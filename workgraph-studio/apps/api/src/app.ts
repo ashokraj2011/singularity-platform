@@ -35,6 +35,7 @@ import { artifactTemplatesRouter } from './modules/artifact/artifact-templates.r
 import { lookupRouter } from './modules/lookup/lookup.router'
 import { receiptsRouter } from './modules/audit/receipts.router'
 import { eventSubscriptionsRouter } from './modules/audit/event-subscriptions.router'
+import { incomingEventsRouter } from './modules/audit/incoming-events.router'
 
 export function createApp(): Express {
   const app = express()
@@ -94,6 +95,8 @@ export function createApp(): Express {
 
   // M11.e — event-bus subscription registry (the dispatcher itself runs in index.ts)
   app.use('/api/events/subscriptions', authMiddleware, eventSubscriptionsRouter)
+  // M11.e cross-service inbound — webhook receiver (signature-gated, NOT auth-middleware-gated)
+  app.use('/api/events/incoming',     incomingEventsRouter)
 
   app.use(errorHandler)
 

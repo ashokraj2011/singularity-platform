@@ -387,6 +387,32 @@ class McpServer(Base):
 
 
 # ---------------------------------------------------------------------------
+# Skills catalog
+# ---------------------------------------------------------------------------
+# Owned by IAM (so the assignment-routing SKILL_BASED mode resolves against
+# a single source of truth across services). Minimal v0: catalog only.
+# UserSkill / AgentSkill linking can land later.
+
+class Skill(Base):
+    __tablename__ = "skills"
+    __table_args__ = (
+        UniqueConstraint("skill_key", name="uq_skills_key"),
+        Index("idx_skills_category", "category"),
+        {"schema": "iam"},
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    skill_key: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String)
+    category: Mapped[Optional[str]] = mapped_column(String)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_by: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.users.id"))
+    created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now, onupdate=_now)
+
+
+# ---------------------------------------------------------------------------
 # M11.e — Event Bus
 # ---------------------------------------------------------------------------
 # Mirror of the workgraph-side schema so subscribers see the same canonical

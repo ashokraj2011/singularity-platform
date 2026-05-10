@@ -24,6 +24,7 @@ from app.authz.routes import router as authz_router
 from app.audit.routes import router as audit_router
 from app.mcp_servers.routes import router as mcp_servers_router
 from app.eventbus.routes import router as eventbus_router  # M11.e
+from app.skills.routes import router as skills_router
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -123,6 +124,7 @@ app.include_router(roles_router, prefix=PREFIX)
 app.include_router(authz_router, prefix=PREFIX)
 app.include_router(audit_router, prefix=PREFIX)
 app.include_router(mcp_servers_router, prefix=PREFIX)
+app.include_router(skills_router, prefix=PREFIX)
 # M11.e — event-bus subscription registry. Router itself carries the /api/v1 prefix.
 app.include_router(eventbus_router)
 
