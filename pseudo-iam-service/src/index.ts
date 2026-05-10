@@ -290,7 +290,81 @@ v1.get("/users/:id", (req, res) => {
   });
 });
 
-v1.get(["/users/:id/teams", "/users/:id/memberships"], (_req, res) => res.json([]));
+// Multi-tenant model: User ↔ Team(role) ↔ Capability. The picker on login
+// reads /me/memberships and lets the user choose {capability, role}.
+//
+// Pseudo data: admins (email starts with "admin") get the cross-product of
+// every capability × every role. Other users get a single editor membership
+// on the first capability so the picker has something to show but skips the
+// pick step (UI auto-selects when length === 1).
+
+interface Membership {
+  capability_id: string;
+  capability_name: string;
+  team_id: string;
+  team_name: string;
+  role_key: string;
+  role_name: string;
+  is_capability_owner: boolean;
+}
+
+function buildMemberships(userEmail: string): Membership[] {
+  const local = userEmail.split("@")[0]?.toLowerCase() ?? "";
+  if (local.startsWith("admin") || local === "anon") {
+    const out: Membership[] = [];
+    for (const cap of PSEUDO_CAPABILITIES) {
+      for (const role of PSEUDO_ROLES) {
+        out.push({
+          capability_id: cap.id,
+          capability_name: cap.name,
+          team_id: PSEUDO_TEAMS[0].id,
+          team_name: PSEUDO_TEAMS[0].name,
+          role_key: role.role_key,
+          role_name: role.name,
+          is_capability_owner: role.role_key === "super-admin",
+        });
+      }
+    }
+    return out;
+  }
+  // alice → editor on cap-1; bob → viewer on cap-2; everyone else → editor on cap-1.
+  if (local === "alice") {
+    return [
+      { capability_id: PSEUDO_CAPABILITIES[0].id, capability_name: PSEUDO_CAPABILITIES[0].name, team_id: PSEUDO_TEAMS[0].id, team_name: PSEUDO_TEAMS[0].name, role_key: "editor", role_name: "Editor", is_capability_owner: false },
+      { capability_id: PSEUDO_CAPABILITIES[1].id, capability_name: PSEUDO_CAPABILITIES[1].name, team_id: PSEUDO_TEAMS[1].id, team_name: PSEUDO_TEAMS[1].name, role_key: "viewer", role_name: "Viewer", is_capability_owner: false },
+    ];
+  }
+  if (local === "bob") {
+    return [
+      { capability_id: PSEUDO_CAPABILITIES[1].id, capability_name: PSEUDO_CAPABILITIES[1].name, team_id: PSEUDO_TEAMS[1].id, team_name: PSEUDO_TEAMS[1].name, role_key: "viewer", role_name: "Viewer", is_capability_owner: false },
+    ];
+  }
+  return [
+    { capability_id: PSEUDO_CAPABILITIES[0].id, capability_name: PSEUDO_CAPABILITIES[0].name, team_id: PSEUDO_TEAMS[0].id, team_name: PSEUDO_TEAMS[0].name, role_key: "editor", role_name: "Editor", is_capability_owner: false },
+  ];
+}
+
+v1.get("/users/:id/teams", (req, res) => {
+  const ms = buildMemberships(`${req.params.id.slice(0, 8)}@pseudo.local`);
+  const seen = new Set<string>();
+  const teams = ms.filter((m) => { if (seen.has(m.team_id)) return false; seen.add(m.team_id); return true; }).map((m) => ({ id: m.team_id, name: m.team_name }));
+  res.json(teams);
+});
+
+v1.get("/users/:id/memberships", async (req, res) => {
+  // We don't have the email from the id alone; try to recover it from a
+  // bearer token if present, else fall back to the deterministic-uuid lookup.
+  const decoded = await decodeAny(req.headers.authorization);
+  const email   = decoded?.payload?.email ?? PSEUDO_USERS.find((u) => u.id === req.params.id)?.email ?? "anon@pseudo.local";
+  res.json(buildMemberships(String(email)));
+});
+
+v1.get("/me/memberships", async (req, res) => {
+  const decoded = await decodeAny(req.headers.authorization);
+  const email = decoded?.payload?.email ?? "anon@pseudo.local";
+  res.json(buildMemberships(String(email)));
+});
+
 v1.get("/users/:id/skills", (_req, res) => res.json([]));
 
 const PSEUDO_TEAMS = [

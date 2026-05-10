@@ -13,7 +13,9 @@ import {
 } from 'lucide-react'
 import type { Node } from 'reactflow'
 import { fetchAgents, fetchTools, fetchCapabilities, registrySource } from '../../lib/registry'
+import { useActiveContextStore } from '../../store/activeContext.store'
 import { api } from '../../lib/api'
+import { UserPicker, TeamPicker, RolePicker, SkillPicker, ConnectorPicker, PickerOrText } from '../../components/lookup/EntityPickers'
 import type { FormWidget } from '../forms/widgets/types'
 import { WidgetListEditor } from '../forms/widgets/WidgetListEditor'
 import { WidgetEditor } from '../forms/widgets/WidgetEditor'
@@ -902,8 +904,11 @@ function CompensationConfigSection({
             <>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <div>
-                  <FieldLabel>Tool ID</FieldLabel>
-                  <NeoInput value={current.toolId ?? ''} onChange={v => onChange({ ...current, toolId: v || undefined })} placeholder="uuid" />
+                  <FieldLabel>Tool</FieldLabel>
+                  <ToolPicker
+                    value={current.toolId ?? ''}
+                    onChange={v => onChange({ ...current, toolId: v || undefined })}
+                  />
                 </div>
                 <div>
                   <FieldLabel>Action ID</FieldLabel>
@@ -924,7 +929,12 @@ function CompensationConfigSection({
             <>
               <div>
                 <FieldLabel>Assignee (email)</FieldLabel>
-                <NeoInput value={current.assignee ?? ''} onChange={v => onChange({ ...current, assignee: v || undefined })} placeholder="ops@example.com" />
+                <UserPicker
+                  value={current.assignee ?? ''}
+                  onChange={v => onChange({ ...current, assignee: v || undefined })}
+                  emit="email"
+                  placeholder="Select an assignee…"
+                />
               </div>
               <div>
                 <FieldLabel>Task description</FieldLabel>
@@ -1070,11 +1080,18 @@ function NodeAssignmentSection({
                 onInsert={(path) => setValue(`{{${path}}}`)}
               />
             </div>
-            <input
+            <PickerOrText
               value={value}
-              onChange={e => setValue(e.target.value || undefined)}
+              onChange={v => setValue(v || undefined)}
               placeholder={meta.placeholder}
-              style={inputSt}
+              inputStyle={inputSt}
+              picker={write =>
+                  mode === 'DIRECT_USER' ? <UserPicker value={value} onChange={write} placeholder="Select a user…" />
+                : mode === 'TEAM_QUEUE'  ? <TeamPicker value={value} onChange={write} placeholder="Select a team…" />
+                : mode === 'ROLE_BASED'  ? <RolePicker value={value} onChange={write} placeholder="Select a role…" />
+                : mode === 'SKILL_BASED' ? <SkillPicker value={value} onChange={write} placeholder="Select a skill…" />
+                : <input value={value} onChange={e => write(e.target.value)} placeholder={meta.placeholder} style={inputSt} />
+              }
             />
             <p style={{ fontSize: 9, color: '#64748b', marginTop: 5, lineHeight: 1.5 }}>
               Examples:{' '}
@@ -1435,12 +1452,24 @@ function AgentPicker({ value, onChange, capabilityId }: { value: string; onChang
 
 // M10 — capability picker (federated /api/lookup/capabilities).
 function CapabilityPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const memberships = useActiveContextStore(s => s.memberships)
+  const active = useActiveContextStore(s => s.active)
   const { data, isLoading, isError } = useQuery({
     queryKey: ['registry', 'capabilities'],
     queryFn: () => fetchCapabilities(),
     staleTime: 30_000,
   })
-  const caps = data ?? []
+  const all = data ?? []
+  // If the user has memberships, filter to capabilities they belong to.
+  // Otherwise (admin without explicit memberships, dev mode) show everything.
+  const allowedIds = new Set(memberships.map(m => m.capability_id))
+  const caps = memberships.length > 0 ? all.filter(c => allowedIds.has(c.id)) : all
+  // Auto-default to active capability when nothing is set yet.
+  useEffect(() => {
+    if (!value && active?.capabilityId && caps.some(c => c.id === active.capabilityId)) {
+      onChange(active.capabilityId)
+    }
+  }, [value, active?.capabilityId, caps, onChange])
   const selected = caps.find(c => c.id === value)
   return (
     <div>
@@ -1638,8 +1667,12 @@ function SinkConfigSection({
       {current.kind === 'CONNECTOR' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div>
-            <FieldLabel>Connector ID</FieldLabel>
-            <NeoInput value={current.connectorId ?? ''} onChange={v => onChange({ ...current, connectorId: v })} placeholder="connector-uuid" />
+            <FieldLabel>Connector</FieldLabel>
+            <ConnectorPicker
+              value={current.connectorId ?? ''}
+              onChange={v => onChange({ ...current, connectorId: v })}
+              placeholder="Select a connector…"
+            />
           </div>
           <div>
             <FieldLabel>Operation</FieldLabel>

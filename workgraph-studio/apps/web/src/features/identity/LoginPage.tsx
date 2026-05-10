@@ -4,6 +4,7 @@ import { motion } from 'motion/react'
 import { Zap, AlertCircle, Loader2, ExternalLink, KeyRound, ShieldCheck } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAuthStore } from '../../store/auth.store'
+import { useActiveContextStore, type Membership } from '../../store/activeContext.store'
 
 const AUTH_PROVIDER  = (import.meta.env.VITE_AUTH_PROVIDER ?? 'local') as 'local' | 'iam'
 const IAM_LOGIN_URL  = import.meta.env.VITE_IAM_LOGIN_URL  ?? 'http://localhost:5175/login'
@@ -16,9 +17,23 @@ const PSEUDO_IAM_URL    = import.meta.env.VITE_PSEUDO_IAM_URL    ?? 'http://loca
 const AUTO_LOGIN        = (import.meta.env.VITE_AUTO_LOGIN     ?? '1') !== '0'
 const PSEUDO_LOGIN_EMAIL = import.meta.env.VITE_PSEUDO_LOGIN_EMAIL ?? 'admin@pseudo.local'
 
+async function fetchMemberships(token: string): Promise<Membership[]> {
+  try {
+    const res = await fetch(`${PSEUDO_IAM_URL.replace(/\/$/, '')}/me/memberships`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) return []
+    return await res.json() as Membership[]
+  } catch {
+    return []
+  }
+}
+
 export function LoginPage() {
   const navigate = useNavigate()
   const setAuth = useAuthStore(s => s.setAuth)
+  const setMemberships = useActiveContextStore(s => s.setMemberships)
+  const setActive = useActiveContextStore(s => s.setActive)
 
   // Local-mode form state
   const [email, setEmail]       = useState('admin@workgraph.local')
@@ -53,7 +68,18 @@ export function LoginPage() {
         displayName: body.user.display_name ?? body.user.email,
         roles:       body.user.is_super_admin ? ['super-admin'] : [],
       })
-      navigate('/dashboard')
+      // Multi-tenant model: fetch memberships, then either auto-pick (1 option)
+      // or send the user to the picker page (>1).
+      const ms = await fetchMemberships(body.access_token)
+      setMemberships(ms)
+      if (ms.length === 1) {
+        setActive(ms[0])
+        navigate('/dashboard')
+      } else if (ms.length > 1) {
+        navigate('/context-picker')
+      } else {
+        navigate('/dashboard')
+      }
     } catch (err) {
       setError((err as Error).message)
       setLoading(false)

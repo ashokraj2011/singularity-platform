@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from './store/auth.store'
 import { AppLayout } from './components/AppLayout'
 import { LoginPage } from './features/identity/LoginPage'
+import { ContextPickerPage } from './features/identity/ContextPickerPage'
 import { DashboardPage } from './features/dashboard/DashboardPage'
 import { WorkflowStudioPage } from './features/workflow/WorkflowStudioPage'
 import { WorkflowsListPage } from './features/workflow/WorkflowsListPage'
@@ -30,7 +31,8 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/login" element={<LoginPage />} />
+        <Route path="/login"          element={<LoginPage />} />
+        <Route path="/context-picker" element={<RequireAuth><ContextPickerPage /></RequireAuth>} />
 
         {/* End-user runtime — minimal shell, no studio chrome */}
         <Route

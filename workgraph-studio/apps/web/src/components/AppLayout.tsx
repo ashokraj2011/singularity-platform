@@ -4,8 +4,10 @@ import { motion, AnimatePresence } from 'motion/react'
 import {
   LayoutDashboard, FileText, GitBranch, ScrollText, Globe, Inbox,
   LogOut, Bell, Settings, ChevronLeft, ChevronRight, Puzzle, Link2, Activity, Play,
+  Building2,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth.store'
+import { useActiveContextStore } from '../store/activeContext.store'
 
 // Top-level (everyday) navigation — no design / authoring access required.
 const navItems = [
@@ -26,6 +28,42 @@ const adminItems: { to: string; label: string; icon: typeof LayoutDashboard }[] 
   { to: '/connectors',        label: 'Connectors',        icon: Link2 },
   { to: '/audit',             label: 'Audit Log',         icon: FileText },
 ]
+
+function ActiveContextChip() {
+  const navigate = useNavigate()
+  const active = useActiveContextStore(s => s.active)
+  const memberships = useActiveContextStore(s => s.memberships)
+  if (!active) return null
+  const switchable = memberships.length > 1
+  return (
+    <button
+      onClick={() => switchable && navigate('/context-picker')}
+      title={switchable ? 'Switch capability or role' : `Single capability — ${active.capabilityName}`}
+      disabled={!switchable}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        padding: '4px 10px', borderRadius: 20,
+        border: '1px solid var(--color-outline-variant)',
+        background: 'var(--color-surface-container-low, rgba(0,0,0,0.02))',
+        fontSize: 11, fontWeight: 600, color: 'var(--color-on-surface)',
+        cursor: switchable ? 'pointer' : 'default',
+      }}
+    >
+      <Building2 size={11} style={{ opacity: 0.6 }} />
+      <span style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {active.capabilityName}
+      </span>
+      <span style={{
+        padding: '1px 6px', borderRadius: 8,
+        background: active.isCapabilityOwner ? 'rgba(251,191,36,0.15)' : 'rgba(0,132,61,0.10)',
+        color: active.isCapabilityOwner ? '#b45309' : 'var(--color-primary)',
+        fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em',
+      }}>
+        {active.roleName}
+      </span>
+    </button>
+  )
+}
 
 function NavItem({ to, label, icon: Icon, collapsed }: { to: string; label: string; icon: React.ComponentType<{ className?: string; style?: React.CSSProperties }>; collapsed: boolean }) {
   return (
@@ -67,6 +105,7 @@ function NavItem({ to, label, icon: Icon, collapsed }: { to: string; label: stri
 
 export function AppLayout() {
   const { user, logout } = useAuthStore()
+  const clearContext = useActiveContextStore(s => s.clear)
   const navigate = useNavigate()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === 'undefined') return false
@@ -79,6 +118,7 @@ export function AppLayout() {
 
   function handleLogout() {
     logout()
+    clearContext()
     navigate('/login')
   }
 
@@ -243,7 +283,7 @@ export function AppLayout() {
         {/* Topbar */}
         <header className="shell-topbar" style={{ height: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 20px' }}>
           {/* Breadcrumb / workspace badge */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{
               display: 'inline-flex', alignItems: 'center', gap: 5,
               padding: '4px 10px', borderRadius: 20,
@@ -255,6 +295,7 @@ export function AppLayout() {
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--color-primary)', flexShrink: 0 }} />
               Workflow
             </span>
+            <ActiveContextChip />
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

@@ -12,6 +12,7 @@ import type { ArtifactTemplate, ArtifactParty, PartyRole, ArtifactType } from '.
 import { ARTIFACT_TYPE_LABEL, ARTIFACT_TYPE_COLOR } from './ArtifactDesignerPage'
 import type { FormSection, SectionType } from '../forms/sections/types'
 import { uid, newSection } from '../forms/sections/types'
+import { TeamPicker } from '../../components/lookup/EntityPickers'
 import { SECTION_TYPES, SectionEditor, SectionIcon, labelStyle, inputStyle } from '../forms/sections/SectionEditor'
 
 // ── Artifact-only constants ───────────────────────────────────────────────────
@@ -410,7 +411,12 @@ export function ArtifactEditorPage() {
             <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.13em', color: 'var(--color-outline)', marginBottom: 8 }}>Metadata</p>
             <div style={{ marginBottom: 8 }}>
               <label style={{ ...labelStyle(), marginBottom: 3 }}>Team</label>
-              <input value={teamName} onChange={e => { setTeamName(e.target.value); setDirty(true) }} placeholder="e.g. Engineering" style={{ ...inputStyle(), fontSize: 11 }} />
+              <TeamPicker
+                value={teamName}
+                onChange={v => { setTeamName(v); setDirty(true) }}
+                emit="name"
+                placeholder="Select a team…"
+              />
             </div>
             <div>
               <label style={{ ...labelStyle(), marginBottom: 3 }}>Description</label>

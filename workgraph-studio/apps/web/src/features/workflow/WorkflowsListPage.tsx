@@ -8,7 +8,8 @@ import {
   Tag, ChevronDown, X, Upload, Play, PenLine, GitFork,
 } from 'lucide-react'
 import { api } from '../../lib/api'
-import { listCapabilities, isIamConfigured, type IamCapability } from '../../lib/iam'
+import { useActiveContextStore } from '../../store/activeContext.store'
+import { UserPicker, TeamPicker, CapabilityPicker } from '../../components/lookup/EntityPickers'
 
 type WorkflowInstance = {
   id: string
@@ -319,7 +320,8 @@ export function WorkflowsListPage() {
   const [importName, setImportName] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [createName, setCreateName] = useState('')
-  const [createCapabilityId, setCreateCapabilityId] = useState<string>('')
+  const activeContext = useActiveContextStore(s => s.active)
+  const [createCapabilityId, setCreateCapabilityId] = useState<string>(activeContext?.capabilityId ?? '')
   const [createDesc, setCreateDesc] = useState('')
   const [createMeta, setCreateMeta] = useState<TemplateMetadata>(emptyMeta())
   const [createStep, setCreateStep] = useState<'identity' | 'config' | 'tags'>('identity')
@@ -444,14 +446,6 @@ export function WorkflowsListPage() {
       setRunOpen(null)
       navigate(`/runs/${run.id}`)
     },
-  })
-
-  // Capabilities (loaded once when modal opens) for the capability picker.
-  const { data: iamCapabilities = [] } = useQuery<IamCapability[]>({
-    queryKey: ['iam', 'capabilities'],
-    queryFn:  () => listCapabilities(),
-    enabled:  createOpen && isIamConfigured(),
-    staleTime: 60_000,
   })
 
   const allInstances: WorkflowInstance[] = instancesData?.content ?? (Array.isArray(instancesData) ? instancesData : [])
@@ -1034,41 +1028,34 @@ export function WorkflowsListPage() {
                       placeholder="What does this workflow do?"
                       style={{ ...inputStyle, resize: 'vertical' }} />
                   </Field>
-                  <Field label={`Capability (owner)${isIamConfigured() ? '' : ' — set VITE_IAM_BASE_URL to enable picker'}`}>
-                    {iamCapabilities.length > 0 ? (
-                      <select
-                        value={createCapabilityId}
-                        onChange={e => setCreateCapabilityId(e.target.value)}
-                        style={{ ...inputStyle, cursor: 'pointer' }}
-                      >
-                        <option value="">— Select capability —</option>
-                        {iamCapabilities.map(c => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}{c.capability_type ? ` · ${c.capability_type}` : ''}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        value={createCapabilityId}
-                        onChange={e => setCreateCapabilityId(e.target.value)}
-                        placeholder="capability-id (paste manually)"
-                        style={inputStyle}
-                      />
-                    )}
+                  <Field label="Capability (owner)">
+                    <CapabilityPicker
+                      value={createCapabilityId}
+                      onChange={v => setCreateCapabilityId(v)}
+                      placeholder="Select a capability…"
+                      hint="Federated from IAM. Filtered to capabilities you have a membership in."
+                    />
                     <p style={{ fontSize: 11, color: '#64748b', marginTop: 4, lineHeight: 1.4 }}>
                       Capability is the authorization boundary for view / edit / start.
                       Leave empty to fall back to team-based permissions.
                     </p>
                   </Field>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                    <Field label="Team name (secondary tag)">
-                      <input value={createMeta.teamName ?? ''} onChange={e => setCreateMeta(m => ({ ...m, teamName: e.target.value }))}
-                        placeholder="e.g. Platform Engineering" style={inputStyle} />
+                    <Field label="Team (secondary tag)">
+                      <TeamPicker
+                        value={createMeta.teamName ?? ''}
+                        onChange={v => setCreateMeta(m => ({ ...m, teamName: v || undefined }))}
+                        emit="name"
+                        placeholder="Select a team…"
+                      />
                     </Field>
                     <Field label="Owner / author">
-                      <input value={createMeta.owner ?? ''} onChange={e => setCreateMeta(m => ({ ...m, owner: e.target.value }))}
-                        placeholder="email or name" style={inputStyle} />
+                      <UserPicker
+                        value={createMeta.owner ?? ''}
+                        onChange={v => setCreateMeta(m => ({ ...m, owner: v || undefined }))}
+                        emit="email"
+                        placeholder="Select an owner…"
+                      />
                     </Field>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
