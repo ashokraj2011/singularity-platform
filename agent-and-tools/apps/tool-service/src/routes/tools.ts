@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { query, queryOne } from "../database";
 import { optionalAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
+import { publishEvent } from "../lib/eventbus/publisher";
 
 export const toolRoutes = Router();
 toolRoutes.use(optionalAuth);
@@ -48,6 +49,23 @@ toolRoutes.post("/", async (req: Request, res: Response) => {
      VALUES ($1,$2,$3,$4,'tool.registered',$5)`,
     [tool_name, v, null, null, JSON.stringify({ display_name })]
   );
+
+  // M11.e — emit canonical event so workgraph etc. can react.
+  void publishEvent({
+    eventName: "tool.registered",
+    envelope: {
+      source_service: "tool-service",
+      subject: { kind: "tool", id: (tool as { id: string }).id },
+      actor:   req.user?.user_id ? { kind: "user", id: req.user.user_id } : null,
+      status:  "emitted",
+      started_at: new Date().toISOString(),
+      payload: {
+        tool_name, version: v, display_name,
+        risk_level: risk_level ?? "low",
+        requires_approval: requires_approval ?? false,
+      },
+    },
+  }).catch((err) => console.warn("[eventbus] publishEvent failed:", (err as Error).message));
 
   res.status(201).json(tool);
 });

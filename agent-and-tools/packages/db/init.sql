@@ -277,3 +277,57 @@ CREATE INDEX IF NOT EXISTS idx_tool_audit_tool
     ON tool.tool_audit_events(tool_name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tool_audit_capability
     ON tool.tool_audit_events(capability_id, created_at DESC);
+
+-- ─── M11.e — Event Bus (tool-service) ─────────────────────────────────────────
+-- Same canonical envelope shape as workgraph + IAM + agent-runtime.
+
+CREATE TABLE IF NOT EXISTS tool.event_outbox (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_name      TEXT NOT NULL,
+    source_service  TEXT NOT NULL,
+    trace_id        TEXT,
+    subject_kind    TEXT NOT NULL,
+    subject_id      TEXT NOT NULL,
+    envelope        JSONB NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    emitted_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_attempt_at TIMESTAMPTZ,
+    last_error      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_event_outbox_status_emitted
+    ON tool.event_outbox(status, emitted_at);
+CREATE INDEX IF NOT EXISTS idx_event_outbox_event_name
+    ON tool.event_outbox(event_name);
+CREATE INDEX IF NOT EXISTS idx_event_outbox_trace
+    ON tool.event_outbox(trace_id);
+
+CREATE TABLE IF NOT EXISTS tool.event_subscriptions (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subscriber_id  TEXT NOT NULL,
+    event_pattern  TEXT NOT NULL,
+    target_url     TEXT NOT NULL,
+    secret         TEXT,
+    is_active      BOOLEAN NOT NULL DEFAULT true,
+    metadata       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_event_subscriptions_active
+    ON tool.event_subscriptions(is_active, event_pattern);
+
+CREATE TABLE IF NOT EXISTS tool.event_deliveries (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    outbox_id       UUID NOT NULL REFERENCES tool.event_outbox(id) ON DELETE CASCADE,
+    subscription_id UUID NOT NULL REFERENCES tool.event_subscriptions(id) ON DELETE CASCADE,
+    status          TEXT NOT NULL DEFAULT 'queued',
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TIMESTAMPTZ,
+    last_error      TEXT,
+    delivered_at    TIMESTAMPTZ,
+    response_status INTEGER,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (outbox_id, subscription_id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_deliveries_status
+    ON tool.event_deliveries(status, created_at);

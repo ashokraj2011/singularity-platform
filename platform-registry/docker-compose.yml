@@ -30,5 +30,18 @@ services:
       postgres:
         condition: service_healthy
 
+  # M11 follow-up — distributed tracing UI (Jaeger all-in-one).
+  # Other services point OTEL_EXPORTER_OTLP_ENDPOINT at host.docker.internal:4318.
+  # UI: http://localhost:16686
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: platform-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+
 volumes:
   platform-registry-pgdata: {}

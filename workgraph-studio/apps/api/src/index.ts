@@ -1,3 +1,7 @@
+// M11 follow-up — OTel auto-instrumentation. MUST be the first import so the
+// SDK monkey-patches express/http/prisma BEFORE they're loaded below.
+import './lib/observability/otel'
+
 import { createApp } from './app'
 import { config } from './config'
 import { prisma } from './lib/prisma'

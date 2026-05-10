@@ -74,6 +74,9 @@ services:
       # only when that env is empty.
       IAM_BOOTSTRAP_USERNAME: ${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
       IAM_BOOTSTRAP_PASSWORD: ${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
+      # M11 follow-up — OpenTelemetry → Jaeger (platform-registry stack)
+      OTEL_SERVICE_NAME:           workgraph-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
     depends_on:
       postgres:
         condition: service_healthy

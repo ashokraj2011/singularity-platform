@@ -9,6 +9,8 @@ import { executionRoutes } from "./routes/execution";
 import { runnerRoutes } from "./routes/runners";
 import { errorHandler } from "./middleware/errorHandler";
 import { startSelfRegistration } from "./lib/platform-registry/register";
+import { startEventDispatcher } from "./lib/eventbus/dispatcher";
+import { eventSubscriptionsRouter } from "./lib/eventbus/routes";
 
 dotenv.config();
 
@@ -27,8 +29,15 @@ app.use("/api/v1/tools", toolRoutes);
 app.use("/api/v1/tools", discoveryRoutes);
 app.use("/api/v1/tools", executionRoutes);
 app.use("/api/v1", runnerRoutes);
+// M11.e — event-bus subscription registry
+app.use("/api/v1/events/subscriptions", eventSubscriptionsRouter);
 
 app.use(errorHandler);
+
+// M11.e — start dispatcher (LISTEN/NOTIFY + safety sweep)
+void startEventDispatcher().catch((err) => {
+  console.warn(`[eventbus] dispatcher failed to start: ${(err as Error).message}`);
+});
 
 // M11.a — self-register with platform-registry (no-op if env unset)
 startSelfRegistration({
