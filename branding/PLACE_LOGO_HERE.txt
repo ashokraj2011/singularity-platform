@@ -1,0 +1,17 @@
+Drop the official Singularity logo files in this folder:
+
+  branding/singularity-logo.png      ← full lockup (silver swirl + "Singularity / Governed Agentic Delivery")
+  branding/singularity-mark.png      ← swirl only (favicon, tight headers)
+
+Then run from the repo root:
+
+  ./bin/sync-branding.sh
+
+That copies the files into every app's public/ directory so all
+SPAs/Next.js apps render the same brand.
+
+Recommended source dimensions:
+  singularity-logo.png   1200x1200 px or larger, PNG with transparent or forest-green background
+  singularity-mark.png   512x512 px, transparent background
+
+You can delete this file after dropping the assets.

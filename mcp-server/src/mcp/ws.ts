@@ -1,0 +1,132 @@
+/**
+ * WebSocket bridge — PLAN_mcp.md §4.
+ *
+ * One bidirectional connection per subscriber, multiplexes:
+ *   - subscribe.events    {filters}                 → ack + stream
+ *   - unsubscribe.events  {subscription_id}         → ack
+ *   - replay.events       {since_id|since_timestamp,
+ *                          filters, limit}          → ack + replay batch + stream catches up
+ *   - ping                                          → pong
+ *
+ * Wire envelope (every direction):
+ *   { type: "subscribe.events" | ..., id?: <correlation>, ... }
+ *
+ * Auth: handshake requires `Sec-WebSocket-Protocol: bearer.<TOKEN>` OR
+ *       `Authorization: Bearer <TOKEN>` header (browsers only support the
+ *       former, programmatic clients support both).
+ *
+ * v0 only — durable distribution is M9.x platform work.
+ */
+import { IncomingMessage } from "http";
+import { v4 as uuidv4 } from "uuid";
+import WebSocket, { WebSocketServer } from "ws";
+import { config } from "../config";
+import { log } from "../shared/log";
+import { events } from "../events/bus";
+import { McpEventEnvelope, SubscriptionFilter } from "../events/types";
+
+interface ActiveSubscription {
+  id: string;
+  unsubscribe: () => void;
+}
+
+function authorise(req: IncomingMessage): boolean {
+  const headerAuth = req.headers["authorization"];
+  if (typeof headerAuth === "string" && headerAuth.startsWith("Bearer ")) {
+    return headerAuth.slice(7) === config.MCP_BEARER_TOKEN;
+  }
+  // Browser/JS clients can't set Authorization on a WS handshake; they pass
+  // the bearer in Sec-WebSocket-Protocol as `bearer.<token>` (a common
+  // subprotocol convention).
+  const protoHeader = req.headers["sec-websocket-protocol"];
+  if (typeof protoHeader === "string") {
+    const protos = protoHeader.split(",").map((p) => p.trim());
+    for (const p of protos) {
+      if (p.startsWith("bearer.")) return p.slice(7) === config.MCP_BEARER_TOKEN;
+    }
+  }
+  return false;
+}
+
+function send(ws: WebSocket, msg: Record<string, unknown>): void {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+}
+
+export function attachWsBridge(wss: WebSocketServer): void {
+  wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
+    if (!authorise(req)) {
+      send(ws, { type: "error", error: "unauthorized" });
+      ws.close(4401, "unauthorized");
+      return;
+    }
+    const subs = new Map<string, ActiveSubscription>();
+    log.debug({ remote: req.socket.remoteAddress }, "ws connected");
+
+    send(ws, { type: "hello", server: "singularity-mcp-server", protocol: "mcp.ws.v0" });
+
+    ws.on("message", (raw: WebSocket.RawData) => {
+      let msg: Record<string, unknown>;
+      try {
+        msg = JSON.parse(raw.toString()) as Record<string, unknown>;
+      } catch {
+        send(ws, { type: "error", error: "invalid_json" });
+        return;
+      }
+      const type = msg.type as string | undefined;
+      const correlationId = (msg.id as string | undefined) ?? uuidv4();
+
+      if (type === "ping") {
+        send(ws, { type: "pong", id: correlationId });
+        return;
+      }
+
+      if (type === "subscribe.events") {
+        const filter = (msg.filter ?? msg.filters) as SubscriptionFilter | undefined;
+        const subId = uuidv4();
+        const off = events.subscribe(filter, (ev: McpEventEnvelope) => {
+          send(ws, { type: "event", subscription_id: subId, event: ev });
+        });
+        subs.set(subId, { id: subId, unsubscribe: off });
+        send(ws, { type: "subscribed", id: correlationId, subscription_id: subId });
+        return;
+      }
+
+      if (type === "unsubscribe.events") {
+        const subId = msg.subscription_id as string | undefined;
+        if (subId && subs.has(subId)) {
+          subs.get(subId)!.unsubscribe();
+          subs.delete(subId);
+          send(ws, { type: "unsubscribed", id: correlationId, subscription_id: subId });
+        } else {
+          send(ws, { type: "error", id: correlationId, error: "subscription_not_found" });
+        }
+        return;
+      }
+
+      if (type === "replay.events") {
+        const filter = (msg.filter ?? msg.filters) as SubscriptionFilter | undefined;
+        const since_id = msg.since_id as string | undefined;
+        const since_timestamp = msg.since_timestamp as string | undefined;
+        const limit = (msg.limit as number | undefined) ?? 500;
+        const batch = events.replaySince({ since_id, since_timestamp, filter, limit });
+        send(ws, {
+          type: "replay.batch",
+          id: correlationId,
+          count: batch.length,
+          events: batch,
+          // tail_id helps the client request the next replay window
+          tail_id: batch.length > 0 ? batch[batch.length - 1].id : null,
+        });
+        return;
+      }
+
+      send(ws, { type: "error", id: correlationId, error: `unknown_type:${type ?? "<missing>"}` });
+    });
+
+    ws.on("close", () => {
+      for (const sub of subs.values()) sub.unsubscribe();
+      subs.clear();
+      log.debug({ remote: req.socket.remoteAddress }, "ws disconnected");
+    });
+  });
+}

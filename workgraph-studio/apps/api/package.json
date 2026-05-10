@@ -1,0 +1,51 @@
+{
+  "name": "@workgraph/api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only --exit-child src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:seed": "ts-node prisma/seed.ts",
+    "prisma:generate": "prisma generate",
+    "prisma:studio": "prisma studio"
+  },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "@types/pg": "^8.20.0",
+    "@workgraph/engine": "workspace:*",
+    "@workgraph/shared-types": "workspace:*",
+    "ajv": "^8.17.1",
+    "axios": "^1.7.9",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^5.0.1",
+    "jose": "^5.9.6",
+    "jsep": "^1.4.0",
+    "minio": "^8.0.1",
+    "multer": "^2.1.1",
+    "node-cron": "^3.0.3",
+    "pg": "^8.20.0",
+    "pino": "^9.6.0",
+    "pino-http": "^10.3.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/multer": "^2.1.0",
+    "@types/node": "^22.10.2",
+    "@types/node-cron": "^3.0.11",
+    "prisma": "^5.22.0",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.7.2"
+  }
+}

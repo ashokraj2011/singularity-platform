@@ -1,0 +1,75 @@
+services:
+  llm-gateway-service:
+    build:
+      context: .
+      dockerfile: services/llm_gateway_service/Dockerfile
+    env_file: .env
+    environment:
+      - LLM_GATEWAY_DB=/data/llm_gateway.db
+      # M11.a
+      - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
+      - PUBLIC_BASE_URL=${LLM_GATEWAY_PUBLIC_URL:-http://host.docker.internal:8001}
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data/llm_gateway:/data
+
+  context-memory-service:
+    build:
+      context: .
+      dockerfile: services/context_memory_service/Dockerfile
+    env_file: .env
+    environment:
+      - CONTEXT_MEMORY_DB=/data/context_memory.db
+      - LLM_GATEWAY_INTERNAL_URL=http://llm-gateway-service:8001
+      # M11.a
+      - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
+      - PUBLIC_BASE_URL=${CONTEXT_MEMORY_PUBLIC_URL:-http://host.docker.internal:8002}
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./data/context_memory:/data
+    depends_on:
+      - llm-gateway-service
+
+  metrics-ledger-service:
+    build:
+      context: .
+      dockerfile: services/metrics_ledger_service/Dockerfile
+    env_file: .env
+    environment:
+      - METRICS_LEDGER_DB=/data/metrics_ledger.db
+      # M11.a
+      - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
+      - PUBLIC_BASE_URL=${METRICS_LEDGER_PUBLIC_URL:-http://host.docker.internal:8003}
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./data/metrics_ledger:/data
+
+  context-api-service:
+    build:
+      context: .
+      dockerfile: services/context_api_service/Dockerfile
+    env_file: .env
+    environment:
+      - LLM_GATEWAY_URL=http://llm-gateway-service:8001
+      - CONTEXT_MEMORY_URL=http://context-memory-service:8002
+      - METRICS_LEDGER_URL=http://metrics-ledger-service:8003
+      # M8 — orchestrator dependencies
+      - COMPOSER_URL=http://host.docker.internal:3004
+      - TOOL_SERVICE_URL=http://host.docker.internal:3002
+      - CALL_LOG_DB=/data/call_log.db
+      # M9.x — persisted MCP events (drained at end of /execute)
+      - EVENTS_STORE_DB=/data/call_log_events.db
+      # M11.a — self-register
+      - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
+      - PUBLIC_BASE_URL=${CONTEXT_API_PUBLIC_URL:-http://host.docker.internal:8000}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/context_api:/data
+    depends_on:
+      - llm-gateway-service
+      - context-memory-service
+      - metrics-ledger-service

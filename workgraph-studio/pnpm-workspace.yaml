@@ -1,0 +1,10 @@
+packages:
+  - 'apps/web'
+  - 'apps/desktop'
+  - 'apps/api'
+  - 'packages/shared-types'
+  - 'packages/engine'
+allowBuilds:
+  '@prisma/client': true
+  '@prisma/engines': true
+  prisma: true

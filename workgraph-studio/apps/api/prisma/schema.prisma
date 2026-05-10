@@ -1,0 +1,1457 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ─── ENUMS ────────────────────────────────────────────────────────────────────
+
+enum NodeType {
+  START
+  END
+  HUMAN_TASK
+  AGENT_TASK
+  APPROVAL
+  DECISION_GATE
+  CONSUMABLE_CREATION
+  TOOL_REQUEST
+  POLICY_CHECK
+  TIMER
+  SIGNAL_WAIT
+  SIGNAL_EMIT
+  CALL_WORKFLOW
+  FOREACH
+  PARALLEL_FORK
+  PARALLEL_JOIN
+  INCLUSIVE_GATEWAY
+  EVENT_GATEWAY
+  CUSTOM
+  DATA_SINK
+  SET_CONTEXT
+  ERROR_CATCH
+}
+
+enum ExecutionLocation {
+  SERVER
+  CLIENT
+  EDGE
+  EXTERNAL
+}
+
+enum ConnectorType {
+  HTTP
+  EMAIL
+  TEAMS
+  SLACK
+  JIRA
+  GIT
+  CONFLUENCE
+  DATADOG
+  SERVICENOW
+  LLM_GATEWAY
+  S3
+  POSTGRES
+}
+
+enum EdgeType {
+  SEQUENTIAL
+  CONDITIONAL
+  PARALLEL_SPLIT
+  PARALLEL_JOIN
+  ERROR_BOUNDARY
+}
+
+enum NodeStatus {
+  PENDING
+  ACTIVE
+  COMPLETED
+  SKIPPED
+  FAILED
+  BLOCKED
+}
+
+enum InstanceStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+enum TaskStatus {
+  OPEN
+  IN_PROGRESS
+  PENDING_REVIEW
+  COMPLETED
+  CANCELLED
+}
+
+enum AssignmentMode {
+  DIRECT_USER
+  TEAM_QUEUE
+  ROLE_BASED
+  SKILL_BASED
+  AGENT
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  APPROVED_WITH_CONDITIONS
+  NEEDS_MORE_INFORMATION
+  DEFERRED
+  ESCALATED
+}
+
+enum ConsumableStatus {
+  DRAFT
+  UNDER_REVIEW
+  APPROVED
+  PUBLISHED
+  SUPERSEDED
+  CONSUMED
+  REJECTED
+}
+
+enum AgentRunStatus {
+  REQUESTED
+  RUNNING
+  PAUSED
+  AWAITING_REVIEW
+  APPROVED
+  REJECTED
+  FAILED
+}
+
+enum ToolRunStatus {
+  REQUESTED
+  PENDING_APPROVAL
+  APPROVED
+  RUNNING
+  COMPLETED
+  REJECTED
+  FAILED
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSED
+  FAILED
+}
+
+// ─── IDENTITY ─────────────────────────────────────────────────────────────────
+
+model User {
+  id           String      @id @default(uuid())
+  email        String      @unique
+  displayName  String
+  // Local password hash — only used when AUTH_PROVIDER=local (offline dev).
+  // Optional now that IAM is the source of truth.
+  passwordHash String?
+  // ID of the corresponding user in the external Singularity IAM platform.
+  // Lazily upserted on first verified login when AUTH_PROVIDER=iam.
+  iamUserId    String?     @unique
+  isActive     Boolean     @default(true)
+  teamId       String?
+  team         Team?       @relation(fields: [teamId], references: [id])
+  roles        UserRole[]
+  skills       UserSkill[]
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@map("users")
+}
+
+model Team {
+  id           String          @id @default(uuid())
+  name         String
+  description  String?
+  departmentId String?
+  department   Department?     @relation(fields: [departmentId], references: [id])
+  members      TeamMember[]
+  users        User[]
+  queueItems   TeamQueueItem[]
+  workflows    Workflow[]
+  variables    TeamVariable[]
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@map("teams")
+}
+
+// Variables that flow into every workflow instance's context as
+// `_globals.<key>`.  Three orthogonal axes:
+//
+//   visibility  — who can READ this variable at runtime.
+//                   ORG_GLOBAL  → every workflow / team / capability sees it.
+//                   CAPABILITY  → only workflows whose capabilityId matches
+//                                 `visibilityScopeId` see it.
+//                   WORKFLOW    → only the one workflow whose id matches
+//                                 `visibilityScopeId` sees it.
+//                 Visibility cascades: a workflow sees its own + its
+//                 capability's + every ORG_GLOBAL.
+//
+//   instanceMode — runtime mutability:
+//                   GLOBAL   → fixed value across every run (legacy default).
+//                   INSTANCE → per-run value, defaulted from `value`; operators
+//                              can override on a single run without touching
+//                              the team-level default.
+//
+//   editableBy   — write-mode RBAC:
+//                   USER   → any team member with the right role can edit.
+//                   SYSTEM → only ADMIN users (or the system process) can edit
+//                            this variable.  Use this for things like
+//                            `runCount` or `lastDeployedHash` that downstream
+//                            jobs maintain.
+model TeamVariable {
+  id                String   @id @default(cuid())
+  teamId            String
+  key               String
+  label             String?
+  type              String   @default("STRING") // STRING | NUMBER | BOOLEAN | JSON
+  // legacy column — kept under the old name for back-compat. Holds
+  // `instanceMode` semantics (GLOBAL | INSTANCE).
+  scope             String   @default("GLOBAL")
+  // New: read-visibility hierarchy.  Default is ORG_GLOBAL so existing rows
+  // keep their current "every workflow sees it" behaviour.
+  visibility        String   @default("ORG_GLOBAL") // ORG_GLOBAL | CAPABILITY | WORKFLOW
+  // For CAPABILITY visibility: capability id.  For WORKFLOW visibility: the
+  // owning workflow id.  Null when visibility = ORG_GLOBAL.
+  visibilityScopeId String?
+  // New: who can write this variable.
+  editableBy        String   @default("USER") // USER | SYSTEM
+  value             Json
+  description       String?
+  team              Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  createdById       String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([teamId, key])
+  @@index([teamId])
+  @@index([visibility, visibilityScopeId])
+  @@map("team_variables")
+}
+
+// Local cache of Singularity IAM capabilities — refreshed on demand whenever
+// the IAM client looks one up.  Used so the workflow studio can render names
+// and types for `capabilityId` references without hitting IAM on every page.
+model Capability {
+  id       String   @id // == IAM capability_id
+  name     String
+  type     String?
+  status   String?
+  syncedAt DateTime @default(now())
+
+  @@map("capabilities_cache")
+}
+
+model Department {
+  id        String       @id @default(uuid())
+  name      String
+  parentId  String?
+  parent    Department?  @relation("DeptTree", fields: [parentId], references: [id])
+  children  Department[] @relation("DeptTree")
+  teams     Team[]
+  createdAt DateTime     @default(now())
+
+  @@map("departments")
+}
+
+model Role {
+  id           String           @id @default(uuid())
+  name         String           @unique
+  description  String?
+  isSystemRole Boolean          @default(false)
+  userRoles    UserRole[]
+  permissions  RolePermission[]
+  createdAt    DateTime         @default(now())
+
+  @@map("roles")
+}
+
+model Skill {
+  id          String       @id @default(uuid())
+  name        String       @unique
+  description String?
+  category    String?
+  userSkills  UserSkill[]
+  agentSkills AgentSkill[]
+  createdAt   DateTime     @default(now())
+
+  @@map("skills")
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  name        String           @unique
+  resource    String
+  action      String
+  description String?
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model UserRole {
+  userId    String
+  roleId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  grantedAt DateTime @default(now())
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model UserSkill {
+  userId           String
+  skillId          String
+  proficiencyLevel Int?
+  user             User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  skill            Skill  @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@id([userId, skillId])
+  @@map("user_skills")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model TeamMember {
+  id       String   @id @default(uuid())
+  teamId   String
+  userId   String
+  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  joinedAt DateTime @default(now())
+
+  @@unique([teamId, userId])
+  @@map("team_members")
+}
+
+model Delegation {
+  id          String   @id @default(uuid())
+  delegatorId String
+  delegateId  String
+  scope       String?
+  startsAt    DateTime
+  endsAt      DateTime
+  createdAt   DateTime @default(now())
+
+  @@map("delegations")
+}
+
+model ApprovalAuthority {
+  id           String    @id @default(uuid())
+  userId       String
+  resourceType String
+  maxValue     Decimal?
+  grantedAt    DateTime  @default(now())
+  expiresAt    DateTime?
+
+  @@map("approval_authorities")
+}
+
+// ─── INITIATIVES ──────────────────────────────────────────────────────────────
+
+model Initiative {
+  id          String               @id @default(uuid())
+  title       String
+  description String?
+  status      String               @default("DRAFT")
+  createdById String
+  owners      InitiativeOwner[]
+  documents   InitiativeDocument[]
+  workflows   WorkflowInstance[]
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  @@map("initiatives")
+}
+
+model InitiativeOwner {
+  initiativeId String
+  userId       String
+  initiative   Initiative @relation(fields: [initiativeId], references: [id], onDelete: Cascade)
+
+  @@id([initiativeId, userId])
+  @@map("initiative_owners")
+}
+
+model InitiativeDocument {
+  id           String     @id @default(uuid())
+  initiativeId String
+  documentId   String
+  initiative   Initiative @relation(fields: [initiativeId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@map("initiative_documents")
+}
+
+// ─── WORKFLOW ─────────────────────────────────────────────────────────────────
+
+// ─── Workflow (the editable design — no longer a "template") ─────────────────
+//
+// A Workflow IS the canonical design.  Its graph lives in the dedicated
+// `workflow_design_*` tables; runs are separate WorkflowInstance rows cloned
+// from those tables when a run starts.  The `workflow_templates` table name
+// is preserved for back-compat — only the model name and code surface change.
+model Workflow {
+  id             String                @id @default(uuid())
+  name           String
+  description    String?
+  status         String                @default("DRAFT")
+  currentVersion Int                   @default(1)
+  createdById    String?
+  teamId         String
+  team           Team                  @relation(fields: [teamId], references: [id])
+  // ID of the owning capability in Singularity IAM.  When set, this is the
+  // authorization boundary — the permission helper calls iamClient.authzCheck
+  // against this capability.  When null, falls back to the legacy team rule.
+  capabilityId   String?
+  archivedAt     DateTime?
+  metadata       Json?
+  // Workflow-scoped variables: [{key, label, type, defaultValue, description, scope}]
+  // scope: 'INPUT' (provided when starting a run) | 'CONSTANT' (workflow-baked default)
+  variables      Json                  @default("[]")
+  // Editable design graph — runs clone these into WorkflowInstance.nodes / edges / phases.
+  designPhases   WorkflowDesignPhase[]
+  designNodes    WorkflowDesignNode[]
+  designEdges    WorkflowDesignEdge[]
+  versions       WorkflowVersion[]
+  triggers       WorkflowTrigger[]
+  permissions    WorkflowPermission[]
+  instances      WorkflowInstance[]
+  runSnapshots   RunSnapshot[]
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  @@index([teamId])
+  @@index([capabilityId])
+  @@index([status])
+  @@map("workflow_templates")
+}
+
+// ─── Browser-runtime snapshot ────────────────────────────────────────────────
+//
+// Single row per browser-driven run.  The browser writes the full RunState as
+// JSON; the server is just durable storage with optimistic-concurrency on
+// `version`.  Run state machine + edge eval lives entirely client-side.
+model RunSnapshot {
+  id          String   @id @default(uuid())
+  runId       String   @unique // browser-generated UUID
+  workflowId  String
+  name        String
+  status      String // RunStatus enum mirror (string for forward-compat)
+  payload     Json // entire RunState blob
+  version     Int      @default(1) // monotonic; rejects POST with stale version
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  workflow    Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([workflowId])
+  @@index([createdById])
+  @@index([status])
+  @@map("run_snapshots")
+}
+
+enum WorkflowPermissionAction {
+  VIEW
+  EDIT
+  START
+  ADMIN
+}
+
+model WorkflowPermission {
+  id         String                   @id @default(uuid())
+  templateId String
+  roleId     String
+  action     WorkflowPermissionAction
+  template   Workflow                 @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  grantedAt  DateTime                 @default(now())
+
+  @@unique([templateId, roleId, action])
+  @@map("workflow_permissions")
+}
+
+enum TriggerType {
+  WEBHOOK
+  SCHEDULE
+  EVENT
+}
+
+model WorkflowTrigger {
+  id          String      @id @default(uuid())
+  templateId  String
+  template    Workflow    @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  type        TriggerType
+  isActive    Boolean     @default(true)
+  // For WEBHOOK: { secret: string }
+  // For SCHEDULE: { cron: string, timezone?: string }
+  // For EVENT: { eventType: string, filter?: object }
+  config      Json        @default("{}")
+  lastFiredAt DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([type, isActive])
+  @@map("workflow_triggers")
+}
+
+model WorkflowVersion {
+  id            String   @id @default(uuid())
+  templateId    String
+  version       Int
+  graphSnapshot Json
+  // SHA-256 of the canonical graph representation — used to dedupe snapshots
+  // when starting a run.  If the design hasn't changed since the last
+  // snapshot, the run reuses that version instead of creating a new one.
+  contentHash   String?
+  // Optional human/auto trigger context — "auto" (snapshot on run) or "manual" (Publish).
+  source        String?
+  template      Workflow @relation(fields: [templateId], references: [id])
+  createdAt     DateTime @default(now())
+
+  @@unique([templateId, version])
+  @@index([templateId, contentHash])
+  @@map("workflow_template_versions")
+}
+
+// ─── Workflow design tables — the editable graph owned by a Workflow ─────────
+
+model WorkflowDesignPhase {
+  id           String               @id @default(uuid())
+  workflowId   String
+  name         String
+  displayOrder Int                  @default(0)
+  color        String?
+  workflow     Workflow             @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  nodes        WorkflowDesignNode[]
+  createdAt    DateTime             @default(now())
+
+  @@index([workflowId])
+  @@map("workflow_design_phases")
+}
+
+model WorkflowDesignNode {
+  id                 String               @id @default(uuid())
+  workflowId         String
+  phaseId            String?
+  nodeType           NodeType
+  label              String
+  config             Json                 @default("{}")
+  compensationConfig Json?
+  executionLocation  ExecutionLocation    @default(SERVER)
+  positionX          Float                @default(0)
+  positionY          Float                @default(0)
+  workflow           Workflow             @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  phase              WorkflowDesignPhase? @relation(fields: [phaseId], references: [id])
+  outgoing           WorkflowDesignEdge[] @relation("DesignSourceNode")
+  incoming           WorkflowDesignEdge[] @relation("DesignTargetNode")
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  @@index([workflowId])
+  @@map("workflow_design_nodes")
+}
+
+model WorkflowDesignEdge {
+  id           String             @id @default(uuid())
+  workflowId   String
+  sourceNodeId String
+  targetNodeId String
+  edgeType     EdgeType           @default(SEQUENTIAL)
+  condition    Json?
+  label        String?
+  workflow     Workflow           @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  source       WorkflowDesignNode @relation("DesignSourceNode", fields: [sourceNodeId], references: [id], onDelete: Cascade)
+  target       WorkflowDesignNode @relation("DesignTargetNode", fields: [targetNodeId], references: [id], onDelete: Cascade)
+  createdAt    DateTime           @default(now())
+
+  @@index([workflowId])
+  @@index([sourceNodeId])
+  @@index([targetNodeId])
+  @@map("workflow_design_edges")
+}
+
+// A WorkflowInstance is now exclusively a run — a transactional clone of a
+// Workflow's design graph at start time.  The previous `isDesign=true` row
+// pattern is gone; the editable design lives in `workflow_design_*` tables
+// owned by the Workflow.
+model WorkflowInstance {
+  id                String             @id @default(uuid())
+  templateId        String?
+  // Snapshot version this run was cloned from.
+  templateVersion   Int?
+  template          Workflow?          @relation(fields: [templateId], references: [id])
+  initiativeId      String?
+  name              String
+  status            InstanceStatus     @default(DRAFT)
+  context           Json               @default("{}")
+  initiative        Initiative?        @relation(fields: [initiativeId], references: [id])
+  parentInstanceId  String?
+  parentNodeId      String?
+  parent            WorkflowInstance?  @relation("Subworkflows", fields: [parentInstanceId], references: [id])
+  children          WorkflowInstance[] @relation("Subworkflows")
+  phases            WorkflowPhase[]
+  nodes             WorkflowNode[]
+  edges             WorkflowEdge[]
+  mutations         WorkflowMutation[]
+  events            WorkflowEvent[]
+  tasks             Task[]
+  consumables       Consumable[]
+  agentRuns         AgentRun[]
+  toolRuns          ToolRun[]
+  pendingExecutions PendingExecution[]
+  documents         Document[]
+  startedAt         DateTime?
+  completedAt       DateTime?
+  archivedAt        DateTime?
+  createdById       String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@index([templateId])
+  @@map("workflow_instances")
+}
+
+model WorkflowPhase {
+  id           String           @id @default(uuid())
+  instanceId   String
+  name         String
+  displayOrder Int              @default(0)
+  color        String?
+  instance     WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  nodes        WorkflowNode[]
+  createdAt    DateTime         @default(now())
+
+  @@map("workflow_phases")
+}
+
+model WorkflowNode {
+  id                 String             @id @default(uuid())
+  instanceId         String
+  phaseId            String?
+  nodeType           NodeType
+  label              String
+  status             NodeStatus         @default(PENDING)
+  config             Json               @default("{}")
+  compensationConfig Json?
+  executionLocation  ExecutionLocation  @default(SERVER)
+  positionX          Float              @default(0)
+  positionY          Float              @default(0)
+  instance           WorkflowInstance   @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  phase              WorkflowPhase?     @relation(fields: [phaseId], references: [id])
+  outgoing           WorkflowEdge[]     @relation("SourceNode")
+  incoming           WorkflowEdge[]     @relation("TargetNode")
+  pendingExecutions  PendingExecution[]
+  documents          Document[]
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@map("workflow_nodes")
+}
+
+model WorkflowEdge {
+  id           String           @id @default(uuid())
+  instanceId   String
+  sourceNodeId String
+  targetNodeId String
+  edgeType     EdgeType         @default(SEQUENTIAL)
+  condition    Json?
+  label        String?
+  instance     WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  source       WorkflowNode     @relation("SourceNode", fields: [sourceNodeId], references: [id])
+  target       WorkflowNode     @relation("TargetNode", fields: [targetNodeId], references: [id])
+  createdAt    DateTime         @default(now())
+
+  @@map("workflow_edges")
+}
+
+model WorkflowMutation {
+  id            String           @id @default(uuid())
+  instanceId    String
+  nodeId        String?
+  mutationType  String
+  beforeState   Json?
+  afterState    Json?
+  performedById String?
+  instance      WorkflowInstance @relation(fields: [instanceId], references: [id])
+  performedAt   DateTime         @default(now())
+
+  @@map("workflow_mutations")
+}
+
+model WorkflowEvent {
+  id         String           @id @default(uuid())
+  instanceId String
+  eventType  String
+  payload    Json?
+  instance   WorkflowInstance @relation(fields: [instanceId], references: [id])
+  occurredAt DateTime         @default(now())
+
+  @@map("workflow_events")
+}
+
+// ─── TASKS ────────────────────────────────────────────────────────────────────
+
+model Task {
+  id             String              @id @default(uuid())
+  instanceId     String?
+  nodeId         String?
+  title          String
+  description    String?
+  status         TaskStatus          @default(OPEN)
+  assignmentMode AssignmentMode      @default(DIRECT_USER)
+  priority       Int                 @default(50)
+  dueAt          DateTime?
+  formSchema     Json?
+  formData       Json?
+  instance       WorkflowInstance?   @relation(fields: [instanceId], references: [id])
+  assignments    TaskAssignment[]
+  queueItems     TeamQueueItem[]
+  comments       TaskComment[]
+  statusHistory  TaskStatusHistory[]
+  attachments    Document[]
+  createdById    String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@map("tasks")
+}
+
+model TaskAssignment {
+  id           String    @id @default(uuid())
+  taskId       String
+  assignedToId String?
+  teamId       String?
+  roleId       String?
+  skillId      String?
+  task         Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  assignedAt   DateTime  @default(now())
+  claimedAt    DateTime?
+  completedAt  DateTime?
+
+  @@map("task_assignments")
+}
+
+// Queue of tasks awaiting claim by an eligible user.  Eligibility is
+// determined by the populated columns: a row may be tagged with `teamId`
+// (TEAM_QUEUE), `roleKey` + `capabilityId` (ROLE_BASED), or `skillKey`
+// (SKILL_BASED).  At most one of these is set per row; the runtime enqueues
+// one row per assignment-mode at task activation time.
+model TeamQueueItem {
+  id             String    @id @default(uuid())
+  taskId         String
+  // Optional team membership filter (TEAM_QUEUE mode)
+  teamId         String?
+  // Optional role filter — combined with capabilityId via IAM authzCheck
+  roleKey        String?
+  // Optional skill filter — eligibility resolved against IAM /skills/:key/users
+  skillKey       String?
+  // Capability that scopes role-based eligibility (always set for ROLE_BASED)
+  capabilityId   String?
+  // Echoes which AssignmentMode produced this row, for auditing.
+  assignmentMode String?
+  claimedById    String?
+  team           Team?     @relation(fields: [teamId], references: [id])
+  task           Task      @relation(fields: [taskId], references: [id])
+  enqueuedAt     DateTime  @default(now())
+  claimedAt      DateTime?
+
+  @@index([taskId])
+  @@index([teamId])
+  @@index([roleKey, capabilityId])
+  @@index([skillKey])
+  @@index([claimedById])
+  @@map("team_queue_items")
+}
+
+model TaskComment {
+  id        String   @id @default(uuid())
+  taskId    String
+  authorId  String
+  content   String
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@map("task_comments")
+}
+
+model TaskStatusHistory {
+  id             String      @id @default(uuid())
+  taskId         String
+  previousStatus TaskStatus?
+  newStatus      TaskStatus
+  changedById    String?
+  reason         String?
+  task           Task        @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  changedAt      DateTime    @default(now())
+
+  @@map("task_status_history")
+}
+
+// ─── APPROVALS ────────────────────────────────────────────────────────────────
+
+model ApprovalRequest {
+  id             String             @id @default(uuid())
+  instanceId     String?
+  nodeId         String?
+  subjectType    String
+  subjectId      String
+  requestedById  String
+  // ── Assignment routing (mirrors Task) ─────────────────────────────────────
+  // DIRECT_USER → assignedToId
+  // TEAM_QUEUE  → teamId
+  // ROLE_BASED  → roleKey + capabilityId
+  // SKILL_BASED → skillKey
+  assignedToId   String?
+  assignmentMode String?
+  teamId         String?
+  roleKey        String?
+  skillKey       String?
+  capabilityId   String?
+  status         ApprovalStatus     @default(PENDING)
+  dueAt          DateTime?
+  formData       Json?
+  decisions      ApprovalDecision[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@index([assignedToId])
+  @@index([teamId])
+  @@index([roleKey, capabilityId])
+  @@index([skillKey])
+  @@map("approval_requests")
+}
+
+model ApprovalDecision {
+  id          String          @id @default(uuid())
+  requestId   String
+  decidedById String
+  decision    ApprovalStatus
+  conditions  String?
+  notes       String?
+  request     ApprovalRequest @relation(fields: [requestId], references: [id])
+  decidedAt   DateTime        @default(now())
+
+  @@map("approval_decisions")
+}
+
+// ─── CONSUMABLES ──────────────────────────────────────────────────────────────
+
+model ConsumableType {
+  id               String       @id @default(uuid())
+  name             String       @unique
+  description      String?
+  schemaDef        Json         @default("{}")
+  ownerRoleId      String?
+  requiresApproval Boolean      @default(true)
+  allowVersioning  Boolean      @default(true)
+  consumables      Consumable[]
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@map("consumable_types")
+}
+
+model Consumable {
+  id             String              @id @default(uuid())
+  typeId         String
+  instanceId     String?
+  nodeId         String?
+  name           String
+  status         ConsumableStatus    @default(DRAFT)
+  currentVersion Int                 @default(1)
+  formData       Json?
+  // ── Assignment routing (the consumable's owner) ──────────────────────────
+  assignedToId   String?
+  assignmentMode String?
+  teamId         String?
+  roleKey        String?
+  skillKey       String?
+  capabilityId   String?
+  type           ConsumableType      @relation(fields: [typeId], references: [id])
+  instance       WorkflowInstance?   @relation(fields: [instanceId], references: [id])
+  versions       ConsumableVersion[]
+  events         ConsumableEvent[]
+  createdById    String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([assignedToId])
+  @@index([teamId])
+  @@index([roleKey, capabilityId])
+  @@index([skillKey])
+  @@map("consumables")
+}
+
+model ConsumableVersion {
+  id           String     @id @default(uuid())
+  consumableId String
+  version      Int
+  payload      Json       @default("{}")
+  createdById  String?
+  consumable   Consumable @relation(fields: [consumableId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@unique([consumableId, version])
+  @@map("consumable_versions")
+}
+
+model ConsumableEvent {
+  id           String     @id @default(uuid())
+  consumableId String
+  eventType    String
+  payload      Json?
+  consumable   Consumable @relation(fields: [consumableId], references: [id])
+  occurredAt   DateTime   @default(now())
+
+  @@map("consumable_events")
+}
+
+// ─── AGENTS ───────────────────────────────────────────────────────────────────
+
+model Agent {
+  id                 String       @id @default(uuid())
+  name               String
+  description        String?
+  provider           String       @default("ANTHROPIC")
+  model              String
+  systemPrompt       String?
+  isActive           Boolean      @default(true)
+  // M10/M11.c — immutable snapshot of an agent-and-tools template captured
+  // at AgentRun start. Rows are no longer authored locally.
+  externalTemplateId String?      @unique
+  externalSyncedAt   DateTime?    // = fetchedAt
+  sourceHash         String?      // sha256(canonical JSON) of upstream payload at snapshot time
+  sourceVersion      String?      // template's own .version (if present)
+  fetchedBy          String?      // workgraph user id (null = system snapshot)
+  skills             AgentSkill[]
+  runs               AgentRun[]
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@map("agents")
+}
+
+model AgentSkill {
+  agentId String
+  skillId String
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  skill   Skill  @relation(fields: [skillId], references: [id])
+
+  @@id([agentId, skillId])
+  @@map("agent_skills")
+}
+
+model AgentRun {
+  id            String            @id @default(uuid())
+  agentId       String
+  instanceId    String?
+  nodeId        String?
+  status        AgentRunStatus    @default(REQUESTED)
+  initiatedById String?
+  agent         Agent             @relation(fields: [agentId], references: [id])
+  instance      WorkflowInstance? @relation(fields: [instanceId], references: [id])
+  inputs        AgentRunInput[]
+  outputs       AgentRunOutput[]
+  reviews       AgentReview[]
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@map("agent_runs")
+}
+
+model AgentRunInput {
+  id        String   @id @default(uuid())
+  runId     String
+  inputType String
+  payload   Json     @default("{}")
+  run       AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@map("agent_run_inputs")
+}
+
+model AgentRunOutput {
+  id                String   @id @default(uuid())
+  runId             String
+  outputType        String
+  rawContent        String?
+  structuredPayload Json?
+  tokenCount        Int?
+  run               AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  createdAt         DateTime @default(now())
+
+  @@map("agent_run_outputs")
+}
+
+model AgentReview {
+  id           String   @id @default(uuid())
+  runId        String
+  reviewedById String
+  decision     String
+  notes        String?
+  run          AgentRun @relation(fields: [runId], references: [id])
+  reviewedAt   DateTime @default(now())
+
+  @@map("agent_reviews")
+}
+
+// ─── TOOLS ────────────────────────────────────────────────────────────────────
+
+model Tool {
+  id               String       @id @default(uuid())
+  name             String       @unique
+  description      String?
+  riskLevel        RiskLevel    @default(MEDIUM)
+  requiresApproval Boolean      @default(true)
+  isActive         Boolean      @default(true)
+  // M10/M11.c — immutable snapshot of a tool-service registration captured
+  // at ToolRun start. Rows are no longer authored locally.
+  externalToolName String?      @unique
+  externalVersion  String?
+  externalSyncedAt DateTime?    // = fetchedAt
+  sourceHash       String?      // sha256(canonical JSON) of upstream payload at snapshot time
+  sourceVersion    String?      // tool's published version (if present)
+  fetchedBy        String?      // workgraph user id (null = system snapshot)
+  actions          ToolAction[]
+  runs             ToolRun[]
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@map("tools")
+}
+
+model ToolAction {
+  id           String    @id @default(uuid())
+  toolId       String
+  name         String
+  description  String?
+  inputSchema  Json      @default("{}")
+  outputSchema Json      @default("{}")
+  riskLevel    RiskLevel @default(MEDIUM)
+  tool         Tool      @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  @@map("tool_actions")
+}
+
+model ToolPermission {
+  id        String   @id @default(uuid())
+  toolId    String
+  roleId    String?
+  actionId  String?
+  grantedAt DateTime @default(now())
+
+  @@map("tool_permissions")
+}
+
+model ExecutionRunner {
+  id         String  @id @default(uuid())
+  name       String
+  runnerType String  @default("MOCK")
+  config     Json    @default("{}")
+  isActive   Boolean @default(true)
+
+  @@map("execution_runners")
+}
+
+model ToolRun {
+  id             String            @id @default(uuid())
+  toolId         String
+  actionId       String?
+  instanceId     String?
+  runnerId       String?
+  status         ToolRunStatus     @default(REQUESTED)
+  inputPayload   Json              @default("{}")
+  outputPayload  Json?
+  requestedById  String?
+  idempotencyKey String?
+  tool           Tool              @relation(fields: [toolId], references: [id])
+  instance       WorkflowInstance? @relation(fields: [instanceId], references: [id])
+  approvals      ToolRunApproval[]
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@unique([toolId, idempotencyKey])
+  @@map("tool_runs")
+}
+
+model ToolRunApproval {
+  id                String    @id @default(uuid())
+  runId             String
+  approvalRequestId String?
+  approvedById      String?
+  decision          String?
+  run               ToolRun   @relation(fields: [runId], references: [id])
+  decidedAt         DateTime?
+
+  @@map("tool_run_approvals")
+}
+
+// ─── POLICIES ─────────────────────────────────────────────────────────────────
+
+model Policy {
+  id           String            @id @default(uuid())
+  name         String
+  description  String?
+  resourceType String
+  isActive     Boolean           @default(true)
+  priority     Int               @default(100)
+  conditions   PolicyCondition[]
+  actions      PolicyAction[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@map("policies")
+}
+
+model PolicyCondition {
+  id              String @id @default(uuid())
+  policyId        String
+  fieldPath       String
+  operator        String
+  value           Json
+  logicalOperator String @default("AND")
+  policy          Policy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@map("policy_conditions")
+}
+
+model PolicyAction {
+  id           String @id @default(uuid())
+  policyId     String
+  actionType   String
+  actionConfig Json   @default("{}")
+  policy       Policy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@map("policy_actions")
+}
+
+// ─── AUDIT ────────────────────────────────────────────────────────────────────
+
+model EventLog {
+  id         String   @id @default(uuid())
+  eventType  String
+  entityType String
+  entityId   String
+  actorId    String?
+  payload    Json?
+  occurredAt DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([occurredAt(sort: Desc)])
+  @@map("event_log")
+}
+
+model Receipt {
+  id          String   @id @default(uuid())
+  receiptType String
+  entityType  String
+  entityId    String
+  eventLogId  String?
+  content     Json     @default("{}")
+  generatedAt DateTime @default(now())
+
+  @@map("receipts")
+}
+
+// ─── DOCUMENTS ────────────────────────────────────────────────────────────────
+
+// An attachment associated with a task / node / instance.
+//
+// Two kinds (`kind`):
+//   UPLOAD — file stored in MinIO/S3.  `storageKey`, `mimeType`, `sizeBytes`
+//            and `bucket` are populated; `url` is null.
+//   LINK   — external URL (OneDrive, SharePoint, Google Drive, Dropbox,
+//            arbitrary HTTPS).  `url` and `provider` are populated; storage
+//            fields are null.
+//
+// Either kind may be attached at runtime to any node — there is no size
+// limit on links and uploads only enforce the configured server-side cap.
+model Document {
+  id           String   @id @default(uuid())
+  name         String
+  // Common
+  kind         String   @default("UPLOAD") // UPLOAD | LINK
+  // UPLOAD-only
+  mimeType     String?
+  sizeBytes    BigInt?
+  storageKey   String?
+  bucket       String?
+  // LINK-only
+  url          String?
+  provider     String? // ONEDRIVE | SHAREPOINT | GDRIVE | DROPBOX | BOX | GENERIC
+  // Common metadata
+  uploadedById String?
+  uploadedAt   DateTime @default(now())
+
+  // Optional links to runtime form-fill artifacts
+  taskId     String?
+  nodeId     String?
+  instanceId String?
+
+  task     Task?             @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  node     WorkflowNode?     @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  instance WorkflowInstance? @relation(fields: [instanceId], references: [id], onDelete: SetNull)
+
+  @@index([taskId])
+  @@index([nodeId])
+  @@index([instanceId])
+  @@index([kind])
+  @@map("documents")
+}
+
+// ─── CUSTOM NODE TYPES ────────────────────────────────────────────────────────
+
+model CustomNodeType {
+  id            String   @id @default(uuid())
+  // Internal key used in config.customTypeId — uppercase, snake_case e.g. MARKETING_REVIEW
+  name          String   @unique
+  label         String
+  description   String?
+  color         String   @default("#64748b")
+  // Lucide icon name, e.g. "Star", "Briefcase"
+  icon          String   @default("Box")
+  // Which built-in executor handles this node at runtime
+  baseType      String   @default("HUMAN_TASK")
+  // JSON array: [{key, label, placeholder, multiline?}]
+  fields        Json     @default("[]")
+  // If true, the node config gets a section-based form builder (and runtime fill panel)
+  supportsForms Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("custom_node_types")
+}
+
+// ─── OUTBOX ───────────────────────────────────────────────────────────────────
+
+model OutboxEvent {
+  id            String       @id @default(uuid())
+  aggregateType String
+  aggregateId   String
+  eventType     String
+  payload       Json
+  status        OutboxStatus @default(PENDING)
+  createdAt     DateTime     @default(now())
+  processedAt   DateTime?
+  errorMessage  String?
+
+  @@index([status, createdAt])
+  @@map("outbox_events")
+}
+
+// ─── CONNECTORS ───────────────────────────────────────────────────────────────
+
+model Connector {
+  id          String        @id @default(uuid())
+  type        ConnectorType
+  name        String
+  description String?
+  // Non-sensitive configuration (baseUrl, project keys, defaults)
+  config      Json          @default("{}")
+  // Encrypted at rest — API NEVER returns this field in list/get responses
+  credentials Json          @default("{}")
+  archivedAt  DateTime?
+  createdById String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@map("connectors")
+}
+
+// ─── PENDING EXECUTIONS (client/edge/external location gating) ───────────────
+
+model PendingExecution {
+  id          String            @id @default(uuid())
+  instanceId  String
+  nodeId      String
+  location    ExecutionLocation
+  claimToken  String            @unique @default(uuid())
+  payload     Json?
+  claimedAt   DateTime?
+  claimedBy   String?
+  completedAt DateTime?
+  result      Json?
+  error       String?
+  expiresAt   DateTime
+  instance    WorkflowInstance  @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  node        WorkflowNode      @relation(fields: [nodeId], references: [id], onDelete: Cascade)
+  createdAt   DateTime          @default(now())
+
+  @@index([instanceId, completedAt])
+  @@index([location, completedAt, expiresAt])
+  @@map("pending_executions")
+}
+
+// ─── Artifact Designer ────────────────────────────────────────────────────────
+//
+// ArtifactTemplate defines the structure of a typed document: sections, parties,
+// fill rules. Used to generate contracts (agent↔agent, agent↔human, human↔human),
+// deliverables, specs, handoffs, and reports.
+//
+// Sections are stored as JSON:
+//   [{ id, title, type, required, filledBy, placeholder, description,
+//      fields?, columns?, language?, items? }]
+//
+// Parties are stored as JSON:
+//   [{ id, name, role, required, description }]
+
+model ArtifactTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  /// CONTRACT | DELIVERABLE | SPECIFICATION | APPROVAL_BRIEF | HANDOFF | REPORT
+  type        String   @default("DELIVERABLE")
+  /// DRAFT | PUBLISHED | ARCHIVED
+  status      String   @default("DRAFT")
+  version     Int      @default(1)
+  sections    Json     @default("[]")
+  parties     Json     @default("[]")
+  metadata    Json?
+  createdById String
+  teamName    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([type])
+  @@index([status])
+  @@map("artifact_templates")
+}
+
+// ─── M11.e — Event bus (Postgres LISTEN/NOTIFY + outbox + webhooks) ──────────
+//
+// Each service owns its own outbox + subscriptions. Publishers INSERT into
+// `event_outbox` and pg_notify('event_outbox_workgraph', id). A dispatcher
+// LISTENs on that channel, fans out to matching subscribers, and tracks
+// per-delivery state for at-least-once retry semantics.
+
+model EventOutbox {
+  id            String   @id @default(uuid())
+  eventName     String   // canonical: "workflow.published", "agent.run.completed", ...
+  sourceService String   // "workgraph-api"
+  traceId       String?  // correlation chain (M9.z)
+  subjectKind   String   // "workflow" | "agent_run" | "approval" | ...
+  subjectId     String
+  envelope      Json     // full canonical envelope (kind, status, started_at, correlation, ...)
+  status        String   @default("pending")  // pending | dispatched | failed
+  attempts      Int      @default(0)
+  emittedAt     DateTime @default(now())
+  lastAttemptAt DateTime?
+  lastError     String?
+  deliveries    EventDelivery[]
+
+  @@index([status, emittedAt])
+  @@index([eventName])
+  @@index([traceId])
+  @@map("event_outbox")
+}
+
+model EventSubscription {
+  id            String   @id @default(uuid())
+  subscriberId  String   // free-form; e.g. "audit-warehouse", "slack-bridge"
+  eventPattern  String   // glob: "agent.run.*", "workflow.published", "*"
+  targetUrl     String
+  secret        String?  // optional HMAC-SHA256 signing key
+  isActive      Boolean  @default(true)
+  metadata      Json?
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deliveries    EventDelivery[]
+
+  @@index([isActive, eventPattern])
+  @@map("event_subscriptions")
+}
+
+model EventDelivery {
+  id              String              @id @default(uuid())
+  outboxId        String
+  subscriptionId  String
+  status          String              @default("queued")  // queued | sent | failed | dropped
+  attempts        Int                 @default(0)
+  lastAttemptAt   DateTime?
+  lastError       String?
+  deliveredAt     DateTime?
+  responseStatus  Int?
+  outbox          EventOutbox         @relation(fields: [outboxId],       references: [id], onDelete: Cascade)
+  subscription    EventSubscription   @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  createdAt       DateTime            @default(now())
+
+  @@unique([outboxId, subscriptionId])
+  @@index([status, createdAt])
+  @@map("event_deliveries")
+}
+
+// ─── M11.c — Execution Snapshot tables ────────────────────────────────────────
+//
+// Immutable copies of upstream reference data captured at run start so that
+// audit replay still resolves names/configs even if the upstream entity was
+// later modified or deleted. Distinct from Agent/Tool which are themselves
+// snapshot rows but also act as workgraph-local FK targets for AgentRun/
+// ToolRun. The snapshots below are "read-only audit rows" — nothing FKs to
+// them; consumers JOIN by externalId at read time.
+
+model PromptProfileSnapshot {
+  id             String    @id @default(uuid())
+  externalId     String    // prompt-composer profile uuid
+  name           String?
+  capabilityId   String?
+  scope          String?
+  payload        Json      // canonical-JSON snapshot of the upstream record
+  sourceHash     String    // sha256 of `payload`
+  sourceVersion  String?   // profile.version (if present)
+  fetchedAt      DateTime  @default(now())
+  fetchedBy      String?   // workgraph user id (null = system)
+  createdAt      DateTime  @default(now())
+
+  @@unique([externalId, sourceHash])
+  @@index([externalId, fetchedAt])
+  @@map("prompt_profile_snapshots")
+}
+
+model CapabilitySnapshot {
+  id             String    @id @default(uuid())
+  externalId     String    // IAM capability row uuid
+  capabilityKey  String?   // IAM .capability_id slug (e.g. "tag-test")
+  name           String?
+  capabilityType String?
+  payload        Json      // canonical-JSON snapshot of the upstream record
+  sourceHash     String    // sha256 of `payload`
+  sourceVersion  String?   // optional — reserved (IAM doesn't currently version capabilities)
+  fetchedAt      DateTime  @default(now())
+  fetchedBy      String?   // workgraph user id (null = system)
+  createdAt      DateTime  @default(now())
+
+  @@unique([externalId, sourceHash])
+  @@index([externalId, fetchedAt])
+  @@map("capability_snapshots")
+}

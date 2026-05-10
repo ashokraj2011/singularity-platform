@@ -1,0 +1,87 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: workgraph
+      POSTGRES_USER: workgraph
+      POSTGRES_PASSWORD: workgraph_secret
+    ports:
+      # 5433 is taken by singularity-iam-service; 5434 is workgraph's host port.
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workgraph"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: workgraph
+      MINIO_ROOT_PASSWORD: workgraph_secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      # Build context is the workspace root so the multi-stage Dockerfile can
+      # resolve workspace packages (@workgraph/shared-types, @workgraph/engine).
+      context: ../../
+      dockerfile: apps/api/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      DATABASE_URL: postgresql://workgraph:workgraph_secret@postgres:5432/workgraph
+      JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_ACCESS_KEY: workgraph
+      MINIO_SECRET_KEY: workgraph_secret
+      MINIO_BUCKET: workgraph-documents
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CORS_ORIGINS: http://localhost:3000,http://localhost:5173
+      # M5 — kept for back-compat; M8 routes AGENT_TASK through context-fabric
+      PROMPT_COMPOSER_URL: ${PROMPT_COMPOSER_URL:-http://host.docker.internal:3004}
+      # M8 — AGENT_TASK executor calls context-fabric /execute
+      CONTEXT_FABRIC_URL: ${CONTEXT_FABRIC_URL:-http://host.docker.internal:8000}
+      # M10 — federated /api/lookup/* sources
+      AUTH_PROVIDER:     ${AUTH_PROVIDER:-local}
+      IAM_BASE_URL:      ${IAM_BASE_URL:-http://host.docker.internal:8100/api/v1}
+      AGENT_SERVICE_URL: ${AGENT_SERVICE_URL:-http://host.docker.internal:3001}
+      TOOL_SERVICE_URL:  ${TOOL_SERVICE_URL:-http://host.docker.internal:3002}
+      AGENT_RUNTIME_URL: ${AGENT_RUNTIME_URL:-http://host.docker.internal:3003}
+      # M11.a — self-register with platform-registry on startup
+      PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
+      PUBLIC_BASE_URL:       ${WORKGRAPH_PUBLIC_BASE_URL:-http://host.docker.internal:8080}
+      # M10/M11.c — service-to-service token (used by snapshot lookups + permission helpers)
+      IAM_SERVICE_TOKEN:     ${IAM_SERVICE_TOKEN:-}
+      WORKGRAPH_SNAPSHOT_TOKEN: ${WORKGRAPH_SNAPSHOT_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  minio_data:

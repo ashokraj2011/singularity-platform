@@ -1,0 +1,335 @@
+// Prompt Composer — owns prompt assembly tables.
+//
+// Models marked OWNED are written here (CRUD).
+// Models marked READ are also declared in agent-runtime/prisma/schema.prisma —
+// composer reads them directly during assembly. Same Postgres DB; both
+// services' `prisma db push` converge on identical shapes. M3 cuts over
+// agent-runtime by removing OWNED tables from its schema.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Shared enums (must match agent-runtime declarations exactly)
+// ─────────────────────────────────────────────────────────────
+
+enum EntityStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum AgentRoleType {
+  ARCHITECT
+  DEVELOPER
+  QA
+  GOVERNANCE
+  BUSINESS_ANALYST
+  PRODUCT_OWNER
+  DEVOPS
+  SECURITY
+}
+
+enum PromptScopeType {
+  PLATFORM
+  TENANT
+  BUSINESS_UNIT
+  CAPABILITY
+  AGENT_TEMPLATE
+  AGENT_BINDING
+  WORKFLOW
+  WORKFLOW_PHASE
+  EXECUTION
+}
+
+enum PromptLayerType {
+  PLATFORM_CONSTITUTION
+  TENANT_CONTEXT
+  BUSINESS_UNIT_CONTEXT
+  AGENT_ROLE
+  SKILL_CONTRACT
+  TOOL_CONTRACT
+  CAPABILITY_CONTEXT
+  REPOSITORY_CONTEXT
+  WORKFLOW_CONTEXT
+  PHASE_CONTEXT
+  TASK_CONTEXT
+  RUNTIME_EVIDENCE
+  MEMORY_CONTEXT
+  OUTPUT_CONTRACT
+  APPROVAL_POLICY
+  DATA_ACCESS_POLICY
+}
+
+enum ToolRiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ToolGrantScopeType {
+  AGENT_TEMPLATE
+  AGENT_BINDING
+  CAPABILITY
+  ROLE
+  WORKFLOW_PHASE
+  TEAM
+  USER
+}
+
+enum MemoryPromotionStatus {
+  NOT_REVIEWED
+  CANDIDATE
+  APPROVED
+  REJECTED
+  PROMOTED
+}
+
+// ─────────────────────────────────────────────────────────────
+// OWNED — Prompt assembly tables
+// ─────────────────────────────────────────────────────────────
+
+model PromptProfile {
+  id             String           @id @default(uuid())
+  name           String
+  description    String?
+  ownerScopeType PromptScopeType?
+  ownerScopeId   String?
+  version        Int              @default(1)
+  status         EntityStatus     @default(DRAFT)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  layers PromptProfileLayer[]
+}
+
+model PromptLayer {
+  id          String          @id @default(uuid())
+  name        String
+  layerType   PromptLayerType
+  scopeType   PromptScopeType
+  scopeId     String?
+  content     String
+  priority    Int             @default(100)
+  isRequired  Boolean         @default(false)
+  version     Int             @default(1)
+  status      EntityStatus    @default(ACTIVE)
+  contentHash String?
+  createdBy   String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  profiles PromptProfileLayer[]
+}
+
+model PromptProfileLayer {
+  id              String   @id @default(uuid())
+  promptProfileId String
+  promptLayerId   String
+  priority        Int      @default(100)
+  isEnabled       Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  promptProfile PromptProfile @relation(fields: [promptProfileId], references: [id])
+  promptLayer   PromptLayer   @relation(fields: [promptLayerId], references: [id])
+
+  @@unique([promptProfileId, promptLayerId])
+}
+
+model PromptAssembly {
+  id                   String   @id @default(uuid())
+  executionId          String?
+  agentTemplateId      String
+  agentBindingId       String?
+  capabilityId         String?
+  workflowExecutionId  String?
+  promptProfileId      String?
+  modelProvider        String?
+  modelName            String?
+  finalPromptHash      String?
+  finalPromptPreview   String?
+  estimatedInputTokens Int?
+  createdAt            DateTime @default(now())
+
+  layers PromptAssemblyLayer[]
+}
+
+model PromptAssemblyLayer {
+  id               String  @id @default(uuid())
+  promptAssemblyId String
+  promptLayerId    String?
+  layerType        String?
+  layerHash        String?
+  priority         Int?
+  included         Boolean @default(true)
+  inclusionReason  String?
+  contentSnapshot  String?
+
+  promptAssembly PromptAssembly @relation(fields: [promptAssemblyId], references: [id])
+}
+
+// ─────────────────────────────────────────────────────────────
+// READ — Models owned by agent-runtime, queried during assembly
+// (declarations must stay in lock-step with agent-runtime/prisma/schema.prisma)
+// ─────────────────────────────────────────────────────────────
+
+model AgentTemplate {
+  id                  String       @id @default(uuid())
+  name                String
+  roleType            AgentRoleType
+  description         String?
+  basePromptProfileId String?
+  defaultToolPolicyId String?
+  version             Int          @default(1)
+  status              EntityStatus @default(DRAFT)
+  createdBy           String?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  bindings AgentCapabilityBinding[]
+}
+
+model Capability {
+  id                 String       @id @default(uuid())
+  name               String
+  parentCapabilityId String?
+  capabilityType     String?
+  businessUnitId     String?
+  ownerTeamId        String?
+  criticality        String?
+  description        String?
+  status             EntityStatus @default(ACTIVE)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  parent             Capability?  @relation("CapabilityHierarchy", fields: [parentCapabilityId], references: [id])
+  children           Capability[] @relation("CapabilityHierarchy")
+  bindings           AgentCapabilityBinding[]
+  knowledgeArtifacts CapabilityKnowledgeArtifact[]
+}
+
+model AgentCapabilityBinding {
+  id                  String       @id @default(uuid())
+  agentTemplateId     String
+  capabilityId        String
+  bindingName         String
+  roleInCapability    String?
+  promptProfileId     String?
+  toolPolicyId        String?
+  memoryScopePolicyId String?
+  status              EntityStatus @default(ACTIVE)
+  createdBy           String?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  agentTemplate AgentTemplate @relation(fields: [agentTemplateId], references: [id])
+  capability    Capability    @relation(fields: [capabilityId], references: [id])
+}
+
+model CapabilityKnowledgeArtifact {
+  id           String       @id @default(uuid())
+  capabilityId String
+  artifactType String
+  title        String
+  content      String
+  sourceType   String?
+  sourceRef    String?
+  confidence   Decimal?     @db.Decimal(5, 2)
+  version      Int          @default(1)
+  status       EntityStatus @default(ACTIVE)
+  contentHash  String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  capability Capability @relation(fields: [capabilityId], references: [id])
+}
+
+model DistilledMemory {
+  id                 String       @id @default(uuid())
+  scopeType          String
+  scopeId            String
+  memoryType         String
+  title              String
+  content            String
+  sourceExecutionIds Json?
+  evidenceRefs       Json?
+  approvedBy         String?
+  confidence         Decimal?     @db.Decimal(5, 2)
+  version            Int          @default(1)
+  status             EntityStatus @default(ACTIVE)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+}
+
+model ToolDefinition {
+  id          String       @id @default(uuid())
+  name        String
+  namespace   String
+  description String?
+  toolType    String?
+  version     Int          @default(1)
+  status      EntityStatus @default(ACTIVE)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  contracts ToolContract[]
+  grants    ToolGrant[]
+
+  @@unique([namespace, name, version])
+}
+
+model ToolContract {
+  id               String        @id @default(uuid())
+  toolId           String
+  inputSchema      Json
+  outputSchema     Json?
+  allowedUsage     String?
+  deniedUsage      String?
+  riskLevel        ToolRiskLevel @default(LOW)
+  requiresApproval Boolean       @default(false)
+  auditRequired    Boolean       @default(true)
+  timeoutMs        Int           @default(30000)
+  version          Int           @default(1)
+  status           EntityStatus  @default(ACTIVE)
+  createdAt        DateTime      @default(now())
+
+  tool ToolDefinition @relation(fields: [toolId], references: [id])
+}
+
+model ToolPolicy {
+  id          String       @id @default(uuid())
+  name        String
+  description String?
+  scopeType   String?
+  scopeId     String?
+  status      EntityStatus @default(ACTIVE)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  grants ToolGrant[]
+}
+
+model ToolGrant {
+  id                       String             @id @default(uuid())
+  toolPolicyId             String
+  toolId                   String
+  grantScopeType           ToolGrantScopeType
+  grantScopeId             String
+  allowedActions           Json?
+  deniedActions            Json?
+  environment              String?
+  workflowPhase            String?
+  requiresApprovalOverride Boolean?
+  status                   EntityStatus       @default(ACTIVE)
+  createdAt                DateTime           @default(now())
+
+  toolPolicy ToolPolicy     @relation(fields: [toolPolicyId], references: [id])
+  tool       ToolDefinition @relation(fields: [toolId], references: [id])
+}

@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: platform-registry-postgres
+    environment:
+      POSTGRES_USER:     platform
+      POSTGRES_PASSWORD: platform_secret
+      POSTGRES_DB:       platform_registry
+    ports:
+      - "5435:5432"
+    volumes:
+      - platform-registry-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d platform_registry"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  registry:
+    build: .
+    container_name: platform-registry
+    environment:
+      PORT:            "8090"
+      DATABASE_URL:    postgresql://platform:platform_secret@postgres:5432/platform_registry
+      REGISTER_TOKENS: "${REGISTER_TOKENS:-}"
+      NODE_ENV:        production
+    ports:
+      - "8090:8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  platform-registry-pgdata: {}

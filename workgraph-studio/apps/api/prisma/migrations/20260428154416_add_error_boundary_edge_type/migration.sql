@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "EdgeType" ADD VALUE 'ERROR_BOUNDARY';

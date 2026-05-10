@@ -1,0 +1,39 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: singularity_iam
+      POSTGRES_USER: singularity
+      POSTGRES_PASSWORD: singularity
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U singularity -d singularity_iam"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  iam-service:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://singularity:singularity@postgres:5432/singularity_iam
+      JWT_SECRET: change-me-in-production
+      LOCAL_SUPER_ADMIN_EMAIL: admin@singularity.local
+      LOCAL_SUPER_ADMIN_PASSWORD: Admin1234!
+      CORS_ORIGINS: '["http://localhost:5175","http://localhost:3000"]'
+      # M11.a — self-register with platform-registry on startup
+      PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
+      PUBLIC_BASE_URL:       ${IAM_PUBLIC_BASE_URL:-http://host.docker.internal:8100}
+    ports:
+      - "8100:8100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  postgres_data:

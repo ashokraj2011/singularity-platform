@@ -1,0 +1,13 @@
+{
+  "name": "workgraph-studio",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev:api": "pnpm --filter @workgraph/api dev",
+    "dev:web": "pnpm --filter web dev",
+    "build:api": "pnpm --filter @workgraph/api build",
+    "build:web": "pnpm --filter web build",
+    "migrate": "pnpm --filter @workgraph/api prisma:migrate",
+    "seed": "pnpm --filter @workgraph/api prisma:seed"
+  }
+}

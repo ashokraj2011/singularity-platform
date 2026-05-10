@@ -1,0 +1,19 @@
+{
+  "name": "agent-and-tools",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace=apps/agent-service\" \"npm run dev --workspace=apps/tool-service\" \"npm run dev --workspace=apps/agent-runtime\" \"npm run dev --workspace=apps/prompt-composer\" \"npm run dev --workspace=web\"",
+    "build": "npm run build --workspaces",
+    "db:init": "docker exec agentandtools-postgres psql -U postgres -f /docker-entrypoint-initdb.d/init.sql",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

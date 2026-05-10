@@ -1,0 +1,57 @@
+import { config as dotenvConfig } from 'dotenv'
+import { z } from 'zod'
+
+dotenvConfig()
+
+const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  PORT: z.coerce.number().default(8080),
+  DATABASE_URL: z.string(),
+  JWT_SECRET: z.string().min(32),
+  MINIO_ENDPOINT: z.string().default('localhost'),
+  MINIO_PORT: z.coerce.number().default(9000),
+  MINIO_USE_SSL: z.coerce.boolean().default(false),
+  MINIO_ACCESS_KEY: z.string().default('workgraph'),
+  MINIO_SECRET_KEY: z.string().default('workgraph_secret'),
+  MINIO_BUCKET: z.string().default('workgraph-documents'),
+  ANTHROPIC_API_KEY: z.string().optional(),
+  CORS_ORIGINS: z.string().default('http://localhost:5173,http://localhost:3000'),
+
+  // ── Identity provider (Singularity IAM federation) ─────────────────────────
+  // 'iam'   → all auth + authz delegated to IAM (production)
+  // 'local' → fall back to the built-in HS256 JWT + bcrypt login (offline dev)
+  AUTH_PROVIDER: z.enum(['iam', 'local']).default('local'),
+  // Base URL for the IAM HTTP API (e.g. http://localhost:8100/api/v1).
+  IAM_BASE_URL: z.string().optional(),
+  // Long-lived bearer used by workgraph-studio when calling IAM as a service
+  // (e.g. for member lookups, skill resolution).  Required if AUTH_PROVIDER=iam.
+  IAM_SERVICE_TOKEN: z.string().optional(),
+  // TTL (seconds) for the in-memory token-verification cache.
+  IAM_VERIFY_CACHE_TTL: z.coerce.number().default(60),
+
+  // ── Prompt Composer (M5 — kept for backwards compat; M8 routes through context-fabric) ──
+  PROMPT_COMPOSER_URL: z.string().default('http://localhost:3004'),
+
+  // ── Context Fabric (M8 — AGENT_TASK executor calls /execute) ──
+  CONTEXT_FABRIC_URL: z.string().default('http://localhost:8000'),
+
+  // ── M10 — agent-and-tools upstream URLs for federated lookups ──
+  AGENT_SERVICE_URL: z.string().default('http://localhost:3001'),
+  TOOL_SERVICE_URL:  z.string().default('http://localhost:3002'),
+  AGENT_RUNTIME_URL: z.string().default('http://localhost:3003'),
+  // Snapshot-time token used by the workflow runtime when no user context is
+  // available (AgentTaskExecutor writing the agent snapshot row). User-facing
+  // /api/lookup/* calls forward the caller's JWT instead.
+  WORKGRAPH_SNAPSHOT_TOKEN: z.string().optional(),
+})
+
+function loadConfig() {
+  const result = envSchema.safeParse(process.env)
+  if (!result.success) {
+    console.error('Invalid environment variables:', result.error.flatten().fieldErrors)
+    process.exit(1)
+  }
+  return result.data
+}
+
+export const config = loadConfig()

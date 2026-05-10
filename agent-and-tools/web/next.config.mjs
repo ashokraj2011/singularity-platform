@@ -1,0 +1,32 @@
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: "standalone",
+  async rewrites() {
+    return [
+      // Prompt Composer — owns prompt assembly (M3 cutover from agent-runtime)
+      {
+        source: "/api/composer/:path*",
+        destination: `${process.env.PROMPT_COMPOSER_URL ?? "http://localhost:3004"}/api/v1/:path*`,
+      },
+      // Runtime (new spec) — must come BEFORE the older /api/agents and /api/tools rules
+      {
+        source: "/api/runtime/:path*",
+        destination: `${process.env.AGENT_RUNTIME_URL ?? "http://localhost:3003"}/api/v1/:path*`,
+      },
+      {
+        source: "/api/agents/:path*",
+        destination: `${process.env.AGENT_SERVICE_URL ?? "http://localhost:3001"}/api/v1/:path*`,
+      },
+      {
+        source: "/api/client-runners/:path*",
+        destination: `${process.env.TOOL_SERVICE_URL ?? "http://localhost:3002"}/api/v1/client-runners/:path*`,
+      },
+      {
+        source: "/api/tools/:path*",
+        destination: `${process.env.TOOL_SERVICE_URL ?? "http://localhost:3002"}/api/v1/tools/:path*`,
+      },
+    ];
+  },
+};
+
+export default nextConfig;

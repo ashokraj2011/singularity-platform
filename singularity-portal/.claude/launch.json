@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "portal",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite"],
+      "port": 5180,
+      "autoPort": true
+    }
+  ]
+}

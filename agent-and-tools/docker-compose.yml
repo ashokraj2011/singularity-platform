@@ -1,0 +1,140 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: agentandtools-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: singularity
+      POSTGRES_DB: singularity
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./packages/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  agent-service:
+    build:
+      context: ./apps/agent-service
+      dockerfile: Dockerfile
+    container_name: agentandtools-agent-service
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: postgresql://postgres:singularity@postgres:5432/singularity
+      IAM_SERVICE_URL: ${IAM_SERVICE_URL:-http://localhost:4000}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      # M11.a — self-register
+      PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
+      PUBLIC_BASE_URL:       ${AGENT_SERVICE_PUBLIC_URL:-http://host.docker.internal:3001}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./apps/agent-service/src:/app/src
+
+  tool-service:
+    build:
+      context: ./apps/tool-service
+      dockerfile: Dockerfile
+    container_name: agentandtools-tool-service
+    ports:
+      - "3002:3002"
+    environment:
+      NODE_ENV: development
+      PORT: 3002
+      DATABASE_URL: postgresql://postgres:singularity@postgres:5432/singularity
+      IAM_SERVICE_URL: ${IAM_SERVICE_URL:-http://localhost:4000}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      # M11.a — self-register
+      PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
+      PUBLIC_BASE_URL:       ${TOOL_SERVICE_PUBLIC_URL:-http://host.docker.internal:3002}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./apps/tool-service/src:/app/src
+
+  agent-runtime:
+    build:
+      context: ./apps/agent-runtime
+      dockerfile: Dockerfile
+      target: dev
+    container_name: agentandtools-agent-runtime
+    ports:
+      - "3003:3003"
+    environment:
+      NODE_ENV: development
+      PORT: 3003
+      DATABASE_URL: postgresql://postgres:singularity@postgres:5432/singularity
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      LOG_LEVEL: info
+      DEFAULT_MODEL_PROVIDER: stub
+      DEFAULT_MODEL_NAME: stub-model
+      # M11.a — self-register
+      PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
+      PUBLIC_BASE_URL:       ${AGENT_RUNTIME_PUBLIC_URL:-http://host.docker.internal:3003}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./apps/agent-runtime/src:/app/src
+      - ./apps/agent-runtime/prisma:/app/prisma
+
+  prompt-composer:
+    build:
+      context: ./apps/prompt-composer
+      dockerfile: Dockerfile
+      target: dev
+    container_name: agentandtools-prompt-composer
+    ports:
+      - "3004:3004"
+    environment:
+      NODE_ENV: development
+      PORT: 3004
+      DATABASE_URL: postgresql://postgres:singularity@postgres:5432/singularity
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      LOG_LEVEL: info
+      TOOL_SERVICE_URL: http://tool-service:3002
+      AGENT_RUNTIME_URL: http://agent-runtime:3003
+      CONTEXT_FABRIC_URL: ${CONTEXT_FABRIC_URL:-http://host.docker.internal:8000}
+      # M11.a — self-register
+      PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
+      PUBLIC_BASE_URL:       ${PROMPT_COMPOSER_PUBLIC_URL:-http://host.docker.internal:3004}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./apps/prompt-composer/src:/app/src
+      - ./apps/prompt-composer/prisma:/app/prisma
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: agentandtools-web
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_AGENT_SERVICE_URL: http://localhost:3001
+      NEXT_PUBLIC_TOOL_SERVICE_URL: http://localhost:3002
+      NEXT_PUBLIC_AGENT_RUNTIME_URL: http://localhost:3003
+      NEXT_PUBLIC_PROMPT_COMPOSER_URL: http://localhost:3004
+      AGENT_SERVICE_URL: http://agent-service:3001
+      TOOL_SERVICE_URL: http://tool-service:3002
+      AGENT_RUNTIME_URL: http://agent-runtime:3003
+      PROMPT_COMPOSER_URL: http://prompt-composer:3004
+    depends_on:
+      - agent-service
+      - tool-service
+      - agent-runtime
+      - prompt-composer
+
+volumes:
+  postgres_data:

@@ -1,0 +1,48 @@
+/* Singularity — design tokens.
+ *
+ * Imported (or referenced) by every app. Single source of truth for the
+ * brand palette + spacing rhythm. Update once here, run
+ * ./bin/sync-branding.sh to propagate to each app's public/.
+ */
+:root {
+  /* Forest (primary brand) */
+  --brand-forest:        #0E3B2D;
+  --brand-forest-deep:   #082821;
+  --brand-forest-light:  #155041;
+
+  /* Green accent system */
+  --brand-green:         #00843D;
+  --brand-green-dark:    #006236;
+  --brand-green-accent:  #00A651;
+  --brand-green-tint:    #e6f4ed;
+
+  /* Neutrals on dark */
+  --brand-warm-white:    #F5F2EA;
+  --brand-silver:        #C9CCD1;
+  --brand-red-pulse:     #E63946;
+
+  /* Light-mode surface */
+  --surface-light:       #F0F4F8;
+  --surface-card:        #FFFFFF;
+  --surface-border:      #E2E8F0;
+  --surface-divider:     #F1F5F9;
+
+  /* Text */
+  --text-strong:         #0A2240;
+  --text-body:           #1f2937;
+  --text-muted:          #64748b;
+  --text-faint:          #94a3b8;
+
+  /* Status */
+  --status-error-bg:     #fef2f2;
+  --status-error-border: #fecaca;
+  --status-error-fg:     #b91c1c;
+
+  /* Typography */
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+               Roboto, sans-serif;
+
+  /* Tracking */
+  --tracking-wordmark: 0.04em;
+  --tracking-tagline:  0.18em;
+}

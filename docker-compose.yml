@@ -1,0 +1,402 @@
+# Singularity Platform — master docker compose.
+#
+# Brings up every Singularity service in one stack:
+#   - IAM (Postgres :5433 + iam-service :8100)
+#   - agent-and-tools (Postgres :5432 + agent-service :3001 + tool-service :3002
+#                      + agent-runtime :3003 + prompt-composer :3004 + web :3000)
+#   - context-fabric (api :8000 + llm-gateway :8001 + memory :8002 + metrics-ledger :8003)
+#   - workgraph-studio (Postgres :5434 + MinIO :9000/:9001 + api :8080 + web :5174)
+#   - UserAndCapabillity (:5175)
+#   - singularity-portal (:5180)
+#
+# Usage:
+#   docker compose up -d                   # start everything
+#   docker compose up -d <service>         # start one
+#   docker compose stop <service>          # stop one
+#   docker compose down                    # tear everything down (keeps volumes)
+#   docker compose down -v                 # tear down + delete data volumes
+#
+# Or use the wrapper:
+#   ./singularity.sh up                    # = docker compose up -d
+#   ./singularity.sh up portal             # = docker compose up -d portal
+#   ./singularity.sh status                # = docker compose ps
+#   ./singularity.sh logs api              # = docker compose logs -f workgraph-api
+#
+# Port map (host → container):
+#   3000 agent-and-tools/web (Next.js admin)
+#   3001 agent-service             3002 tool-service           3003 agent-runtime
+#   3004 prompt-composer
+#   5174 workgraph-web             5175 UserAndCapabillity     5180 singularity-portal
+#   5432 agent-and-tools postgres  5433 IAM postgres           5434 workgraph postgres
+#   8000-8003 context-fabric       8080 workgraph-api
+#   8100 IAM API                   9000-9001 MinIO
+
+name: singularity
+
+services:
+  # ─────────────────────────────────────────────────────────────────────
+  # IAM
+  # ─────────────────────────────────────────────────────────────────────
+  iam-postgres:
+    image: postgres:16-alpine
+    container_name: singularity-iam-postgres
+    environment:
+      POSTGRES_USER: singularity
+      POSTGRES_PASSWORD: singularity
+      POSTGRES_DB: singularity_iam
+    ports:
+      - "5433:5432"
+    volumes:
+      - iam_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U singularity -d singularity_iam"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  iam-service:
+    build:
+      context: ./singularity-iam-service
+      dockerfile: Dockerfile
+    container_name: singularity-iam-service
+    environment:
+      DATABASE_URL: postgresql+asyncpg://singularity:singularity@iam-postgres:5432/singularity_iam
+      JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
+      JWT_EXPIRE_MINUTES: 60
+      LOCAL_SUPER_ADMIN_EMAIL: ${LOCAL_SUPER_ADMIN_EMAIL:-admin@singularity.local}
+      LOCAL_SUPER_ADMIN_PASSWORD: ${LOCAL_SUPER_ADMIN_PASSWORD:-Admin1234!}
+      CORS_ORIGINS: '["http://localhost:5175","http://localhost:5180","http://localhost:3000","http://localhost:5174"]'
+    ports:
+      - "8100:8100"
+    depends_on:
+      iam-postgres:
+        condition: service_healthy
+
+  # ─────────────────────────────────────────────────────────────────────
+  # agent-and-tools
+  # ─────────────────────────────────────────────────────────────────────
+  at-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: singularity-at-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: singularity
+      POSTGRES_DB: singularity
+    ports:
+      - "5432:5432"
+    volumes:
+      - at_postgres_data:/var/lib/postgresql/data
+      - ./agent-and-tools/packages/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  agent-service:
+    build:
+      context: ./agent-and-tools/apps/agent-service
+      dockerfile: Dockerfile
+    container_name: singularity-agent-service
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
+      IAM_SERVICE_URL: http://iam-service:8100
+      JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
+    ports:
+      - "3001:3001"
+    depends_on:
+      at-postgres:
+        condition: service_healthy
+    volumes:
+      - ./agent-and-tools/apps/agent-service/src:/app/src
+
+  tool-service:
+    build:
+      context: ./agent-and-tools/apps/tool-service
+      dockerfile: Dockerfile
+    container_name: singularity-tool-service
+    environment:
+      NODE_ENV: development
+      PORT: 3002
+      DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
+      IAM_SERVICE_URL: http://iam-service:8100
+      JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
+    ports:
+      - "3002:3002"
+    depends_on:
+      at-postgres:
+        condition: service_healthy
+    volumes:
+      - ./agent-and-tools/apps/tool-service/src:/app/src
+
+  agent-runtime:
+    build:
+      context: ./agent-and-tools/apps/agent-runtime
+      dockerfile: Dockerfile
+      target: dev
+    container_name: singularity-agent-runtime
+    environment:
+      NODE_ENV: development
+      PORT: 3003
+      DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
+      JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
+      LOG_LEVEL: info
+      DEFAULT_MODEL_PROVIDER: stub
+      DEFAULT_MODEL_NAME: stub-model
+    ports:
+      - "3003:3003"
+    depends_on:
+      at-postgres:
+        condition: service_healthy
+    volumes:
+      - ./agent-and-tools/apps/agent-runtime/src:/app/src
+      - ./agent-and-tools/apps/agent-runtime/prisma:/app/prisma
+
+  prompt-composer:
+    build:
+      context: ./agent-and-tools/apps/prompt-composer
+      dockerfile: Dockerfile
+      target: dev
+    container_name: singularity-prompt-composer
+    environment:
+      NODE_ENV: development
+      PORT: 3004
+      DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
+      JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
+      LOG_LEVEL: info
+      TOOL_SERVICE_URL: http://tool-service:3002
+      AGENT_RUNTIME_URL: http://agent-runtime:3003
+      CONTEXT_FABRIC_URL: http://context-api:8000
+    ports:
+      - "3004:3004"
+    depends_on:
+      at-postgres:
+        condition: service_healthy
+    volumes:
+      - ./agent-and-tools/apps/prompt-composer/src:/app/src
+      - ./agent-and-tools/apps/prompt-composer/prisma:/app/prisma
+
+  agent-web:
+    build:
+      context: ./agent-and-tools/web
+      dockerfile: Dockerfile
+    container_name: singularity-agent-web
+    environment:
+      NEXT_PUBLIC_AGENT_SERVICE_URL: http://localhost:3001
+      NEXT_PUBLIC_TOOL_SERVICE_URL: http://localhost:3002
+      NEXT_PUBLIC_AGENT_RUNTIME_URL: http://localhost:3003
+      NEXT_PUBLIC_PROMPT_COMPOSER_URL: http://localhost:3004
+      AGENT_SERVICE_URL: http://agent-service:3001
+      TOOL_SERVICE_URL: http://tool-service:3002
+      AGENT_RUNTIME_URL: http://agent-runtime:3003
+      PROMPT_COMPOSER_URL: http://prompt-composer:3004
+    ports:
+      - "3000:3000"
+    depends_on:
+      - agent-service
+      - tool-service
+      - agent-runtime
+      - prompt-composer
+
+  # ─────────────────────────────────────────────────────────────────────
+  # context-fabric
+  # ─────────────────────────────────────────────────────────────────────
+  llm-gateway:
+    build:
+      context: ./context-fabric
+      dockerfile: services/llm_gateway_service/Dockerfile
+    container_name: singularity-llm-gateway
+    env_file: ./context-fabric/.env
+    environment:
+      LLM_GATEWAY_DB: /data/llm_gateway.db
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./context-fabric/data/llm_gateway:/data
+
+  context-memory:
+    build:
+      context: ./context-fabric
+      dockerfile: services/context_memory_service/Dockerfile
+    container_name: singularity-context-memory
+    env_file: ./context-fabric/.env
+    environment:
+      CONTEXT_MEMORY_DB: /data/context_memory.db
+      LLM_GATEWAY_INTERNAL_URL: http://llm-gateway:8001
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./context-fabric/data/context_memory:/data
+    depends_on:
+      - llm-gateway
+
+  metrics-ledger:
+    build:
+      context: ./context-fabric
+      dockerfile: services/metrics_ledger_service/Dockerfile
+    container_name: singularity-metrics-ledger
+    env_file: ./context-fabric/.env
+    environment:
+      METRICS_LEDGER_DB: /data/metrics_ledger.db
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./context-fabric/data/metrics_ledger:/data
+
+  context-api:
+    build:
+      context: ./context-fabric
+      dockerfile: services/context_api_service/Dockerfile
+    container_name: singularity-context-api
+    env_file: ./context-fabric/.env
+    environment:
+      LLM_GATEWAY_URL: http://llm-gateway:8001
+      CONTEXT_MEMORY_URL: http://context-memory:8002
+      METRICS_LEDGER_URL: http://metrics-ledger:8003
+    ports:
+      - "8000:8000"
+    depends_on:
+      - llm-gateway
+      - context-memory
+      - metrics-ledger
+
+  # ─────────────────────────────────────────────────────────────────────
+  # workgraph-studio
+  # ─────────────────────────────────────────────────────────────────────
+  wg-postgres:
+    image: postgres:16-alpine
+    container_name: singularity-wg-postgres
+    environment:
+      POSTGRES_DB: workgraph
+      POSTGRES_USER: workgraph
+      POSTGRES_PASSWORD: workgraph_secret
+    ports:
+      - "5434:5432"
+    volumes:
+      - wg_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workgraph"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  wg-minio:
+    image: minio/minio:latest
+    container_name: singularity-wg-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: workgraph
+      MINIO_ROOT_PASSWORD: workgraph_secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - wg_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  workgraph-api:
+    build:
+      context: ./workgraph-studio
+      dockerfile: apps/api/Dockerfile
+    container_name: singularity-workgraph-api
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      DATABASE_URL: postgresql://workgraph:workgraph_secret@wg-postgres:5432/workgraph
+      JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
+      MINIO_ENDPOINT: wg-minio
+      MINIO_PORT: 9000
+      MINIO_ACCESS_KEY: workgraph
+      MINIO_SECRET_KEY: workgraph_secret
+      MINIO_BUCKET: workgraph-documents
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CORS_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5180
+      PROMPT_COMPOSER_URL: http://prompt-composer:3004
+    ports:
+      - "8080:8080"
+    depends_on:
+      wg-postgres:
+        condition: service_healthy
+
+  workgraph-web:
+    build:
+      context: ./workgraph-studio
+      dockerfile: apps/web/Dockerfile
+    container_name: singularity-workgraph-web
+    ports:
+      - "5174:80"
+    depends_on:
+      - workgraph-api
+
+  # ─────────────────────────────────────────────────────────────────────
+  # User and Capability admin SPA
+  # ─────────────────────────────────────────────────────────────────────
+  user-and-capability:
+    build:
+      context: ./UserAndCapabillity
+      dockerfile: Dockerfile
+    container_name: singularity-user-and-capability
+    ports:
+      - "5175:80"
+    depends_on:
+      - iam-service
+
+  # ─────────────────────────────────────────────────────────────────────
+  # MCP Server (reference / demo)
+  #
+  # In production each customer runs their own copy of this in their VPC.
+  # Here we ship one as a demo/test target so the platform stack can be
+  # exercised end-to-end without external infra. Provider/tool secrets
+  # would normally live in the customer's env; the MCP_BEARER_TOKEN here
+  # is the secret context-fabric uses to authenticate to this server.
+  # ─────────────────────────────────────────────────────────────────────
+  mcp-server-demo:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+      target: dev
+    container_name: singularity-mcp-server-demo
+    environment:
+      NODE_ENV: development
+      PORT: 7100
+      LOG_LEVEL: info
+      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      LLM_PROVIDER: mock
+      LLM_MODEL: mock-fast
+      MAX_AGENT_STEPS: 12
+      TIMEOUT_SEC: 240
+      # M11.a — self-register with platform-registry
+      PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
+      PUBLIC_BASE_URL:       ${MCP_PUBLIC_BASE_URL:-http://host.docker.internal:7100}
+    ports:
+      - "7100:7100"
+    volumes:
+      - ./mcp-server/src:/app/src
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Singularity Portal (the wrapper SPA)
+  # ─────────────────────────────────────────────────────────────────────
+  portal:
+    build:
+      context: ./singularity-portal
+      dockerfile: Dockerfile
+    container_name: singularity-portal
+    ports:
+      - "5180:80"
+    depends_on:
+      - iam-service
+      - workgraph-api
+      - prompt-composer
+      - context-api
+
+volumes:
+  iam_postgres_data:
+  at_postgres_data:
+  wg_postgres_data:
+  wg_minio_data:

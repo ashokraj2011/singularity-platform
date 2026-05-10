@@ -1,0 +1,36 @@
+{
+  "_exportVersion": 2,
+  "exportedAt": "2026-04-29T14:54:46.342Z",
+  "template": {
+    "name": "dd"
+  },
+  "latestGraphSnapshot": {
+    "nodes": [
+      {
+        "id": "0cd57eea-d512-4f7a-8a2f-8bf70ee93187",
+        "label": "Create Artifact",
+        "nodeType": "CONSUMABLE_CREATION",
+        "positionX": -180,
+        "positionY": 49,
+        "config": {}
+      },
+      {
+        "id": "3144830e-d26d-484f-869d-e50fe89ce8dc",
+        "label": "Decision Gate",
+        "nodeType": "DECISION_GATE",
+        "positionX": -521,
+        "positionY": 65,
+        "config": {}
+      },
+      {
+        "id": "857402c6-8acb-4046-a28b-da658df7bde1",
+        "label": "Run Sub-Workflow",
+        "nodeType": "CALL_WORKFLOW",
+        "positionX": 400,
+        "positionY": 200,
+        "config": {}
+      }
+    ],
+    "edges": []
+  }
+}
