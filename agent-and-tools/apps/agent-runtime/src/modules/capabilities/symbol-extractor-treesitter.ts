@@ -87,39 +87,79 @@ interface RawSymbol {
   type: ExtractedSymbol["symbolType"];
   startLine: number;
   endLine?: number;
+  /** First-pass summary from docstring or leading comment. LLM summariser
+   *  fills in only when this is null, keeping the LLM call rate down. */
+  summary?: string;
 }
 
-function unquoteString(node: { text?: string } | null | undefined): string | undefined {
-  const raw = node?.text ?? "";
-  // Python triple-quoted, single-quoted, double-quoted; TS template literal too.
-  const m = raw.match(/^"""([\s\S]*?)"""$/) ||
-            raw.match(/^'''([\s\S]*?)'''$/) ||
-            raw.match(/^`([\s\S]*?)`$/) ||
-            raw.match(/^"([^"\\]|\\.)*"$/) ||
-            raw.match(/^'([^'\\]|\\.)*'$/);
-  if (!m) return undefined;
-  // For triple-quoted, m[1] is the body. For single-line, the captured pattern
-  // matches the whole literal — strip the outer quote chars manually.
-  if (raw.startsWith('"""') || raw.startsWith("'''")) return (m[1] ?? "").trim() || undefined;
+// Strip outer quotes from a string literal node. Handles Python triple
+// quotes, single/double quotes, JS template literals.
+function unquoteStringText(raw: string): string | undefined {
+  if (!raw) return undefined;
+  if (raw.startsWith('"""') && raw.endsWith('"""')) return raw.slice(3, -3).trim() || undefined;
+  if (raw.startsWith("'''") && raw.endsWith("'''")) return raw.slice(3, -3).trim() || undefined;
   if (raw.length < 2) return undefined;
-  return raw.slice(1, -1).trim() || undefined;
-}
-
-function summaryFromComment(node: { previousSibling?: { type: string; text?: string } | null } | null): string | undefined {
-  const prev = node?.previousSibling;
-  if (!prev) return undefined;
-  if (prev.type === "comment" || prev.type === "block_comment" || prev.type === "line_comment") {
-    const t = (prev.text ?? "").trim();
-    return t.replace(/^\/\/\s?|^\/\*+\s?|\s?\*+\/$|^#\s?|^\*\s?/gm, "").trim() || undefined;
-  }
+  const f = raw[0], l = raw[raw.length - 1];
+  if ((f === '"' || f === "'" || f === "`") && f === l) return raw.slice(1, -1).trim() || undefined;
   return undefined;
 }
 
-function summaryFromPythonDocstring(bodyNode: { firstChild?: { type: string; firstChild?: { text?: string } | null } | null } | null): string | undefined {
-  const stmt = bodyNode?.firstChild;
-  if (!stmt || stmt.type !== "expression_statement") return undefined;
-  const str = stmt.firstChild;
-  return str ? unquoteString(str) : undefined;
+// Strip leading // / # / * markers AND trailing */ from a captured comment
+// node's text. Joins multi-line block comments into one line.
+function cleanComment(raw: string): string | undefined {
+  const cleaned = raw
+    .replace(/\*+\/\s*$/, "") // trailing */ in block comments
+    .split("\n")
+    .map((ln) => ln.replace(/^\s*(\/\/+\s?|\/\*+\s?|\*+\s?|#\s?)/, "").trim())
+    .map((ln) => ln.replace(/\*+\/\s*$/, "").trim())
+    .filter((ln) => ln.length > 0)
+    .join(" ")
+    .trim();
+  return cleaned ? cleaned.slice(0, 280) : undefined;
+}
+
+// Walk back across siblings to find the nearest comment block immediately
+// preceding `node`. Tree-sitter parsers expose comments as siblings, not as
+// a property of the function/class node.
+function summaryFromLeadingComment(node: TsNode): string | undefined {
+  let cur = node.previousSibling ?? null;
+  // Skip whitespace-only / decorator nodes between the comment and the def.
+  let buf: string[] = [];
+  while (cur) {
+    const t = cur.type;
+    if (
+      t === "comment" || t === "block_comment" || t === "line_comment" ||
+      t === "comment_block" || t === "comment_line"
+    ) {
+      buf.unshift(cur.text ?? "");
+      cur = cur.previousSibling ?? null;
+      continue;
+    }
+    if (t === "decorator" || t === "decorators") {
+      cur = cur.previousSibling ?? null;
+      continue;
+    }
+    break;
+  }
+  if (buf.length === 0) return undefined;
+  return cleanComment(buf.join("\n"));
+}
+
+// Python: docstring is the first statement in the function/class body, an
+// expression_statement whose first child is a string node.
+function summaryFromPythonDocstring(node: TsNode): string | undefined {
+  const body = node.childForFieldName("body");
+  if (!body) return undefined;
+  for (let i = 0; i < body.childCount; i++) {
+    const child = body.child(i);
+    if (!child) continue;
+    if (child.type !== "expression_statement") continue;
+    const str = child.firstChild ?? null;
+    if (!str || str.type !== "string") return undefined;
+    const text = unquoteStringText(str.text ?? "");
+    return text ? text.split("\n")[0].slice(0, 280) : undefined;
+  }
+  return undefined;
 }
 
 interface TsNode {
@@ -145,7 +185,8 @@ interface TsNode {
 
 // Walk the tree and collect symbols. Uses a manual cursor walk so we can stop
 // recursing into function/method bodies (we don't want nested function defs
-// reported as top-level — they're noise).
+// reported as top-level — they're noise). Captures docstring / leading
+// comment as `summary` so the LLM summariser only fires when both are absent.
 function walkPython(root: TsNode): RawSymbol[] {
   const out: RawSymbol[] = [];
   function visit(node: TsNode, depth: number) {
@@ -154,11 +195,17 @@ function walkPython(root: TsNode): RawSymbol[] {
       const nameNode = node.childForFieldName("name");
       if (nameNode?.text) {
         const isMethod = depth > 0 && t === "function_definition";
+        // Prefer the in-body docstring; fall back to a leading comment.
+        // For a `decorated_definition`, leading comments live above the
+        // decorator, so we walk previousSibling on the parent.
+        const target = node.parent?.type === "decorated_definition" ? node.parent : node;
+        const summary = summaryFromPythonDocstring(node) ?? summaryFromLeadingComment(target);
         out.push({
           name: nameNode.text,
           type: isMethod ? "method" : (t === "class_definition" ? "class" : "function"),
           startLine: node.startPosition.row + 1,
           endLine:   node.endPosition.row + 1,
+          summary,
         });
       }
     }
@@ -189,6 +236,19 @@ function walkPython(root: TsNode): RawSymbol[] {
 function walkTsJs(root: TsNode, isTs: boolean): RawSymbol[] {
   const out: RawSymbol[] = [];
 
+  // For exports, the leading comment lives above the wrapping `export_statement`,
+  // not above the inner declaration. Walk up to capture it.
+  function leadingCommentFor(node: TsNode): string | undefined {
+    let target: TsNode = node;
+    while (
+      target.parent &&
+      (target.parent.type === "export_statement" || target.parent.type === "export_default_statement")
+    ) {
+      target = target.parent;
+    }
+    return summaryFromLeadingComment(target);
+  }
+
   function pushIf(name: string | undefined, type: ExtractedSymbol["symbolType"], node: TsNode) {
     if (!name) return;
     out.push({
@@ -196,6 +256,7 @@ function walkTsJs(root: TsNode, isTs: boolean): RawSymbol[] {
       type,
       startLine: node.startPosition.row + 1,
       endLine:   node.endPosition.row + 1,
+      summary:   leadingCommentFor(node),
     });
   }
 
@@ -293,8 +354,9 @@ export async function extractSymbolsTs(files: InputFile[]): Promise<ExtractedSym
         startLine: r.startLine,
         endLine: r.endLine,
         symbolHash,
-        // summary comes from the LLM summariser at write-time when null.
-        summary: undefined,
+        // M15.1 — first-pass summary from docstring / leading comment when
+        // available; LLM summariser fills the rest at write time.
+        summary: r.summary,
       });
     }
     tree.delete();
@@ -302,7 +364,3 @@ export async function extractSymbolsTs(files: InputFile[]): Promise<ExtractedSym
   parser.delete();
   return out;
 }
-
-// Escape unused warnings on helpers we kept for future use.
-void summaryFromComment;
-void summaryFromPythonDocstring;

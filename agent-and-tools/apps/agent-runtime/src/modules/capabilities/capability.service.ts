@@ -138,14 +138,21 @@ export const capabilityService = {
     for (const s of symbols) {
       const existing = await prisma.capabilityCodeSymbol.findFirst({
         where: { repositoryId, symbolHash: s.symbolHash },
-        select: { id: true, embeddings: { select: { id: true, embedding: true } } },
+        select: { id: true },
       });
       if (existing) {
         // Symbol already exists. Skip the row write but re-embed if no
         // pgvector embedding lives for it yet — common after migrating M14
-        // rows where vectorId was JSON text and `embedding` is null.
-        const hasEmbedding = existing.embeddings.some((e) => e.embedding !== null);
-        if (hasEmbedding) { skippedDuplicate += 1; continue; }
+        // rows where vectorId was JSON text and `embedding` is null. Prisma
+        // can't `select` an Unsupported() column, so count via raw SQL.
+        const probe = await prisma.$queryRawUnsafe<Array<{ has: boolean }>>(
+          `SELECT EXISTS(
+             SELECT 1 FROM "CapabilityCodeEmbedding"
+             WHERE "symbolId" = $1 AND embedding IS NOT NULL
+           ) AS has`,
+          existing.id,
+        );
+        if (probe[0]?.has) { skippedDuplicate += 1; continue; }
         try {
           const embedTarget = `${s.symbolName}\n${s.summary ?? ""}`.trim();
           const embedded = await embedder.embed({ text: embedTarget });
