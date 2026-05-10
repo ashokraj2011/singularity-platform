@@ -1,12 +1,11 @@
 "use client";
-import { use } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { runtimeApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 
-export default function RuntimeExecutionDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = use(params);
+export default function RuntimeExecutionDetailPage({ params }: { params: { id: string } }) {
+  const id = decodeURIComponent(params.id);
   const { data: exec } = useSWR(`exec-${id}`, () => runtimeApi.getExecution(id), { refreshInterval: 3000 });
   const { data: receipt } = useSWR(`exec-receipt-${id}`, () => runtimeApi.getReceipt(id), { refreshInterval: 3000 });
 

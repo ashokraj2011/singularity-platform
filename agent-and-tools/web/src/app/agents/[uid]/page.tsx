@@ -1,12 +1,12 @@
 "use client";
-import { use, useState } from "react";
+import { useState } from "react";
 import useSWR from "swr";
 import { agentApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Plus, Zap, RotateCcw, CheckCircle, XCircle } from "lucide-react";
 
-export default function AgentDetailPage({ params }: { params: Promise<{ uid: string }> }) {
-  const { uid } = use(params);
+export default function AgentDetailPage({ params }: { params: { uid: string } }) {
+  const uid = decodeURIComponent(params.uid);
   const { data: agent, mutate: mutateAgent } = useSWR(`agent-${uid}`, () => agentApi.get(uid));
   const { data: versionsData, mutate: mutateVersions } = useSWR(`versions-${uid}`, () => agentApi.listVersions(uid));
   const { data: candidatesData, mutate: mutateCandidates } = useSWR(`candidates-${uid}`, () => agentApi.listCandidates(uid));

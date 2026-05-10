@@ -69,6 +69,28 @@ function toOpenAiMessages(messages: ChatMessage[]): OAMessage[] {
         name:         m.tool_name,
       };
     }
+    if (m.role === "assistant") {
+      // The MCP agent loop stringifies the assistant turn's tool_calls into
+      // `content` (see invoke.ts: `state.messages.push({role:"assistant",
+      // content: JSON.stringify({tool_calls: ...})})`). Reverse it here so
+      // OpenAI sees the proper {tool_calls: [...]} shape — otherwise the
+      // next-turn `tool` message gets rejected with "must be a response
+      // to a preceeding message with 'tool_calls'".
+      try {
+        const parsed = JSON.parse(m.content) as { tool_calls?: Array<{ id: string; name: string; args: Record<string, unknown> }> };
+        if (Array.isArray(parsed.tool_calls) && parsed.tool_calls.length > 0) {
+          return {
+            role:    "assistant",
+            content: null,
+            tool_calls: parsed.tool_calls.map((c) => ({
+              id:       c.id,
+              type:     "function",
+              function: { name: c.name, arguments: JSON.stringify(c.args ?? {}) },
+            })),
+          };
+        }
+      } catch { /* not JSON — treat as plain text below */ }
+    }
     return { role: m.role, content: m.content };
   });
 }

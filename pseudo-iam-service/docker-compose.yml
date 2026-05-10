@@ -1,0 +1,18 @@
+services:
+  pseudo-iam:
+    build: .
+    container_name: pseudo-iam
+    environment:
+      PORT:                  "8101"
+      # Same secret as real IAM so tokens minted here are accepted by all
+      # consumers' local-verify paths without any code change.
+      JWT_SECRET:            ${JWT_SECRET:-dev-secret-change-in-prod}
+      # The MCP server pseudo-IAM points capability-mcp-servers lookups at.
+      # Defaults to the running mcp-server-demo on the host.
+      PSEUDO_MCP_BASE_URL:   ${PSEUDO_MCP_BASE_URL:-http://host.docker.internal:7100}
+      PSEUDO_MCP_BEARER:     ${PSEUDO_MCP_BEARER:-demo-bearer-token-must-be-min-16-chars}
+      # Optional self-register with the platform registry.
+      PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
+      PUBLIC_BASE_URL:       ${PSEUDO_IAM_PUBLIC_URL:-http://host.docker.internal:8101}
+    ports:
+      - "8101:8101"

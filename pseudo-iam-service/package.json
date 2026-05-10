@@ -1,0 +1,23 @@
+{
+  "name": "@singularity/pseudo-iam-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev":   "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "express": "4.21.2",
+    "jose": "5.10.0"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.0",
+    "@types/node": "22.10.5",
+    "tsx": "4.19.2",
+    "typescript": "5.9.3"
+  }
+}

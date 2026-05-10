@@ -1,10 +1,9 @@
 "use client";
-import { use } from "react";
 import useSWR from "swr";
 import { runtimeApi } from "@/lib/api";
 
-export default function PromptAssemblyDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = use(params);
+export default function PromptAssemblyDetailPage({ params }: { params: { id: string } }) {
+  const id = decodeURIComponent(params.id);
   const { data } = useSWR(`assembly-${id}`, () => runtimeApi.getAssembly(id));
 
   if (!data) return <div className="text-slate-500">Loading…</div>;
