@@ -1,20 +1,14 @@
 /**
- * M14 — regex-based code-symbol extractor (v0).
+ * Code-symbol extraction.
  *
- * Walks a list of {path, content} records and produces ExtractedSymbol rows.
- * Languages supported in v0:
- *   - Python (.py)        — `def Foo(...)`, `class Bar(...)`
- *   - TypeScript (.ts/.tsx) — `function`, `class`, `interface`, `type`, `const X = `, `enum`
- *   - JavaScript (.js/.jsx) — same shape as TS minus `interface|type|enum`
+ * M14 v0 shipped a sync regex extractor (kept here as `extractSymbolsRegex`
+ * for tests and as a fallback when tree-sitter init fails).
  *
- * Tree-sitter is the v1 upgrade — handles nested classes / decorators /
- * arrow-function exports / re-exports / module augmentation correctly. This
- * v0 deliberately misses those edge cases in exchange for zero deps and a
- * predictable, debuggable surface.
+ * M15 adds the async `extractSymbols` dispatcher which tries tree-sitter
+ * (web-tree-sitter + WASM grammars) first, falling back to regex on init
+ * failure. Switch via env: `EXTRACTOR_MODE=regex` to force the legacy path.
  *
- * Each symbol carries `summary` extracted from the line immediately above
- * (single-line comment or single-line docstring). Multi-line docstrings are
- * captured up to the first closing `"""` for Python.
+ * Languages: Python (.py), TypeScript (.ts/.tsx), JavaScript (.js/.jsx).
  */
 
 export interface InputFile {
@@ -133,7 +127,7 @@ function summaryFor(content: string, line: number, lang: ExtractedSymbol["langua
   return undefined;
 }
 
-export function extractSymbols(files: InputFile[]): ExtractedSymbol[] {
+export function extractSymbolsRegex(files: InputFile[]): ExtractedSymbol[] {
   const out: ExtractedSymbol[] = [];
   for (const f of files) {
     if (shouldSkipPath(f.path)) continue;
@@ -158,4 +152,21 @@ export function extractSymbols(files: InputFile[]): ExtractedSymbol[] {
     }
   }
   return out;
+}
+
+// M15 — async dispatcher. Picks tree-sitter by default; falls back to regex
+// on init failure or when EXTRACTOR_MODE=regex.
+export async function extractSymbols(files: InputFile[]): Promise<ExtractedSymbol[]> {
+  const mode = (process.env.EXTRACTOR_MODE ?? "treesitter").toLowerCase();
+  if (mode === "regex") return extractSymbolsRegex(files);
+  try {
+    const { extractSymbolsTs } = await import("./symbol-extractor-treesitter");
+    return await extractSymbolsTs(files);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[symbol-extractor] tree-sitter unavailable, falling back to regex: ${(err as Error).message}`,
+    );
+    return extractSymbolsRegex(files);
+  }
 }

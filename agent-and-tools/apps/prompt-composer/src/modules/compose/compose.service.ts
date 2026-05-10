@@ -6,6 +6,33 @@ import { render as renderMustache } from "../../shared/mustache";
 import { toolServiceClient, DiscoveredTool } from "../../clients/tool-service.client";
 import { contextFabricClient } from "../../clients/context-fabric.client";
 import { ComposeInput, ArtifactInput } from "./compose.schemas";
+import {
+  getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral,
+} from "../../lib/embeddings";
+
+// M15 — hybrid scoring helper. Cosine ∈ [-1, 1] → [0, 2] via (cos+1)/2 only
+// when the caller asks; default keeps raw cosine because pgvector's `<=>`
+// returns 1-cosine (a distance), not similarity. We compute similarity as
+// `1 - distance` in the SQL query.
+const RECENCY_BOOST_DAYS = Number(process.env.EMBEDDING_RECENCY_DAYS ?? 30);
+const RECENCY_BOOST_MAX  = Number(process.env.EMBEDDING_RECENCY_BOOST ?? 0.2);
+
+function recencyBoost(ageDays: number): number {
+  if (ageDays >= RECENCY_BOOST_DAYS) return 0;
+  if (ageDays <= 0) return RECENCY_BOOST_MAX;
+  return ((RECENCY_BOOST_DAYS - ageDays) / RECENCY_BOOST_DAYS) * RECENCY_BOOST_MAX;
+}
+
+interface SemanticHit {
+  cosineSimilarity: number;
+  ageDays: number;
+  finalScore: number;
+}
+function rerankByHybrid<T extends SemanticHit>(rows: T[], take: number): T[] {
+  for (const r of rows) r.finalScore = r.cosineSimilarity * (1 + recencyBoost(r.ageDays));
+  rows.sort((a, b) => b.finalScore - a.finalScore);
+  return rows.slice(0, take);
+}
 
 interface AssembledLayer {
   promptLayerId?: string;
@@ -61,7 +88,7 @@ export const composeService = {
       }
     }
 
-    // 3. Capability context, knowledge, distilled memory
+    // 3. Capability context, knowledge, distilled memory, code context
     const capabilityId = input.capabilityId ?? binding?.capabilityId ?? null;
     if (capabilityId) {
       const capability = await prisma.capability.findUnique({ where: { id: capabilityId } });
@@ -70,39 +97,80 @@ export const composeService = {
         const r = renderMustache(capContent, ctx); warnings.push(...r.warnings);
         layers.push({ layerType: "CAPABILITY_CONTEXT", priority: PRIORITY.CAPABILITY_CONTEXT, inclusionReason: "capability scope provided", contentSnapshot: r.rendered, layerHash: sha256(r.rendered) });
 
-        const artifacts = await prisma.capabilityKnowledgeArtifact.findMany({ where: { capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: 10 });
+        // M15 — embed the task once; reuse for all three retrieval queries.
+        // Failure falls back to createdAt ordering so retrieval never blocks
+        // composition.
+        let taskVec: string | null = null;
+        try {
+          if (input.task && input.task.trim().length > 0) {
+            const embedded = await getEmbeddingProvider().embed({ text: input.task.slice(0, 8_000) });
+            assertDimMatches(embedded.dim, `${embedded.provider}:${embedded.model}`);
+            taskVec = toVectorLiteral(embedded.vector);
+          }
+        } catch (err) {
+          warnings.push(`embedding failed: ${(err as Error).message}`);
+        }
+
+        // ── Knowledge artifacts → RUNTIME_EVIDENCE ──────────────────────────
+        const artifacts = taskVec
+          ? await this.semanticKnowledge(capabilityId, taskVec)
+          : (await prisma.capabilityKnowledgeArtifact.findMany({ where: { capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: 10 }))
+              .map(a => ({ ...a, cosineSimilarity: 0, ageDays: 0, finalScore: 0 }));
         for (const a of artifacts) {
           const c = `[${a.artifactType}] ${a.title}\n${a.content}`;
           const r2 = renderMustache(c, ctx); warnings.push(...r2.warnings);
-          layers.push({ layerType: "RUNTIME_EVIDENCE", priority: PRIORITY.RUNTIME_EVIDENCE, inclusionReason: `knowledge artifact ${a.artifactType}`, contentSnapshot: r2.rendered, layerHash: sha256(r2.rendered) });
+          layers.push({
+            layerType: "RUNTIME_EVIDENCE",
+            priority: PRIORITY.RUNTIME_EVIDENCE,
+            inclusionReason: taskVec
+              ? `knowledge ${a.artifactType} (cos=${a.cosineSimilarity.toFixed(3)}, age=${a.ageDays.toFixed(1)}d)`
+              : `knowledge artifact ${a.artifactType}`,
+            contentSnapshot: r2.rendered,
+            layerHash: sha256(r2.rendered),
+          });
         }
 
-        const memory = await prisma.distilledMemory.findMany({ where: { scopeType: "CAPABILITY", scopeId: capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: 10 });
+        // ── Distilled memory → MEMORY_CONTEXT ──────────────────────────────
+        const memory = taskVec
+          ? await this.semanticMemory(capabilityId, taskVec)
+          : (await prisma.distilledMemory.findMany({ where: { scopeType: "CAPABILITY", scopeId: capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: 10 }))
+              .map(m => ({ ...m, cosineSimilarity: 0, ageDays: 0, finalScore: 0 }));
         for (const m of memory) {
           const c = `[${m.memoryType}] ${m.title}\n${m.content}`;
           const r3 = renderMustache(c, ctx); warnings.push(...r3.warnings);
-          layers.push({ layerType: "MEMORY_CONTEXT", priority: PRIORITY.MEMORY_CONTEXT, inclusionReason: "distilled memory match", contentSnapshot: r3.rendered, layerHash: sha256(r3.rendered) });
+          layers.push({
+            layerType: "MEMORY_CONTEXT",
+            priority: PRIORITY.MEMORY_CONTEXT,
+            inclusionReason: taskVec
+              ? `distilled memory (cos=${m.cosineSimilarity.toFixed(3)}, age=${m.ageDays.toFixed(1)}d)`
+              : "distilled memory match",
+            contentSnapshot: r3.rendered,
+            layerHash: sha256(r3.rendered),
+          });
         }
 
-        // M14 — code context. Pull top-N CapabilityCodeSymbol summaries so the
-        // agent prompt carries pointers to the most relevant code in the
-        // capability's repos. v0 orders by createdAt; v1 swaps in pgvector
-        // cosine search against the task embedding.
-        const symbols = await prisma.capabilityCodeSymbol.findMany({
-          where: { capabilityId },
-          orderBy: { createdAt: "desc" },
-          take: 8,
-          include: { repository: true },
-        });
+        // ── Code symbols → CODE_CONTEXT ────────────────────────────────────
+        const symbols = taskVec
+          ? await this.semanticSymbols(capabilityId, taskVec)
+          : (await prisma.capabilityCodeSymbol.findMany({
+              where: { capabilityId }, orderBy: { createdAt: "desc" }, take: 8,
+              include: { repository: true },
+            })).map(s => ({
+              symbol_id: s.id, symbolName: s.symbolName, symbolType: s.symbolType,
+              filePath: s.filePath, startLine: s.startLine, summary: s.summary,
+              language: s.language, repoName: s.repository?.repoName ?? "repo",
+              cosineSimilarity: 0, ageDays: 0, finalScore: 0,
+            }));
         for (const s of symbols) {
-          const repoName = s.repository?.repoName ?? "repo";
           const body = s.summary ?? `${s.symbolType ?? "symbol"} ${s.symbolName ?? ""}`;
-          const c = `[${s.symbolType ?? "symbol"}] ${repoName}/${s.filePath}:${s.startLine ?? "?"}\n${body}`;
+          const c = `[${s.symbolType ?? "symbol"}] ${s.repoName}/${s.filePath}:${s.startLine ?? "?"}\n${body}`;
           const r4 = renderMustache(c, ctx); warnings.push(...r4.warnings);
           layers.push({
             layerType: "CODE_CONTEXT" as never,
             priority: PRIORITY.CODE_CONTEXT,
-            inclusionReason: `code symbol ${s.symbolName ?? ""} (${s.language ?? ""})`,
+            inclusionReason: taskVec
+              ? `code ${s.symbolName ?? ""} (cos=${s.cosineSimilarity.toFixed(3)}, age=${s.ageDays.toFixed(1)}d)`
+              : `code symbol ${s.symbolName ?? ""} (${s.language ?? ""})`,
             contentSnapshot: r4.rendered,
             layerHash: sha256(r4.rendered),
           });
@@ -373,6 +441,110 @@ ${JSON.stringify(t.json_schema, null, 2)}
     if (!body) return null;
     const header = `## Artifact: ${art.label} (${art.role}${art.consumableType ? `, ${art.consumableType}` : ""})`;
     return `${header}\n${body}`;
+  },
+
+  // ── M15 — semantic retrieval helpers (hybrid cosine × recency) ──────────
+  //
+  // pgvector's `<=>` operator returns cosine **distance** (1 - similarity).
+  // We compute similarity in the projection so the ORDER BY uses the
+  // index-friendly distance form. Final hybrid score is JS-computed via
+  // rerankByHybrid() so we keep the recency-boost math out of SQL.
+
+  async semanticKnowledge(capabilityId: string, taskVec: string) {
+    const candidatePool = 30;
+    const finalTake = 10;
+    type Row = {
+      id: string; artifactType: string; title: string; content: string;
+      cosine_similarity: number; age_days: number;
+    };
+    const rows = await prisma.$queryRawUnsafe<Row[]>(
+      `SELECT id, "artifactType", title, content,
+              1 - (embedding <=> $1::vector) AS cosine_similarity,
+              EXTRACT(EPOCH FROM (now() - "createdAt")) / 86400.0 AS age_days
+       FROM "CapabilityKnowledgeArtifact"
+       WHERE "capabilityId" = $2 AND status = 'ACTIVE' AND embedding IS NOT NULL
+       ORDER BY embedding <=> $1::vector
+       LIMIT ${candidatePool}`,
+      taskVec, capabilityId,
+    );
+    return rerankByHybrid(
+      rows.map(r => ({
+        id: r.id, artifactType: r.artifactType, title: r.title, content: r.content,
+        cosineSimilarity: Number(r.cosine_similarity), ageDays: Number(r.age_days), finalScore: 0,
+      })),
+      finalTake,
+    );
+  },
+
+  async semanticMemory(capabilityId: string, taskVec: string) {
+    const candidatePool = 30;
+    const finalTake = 10;
+    type Row = {
+      id: string; memoryType: string; title: string; content: string;
+      cosine_similarity: number; age_days: number;
+    };
+    const rows = await prisma.$queryRawUnsafe<Row[]>(
+      `SELECT id, "memoryType", title, content,
+              1 - (embedding <=> $1::vector) AS cosine_similarity,
+              EXTRACT(EPOCH FROM (now() - "createdAt")) / 86400.0 AS age_days
+       FROM "DistilledMemory"
+       WHERE "scopeType" = 'CAPABILITY' AND "scopeId" = $2 AND status = 'ACTIVE' AND embedding IS NOT NULL
+       ORDER BY embedding <=> $1::vector
+       LIMIT ${candidatePool}`,
+      taskVec, capabilityId,
+    );
+    return rerankByHybrid(
+      rows.map(r => ({
+        id: r.id, memoryType: r.memoryType, title: r.title, content: r.content,
+        cosineSimilarity: Number(r.cosine_similarity), ageDays: Number(r.age_days), finalScore: 0,
+      })),
+      finalTake,
+    );
+  },
+
+  async semanticSymbols(capabilityId: string, taskVec: string) {
+    const candidatePool = 30;
+    const finalTake = 8;
+    type Row = {
+      symbol_id: string;
+      symbolName: string | null; symbolType: string | null;
+      filePath: string; startLine: number | null;
+      summary: string | null; language: string | null;
+      repoName: string;
+      cosine_similarity: number; age_days: number;
+    };
+    // Joined query — embedding lives on CapabilityCodeEmbedding, scoping +
+    // display fields live on CapabilityCodeSymbol + CapabilityRepository.
+    const rows = await prisma.$queryRawUnsafe<Row[]>(
+      `SELECT s.id AS symbol_id,
+              s."symbolName", s."symbolType", s."filePath", s."startLine",
+              s.summary, s.language, r."repoName",
+              1 - (e.embedding <=> $1::vector) AS cosine_similarity,
+              EXTRACT(EPOCH FROM (now() - s."createdAt")) / 86400.0 AS age_days
+       FROM "CapabilityCodeEmbedding" e
+       JOIN "CapabilityCodeSymbol" s ON s.id = e."symbolId"
+       JOIN "CapabilityRepository" r ON r.id = s."repositoryId"
+       WHERE s."capabilityId" = $2 AND e.embedding IS NOT NULL
+       ORDER BY e.embedding <=> $1::vector
+       LIMIT ${candidatePool}`,
+      taskVec, capabilityId,
+    );
+    return rerankByHybrid(
+      rows.map(r => ({
+        symbol_id:        r.symbol_id,
+        symbolName:       r.symbolName,
+        symbolType:       r.symbolType,
+        filePath:         r.filePath,
+        startLine:        r.startLine,
+        summary:          r.summary,
+        language:         r.language,
+        repoName:         r.repoName,
+        cosineSimilarity: Number(r.cosine_similarity),
+        ageDays:          Number(r.age_days),
+        finalScore:       0,
+      })),
+      finalTake,
+    );
   },
 };
 

@@ -253,8 +253,22 @@ model CapabilityCodeSymbol {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  repository CapabilityRepository @relation(fields: [repositoryId], references: [id])
-  capability Capability           @relation(fields: [capabilityId], references: [id])
+  repository  CapabilityRepository      @relation(fields: [repositoryId], references: [id])
+  capability  Capability                @relation(fields: [capabilityId], references: [id])
+  embeddings  CapabilityCodeEmbedding[]
+}
+
+// M15 — composer needs visibility on the embedding column to query cosine.
+model CapabilityCodeEmbedding {
+  id             String   @id @default(uuid())
+  symbolId       String
+  embeddingModel String?
+  vectorId       String?
+  summary        String?
+  embedding      Unsupported("vector(1536)")?
+  createdAt      DateTime @default(now())
+
+  symbol CapabilityCodeSymbol @relation(fields: [symbolId], references: [id])
 }
 
 model AgentCapabilityBinding {
@@ -287,6 +301,8 @@ model CapabilityKnowledgeArtifact {
   version      Int          @default(1)
   status       EntityStatus @default(ACTIVE)
   contentHash  String?
+  // M15 — pgvector mirror (read-only from composer; written by agent-runtime).
+  embedding    Unsupported("vector(1536)")?
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
@@ -306,6 +322,8 @@ model DistilledMemory {
   confidence         Decimal?     @db.Decimal(5, 2)
   version            Int          @default(1)
   status             EntityStatus @default(ACTIVE)
+  // M15 — pgvector mirror (read-only from composer; written by agent-service).
+  embedding          Unsupported("vector(1536)")?
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
 }

@@ -197,11 +197,11 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
 }
 
 // M14 — file-upload variant for knowledge artifacts. v0 reads txt/md
-// client-side via FileReader and POSTs the existing addKnowledge endpoint;
-// no server-side multipart dep. PDF support is a follow-up (needs base64
-// transport + pdf-parse on the server).
-const SUPPORTED_EXT = /\.(txt|md|markdown)$/i;
-const MAX_BYTES = 1_000_000; // 1 MB per file — generous for plain text
+// M15 — multipart upload to the agent-runtime endpoint. Server extracts
+// text from txt/md directly and from PDFs via pdf-parse, then delegates to
+// addKnowledge for embedding + storage.
+const SUPPORTED_EXT = /\.(txt|md|markdown|pdf)$/i;
+const MAX_BYTES = 25 * 1024 * 1024; // 25 MB matches the multer limit
 
 function KnowledgeUploadCard({
   capabilityId, artifactType, onUploaded,
@@ -218,27 +218,34 @@ function KnowledgeUploadCard({
 
   async function handleFiles(files: FileList | File[]) {
     setBusy(true); setError(null);
-    const results: string[] = [];
+    const arr = Array.from(files);
     try {
-      for (const f of Array.from(files)) {
+      for (const f of arr) {
         if (!SUPPORTED_EXT.test(f.name)) {
-          throw new Error(`Unsupported file type: ${f.name}. v0 accepts .txt and .md.`);
+          throw new Error(`Unsupported file type: ${f.name}. Accepts .txt, .md, .pdf.`);
         }
         if (f.size > MAX_BYTES) {
-          throw new Error(`File too large: ${f.name} (${(f.size / 1024).toFixed(0)} KB > ${MAX_BYTES / 1024} KB).`);
+          throw new Error(`File too large: ${f.name} (${(f.size / 1024 / 1024).toFixed(1)} MB > 25 MB).`);
         }
-        const text = await f.text();
-        await runtimeApi.addKnowledge(capabilityId, {
-          artifactType: artifactType || "DOC",
-          title: f.name,
-          content: text,
-          sourceType: "FILE_UPLOAD",
-          sourceRef: f.name,
-          confidence: 0.9,
-        } as never);
-        results.push(f.name);
       }
-      setLastUpload(results);
+      const fd = new FormData();
+      fd.append("artifactType", artifactType || "DOC");
+      for (const f of arr) fd.append("files", f, f.name);
+
+      const res = await fetch(
+        `/api/runtime/capabilities/${encodeURIComponent(capabilityId)}/knowledge-artifacts/upload`,
+        { method: "POST", body: fd },
+      );
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        throw new Error(`Upload failed (${res.status}): ${detail.slice(0, 200)}`);
+      }
+      const body = await res.json() as { data?: { uploaded: number; skipped?: Array<{name:string; reason:string}> } };
+      const skipped = body.data?.skipped ?? [];
+      if (skipped.length > 0) {
+        setError(`Skipped ${skipped.length}: ${skipped.map(s => `${s.name} (${s.reason})`).join(", ")}`);
+      }
+      setLastUpload(arr.map(f => f.name).filter(n => !skipped.some(s => s.name === n)));
       await onUploaded();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
@@ -263,14 +270,14 @@ function KnowledgeUploadCard({
         <div className="flex-1">
           <p className="text-sm text-slate-700 font-medium">Upload knowledge files</p>
           <p className="text-xs text-slate-500">
-            Drag and drop <code>.txt</code> / <code>.md</code> files, or click to browse. Files become ACTIVE artifacts the prompt-composer pulls into <code>RUNTIME_EVIDENCE</code> layers.
+            Drag and drop <code>.txt</code> / <code>.md</code> / <code>.pdf</code> files, or click to browse. Files become ACTIVE artifacts the prompt-composer pulls into <code>RUNTIME_EVIDENCE</code> layers (and now embedded for semantic retrieval).
           </p>
         </div>
         <input
           ref={inputRef}
           type="file"
           multiple
-          accept=".txt,.md,.markdown,text/plain,text/markdown"
+          accept=".txt,.md,.markdown,.pdf,text/plain,text/markdown,application/pdf"
           className="hidden"
           onChange={(e) => { if (e.target.files) void handleFiles(e.target.files); }}
         />

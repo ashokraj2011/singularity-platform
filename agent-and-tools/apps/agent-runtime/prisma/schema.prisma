@@ -350,6 +350,8 @@ model CapabilityKnowledgeArtifact {
   version      Int          @default(1)
   status       EntityStatus @default(ACTIVE)
   contentHash  String?
+  // M15 — pgvector column for semantic retrieval. Embedded on write.
+  embedding    Unsupported("vector(1536)")?
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
@@ -382,6 +384,9 @@ model CapabilityCodeEmbedding {
   embeddingModel String?
   vectorId       String?
   summary        String?
+  // M15 — pgvector column. Prisma can't bind unsupported types, so writes go
+  // through raw SQL UPDATE. Reads use prisma + raw SELECT for cosine.
+  embedding      Unsupported("vector(1536)")?
   createdAt      DateTime @default(now())
 
   symbol CapabilityCodeSymbol @relation(fields: [symbolId], references: [id])
@@ -471,6 +476,8 @@ model DistilledMemory {
   confidence         Decimal?     @db.Decimal(5, 2)
   version            Int          @default(1)
   status             EntityStatus @default(ACTIVE)
+  // M15 — pgvector column for semantic retrieval. Embedded on distill.
+  embedding          Unsupported("vector(1536)")?
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
 }

@@ -3,6 +3,9 @@ import { createHash } from "crypto";
 import { query, queryOne } from "../database";
 import { optionalAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
+import {
+  getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral,
+} from "../lib/embeddings";
 
 export const runtimeRoutes = Router();
 runtimeRoutes.use(optionalAuth);
@@ -252,7 +255,12 @@ runtimeRoutes.post("/learning-candidates/distill", async (req: Request, res: Res
 
   // Write DistilledMemory rows (Prisma table; raw SQL because agent-service
   // doesn't have the prisma client wired). Must quote camelCase column names.
+  // M15 — embed each entry's title+content + UPDATE the pgvector column so
+  // composer's hybrid retrieval can find it. Embedding failures don't abort
+  // the row write; the entry just won't surface via semantic search.
+  const embedder = getEmbeddingProvider();
   const written: Array<Record<string, unknown>> = [];
+  let embeddingFailures = 0;
   for (const e of entries) {
     const [row] = await query<Record<string, unknown>>(
       `INSERT INTO public."DistilledMemory"
@@ -262,8 +270,22 @@ runtimeRoutes.post("/learning-candidates/distill", async (req: Request, res: Res
        RETURNING *`,
       [capability_id, candidate_type, e.title, e.content, JSON.stringify(candidate_ids), e.confidence ?? 0.7],
     );
+    try {
+      const embedded = await embedder.embed({ text: `${e.title}\n${e.content}`.slice(0, 8_000) });
+      assertDimMatches(embedded.dim, `${embedded.provider}:${embedded.model}`);
+      await query(
+        `UPDATE public."DistilledMemory" SET embedding = $1::vector WHERE id = $2`,
+        [toVectorLiteral(embedded.vector), row.id],
+      );
+    } catch (err) {
+      embeddingFailures += 1;
+      // eslint-disable-next-line no-console
+      console.warn(`[distill] embedding failed for memory ${row.id}: ${(err as Error).message}`);
+    }
     written.push(row);
   }
+  void embeddingFailures; // surfaced via logs; not in response shape v0
+  void REQUIRED_EMBEDDING_DIM;
 
   // Mark candidates distilled (preserve `accepted` audit by adding a new status).
   await query(
