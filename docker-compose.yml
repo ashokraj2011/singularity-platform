@@ -367,8 +367,19 @@ services:
       PORT: 7100
       LOG_LEVEL: info
       MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
-      LLM_PROVIDER: mock
-      LLM_MODEL: mock-fast
+      # ── M11 follow-up: embedded LLM gateway ──────────────────────────────
+      # Default provider when an LlmRequest doesn't pick one. Per-request
+      # overrides via the `provider` field in the /mcp/invoke payload.
+      LLM_PROVIDER: ${MCP_LLM_PROVIDER:-mock}
+      LLM_MODEL:    ${MCP_LLM_MODEL:-mock-fast}
+      # Provider keys live HERE on the operator's local machine — they
+      # never leave the local boundary by design. Empty = provider disabled.
+      OPENAI_API_KEY:    ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      COPILOT_TOKEN:     ${COPILOT_TOKEN:-}
+      OPENAI_DEFAULT_MODEL:    ${OPENAI_DEFAULT_MODEL:-gpt-4o-mini}
+      ANTHROPIC_DEFAULT_MODEL: ${ANTHROPIC_DEFAULT_MODEL:-claude-sonnet-4-6}
+      COPILOT_DEFAULT_MODEL:   ${COPILOT_DEFAULT_MODEL:-gpt-4o}
       MAX_AGENT_STEPS: 12
       TIMEOUT_SEC: 240
       # M11.a — self-register with platform-registry

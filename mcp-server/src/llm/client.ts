@@ -1,18 +1,40 @@
 import { config } from "../config";
 import { mockLlmRespond } from "./mock";
+import { openaiRespond } from "./providers/openai";
+import { anthropicRespond } from "./providers/anthropic";
+import { copilotRespond } from "./providers/copilot";
 import { LlmRequest, LlmResponse } from "./types";
 
 /**
- * Provider router. v0 ships only the deterministic mock provider. Real
- * providers (openai, anthropic, openrouter) are added by importing their
- * SDKs and routing on `req.provider` (or `config.LLM_PROVIDER` as default).
+ * M11 follow-up — embedded LLM gateway.
  *
- * Provider keys would live in this MCP server's environment — never in
- * Singularity's cloud — so adding a real provider is purely additive: drop
- * a new file under src/llm/ and switch on the provider name here.
+ * Provider keys live in THIS MCP server's environment (customer's local
+ * machine) and never leave the local boundary — by design, so the platform
+ * stays LLM-agnostic and the customer chooses + pays for their own provider.
+ *
+ * Routes by `req.provider` (or `config.LLM_PROVIDER` as default). Adding
+ * a new provider is purely additive: drop a file under src/llm/providers/
+ * and switch on the name here.
  */
 export async function llmRespond(req: LlmRequest): Promise<LlmResponse> {
-  const provider = req.provider || config.LLM_PROVIDER;
-  if (provider === "mock") return mockLlmRespond(req);
-  throw new Error(`provider '${provider}' not implemented in v0 (only 'mock' is supported)`);
+  const provider = (req.provider || config.LLM_PROVIDER).toLowerCase();
+  switch (provider) {
+    case "mock":      return mockLlmRespond(req);
+    case "openai":    return openaiRespond(req);
+    case "anthropic": return anthropicRespond(req);
+    case "copilot":   return copilotRespond(req);
+    default:
+      throw new Error(`unknown LLM provider: ${provider}. Supported: mock, openai, anthropic, copilot.`);
+  }
+}
+
+/** Used by /healthz and the new GET /llm/providers route to surface
+ *  which providers are configured (without leaking key material). */
+export function listConfiguredProviders(): Array<{ name: string; ready: boolean; default_model: string }> {
+  return [
+    { name: "mock",      ready: true,                              default_model: config.LLM_MODEL },
+    { name: "openai",    ready: Boolean(config.OPENAI_API_KEY),    default_model: config.OPENAI_DEFAULT_MODEL },
+    { name: "anthropic", ready: Boolean(config.ANTHROPIC_API_KEY), default_model: config.ANTHROPIC_DEFAULT_MODEL },
+    { name: "copilot",   ready: Boolean(config.COPILOT_TOKEN),     default_model: config.COPILOT_DEFAULT_MODEL },
+  ];
 }
