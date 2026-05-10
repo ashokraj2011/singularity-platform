@@ -10,6 +10,8 @@ import { memoryRoutes } from "./modules/memory/memory.routes";
 import { errorMiddleware } from "./middleware/error.middleware";
 import { requestIdMiddleware } from "./middleware/request-id.middleware";
 import { optionalAuth } from "./middleware/auth.middleware";
+import { eventSubscriptionsRouter } from "./lib/eventbus/routes";
+import { prisma } from "./config/prisma";
 
 // M3: prompt assembly is now owned by prompt-composer (port 3004).
 // agent-runtime no longer exposes /api/v1/prompts.
@@ -38,5 +40,7 @@ app.use("/api/v1/tools", toolRoutes);
 app.use("/api/v1/capabilities", capabilityRoutes);
 app.use("/api/v1/executions", executionRoutes);
 app.use("/api/v1/memory", memoryRoutes);
+// M11.e — event-bus subscription registry. Dispatcher itself starts in server.ts.
+app.use("/api/v1/events/subscriptions", eventSubscriptionsRouter(prisma));
 
 app.use(errorMiddleware);

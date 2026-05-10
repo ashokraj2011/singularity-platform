@@ -2,6 +2,8 @@ import { app } from "./app";
 import { env } from "./config/env";
 import { logger } from "./config/logger";
 import { startSelfRegistration } from "./lib/platform-registry/register";
+import { startEventDispatcher } from "./lib/eventbus/dispatcher";
+import { prisma } from "./config/prisma";
 
 // M11.a — self-register with platform-registry (no-op if env unset)
 startSelfRegistration({
@@ -20,6 +22,11 @@ startSelfRegistration({
     { capability_key: "knowledge.artifacts", description: "Capability knowledge artifacts" },
   ],
 }, { log: (m) => logger.info(`[platform-registry] ${m}`) });
+
+// M11.e — event-bus dispatcher (LISTEN/NOTIFY + safety sweep)
+void startEventDispatcher(prisma).catch((err) => {
+  logger.warn(`[eventbus] dispatcher failed to start: ${(err as Error).message}`);
+});
 
 app.listen(env.PORT, () => {
   logger.info(`[agent-runtime] listening on port ${env.PORT}`);

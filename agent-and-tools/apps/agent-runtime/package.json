@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
+    "@types/pg": "^8.20.0",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
     "cors": "^2.8.5",
@@ -23,6 +24,7 @@
     "express-async-errors": "^3.1.1",
     "helmet": "^7.2.0",
     "jsonwebtoken": "^9.0.2",
+    "pg": "^8.20.0",
     "pino": "^9.5.0",
     "pino-pretty": "^11.3.0",
     "uuid": "^11.0.3",

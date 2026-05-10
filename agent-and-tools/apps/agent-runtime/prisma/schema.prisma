@@ -474,3 +474,62 @@ model DistilledMemory {
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
 }
+
+// ─── M11.e — Event Bus (publisher side; subscribers can register via routes) ─
+
+model EventOutbox {
+  id            String   @id @default(uuid())
+  eventName     String
+  sourceService String
+  traceId       String?
+  subjectKind   String
+  subjectId     String
+  envelope      Json
+  status        String   @default("pending")  // pending | dispatched | failed
+  attempts      Int      @default(0)
+  emittedAt     DateTime @default(now())
+  lastAttemptAt DateTime?
+  lastError     String?
+  deliveries    EventDelivery[]
+
+  @@index([status, emittedAt])
+  @@index([eventName])
+  @@index([traceId])
+  @@map("event_outbox")
+}
+
+model EventSubscription {
+  id            String   @id @default(uuid())
+  subscriberId  String
+  eventPattern  String
+  targetUrl     String
+  secret        String?
+  isActive      Boolean  @default(true)
+  metadata      Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deliveries    EventDelivery[]
+
+  @@index([isActive, eventPattern])
+  @@map("event_subscriptions")
+}
+
+model EventDelivery {
+  id              String   @id @default(uuid())
+  outboxId        String
+  subscriptionId  String
+  status          String   @default("queued")
+  attempts        Int      @default(0)
+  lastAttemptAt   DateTime?
+  lastError       String?
+  deliveredAt     DateTime?
+  responseStatus  Int?
+  outbox          EventOutbox       @relation(fields: [outboxId],       references: [id], onDelete: Cascade)
+  subscription    EventSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  createdAt       DateTime @default(now())
+
+  @@unique([outboxId, subscriptionId])
+  @@index([status, createdAt])
+  @@map("event_deliveries")
+}
+
