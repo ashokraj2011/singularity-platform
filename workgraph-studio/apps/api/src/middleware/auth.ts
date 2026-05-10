@@ -31,6 +31,22 @@ declare global {
  * Lazy mirroring keeps every existing FK working without touching IAM as the
  * source of truth.
  */
+async function ensureAdminRole(userId: string): Promise<void> {
+  // Mirror IAM's `is_super_admin=true` into a local ADMIN role binding so the
+  // legacy permission helpers (decideLegacy / canStartTemplate / …) recognise
+  // the user without us having to plumb the IAM flag through every check.
+  const adminRole = await prisma.role.upsert({
+    where:  { name: 'ADMIN' },
+    update: {},
+    create: { name: 'ADMIN', description: 'Mirrored from IAM is_super_admin', isSystemRole: true },
+  })
+  await prisma.userRole.upsert({
+    where:  { userId_roleId: { userId, roleId: adminRole.id } },
+    update: {},
+    create: { userId, roleId: adminRole.id },
+  })
+}
+
 async function mirrorIamUser(iamUser: IamUser): Promise<{ id: string; email: string; displayName: string }> {
   const displayName = iamUser.display_name?.trim() || iamUser.email.split('@')[0]
 
@@ -43,8 +59,10 @@ async function mirrorIamUser(iamUser: IamUser): Promise<{ id: string; email: str
         where: { id: existing.id },
         data:  { email: iamUser.email, displayName },
       })
+      if (iamUser.is_super_admin) await ensureAdminRole(updated.id)
       return { id: updated.id, email: updated.email, displayName: updated.displayName }
     }
+    if (iamUser.is_super_admin) await ensureAdminRole(existing.id)
     return { id: existing.id, email: existing.email, displayName: existing.displayName }
   }
 
@@ -57,6 +75,7 @@ async function mirrorIamUser(iamUser: IamUser): Promise<{ id: string; email: str
       where: { id: byEmail.id },
       data:  { iamUserId: iamUser.id, displayName },
     })
+    if (iamUser.is_super_admin) await ensureAdminRole(linked.id)
     return { id: linked.id, email: linked.email, displayName: linked.displayName }
   }
 
@@ -70,6 +89,7 @@ async function mirrorIamUser(iamUser: IamUser): Promise<{ id: string; email: str
       isActive:     true,
     },
   })
+  if (iamUser.is_super_admin) await ensureAdminRole(created.id)
   return { id: created.id, email: created.email, displayName: created.displayName }
 }
 
