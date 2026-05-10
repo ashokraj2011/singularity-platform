@@ -155,6 +155,7 @@ model Capability {
   bindings           AgentCapabilityBinding[]
   repositories       CapabilityRepository[]
   knowledgeArtifacts CapabilityKnowledgeArtifact[]
+  knowledgeSources   CapabilityKnowledgeSource[]
   executions         AgentExecution[]
 }
 
@@ -331,11 +332,40 @@ model CapabilityRepository {
   defaultBranch  String?
   repositoryType String?
   status         EntityStatus @default(ACTIVE)
+  // M17 — polling config. NULL pollIntervalSec disables auto-poll. The
+  // worker stores the last seen HEAD SHA so it only re-extracts on change.
+  pollIntervalSec Int?
+  lastPolledAt    DateTime?
+  lastPolledSha   String?
+  lastPollError   String?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
   capability Capability             @relation(fields: [capabilityId], references: [id])
   symbols    CapabilityCodeSymbol[]
+}
+
+// M17 — polled knowledge sources. Each row points at a remote markdown
+// (or plain text) URL; the worker fetches periodically and upserts the
+// content into a CapabilityKnowledgeArtifact row keyed by
+// (capabilityId, sourceRef=url). Distinct from CapabilityKnowledgeArtifact
+// because the artifact is the *materialised* content; this model is the
+// *source* config (URL + cadence).
+model CapabilityKnowledgeSource {
+  id              String       @id @default(uuid())
+  capabilityId   String
+  url             String       // Public HTTPS URL of a markdown / plain text file
+  artifactType   String       @default("DOC") // applied to the upserted artifact
+  title           String?     // Display name; falls back to URL
+  pollIntervalSec Int?
+  lastPolledAt    DateTime?
+  lastContentHash String?
+  lastPollError   String?
+  status          EntityStatus @default(ACTIVE)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  capability Capability @relation(fields: [capabilityId], references: [id])
 }
 
 model CapabilityKnowledgeArtifact {

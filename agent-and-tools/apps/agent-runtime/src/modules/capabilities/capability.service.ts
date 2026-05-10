@@ -285,6 +285,69 @@ export const capabilityService = {
     };
   },
 
+  // M17 — polling config + knowledge sources.
+  async updateRepositoryPoll(capabilityId: string, repoId: string, input: {
+    pollIntervalSec?: number | null; defaultBranch?: string;
+  }) {
+    await this.get(capabilityId);
+    const repo = await prisma.capabilityRepository.findUnique({ where: { id: repoId } });
+    if (!repo || repo.capabilityId !== capabilityId) throw new NotFoundError("Repository not found");
+    return prisma.capabilityRepository.update({
+      where: { id: repoId },
+      data: {
+        pollIntervalSec: input.pollIntervalSec === undefined ? undefined : input.pollIntervalSec,
+        defaultBranch:   input.defaultBranch ?? undefined,
+      },
+    });
+  },
+
+  async listKnowledgeSources(capabilityId: string) {
+    return prisma.capabilityKnowledgeSource.findMany({
+      where: { capabilityId, status: "ACTIVE" },
+      orderBy: { createdAt: "desc" },
+    });
+  },
+
+  async addKnowledgeSource(capabilityId: string, input: {
+    url: string; artifactType?: string; title?: string; pollIntervalSec?: number | null;
+  }) {
+    await this.get(capabilityId);
+    return prisma.capabilityKnowledgeSource.create({
+      data: {
+        capabilityId,
+        url: input.url,
+        artifactType: input.artifactType ?? "DOC",
+        title: input.title,
+        pollIntervalSec: input.pollIntervalSec ?? 600,
+        status: "ACTIVE",
+      },
+    });
+  },
+
+  async updateKnowledgeSource(capabilityId: string, sourceId: string, input: {
+    url?: string; artifactType?: string; title?: string; pollIntervalSec?: number | null;
+  }) {
+    const src = await prisma.capabilityKnowledgeSource.findUnique({ where: { id: sourceId } });
+    if (!src || src.capabilityId !== capabilityId) throw new NotFoundError("Knowledge source not found");
+    return prisma.capabilityKnowledgeSource.update({
+      where: { id: sourceId },
+      data: {
+        url:             input.url ?? undefined,
+        artifactType:    input.artifactType ?? undefined,
+        title:           input.title ?? undefined,
+        pollIntervalSec: input.pollIntervalSec === undefined ? undefined : input.pollIntervalSec,
+      },
+    });
+  },
+
+  async deleteKnowledgeSource(capabilityId: string, sourceId: string) {
+    const src = await prisma.capabilityKnowledgeSource.findUnique({ where: { id: sourceId } });
+    if (!src || src.capabilityId !== capabilityId) throw new NotFoundError("Knowledge source not found");
+    return prisma.capabilityKnowledgeSource.update({
+      where: { id: sourceId }, data: { status: "ARCHIVED" },
+    });
+  },
+
   // M16 — re-embed worker. Backfills embeddings for any rows whose vector
   // column is NULL across all three tables for a capability. Used after:
   //   1. Switching providers (eg mock → openai) — old vectors are still

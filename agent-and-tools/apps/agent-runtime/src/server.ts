@@ -7,6 +7,7 @@ import { logger } from "./config/logger";
 import { startSelfRegistration } from "./lib/platform-registry/register";
 import { startEventDispatcher } from "./lib/eventbus/dispatcher";
 import { prisma } from "./config/prisma";
+import { startPollWorker } from "./modules/capabilities/poll-worker";
 
 // M11.a — self-register with platform-registry (no-op if env unset)
 startSelfRegistration({
@@ -30,6 +31,9 @@ startSelfRegistration({
 void startEventDispatcher(prisma).catch((err) => {
   logger.warn(`[eventbus] dispatcher failed to start: ${(err as Error).message}`);
 });
+
+// M17 — start the polling worker. No-op when POLL_WORKER_ENABLED=0.
+startPollWorker();
 
 app.listen(env.PORT, () => {
   logger.info(`[agent-runtime] listening on port ${env.PORT}`);

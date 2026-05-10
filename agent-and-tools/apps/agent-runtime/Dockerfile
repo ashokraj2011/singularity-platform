@@ -1,7 +1,8 @@
 FROM node:20-alpine AS base
 WORKDIR /app
 # postgresql-client provides `psql` for the M15 post-push SQL hook.
-RUN apk add --no-cache openssl postgresql-client
+# git is used by the M17 polling worker to clone + diff repositories.
+RUN apk add --no-cache openssl postgresql-client git
 
 FROM base AS deps
 COPY package.json ./

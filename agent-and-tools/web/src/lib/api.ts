@@ -182,6 +182,30 @@ export const runtimeApi = {
       `${RUNTIME_BASE}/capabilities/${capabilityId}/repositories/${repoId}/extract`,
       { method: "POST", body: JSON.stringify({ files }) },
     ),
+  // M17 — polling config + knowledge sources.
+  updateRepoPoll: (capabilityId: string, repoId: string, body: { pollIntervalSec?: number | null; defaultBranch?: string }) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/repositories/${repoId}/poll`,
+      { method: "PATCH", body: JSON.stringify(body) }),
+  listKnowledgeSources: (capabilityId: string) =>
+    reqEnv<Row[]>(`${RUNTIME_BASE}/capabilities/${capabilityId}/knowledge-sources`),
+  addKnowledgeSource: (capabilityId: string, body: { url: string; artifactType?: string; title?: string; pollIntervalSec?: number | null }) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/knowledge-sources`,
+      { method: "POST", body: JSON.stringify(body) }),
+  updateKnowledgeSource: (capabilityId: string, sourceId: string, body: Row) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/knowledge-sources/${sourceId}`,
+      { method: "PATCH", body: JSON.stringify(body) }),
+  deleteKnowledgeSource: (capabilityId: string, sourceId: string) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/knowledge-sources/${sourceId}`,
+      { method: "DELETE" }),
+  // M16 — re-embed worker
+  reembedCapability: (capabilityId: string, kinds?: ("knowledge"|"memory"|"code")[]) =>
+    reqEnv<{
+      provider: string; providerModel: string;
+      knowledge: { scanned: number; embedded: number; failed: number };
+      memory: { scanned: number; embedded: number; failed: number };
+      code: { scanned: number; embedded: number; failed: number };
+    }>(`${RUNTIME_BASE}/capabilities/${capabilityId}/embeddings/reembed`,
+      { method: "POST", body: JSON.stringify({ kinds }) }),
 
   // Executions
   listExecutions: (params?: Record<string, string>) => {

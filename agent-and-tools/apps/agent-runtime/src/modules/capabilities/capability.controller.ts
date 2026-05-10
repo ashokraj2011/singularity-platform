@@ -42,6 +42,24 @@ export const capabilityController = {
     return ok(res, result, 201);
   },
 
+  // M17 — polling config.
+  async updateRepoPoll(req: Request, res: Response) {
+    const updated = await capabilityService.updateRepositoryPoll(req.params.id, req.params.repoId, req.body);
+    return ok(res, updated, 200);
+  },
+  async listKnowledgeSources(req: Request, res: Response) {
+    return ok(res, await capabilityService.listKnowledgeSources(req.params.id));
+  },
+  async addKnowledgeSource(req: Request, res: Response) {
+    return ok(res, await capabilityService.addKnowledgeSource(req.params.id, req.body), 201);
+  },
+  async updateKnowledgeSource(req: Request, res: Response) {
+    return ok(res, await capabilityService.updateKnowledgeSource(req.params.id, req.params.sourceId, req.body));
+  },
+  async deleteKnowledgeSource(req: Request, res: Response) {
+    return ok(res, await capabilityService.deleteKnowledgeSource(req.params.id, req.params.sourceId));
+  },
+
   async reembed(req: Request, res: Response) {
     const kindsParam = req.body?.kinds;
     const kinds = Array.isArray(kindsParam) ? kindsParam.filter((k: unknown): k is "knowledge" | "memory" | "code" =>

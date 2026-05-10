@@ -49,3 +49,18 @@ export const extractSymbolsSchema = z.object({
     .min(1)
     .max(2000),
 });
+
+// M17 — polling configuration patches.
+export const updateRepoPollSchema = z.object({
+  pollIntervalSec: z.number().int().min(60).max(86400).nullable().optional(),
+  defaultBranch:   z.string().min(1).max(100).optional(),
+});
+
+export const knowledgeSourceSchema = z.object({
+  url:             z.string().url(),
+  artifactType:    z.string().min(2).max(50).default("DOC"),
+  title:           z.string().max(200).optional(),
+  pollIntervalSec: z.number().int().min(60).max(86400).nullable().optional(),
+});
+
+export const updateKnowledgeSourceSchema = knowledgeSourceSchema.partial();

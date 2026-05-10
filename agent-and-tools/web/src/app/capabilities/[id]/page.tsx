@@ -10,7 +10,7 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
   const { data: cap, mutate: mutateCap } = useSWR(`cap-${id}`, () => runtimeApi.getCapability(id));
   const { data: templates } = useSWR("runtime-tmpl-options", () => runtimeApi.listTemplates());
 
-  const [tab, setTab] = useState<"bindings" | "repos" | "knowledge" | "code">("bindings");
+  const [tab, setTab] = useState<"bindings" | "repos" | "knowledge" | "code" | "sources" | "tuning">("bindings");
 
   // Forms
   const [repo, setRepo] = useState({ repoName: "", repoUrl: "", defaultBranch: "main", repositoryType: "GITHUB" });
@@ -58,7 +58,7 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
       </div>
 
       <div className="flex gap-1 mb-6 border-b border-slate-200">
-        {(["bindings", "repos", "knowledge", "code"] as const).map(t => (
+        {(["bindings", "repos", "knowledge", "code", "sources", "tuning"] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors capitalize ${
               tab === t ? "border-singularity-600 text-singularity-700" : "border-transparent text-slate-500 hover:text-slate-800"
@@ -156,6 +156,10 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
           ))}
         </div>
       )}
+
+      {tab === "sources" && <SourcesTab capabilityId={id} repos={repos} onMutate={mutateCap} />}
+
+      {tab === "tuning" && <TuningTab capabilityId={id} />}
 
       {tab === "knowledge" && (
         <div>
@@ -410,6 +414,282 @@ function Stat({ label, value, highlight, colSpan }: { label: string; value: stri
     <div className={`bg-slate-50 rounded px-2 py-1.5${colSpan ? ` sm:col-span-${colSpan}` : ""}`}>
       <div className="text-[10px] text-slate-500 uppercase tracking-wide">{label}</div>
       <div className={`text-sm font-medium ${colour} truncate`}>{value}</div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// M17 — sources tab. Per-repo poll-interval editor + URL knowledge sources
+// (markdown / plain text). Worker re-fetches on cadence; only writes when
+// content hash changes.
+// ────────────────────────────────────────────────────────────────────────────
+
+function SourcesTab({ capabilityId, repos, onMutate }: {
+  capabilityId: string;
+  repos: Array<Record<string, unknown>>;
+  onMutate: () => Promise<unknown> | void;
+}) {
+  const { data: sources, mutate: mutateSources } = useSWR(
+    `know-sources-${capabilityId}`,
+    () => runtimeApi.listKnowledgeSources(capabilityId),
+  );
+  const list = (sources ?? []) as Array<Record<string, unknown>>;
+
+  const [newUrl, setNewUrl] = useState("");
+  const [newInterval, setNewInterval] = useState(600);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function addSource() {
+    if (!newUrl) return;
+    setBusy(true); setError(null);
+    try {
+      await runtimeApi.addKnowledgeSource(capabilityId, {
+        url: newUrl, pollIntervalSec: newInterval,
+      });
+      setNewUrl(""); setNewInterval(600);
+      await mutateSources();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "add failed");
+    } finally { setBusy(false); }
+  }
+
+  async function deleteSource(id: string) {
+    await runtimeApi.deleteKnowledgeSource(capabilityId, id);
+    await mutateSources();
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* ── Repo polling section ───────────────────────────────────────── */}
+      <section>
+        <h3 className="text-sm font-semibold text-slate-900 mb-2">Repository polling</h3>
+        <p className="text-xs text-slate-500 mb-3">
+          Set <code>pollIntervalSec</code> on a repo and the agent-runtime worker re-clones + re-extracts symbols when the remote SHA changes. Leave blank to disable.
+        </p>
+        {repos.length === 0 && <p className="text-sm text-slate-400">No repositories attached. Add one under the <strong>repos</strong> tab.</p>}
+        <div className="space-y-2">
+          {repos.map(r => <RepoPollRow key={r.id as string} capabilityId={capabilityId} repo={r} onMutate={onMutate} />)}
+        </div>
+      </section>
+
+      {/* ── Knowledge URL sources section ──────────────────────────────── */}
+      <section>
+        <h3 className="text-sm font-semibold text-slate-900 mb-2">Knowledge URL sources</h3>
+        <p className="text-xs text-slate-500 mb-3">
+          Worker fetches each URL on cadence; when the content hash changes it archives the prior artifact and creates a new one (also embedded for semantic retrieval).
+        </p>
+
+        <div className="card p-3 mb-3 flex gap-2 items-end">
+          <div className="flex-1">
+            <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">URL</label>
+            <input
+              className="w-full px-2 py-1.5 text-sm border border-slate-200 rounded-md"
+              placeholder="https://raw.githubusercontent.com/.../README.md"
+              value={newUrl} onChange={e => setNewUrl(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Poll seconds</label>
+            <input
+              type="number" min={60} max={86400}
+              className="w-24 px-2 py-1.5 text-sm border border-slate-200 rounded-md"
+              value={newInterval} onChange={e => setNewInterval(Number(e.target.value))}
+            />
+          </div>
+          <button className="btn-primary text-xs" disabled={busy || !newUrl} onClick={addSource}>
+            {busy ? "Adding…" : "Add"}
+          </button>
+        </div>
+        {error && <div className="text-xs text-red-600 mb-2">{error}</div>}
+
+        <div className="space-y-2">
+          {list.map(s => (
+            <div key={s.id as string} className="card p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-slate-800 truncate">{(s.title as string) || (s.url as string)}</div>
+                  <div className="text-xs text-slate-500 truncate">{s.url as string}</div>
+                  <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap gap-3">
+                    <span>poll: every <strong>{s.pollIntervalSec as number}s</strong></span>
+                    <span>last: {s.lastPolledAt ? new Date(s.lastPolledAt as string).toLocaleString() : "never"}</span>
+                    {s.lastPollError ? <span className="text-red-600">err: {String(s.lastPollError).slice(0,80)}</span> : null}
+                  </div>
+                </div>
+                <button className="text-xs text-red-600 hover:underline" onClick={() => deleteSource(s.id as string)}>Remove</button>
+              </div>
+            </div>
+          ))}
+          {list.length === 0 && <p className="text-sm text-slate-400">No knowledge sources yet.</p>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function RepoPollRow({ capabilityId, repo, onMutate }: {
+  capabilityId: string;
+  repo: Record<string, unknown>;
+  onMutate: () => Promise<unknown> | void;
+}) {
+  const [interval, setInterval] = useState<string>(repo.pollIntervalSec ? String(repo.pollIntervalSec) : "");
+  const [busy, setBusy] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  async function save() {
+    setBusy(true);
+    try {
+      await runtimeApi.updateRepoPoll(capabilityId, repo.id as string, {
+        pollIntervalSec: interval ? Number(interval) : null,
+      });
+      setSavedAt(Date.now());
+      await onMutate();
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="card p-3 flex items-start justify-between gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-slate-800 truncate">{repo.repoName as string}</div>
+        <div className="text-xs text-slate-500 truncate">{repo.repoUrl as string}</div>
+        <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap gap-3">
+          <span>last: {repo.lastPolledAt ? new Date(repo.lastPolledAt as string).toLocaleString() : "never"}</span>
+          {repo.lastPolledSha ? <span>sha: <code>{String(repo.lastPolledSha).slice(0,7)}</code></span> : null}
+          {repo.lastPollError ? <span className="text-red-600">err: {String(repo.lastPollError).slice(0,80)}</span> : null}
+        </div>
+      </div>
+      <div className="flex items-end gap-2">
+        <div>
+          <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Poll seconds</label>
+          <input
+            type="number" min={60} max={86400}
+            className="w-24 px-2 py-1.5 text-sm border border-slate-200 rounded-md"
+            value={interval} onChange={e => setInterval(e.target.value)} placeholder="(off)"
+          />
+        </div>
+        <button className="btn-primary text-xs whitespace-nowrap" disabled={busy} onClick={save}>
+          {busy ? "Saving…" : savedAt && Date.now() - savedAt < 2000 ? "Saved" : "Save"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// M17 — tuning tab. Calls composer's debug-retrieval endpoint with a sample
+// task and shows scored hits per kind so the operator can sanity-check
+// which knowledge / memory / code symbols a real compose would surface.
+// ────────────────────────────────────────────────────────────────────────────
+
+// Proxied via next.config: /api/composer/* → composer's /api/v1/*
+const COMPOSER_DEBUG_URL = "/api/composer/compose-and-respond/debug-retrieval";
+
+interface DebugHit {
+  cosineSimilarity: number;
+  ageDays: number;
+  finalScore: number;
+}
+interface DebugResponse {
+  capabilityId: string;
+  task: string;
+  provider: string;
+  model: string;
+  dim: number;
+  tuning: { recencyBoostMax: number; recencyBoostDays: number };
+  knowledge: Array<DebugHit & { id: string; artifactType: string; title: string; content: string }>;
+  memory:    Array<DebugHit & { id: string; memoryType: string; title: string; content: string }>;
+  code:      Array<DebugHit & { symbol_id: string; symbolName: string | null; symbolType: string | null;
+                                filePath: string; startLine: number | null; summary: string | null;
+                                language: string | null; repoName: string }>;
+}
+
+function TuningTab({ capabilityId }: { capabilityId: string }) {
+  const [task, setTask] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [data, setData] = useState<DebugResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run() {
+    if (!task.trim()) return;
+    setBusy(true); setError(null); setData(null);
+    try {
+      const res = await fetch(COMPOSER_DEBUG_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ capabilityId, task }),
+      });
+      if (!res.ok) throw new Error(`debug ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      setData(await res.json());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "request failed");
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold text-slate-900 mb-1">Retrieval tuning</h3>
+        <p className="text-xs text-slate-500">
+          Enter a sample task; we'll embed it and run the same hybrid retrieval (cosine × recency boost) the prompt-composer uses, then show scored hits per kind.
+          Recency boost is configured via <code>EMBEDDING_RECENCY_BOOST</code> / <code>EMBEDDING_RECENCY_DAYS</code> on the composer container.
+        </p>
+      </div>
+      <div className="card p-3 flex gap-2">
+        <input
+          className="flex-1 px-2 py-1.5 text-sm border border-slate-200 rounded-md"
+          placeholder="How do I price a bond?"
+          value={task} onChange={e => setTask(e.target.value)}
+        />
+        <button className="btn-primary text-xs" disabled={busy || !task.trim()} onClick={run}>
+          {busy ? "Scoring…" : "Run"}
+        </button>
+      </div>
+      {error && <div className="text-xs text-red-600">{error}</div>}
+      {data && (
+        <div className="space-y-3">
+          <div className="text-xs text-slate-500">
+            provider: <strong>{data.provider}</strong> · model: <strong>{data.model}</strong> · dim: <strong>{data.dim}</strong>
+            {" "}· recency boost ≤ <strong>{(data.tuning.recencyBoostMax * 100).toFixed(0)}%</strong> for items &lt; <strong>{data.tuning.recencyBoostDays}d</strong> old
+          </div>
+          <ScoredSection title="Knowledge" hits={data.knowledge.map(h => ({ ...h, label: h.title, sub: h.artifactType }))} />
+          <ScoredSection title="Memory"    hits={data.memory.map(h => ({ ...h, label: h.title, sub: h.memoryType }))} />
+          <ScoredSection title="Code"      hits={data.code.map(h => ({
+            ...h,
+            label: `${h.symbolName ?? "?"} (${h.symbolType ?? "?"})`,
+            sub:   `${h.repoName}/${h.filePath}:${h.startLine ?? "?"}`,
+          }))} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScoredSection({ title, hits }: {
+  title: string;
+  hits: Array<{ label: string; sub: string; cosineSimilarity: number; ageDays: number; finalScore: number }>;
+}) {
+  return (
+    <div className="card p-3">
+      <h4 className="text-xs font-semibold text-slate-700 mb-2">{title} ({hits.length})</h4>
+      {hits.length === 0 ? (
+        <p className="text-xs text-slate-400">No hits.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {hits.map((h, i) => (
+            <div key={i} className="flex items-start gap-2 text-xs">
+              <span className="text-slate-400 w-6 shrink-0">#{i + 1}</span>
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-slate-800 truncate">{h.label}</div>
+                <div className="text-slate-500 truncate">{h.sub}</div>
+              </div>
+              <div className="text-right shrink-0">
+                <div className="text-slate-700">cos <strong>{h.cosineSimilarity.toFixed(3)}</strong></div>
+                <div className="text-slate-500">age {h.ageDays.toFixed(1)}d → score <strong>{h.finalScore.toFixed(3)}</strong></div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

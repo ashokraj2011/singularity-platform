@@ -5,6 +5,7 @@ import { validate } from "../../middleware/validate.middleware";
 import {
   createCapabilitySchema, attachRepositorySchema, bindAgentSchema, knowledgeArtifactSchema,
   extractSymbolsSchema,
+  updateRepoPollSchema, knowledgeSourceSchema, updateKnowledgeSourceSchema,
 } from "./capability.schemas";
 
 // M15 — multipart upload (knowledge artifacts). Memory storage keeps things
@@ -46,3 +47,28 @@ capabilityRoutes.post(
 // Backfills embeddings for rows whose vector column is NULL (provider switch
 // or M14 v0 migration).
 capabilityRoutes.post("/:id/embeddings/reembed", capabilityController.reembed);
+
+// M17 — polling config + knowledge sources.
+capabilityRoutes.patch(
+  "/:id/repositories/:repoId/poll",
+  validate(updateRepoPollSchema),
+  capabilityController.updateRepoPoll,
+);
+capabilityRoutes.get(
+  "/:id/knowledge-sources",
+  capabilityController.listKnowledgeSources,
+);
+capabilityRoutes.post(
+  "/:id/knowledge-sources",
+  validate(knowledgeSourceSchema),
+  capabilityController.addKnowledgeSource,
+);
+capabilityRoutes.patch(
+  "/:id/knowledge-sources/:sourceId",
+  validate(updateKnowledgeSourceSchema),
+  capabilityController.updateKnowledgeSource,
+);
+capabilityRoutes.delete(
+  "/:id/knowledge-sources/:sourceId",
+  capabilityController.deleteKnowledgeSource,
+);
