@@ -1,3 +1,6 @@
+// M11 follow-up — OTel auto-instrumentation. MUST be first.
+import "./lib/observability/otel";
+
 import "express-async-errors";
 import express from "express";
 import cors from "cors";
@@ -9,6 +12,8 @@ import { learningRoutes } from "./routes/learning";
 import { runtimeRoutes } from "./routes/runtime";
 import { errorHandler } from "./middleware/errorHandler";
 import { startSelfRegistration } from "./lib/platform-registry/register";
+import { startEventDispatcher } from "./lib/eventbus/dispatcher";
+import { eventSubscriptionsRouter } from "./lib/eventbus/routes";
 
 dotenv.config();
 
@@ -27,8 +32,15 @@ app.use("/api/v1/agents", agentRoutes);
 app.use("/api/v1/agents", versionRoutes);
 app.use("/api/v1/agents", learningRoutes);
 app.use("/api/v1", runtimeRoutes);
+// M11.e — event-bus subscription registry
+app.use("/api/v1/events/subscriptions", eventSubscriptionsRouter);
 
 app.use(errorHandler);
+
+// M11.e — start dispatcher
+void startEventDispatcher().catch((err) => {
+  console.warn(`[eventbus] dispatcher failed to start: ${(err as Error).message}`);
+});
 
 // M11.a — self-register with platform-registry (no-op if env unset)
 startSelfRegistration({

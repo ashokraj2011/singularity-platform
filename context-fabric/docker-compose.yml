@@ -68,6 +68,9 @@ services:
       # M11 follow-up — bootstrap auto-mint of IAM service token
       - IAM_BOOTSTRAP_USERNAME=${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
       - IAM_BOOTSTRAP_PASSWORD=${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
+      # M11 follow-up — OpenTelemetry → Jaeger
+      - OTEL_SERVICE_NAME=context-api
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
     ports:
       - "8000:8000"
     volumes:

@@ -1,3 +1,6 @@
+// M11 follow-up — OTel auto-instrumentation. MUST be first.
+import "./lib/observability/otel";
+
 import "express-async-errors";
 import express from "express";
 import cors from "cors";

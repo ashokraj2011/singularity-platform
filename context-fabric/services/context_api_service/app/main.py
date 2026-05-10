@@ -12,6 +12,12 @@ from .execute import router as execute_router
 from .receipts import router as receipts_router
 
 app = FastAPI(title="Context Fabric - Context API Service", version="0.1.0")
+
+# M11 follow-up — OpenTelemetry. Must instrument BEFORE include_router so the
+# auto-instrumentation patches every route on registration.
+from .observability import setup_otel
+setup_otel(app, service_name="context-api")
+
 app.include_router(internal_mcp_router)
 app.include_router(execute_router)
 app.include_router(receipts_router)

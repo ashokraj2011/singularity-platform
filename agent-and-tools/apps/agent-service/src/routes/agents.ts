@@ -4,6 +4,7 @@ import { query, queryOne } from "../database";
 import { optionalAuth } from "../middleware/auth";
 import { emitAuditEvent } from "../middleware/audit";
 import { AppError } from "../middleware/errorHandler";
+import { publishEvent } from "../lib/eventbus/publisher";
 
 export const agentRoutes = Router();
 agentRoutes.use(optionalAuth);
@@ -36,6 +37,21 @@ agentRoutes.post("/", async (req: Request, res: Response) => {
   );
 
   await emitAuditEvent("agent.created", { agent_uid, capability_id, agent_id, actor_user_id: req.user?.user_id });
+
+  // M11.e — emit canonical event so downstream services can react
+  void publishEvent({
+    eventName: "agent.created",
+    envelope: {
+      source_service: "agent-service",
+      subject: { kind: "agent", id: agent_uid },
+      actor:   req.user?.user_id ? { kind: "user", id: req.user.user_id } : null,
+      status:  "emitted",
+      started_at: new Date().toISOString(),
+      correlation: { capability_id, agent_id, agent_key },
+      payload: { name, agent_type: agent_type ?? "llm_agent" },
+    },
+  }).catch((err) => console.warn("[eventbus] publishEvent failed:", (err as Error).message));
+
   res.status(201).json({ agent_uid, agent_key, status: "draft", agent });
 });
 

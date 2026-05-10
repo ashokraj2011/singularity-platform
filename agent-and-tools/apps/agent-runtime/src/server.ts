@@ -1,3 +1,6 @@
+// M11 follow-up — OTel auto-instrumentation. MUST be first.
+import "./lib/observability/otel";
+
 import { app } from "./app";
 import { env } from "./config/env";
 import { logger } from "./config/logger";
