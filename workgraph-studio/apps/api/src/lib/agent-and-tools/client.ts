@@ -165,6 +165,34 @@ export type AgentTemplate = {
   [k: string]: unknown
 }
 
+export type RuntimeCapability = {
+  id: string
+  name: string
+  description?: string | null
+  capabilityType?: string
+  status?: string
+  criticality?: string
+  [k: string]: unknown
+}
+
+export async function listRuntimeCapabilities(
+  authHeader?: string,
+): Promise<RuntimeCapability[]> {
+  const body = await proxyGet(
+    config.AGENT_RUNTIME_URL,
+    'api/v1/capabilities',
+    {},
+    authHeader,
+  )
+  const root = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
+  const data = (root.data ?? body) as unknown
+  if (Array.isArray(data)) return data as RuntimeCapability[]
+  if (data && typeof data === 'object' && Array.isArray((data as { items?: unknown }).items)) {
+    return (data as { items: RuntimeCapability[] }).items
+  }
+  return []
+}
+
 export async function listAgentTemplates(
   authHeader?: string,
 ): Promise<AgentTemplate[]> {

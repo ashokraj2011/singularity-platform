@@ -108,7 +108,14 @@ export async function fetchTool(id: string): Promise<RegistryTool | null> {
 // ─── M10 — extra reference-data lookups for picker UIs ────────────────────
 
 export type LookupTeam = { id: string; name: string; bu_id?: string }
-export type LookupCapability = { id: string; name: string; capability_type?: string; status?: string }
+export type LookupCapability = {
+  id: string
+  capability_id?: string
+  name: string
+  capability_type?: string
+  status?: string
+  source?: 'iam' | 'agent-runtime' | string
+}
 export type LookupUser = { id: string; email: string; display_name?: string; displayName?: string }
 export type LookupRole = { id: string; role_key: string; name: string }
 export type LookupSkill = { id: string; skill_key?: string; name: string }

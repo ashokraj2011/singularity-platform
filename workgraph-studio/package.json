@@ -5,8 +5,10 @@
   "scripts": {
     "dev:api": "pnpm --filter @workgraph/api dev",
     "dev:web": "pnpm --filter web dev",
+    "dev:blueprint": "pnpm --filter blueprint-workbench dev",
     "build:api": "pnpm --filter @workgraph/api build",
     "build:web": "pnpm --filter web build",
+    "build:blueprint": "pnpm --filter blueprint-workbench build",
     "migrate": "pnpm --filter @workgraph/api prisma:migrate",
     "seed": "pnpm --filter @workgraph/api prisma:seed"
   }

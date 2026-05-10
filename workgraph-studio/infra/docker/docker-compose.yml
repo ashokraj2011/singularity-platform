@@ -77,6 +77,10 @@ services:
       # M11 follow-up — OpenTelemetry → Jaeger (platform-registry stack)
       OTEL_SERVICE_NAME:           workgraph-api
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
+    volumes:
+      # Local Blueprint Workbench scans are read-only. This lets paths like
+      # /Users/ashokraj/Downloads/... resolve inside the API container.
+      - ${HOST_DOWNLOADS_DIR:-/Users/ashokraj/Downloads}:/Users/ashokraj/Downloads:ro
     depends_on:
       postgres:
         condition: service_healthy

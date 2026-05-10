@@ -37,6 +37,7 @@ import { lookupRouter } from './modules/lookup/lookup.router'
 import { receiptsRouter } from './modules/audit/receipts.router'
 import { eventSubscriptionsRouter } from './modules/audit/event-subscriptions.router'
 import { incomingEventsRouter } from './modules/audit/incoming-events.router'
+import { blueprintRouter } from './modules/blueprint/blueprint.router'
 
 export function createApp(): Express {
   const app = express()
@@ -83,6 +84,7 @@ export function createApp(): Express {
   // app.use('/api/documents', authMiddleware, documentsRouter) — out of scope
   app.use('/api/connectors', authMiddleware, connectorsRouter)
   app.use('/api/artifact-templates', authMiddleware, artifactTemplatesRouter)
+  app.use('/api/blueprint', authMiddleware, blueprintRouter)
   app.use('/api/documents', authMiddleware, documentsRouter)
   app.use('/api/runtime',   authMiddleware, runtimeRouter)
   app.use('/api/runs',      authMiddleware, snapshotsRouter)

@@ -1,5 +1,6 @@
 packages:
   - 'apps/web'
+  - 'apps/blueprint-workbench'
   - 'apps/desktop'
   - 'apps/api'
   - 'packages/shared-types'

@@ -255,6 +255,7 @@ services:
       LLM_GATEWAY_URL: http://llm-gateway:8001
       CONTEXT_MEMORY_URL: http://context-memory:8002
       METRICS_LEDGER_URL: http://metrics-ledger:8003
+      IAM_BASE_URL: ${IAM_BASE_URL:-http://host.docker.internal:8101/api/v1}
     ports:
       - "8000:8000"
     depends_on:
@@ -318,6 +319,8 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CORS_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5180
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
+    volumes:
+      - ${HOST_DOWNLOADS_DIR:-/Users/ashokraj/Downloads}:/Users/ashokraj/Downloads:ro
     ports:
       - "8080:8080"
     depends_on:

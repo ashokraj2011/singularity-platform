@@ -1,0 +1,1328 @@
+import { Router } from 'express'
+import { z } from 'zod'
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
+import crypto from 'node:crypto'
+import { BlueprintStage, BlueprintSessionStatus, BlueprintStageStatus, BlueprintSourceType, Prisma } from '@prisma/client'
+import { prisma } from '../../lib/prisma'
+import { validate } from '../../middleware/validate'
+import { NotFoundError, ValidationError } from '../../lib/errors'
+import { logEvent, publishOutbox } from '../../lib/audit'
+import { contextFabricClient, ContextFabricError, type ExecuteResponse } from '../../lib/context-fabric/client'
+
+export const blueprintRouter: Router = Router()
+
+const MAX_FILES = 250
+const MAX_TOTAL_BYTES = 2_000_000
+const MAX_EXCERPT_BYTES = 32_000
+const MAX_EXCERPT_FILES = 40
+
+const DEFAULT_EXCLUDES = new Set([
+  '.git', 'node_modules', 'dist', 'build', '.next', '.turbo', '.cache',
+  'coverage', 'target', 'vendor', '__pycache__', '.venv', 'venv',
+])
+
+const createSessionSchema = z.object({
+  goal: z.string().min(8),
+  sourceType: z.enum(['github', 'localdir']),
+  sourceUri: z.string().min(1),
+  sourceRef: z.string().optional(),
+  includeGlobs: z.array(z.string()).default([]),
+  excludeGlobs: z.array(z.string()).default([]),
+  capabilityId: z.string().min(1),
+  architectAgentTemplateId: z.string().uuid(),
+  developerAgentTemplateId: z.string().uuid(),
+  qaAgentTemplateId: z.string().uuid(),
+  workflowInstanceId: z.string().optional(),
+  phaseId: z.string().optional(),
+})
+
+const decisionAnswerSchema = z.object({
+  questionId: z.string().min(1),
+  answerType: z.enum(['option', 'freeform']),
+  selectedOptionLabel: z.string().optional(),
+  customAnswer: z.string().optional(),
+  notes: z.string().optional(),
+}).refine(answer => {
+  if (answer.answerType === 'option') return Boolean(answer.selectedOptionLabel?.trim())
+  return Boolean(answer.customAnswer?.trim() || answer.notes?.trim())
+}, { message: 'Decision answers need either an option or free-form text' })
+
+const saveDecisionAnswersSchema = z.object({
+  answers: z.array(decisionAnswerSchema).max(100),
+})
+
+type CreateSessionInput = z.infer<typeof createSessionSchema>
+type DecisionAnswer = z.infer<typeof decisionAnswerSchema> & { updatedAt?: string; updatedById?: string }
+
+type ManifestEntry = {
+  path: string
+  size: number
+  language?: string
+  sha?: string
+  excerpt?: string
+}
+
+type SnapshotResult = {
+  manifest: ManifestEntry[]
+  summary: Record<string, unknown>
+  fileCount: number
+  totalBytes: number
+  rootHash: string
+}
+
+blueprintRouter.get('/sessions', async (req, res, next) => {
+  try {
+    const createdById = req.user!.userId
+    const sessions = await prisma.blueprintSession.findMany({
+      where: { createdById },
+      include: {
+        snapshots: { orderBy: { createdAt: 'desc' }, take: 1 },
+        stageRuns: { orderBy: { createdAt: 'desc' } },
+        artifacts: { orderBy: { createdAt: 'desc' } },
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 50,
+    })
+    res.json({ items: sessions })
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res, next) => {
+  try {
+    const body = req.body as CreateSessionInput
+    const session = await prisma.blueprintSession.create({
+      data: {
+        goal: body.goal,
+        sourceType: body.sourceType === 'github' ? BlueprintSourceType.GITHUB : BlueprintSourceType.LOCALDIR,
+        sourceUri: body.sourceUri,
+        sourceRef: body.sourceRef ?? null,
+        includeGlobs: body.includeGlobs as Prisma.InputJsonValue,
+        excludeGlobs: body.excludeGlobs as Prisma.InputJsonValue,
+        capabilityId: body.capabilityId,
+        architectAgentTemplateId: body.architectAgentTemplateId,
+        developerAgentTemplateId: body.developerAgentTemplateId,
+        qaAgentTemplateId: body.qaAgentTemplateId,
+        workflowInstanceId: body.workflowInstanceId ?? null,
+        phaseId: body.phaseId ?? null,
+        createdById: req.user!.userId,
+      },
+    })
+    await logEvent('BlueprintSessionCreated', 'BlueprintSession', session.id, req.user!.userId, {
+      capabilityId: session.capabilityId,
+      sourceType: session.sourceType,
+    })
+    await publishOutbox('BlueprintSession', session.id, 'BlueprintSessionCreated', {
+      sessionId: session.id,
+      capabilityId: session.capabilityId,
+    })
+    res.status(201).json(await loadSession(session.id))
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.get('/sessions/:id', async (req, res, next) => {
+  try {
+    res.json(await loadSession(req.params.id))
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.post('/sessions/:id/snapshot', async (req, res, next) => {
+  try {
+    const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
+    if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+
+    let result: SnapshotResult
+    try {
+      result = session.sourceType === BlueprintSourceType.LOCALDIR
+        ? await snapshotLocalDir(session.sourceUri, jsonStrings(session.includeGlobs), jsonStrings(session.excludeGlobs))
+        : await snapshotGithub(session.sourceUri, session.sourceRef ?? undefined, jsonStrings(session.includeGlobs), jsonStrings(session.excludeGlobs))
+    } catch (err) {
+      const failed = await prisma.blueprintSourceSnapshot.create({
+        data: {
+          sessionId: session.id,
+          status: 'FAILED',
+          error: (err as Error).message,
+          manifest: [],
+          summary: { error: (err as Error).message },
+        },
+      })
+      await prisma.blueprintSession.update({ where: { id: session.id }, data: { status: BlueprintSessionStatus.FAILED } })
+      return res.status(422).json({ snapshot: failed, error: (err as Error).message })
+    }
+
+    const snapshot = await prisma.blueprintSourceSnapshot.create({
+      data: {
+        sessionId: session.id,
+        manifest: result.manifest as unknown as Prisma.InputJsonValue,
+        summary: result.summary as Prisma.InputJsonValue,
+        fileCount: result.fileCount,
+        totalBytes: result.totalBytes,
+        rootHash: result.rootHash,
+      },
+    })
+    await prisma.blueprintSession.update({
+      where: { id: session.id },
+      data: { status: BlueprintSessionStatus.SNAPSHOTTED },
+    })
+    await logEvent('BlueprintSourceSnapshotted', 'BlueprintSession', session.id, req.user!.userId, {
+      snapshotId: snapshot.id,
+      fileCount: snapshot.fileCount,
+      totalBytes: snapshot.totalBytes,
+    })
+    res.status(201).json(await loadSession(session.id))
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.post('/sessions/:id/run', async (req, res, next) => {
+  try {
+    const session = await prisma.blueprintSession.findUnique({
+      where: { id: req.params.id },
+      include: {
+        snapshots: { orderBy: { createdAt: 'desc' }, take: 1 },
+        artifacts: { orderBy: { createdAt: 'asc' } },
+      },
+    })
+    if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    const snapshot = session.snapshots[0]
+    if (!snapshot || snapshot.status !== 'COMPLETED') {
+      throw new ValidationError('Create a successful source snapshot before running the workbench agents')
+    }
+
+    await prisma.blueprintSession.update({ where: { id: session.id }, data: { status: BlueprintSessionStatus.RUNNING } })
+
+    const stages: Array<{ stage: BlueprintStage; agentTemplateId: string; task: string }> = [
+      {
+        stage: BlueprintStage.ARCHITECT,
+        agentTemplateId: session.architectAgentTemplateId,
+        task: architectTask(session.goal),
+      },
+      {
+        stage: BlueprintStage.DEVELOPER,
+        agentTemplateId: session.developerAgentTemplateId,
+        task: developerTask(session.goal),
+      },
+      {
+        stage: BlueprintStage.QA,
+        agentTemplateId: session.qaAgentTemplateId,
+        task: qaTask(session.goal),
+      },
+    ]
+
+    const queuedRuns = new Map<BlueprintStage, string>()
+    for (const stage of stages) {
+      const created = await prisma.blueprintStageRun.create({
+        data: {
+          sessionId: session.id,
+          stage: stage.stage,
+          status: BlueprintStageStatus.PENDING,
+          task: stage.task,
+        },
+      })
+      queuedRuns.set(stage.stage, created.id)
+    }
+
+    let failed = false
+    for (const stage of stages) {
+      const runId = queuedRuns.get(stage.stage)
+      if (!runId) throw new ValidationError(`Missing queued run for stage ${stage.stage}`)
+      await prisma.blueprintStageRun.update({
+        where: { id: runId },
+        data: { status: BlueprintStageStatus.RUNNING, startedAt: new Date() },
+      })
+      try {
+        const result = await runStage(session, snapshot, stage.stage, stage.agentTemplateId, stage.task)
+        await prisma.blueprintStageRun.update({
+          where: { id: runId },
+          data: {
+            status: result.status === 'FAILED' ? BlueprintStageStatus.FAILED : BlueprintStageStatus.COMPLETED,
+            response: result.finalResponse ?? '',
+            correlation: result.correlation as unknown as Prisma.InputJsonValue,
+            tokensUsed: result.tokensUsed as unknown as Prisma.InputJsonValue,
+            completedAt: new Date(),
+            error: result.status === 'FAILED' ? result.finishReason ?? 'stage failed' : null,
+          },
+        })
+        await createStageArtifacts(session, snapshot, stage.stage, result)
+        if (result.status === 'FAILED') {
+          failed = true
+          break
+        }
+      } catch (err) {
+        const message = err instanceof ContextFabricError
+          ? `context-fabric error (${err.status}): ${err.message}`
+          : (err as Error).message
+        await prisma.blueprintStageRun.update({
+          where: { id: runId },
+          data: {
+            status: BlueprintStageStatus.FAILED,
+            error: message,
+            completedAt: new Date(),
+          },
+        })
+        await prisma.blueprintArtifact.create({
+          data: {
+            sessionId: session.id,
+            stage: stage.stage,
+            kind: 'stage_error',
+            title: `${humanStage(stage.stage)} error`,
+            content: message,
+          },
+        })
+        failed = true
+        break
+      }
+    }
+
+    await prisma.blueprintSession.update({
+      where: { id: session.id },
+      data: { status: failed ? BlueprintSessionStatus.FAILED : BlueprintSessionStatus.COMPLETED },
+    })
+    await logEvent(failed ? 'BlueprintRunFailed' : 'BlueprintRunCompleted', 'BlueprintSession', session.id, req.user!.userId, {
+      sessionId: session.id,
+    })
+    res.json(await loadSession(session.id))
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.post('/sessions/:id/approve', async (req, res, next) => {
+  try {
+    const session = await prisma.blueprintSession.findUnique({
+      where: { id: req.params.id },
+      include: { stageRuns: { orderBy: { createdAt: 'desc' } } },
+    })
+    if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    const completed = new Set(
+      session.stageRuns
+        .filter(r => r.status === BlueprintStageStatus.COMPLETED)
+        .map(r => r.stage),
+    )
+    for (const stage of [BlueprintStage.ARCHITECT, BlueprintStage.DEVELOPER, BlueprintStage.QA]) {
+      if (!completed.has(stage)) throw new ValidationError(`Cannot approve until ${humanStage(stage)} is completed`)
+    }
+    await prisma.blueprintSession.update({
+      where: { id: session.id },
+      data: {
+        status: BlueprintSessionStatus.APPROVED,
+        approvedById: req.user!.userId,
+        approvedAt: new Date(),
+      },
+    })
+    await prisma.blueprintArtifact.create({
+      data: {
+        sessionId: session.id,
+        kind: 'approval_receipt',
+        title: 'Blueprint approval receipt',
+        payload: {
+          approvedById: req.user!.userId,
+          approvedAt: new Date().toISOString(),
+          requiredStages: ['ARCHITECT', 'DEVELOPER', 'QA'],
+        } as Prisma.InputJsonValue,
+      },
+    })
+    await logEvent('BlueprintApproved', 'BlueprintSession', session.id, req.user!.userId, { sessionId: session.id })
+    res.json(await loadSession(session.id))
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.post('/sessions/:id/decision-answers', validate(saveDecisionAnswersSchema), async (req, res, next) => {
+  try {
+    const body = req.body as z.infer<typeof saveDecisionAnswersSchema>
+    const sessionId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
+    const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
+    if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+
+    const metadata = isRecord(session.metadata) ? session.metadata : {}
+    const updatedAt = new Date().toISOString()
+    const decisionAnswers = body.answers.map(answer => ({
+        questionId: answer.questionId,
+        answerType: answer.answerType,
+        selectedOptionLabel: answer.selectedOptionLabel?.trim() || undefined,
+        customAnswer: answer.customAnswer?.trim() || undefined,
+        notes: answer.notes?.trim() || undefined,
+        updatedAt,
+        updatedById: req.user!.userId,
+    }))
+    await prisma.blueprintSession.update({
+      where: { id: session.id },
+      data: {
+        metadata: {
+          ...metadata,
+          decisionAnswers,
+          decisionAnswersUpdatedAt: updatedAt,
+        } as Prisma.InputJsonValue,
+      },
+    })
+
+    const snapshot = await prisma.blueprintSourceSnapshot.findFirst({
+      where: { sessionId: session.id },
+      orderBy: { createdAt: 'desc' },
+    })
+    if (snapshot?.status === 'COMPLETED') {
+      const ctx = buildSnapshotContext(snapshot as ArtifactSnapshot)
+      await prisma.blueprintArtifact.createMany({
+        data: [
+          {
+            sessionId: session.id,
+            kind: 'stakeholder_answers',
+            title: 'Stakeholder answers',
+            content: buildStakeholderAnswersMarkdown(decisionAnswers),
+            payload: { answers: decisionAnswers } as Prisma.InputJsonValue,
+          },
+          {
+            sessionId: session.id,
+            stage: BlueprintStage.QA,
+            kind: 'implementation_contract',
+            title: 'Implementation contract',
+            content: buildImplementationContractMarkdown(session, ctx, decisionAnswers),
+            payload: { contract: buildImplementationContractPayload(session, ctx, decisionAnswers) } as Prisma.InputJsonValue,
+          },
+        ],
+      })
+    }
+
+    await logEvent('BlueprintDecisionAnswersSaved', 'BlueprintSession', session.id, req.user!.userId, {
+      answerCount: body.answers.length,
+    })
+    res.json(await loadSession(session.id))
+  } catch (err) { next(err) }
+})
+
+async function loadSession(id: string) {
+  const session = await prisma.blueprintSession.findUnique({
+    where: { id },
+    include: {
+      snapshots: { orderBy: { createdAt: 'desc' } },
+      stageRuns: { orderBy: { createdAt: 'asc' } },
+      artifacts: { orderBy: { createdAt: 'asc' } },
+    },
+  })
+  if (!session) throw new NotFoundError('BlueprintSession', id)
+  return session
+}
+
+async function runStage(
+  session: Awaited<ReturnType<typeof prisma.blueprintSession.findUnique>> & { id: string },
+  snapshot: { summary: Prisma.JsonValue; manifest: Prisma.JsonValue; rootHash: string | null },
+  stage: BlueprintStage,
+  agentTemplateId: string,
+  task: string,
+): Promise<ExecuteResponse> {
+  const traceId = `blueprint-${session.id}-${stage.toLowerCase()}`
+  return contextFabricClient.execute({
+    trace_id: traceId,
+    idempotency_key: `${session.id}:${stage}`,
+    run_context: {
+      workflow_instance_id: session.workflowInstanceId ?? `blueprint-${session.id}`,
+      workflow_node_id: session.phaseId ?? `blueprint-${stage.toLowerCase()}`,
+      capability_id: session.capabilityId,
+      agent_template_id: agentTemplateId,
+      user_id: session.createdById ?? undefined,
+      trace_id: traceId,
+    },
+    task,
+    vars: {
+      blueprintSessionId: session.id,
+      sourceType: session.sourceType,
+      sourceUri: session.sourceUri,
+      sourceRef: session.sourceRef,
+      stage,
+    },
+    artifacts: [
+      {
+        label: 'Source snapshot',
+        role: 'CONTEXT',
+        mediaType: 'application/json',
+        content: JSON.stringify({
+          rootHash: snapshot.rootHash,
+          summary: snapshot.summary,
+          manifest: snapshot.manifest,
+        }, null, 2).slice(0, 120_000),
+      },
+    ],
+    overrides: {
+      systemPromptAppend: stageSystemPrompt(stage),
+      extraContext: 'This MVP must not mutate source code. Coding output is a simulated, reviewable proposal with evidence.',
+    },
+    model_overrides: { provider: 'mock', model: 'mock-fast', temperature: 0.2 },
+    context_policy: { optimizationMode: 'code_aware', maxContextTokens: 16000, compareWithRaw: true },
+    limits: { maxSteps: 8, timeoutSec: 180 },
+  })
+}
+
+type ArtifactSession = {
+  id: string
+  goal: string
+  sourceType: BlueprintSourceType
+  sourceUri: string
+  metadata?: Prisma.JsonValue
+}
+
+type ArtifactSnapshot = {
+  summary: Prisma.JsonValue
+  manifest: Prisma.JsonValue
+  rootHash: string | null
+}
+
+async function createStageArtifacts(session: ArtifactSession, snapshot: ArtifactSnapshot, stage: BlueprintStage, result: ExecuteResponse) {
+  const ctx = buildSnapshotContext(snapshot)
+  const response = isUsefulModelResponse(result.finalResponse)
+    ? `\n\n## Model notes\n\n${result.finalResponse}`
+    : ''
+  const commonPayload = {
+    cfCallId: result.correlation.cfCallId,
+    traceId: result.correlation.traceId,
+    promptAssemblyId: result.correlation.promptAssemblyId,
+    mcpInvocationId: result.correlation.mcpInvocationId,
+    codeChangeIds: result.correlation.codeChangeIds ?? [],
+    status: result.status,
+    warnings: result.warnings ?? [],
+  }
+  type ArtifactSpec = { kind: string; title: string; content: string; payload?: Record<string, unknown> }
+  const artifacts =
+    stage === BlueprintStage.ARCHITECT ? [
+      { kind: 'decision_tree', title: 'Question tree', content: buildDecisionTreeMarkdown(session, ctx), payload: { tree: buildDecisionTreePayload(session, ctx) } },
+      { kind: 'agent_questions', title: 'Agent questions', content: buildAgentQuestions(session, ctx) },
+      { kind: 'mental_model', title: 'Mental model', content: buildMentalModel(session, ctx) },
+      { kind: 'gaps', title: 'Gaps and open questions', content: buildGaps(session, ctx) },
+      { kind: 'solution_architecture', title: 'Solution architecture', content: buildSolutionArchitecture(session, ctx) },
+      { kind: 'approved_spec_draft', title: 'Approved spec draft', content: buildApprovedSpec(session, ctx, response) },
+    ] :
+	    stage === BlueprintStage.DEVELOPER ? [
+	      { kind: 'developer_task_pack', title: 'Developer task pack', content: buildDeveloperTaskPack(session, ctx, response) },
+	      { kind: 'simulated_code_change', title: 'Simulated code-change evidence', content: buildCodeChangeEvidence(session, ctx) },
+	    ] : [
+	      { kind: 'implementation_contract', title: 'Implementation contract', content: buildImplementationContractMarkdown(session, ctx, readSessionDecisionAnswers(session)), payload: { contract: buildImplementationContractPayload(session, ctx, readSessionDecisionAnswers(session)) } },
+	      { kind: 'qa_task_pack', title: 'QA task pack', content: buildQaTaskPack(session, ctx, response) },
+	      { kind: 'verification_rules', title: 'Verification rules', content: buildVerificationRules(session, ctx) },
+	      { kind: 'traceability_matrix', title: 'Traceability matrix', content: buildTraceabilityMatrix() },
+	      { kind: 'certification_receipt', title: 'Certification receipt', content: buildCertificationReceipt(session, ctx) },
+	    ] satisfies ArtifactSpec[]
+
+  await prisma.blueprintArtifact.createMany({
+    data: artifacts.map((artifact) => ({
+      sessionId: session.id,
+      stage,
+      kind: artifact.kind,
+      title: artifact.title,
+      content: artifact.content,
+      payload: { ...commonPayload, ...(artifact.payload ?? {}) } as Prisma.InputJsonValue,
+    })),
+  })
+}
+
+type SnapshotContext = {
+  files: ManifestEntry[]
+  sampledFiles: Array<{ path: string; excerpt: string }>
+  languages: Record<string, number>
+  keyFiles: string[]
+  hasBetweenEnum: boolean
+  hasBetweenSwitch: boolean
+  hasLengthCase: boolean
+  hasLengthEnum: boolean
+}
+
+function buildSnapshotContext(snapshot: ArtifactSnapshot): SnapshotContext {
+  const files = Array.isArray(snapshot.manifest) ? snapshot.manifest as ManifestEntry[] : []
+  const summary = isRecord(snapshot.summary) ? snapshot.summary : {}
+  const sampledFiles = Array.isArray(summary.sampledFiles)
+    ? summary.sampledFiles.filter((f): f is { path: string; excerpt: string } =>
+        isRecord(f) && typeof f.path === 'string' && typeof f.excerpt === 'string',
+      )
+    : []
+  const languages = isRecord(summary.languages) ? Object.fromEntries(
+    Object.entries(summary.languages).filter(([, v]) => typeof v === 'number'),
+  ) as Record<string, number> : {}
+  const keyFiles = files
+    .map(f => f.path)
+    .filter(p => /RuleEngineService|Operator|Controller|EvaluateRequest|EvaluateResponse|RuleEngine.*Test/.test(p))
+    .slice(0, 12)
+  const operator = sampledFiles.find(f => f.path.endsWith('Operator.java'))?.excerpt ?? ''
+  const service = sampledFiles.find(f => f.path.endsWith('RuleEngineService.java'))?.excerpt ?? ''
+  return {
+    files,
+    sampledFiles,
+    languages,
+    keyFiles,
+    hasBetweenEnum: /\bbetween\b/.test(operator),
+    hasBetweenSwitch: /case\s+between\s*:/.test(service),
+    hasLengthCase: /case\s+length\s*:/.test(service),
+    hasLengthEnum: /\blength\b/.test(operator),
+  }
+}
+
+function buildAgentQuestions(session: ArtifactSession, ctx: SnapshotContext) {
+  return [
+    '# Agent Questions',
+    '',
+    `Goal: ${session.goal}`,
+    '',
+    '## Architect questions',
+    '',
+    '- Should `between` be inclusive on both ends (`min <= value <= max`)? The existing service implementation appears inclusive.',
+    '- Should `between` support only numbers, or also dates/instants and comparable strings?',
+    '- What should happen when the lower bound is greater than the upper bound: reject the rule or return false?',
+    '- Should missing/null field values return false or raise a validation error?',
+    '',
+    '## Developer questions',
+    '',
+    `- The scan ${ctx.hasBetweenEnum ? 'found' : 'did not find'} ` + '`between` in `Operator.java`.',
+    `- The scan ${ctx.hasBetweenSwitch ? 'found' : 'did not find'} a ` + '`case between` branch in `RuleEngineService.java`.',
+    '- Should the change mainly add tests/docs, or should the implementation be refactored for stronger validation?',
+    ctx.hasLengthCase && !ctx.hasLengthEnum
+      ? '- There is a compile-risk signal: `RuleEngineService` references `case length`, but `Operator.java` does not appear to declare `length`.'
+      : '- No compile-risk signal was detected from the sampled enum/switch relationship.',
+    '',
+    '## QA questions',
+    '',
+    '- Which boundary cases are mandatory: exactly min, exactly max, below min, above max, null, missing field, bad value shape?',
+    '- Do API/controller tests need to cover `between`, or is service-level coverage enough for this increment?',
+    '- Should invalid `value` arrays produce a 400 response through `GlobalExceptionHandler`?',
+  ].join('\n')
+}
+
+function buildDecisionTreePayload(session: ArtifactSession, ctx: SnapshotContext) {
+  return {
+    title: 'Between operator decision tree',
+    goal: session.goal,
+    nodes: [
+      {
+        id: 'Q-ARCH-001',
+        lane: 'Architect',
+        question: 'Should `between` be inclusive on both ends?',
+        recommended: 'Yes. Use `min <= fieldValue <= max`.',
+        evidence: ctx.hasBetweenSwitch
+          ? 'The scanned evaluator already compares with >= lower bound and <= upper bound.'
+          : 'Existing comparison operators include lt/lte/gt/gte; inclusive range matches common rule-engine expectations.',
+        options: [
+          { label: 'Inclusive bounds', status: 'recommended', impact: 'Matches common business rules and boundary QA cases.' },
+          { label: 'Exclusive bounds', status: 'not recommended', impact: 'Requires new semantics and additional operator naming such as betweenExclusive.' },
+        ],
+        downstream: ['DEV-001 verify evaluator branch', 'QA-001 boundary tests'],
+      },
+      {
+        id: 'Q-ARCH-002',
+        lane: 'Architect',
+        question: 'Which value types should `between` support?',
+        recommended: 'Use the existing `compare(...)` behavior for numbers/dates/strings; document exact supported coercions.',
+        evidence: 'RuleEngineService already centralizes comparisons through `compare(...)` for lt/lte/gt/gte.',
+        options: [
+          { label: 'Reuse compare(...)', status: 'recommended', impact: 'Smallest implementation, consistent with existing operators.' },
+          { label: 'Numbers only', status: 'safe but narrow', impact: 'Simpler validation but weaker platform capability.' },
+          { label: 'Custom range comparator', status: 'defer', impact: 'More control, more test burden.' },
+        ],
+        downstream: ['DEV-001 contract verification', 'QA-002 malformed value tests'],
+      },
+      {
+        id: 'Q-DEV-001',
+        lane: 'Developer',
+        question: 'Is implementation required or is this mostly certification?',
+        recommended: ctx.hasBetweenEnum && ctx.hasBetweenSwitch
+          ? 'Treat as certification/hardening: add tests, docs, and validation review.'
+          : 'Add enum support and evaluator implementation before tests.',
+        evidence: `Scan result: enum=${ctx.hasBetweenEnum ? 'found' : 'missing'}, evaluator=${ctx.hasBetweenSwitch ? 'found' : 'missing'}.`,
+        options: [
+          { label: 'Harden existing implementation', status: ctx.hasBetweenEnum && ctx.hasBetweenSwitch ? 'recommended' : 'blocked', impact: 'Fast path when code already exists.' },
+          { label: 'Implement from scratch', status: ctx.hasBetweenEnum && ctx.hasBetweenSwitch ? 'avoid duplicate' : 'recommended', impact: 'Needed only when enum/evaluator branch is absent.' },
+        ],
+        downstream: ['DEV-002 service tests', 'DEV-003 API example'],
+      },
+      {
+        id: 'Q-DEV-002',
+        lane: 'Developer',
+        question: 'Should compile-risk be fixed in this change?',
+        recommended: ctx.hasLengthCase && !ctx.hasLengthEnum
+          ? 'Yes. Resolve the `length` enum/switch mismatch before certifying the feature.'
+          : 'No extra compile-risk fix detected from sampled files.',
+        evidence: ctx.hasLengthCase && !ctx.hasLengthEnum
+          ? '`RuleEngineService` references `case length`, but `Operator.java` did not declare `length` in the scanned excerpt.'
+          : 'No enum/switch mismatch detected.',
+        options: [
+          { label: 'Fix now', status: ctx.hasLengthCase && !ctx.hasLengthEnum ? 'recommended' : 'optional', impact: 'Prevents build failure from blocking between-operator QA.' },
+          { label: 'Separate task', status: 'risk accepted', impact: 'Keeps scope tight but may fail `mvn test`.' },
+        ],
+        downstream: ['VR-004 mvn test', 'Certification receipt'],
+      },
+      {
+        id: 'Q-QA-001',
+        lane: 'QA',
+        question: 'Which tests prove the operator?',
+        recommended: 'Use boundary, malformed input, null/missing field, and controller-path tests.',
+        evidence: 'Snapshot includes service tests and controller tests, so both layers can be covered.',
+        options: [
+          { label: 'Service + API tests', status: 'recommended', impact: 'Best confidence for developer-facing certification.' },
+          { label: 'Service only', status: 'minimum', impact: 'Faster but misses API error mapping.' },
+        ],
+        downstream: ['QA-001', 'QA-002', 'QA-003', 'VR-002', 'VR-003'],
+      },
+    ],
+  }
+}
+
+function buildDecisionTreeMarkdown(session: ArtifactSession, ctx: SnapshotContext) {
+  const tree = buildDecisionTreePayload(session, ctx)
+  return [
+    '# Question Tree',
+    '',
+    `Goal: ${session.goal}`,
+    '',
+    ...tree.nodes.flatMap(node => [
+      `## ${node.id}: ${node.question}`,
+      '',
+      `Lane: ${node.lane}`,
+      '',
+      `Recommended: ${node.recommended}`,
+      '',
+      `Evidence: ${node.evidence}`,
+      '',
+      'Options:',
+      ...node.options.map(option => `- ${option.label} (${option.status}): ${option.impact}`),
+      '',
+      `Downstream: ${node.downstream.join(', ')}`,
+      '',
+    ]),
+  ].join('\n')
+}
+
+function buildMentalModel(session: ArtifactSession, ctx: SnapshotContext) {
+  return [
+    '# Mental Model',
+    '',
+    `The requested feature is a rule-engine operator change: ${session.goal}`,
+    '',
+    'The scanned project is a Java/Spring rule engine. A request reaches the API controller, is mapped into DTOs, and delegates rule evaluation to `RuleEngineService`. Operators are represented by the `Operator` enum and evaluated in a switch inside `RuleEngineService`.',
+    '',
+    '## Codebase signals',
+    '',
+    `- Snapshot files: ${ctx.files.length}`,
+    `- Languages: ${Object.entries(ctx.languages).map(([k, v]) => `${k} ${v}`).join(', ') || 'not available'}`,
+    `- Key files: ${ctx.keyFiles.map(f => `\`${f}\``).join(', ')}`,
+    `- \`between\` in enum: ${ctx.hasBetweenEnum ? 'yes' : 'no'}`,
+    `- \`between\` in evaluator switch: ${ctx.hasBetweenSwitch ? 'yes' : 'no'}`,
+    '',
+    '## Working theory',
+    '',
+    ctx.hasBetweenEnum && ctx.hasBetweenSwitch
+      ? '`between` looks partially or fully implemented already. The useful next step is to verify behavior, strengthen validation, and add tests/documentation so the feature is certified.'
+      : '`between` needs to be added to the operator contract and evaluator dispatch, then covered through service and API tests.',
+  ].join('\n')
+}
+
+function buildGaps(_session: ArtifactSession, ctx: SnapshotContext) {
+  return [
+    '# Gaps and Open Questions',
+    '',
+    '## Confirmed gaps from scan',
+    '',
+    ctx.hasBetweenEnum && ctx.hasBetweenSwitch
+      ? '- Implementation signal exists for `between`, but certification evidence is missing in the generated workbench artifacts.'
+      : '- `between` implementation is not fully visible in the scanned enum/evaluator files.',
+    '- Need explicit tests for inclusive lower/upper boundaries.',
+    '- Need tests for invalid `value` payloads: non-array, one-element array, three-element array, non-comparable values.',
+    '- Need API-level examples or README update showing the JSON rule shape.',
+    ctx.hasLengthCase && !ctx.hasLengthEnum
+      ? '- Compile-risk: `case length` appears in `RuleEngineService`, but `length` was not detected in `Operator.java`.'
+      : '- No enum/switch compile-risk was detected for sampled files.',
+    '',
+    '## Product decisions needed',
+    '',
+    '- Numeric/date/string support policy.',
+    '- Inclusive vs exclusive bounds.',
+    '- Validation behavior for reversed bounds.',
+    '- Error response shape for malformed rules.',
+  ].join('\n')
+}
+
+function buildSolutionArchitecture(session: ArtifactSession, ctx: SnapshotContext) {
+  return [
+    '# Solution Architecture',
+    '',
+    `Feature: ${session.goal}`,
+    '',
+    '## Recommended implementation',
+    '',
+    '1. Treat `between` as an inclusive range operator: `min <= fieldValue <= max`.',
+    '2. Keep `Operator` as the source of truth for valid operator names.',
+    '3. Keep evaluation inside `RuleEngineService.evalCondition` to match the existing operator architecture.',
+    '4. Validate `value` is exactly a two-item array before comparing.',
+    '5. Use the existing `compare(...)` path so number/date/string comparison behavior stays consistent with `lt/lte/gt/gte`.',
+    '6. Add focused service tests and one API test to prove request-level behavior.',
+    '',
+    '## Impacted files',
+    '',
+    ...ctx.keyFiles.map(f => `- \`${f}\``),
+    '',
+    '## Current scan assessment',
+    '',
+    ctx.hasBetweenEnum && ctx.hasBetweenSwitch
+      ? 'The code already shows `between` in the enum and evaluator branch. The architecture task should therefore certify, test, and harden the existing implementation rather than blindly adding duplicate logic.'
+      : 'The code needs enum and evaluator additions before tests can pass.',
+  ].join('\n')
+}
+
+function buildApprovedSpec(session: ArtifactSession, ctx: SnapshotContext, response: string) {
+  return [
+    '# approved-spec.md',
+    '',
+    '## Problem Statement',
+    '',
+    session.goal,
+    '',
+    '## Functional Requirements',
+    '',
+    '- REQ-001: The rule engine must accept `op: "between"` in rule JSON.',
+    '- REQ-002: `between` must require `value` to be an array with exactly `[min, max]`.',
+    '- REQ-003: Evaluation must return true when the field value is greater than or equal to min and less than or equal to max.',
+    '- REQ-004: Evaluation must return false for null or missing field values unless existing comparison policy says otherwise.',
+    '- REQ-005: Malformed `between` rules must produce a clear validation error.',
+    '',
+    '## Non-goals',
+    '',
+    '- Do not introduce a new rule DSL.',
+    '- Do not change existing comparison semantics except where needed for `between` validation.',
+    '- Do not mutate repository files in this MVP workbench run.',
+    '',
+    '## Acceptance Criteria',
+    '',
+    '- Service tests cover below min, exactly min, inside range, exactly max, and above max.',
+    '- Tests cover malformed `value` payloads.',
+    '- API test demonstrates a valid `between` rule through the controller.',
+    ctx.hasLengthCase && !ctx.hasLengthEnum ? '- Resolve the `length` enum/switch mismatch before certification.' : '- Existing enum/switch shape remains consistent.',
+    response,
+  ].join('\n')
+}
+
+function buildDeveloperTaskPack(session: ArtifactSession, ctx: SnapshotContext, response: string) {
+  return [
+    '# developer-task-pack.yaml',
+    '',
+    'developer_tasks:',
+    '  - id: DEV-001',
+    '    title: Verify between operator contract',
+    '    linked_requirements: [REQ-001, REQ-002]',
+    '    expected_files:',
+    '      - src/main/java/org/example/rules/Operator.java',
+    '      - src/main/java/org/example/rules/RuleEngineService.java',
+    `    notes: "${ctx.hasBetweenEnum && ctx.hasBetweenSwitch ? 'Implementation signal already exists; inspect and harden.' : 'Add enum value and evaluator branch.'}"`,
+    '  - id: DEV-002',
+    '    title: Add service-level coverage for between',
+    '    linked_requirements: [REQ-003, REQ-004, REQ-005]',
+    '    expected_files:',
+    '      - src/test/java/org/example/rules/RuleEngineServiceTest.java',
+    '  - id: DEV-003',
+    '    title: Add API-level example/coverage',
+    '    linked_requirements: [REQ-001, REQ-005]',
+    '    expected_files:',
+    '      - src/test/java/org/example/api/RuleEngineControllerTest.java',
+    '      - README.md',
+    '',
+    `# Goal: ${session.goal}`,
+    response,
+  ].join('\n')
+}
+
+function buildCodeChangeEvidence(_session: ArtifactSession, ctx: SnapshotContext) {
+  return [
+    '# code-change-evidence.yaml',
+    '',
+    'simulated_change_set:',
+    '  mode: read_only_mvp',
+    '  repository_mutated: false',
+    '  expected_paths:',
+    ...ctx.keyFiles.map(f => `    - ${f}`),
+    '  summary:',
+    '    - Verify or add inclusive `between` support.',
+    '    - Add boundary and malformed payload tests.',
+    '    - Update README/API examples if missing.',
+  ].join('\n')
+}
+
+function buildQaTaskPack(session: ArtifactSession, _ctx: SnapshotContext, response: string) {
+  return [
+    '# qa-task-pack.yaml',
+    '',
+    'qa_tasks:',
+    '  - id: QA-001',
+    '    title: Boundary coverage',
+    '    scenarios:',
+    '      - value below min returns false',
+    '      - value equal to min returns true',
+    '      - value inside range returns true',
+    '      - value equal to max returns true',
+    '      - value above max returns false',
+    '  - id: QA-002',
+    '    title: Malformed rule coverage',
+    '    scenarios:',
+    '      - missing value',
+    '      - non-array value',
+    '      - array with fewer or more than two values',
+    '      - non-comparable bounds',
+    '  - id: QA-003',
+    '    title: API behavior',
+    '    scenarios:',
+    '      - valid between rule through controller',
+    '      - invalid between rule maps to expected error response',
+    '',
+    `# Goal: ${session.goal}`,
+    response,
+  ].join('\n')
+}
+
+function buildImplementationContractPayload(session: ArtifactSession, ctx: SnapshotContext, decisionAnswers: DecisionAnswer[] = []) {
+  const compileRisk = ctx.hasLengthCase && !ctx.hasLengthEnum
+  const inclusiveDecision = answerText(decisionAnswers, 'Q-ARCH-001', 'Inclusive `min <= fieldValue <= max` semantics.')
+  const valueTypeDecision = answerText(decisionAnswers, 'Q-ARCH-002', 'Reuse existing `compare(...)` behavior for comparable values.')
+  const implementationDecision = answerText(decisionAnswers, 'Q-DEV-001', ctx.hasBetweenEnum && ctx.hasBetweenSwitch
+    ? 'Harden existing implementation rather than duplicating logic.'
+    : 'Add the missing enum/evaluator implementation.')
+  const compileRiskDecision = answerText(decisionAnswers, 'Q-DEV-002', compileRisk
+    ? 'Fix the detected compile risk in this implementation increment.'
+    : 'No compile-risk fix is required from the sampled files.')
+  const qaDecision = answerText(decisionAnswers, 'Q-QA-001', 'Use service and API tests for certification.')
+  return {
+    title: 'Final implementation contract',
+    status: 'READY_FOR_IMPLEMENTATION_REVIEW',
+    goal: session.goal,
+    capturedDecisions: decisionAnswers.map(answer => ({
+      questionId: answer.questionId,
+      answer: answer.answerType === 'option' ? answer.selectedOptionLabel : answer.customAnswer,
+      notes: answer.notes,
+      updatedAt: answer.updatedAt,
+    })),
+    stakeholderInputs: [
+      {
+        role: 'Architect',
+        contribution: `Defines operator semantics and boundaries. Decision: ${inclusiveDecision} Value policy: ${valueTypeDecision}`,
+        outputs: ['REQ-001..REQ-005', 'architecture decisions', 'gaps'],
+      },
+      {
+        role: 'Developer',
+        contribution: `Owns implementation and hardening. Decision: ${implementationDecision} Compile policy: ${compileRiskDecision}`,
+        outputs: ['DEV-001', 'DEV-002', 'DEV-003', 'simulated change evidence'],
+      },
+      {
+        role: 'QA',
+        contribution: `Turns the requirement set into executable verification. Decision: ${qaDecision}`,
+        outputs: ['QA-001', 'QA-002', 'QA-003', 'VR-001..VR-004'],
+      },
+    ],
+    implementationUnits: [
+      {
+        id: 'IMP-001',
+        title: 'Operator contract',
+        owner: 'Developer',
+        files: ['src/main/java/org/example/rules/Operator.java'],
+        instructions: ctx.hasBetweenEnum
+          ? 'Confirm `between` remains in the enum and is documented as a supported operator.'
+          : 'Add `between` to the operator enum and make it available to request validation.',
+        acceptance: ['REQ-001', 'VR-001'],
+      },
+      {
+        id: 'IMP-002',
+        title: 'Evaluator behavior',
+        owner: 'Developer',
+        files: ['src/main/java/org/example/rules/RuleEngineService.java'],
+        instructions: ctx.hasBetweenSwitch
+          ? `Verify the evaluator follows the chosen range rule: ${inclusiveDecision}`
+          : `Add a \`between\` evaluator branch following the chosen range rule: ${inclusiveDecision}`,
+        acceptance: ['REQ-002', 'REQ-003', 'VR-002'],
+      },
+      {
+        id: 'IMP-003',
+        title: 'Validation and error behavior',
+        owner: 'Architect + Developer',
+        files: ['src/main/java/org/example/api/GlobalExceptionHandler.java', 'src/main/java/org/example/api/dto/EvaluateRequest.java'],
+        instructions: `Make malformed \`between\` payloads predictable. Value type policy: ${valueTypeDecision}`,
+        acceptance: ['REQ-005', 'VR-003'],
+      },
+      {
+        id: 'IMP-004',
+        title: 'Proof and certification',
+        owner: 'QA',
+        files: ['src/test/java/org/example/rules/RuleEngineServiceTest.java', 'src/test/java/org/example/api/RuleEngineControllerTest.java', 'README.md'],
+        instructions: `Add proof for the chosen QA policy: ${qaDecision}`,
+        acceptance: ['QA-001', 'QA-002', 'QA-003', 'VR-004'],
+      },
+    ],
+    finalChecklist: [
+      `Range behavior decision: ${inclusiveDecision}`,
+      `Value policy decision: ${valueTypeDecision}`,
+      `Implementation decision: ${implementationDecision}`,
+      `Compile-risk decision: ${compileRiskDecision}`,
+      'Run the project test command and attach logs to the workflow handoff.',
+    ],
+    handoffArtifacts: [
+      'Question tree',
+      'Approved spec draft',
+      'Developer task pack',
+      'QA task pack',
+      'Verification rules',
+      'Traceability matrix',
+      'Certification receipt',
+    ],
+  }
+}
+
+function buildImplementationContractMarkdown(session: ArtifactSession, ctx: SnapshotContext, decisionAnswers: DecisionAnswer[] = []) {
+  const contract = buildImplementationContractPayload(session, ctx, decisionAnswers)
+  return [
+    '# implementation-contract.yaml',
+    '',
+    `goal: ${session.goal}`,
+    `status: ${contract.status}`,
+    '',
+    'captured_decisions:',
+    ...(contract.capturedDecisions.length > 0
+      ? contract.capturedDecisions.map(answer => `  - ${answer.questionId}: "${answer.answer ?? answer.notes ?? 'answered'}"`)
+      : ['  - none_captured_yet']),
+    '',
+    'stakeholder_inputs:',
+    ...contract.stakeholderInputs.flatMap(input => [
+      `  - role: ${input.role}`,
+      `    contribution: "${input.contribution}"`,
+      `    outputs: [${input.outputs.join(', ')}]`,
+    ]),
+    '',
+    'implementation_units:',
+    ...contract.implementationUnits.flatMap(unit => [
+      `  - id: ${unit.id}`,
+      `    title: ${unit.title}`,
+      `    owner: ${unit.owner}`,
+      `    files: [${unit.files.join(', ')}]`,
+      `    instructions: "${unit.instructions}"`,
+      `    acceptance: [${unit.acceptance.join(', ')}]`,
+    ]),
+    '',
+    'final_checklist:',
+    ...contract.finalChecklist.map(item => `  - ${item}`),
+    '',
+    'handoff_artifacts:',
+    ...contract.handoffArtifacts.map(item => `  - ${item}`),
+  ].join('\n')
+}
+
+function buildStakeholderAnswersMarkdown(answers: DecisionAnswer[]) {
+  return [
+    '# stakeholder-answers.yaml',
+    '',
+    'answers:',
+    ...(answers.length > 0 ? answers.flatMap(answer => [
+      `  - question_id: ${answer.questionId}`,
+      `    answer_type: ${answer.answerType}`,
+      answer.selectedOptionLabel ? `    selected_option: "${answer.selectedOptionLabel}"` : undefined,
+      answer.customAnswer ? `    custom_answer: "${answer.customAnswer}"` : undefined,
+      answer.notes ? `    notes: "${answer.notes}"` : undefined,
+      answer.updatedAt ? `    updated_at: ${answer.updatedAt}` : undefined,
+    ].filter((line): line is string => Boolean(line))) : ['  - none']),
+  ].join('\n')
+}
+
+function buildVerificationRules(_session: ArtifactSession, ctx: SnapshotContext) {
+  return [
+    '# verification-rules.yaml',
+    '',
+    'verification_rules:',
+    '  - id: VR-001',
+    '    requirement: REQ-001',
+    '    check: Operator enum and evaluator accept `between`.',
+    `    current_signal: ${ctx.hasBetweenEnum && ctx.hasBetweenSwitch ? 'present' : 'missing_or_partial'}`,
+    '  - id: VR-002',
+    '    requirement: REQ-003',
+    '    check: Inclusive boundary tests pass.',
+    '  - id: VR-003',
+    '    requirement: REQ-005',
+    '    check: Malformed value arrays produce controlled errors.',
+    '  - id: VR-004',
+    '    requirement: BUILD',
+    '    check: `mvn test` passes without enum/switch compile errors.',
+  ].join('\n')
+}
+
+function buildTraceabilityMatrix() {
+  return [
+    '# traceability-matrix.yaml',
+    '',
+    'traceability:',
+    '  - requirement: REQ-001',
+    '    developer_tasks: [DEV-001]',
+    '    qa_tasks: [QA-003]',
+    '    verification_rules: [VR-001]',
+    '  - requirement: REQ-002',
+    '    developer_tasks: [DEV-001]',
+    '    qa_tasks: [QA-002]',
+    '    verification_rules: [VR-003]',
+    '  - requirement: REQ-003',
+    '    developer_tasks: [DEV-002]',
+    '    qa_tasks: [QA-001]',
+    '    verification_rules: [VR-002]',
+  ].join('\n')
+}
+
+function buildCertificationReceipt(_session: ArtifactSession, ctx: SnapshotContext) {
+  return [
+    '# certification-receipt.yaml',
+    '',
+    'certification:',
+    `  implementation_signal: ${ctx.hasBetweenEnum && ctx.hasBetweenSwitch ? 'detected' : 'not_detected'}`,
+    `  compile_risk: ${ctx.hasLengthCase && !ctx.hasLengthEnum ? 'length_operator_enum_mismatch' : 'none_detected_from_snapshot'}`,
+    '  status: READY_FOR_HUMAN_REVIEW',
+    '  note: This MVP generated a governed plan and QA pack from read-only source context; it did not mutate code.',
+  ].join('\n')
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function readSessionDecisionAnswers(session: { metadata?: Prisma.JsonValue | null }) {
+  return isRecord(session.metadata) ? readDecisionAnswers(session.metadata.decisionAnswers) : []
+}
+
+function readDecisionAnswers(value: unknown): DecisionAnswer[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    if (!isRecord(item) || typeof item.questionId !== 'string') return []
+    const answerType = item.answerType === 'freeform' ? 'freeform' : 'option'
+    const selectedOptionLabel = typeof item.selectedOptionLabel === 'string' ? item.selectedOptionLabel : undefined
+    const customAnswer = typeof item.customAnswer === 'string' ? item.customAnswer : undefined
+    const notes = typeof item.notes === 'string' ? item.notes : undefined
+    const updatedAt = typeof item.updatedAt === 'string' ? item.updatedAt : undefined
+    const updatedById = typeof item.updatedById === 'string' ? item.updatedById : undefined
+    if (answerType === 'option' && !selectedOptionLabel) return []
+    if (answerType === 'freeform' && !customAnswer && !notes) return []
+    return [{ questionId: item.questionId, answerType, selectedOptionLabel, customAnswer, notes, updatedAt, updatedById }]
+  })
+}
+
+function answerText(answers: DecisionAnswer[], questionId: string, fallback: string) {
+  const answer = answers.find(item => item.questionId === questionId)
+  if (!answer) return fallback
+  const base = answer.answerType === 'option'
+    ? answer.selectedOptionLabel
+    : answer.customAnswer
+  return [base, answer.notes].filter(Boolean).join(' | notes: ') || fallback
+}
+
+function isUsefulModelResponse(value: string | undefined) {
+  return Boolean(value && value.trim() && !value.includes('[mock]'))
+}
+
+function architectTask(goal: string) {
+  return [
+    `Create a solution architecture blueprint for: ${goal}`,
+    'Produce a mental model, user-visible gaps, architecture decisions, risks, and a contract-pack outline.',
+    'Keep the output structured with headings that can be reviewed by a human approver.',
+  ].join('\n')
+}
+
+function developerTask(goal: string) {
+  return [
+    `Create a simulated developer implementation plan for: ${goal}`,
+    'Do not mutate the repository. Produce expected file changes, task breakdown, code-level approach, and handoff notes.',
+    'For MCP evidence, write simulated developer code change summary to blueprint-proposed-change.md if a demo write tool is available.',
+  ].join('\n')
+}
+
+function qaTask(goal: string) {
+  return [
+    `Create QA and verification coverage for: ${goal}`,
+    'Produce QA tasks, verifier rules, acceptance criteria coverage, risk checks, and a certification recommendation.',
+    'Identify whether any spec gaps should send the work back to the Architect stage.',
+  ].join('\n')
+}
+
+function stageSystemPrompt(stage: BlueprintStage) {
+  if (stage === BlueprintStage.ARCHITECT) {
+    return 'You are the Architect agent. Build governed solution architecture from the approved source snapshot and call out gaps plainly.'
+  }
+  if (stage === BlueprintStage.DEVELOPER) {
+    return 'You are the Developer agent. Produce simulated implementation artifacts only; do not claim real files were changed.'
+  }
+  return 'You are the QA agent. Validate requirements, acceptance criteria, architecture decisions, and test strategy against the blueprint.'
+}
+
+function humanStage(stage: BlueprintStage) {
+  return stage === BlueprintStage.ARCHITECT ? 'Architect'
+    : stage === BlueprintStage.DEVELOPER ? 'Developer'
+    : 'QA'
+}
+
+function jsonStrings(value: Prisma.JsonValue): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []
+}
+
+async function snapshotLocalDir(root: string, includeGlobs: string[], excludeGlobs: string[]): Promise<SnapshotResult> {
+  const absoluteRoot = path.resolve(root)
+  const st = await fs.stat(absoluteRoot)
+  if (!st.isDirectory()) throw new ValidationError('Local source must be a directory')
+
+  const manifest: ManifestEntry[] = []
+  let totalBytes = 0
+  let excerptCount = 0
+
+  async function walk(dir: string): Promise<void> {
+    if (manifest.length >= MAX_FILES || totalBytes >= MAX_TOTAL_BYTES) return
+    const entries = await fs.readdir(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      if (manifest.length >= MAX_FILES || totalBytes >= MAX_TOTAL_BYTES) return
+      const full = path.join(dir, entry.name)
+      const rel = path.relative(absoluteRoot, full).split(path.sep).join('/')
+      if (isExcluded(rel, excludeGlobs)) continue
+      if (entry.isDirectory()) {
+        await walk(full)
+        continue
+      }
+      if (!entry.isFile() || !isIncluded(rel, includeGlobs)) continue
+      const stat = await fs.stat(full)
+      if (stat.size > MAX_EXCERPT_BYTES * 10) continue
+      const file: ManifestEntry = { path: rel, size: stat.size, language: languageFor(rel) }
+      totalBytes += stat.size
+      if (excerptCount < MAX_EXCERPT_FILES && isTextPath(rel) && totalBytes < MAX_TOTAL_BYTES) {
+        const buf = await fs.readFile(full)
+        const excerpt = buf.toString('utf8', 0, Math.min(buf.length, MAX_EXCERPT_BYTES))
+        file.excerpt = excerpt
+        file.sha = sha256(excerpt)
+        excerptCount += 1
+      }
+      manifest.push(file)
+    }
+  }
+
+  await walk(absoluteRoot)
+  return summarizeSnapshot({ source: 'localdir', root: absoluteRoot }, manifest, totalBytes)
+}
+
+async function snapshotGithub(sourceUri: string, sourceRef: string | undefined, includeGlobs: string[], excludeGlobs: string[]): Promise<SnapshotResult> {
+  const parsed = parseGithubUrl(sourceUri)
+  const branch = sourceRef || parsed.branch || await githubDefaultBranch(parsed.owner, parsed.repo)
+  const treeUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`
+  const treeResp = await fetch(treeUrl, { headers: { accept: 'application/vnd.github+json' } })
+  if (!treeResp.ok) throw new ValidationError(`GitHub tree scan failed (${treeResp.status})`)
+  const treeJson = await treeResp.json() as { tree?: Array<{ path: string; type: string; size?: number; sha?: string }> }
+  const prefix = parsed.path ? parsed.path.replace(/^\/+|\/+$/g, '') : ''
+  const manifest: ManifestEntry[] = []
+  let totalBytes = 0
+  let excerptCount = 0
+  for (const item of treeJson.tree ?? []) {
+    if (manifest.length >= MAX_FILES || totalBytes >= MAX_TOTAL_BYTES) break
+    if (item.type !== 'blob') continue
+    const itemPath = item.path
+    if (prefix && !itemPath.startsWith(`${prefix}/`) && itemPath !== prefix) continue
+    const rel = prefix ? itemPath.slice(prefix.length).replace(/^\/+/, '') : itemPath
+    if (!rel || isExcluded(rel, excludeGlobs) || !isIncluded(rel, includeGlobs)) continue
+    const size = item.size ?? 0
+    if (size > MAX_EXCERPT_BYTES * 10) continue
+    const file: ManifestEntry = { path: rel, size, sha: item.sha, language: languageFor(rel) }
+    totalBytes += size
+    if (excerptCount < MAX_EXCERPT_FILES && isTextPath(rel) && size <= MAX_EXCERPT_BYTES) {
+      const raw = `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/${encodeURIComponent(branch)}/${itemPath.split('/').map(encodeURIComponent).join('/')}`
+      const rawResp = await fetch(raw)
+      if (rawResp.ok) {
+        file.excerpt = (await rawResp.text()).slice(0, MAX_EXCERPT_BYTES)
+        excerptCount += 1
+      }
+    }
+    manifest.push(file)
+  }
+  return summarizeSnapshot({ source: 'github', repo: `${parsed.owner}/${parsed.repo}`, branch, path: prefix }, manifest, totalBytes)
+}
+
+function summarizeSnapshot(source: Record<string, unknown>, manifest: ManifestEntry[], totalBytes: number): SnapshotResult {
+  const languages: Record<string, number> = {}
+  const topLevel: Record<string, number> = {}
+  for (const f of manifest) {
+    const lang = f.language ?? 'Other'
+    languages[lang] = (languages[lang] ?? 0) + 1
+    const top = f.path.split('/')[0] || f.path
+    topLevel[top] = (topLevel[top] ?? 0) + 1
+  }
+  const sampledFiles = manifest.filter(f => f.excerpt).map(f => ({ path: f.path, excerpt: f.excerpt }))
+  const rootHash = sha256(JSON.stringify(manifest.map(f => [f.path, f.size, f.sha ?? ''])))
+  return {
+    manifest,
+    fileCount: manifest.length,
+    totalBytes,
+    rootHash,
+    summary: {
+      ...source,
+      generatedAt: new Date().toISOString(),
+      limits: { maxFiles: MAX_FILES, maxTotalBytes: MAX_TOTAL_BYTES, maxExcerptBytes: MAX_EXCERPT_BYTES },
+      languages,
+      topLevel,
+      sampledFiles,
+    },
+  }
+}
+
+function parseGithubUrl(sourceUri: string): { owner: string; repo: string; branch?: string; path?: string } {
+  const url = new URL(sourceUri)
+  if (url.hostname !== 'github.com') throw new ValidationError('GitHub source must be a github.com URL')
+  const parts = url.pathname.split('/').filter(Boolean)
+  if (parts.length < 2) throw new ValidationError('GitHub URL must include owner and repository')
+  const [owner, repoRaw] = parts
+  const repo = repoRaw.replace(/\.git$/, '')
+  const treeIdx = parts.indexOf('tree')
+  if (treeIdx >= 0 && parts.length > treeIdx + 1) {
+    return { owner, repo, branch: parts[treeIdx + 1], path: parts.slice(treeIdx + 2).join('/') }
+  }
+  return { owner, repo }
+}
+
+async function githubDefaultBranch(owner: string, repo: string): Promise<string> {
+  const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers: { accept: 'application/vnd.github+json' } })
+  if (!res.ok) throw new ValidationError(`GitHub repository lookup failed (${res.status})`)
+  const body = await res.json() as { default_branch?: string }
+  return body.default_branch ?? 'main'
+}
+
+function isExcluded(relPath: string, excludeGlobs: string[]) {
+  const parts = relPath.split('/')
+  if (parts.some(p => DEFAULT_EXCLUDES.has(p))) return true
+  return excludeGlobs.some(pattern => matchesGlob(relPath, pattern))
+}
+
+function isIncluded(relPath: string, includeGlobs: string[]) {
+  if (includeGlobs.length === 0) return true
+  return includeGlobs.some(pattern => matchesGlob(relPath, pattern))
+}
+
+function matchesGlob(relPath: string, pattern: string) {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '::DOUBLE_STAR::')
+    .replace(/\*/g, '[^/]*')
+    .replace(/::DOUBLE_STAR::/g, '.*')
+  return new RegExp(`^${escaped}$`).test(relPath)
+}
+
+function isTextPath(relPath: string) {
+  return /\.(ts|tsx|js|jsx|mjs|cjs|json|md|mdx|yml|yaml|toml|prisma|py|rb|go|rs|java|kt|cs|php|css|scss|html|sql|sh|env|txt)$/i.test(relPath)
+    || /(^|\/)(Dockerfile|Makefile|README|LICENSE)(\..*)?$/i.test(relPath)
+}
+
+function languageFor(relPath: string) {
+  const ext = path.extname(relPath).toLowerCase()
+  const map: Record<string, string> = {
+    '.ts': 'TypeScript',
+    '.tsx': 'TypeScript React',
+    '.js': 'JavaScript',
+    '.jsx': 'JavaScript React',
+    '.py': 'Python',
+    '.go': 'Go',
+    '.rs': 'Rust',
+    '.java': 'Java',
+    '.css': 'CSS',
+    '.scss': 'SCSS',
+    '.html': 'HTML',
+    '.json': 'JSON',
+    '.md': 'Markdown',
+    '.yaml': 'YAML',
+    '.yml': 'YAML',
+    '.prisma': 'Prisma',
+    '.sql': 'SQL',
+  }
+  return map[ext] ?? 'Other'
+}
+
+function sha256(input: string) {
+  return crypto.createHash('sha256').update(input).digest('hex')
+}

@@ -65,8 +65,10 @@ export function CapabilityPicker({ value, onChange, placeholder, filterToMembers
   })
   const all = data ?? []
   const allowed = new Set(memberships.map(m => m.capability_id))
+  const isMembershipCapability = (id: string, capabilityId?: string) =>
+    allowed.has(id) || (capabilityId ? allowed.has(capabilityId) : false)
   const caps = filterToMemberships && memberships.length > 0
-    ? all.filter(c => allowed.has(c.id))
+    ? all.filter(c => isMembershipCapability(c.id, c.capability_id) || c.source === 'agent-runtime')
     : all
   useEffect(() => {
     if (autoDefault && !value && active?.capabilityId && caps.some(c => c.id === active.capabilityId)) {
@@ -86,7 +88,7 @@ export function CapabilityPicker({ value, onChange, placeholder, filterToMembers
         </option>
         {caps.map(c => (
           <option key={c.id} value={c.id} style={optionStyle}>
-            {c.name}{c.capability_type ? ` · ${c.capability_type}` : ''}
+            {c.name}{c.capability_type ? ` · ${c.capability_type}` : ''}{c.source === 'agent-runtime' ? ' · Agent & Tools' : ''}
           </option>
         ))}
       </select>

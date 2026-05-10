@@ -59,6 +59,7 @@ services:
       # M8 — orchestrator dependencies
       - COMPOSER_URL=http://host.docker.internal:3004
       - TOOL_SERVICE_URL=http://host.docker.internal:3002
+      - IAM_BASE_URL=${IAM_BASE_URL:-http://host.docker.internal:8101/api/v1}
       - CALL_LOG_DB=/data/call_log.db
       # M9.x — persisted MCP events (drained at end of /execute)
       - EVENTS_STORE_DB=/data/call_log_events.db

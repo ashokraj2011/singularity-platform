@@ -17,11 +17,13 @@ import {
   listTools,
   discoverTools,
   listAgentTemplates,
+  listRuntimeCapabilities,
   listPromptProfiles,
   AgentAndToolsError,
   type ToolDescriptor,
   type AgentTemplate,
   type PromptProfile,
+  type RuntimeCapability,
 } from '../../lib/agent-and-tools/client'
 import { resolveOne, SINGLE_KINDS } from './resolver.js'
 
@@ -106,6 +108,19 @@ function clientFilter<T>(items: T[], q: string | undefined, fields: (item: T) =>
   return items.filter((it) => fields(it).some((f) => caseFold(f).includes(needle)))
 }
 
+function normalizeRuntimeCapability(cap: RuntimeCapability): Record<string, unknown> {
+  return {
+    id:              cap.id,
+    capability_id:   cap.id,
+    name:            cap.name,
+    capability_type: cap.capabilityType ?? cap.capability_type,
+    status:          typeof cap.status === 'string' ? cap.status.toLowerCase() : cap.status,
+    description:     cap.description,
+    criticality:     cap.criticality,
+    source:          'agent-runtime',
+  }
+}
+
 // ── IAM-backed endpoints ─────────────────────────────────────────────────────
 
 lookupRouter.get('/users', async (req, res) => {
@@ -178,7 +193,29 @@ lookupRouter.get('/capabilities', async (req, res) => {
       type:   req.query.type as string | undefined,
       status: req.query.status as string | undefined,
     }, authToken(req))
-    return res.json(unwrapIamPage(body, page, size))
+    const iamPage = unwrapIamPage(body, page, size)
+    const itemsById = new Map<string, Record<string, unknown>>()
+    for (const item of iamPage.items as Array<Record<string, unknown>>) {
+      const id = String(item.id ?? item.capability_id ?? '')
+      if (id) itemsById.set(id, { ...item, source: 'iam' })
+    }
+
+    try {
+      const runtimeCaps = await listRuntimeCapabilities(authHeader(req))
+      for (const cap of runtimeCaps) {
+        const id = String(cap.id ?? '')
+        if (!id) continue
+        const normalized = normalizeRuntimeCapability(cap)
+        const existing = itemsById.get(id)
+        itemsById.set(id, existing ? { ...normalized, ...existing, source: `${existing.source ?? 'iam'}+agent-runtime` } : normalized)
+      }
+    } catch {
+      // Keep IAM-backed lookup usable even if agent-runtime is unavailable.
+    }
+
+    let items = Array.from(itemsById.values())
+    items = clientFilter(items, req.query.q as string | undefined, (c) => [c.name, c.description, c.capability_type, c.capabilityType, c.id, c.capability_id])
+    return res.json(paginate(items, page, size))
   } catch (err) { handleError(err, res) }
 })
 

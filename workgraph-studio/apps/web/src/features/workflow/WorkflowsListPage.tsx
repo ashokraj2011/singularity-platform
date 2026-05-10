@@ -1033,7 +1033,7 @@ export function WorkflowsListPage() {
                       value={createCapabilityId}
                       onChange={v => setCreateCapabilityId(v)}
                       placeholder="Select a capability…"
-                      hint="Federated from IAM. Filtered to capabilities you have a membership in."
+                      hint="Federated from IAM and Agent & Tools. Membership capabilities are filtered to your access."
                     />
                     <p style={{ fontSize: 11, color: '#64748b', marginTop: 4, lineHeight: 1.4 }}>
                       Capability is the authorization boundary for view / edit / start.

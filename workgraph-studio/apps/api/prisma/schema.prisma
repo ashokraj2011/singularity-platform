@@ -151,6 +151,33 @@ enum OutboxStatus {
   FAILED
 }
 
+enum BlueprintSourceType {
+  GITHUB
+  LOCALDIR
+}
+
+enum BlueprintSessionStatus {
+  DRAFT
+  SNAPSHOTTED
+  RUNNING
+  COMPLETED
+  APPROVED
+  FAILED
+}
+
+enum BlueprintStage {
+  ARCHITECT
+  DEVELOPER
+  QA
+}
+
+enum BlueprintStageStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
 // ─── IDENTITY ─────────────────────────────────────────────────────────────────
 
 model User {
@@ -1019,6 +1046,91 @@ model AgentReview {
   reviewedAt   DateTime @default(now())
 
   @@map("agent_reviews")
+}
+
+// ─── BLUEPRINT WORKBENCH ────────────────────────────────────────────────────
+
+model BlueprintSession {
+  id                       String                 @id @default(uuid())
+  goal                     String
+  sourceType               BlueprintSourceType
+  sourceUri                String
+  sourceRef                String?
+  includeGlobs             Json                   @default("[]")
+  excludeGlobs             Json                   @default("[]")
+  capabilityId             String
+  architectAgentTemplateId  String
+  developerAgentTemplateId  String
+  qaAgentTemplateId         String
+  status                   BlueprintSessionStatus @default(DRAFT)
+  workflowInstanceId        String?
+  phaseId                  String?
+  metadata                 Json                   @default("{}")
+  createdById              String?
+  approvedById             String?
+  approvedAt               DateTime?
+  snapshots                BlueprintSourceSnapshot[]
+  stageRuns                BlueprintStageRun[]
+  artifacts                BlueprintArtifact[]
+  createdAt                DateTime               @default(now())
+  updatedAt                DateTime               @updatedAt
+
+  @@index([capabilityId])
+  @@index([createdById])
+  @@index([status])
+  @@map("blueprint_sessions")
+}
+
+model BlueprintSourceSnapshot {
+  id          String           @id @default(uuid())
+  sessionId   String
+  status      String           @default("COMPLETED")
+  manifest    Json             @default("[]")
+  summary     Json             @default("{}")
+  fileCount   Int              @default(0)
+  totalBytes  Int              @default(0)
+  rootHash    String?
+  error       String?
+  session     BlueprintSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt   DateTime         @default(now())
+
+  @@index([sessionId])
+  @@map("blueprint_source_snapshots")
+}
+
+model BlueprintStageRun {
+  id            String               @id @default(uuid())
+  sessionId     String
+  stage         BlueprintStage
+  status        BlueprintStageStatus @default(PENDING)
+  task          String
+  response      String?
+  error         String?
+  correlation   Json?
+  tokensUsed    Json?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  session       BlueprintSession     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt     DateTime             @default(now())
+
+  @@index([sessionId, stage])
+  @@map("blueprint_stage_runs")
+}
+
+model BlueprintArtifact {
+  id          String           @id @default(uuid())
+  sessionId   String
+  stage       BlueprintStage?
+  kind        String
+  title       String
+  content     String?
+  payload     Json?
+  session     BlueprintSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt   DateTime         @default(now())
+
+  @@index([sessionId])
+  @@index([kind])
+  @@map("blueprint_artifacts")
 }
 
 // ─── TOOLS ────────────────────────────────────────────────────────────────────
