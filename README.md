@@ -1,6 +1,33 @@
-# Singularity Neo Platform
+# Singularity Platform
 
-An enterprise AI-agent platform composed of six independently-deployable applications: identity, agent registry, prompt composition, LLM cost optimization, workflow orchestration, and a unified portal that wraps them all.
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+[![Status: Active development](https://img.shields.io/badge/status-active-brightgreen.svg)](#)
+[![Services: 11+](https://img.shields.io/badge/services-11%2B-blue.svg)](#service-inventory)
+
+An enterprise AI-agent platform composed of independently-deployable applications: identity, agent registry, prompt composition, LLM cost optimization, workflow orchestration, an MCP execution engine with embedded LLM gateway, a federated lookup + receipt + event-bus platform layer, and a unified portal that wraps them all.
+
+> **Published as a monorepo**: `https://github.com/ashokraj2011/singularity-platform`
+
+---
+
+## Recent (M9.z – M11)
+
+The platform layer (M11) and supporting milestones landed as a cohesive set; everything below is shipped + smoke-tested end-to-end.
+
+| Milestone | What it added | Verification |
+|---|---|---|
+| **M9.z** Approval pause/resume | MCP `/mcp/resume` + cf `/execute/resume` + workgraph `AgentRunStatus.PAUSED` + `POST /agent-runs/:id/approve`. Single-use continuation tokens, 24h TTL. | Full workflow → tool requires_approval → workgraph PAUSED → UI approve → MCP resumes loop → AWAITING_REVIEW |
+| **M10** Federated lookups | workgraph `/api/lookup/*` proxies to IAM + agent-and-tools with user-JWT forwarding; NodeInspector pickers; Agent/Tool snapshot at AGENT_TASK start (`externalTemplateId`) | Picker dropdowns populated from real services; snapshot row written on first run, reused afterwards |
+| **M11.a** Service + Contract Registry | New `platform-registry` :8090 + Postgres :5435; per-service self-register helper (TS + Python); 11 services + 47 capabilities + contracts browsable | `GET :8090/api/v1/services` returns 12 (11 production + sample) |
+| **M11.b** Reference Resolver | `GET /api/lookup/:entity/:id` for 9 kinds; `POST /api/lookup/resolve` batch (200/207); write-time validation in workflow design POST/PATCH (422 on bad ref) | bogus refs → 422 with field-level failure; valid → 201 |
+| **M11.c** Snapshot provenance | `sourceHash`/`sourceVersion`/`fetchedBy` on snapshots; new `prompt_profile_snapshots` + `capability_snapshots` tables; canonical-JSON sha256 dedupe | 3 runs of same workflow → 1 capability snapshot row |
+| **M11.d** Unified Receipt envelope | cf `GET /receipts?trace_id=` + workgraph `GET /api/receipts?trace_id=` joins workgraph + cf + MCP audit | 14 receipts merged from 3 services in chronological order |
+| **M11.e** Event Bus | `event_outbox` + `event_subscriptions` + `event_deliveries` in 5 publishers (IAM Python, workgraph TS, agent-runtime TS, tool-service TS, agent-service TS); Postgres LISTEN/NOTIFY dispatcher with 30s safety sweep, HMAC, 5-attempt retry; workgraph receiver at `POST /api/events/incoming`; canonical envelope shape across all publishers | Subscribe to `*.created` → trigger from any service → workgraph `event_log` captures with `incoming.<event_name>` |
+| **M11 follow-up** OTel + Jaeger | Auto-instrumentation in workgraph-api (TS), context-api (Python), tool-service (TS), agent-runtime (TS), agent-service (TS); Jaeger all-in-one in `platform-registry` compose; W3C `traceparent` propagated automatically | Single trace `1cc8ef8ac9a1207b` had **59 spans across 4 services**. UI: `http://localhost:16686` |
+| **M11 follow-up** Service-token auto-mint | IAM `POST /api/v1/auth/service-token` + workgraph + cf bootstrap + `IAM_BOOTSTRAP_USERNAME/PASSWORD` env. Replaces 60-min admin-JWT-passing-via-env. | Both services start with `IAM_SERVICE_TOKEN=""`, mint 30-day tokens on first call |
+| **M11 follow-up** Embedded LLM gateway in MCP | LLM-agnostic provider router inside `mcp-server`: OpenAI Chat Completions, Anthropic Messages API (with tool-calling translation), GitHub Copilot Headless. Provider keys live in operator's local env. New `GET /llm/providers` route surfaces what's configured. | All 4 providers route correctly; missing keys produce clean errors. Set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `COPILOT_TOKEN` in env to use real providers. |
+
+---
 
 ```
                      Singularity Portal (:5180)
@@ -51,14 +78,17 @@ An enterprise AI-agent platform composed of six independently-deployable applica
 
 | App | Role | Stack | Ports |
 |-----|------|-------|-------|
-| **singularity-iam-service** | Identity, orgs, roles, capabilities, JWT | Python · FastAPI · Postgres | `8100`, postgres `5433` |
-| **agent-and-tools** | Agent definitions, tool registry, prompt assembly, agent CRUD UI | TypeScript monorepo · Express · Next.js · Prisma · Postgres+pgvector | `3000–3004`, postgres `5432` |
-| **context-fabric** | LLM cost optimizer (context compaction + token-saving ledger) | Python · 4× FastAPI · SQLite | `8000–8003` |
+| **singularity-iam-service** | Identity, orgs, teams, roles, capabilities, skills, JWT, MCP server registry, service-token mint, event bus | Python · FastAPI · Postgres | `8100`, postgres `5433` |
+| **agent-and-tools** | Agent definitions, tool registry, prompt assembly, agent CRUD UI; per-service event bus + OTel | TypeScript monorepo · Express · Next.js · Prisma · Postgres+pgvector | `3000–3004`, postgres `5432` |
+| **context-fabric** | LLM cost optimizer (context compaction + token-saving ledger), `/execute` orchestrator, `/receipts` join, OTel | Python · 4× FastAPI · SQLite | `8000–8003` |
+| **mcp-server** | Per-tenant MCP execution engine + WS bridge + **embedded LLM gateway** (OpenAI / Anthropic / Copilot Headless / mock). Customer-deployed, holds its own provider keys. | TypeScript · Express · WebSocket | `7100` |
+| **workgraph-studio** | Visual DAG designer + workflow runtime, federated `/api/lookup/*`, snapshot layer, unified `/api/receipts`, event bus + receiver, OTel | React + ReactFlow + Zustand · Express + Prisma · MinIO | `5174` (web) / `8080` (api), postgres `5434`, minio `9000-9001` |
+| **platform-registry** | Service + Contract Registry: every service self-registers on startup with capabilities + OpenAPI/event/node contracts | TypeScript · Express · Postgres | `8090`, postgres `5435` |
 | **UserAndCapabillity** | Visual admin SPA for IAM | React 19 · Vite · Tailwind · Radix · Zustand | `5175` |
-| **workgraph-studio** | Visual DAG designer + workflow runtime | React + ReactFlow + Zustand · Express + Prisma · MinIO | `5174` (web) / `8080` (api), postgres `5434`, minio `9000-9001` |
 | **singularity-portal** | The wrapper SPA — single login + dashboard tiles + deep links | React 19 · Vite · Tailwind · Radix | `5180` |
+| **jaeger** (observability) | All-in-one OTel trace UI; receives spans from all instrumented services | docker image | `16686` (UI), `4317`/`4318` (OTLP) |
 
-Six applications. Each owns its database. `capability_id` is the join key across them; joins happen at the application layer, never in SQL.
+11 production services. Each owns its database. `capability_id` is the join key across them; joins happen at the application layer, never in SQL.
 
 ---
 
