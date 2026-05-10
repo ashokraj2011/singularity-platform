@@ -114,3 +114,172 @@ runtimeRoutes.post("/learning-candidates/:id/review", async (req: Request, res: 
 
   res.json({ ...candidate, review_note });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// M14 — distillation worker
+//
+// POST /api/v1/learning-candidates/distill
+//   { capability_id, agent_uid, candidate_type, candidate_ids[] }
+//
+// Looks up the named accepted candidates, batches their content, asks the
+// embedded LLM gateway to synthesise 1-3 distilled memory rules, writes
+// DistilledMemory rows the prompt-composer auto-pulls, and marks the
+// originating candidates as `distilled`.
+//
+// LLM call uses mcp-server's /mcp/invoke directly (its embedded gateway is
+// already wired to OpenAI/Anthropic/Copilot). The provider/model is whatever
+// mcp-server is configured with — no additional secrets needed here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MCP_INVOKE_URL = process.env.MCP_INVOKE_URL ?? "http://host.docker.internal:7100/mcp/invoke";
+const MCP_BEARER     = process.env.MCP_BEARER_TOKEN ?? "demo-bearer-token-must-be-min-16-chars";
+
+interface DistilledMemoryEntry {
+  title: string;
+  content: string;
+  confidence?: number;
+}
+
+async function synthesiseCandidates(args: {
+  capabilityId: string;
+  agentUid: string;
+  candidateType: string;
+  candidates: Array<{ id: string; content: string; confidence?: number }>;
+  traceId: string;
+}): Promise<DistilledMemoryEntry[]> {
+  const systemPrompt = [
+    "You are a knowledge distillation assistant.",
+    "Given multiple agent observations of the same `candidate_type`, synthesise them",
+    "into 1-3 concise, generalised memory rules an agent can reuse on future tasks.",
+    "Each rule must have a short `title` (<= 80 chars) and a `content` body (<= 600 chars).",
+    "Return STRICT JSON: an array of {title, content, confidence} where confidence is in [0,1].",
+    "Do not include any text outside the JSON array. No markdown fences.",
+  ].join("\n");
+  const userMessage = [
+    `capability_id: ${args.capabilityId}`,
+    `agent_uid: ${args.agentUid}`,
+    `candidate_type: ${args.candidateType}`,
+    "",
+    "Observations:",
+    ...args.candidates.map((c, i) => `${i + 1}. ${c.content.slice(0, 400)}`),
+  ].join("\n");
+
+  const body = {
+    runContext: { traceId: args.traceId, capabilityId: args.capabilityId, agentId: args.agentUid },
+    systemPrompt,
+    message: userMessage,
+    tools: [],
+    modelConfig: {},
+    limits: { maxSteps: 1, timeoutSec: 60 },
+  };
+
+  const res = await fetch(MCP_INVOKE_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${MCP_BEARER}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(70_000),
+  });
+  if (!res.ok) {
+    const detail = (await res.text()).slice(0, 400);
+    throw new AppError(`Distillation LLM call failed (${res.status}): ${detail}`, 502);
+  }
+  const data = (await res.json()) as { data?: { finalResponse?: string } };
+  const raw = data.data?.finalResponse ?? "";
+
+  // Synthetic fallback used when the LLM returns no parseable JSON (mock
+  // provider, malformed reply, etc). Joins observations into one rule so the
+  // operator still gets a writable row to refine manually.
+  const synthetic: DistilledMemoryEntry[] = [{
+    title: `${args.candidateType} (${args.candidates.length} observations)`,
+    content: args.candidates.map((c) => c.content).join("\n---\n").slice(0, 600),
+    confidence: Math.min(...args.candidates.map((c) => c.confidence ?? 0.5)),
+  }];
+
+  const match = raw.match(/\[[\s\S]*\]/);
+  if (!match) return synthetic;
+
+  try {
+    const parsed = JSON.parse(match[0]) as DistilledMemoryEntry[];
+    if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("empty array");
+    const cleaned = parsed.slice(0, 3).map((e) => ({
+      title: String(e.title ?? "").slice(0, 200),
+      content: String(e.content ?? "").slice(0, 2000),
+      confidence: typeof e.confidence === "number" ? e.confidence : 0.7,
+    })).filter((e) => e.title && e.content);
+    return cleaned.length > 0 ? cleaned : synthetic;
+  } catch {
+    // Bad JSON (mock provider's "[mock] ..." text matches the bracket regex
+    // but isn't valid JSON). Fall back gracefully.
+    return synthetic;
+  }
+}
+
+runtimeRoutes.post("/learning-candidates/distill", async (req: Request, res: Response) => {
+  const { capability_id, agent_uid, candidate_type, candidate_ids } = req.body ?? {};
+  if (!capability_id || !agent_uid || !candidate_type || !Array.isArray(candidate_ids) || candidate_ids.length === 0) {
+    throw new AppError("capability_id, agent_uid, candidate_type, and candidate_ids[] are required");
+  }
+
+  // Load + validate candidates
+  const cands = await query<{ id: string; content: string; status: string; confidence: number | null; candidate_type: string }>(
+    `SELECT id, content, status, confidence, candidate_type
+     FROM agent.learning_candidates
+     WHERE id = ANY($1::uuid[])`,
+    [candidate_ids],
+  );
+  if (cands.length !== candidate_ids.length) {
+    throw new AppError(`Some candidates not found (got ${cands.length}/${candidate_ids.length})`, 404);
+  }
+  const wrong = cands.filter((c) => c.status !== "accepted" || c.candidate_type !== candidate_type);
+  if (wrong.length > 0) {
+    throw new AppError(
+      `All candidates must have status='accepted' and candidate_type='${candidate_type}'. ${wrong.length} mismatch.`,
+      400,
+    );
+  }
+
+  const traceId = `distill-${createHash("sha256").update(candidate_ids.join(",")).digest("hex").slice(0, 12)}`;
+  const entries = await synthesiseCandidates({
+    capabilityId: capability_id,
+    agentUid: agent_uid,
+    candidateType: candidate_type,
+    candidates: cands.map((c) => ({ id: c.id, content: c.content, confidence: c.confidence ?? undefined })),
+    traceId,
+  });
+
+  // Write DistilledMemory rows (Prisma table; raw SQL because agent-service
+  // doesn't have the prisma client wired). Must quote camelCase column names.
+  const written: Array<Record<string, unknown>> = [];
+  for (const e of entries) {
+    const [row] = await query<Record<string, unknown>>(
+      `INSERT INTO public."DistilledMemory"
+         (id, "scopeType", "scopeId", "memoryType", title, content,
+          "sourceExecutionIds", confidence, status, version, "createdAt", "updatedAt")
+       VALUES (gen_random_uuid()::text, 'CAPABILITY', $1, $2, $3, $4, $5::jsonb, $6, 'ACTIVE', 1, now(), now())
+       RETURNING *`,
+      [capability_id, candidate_type, e.title, e.content, JSON.stringify(candidate_ids), e.confidence ?? 0.7],
+    );
+    written.push(row);
+  }
+
+  // Mark candidates distilled (preserve `accepted` audit by adding a new status).
+  await query(
+    `UPDATE agent.learning_candidates
+     SET status='distilled', reviewed_at=now()
+     WHERE id = ANY($1::uuid[])`,
+    [candidate_ids],
+  );
+
+  res.status(201).json({
+    written: written.length,
+    distilled_memory: written,
+    candidate_ids,
+    capability_id,
+    agent_uid,
+    candidate_type,
+    traceId,
+  });
+});

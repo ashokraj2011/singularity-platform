@@ -62,6 +62,7 @@ enum PromptLayerType {
   TASK_CONTEXT
   RUNTIME_EVIDENCE
   MEMORY_CONTEXT
+  CODE_CONTEXT
   OUTPUT_CONTRACT
   APPROVAL_POLICY
   DATA_ACCESS_POLICY
@@ -213,6 +214,47 @@ model Capability {
   children           Capability[] @relation("CapabilityHierarchy")
   bindings           AgentCapabilityBinding[]
   knowledgeArtifacts CapabilityKnowledgeArtifact[]
+  codeSymbols        CapabilityCodeSymbol[]
+  repositories       CapabilityRepository[]
+}
+
+// M14 — read-only mirrors of agent-runtime's repo + symbol tables so the
+// composer can pull code context without round-tripping. Both services
+// connect to the same Postgres; there's no migration here — agent-runtime's
+// migration creates the tables. Composer just gets a Prisma client view.
+model CapabilityRepository {
+  id              String     @id @default(uuid())
+  capabilityId    String
+  repoName        String
+  repoUrl         String
+  defaultBranch   String     @default("main")
+  repositoryType  String     @default("GITHUB")
+  status          EntityStatus @default(ACTIVE)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  capability Capability             @relation(fields: [capabilityId], references: [id])
+  symbols    CapabilityCodeSymbol[]
+}
+
+model CapabilityCodeSymbol {
+  id             String   @id @default(uuid())
+  capabilityId   String
+  repositoryId   String
+  filePath       String
+  language       String?
+  symbolName     String?
+  symbolType     String?
+  parentSymbolId String?
+  startLine      Int?
+  endLine        Int?
+  summary        String?
+  symbolHash     String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  repository CapabilityRepository @relation(fields: [repositoryId], references: [id])
+  capability Capability           @relation(fields: [capabilityId], references: [id])
 }
 
 model AgentCapabilityBinding {

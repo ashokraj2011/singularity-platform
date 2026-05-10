@@ -3,6 +3,7 @@ import { capabilityController } from "./capability.controller";
 import { validate } from "../../middleware/validate.middleware";
 import {
   createCapabilitySchema, attachRepositorySchema, bindAgentSchema, knowledgeArtifactSchema,
+  extractSymbolsSchema,
 } from "./capability.schemas";
 
 export const capabilityRoutes = Router();
@@ -18,3 +19,10 @@ capabilityRoutes.get("/:id/agent-bindings", capabilityController.listBindings);
 
 capabilityRoutes.post("/:id/knowledge-artifacts", validate(knowledgeArtifactSchema), capabilityController.addKnowledge);
 capabilityRoutes.get("/:id/knowledge-artifacts", capabilityController.listKnowledge);
+
+// M14 — code-symbol extraction (regex-based v0). Body shape: {files:[{path, content}, ...]}
+capabilityRoutes.post(
+  "/:id/repositories/:repoId/extract",
+  validate(extractSymbolsSchema),
+  capabilityController.extractSymbols,
+);

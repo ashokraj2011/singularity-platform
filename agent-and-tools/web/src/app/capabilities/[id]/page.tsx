@@ -1,16 +1,16 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import useSWR from "swr";
 import { runtimeApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { Plus } from "lucide-react";
+import { Plus, Upload } from "lucide-react";
 
 export default function CapabilityDetailPage({ params }: { params: { id: string } }) {
   const id = decodeURIComponent(params.id);
   const { data: cap, mutate: mutateCap } = useSWR(`cap-${id}`, () => runtimeApi.getCapability(id));
   const { data: templates } = useSWR("runtime-tmpl-options", () => runtimeApi.listTemplates());
 
-  const [tab, setTab] = useState<"bindings" | "repos" | "knowledge">("bindings");
+  const [tab, setTab] = useState<"bindings" | "repos" | "knowledge" | "code">("bindings");
 
   // Forms
   const [repo, setRepo] = useState({ repoName: "", repoUrl: "", defaultBranch: "main", repositoryType: "GITHUB" });
@@ -58,7 +58,7 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
       </div>
 
       <div className="flex gap-1 mb-6 border-b border-slate-200">
-        {(["bindings", "repos", "knowledge"] as const).map(t => (
+        {(["bindings", "repos", "knowledge", "code"] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors capitalize ${
               tab === t ? "border-singularity-600 text-singularity-700" : "border-transparent text-slate-500 hover:text-slate-800"
@@ -136,8 +136,34 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
         </div>
       )}
 
+      {tab === "code" && (
+        <div>
+          <p className="text-sm text-slate-600 mb-3">
+            Pick a local directory; the SPA walks it client-side and sends only the source files. The server extracts top-level symbols (Python / TS / JS), embeds each, and stores them so the prompt-composer can attach a <code>CODE_CONTEXT</code> layer to agent prompts.
+          </p>
+          {repos.length === 0 && (
+            <div className="card p-4 text-sm text-slate-500">
+              Attach a repository under the <button className="underline" onClick={() => setTab("repos")}>repos</button> tab first — extracted symbols are scoped to a repository.
+            </div>
+          )}
+          {repos.map(r => (
+            <CodeExtractCard
+              key={r.id as string}
+              capabilityId={id}
+              repoId={r.id as string}
+              repoName={r.repoName as string}
+            />
+          ))}
+        </div>
+      )}
+
       {tab === "knowledge" && (
         <div>
+          <KnowledgeUploadCard
+            capabilityId={id}
+            artifactType={know.artifactType}
+            onUploaded={async () => { await mutateCap(); }}
+          />
           <div className="card p-4 mb-4 space-y-2">
             <div className="grid grid-cols-2 gap-2">
               <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
@@ -166,6 +192,217 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// M14 — file-upload variant for knowledge artifacts. v0 reads txt/md
+// client-side via FileReader and POSTs the existing addKnowledge endpoint;
+// no server-side multipart dep. PDF support is a follow-up (needs base64
+// transport + pdf-parse on the server).
+const SUPPORTED_EXT = /\.(txt|md|markdown)$/i;
+const MAX_BYTES = 1_000_000; // 1 MB per file — generous for plain text
+
+function KnowledgeUploadCard({
+  capabilityId, artifactType, onUploaded,
+}: {
+  capabilityId: string;
+  artifactType: string;
+  onUploaded: () => Promise<void> | void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastUpload, setLastUpload] = useState<string[]>([]);
+  const [dragOver, setDragOver] = useState(false);
+
+  async function handleFiles(files: FileList | File[]) {
+    setBusy(true); setError(null);
+    const results: string[] = [];
+    try {
+      for (const f of Array.from(files)) {
+        if (!SUPPORTED_EXT.test(f.name)) {
+          throw new Error(`Unsupported file type: ${f.name}. v0 accepts .txt and .md.`);
+        }
+        if (f.size > MAX_BYTES) {
+          throw new Error(`File too large: ${f.name} (${(f.size / 1024).toFixed(0)} KB > ${MAX_BYTES / 1024} KB).`);
+        }
+        const text = await f.text();
+        await runtimeApi.addKnowledge(capabilityId, {
+          artifactType: artifactType || "DOC",
+          title: f.name,
+          content: text,
+          sourceType: "FILE_UPLOAD",
+          sourceRef: f.name,
+          confidence: 0.9,
+        } as never);
+        results.push(f.name);
+      }
+      setLastUpload(results);
+      await onUploaded();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  }
+
+  return (
+    <div
+      className={`card p-4 mb-3 border-2 border-dashed transition-colors ${dragOver ? "border-singularity-500 bg-singularity-50" : "border-slate-200"}`}
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault(); setDragOver(false);
+        if (e.dataTransfer.files) void handleFiles(e.dataTransfer.files);
+      }}
+    >
+      <div className="flex items-center gap-3">
+        <Upload size={18} className="text-slate-500 shrink-0" />
+        <div className="flex-1">
+          <p className="text-sm text-slate-700 font-medium">Upload knowledge files</p>
+          <p className="text-xs text-slate-500">
+            Drag and drop <code>.txt</code> / <code>.md</code> files, or click to browse. Files become ACTIVE artifacts the prompt-composer pulls into <code>RUNTIME_EVIDENCE</code> layers.
+          </p>
+        </div>
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          accept=".txt,.md,.markdown,text/plain,text/markdown"
+          className="hidden"
+          onChange={(e) => { if (e.target.files) void handleFiles(e.target.files); }}
+        />
+        <button
+          className="btn-primary text-xs whitespace-nowrap"
+          disabled={busy}
+          onClick={() => inputRef.current?.click()}
+        >
+          {busy ? "Uploading…" : "Choose files"}
+        </button>
+      </div>
+      {error && <div className="mt-2 text-xs text-red-600">{error}</div>}
+      {lastUpload.length > 0 && !error && (
+        <div className="mt-2 text-xs text-emerald-700">Uploaded: {lastUpload.join(", ")}</div>
+      )}
+    </div>
+  );
+}
+
+// M14 — directory picker → regex symbol extractor → embeddings → DB. Filter
+// to source files client-side so we don't ship binaries / images / lockfiles
+// over the wire. v0 caps at 25 MB total per request (matches the server's
+// express.json limit).
+const SOURCE_EXT = /\.(py|ts|tsx|js|jsx|mjs|cjs)$/i;
+const CODE_SKIP_DIRS = new Set([
+  "node_modules", ".git", "dist", "build", "out", "__pycache__", ".venv", "venv",
+  ".next", ".turbo", ".cache", "coverage", "target",
+]);
+const FILE_SIZE_CAP = 200_000; // 200 KB per file
+const PAYLOAD_CAP   = 24_000_000; // 24 MB total
+
+function CodeExtractCard({
+  capabilityId, repoId, repoName,
+}: {
+  capabilityId: string;
+  repoId: string;
+  repoName: string;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{
+    filesProcessed: number; symbolsScanned: number; inserted: number;
+    skippedDuplicate: number; embeddingErrors: number;
+    provider: string; providerModel: string;
+  } | null>(null);
+
+  async function handleFiles(files: FileList) {
+    setBusy(true); setError(null); setResult(null);
+    try {
+      const payload: Array<{ path: string; content: string }> = [];
+      let bytes = 0;
+      for (const f of Array.from(files)) {
+        const path = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
+        if (!SOURCE_EXT.test(path)) continue;
+        if (path.split("/").some((seg) => CODE_SKIP_DIRS.has(seg))) continue;
+        if (f.size > FILE_SIZE_CAP) continue;
+        const text = await f.text();
+        bytes += text.length;
+        if (bytes > PAYLOAD_CAP) {
+          throw new Error(
+            `Selection exceeds ${PAYLOAD_CAP / 1_000_000} MB after filtering. Trim the directory or extract in batches.`,
+          );
+        }
+        payload.push({ path, content: text });
+      }
+      if (payload.length === 0) {
+        throw new Error("No source files (.py / .ts / .tsx / .js / .jsx) found in selection.");
+      }
+      const out = await runtimeApi.extractRepositorySymbols(capabilityId, repoId, payload);
+      setResult(out);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Extraction failed");
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  }
+
+  return (
+    <div className="card p-4 mb-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-slate-800">{repoName}</p>
+          <p className="text-xs text-slate-500">
+            v0 extracts top-level symbols (Python <code>def/class</code>, TS/JS <code>function/class/interface/type/enum/const</code>) via regex. Tree-sitter is the v1 upgrade.
+          </p>
+        </div>
+        <input
+          ref={inputRef}
+          type="file"
+          /* webkitdirectory is non-standard but supported by all major browsers */
+          // @ts-ignore - non-standard attr
+          webkitdirectory=""
+          // @ts-ignore - non-standard attr
+          directory=""
+          multiple
+          className="hidden"
+          onChange={(e) => { if (e.target.files) void handleFiles(e.target.files); }}
+        />
+        <button
+          className="btn-primary text-xs whitespace-nowrap"
+          disabled={busy}
+          onClick={() => inputRef.current?.click()}
+        >
+          {busy ? "Extracting…" : "Pick directory"}
+        </button>
+      </div>
+      {error && <div className="mt-3 text-xs text-red-600">{error}</div>}
+      {result && (
+        <div className="mt-3 text-xs text-slate-700 grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <Stat label="Files processed" value={result.filesProcessed} />
+          <Stat label="Symbols scanned" value={result.symbolsScanned} />
+          <Stat label="Inserted" value={result.inserted} highlight="emerald" />
+          <Stat label="Skipped (dup)" value={result.skippedDuplicate} />
+          <Stat label="Embedding errors" value={result.embeddingErrors} highlight={result.embeddingErrors > 0 ? "red" : undefined} />
+          <Stat label="Provider" value={`${result.provider}:${result.providerModel}`} colSpan={3} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value, highlight, colSpan }: { label: string; value: string | number; highlight?: "emerald" | "red"; colSpan?: number }) {
+  const colour =
+    highlight === "emerald" ? "text-emerald-700" :
+    highlight === "red"     ? "text-red-700" :
+                              "text-slate-700";
+  return (
+    <div className={`bg-slate-50 rounded px-2 py-1.5${colSpan ? ` sm:col-span-${colSpan}` : ""}`}>
+      <div className="text-[10px] text-slate-500 uppercase tracking-wide">{label}</div>
+      <div className={`text-sm font-medium ${colour} truncate`}>{value}</div>
     </div>
   );
 }

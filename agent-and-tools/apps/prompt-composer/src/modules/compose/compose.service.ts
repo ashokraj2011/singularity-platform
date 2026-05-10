@@ -22,6 +22,7 @@ const PRIORITY = {
   CAPABILITY_CONTEXT: 200,
   RUNTIME_EVIDENCE: 250,
   MEMORY_CONTEXT: 300,
+  CODE_CONTEXT: 320, // M14 — between MEMORY_CONTEXT and WORKFLOW_PHASE_BASE
   WORKFLOW_PHASE_BASE: 350,
   TOOL_CONTRACT: 500,
   ARTIFACT_CONTEXT: 600,
@@ -81,6 +82,30 @@ export const composeService = {
           const c = `[${m.memoryType}] ${m.title}\n${m.content}`;
           const r3 = renderMustache(c, ctx); warnings.push(...r3.warnings);
           layers.push({ layerType: "MEMORY_CONTEXT", priority: PRIORITY.MEMORY_CONTEXT, inclusionReason: "distilled memory match", contentSnapshot: r3.rendered, layerHash: sha256(r3.rendered) });
+        }
+
+        // M14 — code context. Pull top-N CapabilityCodeSymbol summaries so the
+        // agent prompt carries pointers to the most relevant code in the
+        // capability's repos. v0 orders by createdAt; v1 swaps in pgvector
+        // cosine search against the task embedding.
+        const symbols = await prisma.capabilityCodeSymbol.findMany({
+          where: { capabilityId },
+          orderBy: { createdAt: "desc" },
+          take: 8,
+          include: { repository: true },
+        });
+        for (const s of symbols) {
+          const repoName = s.repository?.repoName ?? "repo";
+          const body = s.summary ?? `${s.symbolType ?? "symbol"} ${s.symbolName ?? ""}`;
+          const c = `[${s.symbolType ?? "symbol"}] ${repoName}/${s.filePath}:${s.startLine ?? "?"}\n${body}`;
+          const r4 = renderMustache(c, ctx); warnings.push(...r4.warnings);
+          layers.push({
+            layerType: "CODE_CONTEXT" as never,
+            priority: PRIORITY.CODE_CONTEXT,
+            inclusionReason: `code symbol ${s.symbolName ?? ""} (${s.language ?? ""})`,
+            contentSnapshot: r4.rendered,
+            layerHash: sha256(r4.rendered),
+          });
         }
       }
     }

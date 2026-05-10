@@ -43,6 +43,11 @@ export const agentApi = {
     req<Record<string, unknown>>(`${AGENT_BASE}/learning-candidates/${id}/review`, {
       method: "POST", body: JSON.stringify({ decision, review_note }),
     }),
+  distillCandidates: (body: { capability_id: string; agent_uid: string; candidate_type: string; candidate_ids: string[] }) =>
+    req<{ written: number; distilled_memory: Record<string, unknown>[]; candidate_ids: string[] }>(
+      `${AGENT_BASE}/learning-candidates/distill`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
 
   listLearningProfileVersions: (uid: string, profileType = "durable_learning") =>
     req<{ versions: Record<string, unknown>[] }>(`${AGENT_BASE}/agents/${uid}/learning-profiles/${profileType}/versions`),
@@ -166,6 +171,17 @@ export const runtimeApi = {
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${id}/knowledge-artifacts`, { method: "POST", body: JSON.stringify(body) }),
   listKnowledge: (id: string) =>
     reqEnv<Row[]>(`${RUNTIME_BASE}/capabilities/${id}/knowledge-artifacts`),
+  // M14 — code-symbol extraction. Send the file list extracted from the
+  // user-picked directory; server walks regex extractor + persists.
+  extractRepositorySymbols: (capabilityId: string, repoId: string, files: Array<{ path: string; content: string }>) =>
+    reqEnv<{
+      filesProcessed: number; symbolsScanned: number; inserted: number;
+      skippedDuplicate: number; embeddingErrors: number;
+      provider: string; providerModel: string;
+    }>(
+      `${RUNTIME_BASE}/capabilities/${capabilityId}/repositories/${repoId}/extract`,
+      { method: "POST", body: JSON.stringify({ files }) },
+    ),
 
   // Executions
   listExecutions: (params?: Record<string, string>) => {

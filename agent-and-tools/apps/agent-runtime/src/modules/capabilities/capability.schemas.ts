@@ -34,3 +34,18 @@ export const knowledgeArtifactSchema = z.object({
   sourceRef: z.string().optional(),
   confidence: z.number().min(0).max(1).optional(),
 });
+
+// M14 — code-symbol extraction. Caller sends a flat list of files; the
+// regex-based extractor walks them server-side and persists symbols +
+// embeddings. Path is relative to the repo root the user picked client-side.
+export const extractSymbolsSchema = z.object({
+  files: z
+    .array(
+      z.object({
+        path: z.string().min(1),
+        content: z.string(),
+      }),
+    )
+    .min(1)
+    .max(2000),
+});

@@ -27,4 +27,12 @@ export const capabilityController = {
   async listKnowledge(req: Request, res: Response) {
     return ok(res, await capabilityService.listKnowledge(req.params.id));
   },
+  async extractSymbols(req: Request, res: Response) {
+    const result = await capabilityService.extractRepositorySymbols(
+      req.params.id,
+      req.params.repoId,
+      req.body.files,
+    );
+    return ok(res, result, 201);
+  },
 };
