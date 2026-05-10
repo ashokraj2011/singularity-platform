@@ -65,6 +65,9 @@ services:
       # M11.a — self-register
       - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       - PUBLIC_BASE_URL=${CONTEXT_API_PUBLIC_URL:-http://host.docker.internal:8000}
+      # M11 follow-up — bootstrap auto-mint of IAM service token
+      - IAM_BOOTSTRAP_USERNAME=${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
+      - IAM_BOOTSTRAP_PASSWORD=${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
     ports:
       - "8000:8000"
     volumes:

@@ -18,20 +18,23 @@ import { prisma } from '../prisma'
 import { config } from '../../config'
 import { getAgentTemplate } from '../agent-and-tools/client'
 import { proxyGet as iamProxyGet } from '../iam/client'
+import { getIamServiceToken } from '../iam/service-token'
 
 /**
  * Snapshot lookups happen at workflow runtime — there is no caller JWT, so
- * we fall back to the long-lived IAM_SERVICE_TOKEN (same one used by
- * permission helpers + the auth middleware's service calls). If callers
- * want to use a separate token, set WORKGRAPH_SNAPSHOT_TOKEN.
+ * we use the auto-minted IAM service token (M11 follow-up). Operators can
+ * still pin a specific token via WORKGRAPH_SNAPSHOT_TOKEN if they want a
+ * narrower-scope identity for snapshot writes specifically.
  */
-function snapshotAuthHeader(): string | undefined {
-  const tok = config.WORKGRAPH_SNAPSHOT_TOKEN || config.IAM_SERVICE_TOKEN
+async function snapshotAuthHeader(): Promise<string | undefined> {
+  if (config.WORKGRAPH_SNAPSHOT_TOKEN) return `Bearer ${config.WORKGRAPH_SNAPSHOT_TOKEN}`
+  const tok = await getIamServiceToken()
   return tok ? `Bearer ${tok}` : undefined
 }
 
-function snapshotAuthToken(): string | undefined {
-  return config.WORKGRAPH_SNAPSHOT_TOKEN || config.IAM_SERVICE_TOKEN || undefined
+async function snapshotAuthToken(): Promise<string | undefined> {
+  if (config.WORKGRAPH_SNAPSHOT_TOKEN) return config.WORKGRAPH_SNAPSHOT_TOKEN
+  return await getIamServiceToken()
 }
 
 /**
@@ -81,7 +84,7 @@ export async function snapshotAgentTemplate(
   let sourceVersion: string | undefined
 
   try {
-    const tpl = await getAgentTemplate(agentTemplateId, snapshotAuthHeader())
+    const tpl = await getAgentTemplate(agentTemplateId, await snapshotAuthHeader())
     if (tpl) {
       name = tpl.name ?? name
       description = (tpl.description as string | undefined) ?? undefined
@@ -154,7 +157,7 @@ export interface SnapshotCapabilityResult {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 async function fetchCapability(id: string): Promise<Record<string, unknown> | null> {
-  const tok = snapshotAuthToken()
+  const tok = await snapshotAuthToken()
   // IAM /capabilities/:id keys by SLUG. If `id` looks like a UUID, fall back
   // to list+find. Same shape as the resolver does — reused logic.
   if (UUID_RE.test(id)) {

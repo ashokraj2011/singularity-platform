@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 
 from . import call_log, events_store
 from .config import settings
+from .iam_service_token import get_iam_service_token
 
 
 router = APIRouter()
@@ -239,7 +240,7 @@ async def execute(req: ExecuteRequest):
         servers_resp = await _get(
             f"{settings.iam_base_url.rstrip('/')}/capabilities/{req.run_context.capability_id}/mcp-servers",
             params={"status": "active"},
-            headers={"Authorization": f"Bearer {settings.iam_service_token}"},
+            headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
             timeout=10.0,
         )
     except httpx.HTTPError as exc:
@@ -260,7 +261,7 @@ async def execute(req: ExecuteRequest):
     # Fetch the full record (incl bearer) via the per-id endpoint.
     full = await _get(
         f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{mcp_server_id}",
-        headers={"Authorization": f"Bearer {settings.iam_service_token}"},
+        headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
         timeout=10.0,
     )
     mcp_base_url = full["base_url"].rstrip("/")
@@ -631,7 +632,7 @@ async def refresh_events_for_call(call_id: str):
 
     full = await _get(
         f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{rec['mcp_server_id']}",
-        headers={"Authorization": f"Bearer {settings.iam_service_token}"},
+        headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
     )
     persisted = await _drain_mcp_events(
         full["base_url"].rstrip("/"), full["bearer_token"], rec["trace_id"],
@@ -686,7 +687,7 @@ async def execute_resume(req: ResumeRequest):
     # Fetch the MCP credentials from IAM (cached service token).
     full = await _get(
         f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{mcp_server_id}",
-        headers={"Authorization": f"Bearer {settings.iam_service_token}"},
+        headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
     )
     mcp_base_url = full["base_url"].rstrip("/")
     mcp_bearer = full["bearer_token"]

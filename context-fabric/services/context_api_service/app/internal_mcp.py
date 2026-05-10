@@ -22,6 +22,7 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException, Query
 
 from .config import settings
+from .iam_service_token import get_iam_service_token
 
 
 router = APIRouter(prefix="/internal/mcp", tags=["internal-mcp"])
@@ -63,7 +64,7 @@ async def list_mcp_servers_for_capability(
             resp = await client.get(
                 url,
                 params=params,
-                headers={"Authorization": f"Bearer {settings.iam_service_token}"},
+                headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
             )
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"IAM unreachable: {exc}")
@@ -90,7 +91,7 @@ async def get_mcp_server(
         try:
             resp = await client.get(
                 url,
-                headers={"Authorization": f"Bearer {settings.iam_service_token}"},
+                headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
             )
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"IAM unreachable: {exc}")

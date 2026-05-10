@@ -69,6 +69,11 @@ services:
       # M10/M11.c — service-to-service token (used by snapshot lookups + permission helpers)
       IAM_SERVICE_TOKEN:     ${IAM_SERVICE_TOKEN:-}
       WORKGRAPH_SNAPSHOT_TOKEN: ${WORKGRAPH_SNAPSHOT_TOKEN:-}
+      # M11 follow-up — bootstrap creds for auto-minting an IAM service token
+      # (replaces pasting a 60-min admin JWT). Wins over IAM_SERVICE_TOKEN
+      # only when that env is empty.
+      IAM_BOOTSTRAP_USERNAME: ${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
+      IAM_BOOTSTRAP_PASSWORD: ${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
     depends_on:
       postgres:
         condition: service_healthy

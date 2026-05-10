@@ -90,7 +90,15 @@ async function iamFetch(
     throw new IamUnavailableError('IAM_BASE_URL is not configured')
   }
   const url = `${config.IAM_BASE_URL.replace(/\/+$/, '')}${path}`
-  const token = init.token ?? config.IAM_SERVICE_TOKEN
+  // M11 follow-up — fall back to auto-minted service token instead of the
+  // expiring user JWT in IAM_SERVICE_TOKEN env. Lazy import to avoid a cycle.
+  let token = init.token
+  if (!token) {
+    try {
+      const { getIamServiceToken } = await import('./service-token.js')
+      token = await getIamServiceToken()
+    } catch { /* fall through to undefined */ }
+  }
   const headers: Record<string, string> = {
     'content-type': 'application/json',
     ...(token ? { authorization: `Bearer ${token}` } : {}),
