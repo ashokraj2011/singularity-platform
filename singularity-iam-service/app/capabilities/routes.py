@@ -106,6 +106,17 @@ async def create_capability(
     await record_event(db, actor_user_id=current_user.id, event_type="capability_created",
                        capability_id=cap.capability_id, target_type="capability", target_id=cap.capability_id,
                        payload={"name": cap.name, "capability_type": cap.capability_type})
+    # M11.e — emit canonical event so workgraph etc can react
+    from app.eventbus import publish_event
+    await publish_event(
+        event_name="capability.created",
+        subject_kind="capability",
+        subject_id=cap.id,
+        actor={"kind": "user", "id": current_user.id},
+        correlation={"capability_id": cap.capability_id, "capability_type": cap.capability_type},
+        payload={"name": cap.name, "description": cap.description, "owner_bu_id": cap.owner_bu_id},
+        db=db,
+    )
     await db.commit()
     await db.refresh(cap)
     return _cap_out(cap)

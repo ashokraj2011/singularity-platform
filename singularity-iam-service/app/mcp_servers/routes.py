@@ -105,6 +105,17 @@ async def register_mcp_server(
         capability_id=cap.capability_id, target_type="mcp_server", target_id=srv.id,
         payload={"name": srv.name, "base_url": srv.base_url, "protocol": srv.protocol},
     )
+    # M11.e
+    from app.eventbus import publish_event
+    await publish_event(
+        event_name="mcp_server.registered",
+        subject_kind="mcp_server",
+        subject_id=srv.id,
+        actor={"kind": "user", "id": current_user.id},
+        correlation={"capability_id": cap.id, "capability_key": cap.capability_id},
+        payload={"name": srv.name, "base_url": srv.base_url, "protocol": srv.protocol},
+        db=db,
+    )
     await db.commit()
     await db.refresh(srv)
     return _full(srv)

@@ -23,6 +23,7 @@ from app.roles.routes import router as roles_router
 from app.authz.routes import router as authz_router
 from app.audit.routes import router as audit_router
 from app.mcp_servers.routes import router as mcp_servers_router
+from app.eventbus.routes import router as eventbus_router  # M11.e
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -81,8 +82,19 @@ async def lifespan(app: FastAPI):
         ],
     })
 
+    # M11.e — start event-bus dispatcher (LISTEN/NOTIFY + safety sweep)
+    from .eventbus import start_dispatcher, stop_dispatcher
+    try:
+        await start_dispatcher()
+    except Exception as exc:
+        log.warning("eventbus dispatcher failed to start: %s", exc)
+
     yield
 
+    try:
+        await stop_dispatcher()
+    except Exception:
+        pass
     await stop_self_registration()
     await engine.dispose()
 
@@ -111,6 +123,8 @@ app.include_router(roles_router, prefix=PREFIX)
 app.include_router(authz_router, prefix=PREFIX)
 app.include_router(audit_router, prefix=PREFIX)
 app.include_router(mcp_servers_router, prefix=PREFIX)
+# M11.e — event-bus subscription registry. Router itself carries the /api/v1 prefix.
+app.include_router(eventbus_router)
 
 
 @app.get("/api/v1/health")

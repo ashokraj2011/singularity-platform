@@ -384,3 +384,71 @@ class McpServer(Base):
     created_by: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.users.id"))
     created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
     updated_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now, onupdate=_now)
+
+
+# ---------------------------------------------------------------------------
+# M11.e — Event Bus
+# ---------------------------------------------------------------------------
+# Mirror of the workgraph-side schema so subscribers see the same canonical
+# envelope across services. Postgres LISTEN/NOTIFY drives the dispatcher.
+
+class EventOutbox(Base):
+    __tablename__ = "event_outbox"
+    __table_args__ = (
+        Index("idx_event_outbox_status_emitted", "status", "emitted_at"),
+        Index("idx_event_outbox_event_name", "event_name"),
+        Index("idx_event_outbox_trace", "trace_id"),
+        {"schema": "iam"},
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    event_name: Mapped[str] = mapped_column(String, nullable=False)
+    source_service: Mapped[str] = mapped_column(String, nullable=False)
+    trace_id: Mapped[Optional[str]] = mapped_column(String)
+    subject_kind: Mapped[str] = mapped_column(String, nullable=False)
+    subject_id: Mapped[str] = mapped_column(String, nullable=False)
+    envelope: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="pending")
+    attempts: Mapped[int] = mapped_column(default=0)
+    emitted_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(_tstz())
+    last_error: Mapped[Optional[str]] = mapped_column(String)
+
+
+class EventSubscription(Base):
+    __tablename__ = "event_subscriptions"
+    __table_args__ = (
+        Index("idx_event_subscriptions_active", "is_active", "event_pattern"),
+        {"schema": "iam"},
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    subscriber_id: Mapped[str] = mapped_column(String, nullable=False)
+    event_pattern: Mapped[str] = mapped_column(String, nullable=False)
+    target_url: Mapped[str] = mapped_column(String, nullable=False)
+    secret: Mapped[Optional[str]] = mapped_column(String)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_by: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.users.id"))
+    created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now, onupdate=_now)
+
+
+class EventDelivery(Base):
+    __tablename__ = "event_deliveries"
+    __table_args__ = (
+        UniqueConstraint("outbox_id", "subscription_id", name="uq_event_deliveries_outbox_sub"),
+        Index("idx_event_deliveries_status", "status", "created_at"),
+        {"schema": "iam"},
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    outbox_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.event_outbox.id", ondelete="CASCADE"), nullable=False)
+    subscription_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.event_subscriptions.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="queued")
+    attempts: Mapped[int] = mapped_column(default=0)
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(_tstz())
+    last_error: Mapped[Optional[str]] = mapped_column(String)
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(_tstz())
+    response_status: Mapped[Optional[int]] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
