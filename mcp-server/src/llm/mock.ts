@@ -79,14 +79,27 @@ function decideToolCall(
       },
     };
   }
-  // write <content> to <path>  →  write_file_demo (M13 smoke).
-  if (toolNames.has("write_file_demo")) {
+  // write <content> to <path>  →  write_file (M16) or write_file_demo (M13).
+  // Prefer the real tool when available; fall back to the demo for legacy
+  // smoke tests that haven't been migrated yet.
+  if (toolNames.has("write_file") || toolNames.has("write_file_demo")) {
     const m = msg.match(/write\s+(.*?)\s+to\s+(\S+)/i);
     if (m) {
       return {
         id: `tc-${uuidv4().slice(0, 8)}`,
-        name: "write_file_demo",
+        name: toolNames.has("write_file") ? "write_file" : "write_file_demo",
         args: { path: m[2], content: m[1] },
+      };
+    }
+  }
+  // commit / commit message  →  git_commit (M16).
+  if (toolNames.has("git_commit")) {
+    const m = msg.match(/(?:commit|commit message)\s*[:\-]?\s*(.+)$/i);
+    if (m) {
+      return {
+        id: `tc-${uuidv4().slice(0, 8)}`,
+        name: "git_commit",
+        args: { message: m[1].trim().slice(0, 200) },
       };
     }
   }

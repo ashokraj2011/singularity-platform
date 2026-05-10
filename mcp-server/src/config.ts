@@ -38,6 +38,12 @@ const schema = z.object({
 
   MAX_AGENT_STEPS: z.coerce.number().int().positive().default(12),
   TIMEOUT_SEC: z.coerce.number().int().positive().default(240),
+
+  // M16 — sandbox root for the real fs/git tools. All paths must resolve
+  // strictly inside this dir; absolute paths and `..` traversal are rejected.
+  // Default is the workdir; ops can mount a host directory in via docker-compose
+  // and point this at it.
+  MCP_SANDBOX_ROOT: z.string().default("/workspace"),
 });
 
 const parsed = schema.safeParse(process.env);

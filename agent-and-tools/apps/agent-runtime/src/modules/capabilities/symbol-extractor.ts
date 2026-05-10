@@ -25,6 +25,10 @@ export interface ExtractedSymbol {
   endLine?: number;
   summary?: string;
   symbolHash: string;
+  /** M16 — name of the enclosing class for `method` symbols. The service
+   *  resolves this to a CapabilityCodeSymbol id at write time using
+   *  (filePath, symbolName=parentClassName) within the same extract batch. */
+  parentClassName?: string;
 }
 
 const SKIP_DIRS = new Set([

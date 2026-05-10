@@ -90,6 +90,9 @@ interface RawSymbol {
   /** First-pass summary from docstring or leading comment. LLM summariser
    *  fills in only when this is null, keeping the LLM call rate down. */
   summary?: string;
+  /** M16 — name of the enclosing class for `method` symbols. Resolved to a
+   *  CapabilityCodeSymbol id at write time in capability.service.ts. */
+  parentClassName?: string;
 }
 
 // Strip outer quotes from a string literal node. Handles Python triple
@@ -189,15 +192,12 @@ interface TsNode {
 // comment as `summary` so the LLM summariser only fires when both are absent.
 function walkPython(root: TsNode): RawSymbol[] {
   const out: RawSymbol[] = [];
-  function visit(node: TsNode, depth: number) {
+  function visit(node: TsNode, depth: number, parentClassName?: string) {
     const t = node.type;
     if (t === "function_definition" || t === "class_definition") {
       const nameNode = node.childForFieldName("name");
       if (nameNode?.text) {
         const isMethod = depth > 0 && t === "function_definition";
-        // Prefer the in-body docstring; fall back to a leading comment.
-        // For a `decorated_definition`, leading comments live above the
-        // decorator, so we walk previousSibling on the parent.
         const target = node.parent?.type === "decorated_definition" ? node.parent : node;
         const summary = summaryFromPythonDocstring(node) ?? summaryFromLeadingComment(target);
         out.push({
@@ -206,27 +206,35 @@ function walkPython(root: TsNode): RawSymbol[] {
           startLine: node.startPosition.row + 1,
           endLine:   node.endPosition.row + 1,
           summary,
+          parentClassName: isMethod ? parentClassName : undefined,
         });
       }
     }
     if (t === "decorated_definition") {
-      // Recurse into the inner def.
       for (let i = 0; i < node.childCount; i++) {
         const c = node.child(i);
-        if (c) visit(c, depth);
+        if (c) visit(c, depth, parentClassName);
       }
       return;
     }
-    if (t === "function_definition" || t === "class_definition") {
+    if (t === "class_definition") {
+      const cls = node.childForFieldName("name")?.text;
       for (let i = 0; i < node.childCount; i++) {
         const c = node.child(i);
-        if (c) visit(c, depth + 1);
+        if (c) visit(c, depth + 1, cls);
+      }
+      return;
+    }
+    if (t === "function_definition") {
+      for (let i = 0; i < node.childCount; i++) {
+        const c = node.child(i);
+        if (c) visit(c, depth + 1, parentClassName);
       }
       return;
     }
     for (let i = 0; i < node.childCount; i++) {
       const c = node.child(i);
-      if (c) visit(c, depth);
+      if (c) visit(c, depth, parentClassName);
     }
   }
   visit(root, 0);
@@ -249,7 +257,12 @@ function walkTsJs(root: TsNode, isTs: boolean): RawSymbol[] {
     return summaryFromLeadingComment(target);
   }
 
-  function pushIf(name: string | undefined, type: ExtractedSymbol["symbolType"], node: TsNode) {
+  function pushIf(
+    name: string | undefined,
+    type: ExtractedSymbol["symbolType"],
+    node: TsNode,
+    parentClassName?: string,
+  ) {
     if (!name) return;
     out.push({
       name,
@@ -257,6 +270,7 @@ function walkTsJs(root: TsNode, isTs: boolean): RawSymbol[] {
       startLine: node.startPosition.row + 1,
       endLine:   node.endPosition.row + 1,
       summary:   leadingCommentFor(node),
+      parentClassName: type === "method" ? parentClassName : undefined,
     });
   }
 
@@ -265,12 +279,12 @@ function walkTsJs(root: TsNode, isTs: boolean): RawSymbol[] {
     return id?.text;
   }
 
-  function visit(node: TsNode, depth: number) {
+  function visit(node: TsNode, depth: number, parentClassName?: string) {
     const t = node.type;
 
     // Top-level declarations
     if (t === "function_declaration" || t === "generator_function_declaration") {
-      pushIf(nameOf(node), depth > 0 ? "method" : "function", node);
+      pushIf(nameOf(node), depth > 0 ? "method" : "function", node, parentClassName);
     } else if (t === "class_declaration") {
       pushIf(nameOf(node), "class", node);
     } else if (isTs && (t === "interface_declaration")) {
@@ -281,11 +295,8 @@ function walkTsJs(root: TsNode, isTs: boolean): RawSymbol[] {
       pushIf(nameOf(node), "enum", node);
     } else if (t === "method_definition") {
       const id = node.childForFieldName("name");
-      pushIf(id?.text, "method", node);
+      pushIf(id?.text, "method", node, parentClassName);
     } else if (t === "lexical_declaration" || t === "variable_declaration") {
-      // export const X = ... or const X = (...) => {...}
-      // Only count top-level (depth 0) and exported / arrow-fn assignments to
-      // avoid local-variable noise.
       for (let i = 0; i < node.childCount; i++) {
         const child = node.child(i);
         if (!child || child.type !== "variable_declarator") continue;
@@ -299,14 +310,18 @@ function walkTsJs(root: TsNode, isTs: boolean): RawSymbol[] {
       }
     }
 
-    // Recurse into class bodies, statement blocks, but not into function
-    // bodies (we already captured the function itself; nested decls are noise).
+    // Recurse — into class bodies, statement blocks, but not into function
+    // bodies (the function was already captured; nested decls are noise).
+    // When entering a class body, capture the class name to thread into method
+    // pushes.
     const isFnLike = t === "function_declaration" || t === "function_expression" || t === "arrow_function" || t === "method_definition";
     if (isFnLike && depth > 0) return;
     const newDepth = isFnLike || t === "class_body" ? depth + 1 : depth;
+    let scopeClass = parentClassName;
+    if (t === "class_declaration") scopeClass = nameOf(node) ?? parentClassName;
     for (let i = 0; i < node.childCount; i++) {
       const c = node.child(i);
-      if (c) visit(c, newDepth);
+      if (c) visit(c, newDepth, scopeClass);
     }
   }
   visit(root, 0);
@@ -357,6 +372,8 @@ export async function extractSymbolsTs(files: InputFile[]): Promise<ExtractedSym
         // M15.1 — first-pass summary from docstring / leading comment when
         // available; LLM summariser fills the rest at write time.
         summary: r.summary,
+        // M16 — parent class name (resolved to id at write time).
+        parentClassName: r.parentClassName,
       });
     }
     tree.delete();

@@ -66,9 +66,81 @@ codeChangesRouter.get('/:runId/code-changes', async (req: Request, res: Response
     const responses = await Promise.all(cfCallIds.map(id => contextFabricClient.listCodeChanges(id)))
     const items = responses.flatMap(r => r.items)
     const stale = responses.some(r => r.stale)
-    return res.json({ runId, cfCallIds, items, stale })
+
+    // M16 — mirror to Consumable so the existing artifact UI surfaces these
+    // alongside contracts/deliverables. Best-effort: failures don't fail the
+    // proxy response. Idempotent on (runId, code-change id) via name match.
+    const consumableIds = await mirrorToConsumables(runId, items, userId)
+    return res.json({ runId, cfCallIds, items, stale, consumableIds })
   } catch (err) {
     const e = err as { status?: number; message?: string }
     return res.status(e.status ?? 502).json({ error: e.message ?? 'context-fabric error' })
   }
 })
+
+// ────────────────────────────────────────────────────────────────────────────
+// M16 — Consumable mirror.
+//
+// Each code-change becomes a `Consumable` row of type `CODE_CHANGE`. The
+// `name` field encodes (runId, code-change id) so re-fetching is idempotent.
+// `formData` carries the structured payload so the SPA can render it inline.
+// instanceId links back to the WorkflowInstance when available; for snapshot
+// runs it stays null (Consumable.instanceId is optional).
+// ────────────────────────────────────────────────────────────────────────────
+
+const MIRROR_TYPE_NAME = 'CODE_CHANGE'
+
+interface MirrorItem { id: string; tool_name?: string; paths_touched?: string[]; commit_sha?: string }
+
+async function mirrorToConsumables(runId: string, items: MirrorItem[], userId?: string): Promise<string[]> {
+  if (items.length === 0) return []
+  try {
+    const type = await prisma.consumableType.upsert({
+      where:  { name: MIRROR_TYPE_NAME },
+      update: {},
+      create: {
+        name: MIRROR_TYPE_NAME,
+        description: 'Mirror of MCP code-change records (M13). Auto-created on first fetch.',
+        requiresApproval: false,
+        allowVersioning:  false,
+      },
+    })
+    // Use WorkflowInstance.id when runId resolves to one; otherwise leave null.
+    const inst = await prisma.workflowInstance.findUnique({ where: { id: runId }, select: { id: true } })
+    const out: string[] = []
+    for (const it of items) {
+      if (!it.id) continue
+      const naturalName = `${runId}::${it.id}` // dedup key
+      // Look up an existing mirror for this (runId, code-change id).
+      const existing = await prisma.consumable.findFirst({
+        where: { typeId: type.id, name: naturalName },
+        select: { id: true },
+      })
+      if (existing) { out.push(existing.id); continue }
+      const created = await prisma.consumable.create({
+        data: {
+          typeId: type.id,
+          instanceId: inst?.id ?? null,
+          name: naturalName,
+          status: 'PUBLISHED',
+          formData: {
+            codeChangeId: it.id,
+            toolName:     it.tool_name ?? null,
+            pathsTouched: it.paths_touched ?? [],
+            commitSha:    it.commit_sha ?? null,
+            mirroredAt:   new Date().toISOString(),
+            runId,
+          },
+          createdById: userId,
+        },
+      })
+      out.push(created.id)
+    }
+    return out
+  } catch (err) {
+    // Mirror failure shouldn't block the read. Surface to logs only.
+    // eslint-disable-next-line no-console
+    console.warn(`[code-changes] consumable mirror failed for run ${runId}: ${(err as Error).message}`)
+    return []
+  }
+}

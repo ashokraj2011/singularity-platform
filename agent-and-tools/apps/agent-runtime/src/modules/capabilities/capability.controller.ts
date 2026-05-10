@@ -42,6 +42,15 @@ export const capabilityController = {
     return ok(res, result, 201);
   },
 
+  async reembed(req: Request, res: Response) {
+    const kindsParam = req.body?.kinds;
+    const kinds = Array.isArray(kindsParam) ? kindsParam.filter((k: unknown): k is "knowledge" | "memory" | "code" =>
+      k === "knowledge" || k === "memory" || k === "code",
+    ) : undefined;
+    const result = await capabilityService.reembedCapability(req.params.id, { kinds });
+    return ok(res, result, 200);
+  },
+
   // M15 — multipart upload variant. Server-side text extraction by mime;
   // delegates to addKnowledge for embedding + storage. multer attaches the
   // parsed files at `req.files` (memoryStorage; small dependency on the

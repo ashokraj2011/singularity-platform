@@ -134,6 +134,21 @@ export const capabilityService = {
     let skippedDuplicate = 0;
     let embeddingErrors = 0;
     let llmSummaries = 0;
+    let parentLinked = 0;
+
+    // M16 — track each class row by (filePath, symbolName) so methods landing
+    // later in the same file can link via parentSymbolId. Pre-load existing
+    // class rows for this repo so re-extracts also link correctly.
+    const classByKey = new Map<string, string>();
+    {
+      const existingClasses = await prisma.capabilityCodeSymbol.findMany({
+        where: { repositoryId, symbolType: "class" },
+        select: { id: true, filePath: true, symbolName: true },
+      });
+      for (const c of existingClasses) {
+        if (c.symbolName) classByKey.set(`${c.filePath}::${c.symbolName}`, c.id);
+      }
+    }
 
     for (const s of symbols) {
       const existing = await prisma.capabilityCodeSymbol.findFirst({
@@ -199,6 +214,15 @@ export const capabilityService = {
         }
       }
 
+      // Resolve parentSymbolId for methods to the enclosing class row, when
+      // the class was extracted in this batch or persisted from a prior run.
+      let parentSymbolId: string | undefined;
+      if (s.symbolType === "method" && s.parentClassName) {
+        const key = `${s.filePath}::${s.parentClassName}`;
+        parentSymbolId = classByKey.get(key);
+        if (parentSymbolId) parentLinked += 1;
+      }
+
       const row = await prisma.capabilityCodeSymbol.create({
         data: {
           capabilityId,
@@ -207,11 +231,15 @@ export const capabilityService = {
           language: s.language,
           symbolName: s.symbolName,
           symbolType: s.symbolType,
+          parentSymbolId,
           startLine: s.startLine,
           summary,
           symbolHash: s.symbolHash,
         },
       });
+      if (s.symbolType === "class") {
+        classByKey.set(`${s.filePath}::${s.symbolName}`, row.id);
+      }
       inserted += 1;
 
       try {
@@ -250,9 +278,119 @@ export const capabilityService = {
       skippedDuplicate,
       embeddingErrors,
       llmSummaries,
+      parentLinked,
       provider: embedder.name,
       providerModel: embedder.defaultModel,
       requiredDim: REQUIRED_EMBEDDING_DIM,
     };
+  },
+
+  // M16 — re-embed worker. Backfills embeddings for any rows whose vector
+  // column is NULL across all three tables for a capability. Used after:
+  //   1. Switching providers (eg mock → openai) — old vectors are still
+  //      stored but the new model won't find anything until backfilled.
+  //   2. Migrating M14 v0 rows whose vectorId is JSON text but `embedding`
+  //      is NULL.
+  // Scoped to a single capability so a partial-tenant backfill is possible.
+  async reembedCapability(capabilityId: string, opts: { kinds?: ("knowledge" | "memory" | "code")[] } = {}) {
+    await this.get(capabilityId);
+    const embedder = getEmbeddingProvider();
+    const kinds = new Set(opts.kinds ?? ["knowledge", "memory", "code"]);
+
+    const out = {
+      provider: embedder.name,
+      providerModel: embedder.defaultModel,
+      knowledge: { scanned: 0, embedded: 0, failed: 0 },
+      memory:    { scanned: 0, embedded: 0, failed: 0 },
+      code:      { scanned: 0, embedded: 0, failed: 0 },
+    };
+
+    if (kinds.has("knowledge")) {
+      const rows = await prisma.$queryRawUnsafe<Array<{ id: string; title: string; content: string }>>(
+        `SELECT id, title, content FROM "CapabilityKnowledgeArtifact"
+         WHERE "capabilityId" = $1 AND status = 'ACTIVE' AND embedding IS NULL
+         ORDER BY "createdAt" DESC LIMIT 500`,
+        capabilityId,
+      );
+      out.knowledge.scanned = rows.length;
+      for (const r of rows) {
+        try {
+          const emb = await embedder.embed({ text: `${r.title}\n${r.content}`.slice(0, 8_000) });
+          assertDimMatches(emb.dim, `${emb.provider}:${emb.model}`);
+          await prisma.$executeRawUnsafe(
+            `UPDATE "CapabilityKnowledgeArtifact" SET embedding = $1::vector WHERE id = $2`,
+            toVectorLiteral(emb.vector), r.id,
+          );
+          out.knowledge.embedded += 1;
+        } catch { out.knowledge.failed += 1; }
+      }
+    }
+
+    if (kinds.has("memory")) {
+      const rows = await prisma.$queryRawUnsafe<Array<{ id: string; title: string; content: string }>>(
+        `SELECT id, title, content FROM "DistilledMemory"
+         WHERE "scopeType" = 'CAPABILITY' AND "scopeId" = $1
+           AND status = 'ACTIVE' AND embedding IS NULL
+         ORDER BY "createdAt" DESC LIMIT 500`,
+        capabilityId,
+      );
+      out.memory.scanned = rows.length;
+      for (const r of rows) {
+        try {
+          const emb = await embedder.embed({ text: `${r.title}\n${r.content}`.slice(0, 8_000) });
+          assertDimMatches(emb.dim, `${emb.provider}:${emb.model}`);
+          await prisma.$executeRawUnsafe(
+            `UPDATE "DistilledMemory" SET embedding = $1::vector WHERE id = $2`,
+            toVectorLiteral(emb.vector), r.id,
+          );
+          out.memory.embedded += 1;
+        } catch { out.memory.failed += 1; }
+      }
+    }
+
+    if (kinds.has("code")) {
+      // Two flavours: (a) symbol has no embedding row at all, (b) row exists
+      // but `embedding` is NULL (M14 v0 rows). Both mean "no semantic data".
+      const rows = await prisma.$queryRawUnsafe<Array<{
+        symbol_id: string; symbolName: string; summary: string | null;
+        embedding_id: string | null;
+      }>>(
+        `SELECT s.id AS symbol_id, s."symbolName", s.summary,
+                e.id AS embedding_id
+         FROM "CapabilityCodeSymbol" s
+         LEFT JOIN "CapabilityCodeEmbedding" e ON e."symbolId" = s.id
+         WHERE s."capabilityId" = $1
+           AND (e.id IS NULL OR e.embedding IS NULL)
+         ORDER BY s."createdAt" DESC LIMIT 1000`,
+        capabilityId,
+      );
+      out.code.scanned = rows.length;
+      for (const r of rows) {
+        try {
+          const target = `${r.symbolName ?? ""}\n${r.summary ?? ""}`.trim() || "symbol";
+          const emb = await embedder.embed({ text: target });
+          assertDimMatches(emb.dim, `${emb.provider}:${emb.model}`);
+          let embId = r.embedding_id;
+          if (!embId) {
+            const created = await prisma.capabilityCodeEmbedding.create({
+              data: {
+                symbolId: r.symbol_id,
+                embeddingModel: `${emb.provider}:${emb.model}:${emb.dim}`,
+                vectorId: JSON.stringify(emb.vector),
+                summary: r.summary,
+              },
+            });
+            embId = created.id;
+          }
+          await prisma.$executeRawUnsafe(
+            `UPDATE "CapabilityCodeEmbedding" SET embedding = $1::vector WHERE id = $2`,
+            toVectorLiteral(emb.vector), embId,
+          );
+          out.code.embedded += 1;
+        } catch { out.code.failed += 1; }
+      }
+    }
+
+    return out;
   },
 };

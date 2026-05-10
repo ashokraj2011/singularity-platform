@@ -192,12 +192,19 @@ const applyPatchDemoTool: ToolHandler = {
   },
 };
 
+// M16 — real fs/git tools alongside the M13 demos. Both are sandboxed to
+// MCP_SANDBOX_ROOT. Demos are kept registered so existing smoke tests don't
+// break; promote write_file / git_commit when consumers are ready.
+import { writeFileTool, gitCommitTool } from "./fs-git";
+
 const REGISTRY = new Map<string, ToolHandler>([
   [echoTool.descriptor.name, echoTool],
   [nowTool.descriptor.name, nowTool],
   [notifyAdminTool.descriptor.name, notifyAdminTool],
   [writeFileDemoTool.descriptor.name, writeFileDemoTool],
   [applyPatchDemoTool.descriptor.name, applyPatchDemoTool],
+  [writeFileTool.descriptor.name, writeFileTool],
+  [gitCommitTool.descriptor.name, gitCommitTool],
 ]);
 
 export function listLocalTools(): ToolDescriptor[] {

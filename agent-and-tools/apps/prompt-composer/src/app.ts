@@ -6,7 +6,7 @@ import { errorMiddleware } from "./middleware/error.middleware";
 import { requestIdMiddleware } from "./middleware/request-id.middleware";
 import { optionalAuth } from "./middleware/auth.middleware";
 import { promptProfileRoutes, promptLayerRoutes, promptAssemblyRoutes } from "./modules/prompts/prompt.routes";
-import { composeRoutes } from "./modules/compose/compose.routes";
+import { composeRoutes, composeDebugRoutes } from "./modules/compose/compose.routes";
 
 export const app = express();
 
@@ -29,5 +29,6 @@ app.use("/api/v1/prompt-profiles", promptProfileRoutes);
 app.use("/api/v1/prompt-layers", promptLayerRoutes);
 app.use("/api/v1/prompt-assemblies", promptAssemblyRoutes);
 app.use("/api/v1/compose-and-respond", composeRoutes);
+app.use("/api/v1/compose-and-respond/debug-retrieval", composeDebugRoutes);
 
 app.use(errorMiddleware);

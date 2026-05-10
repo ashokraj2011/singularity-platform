@@ -35,9 +35,14 @@ capabilityRoutes.post(
   capabilityController.uploadKnowledge,
 );
 
-// M14 — code-symbol extraction (regex-based v0). Body shape: {files:[{path, content}, ...]}
+// M14 — code-symbol extraction. Body shape: {files:[{path, content}, ...]}
 capabilityRoutes.post(
   "/:id/repositories/:repoId/extract",
   validate(extractSymbolsSchema),
   capabilityController.extractSymbols,
 );
+
+// M16 — re-embed worker. Body: {kinds?: ("knowledge"|"memory"|"code")[]}.
+// Backfills embeddings for rows whose vector column is NULL (provider switch
+// or M14 v0 migration).
+capabilityRoutes.post("/:id/embeddings/reembed", capabilityController.reembed);
