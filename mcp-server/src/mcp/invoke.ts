@@ -22,8 +22,9 @@ import { ChatMessage, ToolCall, ToolDescriptorForLlm } from "../llm/types";
 import { getLocalTool } from "../tools/registry";
 import {
   CorrelationIds, recordLlmCall, recordToolInvocation, recordArtifact,
-  ToolInvocationRecord,
+  recordCodeChange, ToolInvocationRecord, CodeChangeRecord,
 } from "../audit/store";
+import { extractCodeChange } from "../audit/provenanceExtractor";
 import { events } from "../events/bus";
 import {
   savePending, takePending, peekPending, PendingToolDescriptor,
@@ -97,6 +98,7 @@ interface LoopState {
   llmCallIds: string[];
   toolInvocationIds: string[];
   artifactIds: string[];
+  codeChangeIds: string[];
   totalInputTokens: number;
   totalOutputTokens: number;
 }
@@ -195,6 +197,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
             llm_call_ids: state.llmCallIds,
             tool_invocation_ids: state.toolInvocationIds,
             artifact_ids: state.artifactIds,
+            code_change_ids: state.codeChangeIds,
             total_input_tokens: state.totalInputTokens,
             total_output_tokens: state.totalOutputTokens,
           });
@@ -222,6 +225,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         // Normal dispatch path.
         const result = await dispatchToolCall(tc, state.fullToolDescriptors, state.correlation);
         state.toolInvocationIds.push(result.record.id);
+        if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
         state.messages.push({
           role: "tool",
           content: JSON.stringify(result.record.output),
@@ -310,6 +314,7 @@ function buildResponseBody(
     llmCallIds: state.llmCallIds,
     toolInvocationIds: state.toolInvocationIds,
     artifactIds: state.artifactIds,
+    codeChangeIds: state.codeChangeIds,
     finalArtifactId,
   };
 
@@ -390,6 +395,7 @@ invokeRouter.post("/invoke", async (req, res) => {
     llmCallIds: [],
     toolInvocationIds: [],
     artifactIds: [],
+    codeChangeIds: [],
     totalInputTokens: 0,
     totalOutputTokens: 0,
   };
@@ -426,6 +432,7 @@ invokeRouter.post("/resume", async (req, res) => {
     llmCallIds: env.llm_call_ids,
     toolInvocationIds: env.tool_invocation_ids,
     artifactIds: env.artifact_ids,
+    codeChangeIds: env.code_change_ids ?? [],
     totalInputTokens: env.total_input_tokens,
     totalOutputTokens: env.total_output_tokens,
   };
@@ -469,6 +476,7 @@ invokeRouter.post("/resume", async (req, res) => {
       state.correlation,
     );
     state.toolInvocationIds.push(result.record.id);
+    if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
     state.messages.push({
       role: "tool",
       content: JSON.stringify(result.record.output),
@@ -524,7 +532,7 @@ async function dispatchToolCall(
   tc: ToolCall,
   available: PendingToolDescriptor[],
   correlation: CorrelationIds,
-): Promise<{ record: ToolInvocationRecord }> {
+): Promise<{ record: ToolInvocationRecord; codeChange?: CodeChangeRecord }> {
   const start = Date.now();
   events.publish({
     kind: "tool.invocation.created",
@@ -582,14 +590,50 @@ async function dispatchToolCall(
 
   try {
     const r = await handler.execute(tc.args);
-    return finishWith(
-      recordToolInvocation({
-        correlation, tool_name: tc.name, args: tc.args,
-        output: r.output, success: r.success, error: r.error,
-        latency_ms: Date.now() - start,
-      }),
-      r.success ? "info" : "error",
-    );
+    const rec = recordToolInvocation({
+      correlation, tool_name: tc.name, args: tc.args,
+      output: r.output, success: r.success, error: r.error,
+      latency_ms: Date.now() - start,
+    });
+    // M13 — provenance extraction. Only on success; failures don't have
+    // meaningful output. The extractor returns null for non-code-change
+    // tools so this is cheap.
+    let codeChange: CodeChangeRecord | undefined;
+    if (r.success) {
+      const partial = extractCodeChange({
+        tool_name: tc.name, args: tc.args, output: r.output,
+        correlation: { ...correlation, toolInvocationId: rec.id },
+      });
+      if (partial) {
+        codeChange = recordCodeChange(partial);
+        events.publish({
+          kind: "code_change.detected",
+          correlation: { ...correlation, toolInvocationId: rec.id, artifactId: codeChange.id },
+          payload: {
+            code_change_id: codeChange.id,
+            tool_name: codeChange.tool_name,
+            paths_touched: codeChange.paths_touched,
+            has_diff: Boolean(codeChange.diff),
+            has_patch: Boolean(codeChange.patch),
+            has_commit: Boolean(codeChange.commit_sha),
+            source: codeChange.source,
+          },
+        });
+        if (codeChange.commit_sha) {
+          events.publish({
+            kind: "git.commit.created",
+            correlation: { ...correlation, toolInvocationId: rec.id, artifactId: codeChange.id },
+            payload: {
+              code_change_id: codeChange.id,
+              commit_sha: codeChange.commit_sha,
+              paths_touched: codeChange.paths_touched,
+            },
+          });
+        }
+      }
+    }
+    const out = finishWith(rec, r.success ? "info" : "error");
+    return { ...out, codeChange };
   } catch (err) {
     return finishWith(
       recordToolInvocation({

@@ -10,6 +10,7 @@ import { api } from '../../lib/api'
 import { RuntimeWidgetForm, type RuntimeFormSubmitTarget } from '../forms/widgets/RuntimeWidgetForm'
 import type { FormWidget } from '../forms/widgets/types'
 import { LiveEventsPanel } from './LiveEventsPanel'
+import { CodeChangesPanel } from './CodeChangesPanel'
 
 /**
  * Step-by-step run viewer.  Lays out the run as a vertical timeline of steps;
@@ -138,6 +139,9 @@ export function RunViewerPage() {
 
       {/* M9.y — live MCP event tap, scoped to this run */}
       {id && <LiveEventsPanel runId={id} />}
+
+      {/* M13 — structured code-change provenance, joined via cf call_log */}
+      {id && <CodeChangesPanel runId={id} />}
     </div>
   )
 }

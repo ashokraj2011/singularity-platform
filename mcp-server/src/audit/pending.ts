@@ -46,6 +46,8 @@ export interface PendingApproval {
   llm_call_ids: string[];
   tool_invocation_ids: string[];
   artifact_ids: string[];
+  /** M13 — preserved across approval pauses so code-change provenance survives. */
+  code_change_ids?: string[];
   total_input_tokens: number;
   total_output_tokens: number;
 }

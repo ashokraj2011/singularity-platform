@@ -70,6 +70,7 @@ export interface ExecuteResponse {
     llmCallIds: string[]
     toolInvocationIds: string[]
     artifactIds: string[]
+    codeChangeIds?: string[]
   }
   tokensUsed?: { input: number; output: number; total: number }
   finishReason?: string
@@ -85,6 +86,26 @@ export interface ResumeRequest {
   decision: 'approved' | 'rejected'
   reason?: string
   args_override?: Record<string, unknown>
+}
+
+export interface CodeChangeRecord {
+  id: string
+  tool_name?: string
+  paths_touched?: string[]
+  diff?: string
+  patch?: string
+  commit_sha?: string
+  language?: string
+  lines_added?: number
+  lines_removed?: number
+  timestamp?: string
+  stale?: boolean
+}
+
+export interface CodeChangeListResponse {
+  cfCallId: string
+  items: CodeChangeRecord[]
+  stale: boolean
 }
 
 export class ContextFabricError extends Error {
@@ -114,6 +135,26 @@ export const contextFabricClient = {
       )
     }
     return (await res.json()) as ExecuteResponse
+  },
+
+  // M13 — fetch all code-changes captured by a single cf execute call.
+  // Hits /internal/mcp/code-changes which joins the persisted call_log row
+  // to the live MCP `/resources/code-changes` records.
+  async listCodeChanges(cfCallId: string): Promise<CodeChangeListResponse> {
+    const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/internal/mcp/code-changes?cf_call_id=${encodeURIComponent(cfCallId)}`
+    const res = await fetch(url, {
+      method:  'GET',
+      headers: { 'X-Service-Token': config.CONTEXT_FABRIC_SERVICE_TOKEN ?? '' },
+      signal:  AbortSignal.timeout(15_000),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new ContextFabricError(
+        `context-fabric /internal/mcp/code-changes returned ${res.status}: ${text.slice(0, 300)}`,
+        res.status,
+      )
+    }
+    return (await res.json()) as CodeChangeListResponse
   },
 
   async resume(input: ResumeRequest): Promise<ExecuteResponse> {

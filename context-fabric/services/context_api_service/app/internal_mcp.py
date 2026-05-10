@@ -76,6 +76,131 @@ async def list_mcp_servers_for_capability(
     return {"capability_id": capability_id, "servers": resp.json()}
 
 
+# ── M13 — code-changes proxy ────────────────────────────────────────────────
+#
+# context-fabric's call_log rows carry `code_change_ids[]` and `mcp_server_id`.
+# workgraph asks us to resolve a run's code-changes; we pull the call_log row,
+# fetch the MCP server credentials from IAM, then call MCP /resources/code-changes
+# with the persisted ids. MCP is the source of truth — if MCP has restarted and
+# dropped the ring, we still return the persisted ids with a `stale: true` flag
+# so the UI can render a useful "diff content unavailable" notice.
+
+async def _fetch_mcp_server(server_id: str) -> dict:
+    url = f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{server_id}"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            url,
+            headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
+        )
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail="mcp server not found")
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"IAM returned {resp.status_code}: {resp.text[:300]}",
+        )
+    return resp.json()
+
+
+@router.get("/code-changes")
+async def list_code_changes_for_call(
+    cf_call_id: str = Query(..., description="CallLog row id; resolves which MCP server to query"),
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+):
+    """Resolve all code-changes captured during a single execute call.
+
+    Reads cf's local `call_log` row to find the `code_change_ids` and the
+    `mcp_server_id`. Looks up the MCP server credentials from IAM, then
+    calls MCP `/resources/code-changes?ids=…` to hydrate the full records.
+    Returns `{items, stale:false}` on a hit; `{items: minimal_records,
+    stale: true}` when MCP has dropped the records (eg restart).
+    """
+    _check_service_token(x_service_token)
+
+    from . import call_log
+    rec = call_log.get_by_id(cf_call_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"call_log {cf_call_id} not found")
+    ids: list[str] = rec.get("code_change_ids") or []
+    if not ids:
+        return {"cfCallId": cf_call_id, "items": [], "stale": False}
+
+    server_id = rec.get("mcp_server_id")
+    if not server_id:
+        # No MCP server recorded — return placeholders so the UI can still display ids.
+        return {
+            "cfCallId": cf_call_id,
+            "items": [{"id": i, "stale": True, "tool_name": None, "paths_touched": []} for i in ids],
+            "stale": True,
+        }
+
+    server = await _fetch_mcp_server(server_id)
+    base   = (server.get("base_url") or "").rstrip("/")
+    bearer = server.get("bearer_token")
+    if not base or not bearer:
+        raise HTTPException(status_code=502, detail="resolved MCP server is missing base_url or bearer_token")
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(
+                f"{base}/resources/code-changes",
+                params={"ids": ",".join(ids)},
+                headers={"Authorization": f"Bearer {bearer}"},
+            )
+        except httpx.HTTPError as exc:
+            # MCP unreachable — return persisted ids with stale flag.
+            return {
+                "cfCallId": cf_call_id,
+                "items": [{"id": i, "stale": True, "tool_name": None, "paths_touched": []} for i in ids],
+                "stale": True,
+                "error": f"mcp unreachable: {exc}",
+            }
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"MCP returned {resp.status_code}: {resp.text[:300]}")
+    body = resp.json()
+    items = (body.get("data") or {}).get("items") or []
+    # MCP returns only the records it still has — fill gaps with stale placeholders so id ordering is preserved.
+    by_id = {it["id"]: it for it in items if isinstance(it, dict) and "id" in it}
+    full  = [by_id.get(i) or {"id": i, "stale": True, "tool_name": None, "paths_touched": []} for i in ids]
+    any_stale = any(it.get("stale") for it in full)
+    return {"cfCallId": cf_call_id, "items": full, "stale": any_stale}
+
+
+@router.get("/code-changes/{change_id}")
+async def get_code_change(
+    change_id: str,
+    cf_call_id: str = Query(..., description="CallLog row id used to resolve which MCP server holds this change"),
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+):
+    """Fetch a single code-change by id. Requires `cf_call_id` so we can
+    resolve which MCP server holds the record (MCP is per-tenant)."""
+    _check_service_token(x_service_token)
+
+    from . import call_log
+    rec = call_log.get_by_id(cf_call_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"call_log {cf_call_id} not found")
+    server_id = rec.get("mcp_server_id")
+    if not server_id:
+        raise HTTPException(status_code=404, detail="no mcp_server_id on call_log row")
+    server = await _fetch_mcp_server(server_id)
+    base   = (server.get("base_url") or "").rstrip("/")
+    bearer = server.get("bearer_token")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(
+                f"{base}/resources/code-changes/{change_id}",
+                headers={"Authorization": f"Bearer {bearer}"},
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"mcp unreachable: {exc}")
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail="code-change not found in MCP (may have been evicted from ring)")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"MCP returned {resp.status_code}: {resp.text[:300]}")
+    return resp.json().get("data")
+
+
 @router.get("/servers/{server_id}")
 async def get_mcp_server(
     server_id: str,

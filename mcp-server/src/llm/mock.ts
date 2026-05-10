@@ -79,6 +79,17 @@ function decideToolCall(
       },
     };
   }
+  // write <content> to <path>  →  write_file_demo (M13 smoke).
+  if (toolNames.has("write_file_demo")) {
+    const m = msg.match(/write\s+(.*?)\s+to\s+(\S+)/i);
+    if (m) {
+      return {
+        id: `tc-${uuidv4().slice(0, 8)}`,
+        name: "write_file_demo",
+        args: { path: m[2], content: m[1] },
+      };
+    }
+  }
   return null;
 }
 

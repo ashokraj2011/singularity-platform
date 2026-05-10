@@ -34,6 +34,11 @@ const envSchema = z.object({
 
   // ── Context Fabric (M8 — AGENT_TASK executor calls /execute) ──
   CONTEXT_FABRIC_URL: z.string().default('http://localhost:8000'),
+  // M13 — service token for context-fabric's /internal/mcp/* surface (the
+  // proxy that resolves code-changes through MCP). Should match the value
+  // configured on context-fabric as IAM_SERVICE_TOKEN. In dev with no IAM
+  // (pseudo-iam mode) this can be any matching string.
+  CONTEXT_FABRIC_SERVICE_TOKEN: z.string().optional(),
 
   // ── M10 — agent-and-tools upstream URLs for federated lookups ──
   AGENT_SERVICE_URL: z.string().default('http://localhost:3001'),

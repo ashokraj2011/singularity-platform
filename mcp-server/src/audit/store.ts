@@ -57,6 +57,35 @@ export interface ArtifactRecord {
   timestamp: string;
 }
 
+// M13 — Code-change observability. Produced by the provenanceExtractor when
+// a tool invocation either returns a structured `kind:"code_change"` envelope
+// or matches the heuristic file-touching name list. Lives in its own ring so
+// the resources/code-changes endpoint can answer in O(n) without scanning
+// generic artifacts. The originating ToolInvocationRecord is referenced via
+// correlation.toolInvocationId set from the parent invocation.
+export interface CodeChangeRecord {
+  id: string;
+  correlation: CorrelationIds & { toolInvocationId?: string };
+  /** Files (relative paths) the tool reported touching. */
+  paths_touched: string[];
+  /** Optional unified diff (one or more files). */
+  diff?: string;
+  /** Optional patch (apply-patch style envelope). */
+  patch?: string;
+  /** Optional git commit SHA when the change was committed. */
+  commit_sha?: string;
+  /** Optional language hint (eg "typescript", "python"). */
+  language?: string;
+  lines_added?: number;
+  lines_removed?: number;
+  /** Tool that produced the change (denormalised for quick UI display). */
+  tool_name: string;
+  /** Free-form notes from the extractor — eg "envelope" / "heuristic" / "git-commit-only". */
+  source: "envelope" | "heuristic";
+  metadata?: Record<string, unknown>;
+  timestamp: string;
+}
+
 const RING_CAP = 1000;
 class Ring<T extends { id: string }> {
   private buf: T[] = [];
@@ -78,6 +107,7 @@ class Ring<T extends { id: string }> {
 const llmCalls = new Ring<LlmCallRecord>();
 const toolInvocations = new Ring<ToolInvocationRecord>();
 const artifacts = new Ring<ArtifactRecord>();
+const codeChanges = new Ring<CodeChangeRecord>();
 
 export function recordLlmCall(r: Omit<LlmCallRecord, "id" | "timestamp">): LlmCallRecord {
   const rec: LlmCallRecord = { ...r, id: uuidv4(), timestamp: new Date().toISOString() };
@@ -96,6 +126,11 @@ export function recordArtifact(r: Omit<ArtifactRecord, "id" | "timestamp">): Art
   artifacts.push(rec);
   return rec;
 }
+export function recordCodeChange(r: Omit<CodeChangeRecord, "id" | "timestamp">): CodeChangeRecord {
+  const rec: CodeChangeRecord = { ...r, id: `cc_${uuidv4()}`, timestamp: new Date().toISOString() };
+  codeChanges.push(rec);
+  return rec;
+}
 
 export const audit = {
   llmCalls: {
@@ -112,5 +147,10 @@ export const audit = {
     byId: (id: string) => artifacts.byId(id),
     byTraceId: (t: string) => artifacts.byTraceId(t),
     recent: (limit?: number) => artifacts.recent(limit),
+  },
+  codeChanges: {
+    byId: (id: string) => codeChanges.byId(id),
+    byTraceId: (t: string) => codeChanges.byTraceId(t),
+    recent: (limit?: number) => codeChanges.recent(limit),
   },
 };

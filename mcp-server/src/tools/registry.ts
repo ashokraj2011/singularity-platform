@@ -112,10 +112,92 @@ const notifyAdminTool: ToolHandler = {
   },
 };
 
+// ── M13 — code-change demo tools ────────────────────────────────────────────
+//
+// These two return the typed `kind:"code_change"` envelope the
+// provenanceExtractor recognises. They don't actually touch the filesystem —
+// just synthesise a believable record so we can smoke the pipeline end-to-end
+// without wiring real fs/git tools yet. In v1 they get replaced by the real
+// fs / patch / git tools synced from tool-service.
+
+const writeFileDemoTool: ToolHandler = {
+  descriptor: {
+    name: "write_file_demo",
+    description: "Demo tool that records a synthetic file-write code-change. Does NOT touch disk.",
+    natural_language:
+      "Use this when the user asks to write or create a file. Provide path and content.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path:    { type: "string", description: "Relative file path" },
+        content: { type: "string", description: "New file body" },
+        language: { type: "string" },
+      },
+      required: ["path", "content"],
+    },
+    risk_level: "MEDIUM",
+    requires_approval: false,
+  },
+  async execute(args) {
+    const path     = typeof args.path === "string" ? args.path : "untitled.txt";
+    const content  = typeof args.content === "string" ? args.content : "";
+    const language = typeof args.language === "string" ? args.language : undefined;
+    const lines    = content.split("\n").length;
+    return {
+      success: true,
+      output: {
+        kind: "code_change",
+        paths_touched: [path],
+        diff: `--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${lines} @@\n${content.split("\n").map((l) => `+${l}`).join("\n")}\n`,
+        language,
+        lines_added: lines,
+        lines_removed: 0,
+      },
+    };
+  },
+};
+
+const applyPatchDemoTool: ToolHandler = {
+  descriptor: {
+    name: "apply_patch_demo",
+    description: "Demo tool that records a synthetic patch + git commit code-change. Does NOT touch disk.",
+    natural_language:
+      "Use this when the user asks to apply a patch or commit a change.",
+    input_schema: {
+      type: "object",
+      properties: {
+        patch:        { type: "string" },
+        commit_message: { type: "string" },
+      },
+      required: ["patch"],
+    },
+    risk_level: "MEDIUM",
+    requires_approval: false,
+  },
+  async execute(args) {
+    const patch  = typeof args.patch === "string" ? args.patch : "";
+    // Fake a deterministic-ish sha so smoke tests are repeatable.
+    const sha = "demo" + Math.random().toString(16).slice(2, 10).padEnd(8, "0");
+    // Best-effort path extraction from `+++ b/<path>` lines in the patch.
+    const paths = Array.from(patch.matchAll(/\+\+\+ b\/(\S+)/g)).map((m) => m[1]);
+    return {
+      success: true,
+      output: {
+        kind: "code_change",
+        paths_touched: paths,
+        patch,
+        commit_sha: sha,
+      },
+    };
+  },
+};
+
 const REGISTRY = new Map<string, ToolHandler>([
   [echoTool.descriptor.name, echoTool],
   [nowTool.descriptor.name, nowTool],
   [notifyAdminTool.descriptor.name, notifyAdminTool],
+  [writeFileDemoTool.descriptor.name, writeFileDemoTool],
+  [applyPatchDemoTool.descriptor.name, applyPatchDemoTool],
 ]);
 
 export function listLocalTools(): ToolDescriptor[] {

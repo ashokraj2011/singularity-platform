@@ -29,6 +29,7 @@ import { auditRouter } from './modules/audit/audit.router'
 import { documentsRouter } from './modules/document/documents.router'
 import { runtimeRouter } from './modules/runtime/runtime.router'
 import { snapshotsRouter } from './modules/runtime/snapshots.router'
+import { codeChangesRouter } from './modules/runtime/code-changes.router'
 import { notifyRouter } from './modules/notify/notify.router'
 import { connectorsRouter } from './modules/connectors/connectors.router'
 import { artifactTemplatesRouter } from './modules/artifact/artifact-templates.router'
@@ -85,6 +86,7 @@ export function createApp(): Express {
   app.use('/api/documents', authMiddleware, documentsRouter)
   app.use('/api/runtime',   authMiddleware, runtimeRouter)
   app.use('/api/runs',      authMiddleware, snapshotsRouter)
+  app.use('/api/runs',      authMiddleware, codeChangesRouter)
   app.use('/api/notify',    authMiddleware, notifyRouter)
 
   // M10 — federated reference-data lookups (forwards user JWT to source services)

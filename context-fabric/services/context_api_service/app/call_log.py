@@ -44,6 +44,7 @@ def init_db() -> None:
                 llm_call_ids_json TEXT NOT NULL,
                 tool_invocation_ids_json TEXT NOT NULL,
                 artifact_ids_json TEXT NOT NULL,
+                code_change_ids_json TEXT NOT NULL DEFAULT '[]',
                 status TEXT NOT NULL,
                 finish_reason TEXT,
                 final_response TEXT,
@@ -66,6 +67,7 @@ def init_db() -> None:
             "ALTER TABLE call_log ADD COLUMN continuation_token TEXT",
             "ALTER TABLE call_log ADD COLUMN pending_tool_name TEXT",
             "ALTER TABLE call_log ADD COLUMN pending_tool_args_json TEXT",
+            "ALTER TABLE call_log ADD COLUMN code_change_ids_json TEXT NOT NULL DEFAULT '[]'",
         ):
             try:
                 conn.execute(stmt)
@@ -90,11 +92,12 @@ def insert(record: dict) -> str:
                 capability_id, agent_template_id, session_id,
                 prompt_assembly_id, mcp_server_id, mcp_invocation_id,
                 llm_call_ids_json, tool_invocation_ids_json, artifact_ids_json,
+                code_change_ids_json,
                 status, finish_reason, final_response, steps_taken,
                 input_tokens, output_tokens, total_tokens, estimated_cost,
                 started_at, completed_at, error,
                 continuation_token, pending_tool_name, pending_tool_args_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row_id,
@@ -111,6 +114,7 @@ def insert(record: dict) -> str:
                 json.dumps(record.get("llm_call_ids") or []),
                 json.dumps(record.get("tool_invocation_ids") or []),
                 json.dumps(record.get("artifact_ids") or []),
+                json.dumps(record.get("code_change_ids") or []),
                 record.get("status", "UNKNOWN"),
                 record.get("finish_reason"),
                 record.get("final_response"),
@@ -144,6 +148,7 @@ def update_after_resume(call_id: str, record: dict) -> None:
                 llm_call_ids_json = ?,
                 tool_invocation_ids_json = ?,
                 artifact_ids_json = ?,
+                code_change_ids_json = ?,
                 status = ?,
                 finish_reason = ?,
                 final_response = ?,
@@ -163,6 +168,7 @@ def update_after_resume(call_id: str, record: dict) -> None:
                 json.dumps(record.get("llm_call_ids") or []),
                 json.dumps(record.get("tool_invocation_ids") or []),
                 json.dumps(record.get("artifact_ids") or []),
+                json.dumps(record.get("code_change_ids") or []),
                 record.get("status", "UNKNOWN"),
                 record.get("finish_reason"),
                 record.get("final_response"),
@@ -186,7 +192,7 @@ def get_by_continuation_token(token: str) -> Optional[dict]:
         row = row_to_dict(cur.fetchone())
         if not row:
             return None
-        for k in ("llm_call_ids_json", "tool_invocation_ids_json", "artifact_ids_json"):
+        for k in ("llm_call_ids_json", "tool_invocation_ids_json", "artifact_ids_json", "code_change_ids_json"):
             out_key = k[:-5]
             try:
                 row[out_key] = json.loads(row[k] or "[]")
@@ -204,7 +210,7 @@ def get_by_continuation_token(token: str) -> Optional[dict]:
 def _hydrate(row: Optional[dict]) -> Optional[dict]:
     if not row:
         return None
-    for k in ("llm_call_ids_json", "tool_invocation_ids_json", "artifact_ids_json"):
+    for k in ("llm_call_ids_json", "tool_invocation_ids_json", "artifact_ids_json", "code_change_ids_json"):
         out_key = k[:-5]  # strip trailing "_json"
         try:
             row[out_key] = json.loads(row[k] or "[]")
