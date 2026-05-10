@@ -1,12 +1,20 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'motion/react'
-import { Zap, AlertCircle, Loader2, ExternalLink, KeyRound } from 'lucide-react'
+import { Zap, AlertCircle, Loader2, ExternalLink, KeyRound, ShieldCheck } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAuthStore } from '../../store/auth.store'
 
 const AUTH_PROVIDER  = (import.meta.env.VITE_AUTH_PROVIDER ?? 'local') as 'local' | 'iam'
 const IAM_LOGIN_URL  = import.meta.env.VITE_IAM_LOGIN_URL  ?? 'http://localhost:5175/login'
+
+// M12 — pseudo-IAM auto-login support. When VITE_PSEUDO_IAM_URL is set, the
+// "Continue as super admin" button (and the auto-login effect when
+// VITE_AUTO_LOGIN=1) calls pseudo-IAM directly and stores the token.
+// Defaults: pseudo-IAM at :8101, auto-login enabled out-of-the-box for dev.
+const PSEUDO_IAM_URL    = import.meta.env.VITE_PSEUDO_IAM_URL    ?? 'http://localhost:8101/api/v1'
+const AUTO_LOGIN        = (import.meta.env.VITE_AUTO_LOGIN     ?? '1') !== '0'
+const PSEUDO_LOGIN_EMAIL = import.meta.env.VITE_PSEUDO_LOGIN_EMAIL ?? 'admin@pseudo.local'
 
 export function LoginPage() {
   const navigate = useNavigate()
@@ -23,6 +31,42 @@ export function LoginPage() {
 
   // Tab UI: 'local' (legacy) vs 'iam'.  Default to whichever the env says.
   const [tab, setTab] = useState<'local' | 'iam'>(AUTH_PROVIDER)
+
+  // M12 — one-click sign in via pseudo-IAM. Talks directly to pseudo-IAM
+  // (default :8101) which accepts ANY credentials and returns a JWT signed
+  // with the same JWT_SECRET as real IAM, so workgraph-api accepts it.
+  async function pseudoLogin() {
+    setError(''); setLoading(true)
+    try {
+      const res = await fetch(`${PSEUDO_IAM_URL.replace(/\/$/, '')}/auth/local/login`, {
+        method:  'POST',
+        headers: { 'content-type': 'application/json' },
+        body:    JSON.stringify({ email: PSEUDO_LOGIN_EMAIL, password: 'pseudo' }),
+      })
+      if (!res.ok) {
+        throw new Error(`pseudo-IAM ${res.status}: ${(await res.text()).slice(0, 200)}`)
+      }
+      const body = await res.json() as { access_token: string; user: { id: string; email: string; display_name?: string; is_super_admin?: boolean } }
+      setAuth(body.access_token, {
+        id:          body.user.id,
+        email:       body.user.email,
+        displayName: body.user.display_name ?? body.user.email,
+        roles:       body.user.is_super_admin ? ['super-admin'] : [],
+      })
+      navigate('/dashboard')
+    } catch (err) {
+      setError((err as Error).message)
+      setLoading(false)
+    }
+  }
+
+  // Auto-login on mount when VITE_AUTO_LOGIN=1 (the default for dev). The user
+  // should see a brief "signing in…" splash and then land on /dashboard
+  // without having to type anything. Set VITE_AUTO_LOGIN=0 to disable.
+  useEffect(() => {
+    if (AUTO_LOGIN) void pseudoLogin()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function handleLocalSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -107,6 +151,27 @@ export function LoginPage() {
 
           <h2 className="text-lg font-semibold text-slate-200 mb-1">Sign in</h2>
           <p className="text-sm text-slate-500 mb-5">Choose how you want to authenticate</p>
+
+          {/* M12 — one-click pseudo-IAM sign-in. Always visible so even if
+              auto-login is disabled or fails, a single click gets you in. */}
+          <button
+            onClick={() => void pseudoLogin()}
+            disabled={loading}
+            className="w-full mb-5 h-11 rounded-lg flex items-center justify-center gap-2 font-semibold text-sm transition-all"
+            style={{
+              background: 'linear-gradient(135deg, rgba(34,211,238,0.15), rgba(34,211,238,0.05))',
+              border: '1px solid rgba(34,211,238,0.4)',
+              color: '#22d3ee',
+            }}
+          >
+            {loading
+              ? <><Loader2 className="w-4 h-4 animate-spin" /> Signing in…</>
+              : <><ShieldCheck className="w-4 h-4" /> Continue as super admin (Pseudo IAM)</>}
+          </button>
+          <p className="text-[11px] text-slate-500 -mt-3 mb-5 text-center">
+            For local dev — pseudo-IAM accepts any credentials.{' '}
+            <span className="text-slate-600">Auto-login: {AUTO_LOGIN ? 'on' : 'off'} · target: {PSEUDO_IAM_URL}</span>
+          </p>
 
           {/* Tab switcher */}
           <div
