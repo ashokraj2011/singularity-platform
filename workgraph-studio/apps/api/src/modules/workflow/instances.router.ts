@@ -5,7 +5,7 @@ import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
-import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, processStartNodeAttachments } from './runtime/WorkflowRuntime'
+import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, startInstance } from './runtime/WorkflowRuntime'
 import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { cloneDesignToRun } from './lib/cloneDesignToRun'
@@ -101,6 +101,7 @@ workflowInstancesRouter.post('/', validate(createInstanceSchema), async (req, re
       await publishOutbox('WorkflowInstance', result.instance.id, 'WorkflowRunCreated', {
         instanceId: result.instance.id, templateId: body.templateId,
       })
+      await startInstance(result.instance.id, req.user!.userId)
 
       const full = await prisma.workflowInstance.findUnique({
         where: { id: result.instance.id },
@@ -377,43 +378,9 @@ workflowInstancesRouter.post('/:id/advance', validate(advanceSchema), async (req
 workflowInstancesRouter.post('/:id/start', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'start')
-    const instance = await prisma.workflowInstance.update({
-      where: { id: req.params.id },
-      data: { status: 'ACTIVE', startedAt: new Date() },
-    })
-    // Find nodes with no incoming edges → activate them
-    const allNodes = await prisma.workflowNode.findMany({ where: { instanceId: req.params.id } })
-    const allEdges = await prisma.workflowEdge.findMany({ where: { instanceId: req.params.id } })
-    const targetNodeIds = new Set(allEdges.map(e => e.targetNodeId))
-    const startNodes = allNodes.filter(n => !targetNodeIds.has(n.id))
-
-    for (const node of startNodes) {
-      await prisma.workflowNode.update({ where: { id: node.id }, data: { status: 'ACTIVE' } })
-      await prisma.workflowMutation.create({
-        data: {
-          instanceId: req.params.id,
-          nodeId: node.id,
-          mutationType: 'NODE_STATUS_CHANGE',
-          beforeState: { status: 'PENDING' },
-          afterState: { status: 'ACTIVE' },
-          performedById: req.user!.userId,
-        },
-      })
-      await processStartNodeAttachments(node, instance, req.user!.userId)
-      // START nodes are pass-through: advance immediately so downstream activates
-      if (node.nodeType === 'START') {
-        await advance(req.params.id, node.id, (instance.context ?? {}) as Record<string, unknown>, req.user!.userId)
-      }
-    }
-
-    await logEvent('WorkflowStarted', 'WorkflowInstance', instance.id, req.user!.userId)
-    const eventId = await logEvent('WorkflowActivated', 'WorkflowInstance', instance.id, req.user!.userId)
-    await createReceipt('WORKFLOW_STARTED', 'WorkflowInstance', instance.id, {
-      instanceId: instance.id,
-      startedAt: instance.startedAt?.toISOString(),
-    }, eventId)
-
-    res.json({ ...instance, startNodes: startNodes.map(n => n.id) })
+    const started = await startInstance(req.params.id, req.user!.userId)
+    const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: req.params.id } })
+    res.json({ ...instance, startNodes: started.startNodes })
   } catch (err) {
     next(err)
   }

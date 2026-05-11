@@ -18,6 +18,7 @@
 import { createHash } from 'crypto'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
+import { ValidationError } from '../../../lib/errors'
 
 export type CloneOpts = {
   templateId:      string
@@ -163,6 +164,9 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
     prisma.workflowDesignNode.findMany ({ where: { workflowId: templateId }, orderBy: { createdAt: 'asc' } }),
     prisma.workflowDesignEdge.findMany ({ where: { workflowId: templateId }, orderBy: { createdAt: 'asc' } }),
   ])
+  if (designNodes.length === 0) {
+    throw new ValidationError('Cannot start workflow run because the design has no nodes')
+  }
 
   const design: DesignWithGraph = {
     id:     templateId,

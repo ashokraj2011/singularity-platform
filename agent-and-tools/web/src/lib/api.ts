@@ -2,11 +2,53 @@ const AGENT_BASE = "/api/agents";
 const TOOL_BASE = "/api/tools";
 const AUDIT_GOV_BASE = "/api/audit-gov";
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status?: number,
+    public code?: string,
+    public details?: unknown,
+    public requestId?: string | null,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  const direct = localStorage.getItem("agent-tools-token") ||
+    localStorage.getItem("auth-token") ||
+    localStorage.getItem("token");
+  if (direct) return { Authorization: direct.startsWith("Bearer ") ? direct : `Bearer ${direct}` };
+
+  const workgraph = localStorage.getItem("workgraph-auth");
+  if (workgraph) {
+    try {
+      const parsed = JSON.parse(workgraph) as { state?: { token?: string } };
+      const token = parsed.state?.token;
+      if (token) return { Authorization: `Bearer ${token}` };
+    } catch {
+      // Ignore malformed localStorage and continue anonymously.
+    }
+  }
+
+  const envToken = process.env.NEXT_PUBLIC_AGENT_TOOLS_TOKEN;
+  return envToken ? { Authorization: envToken.startsWith("Bearer ") ? envToken : `Bearer ${envToken}` } : {};
+}
+
 async function req<T>(url: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
+  let res: Response;
+  try {
+    res = await fetch(url, { ...opts, headers: { "Content-Type": "application/json", ...authHeaders(), ...(opts?.headers ?? {}) } });
+  } catch (err) {
+    throw new ApiError((err as Error).message || "Network request failed");
+  }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-    throw new Error(err.error ?? res.statusText);
+    const raw = await res.text();
+    let parsed: { error?: string; message?: string } | null = null;
+    try { parsed = raw ? JSON.parse(raw) as { error?: string; message?: string } : null; } catch { parsed = null; }
+    throw new ApiError(parsed?.error ?? parsed?.message ?? raw.slice(0, 240) ?? res.statusText, res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -91,13 +133,38 @@ const RUNTIME_BASE = "/api/runtime";
 // ── Prompt Composer (M3 cutover — owns prompt assembly) ──
 const COMPOSER_BASE = "/api/composer";
 
-type Envelope<T> = { success: boolean; data: T; error: { code: string; message: string } | null; requestId: string | null };
+type Envelope<T> = { success: boolean; data: T; error: { code: string; message: string; details?: unknown } | null; requestId: string | null };
 
 async function reqEnv<T>(url: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
-  const json = await res.json() as Envelope<T>;
+  let res: Response;
+  try {
+    res = await fetch(url, { ...opts, headers: { "Content-Type": "application/json", ...authHeaders(), ...(opts?.headers ?? {}) } });
+  } catch (err) {
+    throw new ApiError((err as Error).message || "Network request failed");
+  }
+
+  const raw = await res.text();
+  let json: Envelope<T> | null = null;
+  try {
+    json = raw ? JSON.parse(raw) as Envelope<T> : null;
+  } catch {
+    const message = raw
+      ? `${res.status} ${res.statusText}: ${raw.slice(0, 240)}`
+      : `${res.status} ${res.statusText}`;
+    throw new ApiError(message, res.status);
+  }
+  if (!json) {
+    throw new ApiError(`${res.status} ${res.statusText}: empty response`, res.status);
+  }
+
   if (!res.ok || !json.success) {
-    throw new Error(json.error?.message ?? res.statusText);
+    throw new ApiError(
+      json.error?.message ?? res.statusText,
+      res.status,
+      json.error?.code,
+      (json.error as { details?: unknown } | null)?.details,
+      json.requestId,
+    );
   }
   return json.data;
 }
@@ -120,7 +187,7 @@ export const runtimeApi = {
   // These hit agent-runtime directly; the workgraph facade (/api/agent-studio/*)
   // is used only by the workgraph SPA's NodeInspector.
   listTemplatesScoped: (scope: "common" | "capability" | "all", capabilityId?: string) => {
-    const qs = new URLSearchParams({ scope, limit: "200" });
+    const qs = new URLSearchParams({ scope, limit: "100" });
     if (capabilityId) qs.set("capabilityId", capabilityId);
     return reqEnv<{ items: Row[]; total: number }>(`${RUNTIME_BASE}/agents/templates?${qs}`);
   },

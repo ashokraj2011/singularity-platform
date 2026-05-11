@@ -117,7 +117,7 @@ export const executionService = {
             const receipt = await prisma.toolExecutionReceipt.create({
               data: {
                 agentExecutionId: id, toolId: tool.id, toolName: call.name,
-                inputHash: sha256(call.input as object),
+                inputHash: sha256(call.input as Record<string, unknown>),
                 status: "BLOCKED", errorMessage: validation.reason,
                 startedAt: new Date(), completedAt: new Date(),
               },
@@ -131,7 +131,7 @@ export const executionService = {
           const receipt = await prisma.toolExecutionReceipt.create({
             data: {
               agentExecutionId: id, toolId: tool.id, toolName: call.name,
-              inputHash: sha256(call.input as object),
+              inputHash: sha256(call.input as Record<string, unknown>),
               status: "WAITING_APPROVAL", startedAt: new Date(),
             },
           });
@@ -155,8 +155,8 @@ export const executionService = {
         const receipt = await prisma.toolExecutionReceipt.create({
           data: {
             agentExecutionId: id, toolId: tool.id, toolName: call.name,
-            inputHash: sha256(call.input as object),
-            outputHash: result.output ? sha256(result.output as object) : null,
+            inputHash: sha256(call.input as Record<string, unknown>),
+            outputHash: result.output ? sha256(result.output as Record<string, unknown>) : null,
             status: result.success ? "SUCCESS" : "ERROR",
             errorMessage: result.error,
             startedAt, completedAt: new Date(),

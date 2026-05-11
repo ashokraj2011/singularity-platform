@@ -27,7 +27,9 @@ export async function fetchStudioAgents(capabilityId: string): Promise<{ common:
     const res = await api.get(`/agent-studio/capabilities/${encodeURIComponent(capabilityId)}/agents`)
     const data = res.data as { common?: RegistryAgent[]; capability?: RegistryAgent[] }
     return { common: data.common ?? [], capability: data.capability ?? [] }
-  } catch {
+  } catch (err) {
+    const status = axios.isAxiosError(err) ? err.response?.status : undefined
+    if (status !== 404) throw err
     const all = await fetchAgents(capabilityId)
     const common     = all.filter((a) => !a.capabilityId)
     const capability = all.filter((a) => a.capabilityId === capabilityId)

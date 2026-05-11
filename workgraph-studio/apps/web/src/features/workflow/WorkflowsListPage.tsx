@@ -872,6 +872,7 @@ export function WorkflowsListPage() {
         <RunModal
           workflow={runOpen}
           submitting={startRunMut.isPending}
+          error={startRunMut.error}
           onCancel={() => setRunOpen(null)}
           onSubmit={(body) => startRunMut.mutate({ workflowId: runOpen.id, body })}
           onSubmitBrowser={(body) => {
@@ -1585,11 +1586,26 @@ const ASSIGNMENT_VAR_KIND: Record<string, 'team' | 'user' | 'role' | 'skill'> = 
   skillKey:     'skill',
 }
 
+function mutationErrorMessage(error: unknown): string | null {
+  if (!error) return null
+  if (typeof error === 'object' && error && 'response' in error) {
+    const data = (error as { response?: { data?: unknown } }).response?.data
+    if (typeof data === 'string') return data
+    if (data && typeof data === 'object') {
+      const message = (data as { message?: unknown; error?: unknown }).message ?? (data as { message?: unknown; error?: unknown }).error
+      if (typeof message === 'string') return message
+    }
+  }
+  if (error instanceof Error) return error.message
+  return 'Could not start this workflow run.'
+}
+
 function RunModal({
-  workflow, submitting, onCancel, onSubmit, onSubmitBrowser,
+  workflow, submitting, error, onCancel, onSubmit, onSubmitBrowser,
 }: {
   workflow:   WorkflowTemplate
   submitting: boolean
+  error?:     unknown
   onCancel:   () => void
   onSubmit:   (body: { name?: string; vars?: Record<string, unknown>; globals?: Record<string, unknown> }) => void
   onSubmitBrowser: (body: { name?: string; vars?: Record<string, unknown>; globals?: Record<string, unknown> }) => void
@@ -1697,6 +1713,7 @@ function RunModal({
   }
   const submit        = () => onSubmit(buildBody())
   const submitBrowser = () => onSubmitBrowser(buildBody())
+  const errorMessage = mutationErrorMessage(error)
 
   return (
     <div
@@ -1802,6 +1819,21 @@ function RunModal({
           </p>
           <FreeformKVEditor entries={globalsState} onChange={setGlobals} />
         </details>
+
+        {errorMessage && (
+          <p style={{
+            margin: '0 0 12px',
+            padding: '9px 10px',
+            borderRadius: 8,
+            border: '1px solid rgba(220,38,38,0.22)',
+            background: 'rgba(220,38,38,0.06)',
+            color: '#b91c1c',
+            fontSize: 12,
+            lineHeight: 1.4,
+          }}>
+            {errorMessage}
+          </p>
+        )}
 
         {/* ── Footer ── */}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>

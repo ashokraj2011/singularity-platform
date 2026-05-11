@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { EntityStatus, Prisma, ToolGrantScopeType } from "@prisma/client";
 import { prisma } from "../../config/prisma";
 import { ConflictError, NotFoundError } from "../../shared/errors";
 
@@ -14,7 +14,7 @@ export const toolService = {
     }
   },
 
-  async list(filter?: { namespace?: string; status?: string }) {
+  async list(filter?: { namespace?: string; status?: EntityStatus }) {
     return prisma.toolDefinition.findMany({
       where: filter ?? {},
       orderBy: { createdAt: "desc" },
@@ -85,7 +85,7 @@ export const toolService = {
     });
   },
 
-  async listGrants(filter?: { grantScopeType?: string; grantScopeId?: string }) {
+  async listGrants(filter?: { grantScopeType?: ToolGrantScopeType; grantScopeId?: string }) {
     return prisma.toolGrant.findMany({
       where: filter ?? {},
       orderBy: { createdAt: "desc" },

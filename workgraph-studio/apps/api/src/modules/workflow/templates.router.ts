@@ -8,6 +8,7 @@ import { NotFoundError } from '../../lib/errors'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { assertTemplatePermission, resolveDefaultTeamId } from '../../lib/permissions/workflowTemplate'
 import { cloneDesignToRun, getDesignInstanceId } from './lib/cloneDesignToRun'
+import { startInstance } from './runtime/WorkflowRuntime'
 import { validateNodeConfig } from '../lookup/resolver'
 
 export const workflowTemplatesRouter: Router = Router()
@@ -117,7 +118,9 @@ workflowTemplatesRouter.post('/:id/runs', validate(startRunSchema), async (req, 
     await publishOutbox('WorkflowInstance', result.instance.id, 'WorkflowRunCreated', {
       instanceId: result.instance.id, templateId: id,
     })
-    res.status(201).json(result.instance)
+    await startInstance(result.instance.id, req.user!.userId)
+    const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: result.instance.id } })
+    res.status(201).json(instance)
   } catch (err) { next(err) }
 })
 

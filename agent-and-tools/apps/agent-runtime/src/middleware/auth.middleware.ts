@@ -6,6 +6,8 @@ export interface AuthUser {
   user_id: string;
   capability_ids?: string[];
   roles?: string[];
+  is_platform_admin?: boolean;
+  is_super_admin?: boolean;
 }
 
 declare global {

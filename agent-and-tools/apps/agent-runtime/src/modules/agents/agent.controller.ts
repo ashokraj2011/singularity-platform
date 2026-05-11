@@ -4,10 +4,34 @@ import { ok } from "../../shared/response";
 import { publishEvent } from "../../lib/eventbus/publisher";
 import { emitAuditEvent } from "../../lib/audit-gov-emit";
 import { prisma } from "../../config/prisma";
+import type { AuthUser } from "../../middleware/auth.middleware";
+
+function canEditTemplate(template: { capabilityId?: string | null; lockedReason?: string | null }, user?: AuthUser): boolean {
+  const roles = (user?.roles ?? []).map((r) => r.toLowerCase());
+  const platformAdmin = Boolean(
+    user?.is_platform_admin ||
+    user?.is_super_admin ||
+    roles.includes("platform-admin") ||
+    roles.includes("super-admin"),
+  );
+  if (!template.capabilityId) return platformAdmin;
+  return platformAdmin || Boolean(user?.capability_ids?.includes(template.capabilityId));
+}
+
+function shapeTemplate<T extends { capabilityId?: string | null; lockedReason?: string | null }>(template: T, user?: AuthUser): T & {
+  scope: "common" | "capability";
+  editable: boolean;
+} {
+  return {
+    ...template,
+    scope: template.capabilityId ? "capability" : "common",
+    editable: canEditTemplate(template, user),
+  };
+}
 
 export const agentController = {
   async createTemplate(req: Request, res: Response) {
-    const t = await agentService.createTemplate(req.body, req.user?.user_id);
+    const t = await agentService.createTemplate(req.body, req.user);
     // M11.e — emit canonical event so workgraph etc. can react
     void publishEvent(prisma, {
       eventName: "agent.template.created",
@@ -24,22 +48,22 @@ export const agentController = {
         },
       },
     }).catch((err) => console.warn("[eventbus] publishEvent failed:", (err as Error).message));
-    return ok(res, t, 201);
+    return ok(res, shapeTemplate(t, req.user), 201);
   },
 
   async listTemplates(req: Request, res: Response) {
     const result = await agentService.listTemplates(req.query as never);
-    return ok(res, result);
+    return ok(res, { ...result, items: result.items.map((t) => shapeTemplate(t, req.user)) });
   },
 
   async getTemplate(req: Request, res: Response) {
     const t = await agentService.getTemplate(req.params.id);
-    return ok(res, t);
+    return ok(res, shapeTemplate(t, req.user));
   },
 
   async deriveTemplate(req: Request, res: Response) {
     const baseId = req.params.id;
-    const t = await agentService.deriveTemplate(baseId, req.body, req.user?.user_id);
+    const t = await agentService.deriveTemplate(baseId, req.body, req.user);
     void publishEvent(prisma, {
       eventName: "agent.template.derived",
       envelope: {
@@ -71,17 +95,11 @@ export const agentController = {
         roleType:       (t as { roleType?: string }).roleType,
       },
     });
-    return ok(res, t, 201);
+    return ok(res, shapeTemplate(t, req.user), 201);
   },
 
   async updateTemplate(req: Request, res: Response) {
-    // Platform-admin gate: agent-runtime currently runs optionalAuth. Deny by
-    // default (no user ⟹ not admin); the lock only releases when a JWT
-    // carrying is_platform_admin / is_super_admin is present. A privileged
-    // service-to-service caller must use that header.
-    const u = req.user as unknown as Record<string, unknown> | undefined;
-    const isPlatformAdmin = Boolean(u && (u.is_platform_admin || u.is_super_admin));
-    const t = await agentService.updateTemplate(req.params.id, req.body, isPlatformAdmin);
+    const t = await agentService.updateTemplate(req.params.id, req.body, req.user);
     void publishEvent(prisma, {
       eventName: "agent.template.updated",
       envelope: {
@@ -104,11 +122,11 @@ export const agentController = {
       severity:       "info",
       payload: { fields_updated: Object.keys(req.body) },
     });
-    return ok(res, t);
+    return ok(res, shapeTemplate(t, req.user));
   },
 
   async createSkill(req: Request, res: Response) {
-    const s = await agentService.createSkill(req.body);
+    const s = await agentService.createSkill(req.body, req.user);
     return ok(res, s, 201);
   },
 
@@ -117,7 +135,7 @@ export const agentController = {
   },
 
   async attachSkill(req: Request, res: Response) {
-    const link = await agentService.attachSkill(req.params.id, req.body.skillId, req.body.isDefault);
+    const link = await agentService.attachSkill(req.params.id, req.body.skillId, req.body.isDefault, req.user);
     return ok(res, link, 201);
   },
 };

@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { MemoryPromotionStatus, Prisma } from "@prisma/client";
 import { prisma } from "../../config/prisma";
 import { NotFoundError } from "../../shared/errors";
 
@@ -17,7 +17,7 @@ export const memoryService = {
     });
   },
 
-  async listExecution(filter?: { workflowExecutionId?: string; capabilityId?: string; promotionStatus?: string }) {
+  async listExecution(filter?: { workflowExecutionId?: string; capabilityId?: string; promotionStatus?: MemoryPromotionStatus }) {
     return prisma.workflowExecutionMemory.findMany({
       where: filter ?? {},
       orderBy: { createdAt: "desc" },

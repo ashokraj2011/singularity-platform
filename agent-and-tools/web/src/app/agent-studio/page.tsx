@@ -2,8 +2,8 @@
 
 import { useMemo, useState } from "react";
 import useSWR from "swr";
-import { runtimeApi } from "@/lib/api";
-import { Bot, GitBranch, Lock, ShieldCheck, Sparkles, X } from "lucide-react";
+import { ApiError, runtimeApi } from "@/lib/api";
+import { AlertCircle, Bot, GitBranch, Layers, Lock, ShieldCheck, Sparkles, X } from "lucide-react";
 
 /**
  * M23 — /agent-studio
@@ -25,19 +25,77 @@ type Agent = {
   baseTemplateId?: string | null;
   lockedReason?: string | null;
   basePromptProfileId?: string | null;
+  editable?: boolean;
   status?: string;
   createdAt?: string;
   updatedAt?: string;
 };
+
+type Capability = {
+  id: string;
+  name?: string;
+  capabilityType?: string | null;
+  status?: string;
+};
+
+type PromptProfile = {
+  id: string;
+  name?: string;
+  description?: string | null;
+  layers?: Array<{
+    id: string;
+    priority?: number;
+    isEnabled?: boolean;
+    promptLayer?: {
+      id: string;
+      name?: string;
+      layerType?: string;
+      scopeType?: string;
+      content?: string;
+    };
+  }>;
+};
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function apiErrorSummary(error: unknown): { title: string; message: string; detail?: string } {
+  if (error instanceof ApiError) {
+    if (error.status === 401) {
+      return {
+        title: "Unauthorized",
+        message: "Sign in or provide an agent-tools bearer token before changing governed agent templates.",
+        detail: error.requestId ? `request ${error.requestId}` : undefined,
+      };
+    }
+    const detail = [
+      error.code,
+      error.requestId ? `request ${error.requestId}` : null,
+      error.details ? JSON.stringify(error.details) : null,
+    ].filter(Boolean).join(" · ");
+    return { title: error.code ?? `HTTP ${error.status ?? "error"}`, message: error.message, detail };
+  }
+  return { title: "Request failed", message: (error as Error)?.message ?? "Unknown error" };
+}
 
 export default function AgentStudioPage() {
   const [capabilityId, setCapabilityId] = useState("");
   const [selected, setSelected] = useState<Agent | null>(null);
   const [deriveTarget, setDeriveTarget] = useState<Agent | null>(null);
 
+  const { data: capabilities = [], error: capabilitiesError, isLoading: capabilitiesLoading } = useSWR(
+    "runtime-capabilities-for-agent-studio",
+    () => runtimeApi.listCapabilities() as Promise<Capability[]>,
+  );
+
+  const selectedCapability = capabilities.find((c) => c.id === capabilityId) ?? null;
+  const validCapabilitySelected = !capabilityId || UUID_RE.test(capabilityId);
+
   // List (common ∪ capability) — when capabilityId is empty, only common rows render.
   const swrKey = capabilityId ? `studio-${capabilityId}` : "studio-common";
-  const { data, mutate, error } = useSWR(swrKey, async () => {
+  const { data, mutate, error, isLoading } = useSWR(swrKey, async () => {
+    if (capabilityId && !UUID_RE.test(capabilityId)) {
+      throw new ApiError("Select a valid capability before loading capability agents.", 400, "INVALID_CAPABILITY");
+    }
     if (!capabilityId) {
       return runtimeApi.listTemplatesScoped("common");
     }
@@ -63,25 +121,34 @@ export default function AgentStudioPage() {
       {/* Capability selector */}
       <div className="card p-3 mb-6">
         <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">
-          capability_id
+          Capability
         </label>
-        <input
-          type="text"
-          className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md font-mono"
-          placeholder="leave blank to view only the common library"
+        <select
+          className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md bg-white"
           value={capabilityId}
-          onChange={(e) => { setCapabilityId(e.target.value.trim()); setSelected(null); }}
-        />
+          onChange={(e) => { setCapabilityId(e.target.value); setSelected(null); }}
+          disabled={capabilitiesLoading}
+        >
+          <option value="">Common library only</option>
+          {capabilities.map((cap) => (
+            <option key={cap.id} value={cap.id}>
+              {cap.name ?? cap.id}{cap.capabilityType ? ` · ${cap.capabilityType}` : ""}
+            </option>
+          ))}
+        </select>
         <p className="text-[11px] text-slate-400 mt-1">
-          Tip: any UUID works. Set this to a real capability_id to see derived agents and to derive new ones.
+          Pick a governed capability to see and derive capability-scoped agents. Leave blank to inspect only common baselines.
         </p>
+        {selectedCapability && (
+          <p className="text-[11px] text-slate-500 mt-1 font-mono">
+            {selectedCapability.id}
+          </p>
+        )}
+        {capabilitiesError && <ErrorBanner error={capabilitiesError} compact />}
       </div>
 
-      {error && (
-        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-700">
-          Failed to load: {(error as Error).message}
-        </div>
-      )}
+      {!validCapabilitySelected && <ErrorBanner error={new ApiError("Capability id is not a valid UUID.", 400, "INVALID_CAPABILITY")} />}
+      {error && <ErrorBanner error={error} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left: lists */}
@@ -89,9 +156,9 @@ export default function AgentStudioPage() {
           <Section
             icon={GitBranch}
             title={`Capability Agents (${capability.length})`}
-            empty={capabilityId ? "No derived agents for this capability yet." : "Pick a capability to see derived agents."}
+            empty={isLoading ? "Loading capability agents..." : capabilityId ? "No derived agents for this capability yet." : "Pick a capability to see derived agents."}
           >
-            {capability.map((a) => (
+            {!isLoading && capability.map((a) => (
               <AgentRow
                 key={a.id}
                 agent={a}
@@ -104,15 +171,15 @@ export default function AgentStudioPage() {
           <Section
             icon={ShieldCheck}
             title={`Common Library (${common.length})`}
-            empty="No common templates available."
+            empty={isLoading ? "Loading common templates..." : "No common templates available."}
           >
-            {common.map((a) => (
+            {!isLoading && common.map((a) => (
               <AgentRow
                 key={a.id}
                 agent={a}
                 selected={selected?.id === a.id}
                 onSelect={() => setSelected(a)}
-                onDerive={capabilityId ? () => setDeriveTarget(a) : undefined}
+                onDerive={capabilityId && validCapabilitySelected ? () => setDeriveTarget(a) : undefined}
               />
             ))}
           </Section>
@@ -132,6 +199,20 @@ export default function AgentStudioPage() {
           onDone={() => { setDeriveTarget(null); mutate(); }}
         />
       )}
+    </div>
+  );
+}
+
+function ErrorBanner({ error, compact = false }: { error: unknown; compact?: boolean }) {
+  const e = apiErrorSummary(error);
+  return (
+    <div className={`${compact ? "mt-2" : "mb-4"} p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800 flex gap-2`}>
+      <AlertCircle size={15} className="shrink-0 mt-0.5" />
+      <div>
+        <div className="font-semibold">{e.title}</div>
+        <div>{e.message}</div>
+        {e.detail && <div className="text-[11px] text-red-600 mt-1 break-all">{e.detail}</div>}
+      </div>
     </div>
   );
 }
@@ -160,6 +241,7 @@ function AgentRow({
   agent, selected, onSelect, onDerive,
 }: { agent: Agent; selected: boolean; onSelect: () => void; onDerive?: () => void }) {
   const isCommon = !agent.capabilityId;
+  const editable = agent.editable ?? !isCommon;
   return (
     <div
       onClick={onSelect}
@@ -184,7 +266,7 @@ function AgentRow({
             ) : (
               <Badge color="slate" label="Custom" />
             )}
-            {!isCommon && <Badge color="emerald" label="Editable" />}
+            {editable && <Badge color="emerald" label="Editable" />}
             {!agent.basePromptProfileId && <Badge color="red" label="No prompt profile" />}
           </div>
           {agent.description && (
@@ -226,6 +308,11 @@ function Badge({
 }
 
 function DetailPanel({ agent }: { agent: Agent | null }) {
+  const { data: profile, error: profileError, isLoading: profileLoading } = useSWR(
+    agent?.basePromptProfileId ? `prompt-profile-${agent.basePromptProfileId}` : null,
+    () => runtimeApi.getProfile(agent!.basePromptProfileId!) as Promise<PromptProfile>,
+  );
+
   if (!agent) {
     return (
       <div className="card p-6 text-sm text-slate-400">
@@ -233,7 +320,9 @@ function DetailPanel({ agent }: { agent: Agent | null }) {
       </div>
     );
   }
-  const isLocked = Boolean(agent.lockedReason);
+  const isCommon = !agent.capabilityId;
+  const isLocked = isCommon || Boolean(agent.lockedReason);
+  const editable = agent.editable ?? !isCommon;
   return (
     <div className="card p-4 space-y-4 sticky top-4">
       <div>
@@ -266,10 +355,48 @@ function DetailPanel({ agent }: { agent: Agent | null }) {
       </Field>
       <Field label="Lock">
         {isLocked ? (
-          <span className="text-amber-700 inline-flex items-center gap-1"><Lock size={11}/> {agent.lockedReason}</span>
+          <span className="text-amber-700 inline-flex items-center gap-1"><Lock size={11}/> {agent.lockedReason ?? "common platform baseline"}</span>
         ) : (
-          <span className="text-emerald-700 inline-flex items-center gap-1"><Sparkles size={11}/> editable by capability owner</span>
+          <span className="text-emerald-700 inline-flex items-center gap-1"><Sparkles size={11}/> {editable ? "editable by capability owner" : "read-only"}</span>
         )}
+      </Field>
+
+      <div>
+        <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 flex items-center gap-1">
+          <Layers size={11} /> Prompt layers
+        </div>
+        {!agent.basePromptProfileId ? (
+          <p className="text-xs text-red-700">No base prompt profile is configured.</p>
+        ) : profileLoading ? (
+          <p className="text-xs text-slate-400">Loading prompt profile...</p>
+        ) : profileError ? (
+          <div className="text-xs text-red-700">{apiErrorSummary(profileError).message}</div>
+        ) : (
+          <div className="space-y-1">
+            <p className="text-xs font-semibold text-slate-700">{profile?.name ?? agent.basePromptProfileId}</p>
+            {(profile?.layers ?? []).length === 0 ? (
+              <p className="text-xs text-amber-700">Profile has no enabled layers.</p>
+            ) : (
+              (profile?.layers ?? [])
+                .filter((l) => l.isEnabled !== false)
+                .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
+                .map((l) => (
+                  <div key={l.id} className="rounded border border-slate-100 bg-slate-50 px-2 py-1">
+                    <div className="text-[11px] font-semibold text-slate-700">
+                      {l.priority ?? "—"} · {l.promptLayer?.name ?? l.promptLayer?.id ?? l.id}
+                    </div>
+                    <div className="text-[10px] text-slate-500">
+                      {l.promptLayer?.layerType ?? "layer"} · {l.promptLayer?.scopeType ?? "scope"}
+                    </div>
+                  </div>
+                ))
+            )}
+          </div>
+        )}
+      </div>
+
+      <Field label="Runtime evidence">
+        <span className="text-slate-500">No recent execution evidence is attached to this template yet.</span>
       </Field>
 
       {agent.description && (
@@ -304,13 +431,18 @@ function DeriveDialog({
   const [err, setErr]                 = useState<string | null>(null);
 
   async function submit() {
+    if (!UUID_RE.test(capabilityId)) {
+      setErr("Select a valid capability before deriving.");
+      return;
+    }
     setSubmitting(true);
     setErr(null);
     try {
       await runtimeApi.deriveTemplate(base.id, { capabilityId, name, description });
       onDone();
     } catch (e) {
-      setErr((e as Error).message);
+      const formatted = apiErrorSummary(e);
+      setErr(`${formatted.title}: ${formatted.message}${formatted.detail ? ` (${formatted.detail})` : ""}`);
     } finally {
       setSubmitting(false);
     }

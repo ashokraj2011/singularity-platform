@@ -1415,6 +1415,7 @@ function RegistryHint({ source }: { source: 'internal' | 'external' }) {
 // Falls back to a flat fetchAgents call when no capability is selected.
 function AgentPicker({ value, onChange, capabilityId }: { value: string; onChange: (v: string) => void; capabilityId?: string | null }) {
   const qc = useQueryClient()
+  const [deriveError, setDeriveError] = useState<string | null>(null)
   const { data: studio, isLoading, isError } = useQuery({
     queryKey: ['agent-studio', capabilityId ?? 'none'],
     enabled: Boolean(capabilityId),
@@ -1443,12 +1444,17 @@ function AgentPicker({ value, onChange, capabilityId }: { value: string; onChang
 
   async function deriveSelected() {
     if (!capabilityId || !selected) return
+    setDeriveError(null)
     try {
       const created = await deriveStudioAgent(capabilityId, selected.id, { name: `${selected.name} (cap)` })
       await qc.invalidateQueries({ queryKey: ['agent-studio', capabilityId] })
       onChange(created.id)
     } catch (err) {
-      console.error('derive failed', err)
+      const message = err && typeof err === 'object' && 'response' in err
+        ? ((err as { response?: { data?: { message?: string; code?: string } } }).response?.data?.message
+            ?? (err as { response?: { data?: { code?: string } } }).response?.data?.code)
+        : (err as Error).message
+      setDeriveError(message ?? 'Could not derive this agent template.')
     }
   }
 
@@ -1508,6 +1514,11 @@ function AgentPicker({ value, onChange, capabilityId }: { value: string; onChang
         )}
         {selected?.description && (
           <span style={{ marginLeft: 4, fontStyle: 'italic', flexBasis: '100%' }}>{selected.description}</span>
+        )}
+        {deriveError && (
+          <span style={{ color: '#f87171', flexBasis: '100%' }}>
+            Derive failed: {deriveError}
+          </span>
         )}
       </div>
     </div>

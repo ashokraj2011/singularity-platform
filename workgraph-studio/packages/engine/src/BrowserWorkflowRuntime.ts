@@ -163,12 +163,13 @@ export class BrowserWorkflowRuntime {
         d.log.push({ ts: nowIso(), kind: 'NoStartNode', message: 'No START node in definition' })
         return
       }
-      d.nodes[startNode.id].status = 'COMPLETED'
-      d.nodes[startNode.id].completedAt = nowIso()
-      d.log.push({ ts: nowIso(), kind: 'NodeCompleted', nodeId: startNode.id, message: 'START' })
+	      d.nodes[startNode.id].status = 'COMPLETED'
+	      d.nodes[startNode.id].completedAt = nowIso()
+	      d.log.push({ ts: nowIso(), kind: 'NodeCompleted', nodeId: startNode.id, message: 'START' })
     })
     // Cascade from the START node
-    const startNode = this.definition.nodes.find(n => n.nodeType === 'START')!
+    const startNode = this.definition.nodes.find(n => n.nodeType === 'START')
+    if (!startNode) return
     this.cascadeAfter(startNode.id, actorId)
   }
 

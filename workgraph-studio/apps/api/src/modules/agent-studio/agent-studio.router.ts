@@ -55,7 +55,7 @@ function shapeAgent(raw: AgentTemplate): StudioAgent {
     capabilityId,
     baseTemplateId:      (r.baseTemplateId as string | undefined) ?? null,
     scope:               capabilityId ? 'capability' : 'common',
-    editable:            lockedReason == null,
+    editable:            capabilityId != null && lockedReason == null,
     lockedReason,
     basePromptProfileId: (r.basePromptProfileId as string | undefined) ?? null,
     status:              (r.status as string | undefined),
@@ -80,7 +80,7 @@ function param(req: Request, key: string): string {
 agentStudioRouter.get('/capabilities/:capabilityId/agents', async (req: Request, res: Response, next) => {
   try {
     const capabilityId = param(req, 'capabilityId')
-    const raw = await listAgentTemplates(authHeader(req), { capabilityId, limit: 200 })
+    const raw = await listAgentTemplates(authHeader(req), { capabilityId, limit: 100 })
     const items = raw.map(shapeAgent)
     const common     = items.filter((a) => a.scope === 'common')
     const capability = items.filter((a) => a.scope === 'capability' && a.capabilityId === capabilityId)

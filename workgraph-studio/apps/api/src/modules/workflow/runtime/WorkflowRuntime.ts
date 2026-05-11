@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client'
 import type { WorkflowInstance, WorkflowNode } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
 import { logEvent, createReceipt, publishOutbox } from '../../../lib/audit'
+import { ValidationError } from '../../../lib/errors'
 import { resolveNextNodes, isComplete } from './GraphTraverser'
 import { activateHumanTask } from './executors/HumanTaskExecutor'
 import { activateAgentTask } from './executors/AgentTaskExecutor'
@@ -307,10 +308,57 @@ async function activateDownstream(
       }
     }
 
-    // Fire on_activate attachments and schedule any deadlines
-    await processAttachments(nextNode, instance, 'on_activate', actorId)
-    await scheduleDeadlines(nextNode)
+	    // Fire on_activate attachments and schedule any deadlines
+	    await processAttachments(nextNode, instance, 'on_activate', actorId)
+	    await scheduleDeadlines(nextNode)
   }
+}
+
+export async function startInstance(instanceId: string, actorId?: string): Promise<{ id: string; startNodes: string[] }> {
+  // Find nodes with no incoming edges → activate them.
+  const allNodes = await prisma.workflowNode.findMany({ where: { instanceId } })
+  const allEdges = await prisma.workflowEdge.findMany({ where: { instanceId } })
+  if (allNodes.length === 0) {
+    throw new ValidationError('Cannot start workflow run because the design has no nodes')
+  }
+  const targetNodeIds = new Set(allEdges.map(e => e.targetNodeId))
+  const startNodes = allNodes.filter(n => !targetNodeIds.has(n.id))
+  if (startNodes.length === 0) {
+    throw new ValidationError('Cannot start workflow run because the graph has no entry node')
+  }
+
+  const instance = await prisma.workflowInstance.update({
+    where: { id: instanceId },
+    data: { status: 'ACTIVE', startedAt: new Date() },
+  })
+
+  for (const node of startNodes) {
+    await prisma.workflowNode.update({ where: { id: node.id }, data: { status: 'ACTIVE' } })
+    await prisma.workflowMutation.create({
+      data: {
+        instanceId,
+        nodeId: node.id,
+        mutationType: 'NODE_STATUS_CHANGE',
+        beforeState: { status: 'PENDING' },
+        afterState: { status: 'ACTIVE' },
+        performedById: actorId,
+      },
+    })
+    await processStartNodeAttachments(node, instance, actorId)
+    // START nodes are pass-through: advance immediately so downstream activates.
+    if (node.nodeType === 'START') {
+      await advance(instanceId, node.id, (instance.context ?? {}) as Record<string, unknown>, actorId)
+    }
+  }
+
+  await logEvent('WorkflowStarted', 'WorkflowInstance', instance.id, actorId)
+  const eventId = await logEvent('WorkflowActivated', 'WorkflowInstance', instance.id, actorId)
+  await createReceipt('WORKFLOW_STARTED', 'WorkflowInstance', instance.id, {
+    instanceId: instance.id,
+    startedAt: instance.startedAt?.toISOString(),
+  }, eventId)
+
+  return { id: instance.id, startNodes: startNodes.map(n => n.id) }
 }
 
 // ─── Failure handling ─────────────────────────────────────────────────────────
