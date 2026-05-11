@@ -98,6 +98,44 @@ toolRoutes.get("/:name/versions/:version", async (req: Request, res: Response) =
   res.json(tool);
 });
 
+// PATCH /api/v1/tools/:name/versions/:version — partial update of editable
+// fields. M20 ships requires_approval / status / risk_level; the rest stay
+// register-time concerns.
+toolRoutes.patch("/:name/versions/:version", async (req: Request, res: Response) => {
+  const { name, version } = req.params;
+  const ALLOWED: Record<string, "boolean" | "string"> = {
+    requires_approval: "boolean",
+    status:            "string",
+    risk_level:        "string",
+  };
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  for (const [k, t] of Object.entries(ALLOWED)) {
+    if (k in req.body) {
+      const v = req.body[k];
+      if (typeof v !== t) throw new AppError(`${k} must be ${t}`, 400);
+      params.push(v);
+      sets.push(`${k} = $${params.length}`);
+    }
+  }
+  if (sets.length === 0) throw new AppError("no patchable fields in body", 400);
+  sets.push(`updated_at = now()`);
+  params.push(name, version);
+  const updated = await queryOne(
+    `UPDATE tool.tools SET ${sets.join(", ")}
+     WHERE tool_name = $${params.length - 1} AND version = $${params.length}
+     RETURNING *`,
+    params,
+  );
+  if (!updated) throw new AppError("Tool not found", 404);
+  await query(
+    `INSERT INTO tool.tool_audit_events (tool_name, tool_version, event_type, payload)
+     VALUES ($1,$2,'tool.updated',$3)`,
+    [name, version, JSON.stringify({ patched: req.body, by: req.user?.user_id ?? null })],
+  );
+  res.json(updated);
+});
+
 // POST /api/v1/tools/:name/versions/:version/activate
 toolRoutes.post("/:name/versions/:version/activate", async (req: Request, res: Response) => {
   const { name, version } = req.params;

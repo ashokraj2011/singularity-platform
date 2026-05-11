@@ -65,6 +65,11 @@ export const toolApi = {
     req<Record<string, unknown>>(TOOL_BASE, { method: "POST", body: JSON.stringify(body) }),
   activate: (name: string, version: string) =>
     req<Record<string, unknown>>(`${TOOL_BASE}/${name}/versions/${version}/activate`, { method: "POST" }),
+  // M20 — partial update of editable fields (requires_approval / status / risk_level).
+  patch: (name: string, version: string, body: { requires_approval?: boolean; status?: string; risk_level?: string }) =>
+    req<Record<string, unknown>>(`${TOOL_BASE}/${name}/versions/${version}`, {
+      method: "PATCH", body: JSON.stringify(body),
+    }),
 
   discover: (body: Record<string, unknown>) =>
     req<{ tools: Record<string, unknown>[] }>(`${TOOL_BASE}/discover`, { method: "POST", body: JSON.stringify(body) }),

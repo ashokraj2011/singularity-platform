@@ -1,9 +1,9 @@
 "use client";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { toolApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { Plus, Wrench, Zap } from "lucide-react";
+import { Plus, Wrench, Zap, ShieldCheck, ShieldOff, X, Tag } from "lucide-react";
 
 const fetcher = () => toolApi.list();
 
@@ -26,6 +26,12 @@ export default function ToolsPage() {
   const { data, isLoading, mutate } = useSWR("tools", fetcher);
   const [showCreate, setShowCreate] = useState(false);
   const [filter, setFilter] = useState("all");
+  // M20 — additional facets and detail-modal state
+  const [tagFilter, setTagFilter]       = useState<string>("");          // "" = any
+  const [riskFilter, setRiskFilter]     = useState<string>("");          // "" | low | medium | high | critical
+  const [targetFilter, setTargetFilter] = useState<string>("");          // "" | LOCAL | SERVER
+  const [detail, setDetail]             = useState<Record<string, unknown> | null>(null);
+  const [busyKey, setBusyKey]           = useState<string | null>(null); // tool_name@version while toggling approval
   const [form, setForm] = useState({
     tool_name: "", display_name: "", description: "", version: "1.0.0",
     risk_level: "low", input_schema: SCHEMA_TEMPLATE, runtime: RUNTIME_TEMPLATE,
@@ -65,9 +71,36 @@ export default function ToolsPage() {
     await mutate();
   }
 
-  const tools = (data?.tools ?? []).filter((t) => {
-    const tool = t as Record<string, unknown>;
-    return filter === "all" || tool.status === filter;
+  async function handleToggleApproval(name: string, version: string, current: boolean) {
+    const key = `${name}@${version}`;
+    setBusyKey(key);
+    try {
+      await toolApi.patch(name, version, { requires_approval: !current });
+      await mutate();
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  // Build the tag union once for the chip strip.
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of (data?.tools ?? []) as Array<Record<string, unknown>>) {
+      const tags = (t.tags as string[]) ?? [];
+      for (const tag of tags) set.add(tag);
+    }
+    return Array.from(set).sort();
+  }, [data]);
+
+  const tools = ((data?.tools ?? []) as Array<Record<string, unknown>>).filter((tool) => {
+    if (filter !== "all" && tool.status !== filter) return false;
+    if (riskFilter && tool.risk_level !== riskFilter) return false;
+    if (targetFilter && tool.execution_target !== targetFilter) return false;
+    if (tagFilter) {
+      const tags = (tool.tags as string[]) ?? [];
+      if (!tags.includes(tagFilter)) return false;
+    }
+    return true;
   });
 
   return (
@@ -83,7 +116,7 @@ export default function ToolsPage() {
       </div>
 
       {/* Filter tabs */}
-      <div className="flex gap-1 mb-6">
+      <div className="flex gap-1 mb-3">
         {["all", "active", "draft", "suspended"].map((f) => (
           <button key={f} onClick={() => setFilter(f)}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors capitalize ${
@@ -92,6 +125,39 @@ export default function ToolsPage() {
             {f}
           </button>
         ))}
+      </div>
+
+      {/* M20 — facets: risk, execution target, tag */}
+      <div className="flex flex-wrap items-center gap-2 mb-6">
+        <span className="text-xs text-slate-500 uppercase tracking-wider">Risk:</span>
+        {["", "low", "medium", "high", "critical"].map(r => (
+          <button key={r || "any"} onClick={() => setRiskFilter(r)}
+            className={`text-xs px-2 py-1 rounded ${riskFilter === r ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}>
+            {r || "any"}
+          </button>
+        ))}
+        <span className="ml-3 text-xs text-slate-500 uppercase tracking-wider">Target:</span>
+        {["", "LOCAL", "SERVER"].map(t => (
+          <button key={t || "any"} onClick={() => setTargetFilter(t)}
+            className={`text-xs px-2 py-1 rounded ${targetFilter === t ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}>
+            {t || "any"}
+          </button>
+        ))}
+        {allTags.length > 0 && (
+          <>
+            <span className="ml-3 text-xs text-slate-500 uppercase tracking-wider flex items-center gap-1"><Tag size={11}/> Tag:</span>
+            <button onClick={() => setTagFilter("")}
+              className={`text-xs px-2 py-1 rounded ${tagFilter === "" ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}>
+              any
+            </button>
+            {allTags.map(tag => (
+              <button key={tag} onClick={() => setTagFilter(tag)}
+                className={`text-xs px-2 py-1 rounded ${tagFilter === tag ? "bg-singularity-600 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}>
+                {tag}
+              </button>
+            ))}
+          </>
+        )}
       </div>
 
       {showCreate && (
@@ -171,11 +237,15 @@ export default function ToolsPage() {
       {isLoading && <div className="text-slate-500 text-sm">Loading tools…</div>}
 
       <div className="space-y-3">
-        {tools.map((tool) => {
-          const t = tool as Record<string, unknown>;
-          const runtime = t.runtime as Record<string, unknown>;
+        {tools.map((t) => {
+          const runtime = t.runtime as Record<string, unknown> | undefined;
+          const tags = (t.tags as string[]) ?? [];
+          const requiresApproval = Boolean(t.requires_approval);
+          const key = `${t.tool_name as string}@${t.version as string}`;
           return (
-            <div key={`${t.tool_name as string}-${t.version as string}`} className="card p-5 flex items-start gap-4">
+            <div key={key}
+                 onClick={() => setDetail(t)}
+                 className="card p-5 flex items-start gap-4 cursor-pointer hover:border-slate-300 transition-colors">
               <div className="p-2.5 bg-purple-50 rounded-lg shrink-0">
                 <Wrench size={20} className="text-purple-600" />
               </div>
@@ -185,30 +255,123 @@ export default function ToolsPage() {
                   <code className="text-xs text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">{t.tool_name as string}@{t.version as string}</code>
                   <StatusBadge value={t.status as string} />
                   <StatusBadge value={t.risk_level as string} />
+                  {requiresApproval && (
+                    <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-semibold">
+                      <ShieldCheck size={10} /> approval
+                    </span>
+                  )}
+                  <span className="text-[10px] uppercase tracking-wider bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-mono">
+                    {t.execution_target as string}
+                  </span>
                 </div>
                 <p className="text-sm text-slate-600 mb-1">{t.description as string}</p>
-                {!!runtime && (
-                  <div className="text-xs text-slate-400">
-                    {runtime.execution_location as string} · {runtime.runtime_type as string}
-                  </div>
+                <div className="text-xs text-slate-400 flex flex-wrap items-center gap-2">
+                  {!!runtime && <span>{runtime.execution_location as string} · {runtime.runtime_type as string}</span>}
+                  {tags.length > 0 && (
+                    <span className="flex items-center gap-1">
+                      {tags.map(tag => (
+                        <span key={tag} className="inline-flex items-center bg-slate-100 px-1.5 py-0.5 rounded">{tag}</span>
+                      ))}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                <button
+                  onClick={() => handleToggleApproval(t.tool_name as string, t.version as string, requiresApproval)}
+                  disabled={busyKey === key}
+                  className="btn-secondary text-xs"
+                  title={requiresApproval ? "Disable approval gate" : "Require approval before this tool runs"}
+                >
+                  {requiresApproval ? <ShieldOff size={14} /> : <ShieldCheck size={14} />}
+                  {busyKey === key ? "…" : (requiresApproval ? "Disable approval" : "Require approval")}
+                </button>
+                {t.status !== "active" && (
+                  <button onClick={() => handleActivate(t.tool_name as string, t.version as string)}
+                    className="btn-secondary text-xs">
+                    <Zap size={14} /> Activate
+                  </button>
                 )}
               </div>
-              {t.status !== "active" && (
-                <button onClick={() => handleActivate(t.tool_name as string, t.version as string)}
-                  className="btn-secondary text-xs shrink-0">
-                  <Zap size={14} /> Activate
-                </button>
-              )}
             </div>
           );
         })}
         {!isLoading && tools.length === 0 && (
           <div className="card p-12 text-center text-slate-400">
             <Wrench size={40} className="mx-auto mb-3 opacity-40" />
-            <p>No tools found. Register your first tool.</p>
+            <p>No tools match the current filters.</p>
           </div>
         )}
       </div>
+
+      {/* M20 — detail modal */}
+      {detail && (
+        <div
+          className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+          onClick={() => setDetail(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[85vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between p-5 border-b border-slate-200">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap mb-1">
+                  <h2 className="text-lg font-semibold text-slate-900 truncate">{detail.display_name as string}</h2>
+                  <code className="text-xs text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                    {detail.tool_name as string}@{detail.version as string}
+                  </code>
+                  <StatusBadge value={detail.status as string} />
+                  <StatusBadge value={detail.risk_level as string} />
+                  {Boolean(detail.requires_approval) && (
+                    <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-semibold">
+                      <ShieldCheck size={10} /> approval
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-slate-600">{detail.description as string}</p>
+              </div>
+              <button onClick={() => setDetail(null)} className="text-slate-400 hover:text-slate-700 shrink-0">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-5 text-sm">
+              <DetailRow label="Execution target" value={String(detail.execution_target ?? "")} mono />
+              {!!detail.runtime && (
+                <DetailRow label="Runtime" value={JSON.stringify(detail.runtime, null, 2)} block />
+              )}
+              <DetailRow label="Input schema" value={JSON.stringify(detail.input_schema, null, 2)} block />
+              {detail.output_schema != null && typeof detail.output_schema === "object" && Object.keys(detail.output_schema as Record<string, unknown>).length > 0 ? (
+                <DetailRow label="Output schema" value={JSON.stringify(detail.output_schema, null, 2)} block />
+              ) : null}
+              {Array.isArray(detail.tags) && detail.tags.length > 0 && (
+                <div>
+                  <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">Tags</div>
+                  <div className="flex flex-wrap gap-1">
+                    {(detail.tags as string[]).map(tag => (
+                      <span key={tag} className="text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded">{tag}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DetailRow({ label, value, mono, block }: { label: string; value: string; mono?: boolean; block?: boolean }) {
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wider text-slate-500 mb-1">{label}</div>
+      {block ? (
+        <pre className={`bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-xs overflow-x-auto ${mono ? "font-mono" : ""}`}>{value}</pre>
+      ) : (
+        <div className={`text-slate-800 ${mono ? "font-mono text-xs" : ""}`}>{value}</div>
+      )}
     </div>
   );
 }
