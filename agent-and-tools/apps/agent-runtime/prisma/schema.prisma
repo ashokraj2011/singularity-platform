@@ -105,9 +105,24 @@ model AgentTemplate {
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @updatedAt
 
+  // M23 — Agent Studio governance fields.
+  // capabilityId NULL  ⟹  common library template (cross-capability baseline)
+  // capabilityId set   ⟹  capability-scoped template (derived OR created from scratch)
+  // baseTemplateId set ⟹  derived from another template (preserves lineage)
+  // lockedReason       ⟹  human-readable reason this template rejects edits
+  capabilityId        String?
+  baseTemplateId      String?
+  lockedReason        String?
+
+  baseTemplate        AgentTemplate?  @relation("AgentTemplateDerivation", fields: [baseTemplateId], references: [id])
+  derivedTemplates    AgentTemplate[] @relation("AgentTemplateDerivation")
+
   skills     AgentTemplateSkill[]
   bindings   AgentCapabilityBinding[]
   executions AgentExecution[]
+
+  @@index([capabilityId])
+  @@index([baseTemplateId])
 }
 
 model AgentSkill {

@@ -109,12 +109,18 @@ async function main() {
 
     const templateId = IDS.templates[rc.role];
     await prisma.agentTemplate.upsert({
-      where: { id: templateId }, update: {},
+      where: { id: templateId },
+      // M23 — re-stamp the lockedReason on every seed run so older databases
+      // pick up the governance flag without a manual migration.
+      update: { lockedReason: "common platform baseline" },
       create: {
         id: templateId,
         name: `${rc.role.charAt(0)}${rc.role.slice(1).toLowerCase()} Agent`,
         roleType: rc.role, basePromptProfileId: profile.id,
         description: rc.content, status: "ACTIVE",
+        // capabilityId stays NULL — these are common-library baselines.
+        // baseTemplateId stays NULL — they are roots of the derivation tree.
+        lockedReason: "common platform baseline",
       },
     });
   }

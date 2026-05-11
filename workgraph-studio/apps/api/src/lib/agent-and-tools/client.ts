@@ -195,11 +195,16 @@ export async function listRuntimeCapabilities(
 
 export async function listAgentTemplates(
   authHeader?: string,
+  query: { scope?: 'common' | 'capability' | 'all'; capabilityId?: string; limit?: number } = {},
 ): Promise<AgentTemplate[]> {
   const body = await proxyGet(
     config.AGENT_RUNTIME_URL,
     'api/v1/agents/templates',
-    {},
+    {
+      scope: query.scope,
+      capabilityId: query.capabilityId,
+      limit: query.limit ? String(query.limit) : '200',
+    },
     authHeader,
   )
   // agent-runtime wraps responses as { success, data: { items: [...] } }
@@ -230,6 +235,50 @@ export async function getAgentTemplate(
     if (err instanceof AgentAndToolsError && err.status === 404) return null
     throw err
   }
+}
+
+// M23 — derive a capability-scoped template from a base
+export async function deriveAgentTemplate(
+  baseId: string,
+  payload: { capabilityId: string; name?: string; description?: string; basePromptProfileId?: string },
+  authHeader?: string,
+): Promise<AgentTemplate> {
+  const body = await proxyPost(
+    config.AGENT_RUNTIME_URL,
+    `api/v1/agents/templates/${encodeURIComponent(baseId)}/derive`,
+    payload,
+    authHeader,
+  )
+  const root = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
+  return (root.data ?? body) as AgentTemplate
+}
+
+// M23 — patch a (derived or unlocked) template
+export async function patchAgentTemplate(
+  id: string,
+  payload: Record<string, unknown>,
+  authHeader?: string,
+): Promise<AgentTemplate> {
+  const url = new URL(`api/v1/agents/templates/${encodeURIComponent(id)}`, config.AGENT_RUNTIME_URL.replace(/\/?$/, '/'))
+  const headers: Record<string, string> = {
+    accept: 'application/json',
+    'content-type': 'application/json',
+  }
+  if (authHeader) headers.authorization = authHeader
+  let res: Response
+  try {
+    res = await fetch(url, { method: 'PATCH', headers, body: JSON.stringify(payload) })
+  } catch (err) {
+    throw new AgentAndToolsError(`agent-and-tools fetch failed (${url}): ${(err as Error).message}`, 502)
+  }
+  const text = await res.text()
+  let bodyOut: unknown
+  try { bodyOut = text ? JSON.parse(text) : null } catch { bodyOut = text }
+  if (!res.ok) {
+    throw new AgentAndToolsError(`agent-and-tools ${res.status} on PATCH /agents/templates/${id}`, res.status, bodyOut)
+  }
+  const root = (bodyOut && typeof bodyOut === 'object' ? bodyOut : {}) as Record<string, unknown>
+  return (root.data ?? bodyOut) as AgentTemplate
 }
 
 /**

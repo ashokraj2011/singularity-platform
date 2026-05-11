@@ -9,16 +9,16 @@ import {
 } from "lucide-react";
 
 const registry = [
-  { label: "Dashboard",   href: "/",          icon: LayoutDashboard },
-  { label: "Agents",      href: "/agents",     icon: Bot },
-  { label: "Tools",       href: "/tools",      icon: Wrench },
-  { label: "Executions",  href: "/executions", icon: Play },
-  { label: "Runners",     href: "/runners",    icon: Users },
-  { label: "Learning",    href: "/learning",   icon: BookOpen },
+  { label: "Dashboard",     href: "/",              icon: LayoutDashboard },
+  // M23 — single Agent Studio entry replaces flat Agents + Agent Templates pages
+  { label: "Agent Studio",  href: "/agent-studio",  icon: Bot },
+  { label: "Tools",         href: "/tools",         icon: Wrench },
+  { label: "Executions",    href: "/executions",    icon: Play },
+  { label: "Runners",       href: "/runners",       icon: Users },
+  { label: "Learning",      href: "/learning",      icon: BookOpen },
 ];
 
 const runtime = [
-  { label: "Agent Templates",     href: "/agent-templates",     icon: Bot },
   { label: "Capabilities",        href: "/capabilities",        icon: GitBranch },
   { label: "Prompt Profiles",     href: "/prompt-profiles",     icon: Layers },
   { label: "Prompt Layers",       href: "/prompt-layers",       icon: ScrollText },

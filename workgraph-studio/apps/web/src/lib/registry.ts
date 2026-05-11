@@ -8,6 +8,43 @@ export type RegistryAgent = {
   description?: string
   model?: string
   capabilities?: string[]
+  // M23 — Agent Studio governance fields (present when fetched via the
+  // Studio facade, optional from the legacy lookup proxy)
+  capabilityId?: string | null
+  baseTemplateId?: string | null
+  scope?: 'common' | 'capability'
+  editable?: boolean
+  lockedReason?: string | null
+  basePromptProfileId?: string | null
+  roleType?: string
+}
+
+// M23 — fetch Studio-shaped grouped agents for a capability via the workgraph
+// facade. Falls back to the legacy lookup proxy on 404 so the picker still
+// works against an older API.
+export async function fetchStudioAgents(capabilityId: string): Promise<{ common: RegistryAgent[]; capability: RegistryAgent[] }> {
+  try {
+    const res = await api.get(`/agent-studio/capabilities/${encodeURIComponent(capabilityId)}/agents`)
+    const data = res.data as { common?: RegistryAgent[]; capability?: RegistryAgent[] }
+    return { common: data.common ?? [], capability: data.capability ?? [] }
+  } catch {
+    const all = await fetchAgents(capabilityId)
+    const common     = all.filter((a) => !a.capabilityId)
+    const capability = all.filter((a) => a.capabilityId === capabilityId)
+    return { common, capability }
+  }
+}
+
+export async function deriveStudioAgent(
+  capabilityId: string,
+  baseId: string,
+  body: { name?: string; description?: string },
+): Promise<RegistryAgent> {
+  const res = await api.post(
+    `/agent-studio/capabilities/${encodeURIComponent(capabilityId)}/agents/${encodeURIComponent(baseId)}/derive`,
+    body,
+  )
+  return res.data as RegistryAgent
 }
 
 export type RegistryToolAction = {

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'motion/react'
 import {
   X, Save, Loader2, Plus, Trash2, ChevronDown, ChevronRight,
@@ -12,7 +12,7 @@ import {
   GitFork, ShieldAlert, SlidersHorizontal, Play, Square,
 } from 'lucide-react'
 import type { Node } from 'reactflow'
-import { fetchAgents, fetchTools, fetchCapabilities, registrySource } from '../../lib/registry'
+import { fetchAgents, fetchStudioAgents, deriveStudioAgent, fetchTools, fetchCapabilities, registrySource, type RegistryAgent } from '../../lib/registry'
 import { useActiveContextStore } from '../../store/activeContext.store'
 import { api } from '../../lib/api'
 import { UserPicker, TeamPicker, RolePicker, SkillPicker, ConnectorPicker, PickerOrText } from '../../components/lookup/EntityPickers'
@@ -1409,15 +1409,50 @@ function RegistryHint({ source }: { source: 'internal' | 'external' }) {
   )
 }
 
-// M10 — federated picker: scoped by selected capability.
+// M23 — Studio-aware picker. When a capabilityId is set, fetches the grouped
+// {common, capability} shape from the workgraph facade and renders two
+// optgroups (Capability Agents first, then Common Library) with inline badges.
+// Falls back to a flat fetchAgents call when no capability is selected.
 function AgentPicker({ value, onChange, capabilityId }: { value: string; onChange: (v: string) => void; capabilityId?: string | null }) {
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ['registry', 'agents', capabilityId ?? 'all'],
-    queryFn: () => fetchAgents(capabilityId ?? undefined),
+  const qc = useQueryClient()
+  const { data: studio, isLoading, isError } = useQuery({
+    queryKey: ['agent-studio', capabilityId ?? 'none'],
+    enabled: Boolean(capabilityId),
+    queryFn: () => fetchStudioAgents(capabilityId as string),
     staleTime: 30_000,
   })
-  const agents = data ?? []
-  const selected = agents.find(a => a.id === value)
+  const flat = useQuery({
+    queryKey: ['registry', 'agents', 'flat'],
+    enabled: !capabilityId,
+    queryFn: () => fetchAgents(undefined),
+    staleTime: 30_000,
+  })
+
+  const capabilityAgents: RegistryAgent[] = studio?.capability ?? []
+  const commonAgents:     RegistryAgent[] = studio?.common ?? (flat.data ?? [])
+  const allForLookup = [...capabilityAgents, ...commonAgents]
+  const selected = allForLookup.find(a => a.id === value)
+
+  const empty = isLoading || flat.isLoading
+    ? 'Loading agents…'
+    : isError || flat.isError
+      ? 'Failed to load agents'
+      : (capabilityAgents.length + commonAgents.length) === 0
+        ? 'No agents available'
+        : 'Select an agent…'
+
+  async function deriveSelected() {
+    if (!capabilityId || !selected) return
+    try {
+      const created = await deriveStudioAgent(capabilityId, selected.id, { name: `${selected.name} (cap)` })
+      await qc.invalidateQueries({ queryKey: ['agent-studio', capabilityId] })
+      onChange(created.id)
+    } catch (err) {
+      console.error('derive failed', err)
+    }
+  }
+
+  const showDerive = Boolean(capabilityId && selected && selected.scope === 'common')
 
   return (
     <div>
@@ -1431,22 +1466,71 @@ function AgentPicker({ value, onChange, capabilityId }: { value: string; onChang
           outline: 'none', appearance: 'none', cursor: 'pointer',
         }}
       >
-        <option value="" style={{ background: '#0f172a' }}>
-          {isLoading ? 'Loading agents…' : isError ? 'Failed to load agents' : agents.length === 0 ? 'No agents available' : 'Select an agent…'}
-        </option>
-        {agents.map(a => (
-          <option key={a.id} value={a.id} style={{ background: '#0f172a' }}>
-            {a.name}{a.model ? ` · ${a.model}` : ''}
-          </option>
-        ))}
-      </select>
-      <p style={{ fontSize: 9, color: '#475569', marginTop: 4, display: 'flex', alignItems: 'center' }}>
-        Source: <RegistryHint source={registrySource.agents} />
-        {selected?.description && (
-          <span style={{ marginLeft: 8, fontStyle: 'italic' }}>{selected.description}</span>
+        <option value="" style={{ background: '#0f172a' }}>{empty}</option>
+        {capabilityAgents.length > 0 && (
+          <optgroup label="Capability Agents" style={{ background: '#0f172a' }}>
+            {capabilityAgents.map(a => (
+              <option key={a.id} value={a.id} style={{ background: '#0f172a' }}>
+                {a.name}{a.baseTemplateId ? ' [Derived]' : ' [Custom]'}{a.model ? ` · ${a.model}` : ''}
+              </option>
+            ))}
+          </optgroup>
         )}
-      </p>
+        {commonAgents.length > 0 && (
+          <optgroup label="Common Library (locked)" style={{ background: '#0f172a' }}>
+            {commonAgents.map(a => (
+              <option key={a.id} value={a.id} style={{ background: '#0f172a' }}>
+                {a.name} [Locked]{a.model ? ` · ${a.model}` : ''}
+              </option>
+            ))}
+          </optgroup>
+        )}
+      </select>
+      <div style={{ fontSize: 9, color: '#475569', marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        Source: <RegistryHint source={registrySource.agents} />
+        {selected && (
+          <>
+            <AgentBadge selected={selected} />
+            {showDerive && (
+              <button
+                onClick={deriveSelected}
+                style={{
+                  fontSize: 9, padding: '2px 6px', borderRadius: 4, cursor: 'pointer',
+                  background: 'rgba(99,102,241,0.18)', color: '#a5b4fc',
+                  border: '1px solid rgba(99,102,241,0.32)',
+                }}
+                title="Create a capability-scoped child of this common template and select it."
+              >
+                Derive into this capability →
+              </button>
+            )}
+          </>
+        )}
+        {selected?.description && (
+          <span style={{ marginLeft: 4, fontStyle: 'italic', flexBasis: '100%' }}>{selected.description}</span>
+        )}
+      </div>
     </div>
+  )
+}
+
+function AgentBadge({ selected }: { selected: RegistryAgent }) {
+  const isCommon = selected.scope === 'common' || (!selected.capabilityId && selected.lockedReason)
+  const isDerived = selected.scope === 'capability' && Boolean(selected.baseTemplateId)
+  const noProfile = !selected.basePromptProfileId
+  const dot = (color: string, bg: string, label: string) => (
+    <span style={{
+      fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em',
+      padding: '1px 5px', borderRadius: 4, background: bg, color,
+    }}>{label}</span>
+  )
+  return (
+    <span style={{ display: 'inline-flex', gap: 4 }}>
+      {isCommon  && dot('#f59e0b', 'rgba(245,158,11,0.16)', 'Locked')}
+      {isDerived && dot('#60a5fa', 'rgba(96,165,250,0.16)', 'Derived')}
+      {!isCommon && !isDerived && selected.capabilityId && dot('#34d399', 'rgba(52,211,153,0.16)', 'Custom')}
+      {noProfile && dot('#f87171', 'rgba(248,113,113,0.16)', 'No profile')}
+    </span>
   )
 }
 

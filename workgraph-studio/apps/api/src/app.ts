@@ -34,6 +34,7 @@ import { notifyRouter } from './modules/notify/notify.router'
 import { connectorsRouter } from './modules/connectors/connectors.router'
 import { artifactTemplatesRouter } from './modules/artifact/artifact-templates.router'
 import { lookupRouter } from './modules/lookup/lookup.router'
+import { agentStudioRouter } from './modules/agent-studio/agent-studio.router'
 import { receiptsRouter } from './modules/audit/receipts.router'
 import { eventSubscriptionsRouter } from './modules/audit/event-subscriptions.router'
 import { incomingEventsRouter } from './modules/audit/incoming-events.router'
@@ -93,6 +94,8 @@ export function createApp(): Express {
 
   // M10 — federated reference-data lookups (forwards user JWT to source services)
   app.use('/api/lookup',    authMiddleware, lookupRouter)
+  // M23 — Agent Studio facade (governance + derivation on top of agent-runtime)
+  app.use('/api/agent-studio', authMiddleware, agentStudioRouter)
 
   // M11.d — unified cross-service receipt timeline
   app.use('/api/receipts',  authMiddleware, receiptsRouter)

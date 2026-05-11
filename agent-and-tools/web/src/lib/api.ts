@@ -116,6 +116,19 @@ export const runtimeApi = {
   attachSkillToTemplate: (id: string, skillId: string, isDefault = true) =>
     reqEnv<Row>(`${RUNTIME_BASE}/agents/templates/${id}/skills`, { method: "POST", body: JSON.stringify({ skillId, isDefault }) }),
 
+  // M23 — Agent Studio: derive + lock-aware patch + scoped list helpers.
+  // These hit agent-runtime directly; the workgraph facade (/api/agent-studio/*)
+  // is used only by the workgraph SPA's NodeInspector.
+  listTemplatesScoped: (scope: "common" | "capability" | "all", capabilityId?: string) => {
+    const qs = new URLSearchParams({ scope, limit: "200" });
+    if (capabilityId) qs.set("capabilityId", capabilityId);
+    return reqEnv<{ items: Row[]; total: number }>(`${RUNTIME_BASE}/agents/templates?${qs}`);
+  },
+  deriveTemplate: (baseId: string, body: { capabilityId: string; name?: string; description?: string }) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/agents/templates/${baseId}/derive`, { method: "POST", body: JSON.stringify(body) }),
+  patchTemplate: (id: string, body: Row) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/agents/templates/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+
   // Skills
   listSkills: () => reqEnv<Row[]>(`${RUNTIME_BASE}/agents/skills`),
   createSkill: (body: Row) =>
