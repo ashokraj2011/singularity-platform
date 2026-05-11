@@ -132,6 +132,20 @@ The narrative to lead with: *"Singularity is a governed agent platform — every
 
 For dev machines that already have Postgres and don't want Docker. Focused on the demo path; skips real IAM (uses pseudo-IAM), the three optional context-fabric siblings, and MinIO (file uploads will fail but everything else works).
 
+### Just run the script (recommended)
+
+```bash
+bin/bare-metal.sh up <db_user> [db_password] [db_host] [db_port]
+bin/bare-metal.sh smoke      # curl every /health endpoint
+bin/bare-metal.sh status     # list running PIDs
+bin/bare-metal.sh logs workgraph-api    # tail one service
+bin/bare-metal.sh down       # stop everything + free ports
+```
+
+Idempotent — re-runs of `up` skip installs and DB creation if they already happened, just re-boots. Defaults: `db_password` from `$PGPASSWORD` env or `postgres`, `db_host=localhost`, `db_port=5432`.
+
+The manual recipe below is what the script does under the hood — useful if you want to step through it or diverge.
+
 ### 1. Postgres prep — one shot
 Adjust user/password to match your instance (defaults: `postgres@localhost:5432`).
 
