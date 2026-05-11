@@ -74,13 +74,17 @@ export function TeamVariablesPage() {
   const isAdmin = (user?.roles ?? []).some(r => ADMIN_ROLE_NAMES.includes(r))
   const [selectedTeamId, setSelectedTeamId] = useState<string>(user?.teamId ?? '')
 
-  const { data: teamsResp } = useQuery<{ data: Team[] } | Team[]>({
+  // /api/teams returns { content: [...] }; older code expected { data } or
+  // bare array. Accept all three shapes so the picker populates either way.
+  const { data: teamsResp } = useQuery<{ content?: Team[]; data?: Team[] } | Team[]>({
     queryKey: ['teams', 'list'],
     queryFn: () => api.get('/teams').then(r => r.data),
   })
   const teams: Team[] = Array.isArray(teamsResp)
     ? teamsResp
-    : Array.isArray((teamsResp as any)?.data) ? (teamsResp as any).data : []
+    : Array.isArray((teamsResp as any)?.content) ? (teamsResp as any).content
+    : Array.isArray((teamsResp as any)?.data)    ? (teamsResp as any).data
+    : []
 
   // Default selected team to current user's team if it exists in the list
   if (!selectedTeamId && teams.length > 0) {
