@@ -45,7 +45,10 @@ services:
       NODE_ENV: production
       PORT: 8080
       DATABASE_URL: postgresql://workgraph:workgraph_secret@postgres:5432/workgraph
-      JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
+      # M23 follow-up — must match pseudo-IAM's default so tokens minted by
+      # /login (pseudoLogin in LoginPage.tsx) verify here. 32+ char minimum
+      # is enforced by workgraph-api's Zod validator.
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod-min-32-chars!!}
       MINIO_ENDPOINT: minio
       MINIO_PORT: 9000
       MINIO_ACCESS_KEY: workgraph
@@ -59,7 +62,9 @@ services:
       CONTEXT_FABRIC_URL: ${CONTEXT_FABRIC_URL:-http://host.docker.internal:8000}
       # M10 — federated /api/lookup/* sources
       AUTH_PROVIDER:     ${AUTH_PROVIDER:-local}
-      IAM_BASE_URL:      ${IAM_BASE_URL:-http://host.docker.internal:8100/api/v1}
+      # Point at pseudo-IAM by default so /login → /context-picker → API calls
+      # all use one token authority. Override to :8100 when running real IAM.
+      IAM_BASE_URL:      ${IAM_BASE_URL:-http://host.docker.internal:8101/api/v1}
       AGENT_SERVICE_URL: ${AGENT_SERVICE_URL:-http://host.docker.internal:3001}
       TOOL_SERVICE_URL:  ${TOOL_SERVICE_URL:-http://host.docker.internal:3002}
       AGENT_RUNTIME_URL: ${AGENT_RUNTIME_URL:-http://host.docker.internal:3003}

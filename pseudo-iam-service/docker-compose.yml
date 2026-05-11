@@ -4,9 +4,11 @@ services:
     container_name: pseudo-iam
     environment:
       PORT:                  "8101"
-      # Same secret as real IAM so tokens minted here are accepted by all
-      # consumers' local-verify paths without any code change.
-      JWT_SECRET:            ${JWT_SECRET:-dev-secret-change-in-prod}
+      # Must be 32+ chars to satisfy workgraph-api's Zod validator. Aligning
+      # to the same value across pseudo-iam + workgraph-api so the JWT minted
+      # here verifies in workgraph's middleware (was causing a /context-picker
+      # → /dashboard → 401 → /login → /context-picker loop).
+      JWT_SECRET:            ${JWT_SECRET:-dev-secret-change-in-prod-min-32-chars!!}
       # The MCP server pseudo-IAM points capability-mcp-servers lookups at.
       # Defaults to the running mcp-server-demo on the host.
       PSEUDO_MCP_BASE_URL:   ${PSEUDO_MCP_BASE_URL:-http://host.docker.internal:7100}
