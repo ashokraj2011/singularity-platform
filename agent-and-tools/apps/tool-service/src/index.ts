@@ -11,6 +11,7 @@ import { discoveryRoutes } from "./routes/discovery";
 import { executionRoutes } from "./routes/execution";
 import { runnerRoutes } from "./routes/runners";
 import { internalToolsRoutes } from "./routes/internal-tools";
+import { connectorToolsRoutes } from "./routes/connector-tools";
 import { errorHandler } from "./middleware/errorHandler";
 import { startSelfRegistration } from "./lib/platform-registry/register";
 import { startEventDispatcher } from "./lib/eventbus/dispatcher";
@@ -36,6 +37,8 @@ app.use("/api/v1/tools", executionRoutes);
 app.use("/api/v1", runnerRoutes);
 // M18 — internal endpoints that back the server-side core tools.
 app.use("/api/v1/internal-tools", internalToolsRoutes);
+// M19 — connector tool wrappers (proxy to workgraph /api/connectors/:id/invoke).
+app.use("/api/v1/connector-tools", connectorToolsRoutes);
 // M11.e — event-bus subscription registry
 app.use("/api/v1/events/subscriptions", eventSubscriptionsRouter);
 

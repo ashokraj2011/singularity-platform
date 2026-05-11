@@ -20,7 +20,7 @@ composeDebugRoutes.post("/", async (req, res, next) => {
     if (!capabilityId || !task) return res.status(400).json({ error: "capabilityId + task required" });
     // We need a vector; embed the task here. The service helpers expect a
     // pgvector literal already, so we duplicate that one-liner.
-    const { getEmbeddingProvider, assertDimMatches, toVectorLiteral } = await import("../../lib/embeddings");
+    const { getEmbeddingProvider, assertDimMatches, toVectorLiteral } = await import("@agentandtools/shared");
     const embedded = await getEmbeddingProvider().embed({ text: String(task).slice(0, 8_000) });
     assertDimMatches(embedded.dim, `${embedded.provider}:${embedded.model}`);
     const taskVec = toVectorLiteral(embedded.vector);

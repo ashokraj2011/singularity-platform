@@ -19,7 +19,7 @@
  */
 import { Router, Request, Response } from "express";
 import { query } from "../database";
-import { getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral } from "../lib/embeddings";
+import { getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral } from "@agentandtools/shared";
 
 const RECENCY_BOOST_DAYS = Number(process.env.EMBEDDING_RECENCY_DAYS ?? 30);
 const RECENCY_BOOST_MAX  = Number(process.env.EMBEDDING_RECENCY_BOOST ?? 0.2);

@@ -4,7 +4,7 @@ import { sha256 } from "../../shared/hash";
 import { extractSymbols, type InputFile } from "./symbol-extractor";
 import {
   getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral,
-} from "../../lib/embeddings";
+} from "@agentandtools/shared";
 import { summariseSymbol, fileSnippetFor } from "../../lib/llm/summarise";
 
 export const capabilityService = {

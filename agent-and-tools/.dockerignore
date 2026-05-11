@@ -1,0 +1,12 @@
+# Keep the workspace-root build context light. Each Dockerfile re-builds
+# packages/shared/dist via `npm run build --workspace=packages/shared`, so
+# pre-built dist on the host doesn't need to be shipped.
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/coverage
+.git
+.idea
+.vscode
+*.log

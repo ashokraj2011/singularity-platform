@@ -15,7 +15,8 @@
 import { query } from "../database";
 
 const VERSION = "1.0.0";
-const INTERNAL_BASE = process.env.INTERNAL_TOOLS_BASE_URL ?? "http://tool-service:3002/api/v1/internal-tools";
+const INTERNAL_BASE   = process.env.INTERNAL_TOOLS_BASE_URL    ?? "http://tool-service:3002/api/v1/internal-tools";
+const CONNECTOR_BASE  = process.env.CONNECTOR_TOOLS_BASE_URL   ?? "http://tool-service:3002/api/v1/connector-tools";
 
 interface SeedTool {
   name: string;
@@ -116,6 +117,42 @@ const SEEDS: SeedTool[] = [
     inputSchema: { type: "object", properties: { text: { type: "string" }, kinds: { type: "array", items: { type: "string" } } }, required: ["text"] },
     runtime: { execution_location: "server", runtime_type: "http", endpoint_url: `${INTERNAL_BASE}/extract_entities`, method: "POST" },
     executionTarget: "SERVER", tags: ["llm", "nlp", "core"],
+  },
+  // ── M19 — connector-as-tool wrappers (proxy workgraph /api/connectors/:id/invoke) ──
+  {
+    name: "connector_invoke", display: "Connector Invoke (generic)", riskLevel: "medium", requiresApproval: false,
+    description: "Generic connector call — pick any registered connector by name and invoke any operation it supports. Use the typed wrappers (send_slack_message etc) when you can; this is the escape hatch.",
+    inputSchema: { type: "object", properties: { connector_name: { type: "string" }, operation: { type: "string" }, params: { type: "object" } }, required: ["connector_name", "operation"] },
+    runtime: { execution_location: "server", runtime_type: "http", endpoint_url: `${CONNECTOR_BASE}/connector_invoke`, method: "POST" },
+    executionTarget: "SERVER", tags: ["connector", "core"],
+  },
+  {
+    name: "send_slack_message", display: "Send Slack Message", riskLevel: "medium", requiresApproval: false,
+    description: "Post a message to a Slack channel via a registered SLACK connector. `connector_name` defaults to 'default-slack' when omitted.",
+    inputSchema: { type: "object", properties: { connector_name: { type: "string" }, channel: { type: "string" }, text: { type: "string" }, blocks: { type: "array" } }, required: ["channel", "text"] },
+    runtime: { execution_location: "server", runtime_type: "http", endpoint_url: `${CONNECTOR_BASE}/send_slack_message`, method: "POST" },
+    executionTarget: "SERVER", tags: ["connector", "slack", "core"],
+  },
+  {
+    name: "send_email", display: "Send Email", riskLevel: "medium", requiresApproval: false,
+    description: "Send an email via a registered EMAIL connector. `connector_name` defaults to 'default-email'.",
+    inputSchema: { type: "object", properties: { connector_name: { type: "string" }, to: { type: "string" }, subject: { type: "string" }, body: { type: "string" }, html: { type: "boolean" } }, required: ["to", "subject", "body"] },
+    runtime: { execution_location: "server", runtime_type: "http", endpoint_url: `${CONNECTOR_BASE}/send_email`, method: "POST" },
+    executionTarget: "SERVER", tags: ["connector", "email", "core"],
+  },
+  {
+    name: "send_teams_message", display: "Send Teams Message", riskLevel: "medium", requiresApproval: false,
+    description: "Post a message to a Microsoft Teams channel via a registered TEAMS connector. `connector_name` defaults to 'default-teams'.",
+    inputSchema: { type: "object", properties: { connector_name: { type: "string" }, channel: { type: "string" }, text: { type: "string" } }, required: ["channel", "text"] },
+    runtime: { execution_location: "server", runtime_type: "http", endpoint_url: `${CONNECTOR_BASE}/send_teams_message`, method: "POST" },
+    executionTarget: "SERVER", tags: ["connector", "teams", "core"],
+  },
+  {
+    name: "create_jira_issue", display: "Create Jira Issue", riskLevel: "medium", requiresApproval: false,
+    description: "File a new Jira ticket via a registered JIRA connector. `connector_name` defaults to 'default-jira'.",
+    inputSchema: { type: "object", properties: { connector_name: { type: "string" }, project: { type: "string" }, summary: { type: "string" }, description: { type: "string" }, issue_type: { type: "string" }, priority: { type: "string" }, labels: { type: "array", items: { type: "string" } } }, required: ["project", "summary"] },
+    runtime: { execution_location: "server", runtime_type: "http", endpoint_url: `${CONNECTOR_BASE}/create_jira_issue`, method: "POST" },
+    executionTarget: "SERVER", tags: ["connector", "jira", "core"],
   },
 ];
 

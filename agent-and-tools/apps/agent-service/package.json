@@ -21,7 +21,8 @@
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.11.5",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@agentandtools/shared": "*"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

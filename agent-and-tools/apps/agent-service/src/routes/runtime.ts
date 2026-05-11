@@ -5,7 +5,7 @@ import { optionalAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
 import {
   getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral,
-} from "../lib/embeddings";
+} from "@agentandtools/shared";
 
 export const runtimeRoutes = Router();
 runtimeRoutes.use(optionalAuth);

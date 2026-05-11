@@ -19,8 +19,8 @@ services:
 
   agent-service:
     build:
-      context: ./apps/agent-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: apps/agent-service/Dockerfile
     container_name: agentandtools-agent-service
     ports:
       - "3001:3001"
@@ -40,12 +40,12 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./apps/agent-service/src:/app/src
+      - ./apps/agent-service/src:/app/apps/agent-service/src
 
   tool-service:
     build:
-      context: ./apps/tool-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: apps/tool-service/Dockerfile
     container_name: agentandtools-tool-service
     ports:
       - "3002:3002"
@@ -65,12 +65,12 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./apps/tool-service/src:/app/src
+      - ./apps/tool-service/src:/app/apps/tool-service/src
 
   agent-runtime:
     build:
-      context: ./apps/agent-runtime
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: apps/agent-runtime/Dockerfile
       target: dev
     container_name: agentandtools-agent-runtime
     ports:
@@ -93,13 +93,13 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./apps/agent-runtime/src:/app/src
-      - ./apps/agent-runtime/prisma:/app/prisma
+      - ./apps/agent-runtime/src:/app/apps/agent-runtime/src
+      - ./apps/agent-runtime/prisma:/app/apps/agent-runtime/prisma
 
   prompt-composer:
     build:
-      context: ./apps/prompt-composer
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: apps/prompt-composer/Dockerfile
       target: dev
     container_name: agentandtools-prompt-composer
     ports:
@@ -120,8 +120,8 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./apps/prompt-composer/src:/app/src
-      - ./apps/prompt-composer/prisma:/app/prisma
+      - ./apps/prompt-composer/src:/app/apps/prompt-composer/src
+      - ./apps/prompt-composer/prisma:/app/apps/prompt-composer/prisma
 
   web:
     build:

@@ -8,7 +8,7 @@ import { contextFabricClient } from "../../clients/context-fabric.client";
 import { ComposeInput, ArtifactInput } from "./compose.schemas";
 import {
   getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral,
-} from "../../lib/embeddings";
+} from "@agentandtools/shared";
 
 // M15 — hybrid scoring helper. Cosine ∈ [-1, 1] → [0, 2] via (cos+1)/2 only
 // when the caller asks; default keeps raw cosine because pgvector's `<=>`

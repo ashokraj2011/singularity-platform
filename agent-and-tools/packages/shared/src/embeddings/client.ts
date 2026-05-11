@@ -61,3 +61,21 @@ export function getEmbeddingProvider(): EmbeddingProvider {
 export function _setEmbeddingProviderForTesting(p: EmbeddingProvider | undefined): void {
   cached = p;
 }
+
+// M15 — column dim is fixed at 1536 by the migration. Embedders that produce a
+// different dim must be rejected at write time so we don't silently truncate.
+export const REQUIRED_EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM ?? 1536);
+
+export function assertDimMatches(dim: number, source: string): void {
+  if (dim !== REQUIRED_EMBEDDING_DIM) {
+    throw new Error(
+      `[embeddings] dim mismatch from ${source}: got ${dim}, column expects ${REQUIRED_EMBEDDING_DIM}. ` +
+      `Either change EMBEDDING_DIM/migration or pick a provider model that produces ${REQUIRED_EMBEDDING_DIM}-dim vectors.`,
+    );
+  }
+}
+
+/** Format a JS number[] as a pgvector literal (eg `'[0.1,0.2,...]'`). */
+export function toVectorLiteral(vec: number[]): string {
+  return `[${vec.join(",")}]`;
+}

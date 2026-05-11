@@ -20,6 +20,7 @@
     "@opentelemetry/resources": "^2.7.1",
     "@opentelemetry/sdk-node": "^0.217.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
+    "@agentandtools/shared": "*",
     "@prisma/client": "^5.22.0",
     "@types/pg": "^8.20.0",
     "ajv": "^8.17.1",
