@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import {
   LayoutDashboard, Bot, Wrench, Play, Users, BookOpen,
   GitBranch, Layers, ScrollText, ShieldCheck, Activity, Brain,
-  ChevronLeft, ChevronRight,
+  ChevronLeft, ChevronRight, DollarSign,
 } from "lucide-react";
 
 const registry = [
@@ -25,6 +25,11 @@ const runtime = [
   { label: "Tool Grants",         href: "/tool-grants",         icon: ShieldCheck },
   { label: "Runtime Executions",  href: "/runtime-executions",  icon: Activity },
   { label: "Memory",              href: "/memory",              icon: Brain },
+];
+
+const governance = [
+  { label: "Audit",  href: "/audit", icon: ShieldCheck },
+  { label: "Cost",   href: "/cost",  icon: DollarSign },
 ];
 
 type ItemDef = { label: string; href: string; icon: typeof LayoutDashboard };
@@ -200,6 +205,24 @@ export function Sidebar() {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
             {runtime.map(item => (
+              <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={true} />
+            ))}
+          </div>
+        )}
+
+        {/* Governance section (M21) */}
+        {!collapsed ? (
+          <div style={{ marginTop: 20 }}>
+            <p className="label-xs" style={{ padding: "0 12px", marginBottom: 6 }}>Governance</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              {governance.map(item => (
+                <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={false} />
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
+            {governance.map(item => (
               <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={true} />
             ))}
           </div>

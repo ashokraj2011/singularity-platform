@@ -25,6 +25,11 @@ const nextConfig = {
         source: "/api/tools/:path*",
         destination: `${process.env.TOOL_SERVICE_URL ?? "http://localhost:3002"}/api/v1/tools/:path*`,
       },
+      // M21 — audit & governance service (lives outside this compose stack)
+      {
+        source: "/api/audit-gov/:path*",
+        destination: `${process.env.AUDIT_GOV_URL ?? "http://host.docker.internal:8500"}/api/v1/:path*`,
+      },
     ];
   },
 };

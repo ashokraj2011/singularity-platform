@@ -139,6 +139,8 @@ services:
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
+      # M21 — central audit & governance ledger lives outside this compose stack
+      AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
     depends_on:
       - agent-service
       - tool-service

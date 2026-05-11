@@ -26,6 +26,7 @@ import {
 } from "../audit/store";
 import { extractCodeChange } from "../audit/provenanceExtractor";
 import { events } from "../events/bus";
+import { emitAuditEvent } from "../lib/audit-gov-emit";
 import {
   savePending, takePending, peekPending, PendingToolDescriptor,
 } from "../audit/pending";
@@ -149,6 +150,27 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
     });
     state.llmCallIds.push(llmRec.id);
 
+    // M21 — fire-and-forget to audit-governance-service. Failures land in
+    // logs only and never block the agent loop.
+    emitAuditEvent({
+      trace_id:      state.correlation.traceId,
+      source_service: "mcp-server",
+      kind:          "llm.call.completed",
+      subject_type:  "LlmCall",
+      subject_id:    llmRec.id,
+      capability_id: state.correlation.capabilityId,
+      severity:      "info",
+      payload: {
+        provider:      state.modelConfig.provider,
+        model:         state.modelConfig.model,
+        input_tokens:  llmResp.input_tokens,
+        output_tokens: llmResp.output_tokens,
+        total_tokens:  llmResp.input_tokens + llmResp.output_tokens,
+        latency_ms:    llmResp.latency_ms,
+        finish_reason: llmResp.finish_reason,
+      },
+    });
+
     events.publish({
       kind: "llm.response",
       correlation: { ...state.correlation, llmCallId: llmRec.id },
@@ -207,6 +229,42 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
             severity: "warn",
             payload: {
               continuation_token: env.continuation_token,
+              tool_name: tc.name,
+              tool_args: tc.args,
+              risk_level: desc?.risk_level,
+              expires_at: env.expires_at,
+            },
+          });
+          // M21 — register the approval in the central authority + write
+          // the audit_event so the dashboard can see who's waiting.
+          //
+          // Production hardening will MOVE the PendingApproval store from
+          // mcp-server's in-memory map into audit-governance entirely (M21.5);
+          // for v0 we mirror so the surface is visible without breaking M9.z.
+          void fetch(`${process.env.AUDIT_GOV_URL ?? "http://host.docker.internal:8500"}/api/v1/governance/approvals`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              id: env.continuation_token,
+              trace_id: state.correlation.traceId,
+              capability_id: state.correlation.capabilityId,
+              source_service: "mcp-server",
+              tool_name: tc.name,
+              tool_args: tc.args,
+              risk_level: desc?.risk_level,
+              expires_at: env.expires_at,
+            }),
+            signal: AbortSignal.timeout(5_000),
+          }).catch(() => { /* fire-and-forget */ });
+          emitAuditEvent({
+            trace_id: state.correlation.traceId,
+            source_service: "mcp-server",
+            kind: "approval.wait.created",
+            subject_type: "Approval",
+            subject_id: env.continuation_token,
+            capability_id: state.correlation.capabilityId,
+            severity: "warn",
+            payload: {
               tool_name: tc.name,
               tool_args: tc.args,
               risk_level: desc?.risk_level,
@@ -547,6 +605,22 @@ async function dispatchToolCall(
       severity,
       payload: {
         tool_name: rec.tool_name, success: rec.success, error: rec.error,
+        latency_ms: rec.latency_ms,
+      },
+    });
+    // M21 — fire-and-forget to audit-governance
+    emitAuditEvent({
+      trace_id:      correlation.traceId,
+      source_service: "mcp-server",
+      kind:          "tool.invocation.completed",
+      subject_type:  "ToolInvocation",
+      subject_id:    rec.id,
+      capability_id: correlation.capabilityId,
+      severity:      rec.success ? "info" : "warn",
+      payload: {
+        tool_name:  rec.tool_name,
+        success:    rec.success,
+        error:      rec.error,
         latency_ms: rec.latency_ms,
       },
     });

@@ -388,6 +388,8 @@ services:
       # M11.a — self-register with platform-registry
       PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       PUBLIC_BASE_URL:       ${MCP_PUBLIC_BASE_URL:-http://host.docker.internal:7100}
+      # M21 — central audit & governance ledger (fire-and-forget POST)
+      AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
     ports:
       - "7100:7100"
     volumes:

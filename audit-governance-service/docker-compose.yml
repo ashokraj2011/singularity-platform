@@ -1,0 +1,40 @@
+services:
+  audit-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: audit-governance-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: audit
+      POSTGRES_DB: audit_governance
+    ports:
+      - "5436:5432"
+    volumes:
+      - audit_postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  audit-governance:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    container_name: audit-governance-service
+    ports:
+      - "8500:8500"
+    environment:
+      NODE_ENV: development
+      PORT: 8500
+      DATABASE_URL: postgresql://postgres:audit@audit-postgres:5432/audit_governance
+    depends_on:
+      audit-postgres:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      - ./db:/app/db
+
+volumes:
+  audit_postgres_data:

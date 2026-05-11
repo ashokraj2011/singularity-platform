@@ -1,5 +1,6 @@
 const AGENT_BASE = "/api/agents";
 const TOOL_BASE = "/api/tools";
+const AUDIT_GOV_BASE = "/api/audit-gov";
 
 async function req<T>(url: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
@@ -239,4 +240,42 @@ export const runtimeApi = {
     const qs = params ? "?" + new URLSearchParams(params).toString() : "";
     return reqEnv<Row[]>(`${RUNTIME_BASE}/memory/distilled${qs}`);
   },
+};
+
+// ── M21 — Audit & Governance Service ─────────────────────
+export const auditGovApi = {
+  summary: () => req<{
+    audit_events: number; llm_calls: number;
+    total_tokens_all: number; cost_usd_all: number;
+    pending_approvals: number; denials_24h: number;
+  }>(`${AUDIT_GOV_BASE}/cost/summary`),
+  costRollup: (params: { capability_id?: string; period?: "hour"|"day"|"week"; limit?: number }) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v != null) qs.set(k, String(v));
+    return req<{
+      period: string; capability_id: string | null;
+      buckets: Array<{ bucket: string; calls: number; total_tokens: number; cost_usd: number; input_tokens: number; output_tokens: number }>;
+    }>(`${AUDIT_GOV_BASE}/cost/rollup?${qs}`);
+  },
+  costByModel: (params: { capability_id?: string; days?: number }) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v != null) qs.set(k, String(v));
+    return req<{ days: number; items: Array<{ provider: string; model: string; calls: number; total_tokens: number; cost_usd: number }> }>(
+      `${AUDIT_GOV_BASE}/cost/by-model?${qs}`,
+    );
+  },
+  auditTimeline: (params: { trace_id?: string; capability_id?: string; actor_id?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v != null) qs.set(k, String(v));
+    return req<{ count: number; items: Array<Record<string, unknown>> }>(`${AUDIT_GOV_BASE}/audit/timeline?${qs}`);
+  },
+  approvals: (params?: { status?: string; capability_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (params) for (const [k, v] of Object.entries(params)) if (v != null) qs.set(k, String(v));
+    return req<{ items: Array<Record<string, unknown>> }>(`${AUDIT_GOV_BASE}/governance/approvals?${qs}`);
+  },
+  decideApproval: (id: string, body: { decision: "approved" | "rejected"; decided_by?: string; decision_reason?: string }) =>
+    req<Record<string, unknown>>(`${AUDIT_GOV_BASE}/governance/approvals/${id}/decide`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
 };
