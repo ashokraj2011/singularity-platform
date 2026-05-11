@@ -70,28 +70,52 @@ case "$cmd" in
       info "starting $target …"
       docker compose up -d "$target"
     else
-      info "starting all services …"
+      info "starting master stack …"
       docker compose up -d
+      # Side stacks that live in their own compose files but are part of the
+      # showcase: pseudo-IAM (auth authority for the SPA) + audit-governance
+      # (cross-service ledger). Bring them up too so `./singularity.sh up`
+      # is a single-command boot.
+      if [ -d pseudo-iam-service ]; then
+        info "starting pseudo-iam …"
+        ( cd pseudo-iam-service && docker compose up -d )
+      fi
+      if [ -d audit-governance-service ]; then
+        info "starting audit-governance …"
+        ( cd audit-governance-service && docker compose up -d )
+      fi
     fi
     ok "done. Use \`$0 urls\` for the address list."
     ;;
 
   down)
     require_compose
-    info "stopping all services (volumes preserved) …"
+    info "stopping master stack (volumes preserved) …"
     docker compose down
+    if [ -d pseudo-iam-service ]; then
+      ( cd pseudo-iam-service && docker compose down )
+    fi
+    if [ -d audit-governance-service ]; then
+      ( cd audit-governance-service && docker compose down )
+    fi
     ok "stack down."
     ;;
 
   nuke)
     require_compose
-    warn "this will DELETE all data volumes (Postgres, MinIO). Type 'yes' to confirm."
+    warn "this will DELETE all data volumes (Postgres, MinIO, audit-gov). Type 'yes' to confirm."
     read -r confirm
     if [ "$confirm" != "yes" ]; then
       err "aborted."
       exit 1
     fi
     docker compose down -v
+    if [ -d pseudo-iam-service ]; then
+      ( cd pseudo-iam-service && docker compose down -v )
+    fi
+    if [ -d audit-governance-service ]; then
+      ( cd audit-governance-service && docker compose down -v )
+    fi
     ok "stack down + data wiped."
     ;;
 

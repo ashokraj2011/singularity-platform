@@ -24,22 +24,19 @@ git clone https://github.com/ashokraj2011/singularity-platform.git
 cd singularity-platform
 ```
 
-### 2. Bring up — three commands, three stacks
-The master compose covers 19 services. Two side stacks (pseudo-IAM, audit-gov) live in their own subdirs.
-
+### 2. Bring up — one command, three stacks
 ```bash
-# A) Pseudo-IAM (accepts any email/password, mints a JWT) — used by the SPA login
-( cd pseudo-iam-service && docker compose up -d )
-
-# B) Audit & governance ledger (port 8500 — every other service sends events here)
-( cd audit-governance-service && docker compose up -d )
-
-# C) Master stack: IAM + agent-and-tools (4 svcs) + context-fabric (4 svcs)
-#                 + workgraph (api+web+pg+minio) + mcp-server + portal
 ./singularity.sh up
 ```
 
+This brings up:
+- **Master stack** (19 services): IAM + agent-and-tools (4 svcs) + context-fabric (4 svcs) + workgraph (api + web + pg + minio) + mcp-server-demo + portal + user-and-capability
+- **Pseudo-IAM** (port 8101): the SPA's auth authority — accepts any email/password, mints a JWT signed with the same secret as workgraph-api
+- **Audit & governance ledger** (port 8500): the cross-service event ledger every producer fires into
+
 First boot pulls images + builds web bundles. Wait ~3–5 minutes. Tail with `./singularity.sh logs workgraph-api -f` if you want to watch.
+
+> Need to bring up just one piece? `./singularity.sh up <service-name>` works for the master-stack services (run `./singularity.sh ls` for the list). The two side stacks (pseudo-iam, audit-governance) only come up via the no-arg form.
 
 ### 3. Seed the agent-and-tools DB
 ```bash
@@ -96,10 +93,8 @@ You should see `200` for all seven.
 
 ### 7. Tear down
 ```bash
-./singularity.sh down                                    # stop everything, keep data
-( cd audit-governance-service && docker compose down )
-( cd pseudo-iam-service && docker compose down )
-# Add `-v` to any of those to delete volumes for a fully fresh next boot.
+./singularity.sh down     # stop all three stacks, keep data volumes
+./singularity.sh nuke     # stop + WIPE all data volumes (asks for confirmation)
 ```
 
 ### URLs cheat sheet (print these)
