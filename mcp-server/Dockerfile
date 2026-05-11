@@ -1,8 +1,9 @@
 FROM node:20-alpine AS base
 WORKDIR /app
-# M16 — git is required by the git_commit tool. Empty /workspace dir is the
-# default sandbox root. Mount a host volume in compose to expose real files.
-RUN apk add --no-cache git && mkdir -p /workspace
+# M16 — git is required by git_commit. Empty /workspace dir is the default
+# sandbox root; mount a host volume in compose to expose real files.
+# M18 — ripgrep powers the search_code tool.
+RUN apk add --no-cache git ripgrep && mkdir -p /workspace
 
 FROM base AS deps
 COPY package.json ./

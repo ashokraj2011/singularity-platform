@@ -196,6 +196,10 @@ const applyPatchDemoTool: ToolHandler = {
 // MCP_SANDBOX_ROOT. Demos are kept registered so existing smoke tests don't
 // break; promote write_file / git_commit when consumers are ready.
 import { writeFileTool, gitCommitTool } from "./fs-git";
+// M18 — core utility tools (read-only fs + http + ripgrep search).
+import {
+  readFileTool, listDirectoryTool, searchCodeTool, httpGetTool, webFetchTool,
+} from "./core";
 
 const REGISTRY = new Map<string, ToolHandler>([
   [echoTool.descriptor.name, echoTool],
@@ -205,6 +209,11 @@ const REGISTRY = new Map<string, ToolHandler>([
   [applyPatchDemoTool.descriptor.name, applyPatchDemoTool],
   [writeFileTool.descriptor.name, writeFileTool],
   [gitCommitTool.descriptor.name, gitCommitTool],
+  [readFileTool.descriptor.name, readFileTool],
+  [listDirectoryTool.descriptor.name, listDirectoryTool],
+  [searchCodeTool.descriptor.name, searchCodeTool],
+  [httpGetTool.descriptor.name, httpGetTool],
+  [webFetchTool.descriptor.name, webFetchTool],
 ]);
 
 export function listLocalTools(): ToolDescriptor[] {

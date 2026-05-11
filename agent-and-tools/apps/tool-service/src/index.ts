@@ -10,10 +10,12 @@ import { toolRoutes } from "./routes/tools";
 import { discoveryRoutes } from "./routes/discovery";
 import { executionRoutes } from "./routes/execution";
 import { runnerRoutes } from "./routes/runners";
+import { internalToolsRoutes } from "./routes/internal-tools";
 import { errorHandler } from "./middleware/errorHandler";
 import { startSelfRegistration } from "./lib/platform-registry/register";
 import { startEventDispatcher } from "./lib/eventbus/dispatcher";
 import { eventSubscriptionsRouter } from "./lib/eventbus/routes";
+import { seedCoreToolkit } from "./lib/seed-core-tools";
 
 dotenv.config();
 
@@ -32,6 +34,8 @@ app.use("/api/v1/tools", toolRoutes);
 app.use("/api/v1/tools", discoveryRoutes);
 app.use("/api/v1/tools", executionRoutes);
 app.use("/api/v1", runnerRoutes);
+// M18 — internal endpoints that back the server-side core tools.
+app.use("/api/v1/internal-tools", internalToolsRoutes);
 // M11.e — event-bus subscription registry
 app.use("/api/v1/events/subscriptions", eventSubscriptionsRouter);
 
@@ -58,6 +62,11 @@ startSelfRegistration({
     { capability_key: "tool.execution",  description: "Server-side tool execution + grants" },
     { capability_key: "tool.runners",    description: "Client-runner heartbeat registry" },
   ],
+});
+
+// M18 — seed the core toolkit (idempotent — only inserts missing rows).
+void seedCoreToolkit().catch((err) => {
+  console.warn(`[tool-service] core-toolkit seed failed: ${(err as Error).message}`);
 });
 
 app.listen(PORT, () => {
