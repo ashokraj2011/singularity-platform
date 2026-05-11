@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Singularity Platform — Documentation</title>
+<style>
+  :root {
+    --bg:           #ffffff;
+    --fg:           #0f172a;
+    --muted:        #64748b;
+    --line:         #e2e8f0;
+    --code-bg:      #f8fafc;
+    --code-border:  #e2e8f0;
+    --sidebar-bg:   #0f172a;
+    --sidebar-fg:   #cbd5e1;
+    --sidebar-hi:   #22d3ee;
+    --accent:       #00843D;
+    --accent-soft:  rgba(0,132,61,0.10);
+    --amber:        #b45309;
+    --amber-soft:   rgba(245,158,11,0.12);
+    --red:          #b91c1c;
+    --red-soft:     rgba(220,38,38,0.10);
+    --blue:         #1d4ed8;
+    --blue-soft:    rgba(29,78,216,0.10);
+    --max-w:        920px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, pre, kbd, .mono { font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace; }
+
+  /* ── layout ─────────────────────────────────────────────────────────── */
+  .shell { display: flex; min-height: 100vh; }
+  aside {
+    width: 280px;
+    flex-shrink: 0;
+    background: var(--sidebar-bg);
+    color: var(--sidebar-fg);
+    padding: 24px 18px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    border-right: 1px solid #1e293b;
+  }
+  aside h1 {
+    font-size: 14px;
+    margin: 0 0 4px 0;
+    color: #fff;
+    letter-spacing: 0.02em;
+  }
+  aside .tagline {
+    font-size: 11px;
+    color: #64748b;
+    margin-bottom: 24px;
+    line-height: 1.5;
+  }
+  aside h2 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #475569;
+    margin: 18px 0 6px 0;
+    font-weight: 700;
+  }
+  aside a {
+    display: block;
+    color: var(--sidebar-fg);
+    text-decoration: none;
+    font-size: 13px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    margin-bottom: 1px;
+    border-left: 2px solid transparent;
+  }
+  aside a:hover { background: #1e293b; color: #fff; }
+  aside a.active { color: var(--sidebar-hi); border-left-color: var(--sidebar-hi); background: rgba(34,211,238,0.05); }
+
+  main {
+    flex: 1;
+    padding: 48px 56px;
+    max-width: calc(var(--max-w) + 112px);
+    overflow-x: auto;
+  }
+  main .inner { max-width: var(--max-w); }
+
+  /* ── content ────────────────────────────────────────────────────────── */
+  h1.page { font-size: 32px; font-weight: 800; margin: 0 0 6px 0; letter-spacing: -0.02em; }
+  h1.page + p.lead { font-size: 17px; color: var(--muted); margin: 0 0 32px 0; }
+
+  section { margin: 56px 0; scroll-margin-top: 24px; }
+  section > h2 {
+    font-size: 24px;
+    font-weight: 800;
+    margin: 0 0 12px 0;
+    letter-spacing: -0.01em;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  section > h3 { font-size: 17px; font-weight: 700; margin: 32px 0 8px 0; }
+  section > h4 { font-size: 14px; font-weight: 700; margin: 20px 0 6px 0; letter-spacing: 0.02em; }
+  p { margin: 12px 0; }
+  ul, ol { padding-left: 22px; margin: 12px 0; }
+  ul li, ol li { margin: 4px 0; }
+
+  /* inline code + code blocks */
+  code:not(.block) {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 0.9em;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.55;
+    margin: 14px 0;
+  }
+  pre code { background: transparent; border: none; padding: 0; }
+
+  /* tables */
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  th { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  tbody tr:hover { background: #fafafa; }
+  td code { font-size: 12px; }
+
+  /* callouts */
+  .callout {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    font-size: 14px;
+  }
+  .callout.warn   { border-left-color: var(--amber); background: var(--amber-soft); }
+  .callout.danger { border-left-color: var(--red);   background: var(--red-soft); }
+  .callout.note   { border-left-color: var(--blue);  background: var(--blue-soft); }
+  .callout-title { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
+
+  /* pills */
+  .pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--accent-soft);
+    color: var(--accent);
+    margin-right: 6px;
+    border: 1px solid rgba(0,132,61,0.18);
+  }
+  .pill.amber { background: var(--amber-soft); color: var(--amber); border-color: rgba(245,158,11,0.25); }
+  .pill.red   { background: var(--red-soft);   color: var(--red);   border-color: rgba(220,38,38,0.20); }
+  .pill.blue  { background: var(--blue-soft);  color: var(--blue);  border-color: rgba(29,78,216,0.20); }
+  .pill.grey  { background: #f1f5f9; color: #475569; border-color: #cbd5e1; }
+
+  /* ASCII art / diagrams */
+  pre.diagram {
+    background: #fafafa;
+    color: #334155;
+    line-height: 1.4;
+    font-size: 12px;
+  }
+
+  /* anchor on hover */
+  h2 .anchor, h3 .anchor { opacity: 0; margin-left: 8px; color: var(--muted); text-decoration: none; font-weight: 400; }
+  h2:hover .anchor, h3:hover .anchor { opacity: 1; }
+
+  footer {
+    margin-top: 96px;
+    padding: 24px 0;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  /* mobile collapse */
+  @media (max-width: 900px) {
+    .shell { flex-direction: column; }
+    aside { width: 100%; height: auto; position: static; }
+    main { padding: 24px 20px; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+<aside>
+  <h1>Singularity Platform</h1>
+  <div class="tagline">Governed AI-agent platform — every agent rooted in a locked baseline, every run observable end-to-end, every LLM call gated against a budget.</div>
+
+  <h2>Get started</h2>
+  <a href="#overview">Overview</a>
+  <a href="#quickstart">Quickstart</a>
+  <a href="#demo-path">Demo path</a>
+
+  <h2>Architecture</h2>
+  <a href="#five-planes">The five planes</a>
+  <a href="#service-inventory">Service inventory</a>
+  <a href="#data-flow">End-to-end data flow</a>
+
+  <h2>Capabilities</h2>
+  <a href="#agent-studio">Agent Studio (M23)</a>
+  <a href="#run-insights">Run Insights (M24)</a>
+  <a href="#audit-governance">Audit &amp; Governance (M21–M22)</a>
+  <a href="#workflow-runtime">Workflow runtime</a>
+
+  <h2>Reference</h2>
+  <a href="#api-reference">API surface</a>
+  <a href="#schema-highlights">Schema highlights</a>
+  <a href="#milestones">Milestone timeline</a>
+  <a href="#troubleshooting">Troubleshooting</a>
+</aside>
+
+<main>
+<div class="inner">
+
+<h1 class="page">Singularity Platform</h1>
+<p class="lead">An enterprise AI-agent platform of independently-deployable services — identity, agent registry, prompt composition, LLM cost optimization, workflow orchestration, MCP execution, and a unified portal — wired together by a federated lookup layer, a cross-service audit ledger, and inline governance gates.</p>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="overview">
+<h2>Overview <a class="anchor" href="#overview">#</a></h2>
+
+<p>The platform is a monorepo of <strong>~19 services</strong> grouped into five planes (control, orchestration, composition, data, optimization). Every component is independently deployable; together they let you:</p>
+
+<ul>
+  <li><strong>Design</strong> multi-agent workflows in a visual editor with 22+ node types</li>
+  <li><strong>Govern</strong> agents through a derivation model — common locked baselines beget capability-scoped children</li>
+  <li><strong>Execute</strong> agent loops against any LLM via per-tenant MCP servers</li>
+  <li><strong>Observe</strong> per-step timing, cost, tokens, and artifacts on a single run insights dashboard</li>
+  <li><strong>Enforce</strong> budgets and rate limits pre-flight, before any LLM call is dispatched</li>
+</ul>
+
+<div class="callout">
+  <div class="callout-title">Where the platform earns its keep</div>
+  Most agent stacks ship the happy path: prompt, model, response. This one ships <em>the governance plane</em> — derivation lineage, lock semantics, audit-by-default, cost gates, and a single composite endpoint that joins a run with its steps, artifacts, and ledger events. That's what makes it production-shaped, not demo-shaped.
+</div>
+
+<h3>The headline numbers</h3>
+
+<table>
+  <thead><tr><th>Surface</th><th>Count</th><th>Source</th></tr></thead>
+  <tbody>
+    <tr><td>Backend services</td><td>19</td><td>master <code>docker-compose.yml</code> + 2 side stacks</td></tr>
+    <tr><td>Workflow node types</td><td>22+</td><td>workgraph-studio <code>NodeType</code> enum</td></tr>
+    <tr><td>Agent baselines (locked)</td><td>4</td><td>seed: ARCHITECT / DEVELOPER / QA / GOVERNANCE</td></tr>
+    <tr><td>Audit event producers</td><td>5</td><td>mcp-server, workgraph-api, tool-service, context-fabric, agent-runtime</td></tr>
+    <tr><td>Independent databases</td><td>4 PG + 3 SQLite</td><td>per-service isolation</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="quickstart">
+<h2>Quickstart <a class="anchor" href="#quickstart">#</a></h2>
+
+<p>From a fresh clone to a live demo in about five minutes.</p>
+
+<h3>Prerequisites</h3>
+<ul>
+  <li>Docker Desktop (Compose v2)</li>
+  <li><code>git</code>, <code>curl</code>, <code>psql</code> (optional)</li>
+  <li>Free ports: <code>3000, 5174, 5175, 5180, 7100, 8000-8003, 8080, 8100-8101, 8500, 5432-5436, 9000-9001</code></li>
+  <li>~6 GB free RAM allocated to Docker</li>
+</ul>
+
+<h3>1 · Clone</h3>
+<pre><code class="block">git clone https://github.com/ashokraj2011/singularity-platform.git
+cd singularity-platform</code></pre>
+
+<h3>2 · Boot everything</h3>
+<pre><code class="block">./singularity.sh up</code></pre>
+<p>One command brings up <strong>all three stacks</strong>: the master stack (19 services), pseudo-IAM (port 8101), and audit-governance (port 8500). First boot pulls images + builds web bundles — wait 3–5 minutes.</p>
+
+<h3>3 · Seed the agent-and-tools DB</h3>
+<pre><code class="block">( cd agent-and-tools/apps/agent-runtime \
+  && DATABASE_URL="postgresql://postgres:singularity@localhost:5432/singularity" \
+     npx prisma db seed )</code></pre>
+<p>Lands 9 agent templates (4 locked common baselines + 5 derived), 5 prompt profiles, 7 layers, 4 tools, 1 default capability.</p>
+
+<h3>4 · Smoke check</h3>
+<pre><code class="block">for u in \
+  "http://localhost:8101/health" \
+  "http://localhost:8500/health" \
+  "http://localhost:7100/health" \
+  "http://localhost:8000/health" \
+  "http://localhost:8080/health" \
+  "http://localhost:3000/api/runtime/agents/templates?scope=common&amp;limit=3" \
+  "http://localhost:5174/"; do
+  printf "%-65s %s\n" "$u" "$(curl -s -o /dev/null -w '%{http_code}' $u)"
+done</code></pre>
+<p>You should see <code>200</code> for all seven.</p>
+
+<h3>5 · Tear down</h3>
+<pre><code class="block">./singularity.sh down     # keep data volumes
+./singularity.sh nuke     # wipe all volumes (confirmation required)</code></pre>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="demo-path">
+<h2>Demo path — five clicks <a class="anchor" href="#demo-path">#</a></h2>
+
+<p>A scripted narrative that walks an audience through the platform's value in about ten minutes.</p>
+
+<table>
+<thead><tr><th>Step</th><th>Where</th><th>What to show</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>1 · Login</strong></td>
+  <td><code>localhost:5174</code></td>
+  <td>Auto-login fires through pseudo-IAM. <em>"Any user, anywhere — same JWT secret as our real IAM. Swap the env var to point at real IAM."</em></td>
+</tr>
+<tr>
+  <td><strong>2 · Agent Studio</strong></td>
+  <td><code>localhost:3000/agent-studio</code></td>
+  <td>Pick capability → see four <span class="pill amber">Locked</span> common baselines (Architect / Developer / QA / Governance). Click <strong>Derive →</strong> on one, name it. <em>"Derived agents inherit prompt profile + tool policy, become editable by capability owners, audit-gov captures <code>agent.template.derived</code>."</em></td>
+</tr>
+<tr>
+  <td><strong>3 · Run a workflow</strong></td>
+  <td><code>localhost:5174/runs</code> → <strong>Run a Workflow</strong></td>
+  <td>Pick "Business Initiative Delivery". Open a HUMAN_TASK node, attach a file, click <strong>Complete</strong>. Workflow advances.</td>
+</tr>
+<tr>
+  <td><strong>4 · Run Insights</strong></td>
+  <td>Green <strong>Insights →</strong> pill in the run viewer header</td>
+  <td>The M24 dashboard — total duration, per-step Gantt with precise timing, artifacts list, cost-by-model, audit timeline keyed to the run. <em>"Every step duration is authoritative — not inferred."</em></td>
+</tr>
+<tr>
+  <td><strong>5 · Governance</strong></td>
+  <td><code>localhost:3000/audit</code> and <code>localhost:3000/cost</code></td>
+  <td>Cross-service ledger. Show recent <code>agent.template.derived</code>, <code>cf.execute.completed</code>, <code>tool.execution.success</code>, <code>llm.call.completed</code> rows. <em>"All five producers fire fire-and-forget events here. Pre-flight budget and rate-limit checks happen inline."</em></td>
+</tr>
+</tbody>
+</table>
+
+<h3>Closing flourish — show "DENIED" live</h3>
+<pre><code class="block"># Set a tight budget for any capability
+curl -s -X POST http://localhost:8500/api/v1/governance/budgets \
+  -H 'content-type: application/json' \
+  -d '{"scope_type":"capability","scope_id":"&lt;cap-id&gt;","period":"day","tokens_max":1}'</code></pre>
+<p>Re-run any AGENT_TASK on that capability. <strong>status:DENIED</strong> returns instantly — no LLM dispatch. Open <code>/audit</code> → see <code>governance.denied</code> event with reason.</p>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="five-planes">
+<h2>The five planes <a class="anchor" href="#five-planes">#</a></h2>
+
+<p>A useful mental model when deciding which app should own a new feature.</p>
+
+<pre class="diagram">┌───────────────────────────────────────────────────────────┐
+│ CONTROL          IAM + UserAndCapabillity + Portal        │
+│  decides WHO can do WHAT; humans configure here           │
+└───────────────────────────────────────────────────────────┘
+                            │
+┌───────────────────────────▼───────────────────────────────┐
+│ ORCHESTRATION    workgraph-studio                         │
+│  decides WHEN and IN WHAT ORDER work happens              │
+└───────────────────────────────────────────────────────────┘
+                            │
+┌───────────────────────────▼───────────────────────────────┐
+│ COMPOSITION      prompt-composer (inside agent-and-tools) │
+│  decides WHAT TO SAY to the LLM (layered prompts +        │
+│  workflow context + tool contracts + artifacts)           │
+└───────────────────────────────────────────────────────────┘
+                            │
+┌───────────────────────────▼───────────────────────────────┐
+│ DATA             agent-and-tools (registries, memory)     │
+│  the WHAT of the work (templates, tools, knowledge)       │
+└───────────────────────────────────────────────────────────┘
+                            │
+┌───────────────────────────▼───────────────────────────────┐
+│ OPTIMIZATION     context-fabric                           │
+│  makes LLM calls cheaper (compaction + cost tracking)     │
+└───────────────────────────────────────────────────────────┘
+</pre>
+
+<p>Each plane is a layer of <em>responsibility</em>, not strictly a layer in a request-trace sense. A single user click can cross all five (e.g. clicking "Run" in the SPA: control plane authenticates, orchestration starts the DAG, composition assembles the prompt for the first AGENT_TASK, data plane resolves the agent template, optimization plane caches the response).</p>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="service-inventory">
+<h2>Service inventory <a class="anchor" href="#service-inventory">#</a></h2>
+
+<h3>Master stack (19 services)</h3>
+<table>
+<thead><tr><th>Service</th><th>URL</th><th>Plane</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><strong>portal</strong></td><td><code>:5180</code></td><td>Control</td><td>Branded wrapper SPA</td></tr>
+<tr><td><strong>user-and-capability</strong></td><td><code>:5175</code></td><td>Control</td><td>IAM admin SPA</td></tr>
+<tr><td><strong>workgraph-web</strong></td><td><code>:5174</code></td><td>Orchestration</td><td>Designer + Runtime UI</td></tr>
+<tr><td><strong>agent-web</strong></td><td><code>:3000</code></td><td>Data</td><td>Next.js admin (Agent Studio, /audit, /cost)</td></tr>
+<tr><td><strong>iam-service</strong></td><td><code>:8100/api/v1</code></td><td>Control</td><td>Real IAM with OpenAPI at <code>/docs</code></td></tr>
+<tr><td><strong>workgraph-api</strong></td><td><code>:8080/api</code></td><td>Orchestration</td><td>DAG runtime, executors, insights endpoint</td></tr>
+<tr><td><strong>prompt-composer</strong></td><td><code>:3004/api/v1</code></td><td>Composition</td><td><code>/compose-and-respond</code></td></tr>
+<tr><td><strong>agent-runtime</strong></td><td><code>:3003/api/v1</code></td><td>Data</td><td>Agent templates, memory, derivation</td></tr>
+<tr><td><strong>tool-service</strong></td><td><code>:3002/api/v1</code></td><td>Data</td><td>Tool registry, discovery, invocation</td></tr>
+<tr><td><strong>agent-service</strong></td><td><code>:3001/api/v1</code></td><td>Data</td><td>Agent CRUD (instances)</td></tr>
+<tr><td><strong>context-api</strong></td><td><code>:8000</code></td><td>Optimization</td><td><code>/execute</code>, <code>/chat/respond</code></td></tr>
+<tr><td><strong>llm-gateway</strong></td><td><code>:8001</code></td><td>Optimization</td><td>Provider proxy</td></tr>
+<tr><td><strong>context-memory</strong></td><td><code>:8002</code></td><td>Optimization</td><td>Conversation memory + summaries</td></tr>
+<tr><td><strong>metrics-ledger</strong></td><td><code>:8003</code></td><td>Optimization</td><td>Token savings ledger</td></tr>
+<tr><td><strong>mcp-server-demo</strong></td><td><code>:7100</code></td><td>Execution</td><td>Per-tenant agent loop runner</td></tr>
+<tr><td>iam-postgres</td><td><code>:5433</code></td><td>—</td><td><code>singularity_iam</code> DB</td></tr>
+<tr><td>at-postgres</td><td><code>:5432</code></td><td>—</td><td><code>singularity</code> DB (pgvector enabled)</td></tr>
+<tr><td>wg-postgres</td><td><code>:5434</code></td><td>—</td><td><code>workgraph</code> DB</td></tr>
+<tr><td>wg-minio</td><td><code>:9000</code> / <code>:9001</code></td><td>—</td><td>Artifact storage</td></tr>
+</tbody>
+</table>
+
+<h3>Side stacks</h3>
+<table>
+<thead><tr><th>Service</th><th>URL</th><th>Role</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>pseudo-iam</strong></td>
+  <td><code>:8101</code></td>
+  <td>Demo identity authority. Accepts any email/password, mints a 24h JWT signed with the same secret as <code>workgraph-api</code>. Drop-in replacement for real IAM in development.</td>
+</tr>
+<tr>
+  <td><strong>audit-governance</strong></td>
+  <td><code>:8500</code></td>
+  <td>The cross-service event ledger every producer fires into. Own Postgres on <code>:5436</code>. Exposes <code>/audit/timeline</code>, <code>/cost/rollup</code>, <code>/governance/budgets</code>, <code>/governance/rate-limits</code>, <code>/governance/approvals</code>.</td>
+</tr>
+</tbody>
+</table>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="data-flow">
+<h2>End-to-end data flow <a class="anchor" href="#data-flow">#</a></h2>
+
+<p>A typical AGENT_TASK execution traces this path:</p>
+
+<pre class="diagram">workgraph-api (AgentTaskExecutor)
+    │
+    │ POST /execute  { task, run_context, capability_id, agent_template_id }
+    ▼
+context-fabric (context-api on :8000)
+    │
+    │ 1. POST prompt-composer/compose-and-respond  (previewOnly=true)
+    │    → returns assembled prompt + tool descriptors
+    │
+    │ 2. context-memory/memory/search → relevant prior facts
+    │
+    │ 3. POST mcp-server/mcp/invoke
+    │      ↓ pre-flight: GET audit-gov/governance/budgets/check
+    │      ↓ pre-flight: GET audit-gov/governance/rate-limits/check
+    │      ↓ LOOP { llm call → tool call (via tool-service or local) }
+    │      ↓ emit-as-you-go: llm.call.completed, tool.execution.*,
+    │                        governance.denied, approval.wait.created
+    │
+    │ 4. POST audit-gov/events  (cf.execute.completed with traceId)
+    │
+    ▼
+workgraph-api persists results → next node fires
+</pre>
+
+<p>Every step writes to the central <code>audit_events</code> table keyed by <code>trace_id</code> (which equals the <code>workflow_instance_id</code> for workgraph-driven runs). The run insights endpoint joins these events back into the per-step view.</p>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="agent-studio">
+<h2>Agent Studio (M23) <a class="anchor" href="#agent-studio">#</a></h2>
+
+<p>A single workbench surface for governance-aware agent authoring. Replaces the flat <code>/agents</code> and <code>/agent-templates</code> admin pages.</p>
+
+<h3>The derivation model</h3>
+<p>Every <code>AgentTemplate</code> falls into one of two states:</p>
+
+<table>
+<thead><tr><th>State</th><th>Identifier</th><th>Editability</th></tr></thead>
+<tbody>
+<tr>
+  <td><span class="pill amber">Common / Locked</span></td>
+  <td><code>capabilityId IS NULL</code>, <code>lockedReason</code> set</td>
+  <td>Platform-admin only</td>
+</tr>
+<tr>
+  <td><span class="pill blue">Derived</span></td>
+  <td><code>capabilityId</code> set, <code>baseTemplateId</code> points at a parent</td>
+  <td>Owner of the capability (or platform-admin)</td>
+</tr>
+<tr>
+  <td><span class="pill grey">Custom</span></td>
+  <td><code>capabilityId</code> set, <code>baseTemplateId IS NULL</code></td>
+  <td>Owner of the capability (or platform-admin)</td>
+</tr>
+</tbody>
+</table>
+
+<p>The four <strong>seeded baselines</strong> — <code>ARCHITECT</code>, <code>DEVELOPER</code>, <code>QA</code>, <code>GOVERNANCE</code> (UUIDs <code>00000000-0000-0000-0000-0000000000d1..d4</code>) — are common locked templates. Each ships its own <code>basePromptProfileId</code> wired to a layered prompt (platform constitution + role contract + output contract).</p>
+
+<h3>Schema delta (M23)</h3>
+<pre><code class="block">model AgentTemplate {
+  // ... existing fields ...
+
+  // M23 — Agent Studio governance fields
+  capabilityId    String?
+  baseTemplateId  String?
+  lockedReason    String?
+
+  baseTemplate     AgentTemplate?  @relation("AgentTemplateDerivation", fields: [baseTemplateId], references: [id])
+  derivedTemplates AgentTemplate[] @relation("AgentTemplateDerivation")
+
+  @@index([capabilityId])
+  @@index([baseTemplateId])
+}</code></pre>
+
+<h3>Authorization model</h3>
+<p>Three helpers anchor authorization on the actor's JWT claims (<code>capability_ids[]</code>, <code>roles[]</code>, <code>is_platform_admin</code>, <code>is_super_admin</code>):</p>
+
+<ul>
+  <li><code>isPlatformAdmin(actor)</code> — checks role/flag</li>
+  <li><code>canManageCapability(actor, capabilityId)</code> — checks <code>capability_ids</code> membership or <code>capability-owner:&lt;id&gt;</code> role</li>
+  <li><code>requireCapabilityOwner(actor, capabilityId, action)</code> — throws <code>ForbiddenError</code> if neither</li>
+</ul>
+
+<p>Mutation routes are gated by <code>requireAuth</code> middleware; read routes stay anonymous (the controller decorates each template with <code>editable: false</code> when there's no user). Cross-capability derivation (deriving from a base that belongs to a different capability) is blocked unless the actor is platform-admin.</p>
+
+<h3>UI surface</h3>
+<ul>
+  <li><strong>Capability picker</strong> (dropdown of capabilities from <code>/api/runtime/capabilities</code>) — UUID-validated</li>
+  <li><strong>Two grouped sections</strong>: Capability Agents (editable, lineage badge), Common Library (locked badge)</li>
+  <li><strong>Right detail panel</strong>: lineage, scope, lock status, base prompt profile id with rendered <strong>prompt-layer tree</strong> (priority-sorted, layerType/scopeType badges)</li>
+  <li><strong>Derive dialog</strong>: name + description override; creates a capability-scoped child inheriting role + prompt profile + tool policy</li>
+</ul>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="run-insights">
+<h2>Run Insights (M24) <a class="anchor" href="#run-insights">#</a></h2>
+
+<p>A single composite endpoint that joins a workflow run with its per-step timing, artifacts, and cost. Visualised as a Gantt-style timeline at <code>/runs/:id/insights</code>.</p>
+
+<h3>The composite endpoint</h3>
+<pre><code class="block">GET /api/workflow-instances/:id/insights</code></pre>
+
+<p>Returns:</p>
+<ul>
+  <li><strong>run</strong>: id, name, status, startedAt, completedAt, durationMs</li>
+  <li><strong>totals</strong>: nodes count + breakdown by status, documents, consumables, llm_calls, total_tokens, total_cost_usd, governance_denied</li>
+  <li><strong>nodes[]</strong>: per-step status, <code>startedAt</code>/<code>completedAt</code>, <code>durationMs</code>, <code>durationPrecise</code> (true when sourced from the M24.5 columns), linked documents, linked consumables, event count</li>
+  <li><strong>documents[]</strong>, <strong>consumables[]</strong>: full artifact list with MinIO refs</li>
+  <li><strong>costByModel[]</strong>: provider/model breakdown sourced from audit-gov</li>
+  <li><strong>events[]</strong>: full audit timeline (subject_id + trace_id joins to capture cross-service events)</li>
+</ul>
+
+<h3>Per-step timing precision (M24.5)</h3>
+<p>The original M24 inferred per-step duration as <code>updatedAt - createdAt</code> on completed nodes. M24.5 added two columns to <code>WorkflowNode</code>:</p>
+
+<pre><code class="block">// workgraph-studio/apps/api/prisma/schema.prisma
+model WorkflowNode {
+  // ...
+  startedAt    DateTime?  // stamped on PENDING → ACTIVE
+  completedAt  DateTime?  // stamped on COMPLETED / FAILED / SKIPPED
+}</code></pre>
+
+<p>The central <code>WorkflowRuntime</code> plus six executors (DecisionGate, ErrorCatch, Foreach, ParallelFork, ParallelJoin, PolicyCheck) and the approvals router write these columns on every status transition. The insights handler prefers them, falling back to the old heuristic only for runs that pre-date the schema change. The SPA renders precise durations without the <code>≈</code> approximate marker.</p>
+
+<h3>UI surface</h3>
+<ul>
+  <li><strong>7 summary tiles</strong>: total duration, steps (with status counts), LLM calls, tokens, total cost USD, documents, consumables, governance denials</li>
+  <li><strong>Per-step Gantt</strong>: horizontal bars sized by duration, status-coloured, with badges showing 📎 documents / 📦 consumables / ⚡ events per node</li>
+  <li><strong>Artifacts table</strong>: documents + consumables with downloadable MinIO refs</li>
+  <li><strong>Cost-by-model breakdown</strong>: provider / model / calls / tokens / $ per row</li>
+  <li><strong>Audit timeline</strong>: severity-coloured event log keyed to the run</li>
+  <li><strong>5s polling</strong> so the dashboard tracks in-progress runs live</li>
+</ul>
+
+<p>Entry: a green <strong>Insights →</strong> pill in the <code>RunViewerPage</code> header.</p>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="audit-governance">
+<h2>Audit &amp; Governance (M21–M22) <a class="anchor" href="#audit-governance">#</a></h2>
+
+<p>A standalone <strong>audit-governance-service</strong> (port 8500, own Postgres on 5436) is the cross-service ledger every producer fires into. Combined with inline pre-flight checks in mcp-server, it turns governance from passive observation into active enforcement.</p>
+
+<h3>The five producers</h3>
+<table>
+<thead><tr><th>Service</th><th>Trigger</th><th>Event kinds emitted</th></tr></thead>
+<tbody>
+<tr><td>mcp-server</td><td>Per LLM call / tool execution / approval</td><td><code>llm.call.completed</code>, <code>tool.invocation.completed</code>, <code>approval.wait.created</code>, <code>governance.denied</code></td></tr>
+<tr><td>workgraph-api</td><td>Every state transition via <code>publishOutbox</code></td><td><code>agent.run.*</code>, <code>workflow.instance.*</code>, <code>workflow.triggered</code></td></tr>
+<tr><td>tool-service</td><td>Each tool-execution terminal status</td><td><code>tool.execution.success</code> / <code>error</code> / <code>client_execution_required</code> / <code>browser_execution_required</code></td></tr>
+<tr><td>context-fabric</td><td>After every <code>call_log.insert</code> in <code>/execute</code></td><td><code>cf.execute.completed</code></td></tr>
+<tr><td>agent-runtime</td><td>Template derive / update</td><td><code>agent.template.derived</code>, <code>agent.template.updated</code></td></tr>
+</tbody>
+</table>
+
+<h3>The schema</h3>
+<table>
+<thead><tr><th>Table</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>audit_events</code></td><td>Canonical event log joined by <code>trace_id</code> across services</td></tr>
+<tr><td><code>llm_calls</code></td><td>Denormalised LLM calls with <code>cost_usd</code> computed inline from <code>rate_card</code></td></tr>
+<tr><td><code>rate_card</code></td><td>Per-(provider,model) <code>input_per_1k</code> + <code>output_per_1k</code> seeded for OpenAI, Anthropic, Copilot, Mock</td></tr>
+<tr><td><code>budgets</code></td><td>(scope_type, scope_id, period) windows with auto-bumped <code>current_tokens</code> + <code>current_cost</code></td></tr>
+<tr><td><code>rate_limits</code></td><td>Sliding-window call caps with auto-reset</td></tr>
+<tr><td><code>approvals</code></td><td>Central approval authority (mirrored from mcp-server's in-memory ring)</td></tr>
+<tr><td><code>authz_decisions</code></td><td>Per-resource allow/deny audit trail</td></tr>
+</tbody>
+</table>
+
+<h3>Pre-flight enforcement</h3>
+<p>Before each LLM dispatch, the mcp-server agent loop awaits two parallel checks:</p>
+
+<pre><code class="block">// mcp-server/src/lib/audit-gov-check.ts
+const [budgetRes, rateRes] = await Promise.all([
+  checkBudget(state.correlation.capabilityId, undefined),
+  checkRateLimit(state.correlation.capabilityId, undefined),
+])
+if (!budgetRes.allowed) {
+  emitAuditEvent({ kind: "governance.denied", ... })
+  return { kind: "denied", finishReason: "governance_denied", reason, check: "budget", ... }
+}</code></pre>
+
+<p>The response carries <code>status: "DENIED"</code> with the failing check + remaining-window detail. The check is <strong>fail-open</strong> — an unreachable audit-gov defaults to <em>allow</em> so a brownout doesn't stall every tenant — but the failure is logged at warn level.</p>
+
+<h3>SPA surfaces</h3>
+<ul>
+  <li><code>localhost:3000/audit</code> — recent events, severity-coloured, filterable by source_service / kind</li>
+  <li><code>localhost:3000/cost</code> — cost rollup by capability, period (day/week/month), with model breakdown</li>
+</ul>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="workflow-runtime">
+<h2>Workflow runtime <a class="anchor" href="#workflow-runtime">#</a></h2>
+
+<p>Workgraph-studio is the orchestration plane. It owns workflow design, instance state, executors, and the runtime UI.</p>
+
+<h3>Architectural split: designer vs. runtime</h3>
+<p>Two distinct surfaces, never reused for each other:</p>
+
+<table>
+<thead><tr><th>Concern</th><th>Routes</th><th>Component</th></tr></thead>
+<tbody>
+<tr><td><strong>Designer</strong> (template authoring)</td><td><code>/workflows</code>, <code>/design/:workflowId</code></td><td><code>WorkflowsListPage</code> → <code>WorkflowStudioPage</code></td></tr>
+<tr><td><strong>Server-driven run viewer</strong></td><td><code>/runs</code>, <code>/runs/:id</code>, <code>/runs/:id/insights</code></td><td><code>RunsDashboardPage</code> / <code>RunViewerPage</code> / <code>RunInsightsPage</code></td></tr>
+<tr><td><strong>Browser-driven runner</strong></td><td><code>/play/new</code>, <code>/play/:runId</code></td><td><code>RunPlayerEntry</code> / <code>RunPlayerPage</code></td></tr>
+<tr><td>Legacy</td><td><code>/workflow/:instanceId</code></td><td>Redirects to <code>/runs/:id</code></td></tr>
+</tbody>
+</table>
+
+<h3>Node types (22+)</h3>
+<table>
+<thead><tr><th>Category</th><th>Types</th></tr></thead>
+<tbody>
+<tr><td>Lifecycle</td><td><code>START</code>, <code>END</code></td></tr>
+<tr><td>Work</td><td><code>HUMAN_TASK</code>, <code>AGENT_TASK</code>, <code>TOOL_REQUEST</code>, <code>CONSUMABLE_CREATION</code></td></tr>
+<tr><td>Approval</td><td><code>APPROVAL</code></td></tr>
+<tr><td>Flow control</td><td><code>DECISION_GATE</code>, <code>PARALLEL_FORK</code>, <code>PARALLEL_JOIN</code>, <code>FOREACH</code>, <code>ERROR_CATCH</code></td></tr>
+<tr><td>Timing / Signals</td><td><code>TIMER</code>, <code>SIGNAL_WAIT</code>, <code>SIGNAL_EMIT</code>, <code>SET_CONTEXT</code></td></tr>
+<tr><td>Composition</td><td><code>SUB_WORKFLOW</code>, <code>CALL_WORKFLOW</code></td></tr>
+<tr><td>Governance</td><td><code>POLICY_CHECK</code></td></tr>
+</tbody>
+</table>
+
+<h3>Execution location</h3>
+<p>Each node has an <code>executionLocation</code> that determines where its executor runs:</p>
+<ul>
+  <li><span class="pill blue">SERVER</span> — Express runtime fires the executor directly</li>
+  <li><span class="pill blue">CLIENT</span> — browser engine via <code>BrowserWorkflowRuntime</code></li>
+  <li><span class="pill blue">EDGE / EXTERNAL</span> — claim-token pattern for async external runners</li>
+</ul>
+
+<h3>HUMAN_TASK file uploads</h3>
+<p>Uploads from browser-driven <code>/play</code> sessions write to MinIO. The <code>Document</code> model has FKs onto <code>WorkflowNode</code> and <code>WorkflowInstance</code>, but browser-play uses design-time node IDs and IndexedDB-local run IDs that don't exist as those rows. The handler at <code>POST /api/documents/upload</code> looks up the supplied IDs first and nulls them when missing, so uploads succeed regardless of the run-source.</p>
+
+<p>Widget-less HUMAN_TASK nodes (the common "review attachments and mark done" pattern) still render a "Submit &amp; complete" button even when the form has zero fields — so the assignee can always advance the workflow.</p>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="api-reference">
+<h2>API surface <a class="anchor" href="#api-reference">#</a></h2>
+
+<h3>workgraph-api (<code>:8080</code>)</h3>
+<table>
+<thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>GET /api/workflow-templates</code></td><td>List + filter design-time templates</td></tr>
+<tr><td><code>GET /api/workflow-templates/:id/design-graph</code></td><td>Nodes + edges + phases for the designer</td></tr>
+<tr><td><code>POST /api/workflow-instances</code></td><td>Start a run from a template</td></tr>
+<tr><td><code>GET /api/workflow-instances/:id</code></td><td>Run header + nodes</td></tr>
+<tr><td><code>GET /api/workflow-instances/:id/insights</code></td><td><strong>M24</strong> composite — run + steps + artifacts + cost + events</td></tr>
+<tr><td><code>POST /api/documents/upload</code></td><td>Multipart upload, returns presigned MinIO URL</td></tr>
+<tr><td><code>POST /api/agent-runs/:id/approve</code></td><td>Resume a PAUSED run after MCP approval</td></tr>
+<tr><td><code>GET /api/lookup/*</code></td><td>Federated pickers (capabilities, agents, tools, users, teams, roles, …)</td></tr>
+<tr><td><code>GET /api/agent-studio/*</code></td><td><strong>M23</strong> Studio facade (grouped agents, derive, prompt preview)</td></tr>
+</tbody>
+</table>
+
+<h3>agent-runtime (<code>:3003/api/v1</code>)</h3>
+<table>
+<thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>GET /agents/templates?scope=common|capability|all&amp;capabilityId=…</code></td><td>List with scope filter</td></tr>
+<tr><td><code>POST /agents/templates</code></td><td>Create (platform-admin for common, capability-owner for scoped)</td></tr>
+<tr><td><code>POST /agents/templates/:id/derive</code></td><td>Create a capability-scoped child</td></tr>
+<tr><td><code>PATCH /agents/templates/:id</code></td><td>Lock-aware update</td></tr>
+<tr><td><code>POST /agents/templates/:id/skills</code></td><td>Attach a skill</td></tr>
+<tr><td><code>GET /capabilities</code></td><td>List capabilities</td></tr>
+</tbody>
+</table>
+
+<h3>tool-service (<code>:3002/api/v1</code>)</h3>
+<table>
+<thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>POST /tools/discover</code></td><td>Capability-scoped + risk-filtered discovery</td></tr>
+<tr><td><code>POST /tools/invoke</code></td><td>Execute a tool by name (server / client-runner / browser)</td></tr>
+<tr><td><code>PATCH /tools/:name/versions/:v</code></td><td>Edit risk_level / requires_approval / status (M20)</td></tr>
+<tr><td><code>GET /tools/executions</code></td><td>Audit list with filters</td></tr>
+</tbody>
+</table>
+
+<h3>prompt-composer (<code>:3004/api/v1</code>)</h3>
+<table>
+<thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>POST /compose-and-respond</code></td><td>Compose layered prompt + (optional) LLM dispatch</td></tr>
+<tr><td><code>GET /prompt-profiles/:id</code></td><td>Profile with layers (Studio uses this for the prompt-tree view)</td></tr>
+</tbody>
+</table>
+
+<h3>context-fabric / context-api (<code>:8000</code>)</h3>
+<table>
+<thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>POST /execute</code></td><td>Orchestrator entry — composes prompt, enriches with memory, dispatches to MCP, persists CallLog</td></tr>
+<tr><td><code>POST /execute/resume</code></td><td>Resume a paused run after approval</td></tr>
+<tr><td><code>GET /internal/mcp/code-changes?cf_call_id=…</code></td><td>Proxy MCP's code-change resource for workgraph</td></tr>
+</tbody>
+</table>
+
+<h3>mcp-server (<code>:7100</code>)</h3>
+<table>
+<thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>POST /mcp/invoke</code></td><td>Agent loop entry — LLM ↔ tool loop with pre-flight governance</td></tr>
+<tr><td><code>POST /mcp/resume</code></td><td>Resume from a continuation token after approval</td></tr>
+<tr><td><code>GET /resources/code-changes/:id</code></td><td>Normalised code-change record (M13)</td></tr>
+<tr><td><code>GET /resources/run-events/:runId</code></td><td>Full run event timeline</td></tr>
+<tr><td><strong>WS</strong> <code>/mcp/ws</code></td><td>Subscribe + replay live events filtered by traceId/runId</td></tr>
+</tbody>
+</table>
+
+<h3>audit-governance (<code>:8500/api/v1</code>)</h3>
+<table>
+<thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>POST /events</code></td><td>Producer entry — fire-and-forget event ingest</td></tr>
+<tr><td><code>GET /audit/timeline?trace_id=…|capability_id=…|actor_id=…</code></td><td>Filtered event log</td></tr>
+<tr><td><code>GET /cost/rollup?capability_id=…&amp;period=day|week|hour</code></td><td>Token + cost aggregates</td></tr>
+<tr><td><code>GET /cost/by-model</code></td><td>Top models by cost</td></tr>
+<tr><td><code>POST /governance/budgets</code></td><td>Upsert a (scope_type, scope_id, period) budget</td></tr>
+<tr><td><code>GET /governance/budgets/check?scope_type=&amp;scope_id=</code></td><td>Pre-flight allow/deny</td></tr>
+<tr><td><code>GET /governance/rate-limits/check</code></td><td>Sliding-window check</td></tr>
+<tr><td><code>POST /governance/approvals/:id/decide</code></td><td>Approve or reject a pending tool call</td></tr>
+</tbody>
+</table>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="schema-highlights">
+<h2>Schema highlights <a class="anchor" href="#schema-highlights">#</a></h2>
+
+<h3>workgraph-studio (Postgres on <code>:5434</code>)</h3>
+<ul>
+  <li><code>Workflow</code> / <code>WorkflowVersion</code> — design-time templates (versioned)</li>
+  <li><code>WorkflowDesignNode</code> / <code>WorkflowDesignEdge</code> / <code>WorkflowDesignPhase</code> — design graph</li>
+  <li><code>WorkflowInstance</code> — clone of a design at run-start (startedAt, completedAt, status)</li>
+  <li><code>WorkflowNode</code> — per-step instance (status, startedAt, completedAt, attempts)</li>
+  <li><code>Task</code> / <code>TaskAssignment</code> — HUMAN_TASK assignment routing (DIRECT_USER / TEAM_QUEUE / ROLE_BASED / SKILL_BASED)</li>
+  <li><code>ApprovalRequest</code> / <code>ApprovalDecision</code> — approval lifecycle (6 statuses)</li>
+  <li><code>Consumable</code> / <code>ConsumableVersion</code> / <code>ConsumableEvent</code> — typed artifacts (CONTRACT, DELIVERABLE, SPEC, …)</li>
+  <li><code>Document</code> — MinIO-backed uploads + external links (taskId / nodeId / instanceId nullable FKs)</li>
+  <li><code>EventLog</code> / <code>OutboxEvent</code> / <code>Receipt</code> / <code>WorkflowMutation</code> — audit chain</li>
+  <li><code>Agent</code> / <code>AgentRun</code> / <code>AgentRunInput</code> / <code>AgentRunOutput</code> — agent execution snapshots</li>
+  <li><code>Tool</code> / <code>ToolRun</code> — tool execution snapshots</li>
+  <li>Federated mirror tables — <code>Capability</code>, <code>Team</code>, <code>User</code>, <code>Role</code> (lazy-mirrored from IAM on first sight)</li>
+</ul>
+
+<h3>agent-runtime (Postgres on <code>:5432</code>, schema <code>public</code>)</h3>
+<ul>
+  <li><code>AgentTemplate</code> — with M23 fields <code>capabilityId</code>, <code>baseTemplateId</code>, <code>lockedReason</code></li>
+  <li><code>AgentSkill</code> / <code>AgentTemplateSkill</code></li>
+  <li><code>AgentCapabilityBinding</code> — links template to a capability + prompt profile + tool policy</li>
+  <li><code>AgentExecution</code> / <code>AgentExecutionReceipt</code> — execution audit</li>
+  <li><code>PromptProfile</code> / <code>PromptLayer</code> / <code>PromptProfileLayer</code> — layered prompt assembly (scope-polymorphic via <code>ownerScopeType</code>)</li>
+  <li><code>Capability</code> / <code>CapabilityRepository</code> / <code>CapabilityCodeSymbol</code> / <code>CapabilityCodeEmbedding</code> / <code>CapabilityKnowledgeArtifact</code> — knowledge pipeline (pgvector)</li>
+  <li><code>DistilledMemory</code> / <code>WorkflowExecutionMemory</code> — learning storage</li>
+  <li><code>ToolDefinition</code> / <code>ToolContract</code> / <code>ToolGrant</code></li>
+</ul>
+
+<h3>audit-governance (Postgres on <code>:5436</code>, schema <code>audit_governance</code>)</h3>
+<ul>
+  <li><code>audit_events</code> — every cross-service event, keyed by <code>trace_id</code></li>
+  <li><code>llm_calls</code> — denormalised LLM calls with cost</li>
+  <li><code>rate_card</code> — per-(provider, model) pricing</li>
+  <li><code>budgets</code>, <code>rate_limits</code> — governance windows</li>
+  <li><code>approvals</code> — central approval state</li>
+  <li><code>authz_decisions</code> — allow/deny trail</li>
+</ul>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="milestones">
+<h2>Milestone timeline <a class="anchor" href="#milestones">#</a></h2>
+
+<table>
+<thead><tr><th>Milestone</th><th>What it added</th></tr></thead>
+<tbody>
+<tr><td><strong>M5</strong></td><td>workgraph → composer → context-fabric wired end-to-end</td></tr>
+<tr><td><strong>M6–M9</strong></td><td>MCP server, WebSocket bridge, code-change observability</td></tr>
+<tr><td><strong>M9.z</strong></td><td>Approval pause/resume — MCP <code>/mcp/resume</code> + cf <code>/execute/resume</code> + workgraph PAUSED + UI approve</td></tr>
+<tr><td><strong>M10</strong></td><td>Federated lookups across all SPA pickers; user-JWT forwarding</td></tr>
+<tr><td><strong>M11</strong></td><td>Platform-registry, service-tokens, OpenTelemetry env wiring</td></tr>
+<tr><td><strong>M12</strong></td><td>Pseudo-IAM service — drop-in dev identity authority</td></tr>
+<tr><td><strong>M13</strong></td><td>Code-change observability — first-class artifact types + normalised read view</td></tr>
+<tr><td><strong>M14–M16</strong></td><td>Knowledge pipeline (distillation, knowledge artifacts, code-symbol extraction with pgvector)</td></tr>
+<tr><td><strong>M17</strong></td><td>Polling-based ingestion + SPA tuning page</td></tr>
+<tr><td><strong>M18</strong></td><td>Core toolkit — 12 always-on tools registered in tool-service</td></tr>
+<tr><td><strong>M19</strong></td><td>Connector-as-tool wrappers + monorepo build-context unification</td></tr>
+<tr><td><strong>M20</strong></td><td>Tool catalog browser + Tier 2 governance (risk-level editing, requires_approval toggle)</td></tr>
+<tr><td><strong>M21</strong></td><td>Audit &amp; governance service — unified ledger + cost worker + rate-card</td></tr>
+<tr><td><strong>M22</strong></td><td>Producer fan-out + pre-flight enforcement (inline budget &amp; rate-limit checks)</td></tr>
+<tr><td><strong>M23</strong></td><td>Agent Studio — derivation model, lock semantics, governance-aware UI</td></tr>
+<tr><td><strong>M24</strong></td><td>Run Insights dashboard — composite endpoint + per-step Gantt + cost + artifacts</td></tr>
+<tr><td><strong>M24.5</strong></td><td>Authoritative per-step timing (<code>startedAt</code>/<code>completedAt</code> on <code>WorkflowNode</code>)</td></tr>
+</tbody>
+</table>
+
+<p>Every milestone is independently shipped and smoke-tested end-to-end. The README documents each one in detail.</p>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<section id="troubleshooting">
+<h2>Troubleshooting <a class="anchor" href="#troubleshooting">#</a></h2>
+
+<h3>Boot</h3>
+
+<div class="callout warn">
+  <div class="callout-title">"docker compose v2 not found"</div>
+  Docker Desktop isn't running or only legacy <code>docker-compose</code> v1 is installed. <code>docker version</code> verifies the daemon is up; <code>docker compose version</code> verifies the v2 plugin. On managed Macs you may need to install Docker Desktop via corporate self-service.
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">Two Postgres servers on <code>:5432</code></div>
+  Stop the host's Postgres or remap <code>at-postgres</code>'s host port — the master compose binds <code>5432</code> to the agent-and-tools DB by default.
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">Workgraph rejects JWT (401s on every endpoint)</div>
+  JWT secret divergence — workgraph-api enforces a 32+ char secret. The compose defaults align <code>pseudo-iam</code>, <code>workgraph-api</code>, and IAM at <code>dev-secret-change-in-prod-min-32-chars!!</code>. Verify with <code>docker exec docker-api-1 printenv JWT_SECRET</code> and the same on pseudo-iam.
+</div>
+
+<h3>Auth</h3>
+
+<div class="callout warn">
+  <div class="callout-title">/context-picker → /dashboard → /login loop</div>
+  Token verifies but downstream IAM rejects it. Ensure workgraph-api's <code>IAM_BASE_URL</code> points at pseudo-IAM (<code>:8101</code>), not real IAM (<code>:8100</code>) — the lookup proxy forwards the user JWT and the upstream IAM must be the same authority.
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">/api/runtime/inbox or /api/agent-studio 500</div>
+  Workgraph-api's local <code>User</code> mirror has no row for the pseudo-IAM <code>sub</code>. <code>AUTH_PROVIDER=iam</code> triggers the lazy <code>mirrorIamUser</code> at first sight; if you cold-path it via a tool call, the mirror won't have run yet. Hard-refresh the SPA to mint a fresh JWT and have the auth middleware do its thing.
+</div>
+
+<h3>Seed / DB</h3>
+
+<div class="callout warn">
+  <div class="callout-title">Prisma seed fails with "no unique or exclusion constraint"</div>
+  Prisma's compound-key upsert codegen occasionally emits an ON CONFLICT shape Postgres rejects after a <code>db push --force-reset</code>. The seed uses an explicit <code>findFirst</code> + <code>create</code>/<code>update</code> pattern to sidestep that. If you hit it after future schema changes, replace any <code>upsert({ where: { compound_key: ... } })</code> with the explicit pattern.
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">"type vector does not exist" after force-reset</div>
+  pgvector extension was wiped. Recreate it:
+  <pre style="margin-top: 8px;"><code class="block">docker exec agentandtools-postgres psql -U postgres -d singularity -c \
+  "CREATE EXTENSION IF NOT EXISTS vector;"</code></pre>
+</div>
+
+<h3>Files</h3>
+
+<div class="callout warn">
+  <div class="callout-title">File upload from /play returns 500 (FK violation)</div>
+  Browser-driven runs use design-time node IDs and IndexedDB-local run IDs. The upload handler nulls supplied IDs that don't exist in <code>WorkflowNode</code> / <code>WorkflowInstance</code>, so this should "just work" in current code. If it doesn't, check <code>Document</code> table FKs are <code>ON DELETE SET NULL</code>.
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">HUMAN_TASK has no Complete button</div>
+  Widget-less form bodies render the "Submit &amp; complete" button as a primary action. If a node has zero widgets defined at design-time, this is the expected path. Make sure the user has claimed the node first.
+</div>
+</section>
+
+<footer>
+  Singularity Platform · governed agent platform · MIT licensed · <a href="https://github.com/ashokraj2011/singularity-platform">github.com/ashokraj2011/singularity-platform</a>
+</footer>
+
+</div>
+</main>
+</div>
+
+<script>
+  // Sidebar active-section highlighting + smooth scroll
+  const links = document.querySelectorAll('aside a');
+  const sections = document.querySelectorAll('main section');
+
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (e.isIntersecting) {
+        const id = e.target.id;
+        links.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === `#${id}`));
+      }
+    });
+  }, { rootMargin: '-40% 0px -55% 0px', threshold: 0 });
+
+  sections.forEach((s) => observer.observe(s));
+
+  // Smooth scroll
+  links.forEach((a) => {
+    a.addEventListener('click', (ev) => {
+      const href = a.getAttribute('href') || '';
+      if (href.startsWith('#')) {
+        const el = document.querySelector(href);
+        if (el) {
+          ev.preventDefault();
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          history.replaceState(null, '', href);
+        }
+      }
+    });
+  });
+</script>
+</body>
+</html>
