@@ -128,6 +128,167 @@ The narrative to lead with: *"Singularity is a governed agent platform — every
 
 ---
 
+## Bare-metal alternative — single Postgres, no Docker
+
+For dev machines that already have Postgres and don't want Docker. Focused on the demo path; skips real IAM (uses pseudo-IAM), the three optional context-fabric siblings, and MinIO (file uploads will fail but everything else works).
+
+### 1. Postgres prep — one shot
+Adjust user/password to match your instance (defaults: `postgres@localhost:5432`).
+
+```bash
+psql postgres <<'SQL'
+CREATE DATABASE singularity;
+CREATE DATABASE workgraph;
+CREATE DATABASE audit_governance;
+CREATE DATABASE singularity_iam;
+\c singularity
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+\c audit_governance
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+SQL
+
+# Apply audit-gov schema (7 tables + rate_card seed)
+psql -d audit_governance -f audit-governance-service/db/init.sql
+```
+
+### 2. Single env file
+```bash
+cat > .env.local <<'EOF'
+export PG_HOST=localhost
+export PG_PORT=5432
+export PG_USER=postgres
+export PG_PASS=postgres
+
+export DATABASE_URL_AGENT_TOOLS="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/singularity"
+export DATABASE_URL_WORKGRAPH="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/workgraph"
+export DATABASE_URL_AUDIT_GOV="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/audit_governance"
+
+# Shared JWT secret (32+ chars — workgraph-api enforces)
+export JWT_SECRET="dev-secret-change-in-prod-min-32-chars!!"
+
+# IAM points at pseudo (skip real IAM)
+export AUTH_PROVIDER="iam"
+export IAM_BASE_URL="http://localhost:8101/api/v1"
+
+# Cross-service URLs
+export AUDIT_GOV_URL="http://localhost:8500"
+export PROMPT_COMPOSER_URL="http://localhost:3004"
+export AGENT_RUNTIME_URL="http://localhost:3003"
+export TOOL_SERVICE_URL="http://localhost:3002"
+export AGENT_SERVICE_URL="http://localhost:3001"
+export CONTEXT_FABRIC_URL="http://localhost:8000"
+export MCP_SERVER_URL="http://localhost:7100"
+export MCP_BEARER_TOKEN="demo-bearer-token-must-be-min-16-chars"
+
+# LLM mock by default — no API keys required
+export LLM_PROVIDER="mock"
+export LLM_MODEL="mock-fast"
+EOF
+
+source .env.local
+```
+
+### 3. Install + push schemas (one-time)
+```bash
+( cd agent-and-tools          && npm install )
+( cd workgraph-studio         && pnpm install )
+( cd pseudo-iam-service       && npm install )
+( cd audit-governance-service && npm install )
+( cd mcp-server               && npm install )
+
+# Prisma push + seed for agent-runtime
+( cd agent-and-tools/apps/agent-runtime \
+  && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma db push \
+  && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma db seed )
+
+# Prisma push for workgraph-api
+( cd workgraph-studio/apps/api \
+  && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx prisma db push )
+
+# Python deps for context-api
+pip install fastapi uvicorn httpx pydantic-settings python-jose[cryptography] \
+            sqlalchemy aiosqlite
+```
+
+### 4. Boot — paste this script
+Saves PIDs to `.pids` so a single `kill` cleans up.
+
+```bash
+mkdir -p logs && : > .pids
+boot() {
+  local name=$1; shift
+  ( "$@" >> "logs/${name}.log" 2>&1 & echo $! >> .pids ) && \
+    echo "→ $name (PID $!)  → tail -f logs/${name}.log"
+}
+
+# ---- Tier 0: zero-dep ----
+boot pseudo-iam        bash -c "cd pseudo-iam-service        && JWT_SECRET=\"$JWT_SECRET\" PORT=8101 npm run dev"
+boot audit-gov         bash -c "cd audit-governance-service  && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8500 npm run dev"
+
+sleep 2
+
+# ---- Tier 1: agent-and-tools backend ----
+boot agent-service     bash -c "cd agent-and-tools/apps/agent-service    && PORT=3001 AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+boot tool-service      bash -c "cd agent-and-tools/apps/tool-service     && PORT=3002 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+boot agent-runtime     bash -c "cd agent-and-tools/apps/agent-runtime    && PORT=3003 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+boot prompt-composer   bash -c "cd agent-and-tools/apps/prompt-composer  && PORT=3004 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+
+# ---- Tier 2: execution + orchestrator ----
+boot mcp-server        bash -c "cd mcp-server                            && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_PROVIDER=mock LLM_MODEL=mock-fast AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
+boot context-api       bash -c "cd context-fabric/services/context_api_service && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8000 AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+sleep 3
+
+# ---- Tier 3: workgraph ----
+boot workgraph-api     bash -c "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
+
+# ---- Tier 4: SPAs ----
+boot agent-web         bash -c "cd agent-and-tools/web                   && AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" npm run dev"
+boot workgraph-web     bash -c "cd workgraph-studio/apps/web             && VITE_API_BASE=http://localhost:8080 VITE_PSEUDO_IAM_URL=http://localhost:8101/api/v1 VITE_AUTO_LOGIN=1 npm run dev"
+
+echo
+echo "All booted. Tail any service with: tail -f logs/<name>.log"
+echo "Stop everything:                    kill \$(cat .pids) && rm .pids"
+```
+
+### 5. Smoke check
+```bash
+for url in \
+  http://localhost:8101/health \
+  http://localhost:8500/health \
+  http://localhost:7100/health \
+  http://localhost:8000/health \
+  http://localhost:8080/health \
+  "http://localhost:3000/api/runtime/agents/templates?scope=common&limit=3" \
+  http://localhost:5174/ \
+  ; do
+  printf "%-65s %s\n" "$url" "$(curl -s -o /dev/null -w '%{http_code}' "$url")"
+done
+```
+
+All seven should return `200`. Open `http://localhost:5174` for the demo.
+
+### Tear down
+```bash
+kill $(cat .pids) && rm .pids
+# Optional — wipe data:
+psql postgres -c "DROP DATABASE singularity; DROP DATABASE workgraph; DROP DATABASE audit_governance; DROP DATABASE singularity_iam;"
+```
+
+### What's intentionally skipped
+
+| Skipped | Impact |
+|---|---|
+| real IAM (`iam-service`) | None for demo — pseudo-IAM signs JWTs workgraph accepts because they share `JWT_SECRET` |
+| llm-gateway, context-memory, metrics-ledger | None — context-api calls mcp-server directly; mcp-server's embedded LLM is mock |
+| MinIO | File uploads return 5xx; insights, Agent Studio, audit, cost all still work |
+| portal (`:5180`), user-and-capability (`:5175`) | Optional UI wrappers; `:5174` + `:3000` cover the demo path |
+
+Common boot failures: (a) wrong `PG_USER`/`PG_PASS`, (b) `pgvector` extension not installed in `singularity`, (c) port collision (`lsof -i :3003`).
+
+---
+
 ## Recent (M9.z – M11)
 
 The platform layer (M11) and supporting milestones landed as a cohesive set; everything below is shipped + smoke-tested end-to-end.
