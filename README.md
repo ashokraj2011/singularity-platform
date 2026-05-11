@@ -10,6 +10,129 @@ An enterprise AI-agent platform composed of independently-deployable application
 
 ---
 
+## Quickstart — clone to demo in ~5 minutes
+
+### Prerequisites
+- Docker Desktop (Compose v2)
+- `git`, `curl`, `psql` (optional, for ad-hoc inspection)
+- Ports free: `3000, 5174, 5175, 5180, 7100, 8000-8003, 8080, 8100-8101, 8500, 5432, 5433, 5434, 5436, 9000-9001`
+- ~6 GB free RAM for the full stack
+
+### 1. Clone
+```bash
+git clone https://github.com/ashokraj2011/singularity-platform.git
+cd singularity-platform
+```
+
+### 2. Bring up — three commands, three stacks
+The master compose covers 19 services. Two side stacks (pseudo-IAM, audit-gov) live in their own subdirs.
+
+```bash
+# A) Pseudo-IAM (accepts any email/password, mints a JWT) — used by the SPA login
+( cd pseudo-iam-service && docker compose up -d )
+
+# B) Audit & governance ledger (port 8500 — every other service sends events here)
+( cd audit-governance-service && docker compose up -d )
+
+# C) Master stack: IAM + agent-and-tools (4 svcs) + context-fabric (4 svcs)
+#                 + workgraph (api+web+pg+minio) + mcp-server + portal
+./singularity.sh up
+```
+
+First boot pulls images + builds web bundles. Wait ~3–5 minutes. Tail with `./singularity.sh logs workgraph-api -f` if you want to watch.
+
+### 3. Seed the agent-and-tools DB
+```bash
+( cd agent-and-tools/apps/agent-runtime \
+  && DATABASE_URL="postgresql://postgres:singularity@localhost:5432/singularity" \
+     npx prisma db seed )
+```
+
+Lands 9 agent templates (4 locked common baselines + 5 derived), 5 prompt profiles, 7 layers, 4 tools, 1 default capability.
+
+### 4. One-line smoke check
+```bash
+for u in \
+  "http://localhost:8101/health" \
+  "http://localhost:8500/health" \
+  "http://localhost:7100/health" \
+  "http://localhost:8000/health" \
+  "http://localhost:8080/health" \
+  "http://localhost:3000/api/runtime/agents/templates?scope=common&limit=3" \
+  "http://localhost:5174/"; do
+  printf "%-65s %s\n" "$u" "$(curl -s -o /dev/null -w '%{http_code}' $u)"
+done
+```
+
+You should see `200` for all seven.
+
+### 5. The demo path — five clicks, five "wow" moments
+
+| Step | URL | What to show |
+|---|---|---|
+| **1. Login** | `http://localhost:5174` | Auto-login fires through pseudo-IAM. Mention: "any user, anywhere — same JWT secret as our IAM, swap the env var to point at real IAM" |
+| **2. Agent Studio** | `http://localhost:3000/agent-studio` → pick the seeded capability from the dropdown | Show the four **Locked** common baselines (Architect / Developer / QA / Governance), click **Derive →** on one, name it. Mention: "derived agents inherit prompt profile + tool policy, become editable by capability owners, audit-gov captures `agent.template.derived`" |
+| **3. Run a workflow** | `localhost:5174/runs` → click **Run a Workflow** → pick "Business Initiative Delivery" → start | The new run lands in `/runs/<id>`. Open a HUMAN_TASK node, attach a file, click Complete. Workflow advances. |
+| **4. Run Insights** | Click the green **Insights →** pill at the top of the run viewer | The M24 dashboard — total duration, per-step Gantt with precise timing (`startedAt`/`completedAt` columns), artifacts list, cost-by-model, full audit timeline keyed to the run. Mention: "every step duration is authoritative, not inferred" |
+| **5. Governance & cost** | `http://localhost:3000/audit` and `http://localhost:3000/cost` | Cross-service ledger. Show the recent `agent.template.derived`, `cf.execute.completed`, `tool.execution.success`, `llm.call.completed` rows. Then `/cost` for $$ + tokens, with model breakdown. Mention: "all four producers — mcp-server, workgraph-api, tool-service, context-fabric, agent-runtime — fire fire-and-forget events here; pre-flight budget/rate-limit checks happen inline." |
+
+### 6. Optional polish for the demo
+
+- **Set a tight budget then watch DENIED**:
+  ```bash
+  curl -s -X POST http://localhost:8500/api/v1/governance/budgets \
+    -H 'content-type: application/json' \
+    -d '{"scope_type":"capability","scope_id":"<cap-id>","period":"day","tokens_max":1}'
+  ```
+  Re-run any AGENT_TASK on that capability — `status:DENIED` returns instantly, no LLM dispatch. Open `/audit` → see `governance.denied` event.
+- **MCP smoke** (slick because it's the same call workflows make under the hood):
+  ```bash
+  curl -sS -X POST http://localhost:7100/mcp/invoke \
+    -H 'authorization: Bearer demo-bearer-token-must-be-min-16-chars' \
+    -H 'content-type: application/json' \
+    -d '{"runContext":{"traceId":"t-demo","runId":"r-demo","capabilityId":"c-demo"},"message":"hi","tools":[]}'
+  ```
+- **Insights for a workflow that calls an LLM**: design a workflow with an AGENT_TASK, point it at a derived agent, run. Insights will populate `cost_usd` + `tokens` + model breakdown for real.
+
+### 7. Tear down
+```bash
+./singularity.sh down                                    # stop everything, keep data
+( cd audit-governance-service && docker compose down )
+( cd pseudo-iam-service && docker compose down )
+# Add `-v` to any of those to delete volumes for a fully fresh next boot.
+```
+
+### URLs cheat sheet (print these)
+
+```
+Workgraph SPA            http://localhost:5174    runs, designer, insights
+Agent / Tools SPA        http://localhost:3000    Agent Studio, /audit, /cost
+Singularity Portal       http://localhost:5180    branded wrapper around all of it
+User & Capability SPA    http://localhost:5175    IAM admin
+
+Workgraph API            http://localhost:8080
+Agent Runtime API        http://localhost:3003
+Tool Service API         http://localhost:3002
+Prompt Composer API      http://localhost:3004
+Context Fabric API       http://localhost:8000
+MCP Server               http://localhost:7100
+Pseudo-IAM               http://localhost:8101
+Audit & Governance API   http://localhost:8500
+```
+
+### Known gotchas (fix before the demo)
+
+1. **First boot of agent-runtime fails seed** if `pgvector` extension isn't created. The compose's `at-postgres` is a pgvector image so this is usually OK; if you see `type "vector" does not exist` after a force-reset:
+   ```bash
+   docker exec agentandtools-postgres psql -U postgres -d singularity -c "CREATE EXTENSION IF NOT EXISTS vector;"
+   ```
+2. **Token errors after a long idle**: pseudo-IAM signs 24h JWTs. If your tab sat overnight, hard-refresh `localhost:5174` and let auto-login mint a fresh one.
+3. **Port collisions** — `lsof -i :5174` if the workgraph SPA won't start; another stack from a previous demo might still be holding it.
+
+The narrative to lead with: *"Singularity is a governed agent platform — every agent is rooted in a locked baseline, every workflow run is observable end-to-end, and every LLM call is gated against a budget."*
+
+---
+
 ## Recent (M9.z – M11)
 
 The platform layer (M11) and supporting milestones landed as a cohesive set; everything below is shipped + smoke-tested end-to-end.
