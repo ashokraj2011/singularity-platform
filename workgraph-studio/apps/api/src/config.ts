@@ -48,6 +48,10 @@ const envSchema = z.object({
   // available (AgentTaskExecutor writing the agent snapshot row). User-facing
   // /api/lookup/* calls forward the caller's JWT instead.
   WORKGRAPH_SNAPSHOT_TOKEN: z.string().optional(),
+
+  // M24 — audit-governance ledger (port 8500). Used by the run insights
+  // dashboard to splice cost/token/governance rollups into the per-run view.
+  AUDIT_GOV_URL: z.string().default('http://host.docker.internal:8500'),
 })
 
 function loadConfig() {

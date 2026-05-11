@@ -96,6 +96,19 @@ export function RunViewerPage() {
               {instance.name}
             </h1>
             <StatusChip status={instance.status} />
+            {/* M24 — entry into the timing + cost + artifacts dashboard */}
+            <button
+              onClick={() => navigate(`/runs/${instance.id}/insights`)}
+              style={{
+                fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4,
+                background: 'rgba(0,132,61,0.10)', color: '#00843D',
+                border: '1px solid rgba(0,132,61,0.22)', cursor: 'pointer',
+                letterSpacing: '0.06em', textTransform: 'uppercase',
+              }}
+              title="Open run insights — duration per step, cost, artifacts produced"
+            >
+              Insights →
+            </button>
             {typeof instance.templateVersion === 'number' && (
               <span title={`Cloned from design v${instance.templateVersion}`} style={{
                 fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4,

@@ -17,6 +17,7 @@ import { InboxPage } from './features/runtime/InboxPage'
 import { WorkDetailPage } from './features/runtime/WorkDetailPage'
 import { HistoryPage } from './features/runtime/HistoryPage'
 import { RunViewerPage } from './features/runtime/RunViewerPage'
+import { RunInsightsPage } from './features/runtime/RunInsightsPage'
 import { RunsDashboardPage } from './features/runtime/RunsDashboardPage'
 import { RunPlayerPage, RunPlayerEntry } from './features/runtime/RunPlayerPage'
 import { RunWorkflowPage } from './features/runtime/RunWorkflowPage'
@@ -66,6 +67,7 @@ export default function App() {
           <Route path="workflow/:instanceId" element={<WorkflowStudioPage />} />
           <Route path="runs"                 element={<RunsDashboardPage />} />
           <Route path="runs/:id"             element={<RunViewerPage />} />
+          <Route path="runs/:id/insights"    element={<RunInsightsPage />} />
           <Route path="play/new"             element={<RunPlayerEntry />} />
           <Route path="play/:runId"          element={<RunPlayerPage />} />
           <Route path="connectors"         element={<ConnectorsPage />} />

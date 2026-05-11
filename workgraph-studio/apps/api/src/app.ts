@@ -15,6 +15,7 @@ import { permissionsRouter } from './modules/identity/permissions.router'
 // import { initiativesRouter } from './modules/initiative/initiatives.router'
 import { workflowTemplatesRouter } from './modules/workflow/templates.router'
 import { workflowInstancesRouter } from './modules/workflow/instances.router'
+import { insightsRouter } from './modules/workflow/insights.router'
 import { triggersRouter, webhookRouter } from './modules/workflow/triggers/triggers.router'
 import { customNodeTypesRouter } from './modules/workflow/custom-node-types.router'
 import { tasksRouter } from './modules/task/tasks.router'
@@ -69,6 +70,8 @@ export function createApp(): Express {
   // app.use('/api/initiatives', authMiddleware, initiativesRouter) — out of scope
   app.use('/api/workflow-templates', authMiddleware, workflowTemplatesRouter)
   app.use('/api/workflow-instances', authMiddleware, workflowInstancesRouter)
+  // M24 — run insights composite (sub-router; same /api/workflow-instances prefix)
+  app.use('/api/workflow-instances', authMiddleware, insightsRouter)
   app.use('/api/workflow-triggers', authMiddleware, triggersRouter)
   app.use('/api/custom-node-types', authMiddleware, customNodeTypesRouter)
   // Webhook receiver is intentionally unauthenticated; secret-gated.
