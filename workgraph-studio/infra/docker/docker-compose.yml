@@ -89,10 +89,14 @@ services:
 
   web:
     build:
-      context: ../../apps/web
-      dockerfile: Dockerfile
+      # M23 follow-up — workspace root context so the Dockerfile can
+      # COPY packages/engine + packages/shared-types (mirrors api).
+      context: ../../
+      dockerfile: apps/web/Dockerfile
     ports:
-      - "3000:80"
+      # Off 3000 to avoid colliding with agentandtools-web; 5174 matches
+      # the Vite dev-mode port so workflow share-links keep working.
+      - "5174:80"
     depends_on:
       - api
 
