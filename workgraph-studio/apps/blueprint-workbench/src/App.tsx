@@ -1,39 +1,58 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  BadgeCheck, Boxes, Brain, CheckCircle2, ClipboardCheck, Code2, FileText,
-  GitBranch, HardDrive, Loader2, Play, RefreshCw, ScanSearch, ShieldCheck,
-  Sparkles, TriangleAlert, LogOut,
+  AlertTriangle,
+  ArrowDownLeft,
+  BadgeCheck,
+  BookOpen,
+  Boxes,
+  Brain,
+  CheckCircle2,
+  ClipboardCheck,
+  Code2,
+  GitBranch,
+  HardDrive,
+  Loader2,
+  LogOut,
+  Play,
+  RefreshCw,
+  Route,
+  ScanSearch,
+  ShieldCheck,
+  Sparkles,
+  Undo2,
 } from 'lucide-react'
 import {
-	  api, clearToken, getToken, pseudoLogin, type BlueprintSession,
-	  type BlueprintSnapshot, type CreateSessionRequest, type LookupAgent,
-	  type LookupCapability, type SourceType, type Stage, type DecisionAnswer,
-	} from './api'
+  api,
+  clearToken,
+  getToken,
+  pseudoLogin,
+  type BlueprintArtifact,
+  type BlueprintSession,
+  type CreateSessionRequest,
+  type DecisionAnswer,
+  type GateMode,
+  type LoopStage,
+  type LoopVerdict,
+  type LookupAgent,
+  type LookupCapability,
+  type SourceType,
+  type Stage,
+  type StageAttempt,
+} from './api'
 
-const stageMeta: Record<Stage, { label: string; icon: typeof Brain }> = {
+const roleMeta: Record<Stage, { label: string; icon: typeof Brain }> = {
   ARCHITECT: { label: 'Architect', icon: Brain },
   DEVELOPER: { label: 'Developer', icon: Code2 },
   QA: { label: 'QA', icon: ClipboardCheck },
 }
 
-const artifactOrder = [
-  'decision_tree',
-  'stakeholder_answers',
-  'implementation_contract',
-  'agent_questions',
-  'mental_model',
-  'gaps',
-  'solution_architecture',
-  'approved_spec_draft',
-  'developer_task_pack',
-  'simulated_code_change',
-  'qa_task_pack',
-  'verification_rules',
-  'traceability_matrix',
-  'certification_receipt',
-  'approval_receipt',
-]
+const verdictLabels: Record<LoopVerdict, string> = {
+  PASS: 'Pass',
+  NEEDS_REWORK: 'Needs rework',
+  BLOCKED: 'Blocked',
+  ACCEPTED_WITH_RISK: 'Accepted with risk',
+}
 
 export default function App() {
   const queryClient = useQueryClient()
@@ -76,38 +95,37 @@ export default function App() {
           <button className="icon-button" onClick={() => sessionsQuery.refetch()} title="Refresh sessions">
             <RefreshCw size={16} />
           </button>
-          <button className="icon-button" onClick={() => {
-            clearToken()
-            setAuthTick(authTick + 1)
-            setActiveSession(null)
-            queryClient.clear()
-          }} title="Sign out">
+          <button
+            className="icon-button"
+            onClick={() => {
+              clearToken()
+              setAuthTick(authTick + 1)
+              setActiveSession(null)
+              queryClient.clear()
+            }}
+            title="Sign out"
+          >
             <LogOut size={16} />
           </button>
         </div>
       </header>
 
-      <section className="workspace-grid">
-        <WorkbenchForm onCreated={refreshSession} />
-        <PipelinePanel session={activeSession} onSession={refreshSession} />
-        <ArtifactPanel session={activeSession} onSession={refreshSession} />
-        <EvidencePanel session={activeSession} sessions={sessions} onSelect={setActiveSession} />
+      <section className="loop-shell">
+        <WorkbenchSetup sessions={sessions} activeSession={activeSession} onSelect={setActiveSession} onCreated={refreshSession} />
+        <LoopWorkbench session={activeSession} onSession={refreshSession} />
       </section>
     </main>
   )
 }
 
 function AuthGate({ onAuthed }: { onAuthed: () => void }) {
-  const loginMutation = useMutation({
-    mutationFn: pseudoLogin,
-    onSuccess: onAuthed,
-  })
+  const loginMutation = useMutation({ mutationFn: pseudoLogin, onSuccess: onAuthed })
   return (
     <main className="auth-empty">
       <div>
         <Sparkles size={28} />
         <h1>Blueprint Workbench</h1>
-        <p>This standalone MVP uses the same Workgraph API, but it needs its own browser token on port 5176.</p>
+        <p>This standalone MVP uses the Workgraph API and needs a browser token on port 5176.</p>
         <button className="primary-action" onClick={() => loginMutation.mutate()} disabled={loginMutation.isPending}>
           {loginMutation.isPending ? <Loader2 className="spin" size={16} /> : <ShieldCheck size={16} />}
           Continue as super admin
@@ -118,11 +136,23 @@ function AuthGate({ onAuthed }: { onAuthed: () => void }) {
   )
 }
 
-function WorkbenchForm({ onCreated }: { onCreated: (session: BlueprintSession) => void }) {
+function WorkbenchSetup({
+  sessions,
+  activeSession,
+  onSelect,
+  onCreated,
+}: {
+  sessions: BlueprintSession[]
+  activeSession: BlueprintSession | null
+  onSelect: (session: BlueprintSession) => void
+  onCreated: (session: BlueprintSession) => void
+}) {
+  const workflowDefaults = useMemo(readWorkflowDefaults, [])
   const [sourceType, setSourceType] = useState<SourceType>('localdir')
   const [sourceUri, setSourceUri] = useState('')
   const [sourceRef, setSourceRef] = useState('')
-  const [goal, setGoal] = useState('Create a governed planning, solution architecture, coding, and QA flow for this codebase.')
+  const [goal, setGoal] = useState('Create a governed planning, design, development, QA, and testing loop for this codebase.')
+  const [gateMode, setGateMode] = useState<GateMode>(workflowDefaults.gateMode ?? 'manual')
   const [capabilityId, setCapabilityId] = useState('')
   const [architectAgentTemplateId, setArchitectAgentTemplateId] = useState('')
   const [developerAgentTemplateId, setDeveloperAgentTemplateId] = useState('')
@@ -144,11 +174,10 @@ function WorkbenchForm({ onCreated }: { onCreated: (session: BlueprintSession) =
   }, [capabilityId, capabilities])
 
   useEffect(() => {
-    if (agents[0]) {
-      setArchitectAgentTemplateId(v => v || agents[0].id)
-      setDeveloperAgentTemplateId(v => v || agents[0].id)
-      setQaAgentTemplateId(v => v || agents[0].id)
-    }
+    if (!agents[0]) return
+    setArchitectAgentTemplateId(v => v || preferredAgent(agents, 'architect')?.id || agents[0].id)
+    setDeveloperAgentTemplateId(v => v || preferredAgent(agents, 'developer')?.id || agents[0].id)
+    setQaAgentTemplateId(v => v || preferredAgent(agents, 'qa')?.id || agents[0].id)
   }, [agents])
 
   const createMutation = useMutation({
@@ -156,21 +185,41 @@ function WorkbenchForm({ onCreated }: { onCreated: (session: BlueprintSession) =
     onSuccess: onCreated,
   })
 
-  const canCreate = goal.trim().length > 7 && sourceUri.trim() && capabilityId && architectAgentTemplateId && developerAgentTemplateId && qaAgentTemplateId
+  const canCreate = goal.trim().length > 7
+    && sourceUri.trim()
+    && capabilityId
+    && architectAgentTemplateId
+    && developerAgentTemplateId
+    && qaAgentTemplateId
 
   return (
-    <section className="panel setup-panel">
+    <aside className="panel setup-panel">
       <div className="panel-heading">
         <Boxes size={18} />
         <div>
-          <h2>Session Context</h2>
-          <p>Read-only source intake plus the three agent bindings.</p>
+          <h2>Source + Loop Context</h2>
+          <p>Read-only source intake plus governed stage bindings.</p>
         </div>
       </div>
 
+      {sessions.length > 0 && (
+        <label>
+          <span>Recent sessions</span>
+          <select
+            value={activeSession?.id ?? ''}
+            onChange={event => {
+              const selected = sessions.find(session => session.id === event.target.value)
+              if (selected) onSelect(selected)
+            }}
+          >
+            {sessions.map(session => <option key={session.id} value={session.id}>{sessionOptionLabel(session)}</option>)}
+          </select>
+        </label>
+      )}
+
       <label>
         <span>Goal</span>
-        <textarea value={goal} onChange={e => setGoal(e.target.value)} rows={4} />
+        <textarea value={goal} onChange={event => setGoal(event.target.value)} rows={4} />
       </label>
 
       <div className="segmented">
@@ -186,7 +235,7 @@ function WorkbenchForm({ onCreated }: { onCreated: (session: BlueprintSession) =
         <span>{sourceType === 'github' ? 'GitHub URL' : 'Local directory'}</span>
         <input
           value={sourceUri}
-          onChange={e => setSourceUri(e.target.value)}
+          onChange={event => setSourceUri(event.target.value)}
           placeholder={sourceType === 'github' ? 'https://github.com/org/repo' : '/path/visible/to/workgraph-api'}
         />
       </label>
@@ -194,24 +243,33 @@ function WorkbenchForm({ onCreated }: { onCreated: (session: BlueprintSession) =
       <div className="two-col">
         <label>
           <span>Branch / ref</span>
-          <input value={sourceRef} onChange={e => setSourceRef(e.target.value)} placeholder="optional" />
+          <input value={sourceRef} onChange={event => setSourceRef(event.target.value)} placeholder="optional" />
         </label>
         <label>
+          <span>Gate mode</span>
+          <select value={gateMode} onChange={event => setGateMode(event.target.value as GateMode)}>
+            <option value="manual">Manual gates</option>
+            <option value="auto">Conservative auto gates</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="two-col">
+        <label>
           <span>Include globs</span>
-          <input value={includeGlobs} onChange={e => setIncludeGlobs(e.target.value)} placeholder="optional" />
+          <input value={includeGlobs} onChange={event => setIncludeGlobs(event.target.value)} placeholder="optional" />
+        </label>
+        <label>
+          <span>Exclude globs</span>
+          <input value={excludeGlobs} onChange={event => setExcludeGlobs(event.target.value)} />
         </label>
       </div>
 
       <label>
-        <span>Exclude globs</span>
-        <input value={excludeGlobs} onChange={e => setExcludeGlobs(e.target.value)} />
-      </label>
-
-      <label>
         <span>Capability</span>
-        <select value={capabilityId} onChange={e => setCapabilityId(e.target.value)}>
+        <select value={capabilityId} onChange={event => setCapabilityId(event.target.value)}>
           <option value="">{capabilitiesQuery.isLoading ? 'Loading...' : 'Select capability'}</option>
-          {capabilities.map(cap => <option key={cap.id} value={cap.id}>{capLabel(cap)}</option>)}
+          {capabilities.map(capability => <option key={capability.id} value={capability.id}>{capLabel(capability)}</option>)}
         </select>
       </label>
 
@@ -221,7 +279,7 @@ function WorkbenchForm({ onCreated }: { onCreated: (session: BlueprintSession) =
         <AgentSelect label="QA" agents={agents} value={qaAgentTemplateId} onChange={setQaAgentTemplateId} />
       </div>
 
-      {createMutation.isError && <p className="error-text">{String(createMutation.error.message)}</p>}
+      {createMutation.isError && <p className="error-text">{createMutation.error.message}</p>}
       <button
         className="primary-action"
         disabled={!canCreate || createMutation.isPending}
@@ -236,397 +294,450 @@ function WorkbenchForm({ onCreated }: { onCreated: (session: BlueprintSession) =
           architectAgentTemplateId,
           developerAgentTemplateId,
           qaAgentTemplateId,
+          gateMode,
+          workflowInstanceId: workflowDefaults.workflowInstanceId,
+          workflowNodeId: workflowDefaults.workflowNodeId,
+          phaseId: workflowDefaults.phaseId,
+          loopDefinition: workflowDefaults.loopDefinition,
         })}
       >
         {createMutation.isPending ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
-        Create Workbench Session
+        Create Loop Session
       </button>
+    </aside>
+  )
+}
+
+function LoopWorkbench({ session, onSession }: { session: BlueprintSession | null; onSession: (session: BlueprintSession) => void }) {
+  const [activeStageKey, setActiveStageKey] = useState<string | null>(null)
+  const stages = session?.loopDefinition?.stages ?? []
+
+  useEffect(() => {
+    if (!session) {
+      setActiveStageKey(null)
+      return
+    }
+    const preferred = session.currentStageKey ?? stages[0]?.key ?? null
+    setActiveStageKey(current => current && stages.some(stage => stage.key === current) ? current : preferred)
+  }, [session?.id, session?.currentStageKey, stages])
+
+  const activeStage = stages.find(stage => stage.key === activeStageKey) ?? stages[0]
+
+  if (!session) {
+    return (
+      <section className="empty-workbench">
+        <Route size={30} />
+        <h2>Create or select a session</h2>
+        <p>The loop map, stage cockpit, artifact notebook, and evidence timeline will appear here.</p>
+      </section>
+    )
+  }
+
+  return (
+    <section className="workbench-grid">
+      <LoopMap session={session} activeStageKey={activeStage?.key ?? null} onStage={setActiveStageKey} onSession={onSession} />
+      <StageCockpit session={session} stage={activeStage} onSession={onSession} />
+      <ArtifactNotebook session={session} activeStageKey={activeStage?.key} onSession={onSession} />
+      <EvidenceTimeline session={session} />
     </section>
   )
 }
 
-function PipelinePanel({ session, onSession }: { session: BlueprintSession | null; onSession: (session: BlueprintSession) => void }) {
+function LoopMap({
+  session,
+  activeStageKey,
+  onStage,
+  onSession,
+}: {
+  session: BlueprintSession
+  activeStageKey: string | null
+  onStage: (stageKey: string) => void
+  onSession: (session: BlueprintSession) => void
+}) {
   const snapshotMutation = useMutation({ mutationFn: (id: string) => api.snapshot(id), onSuccess: onSession })
-  const runMutation = useMutation({ mutationFn: (id: string) => api.run(id), onSuccess: onSession })
-  const approveMutation = useMutation({ mutationFn: (id: string) => api.approve(id), onSuccess: onSession })
-  const latestSnapshot = session?.snapshots[0]
-  const stageStatus = useMemo(() => {
-    const map = new Map<Stage, string>()
-    for (const run of latestStageRuns(session)) map.set(run.stage, run.status)
-    return map
-  }, [session])
-  const allStagesDone = ['ARCHITECT', 'DEVELOPER', 'QA'].every(stage => stageStatus.get(stage as Stage) === 'COMPLETED')
-  const canRunAgents = Boolean(latestSnapshot) && session?.status !== 'RUNNING' && session?.status !== 'COMPLETED' && session?.status !== 'APPROVED'
-
+  const latestSnapshot = session.snapshots[0]
+  const green = isLoopGreen(session)
   return (
-    <section className="panel pipeline-panel">
+    <section className="panel loop-map-panel">
       <div className="panel-heading">
-        <ScanSearch size={18} />
+        <Route size={18} />
         <div>
-          <h2>Pipeline</h2>
-          <p>Snapshot, architecture, simulated development, QA, approval.</p>
+          <h2>Loop Map</h2>
+          <p>{session.loopDefinition?.name ?? 'Blueprint loop'} · {session.gateMode === 'auto' ? 'conservative auto gates' : 'manual gates'}</p>
         </div>
       </div>
 
-      {!session ? <p className="empty">Create a session to start the pipeline.</p> : (
-        <>
-          <div className="session-strip">
+      <div className="session-strip">
+        <div>
+          <span className={`status ${session.status.toLowerCase()}`}>{session.status}</span>
+          <strong>{session.sourceType}</strong>
+        </div>
+        <h3>{session.goal}</h3>
+        <p>{session.sourceUri}</p>
+      </div>
+
+      <div className="loop-actions">
+        <button className="secondary-action" disabled={snapshotMutation.isPending} onClick={() => snapshotMutation.mutate(session.id)}>
+          {snapshotMutation.isPending ? <Loader2 className="spin" size={15} /> : <ScanSearch size={15} />}
+          Snapshot
+        </button>
+        {latestSnapshot && (
+          <span className="snapshot-pill">{latestSnapshot.fileCount} files · {formatBytes(latestSnapshot.totalBytes)}</span>
+        )}
+      </div>
+      {snapshotMutation.isError && <p className="error-text">{snapshotMutation.error.message}</p>}
+
+      <div className="loop-map">
+        {(session.loopDefinition?.stages ?? []).map((stage, index) => {
+          const attempts = attemptsFor(session, stage.key)
+          const latest = attempts.at(-1)
+          const status = latestStatus(latest)
+          const Icon = roleMeta[stage.agentRole].icon
+          return (
+            <button
+              type="button"
+              key={stage.key}
+              className={`loop-node ${activeStageKey === stage.key ? 'active' : ''} ${session.currentStageKey === stage.key ? 'current' : ''} ${status}`}
+              onClick={() => onStage(stage.key)}
+            >
+              <span className="node-number">{index + 1}</span>
+              <span className="node-main">
+                <strong><Icon size={14} /> {stage.label}</strong>
+                <small>{roleMeta[stage.agentRole].label} · {attempts.length || 0} iteration{attempts.length === 1 ? '' : 's'}</small>
+              </span>
+              <span className="node-verdict">{latest?.verdict ? verdictLabels[latest.verdict] : latest?.status ?? 'Ready'}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      <div className="greenline">
+        <div>
+          <strong>{green ? 'Loop is green' : 'Loop is not green yet'}</strong>
+          <span>{green ? 'Final pack can be generated.' : 'Each required stage needs a pass or accepted-risk verdict.'}</span>
+        </div>
+        <BadgeCheck size={18} />
+      </div>
+    </section>
+  )
+}
+
+function StageCockpit({
+  session,
+  stage,
+  onSession,
+}: {
+  session: BlueprintSession
+  stage?: LoopStage
+  onSession: (session: BlueprintSession) => void
+}) {
+  const [answers, setAnswers] = useState<Record<string, DecisionAnswer>>({})
+  const [feedback, setFeedback] = useState('')
+  const [acceptRisk, setAcceptRisk] = useState(false)
+  const [sendBackTarget, setSendBackTarget] = useState('')
+  const [sendBackReason, setSendBackReason] = useState('')
+  const [requiredChanges, setRequiredChanges] = useState('')
+
+  useEffect(() => {
+    setAnswers(Object.fromEntries((session.decisionAnswers ?? []).map(answer => [answer.questionId, answer])))
+  }, [session.id, session.decisionAnswers])
+
+  useEffect(() => {
+    setFeedback('')
+    setSendBackTarget(stage?.allowedSendBackTo?.[0] ?? '')
+    setSendBackReason('')
+    setRequiredChanges('')
+    setAcceptRisk(false)
+  }, [stage?.key])
+
+  const runMutation = useMutation({
+    mutationFn: () => {
+      if (!stage) throw new Error('No stage selected')
+      return api.runStage(session.id, stage.key)
+    },
+    onSuccess: onSession,
+  })
+  const verdictMutation = useMutation({
+    mutationFn: (verdict: LoopVerdict) => {
+      if (!stage) throw new Error('No stage selected')
+      return api.verdict(session.id, stage.key, {
+        verdict,
+        feedback: feedback.trim() || undefined,
+        acceptRisk,
+        answers: answerList(answers),
+      })
+    },
+    onSuccess: onSession,
+  })
+  const sendBackMutation = useMutation({
+    mutationFn: () => {
+      if (!stage) throw new Error('No stage selected')
+      return api.sendBack(session.id, stage.key, {
+        targetStageKey: sendBackTarget,
+        reason: sendBackReason,
+        requiredChanges: requiredChanges.trim() || undefined,
+      })
+    },
+    onSuccess: onSession,
+  })
+
+  if (!stage) {
+    return <section className="panel cockpit-panel"><p className="empty">No stage selected.</p></section>
+  }
+
+  const latest = attemptsFor(session, stage.key).at(-1)
+  const canRun = Boolean(session.snapshots[0]) && latest?.status !== 'RUNNING'
+  const requiredMissing = (stage.questions ?? [])
+    .filter(question => question.required && !hasAnswer(answers[question.id]))
+    .map(question => question.id)
+
+  return (
+    <section className="panel cockpit-panel">
+      <div className="panel-heading">
+        {(() => {
+          const Icon = roleMeta[stage.agentRole].icon
+          return <Icon size={18} />
+        })()}
+        <div>
+          <h2>Stage Cockpit</h2>
+          <p>{stage.label} · {roleMeta[stage.agentRole].label}</p>
+        </div>
+      </div>
+
+      <div className="stage-hero">
+        <div>
+          <span className="stage-key">{stage.key}</span>
+          <h3>{stage.label}</h3>
+          <p>{stage.description}</p>
+        </div>
+        <button className="primary-action compact" disabled={!canRun || runMutation.isPending} onClick={() => runMutation.mutate()}>
+          {runMutation.isPending ? <Loader2 className="spin" size={15} /> : <Play size={15} />}
+          Run stage
+        </button>
+      </div>
+
+      {!session.snapshots[0] && <p className="warning-text">Snapshot the source before running stages.</p>}
+      {(runMutation.error || verdictMutation.error || sendBackMutation.error) && (
+        <p className="error-text">{(runMutation.error ?? verdictMutation.error ?? sendBackMutation.error)?.message}</p>
+      )}
+
+      <div className="attempt-card">
+        <strong>Latest attempt</strong>
+        {latest ? (
+          <>
+            <span className={`status ${latestStatus(latest)}`}>{latest.verdict ? verdictLabels[latest.verdict] : latest.status}</span>
+            <p>{latest.gateRecommendation?.reason ?? latest.error ?? 'Awaiting human verdict.'}</p>
+            {latest.correlation && <code>{latest.correlation.cfCallId ?? latest.correlation.traceId ?? latest.id}</code>}
+          </>
+        ) : (
+          <p>No attempt yet. Run this stage to generate artifacts and a gate recommendation.</p>
+        )}
+      </div>
+
+      <div className="question-stack">
+        {(stage.questions ?? []).map(question => (
+          <section className="question-card" key={question.id}>
             <div>
-              <span className={`status ${session.status.toLowerCase()}`}>{session.status}</span>
-              <strong>{session.sourceType}</strong>
+              <strong>{question.question}</strong>
+              <code>{question.id}{question.required ? ' · required' : ''}</code>
             </div>
-            <h3>{session.goal}</h3>
-            <p>{session.sourceUri}</p>
-          </div>
+            {question.options && question.options.length > 0 && (
+              <div className="option-grid">
+                {question.options.map(option => (
+                  <button
+                    type="button"
+                    key={option.label}
+                    className={`option-card ${answers[question.id]?.selectedOptionLabel === option.label ? 'selected' : ''}`}
+                    onClick={() => setAnswers(current => ({
+                      ...current,
+                      [question.id]: {
+                        questionId: question.id,
+                        answerType: 'option',
+                        selectedOptionLabel: option.label,
+                        notes: current[question.id]?.notes,
+                      },
+                    }))}
+                  >
+                    <strong>{option.label}</strong>
+                    {option.recommended && <span>recommended</span>}
+                    {option.impact && <p>{option.impact}</p>}
+                  </button>
+                ))}
+              </div>
+            )}
+            {question.freeform !== false && (
+              <textarea
+                rows={2}
+                value={answers[question.id]?.customAnswer ?? ''}
+                onChange={event => setAnswers(current => ({
+                  ...current,
+                  [question.id]: {
+                    questionId: question.id,
+                    answerType: 'freeform',
+                    customAnswer: event.target.value,
+                    notes: current[question.id]?.notes,
+                  },
+                }))}
+                placeholder="Free-form answer, constraints, or stakeholder note"
+              />
+            )}
+          </section>
+        ))}
+      </div>
 
-          <div className="rail">
-            <RailItem icon={ScanSearch} label="Snapshot" status={latestSnapshot?.status === 'COMPLETED' ? 'COMPLETED' : session.status === 'FAILED' ? 'FAILED' : 'PENDING'} />
-            {(['ARCHITECT', 'DEVELOPER', 'QA'] as Stage[]).map(stage => {
-              const Icon = stageMeta[stage].icon
-              return <RailItem key={stage} icon={Icon} label={stageMeta[stage].label} status={stageStatus.get(stage) ?? 'PENDING'} />
-            })}
-            <RailItem icon={ShieldCheck} label="Approval" status={session.status === 'APPROVED' ? 'COMPLETED' : 'PENDING'} />
-          </div>
+      <label>
+        <span>Review feedback</span>
+        <textarea rows={3} value={feedback} onChange={event => setFeedback(event.target.value)} placeholder="Why this passes, what risk is accepted, or what must change." />
+      </label>
 
-          <div className="action-row">
-            <button className="secondary-action" disabled={snapshotMutation.isPending} onClick={() => snapshotMutation.mutate(session.id)}>
-              {snapshotMutation.isPending ? <Loader2 className="spin" size={15} /> : <ScanSearch size={15} />}
-              Snapshot
-            </button>
-            <button className="secondary-action" disabled={!canRunAgents || runMutation.isPending} onClick={() => runMutation.mutate(session.id)}>
-              {runMutation.isPending ? <Loader2 className="spin" size={15} /> : <Play size={15} />}
-              Run Agents
-            </button>
-            <button className="secondary-action approve" disabled={!allStagesDone || session.status === 'APPROVED' || approveMutation.isPending} onClick={() => approveMutation.mutate(session.id)}>
-              {approveMutation.isPending ? <Loader2 className="spin" size={15} /> : <BadgeCheck size={15} />}
-              Approve
-            </button>
-          </div>
+      {requiredMissing.length > 0 && (
+        <label className="risk-toggle">
+          <input type="checkbox" checked={acceptRisk} onChange={event => setAcceptRisk(event.target.checked)} />
+          <span>Accept risk and continue with unanswered required questions: {requiredMissing.join(', ')}</span>
+        </label>
+      )}
 
-          <MutationError error={snapshotMutation.error ?? runMutation.error ?? approveMutation.error} />
-          {latestSnapshot && <SnapshotSummary snapshot={latestSnapshot} />}
-        </>
+      <div className="verdict-row">
+        <button className="secondary-action approve" disabled={!latest || verdictMutation.isPending} onClick={() => verdictMutation.mutate('PASS')}>
+          <CheckCircle2 size={15} /> Pass
+        </button>
+        <button className="secondary-action" disabled={!latest || verdictMutation.isPending} onClick={() => verdictMutation.mutate('ACCEPTED_WITH_RISK')}>
+          <AlertTriangle size={15} /> Accept risk
+        </button>
+        <button className="secondary-action danger" disabled={!latest || verdictMutation.isPending} onClick={() => verdictMutation.mutate('NEEDS_REWORK')}>
+          <Undo2 size={15} /> Mark bad
+        </button>
+      </div>
+
+      {(stage.allowedSendBackTo ?? []).length > 0 && (
+        <div className="send-back-box">
+          <div className="send-back-title">
+            <ArrowDownLeft size={15} />
+            <strong>Bad, go back</strong>
+          </div>
+          <div className="two-col">
+            <label>
+              <span>Target stage</span>
+              <select value={sendBackTarget} onChange={event => setSendBackTarget(event.target.value)}>
+                {(stage.allowedSendBackTo ?? []).map(key => (
+                  <option key={key} value={key}>{stageLabel(session, key)}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Reason</span>
+              <input value={sendBackReason} onChange={event => setSendBackReason(event.target.value)} placeholder="What failed?" />
+            </label>
+          </div>
+          <label>
+            <span>Required changes</span>
+            <textarea rows={2} value={requiredChanges} onChange={event => setRequiredChanges(event.target.value)} placeholder="What must the earlier stage fix before coming back?" />
+          </label>
+          <button className="secondary-action danger" disabled={!sendBackTarget || sendBackReason.trim().length < 3 || sendBackMutation.isPending} onClick={() => sendBackMutation.mutate()}>
+            {sendBackMutation.isPending ? <Loader2 className="spin" size={15} /> : <ArrowDownLeft size={15} />}
+            Send back
+          </button>
+        </div>
       )}
     </section>
   )
 }
 
-function ArtifactPanel({ session, onSession }: { session: BlueprintSession | null; onSession: (session: BlueprintSession) => void }) {
-  const [activeKind, setActiveKind] = useState<string>('decision_tree')
+function ArtifactNotebook({ session, activeStageKey, onSession }: { session: BlueprintSession; activeStageKey?: string; onSession: (session: BlueprintSession) => void }) {
+  const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null)
+  const finalizeMutation = useMutation({ mutationFn: () => api.finalize(session.id), onSuccess: onSession })
   const artifacts = useMemo(() => {
-    const latestByKind = new Map<string, BlueprintSession['artifacts'][number]>()
-    for (const artifact of session?.artifacts ?? []) latestByKind.set(artifact.kind, artifact)
-    const list = Array.from(latestByKind.values())
-    list.sort((a, b) => artifactOrder.indexOf(a.kind) - artifactOrder.indexOf(b.kind))
-    return list
-  }, [session])
-  const active = artifacts.find(a => a.kind === activeKind) ?? artifacts[0]
+    const ordered = [...session.artifacts]
+    ordered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    return ordered
+  }, [session.artifacts])
+  const visible = artifacts.filter(artifact => !activeStageKey || !artifact.stageKey || artifact.stageKey === activeStageKey || artifact.kind === 'final_implementation_pack')
+  const active = visible.find(artifact => artifact.id === activeArtifactId) ?? visible[0]
 
   useEffect(() => {
-    if (artifacts[0] && !artifacts.some(a => a.kind === activeKind)) setActiveKind(artifacts[0].kind)
-  }, [activeKind, artifacts])
+    setActiveArtifactId(current => current && visible.some(artifact => artifact.id === current) ? current : visible[0]?.id ?? null)
+  }, [session.id, activeStageKey, visible])
+
+  const green = isLoopGreen(session)
 
   return (
     <section className="panel artifact-panel">
       <div className="panel-heading">
-        <FileText size={18} />
+        <BookOpen size={18} />
         <div>
-          <h2>Artifact Viewer</h2>
-          <p>Contract-pack outputs from the staged agents.</p>
+          <h2>Artifact Notebook</h2>
+          <p>Versioned stage outputs and the final implementation pack.</p>
         </div>
       </div>
-      {!session ? <p className="empty">Artifacts will appear after the pipeline runs.</p> : artifacts.length === 0 ? (
-        <p className="empty">No artifacts yet. Run the snapshot and agent pipeline.</p>
+
+      <div className="finalize-strip">
+        <div>
+          <strong>{session.finalPack ? 'Final pack stamped' : green ? 'Ready to finalize' : 'Final pack locked'}</strong>
+          <span>{session.finalPack?.summary ?? (green ? 'All required gates are green.' : 'Pass or accept risk on every required stage first.')}</span>
+        </div>
+        <button className="secondary-action approve" disabled={!green || Boolean(session.finalPack) || finalizeMutation.isPending} onClick={() => finalizeMutation.mutate()}>
+          {finalizeMutation.isPending ? <Loader2 className="spin" size={15} /> : <BadgeCheck size={15} />}
+          Finalize
+        </button>
+      </div>
+      {finalizeMutation.isError && <p className="error-text">{finalizeMutation.error.message}</p>}
+
+      {visible.length === 0 ? (
+        <p className="empty">Artifacts appear as stage attempts complete.</p>
       ) : (
         <div className="artifact-layout">
           <nav className="artifact-tabs">
-            {artifacts.map(artifact => (
-              <button key={artifact.id} className={active?.id === artifact.id ? 'active' : ''} onClick={() => setActiveKind(artifact.kind)}>
-                {artifact.title}
-              </button>
-            ))}
+            {visible.map(artifact => <ArtifactTab key={artifact.id} artifact={artifact} active={artifact.id === active?.id} onClick={() => setActiveArtifactId(artifact.id)} />)}
           </nav>
-	          <article>
-	            <h3>{active?.title}</h3>
-	            {active?.kind === 'decision_tree' ? (
-	              <DecisionTree artifact={active} session={session} onSession={onSession} />
-	            ) : active?.kind === 'implementation_contract' ? (
-	              <ImplementationContract artifact={active} />
-	            ) : (
-	              <pre>{active?.content ?? JSON.stringify(active?.payload ?? {}, null, 2)}</pre>
-	            )}
-	          </article>
-	        </div>
-	      )}
+          <article>
+            <h3>{active?.title}</h3>
+            <pre>{renderArtifact(active)}</pre>
+          </article>
+        </div>
+      )}
     </section>
   )
 }
 
-type DecisionTreeNode = {
-  id: string
-  lane: string
-  question: string
-  recommended: string
-  evidence: string
-  options: Array<{ label: string; status: string; impact: string }>
-  downstream: string[]
-}
-
-function DecisionTree({ artifact, session, onSession }: { artifact: BlueprintSession['artifacts'][number]; session: BlueprintSession | null; onSession: (session: BlueprintSession) => void }) {
-  const tree = artifact.payload?.tree as { title?: string; goal?: string; nodes?: DecisionTreeNode[] } | undefined
-  const nodes = tree?.nodes ?? []
-  const persistedAnswers = useMemo(() => session?.metadata?.decisionAnswers ?? [], [session?.metadata?.decisionAnswers])
-  const [answers, setAnswers] = useState<Record<string, DecisionAnswer>>({})
-  const saveMutation = useMutation({
-    mutationFn: (items: DecisionAnswer[]) => {
-      if (!session) throw new Error('No active session')
-      return api.saveDecisionAnswers(session.id, items)
-    },
-    onSuccess: onSession,
-  })
-
-  useEffect(() => {
-    setAnswers(Object.fromEntries(persistedAnswers.map(answer => [answer.questionId, answer])))
-  }, [persistedAnswers, session?.id])
-
-  const answerList = Object.values(answers).filter(answer =>
-    answer.selectedOptionLabel?.trim() || answer.customAnswer?.trim() || answer.notes?.trim(),
-  )
-  const hasDirtyAnswers = JSON.stringify(answerList) !== JSON.stringify(persistedAnswers)
-  const setAnswer = (questionId: string, patch: Partial<DecisionAnswer>) => {
-    setAnswers(current => {
-      const previous = current[questionId] ?? { questionId, answerType: 'option' as const }
-      return {
-        ...current,
-        [questionId]: {
-          ...previous,
-          ...patch,
-          questionId,
-        },
-      }
-    })
-  }
-  const clearAnswer = (questionId: string) => {
-    setAnswers(current => {
-      const next = { ...current }
-      delete next[questionId]
-      return next
-    })
-  }
-
-  if (nodes.length === 0) return <pre>{artifact.content ?? 'No decision tree payload available.'}</pre>
+function ArtifactTab({ artifact, active, onClick }: { artifact: BlueprintArtifact; active: boolean; onClick: () => void }) {
   return (
-    <div className="decision-tree">
-      <div className="tree-summary">
-        <Brain size={18} />
-        <div>
-          <strong>{tree?.title ?? 'Decision tree'}</strong>
-          {tree?.goal && <span>{tree.goal}</span>}
-        </div>
-	        <button
-	          className="secondary-action tree-save"
-	          disabled={!session || !hasDirtyAnswers || saveMutation.isPending}
-	          onClick={() => saveMutation.mutate(answerList)}
-	        >
-          {saveMutation.isPending ? <Loader2 className="spin" size={14} /> : <CheckCircle2 size={14} />}
-          Save answers
-        </button>
-      </div>
-      {saveMutation.isError && <p className="error-text">{saveMutation.error.message}</p>}
-      <div className="tree-lanes">
-        {nodes.map((node, index) => (
-          <section className="tree-node" key={node.id}>
-            <div className="node-index">{index + 1}</div>
-            <div className="node-body">
-              <div className="node-header">
-                <span>{node.lane}</span>
-                <code>{node.id}</code>
-              </div>
-              <h4>{node.question}</h4>
-              <div className="recommended">
-                <CheckCircle2 size={14} />
-                <p>{node.recommended}</p>
-              </div>
-              <p className="evidence-text">{node.evidence}</p>
-              <div className="option-grid">
-                {node.options.map(option => (
-                  <button
-                    type="button"
-                    className={`option-card ${option.status.replaceAll(' ', '-').toLowerCase()} ${answers[node.id]?.selectedOptionLabel === option.label ? 'selected' : ''}`}
-                    key={option.label}
-                    onClick={() => setAnswer(node.id, {
-                      answerType: 'option',
-                      selectedOptionLabel: option.label,
-                      customAnswer: undefined,
-                    })}
-                  >
-                    <strong>{option.label}</strong>
-                    <span>{option.status}</span>
-                    <p>{option.impact}</p>
-                  </button>
-                ))}
-              </div>
-              <div className="answer-editor">
-                <label>
-                  <span>Other / free-form answer</span>
-                  <textarea
-                    rows={2}
-                    value={answers[node.id]?.customAnswer ?? ''}
-                    onChange={event => setAnswer(node.id, {
-                      answerType: 'freeform',
-                      selectedOptionLabel: undefined,
-                      customAnswer: event.target.value,
-                    })}
-                    placeholder="Capture the stakeholder answer when no option fits."
-                  />
-                </label>
-                <label>
-                  <span>Notes</span>
-                  <textarea
-	                    rows={2}
-	                    value={answers[node.id]?.notes ?? ''}
-	                    onChange={event => setAnswer(node.id, {
-	                      answerType: answers[node.id]?.selectedOptionLabel ? 'option' : 'freeform',
-	                      notes: event.target.value,
-	                    })}
-	                    placeholder="Reasoning, constraints, or approval conditions."
-                  />
-                </label>
-                {answers[node.id] && (
-                  <button type="button" className="clear-answer" onClick={() => clearAnswer(node.id)}>
-                    Clear answer
-                  </button>
-                )}
-              </div>
-              <div className="downstream-row">
-                {node.downstream.map(item => <span key={item}>{item}</span>)}
-              </div>
-            </div>
-          </section>
-        ))}
-      </div>
-    </div>
+    <button className={active ? 'active' : ''} onClick={onClick}>
+      <strong>{artifact.title}</strong>
+      <span>{artifact.stageKey ? `${artifact.stageKey} · v${artifact.version ?? 1}` : artifact.kind}</span>
+    </button>
   )
 }
 
-type ImplementationContractData = {
-  title?: string
-  status?: string
-  goal?: string
-  stakeholderInputs?: Array<{ role: string; contribution: string; outputs: string[] }>
-  implementationUnits?: Array<{ id: string; title: string; owner: string; files: string[]; instructions: string; acceptance: string[] }>
-  finalChecklist?: string[]
-  handoffArtifacts?: string[]
-}
-
-function ImplementationContract({ artifact }: { artifact: BlueprintSession['artifacts'][number] }) {
-  const contract = artifact.payload?.contract as ImplementationContractData | undefined
-  if (!contract) return <pre>{artifact.content ?? 'No implementation contract payload available.'}</pre>
-  return (
-    <div className="implementation-contract">
-      <div className="contract-hero">
-        <FileText size={18} />
-        <div>
-          <strong>{contract.title ?? 'Final implementation contract'}</strong>
-          {contract.goal && <span>{contract.goal}</span>}
-        </div>
-        {contract.status && <code>{contract.status}</code>}
-      </div>
-
-      <div className="stakeholder-grid">
-        {(contract.stakeholderInputs ?? []).map(input => {
-          const Icon = input.role === 'Architect' ? Brain : input.role === 'Developer' ? Code2 : ClipboardCheck
-          return (
-            <section className="stakeholder-card" key={input.role}>
-              <div>
-                <Icon size={16} />
-                <strong>{input.role}</strong>
-              </div>
-              <p>{input.contribution}</p>
-              <div className="downstream-row">
-                {input.outputs.map(output => <span key={output}>{output}</span>)}
-              </div>
-            </section>
-          )
-        })}
-      </div>
-
-      <div className="contract-section">
-        <h4>Implementation Units</h4>
-        {(contract.implementationUnits ?? []).map(unit => (
-          <section className="implementation-unit" key={unit.id}>
-            <div className="unit-header">
-              <code>{unit.id}</code>
-              <strong>{unit.title}</strong>
-              <span>{unit.owner}</span>
-            </div>
-            <p>{unit.instructions}</p>
-            <div className="unit-files">
-              {unit.files.map(file => <code key={file}>{file}</code>)}
-            </div>
-            <div className="downstream-row">
-              {unit.acceptance.map(item => <span key={item}>{item}</span>)}
-            </div>
-          </section>
-        ))}
-      </div>
-
-      <div className="contract-columns">
-        <section className="contract-section">
-          <h4>Final Checklist</h4>
-          <ul>
-            {(contract.finalChecklist ?? []).map(item => <li key={item}><CheckCircle2 size={14} /> {item}</li>)}
-          </ul>
-        </section>
-        <section className="contract-section">
-          <h4>Workflow Handoff</h4>
-          <div className="handoff-list">
-            {(contract.handoffArtifacts ?? []).map(item => <span key={item}>{item}</span>)}
-          </div>
-        </section>
-      </div>
-    </div>
-  )
-}
-
-function EvidencePanel({ session, sessions, onSelect }: { session: BlueprintSession | null; sessions: BlueprintSession[]; onSelect: (session: BlueprintSession) => void }) {
-  const correlations = latestStageRuns(session).filter(run => run.correlation)
+function EvidenceTimeline({ session }: { session: BlueprintSession }) {
+  const events = [...(session.reviewEvents ?? [])].reverse()
+  const attempts = [...(session.stageAttempts ?? [])].reverse()
   return (
     <section className="panel evidence-panel">
       <div className="panel-heading">
         <ShieldCheck size={18} />
         <div>
-          <h2>Evidence</h2>
-          <p>Prompt, Context Fabric, MCP, and code-change IDs.</p>
+          <h2>Evidence Timeline</h2>
+          <p>Review events, Context Fabric calls, MCP IDs, and tokens.</p>
         </div>
       </div>
-      {sessions.length > 0 && (
-        <label>
-          <span>Recent sessions</span>
-          <select value={session?.id ?? ''} onChange={e => {
-            const selected = sessions.find(s => s.id === e.target.value)
-            if (selected) onSelect(selected)
-          }}>
-            {sessions.map(item => <option key={item.id} value={item.id}>{sessionOptionLabel(item)}</option>)}
-          </select>
-        </label>
-      )}
-      {!session ? <p className="empty">No evidence yet.</p> : correlations.length === 0 ? (
-        <p className="empty">Run agents to capture Context Fabric and MCP evidence.</p>
-      ) : (
-        <div className="evidence-list">
-          {correlations.map(run => (
-            <div className="evidence-row" key={run.id}>
-              <strong>{stageMeta[run.stage].label}</strong>
-              <code>cf {short(run.correlation?.cfCallId)}</code>
-              <code>prompt {short(run.correlation?.promptAssemblyId)}</code>
-              <code>mcp {short(run.correlation?.mcpInvocationId)}</code>
-              {(run.correlation?.codeChangeIds ?? []).length > 0 && <code>changes {(run.correlation?.codeChangeIds ?? []).map(short).join(', ')}</code>}
-              {run.tokensUsed?.total !== undefined && <span>{run.tokensUsed.total} tokens</span>}
-            </div>
-          ))}
-        </div>
-      )}
+
+      <div className="timeline">
+        {events.length === 0 && attempts.length === 0 && <p className="empty">No loop events yet.</p>}
+        {events.map(event => (
+          <div className="timeline-row" key={event.id}>
+            <span>{event.type.replaceAll('_', ' ')}</span>
+            <strong>{event.message}</strong>
+            <small>{new Date(event.createdAt).toLocaleString()}</small>
+          </div>
+        ))}
+        {attempts.filter(attempt => attempt.correlation).map(attempt => (
+          <div className="timeline-row evidence" key={attempt.id}>
+            <span>{attempt.stageLabel} evidence</span>
+            <strong>{attempt.correlation?.cfCallId ?? attempt.correlation?.traceId ?? attempt.id}</strong>
+            <small>{attempt.tokensUsed?.total ? `${attempt.tokensUsed.total} tokens` : 'correlation captured'}</small>
+          </div>
+        ))}
+      </div>
     </section>
   )
 }
@@ -635,81 +746,94 @@ function AgentSelect({ label, agents, value, onChange }: { label: string; agents
   return (
     <label>
       <span>{label}</span>
-      <select value={value} onChange={e => onChange(e.target.value)}>
-        <option value="">Select agent</option>
+      <select value={value} onChange={event => onChange(event.target.value)}>
+        <option value="">{agents.length ? 'Select agent' : 'Load capability first'}</option>
         {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
       </select>
     </label>
   )
 }
 
-function RailItem({ icon: Icon, label, status }: { icon: typeof Brain; label: string; status: string }) {
-  const normalized = status.toLowerCase()
-  return (
-    <div className={`rail-item ${normalized}`}>
-      <Icon size={16} />
-      <span>{label}</span>
-      {status === 'COMPLETED' ? <CheckCircle2 size={14} /> : status === 'FAILED' ? <TriangleAlert size={14} /> : null}
-    </div>
-  )
+function preferredAgent(agents: LookupAgent[], role: string) {
+  return agents.find(agent => agent.name.toLowerCase().includes(role))
 }
 
-function SnapshotSummary({ snapshot }: { snapshot: BlueprintSnapshot }) {
-  const languages = Object.entries(snapshot.summary.languages ?? {}).slice(0, 5)
-  return (
-    <div className="snapshot-summary">
-      <div>
-        <strong>{snapshot.fileCount}</strong>
-        <span>files</span>
-      </div>
-      <div>
-        <strong>{formatBytes(snapshot.totalBytes)}</strong>
-        <span>bounded scan</span>
-      </div>
-      <div>
-        <strong>{short(snapshot.rootHash)}</strong>
-        <span>root hash</span>
-      </div>
-      <div className="language-row">
-        {languages.map(([name, count]) => <span key={name}>{name} {count}</span>)}
-      </div>
-    </div>
-  )
+function attemptsFor(session: BlueprintSession, stageKey: string) {
+  return (session.stageAttempts ?? []).filter(attempt => attempt.stageKey === stageKey)
 }
 
-function MutationError({ error }: { error: Error | null }) {
-  if (!error) return null
-  return <p className="error-text">{error.message}</p>
+function latestStatus(attempt?: StageAttempt) {
+  if (!attempt) return 'pending'
+  if (attempt.verdict === 'PASS' || attempt.verdict === 'ACCEPTED_WITH_RISK') return 'passed'
+  if (attempt.verdict === 'BLOCKED' || attempt.status === 'FAILED') return 'failed'
+  if (attempt.verdict === 'NEEDS_REWORK' || attempt.status === 'NEEDS_REWORK') return 'rework'
+  if (attempt.status === 'RUNNING') return 'running'
+  return 'completed'
+}
+
+function isLoopGreen(session: BlueprintSession) {
+  const stages = session.loopDefinition?.stages ?? []
+  return stages.filter(stage => stage.required !== false).every(stage => {
+    const latest = attemptsFor(session, stage.key).at(-1)
+    return latest?.verdict === 'PASS' || latest?.verdict === 'ACCEPTED_WITH_RISK'
+  })
+}
+
+function answerList(answers: Record<string, DecisionAnswer>) {
+  return Object.values(answers).filter(hasAnswer)
+}
+
+function hasAnswer(answer?: DecisionAnswer) {
+  return Boolean(answer?.selectedOptionLabel?.trim() || answer?.customAnswer?.trim() || answer?.notes?.trim())
+}
+
+function stageLabel(session: BlueprintSession, stageKey: string) {
+  return session.loopDefinition?.stages.find(stage => stage.key === stageKey)?.label ?? stageKey
+}
+
+function renderArtifact(artifact?: BlueprintArtifact) {
+  if (!artifact) return ''
+  if (artifact.content) return artifact.content
+  return JSON.stringify(artifact.payload ?? {}, null, 2)
+}
+
+function sessionOptionLabel(session: BlueprintSession) {
+  return `${session.status} · ${session.goal.slice(0, 54)}${session.goal.length > 54 ? '...' : ''}`
 }
 
 function capLabel(cap: LookupCapability) {
-  return `${cap.name}${cap.capability_type ? ` · ${cap.capability_type}` : ''}${cap.source?.includes('agent-runtime') ? ' · Agent & Tools' : ''}`
+  return `${cap.name}${cap.capability_type ? ` · ${cap.capability_type}` : ''}`
 }
 
 function csv(value: string) {
   return value.split(',').map(item => item.trim()).filter(Boolean)
 }
 
-function short(value?: string) {
-  if (!value) return 'n/a'
-  return value.length > 12 ? `${value.slice(0, 8)}...` : value
-}
-
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function sessionOptionLabel(session: BlueprintSession) {
-  const goal = session.goal.length > 64 ? `${session.goal.slice(0, 61)}...` : session.goal
-  return `${session.status} · ${goal}`
-}
-
-function latestStageRuns(session: BlueprintSession | null) {
-  const latest = new Map<Stage, BlueprintSession['stageRuns'][number]>()
-  for (const run of session?.stageRuns ?? []) latest.set(run.stage, run)
-  return (['ARCHITECT', 'DEVELOPER', 'QA'] as Stage[])
-    .map(stage => latest.get(stage))
-    .filter((run): run is BlueprintSession['stageRuns'][number] => Boolean(run))
+function readWorkflowDefaults() {
+  if (typeof window === 'undefined') return {}
+  const params = new URLSearchParams(window.location.search)
+  const gateMode = params.get('gateMode') === 'auto' ? 'auto' as const : params.get('gateMode') === 'manual' ? 'manual' as const : undefined
+  const encodedLoop = params.get('loopDefinition')
+  let loopDefinition
+  if (encodedLoop) {
+    try {
+      const json = encodedLoop.trim().startsWith('{') ? encodedLoop : atob(encodedLoop)
+      loopDefinition = JSON.parse(json)
+    } catch {
+      loopDefinition = undefined
+    }
+  }
+  return {
+    workflowInstanceId: params.get('workflowInstanceId') ?? undefined,
+    workflowNodeId: params.get('workflowNodeId') ?? undefined,
+    phaseId: params.get('phaseId') ?? undefined,
+    gateMode,
+    loopDefinition,
+  }
 }

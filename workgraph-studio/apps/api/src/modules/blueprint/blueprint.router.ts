@@ -34,7 +34,10 @@ const createSessionSchema = z.object({
   developerAgentTemplateId: z.string().uuid(),
   qaAgentTemplateId: z.string().uuid(),
   workflowInstanceId: z.string().optional(),
+  workflowNodeId: z.string().optional(),
   phaseId: z.string().optional(),
+  loopDefinition: z.unknown().optional(),
+  gateMode: z.enum(['manual', 'auto']).default('manual'),
 })
 
 const decisionAnswerSchema = z.object({
@@ -52,8 +55,123 @@ const saveDecisionAnswersSchema = z.object({
   answers: z.array(decisionAnswerSchema).max(100),
 })
 
+const stageActionParamsSchema = z.object({
+  id: z.string().min(1),
+  stageKey: z.string().min(1).max(80),
+})
+
+const verdictSchema = z.object({
+  verdict: z.enum(['PASS', 'NEEDS_REWORK', 'BLOCKED', 'ACCEPTED_WITH_RISK']),
+  feedback: z.string().optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  acceptRisk: z.boolean().optional(),
+  answers: z.array(decisionAnswerSchema).max(100).optional(),
+})
+
+const sendBackSchema = z.object({
+  targetStageKey: z.string().min(1).max(80),
+  reason: z.string().min(3),
+  requiredChanges: z.string().optional(),
+  blockingQuestions: z.array(z.string()).max(20).optional(),
+})
+
 type CreateSessionInput = z.infer<typeof createSessionSchema>
 type DecisionAnswer = z.infer<typeof decisionAnswerSchema> & { updatedAt?: string; updatedById?: string }
+type LoopAgentRole = 'ARCHITECT' | 'DEVELOPER' | 'QA'
+type LoopVerdict = 'PASS' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_RISK'
+type LoopAttemptStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'PASSED' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_RISK'
+
+type LoopQuestion = {
+  id: string
+  question: string
+  required?: boolean
+  options?: Array<{ label: string; impact?: string; recommended?: boolean }>
+  freeform?: boolean
+}
+
+type LoopStageDefinition = {
+  key: string
+  label: string
+  agentRole: LoopAgentRole
+  agentTemplateId?: string
+  description?: string
+  next?: string | null
+  terminal?: boolean
+  required?: boolean
+  allowedSendBackTo?: string[]
+  questions?: LoopQuestion[]
+}
+
+type LoopDefinition = {
+  version: number
+  name: string
+  stages: LoopStageDefinition[]
+  maxLoopsPerStage: number
+  maxTotalSendBacks: number
+}
+
+type GateRecommendation = {
+  verdict: LoopVerdict
+  confidence: number
+  reason: string
+  targetStageKey?: string
+}
+
+type StageAttempt = {
+  id: string
+  stageKey: string
+  stageLabel: string
+  agentRole: LoopAgentRole
+  agentTemplateId: string
+  attemptNumber: number
+  status: LoopAttemptStatus
+  startedAt: string
+  completedAt?: string
+  response?: string
+  error?: string
+  verdict?: LoopVerdict
+  confidence?: number
+  feedback?: string
+  acceptedAt?: string
+  acceptedById?: string
+  artifactIds?: string[]
+  gateRecommendation?: GateRecommendation
+  correlation?: Record<string, unknown>
+  tokensUsed?: Record<string, unknown>
+}
+
+type ReviewEvent = {
+  id: string
+  type: string
+  stageKey?: string
+  targetStageKey?: string
+  attemptId?: string
+  message: string
+  actorId?: string
+  payload?: Record<string, unknown>
+  createdAt: string
+}
+
+type FinalPack = {
+  id: string
+  status: string
+  generatedAt: string
+  generatedById?: string
+  summary: string
+  stages: Array<{ stageKey: string; label: string; verdict: LoopVerdict; attemptNumber: number; artifactIds: string[] }>
+  artifactKinds: string[]
+}
+
+type LoopState = {
+  workflowNodeId?: string
+  gateMode: 'manual' | 'auto'
+  loopDefinition: LoopDefinition
+  currentStageKey: string | null
+  stageAttempts: StageAttempt[]
+  reviewEvents: ReviewEvent[]
+  decisionAnswers: DecisionAnswer[]
+  finalPack?: FinalPack
+}
 
 type ManifestEntry = {
   path: string
@@ -84,13 +202,32 @@ blueprintRouter.get('/sessions', async (req, res, next) => {
       orderBy: { updatedAt: 'desc' },
       take: 50,
     })
-    res.json({ items: sessions })
+    res.json({ items: sessions.map(shapeSession) })
   } catch (err) { next(err) }
 })
 
 blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res, next) => {
   try {
     const body = req.body as CreateSessionInput
+    const loopDefinition = normalizeLoopDefinition(body.loopDefinition, body)
+    const now = new Date().toISOString()
+    const initialLoopState: LoopState = {
+      workflowNodeId: body.workflowNodeId,
+      gateMode: body.gateMode,
+      loopDefinition,
+      currentStageKey: loopDefinition.stages[0]?.key ?? null,
+      stageAttempts: [],
+      decisionAnswers: [],
+      reviewEvents: [{
+        id: crypto.randomUUID(),
+        type: 'SESSION_CREATED',
+        stageKey: loopDefinition.stages[0]?.key,
+        message: `Workbench session created with ${loopDefinition.stages.length} loop stages.`,
+        actorId: req.user!.userId,
+        createdAt: now,
+        payload: { gateMode: body.gateMode, workflowNodeId: body.workflowNodeId },
+      }],
+    }
     const session = await prisma.blueprintSession.create({
       data: {
         goal: body.goal,
@@ -105,6 +242,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         qaAgentTemplateId: body.qaAgentTemplateId,
         workflowInstanceId: body.workflowInstanceId ?? null,
         phaseId: body.phaseId ?? null,
+        metadata: initialLoopState as unknown as Prisma.InputJsonValue,
         createdById: req.user!.userId,
       },
     })
@@ -284,6 +422,39 @@ blueprintRouter.post('/sessions/:id/run', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+blueprintRouter.post('/sessions/:id/stages/:stageKey/run', async (req, res, next) => {
+  try {
+    const params = stageActionParamsSchema.parse(req.params)
+    const updated = await runLoopStage(params.id, params.stageKey, req.user!.userId)
+    res.json(updated)
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.post('/sessions/:id/stages/:stageKey/verdict', validate(verdictSchema), async (req, res, next) => {
+  try {
+    const params = stageActionParamsSchema.parse(req.params)
+    const body = req.body as z.infer<typeof verdictSchema>
+    const updated = await saveStageVerdict(params.id, params.stageKey, body, req.user!.userId)
+    res.json(updated)
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.post('/sessions/:id/stages/:stageKey/send-back', validate(sendBackSchema), async (req, res, next) => {
+  try {
+    const params = stageActionParamsSchema.parse(req.params)
+    const body = req.body as z.infer<typeof sendBackSchema>
+    const updated = await sendStageBack(params.id, params.stageKey, body, req.user!.userId)
+    res.json(updated)
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.post('/sessions/:id/finalize', async (req, res, next) => {
+  try {
+    const updated = await finalizeLoop(req.params.id, req.user!.userId)
+    res.json(updated)
+  } catch (err) { next(err) }
+})
+
 blueprintRouter.post('/sessions/:id/approve', async (req, res, next) => {
   try {
     const session = await prisma.blueprintSession.findUnique({
@@ -397,7 +568,928 @@ async function loadSession(id: string) {
     },
   })
   if (!session) throw new NotFoundError('BlueprintSession', id)
-  return session
+  return shapeSession(session)
+}
+
+type LoopSessionSeed = {
+  id?: string
+  goal: string
+  architectAgentTemplateId: string
+  developerAgentTemplateId: string
+  qaAgentTemplateId: string
+  metadata?: Prisma.JsonValue
+  workflowInstanceId?: string | null
+  phaseId?: string | null
+}
+
+function shapeSession<T extends LoopSessionSeed & { artifacts?: Array<{ payload?: Prisma.JsonValue | null }> }>(session: T) {
+  const loop = readLoopState(session)
+  return {
+    ...session,
+    workflowNodeId: loop.workflowNodeId,
+    gateMode: loop.gateMode,
+    loopDefinition: loop.loopDefinition,
+    currentStageKey: loop.currentStageKey,
+    stageAttempts: loop.stageAttempts,
+    reviewEvents: loop.reviewEvents,
+    decisionAnswers: loop.decisionAnswers,
+    finalPack: loop.finalPack,
+    artifacts: session.artifacts?.map(shapeArtifact) ?? [],
+  }
+}
+
+function shapeArtifact<T extends { payload?: Prisma.JsonValue | null }>(artifact: T) {
+  const payload = isRecord(artifact.payload) ? artifact.payload : {}
+  return {
+    ...artifact,
+    stageKey: typeof payload.stageKey === 'string' ? payload.stageKey : undefined,
+    attemptId: typeof payload.attemptId === 'string' ? payload.attemptId : undefined,
+    version: typeof payload.version === 'number' ? payload.version : undefined,
+  }
+}
+
+function readLoopState(session: LoopSessionSeed): LoopState {
+  const metadata = isRecord(session.metadata) ? session.metadata : {}
+  const loopDefinition = normalizeLoopDefinition(metadata.loopDefinition, session)
+  const currentStageKey = typeof metadata.currentStageKey === 'string'
+    ? metadata.currentStageKey
+    : loopDefinition.stages[0]?.key ?? null
+  return {
+    workflowNodeId: typeof metadata.workflowNodeId === 'string' ? metadata.workflowNodeId : undefined,
+    gateMode: metadata.gateMode === 'auto' ? 'auto' : 'manual',
+    loopDefinition,
+    currentStageKey,
+    stageAttempts: Array.isArray(metadata.stageAttempts) ? (metadata.stageAttempts as unknown[]).filter(isStageAttempt) : [],
+    reviewEvents: Array.isArray(metadata.reviewEvents) ? (metadata.reviewEvents as unknown[]).filter(isReviewEvent) : [],
+    decisionAnswers: Array.isArray(metadata.decisionAnswers) ? (metadata.decisionAnswers as unknown[]).filter(isDecisionAnswerRecord) : [],
+    finalPack: isFinalPack(metadata.finalPack) ? metadata.finalPack : undefined,
+  }
+}
+
+function stateToMetadata(session: LoopSessionSeed, state: LoopState): Prisma.InputJsonValue {
+  const current = isRecord(session.metadata) ? session.metadata : {}
+  return {
+    ...current,
+    workflowNodeId: state.workflowNodeId,
+    gateMode: state.gateMode,
+    loopDefinition: state.loopDefinition,
+    currentStageKey: state.currentStageKey,
+    stageAttempts: state.stageAttempts,
+    reviewEvents: state.reviewEvents,
+    decisionAnswers: state.decisionAnswers,
+    finalPack: state.finalPack,
+    decisionAnswersUpdatedAt: current.decisionAnswersUpdatedAt,
+  } as Prisma.InputJsonValue
+}
+
+function normalizeLoopDefinition(input: unknown, session: Pick<LoopSessionSeed, 'architectAgentTemplateId' | 'developerAgentTemplateId' | 'qaAgentTemplateId'>): LoopDefinition {
+  if (isRecord(input) && Array.isArray(input.stages)) {
+    const rawStages = input.stages.filter(isRecord)
+    const stages = rawStages.map((raw, index) => normalizeLoopStage(raw, index, session)).filter((stage): stage is LoopStageDefinition => Boolean(stage))
+    if (stages.length > 0) {
+      const known = new Set(stages.map(stage => stage.key))
+      return {
+        version: typeof input.version === 'number' ? input.version : 1,
+        name: typeof input.name === 'string' ? input.name : 'Workflow blueprint loop',
+        stages: stages.map((stage, index) => ({
+          ...stage,
+          next: stage.next && known.has(stage.next) ? stage.next : stage.terminal ? null : stages[index + 1]?.key ?? null,
+          allowedSendBackTo: (stage.allowedSendBackTo ?? []).filter(key => known.has(key)),
+        })),
+        maxLoopsPerStage: numberOr(input.maxLoopsPerStage, 3),
+        maxTotalSendBacks: numberOr(input.maxTotalSendBacks, 8),
+      }
+    }
+  }
+  return defaultLoopDefinition(session)
+}
+
+function normalizeLoopStage(raw: Record<string, unknown>, index: number, session: Pick<LoopSessionSeed, 'architectAgentTemplateId' | 'developerAgentTemplateId' | 'qaAgentTemplateId'>): LoopStageDefinition | null {
+  const key = slug(typeof raw.key === 'string' ? raw.key : typeof raw.id === 'string' ? raw.id : `stage-${index + 1}`)
+  if (!key) return null
+  const agentRole = normalizeAgentRole(raw.agentRole ?? raw.role)
+  return {
+    key,
+    label: typeof raw.label === 'string' ? raw.label : titleFromKey(key),
+    agentRole,
+    agentTemplateId: typeof raw.agentTemplateId === 'string' ? raw.agentTemplateId : defaultAgentTemplateForRole(session, agentRole),
+    description: typeof raw.description === 'string' ? raw.description : undefined,
+    next: typeof raw.next === 'string' ? slug(raw.next) : raw.next === null ? null : undefined,
+    terminal: raw.terminal === true,
+    required: raw.required !== false,
+    allowedSendBackTo: Array.isArray(raw.allowedSendBackTo) ? raw.allowedSendBackTo.filter((item): item is string => typeof item === 'string').map(slug) : [],
+    questions: Array.isArray(raw.questions) ? raw.questions.filter(isRecord).map(normalizeQuestion).filter((q): q is LoopQuestion => Boolean(q)) : [],
+  }
+}
+
+function normalizeQuestion(raw: Record<string, unknown>): LoopQuestion | null {
+  const id = typeof raw.id === 'string' ? raw.id : undefined
+  const question = typeof raw.question === 'string' ? raw.question : undefined
+  if (!id || !question) return null
+  return {
+    id,
+    question,
+    required: raw.required === true,
+    freeform: raw.freeform !== false,
+    options: Array.isArray(raw.options) ? raw.options.filter(isRecord).map(option => ({
+      label: String(option.label ?? ''),
+      impact: typeof option.impact === 'string' ? option.impact : undefined,
+      recommended: option.recommended === true,
+    })).filter(option => option.label.trim()) : [],
+  }
+}
+
+function defaultLoopDefinition(session: Pick<LoopSessionSeed, 'architectAgentTemplateId' | 'developerAgentTemplateId' | 'qaAgentTemplateId'>): LoopDefinition {
+  return {
+    version: 1,
+    name: 'Blueprint implementation loop',
+    maxLoopsPerStage: 3,
+    maxTotalSendBacks: 8,
+    stages: [
+      {
+        key: 'plan',
+        label: 'Plan',
+        agentRole: 'ARCHITECT',
+        agentTemplateId: session.architectAgentTemplateId,
+        description: 'Create the mental model, scope, risks, and planning questions.',
+        next: 'design',
+        allowedSendBackTo: [],
+        required: true,
+        questions: [
+          { id: 'PLAN-001', question: 'What is the smallest valuable outcome for this change?', required: true, freeform: true },
+          { id: 'PLAN-002', question: 'Which constraints must not be violated?', required: false, freeform: true },
+        ],
+      },
+      {
+        key: 'design',
+        label: 'Design',
+        agentRole: 'ARCHITECT',
+        agentTemplateId: session.architectAgentTemplateId,
+        description: 'Turn the plan into solution architecture, contracts, and acceptance boundaries.',
+        next: 'develop',
+        allowedSendBackTo: ['plan'],
+        required: true,
+        questions: [
+          { id: 'DESIGN-001', question: 'Is the proposed design acceptable for implementation?', required: true, options: [
+            { label: 'Accept design', recommended: true, impact: 'Developer can produce the implementation task pack.' },
+            { label: 'Needs redesign', impact: 'Send back to planning or design with constraints.' },
+          ], freeform: true },
+        ],
+      },
+      {
+        key: 'develop',
+        label: 'Develop',
+        agentRole: 'DEVELOPER',
+        agentTemplateId: session.developerAgentTemplateId,
+        description: 'Produce the proposed implementation plan, file changes, and read-only code-change evidence.',
+        next: 'qa-review',
+        allowedSendBackTo: ['design', 'plan'],
+        required: true,
+        questions: [
+          { id: 'DEV-001', question: 'Is the implementation plan complete enough for QA to review?', required: true, options: [
+            { label: 'Ready for QA', recommended: true, impact: 'Move into QA review.' },
+            { label: 'Needs developer rework', impact: 'Run another developer iteration.' },
+          ], freeform: true },
+        ],
+      },
+      {
+        key: 'qa-review',
+        label: 'QA Review',
+        agentRole: 'QA',
+        agentTemplateId: session.qaAgentTemplateId,
+        description: 'Review implementation evidence against requirements, edge cases, and failure modes.',
+        next: 'test-certification',
+        allowedSendBackTo: ['develop', 'design'],
+        required: true,
+        questions: [
+          { id: 'QA-001', question: 'What must be proven before this can be certified?', required: true, freeform: true },
+        ],
+      },
+      {
+        key: 'test-certification',
+        label: 'Test Certification',
+        agentRole: 'QA',
+        agentTemplateId: session.qaAgentTemplateId,
+        description: 'Stamp the testing strategy, verification notes, traceability, and final certification readiness.',
+        next: null,
+        terminal: true,
+        allowedSendBackTo: ['develop', 'qa-review', 'design'],
+        required: true,
+        questions: [
+          { id: 'TEST-001', question: 'Can this be finalized for workflow handoff?', required: true, options: [
+            { label: 'Finalize', recommended: true, impact: 'Generate the final implementation pack.' },
+            { label: 'Send back', impact: 'Return to the failing stage with feedback.' },
+          ], freeform: true },
+        ],
+      },
+    ],
+  }
+}
+
+function normalizeAgentRole(value: unknown): LoopAgentRole {
+  const role = String(value ?? '').toUpperCase().replace('-', '_')
+  return role === 'DEVELOPER' || role === 'QA' ? role : 'ARCHITECT'
+}
+
+function defaultAgentTemplateForRole(session: Pick<LoopSessionSeed, 'architectAgentTemplateId' | 'developerAgentTemplateId' | 'qaAgentTemplateId'>, role: LoopAgentRole) {
+  return role === 'DEVELOPER' ? session.developerAgentTemplateId : role === 'QA' ? session.qaAgentTemplateId : session.architectAgentTemplateId
+}
+
+function slug(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+}
+
+function titleFromKey(key: string): string {
+  return key.split('-').filter(Boolean).map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ')
+}
+
+function numberOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
+}
+
+async function runLoopStage(sessionId: string, stageKey: string, actorId: string) {
+  const session = await prisma.blueprintSession.findUnique({
+    where: { id: sessionId },
+    include: {
+      snapshots: { orderBy: { createdAt: 'desc' }, take: 1 },
+      artifacts: { orderBy: { createdAt: 'asc' } },
+    },
+  })
+  if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+  const snapshot = session.snapshots[0]
+  if (!snapshot || snapshot.status !== 'COMPLETED') {
+    throw new ValidationError('Create a successful source snapshot before running a loop stage')
+  }
+
+  const state = readLoopState(session)
+  const stage = findLoopStage(state, stageKey)
+  const priorAttempts = state.stageAttempts.filter(attempt => attempt.stageKey === stage.key)
+  if (priorAttempts.length >= state.loopDefinition.maxLoopsPerStage) {
+    throw new ValidationError(`Stage ${stage.label} reached the max loop count (${state.loopDefinition.maxLoopsPerStage})`)
+  }
+
+  const attempt: StageAttempt = {
+    id: crypto.randomUUID(),
+    stageKey: stage.key,
+    stageLabel: stage.label,
+    agentRole: stage.agentRole,
+    agentTemplateId: stage.agentTemplateId ?? defaultAgentTemplateForRole(session, stage.agentRole),
+    attemptNumber: priorAttempts.length + 1,
+    status: 'RUNNING',
+    startedAt: new Date().toISOString(),
+  }
+  const startedState: LoopState = {
+    ...state,
+    currentStageKey: stage.key,
+    stageAttempts: [...state.stageAttempts, attempt],
+    reviewEvents: [...state.reviewEvents, reviewEvent('STAGE_RUN_STARTED', `${stage.label} attempt ${attempt.attemptNumber} started.`, actorId, { stageKey: stage.key, attemptId: attempt.id })],
+  }
+  await prisma.blueprintSession.update({
+    where: { id: session.id },
+    data: { status: BlueprintSessionStatus.RUNNING, metadata: stateToMetadata(session, startedState) },
+  })
+
+  const task = loopStageTask(session, stage, startedState)
+  const dbRun = await prisma.blueprintStageRun.create({
+    data: {
+      sessionId: session.id,
+      stage: legacyStage(stage),
+      status: BlueprintStageStatus.RUNNING,
+      task,
+      startedAt: new Date(),
+    },
+  })
+
+  try {
+    const result = await runLoopStageExecute(session, snapshot, stage, attempt.agentTemplateId, task)
+    const completedAt = new Date().toISOString()
+    const gateRecommendation = buildGateRecommendation(result, stage)
+    const artifactIds = await createLoopStageArtifacts(session, snapshot, stage, attempt, result, gateRecommendation)
+    await prisma.blueprintStageRun.update({
+      where: { id: dbRun.id },
+      data: {
+        status: result.status === 'FAILED' ? BlueprintStageStatus.FAILED : BlueprintStageStatus.COMPLETED,
+        response: result.finalResponse ?? '',
+        correlation: result.correlation as unknown as Prisma.InputJsonValue,
+        tokensUsed: result.tokensUsed as unknown as Prisma.InputJsonValue,
+        completedAt: new Date(completedAt),
+        error: result.status === 'FAILED' ? result.finishReason ?? 'stage failed' : null,
+      },
+    })
+
+    const latest = await prisma.blueprintSession.findUnique({ where: { id: session.id } })
+    const nextState = readLoopState(latest ?? session)
+    const updatedAttempts = nextState.stageAttempts.map(item => item.id === attempt.id ? {
+      ...item,
+      status: result.status === 'FAILED' ? 'FAILED' as const : 'COMPLETED' as const,
+      completedAt,
+      response: result.finalResponse ?? '',
+      error: result.status === 'FAILED' ? result.finishReason ?? 'stage failed' : undefined,
+      correlation: result.correlation as unknown as Record<string, unknown>,
+      tokensUsed: result.tokensUsed as unknown as Record<string, unknown>,
+      gateRecommendation,
+      artifactIds,
+    } : item)
+    let updatedState: LoopState = {
+      ...nextState,
+      currentStageKey: stage.key,
+      stageAttempts: updatedAttempts,
+      reviewEvents: [...nextState.reviewEvents, reviewEvent('STAGE_RUN_COMPLETED', `${stage.label} attempt ${attempt.attemptNumber} completed with ${gateRecommendation.verdict}.`, actorId, {
+        stageKey: stage.key,
+        attemptId: attempt.id,
+        gateRecommendation,
+      })],
+    }
+    updatedState = maybeApplyAutoGate(updatedState, stage, attempt.id, actorId)
+    await prisma.blueprintSession.update({
+      where: { id: session.id },
+      data: {
+        status: BlueprintSessionStatus.SNAPSHOTTED,
+        metadata: stateToMetadata(latest ?? session, updatedState),
+      },
+    })
+    return loadSession(session.id)
+  } catch (err) {
+    const message = err instanceof ContextFabricError
+      ? `context-fabric error (${err.status}): ${err.message}`
+      : (err as Error).message
+    await prisma.blueprintStageRun.update({
+      where: { id: dbRun.id },
+      data: { status: BlueprintStageStatus.FAILED, error: message, completedAt: new Date() },
+    })
+    const latest = await prisma.blueprintSession.findUnique({ where: { id: session.id } })
+    const failedState = readLoopState(latest ?? session)
+    const attempts = failedState.stageAttempts.map(item => item.id === attempt.id ? {
+      ...item,
+      status: 'FAILED' as const,
+      completedAt: new Date().toISOString(),
+      error: message,
+      gateRecommendation: { verdict: 'BLOCKED' as const, confidence: 0.95, reason: message, targetStageKey: stage.allowedSendBackTo?.[0] },
+    } : item)
+    await prisma.blueprintArtifact.create({
+      data: {
+        sessionId: session.id,
+        stage: legacyStage(stage),
+        kind: 'loop_stage_error',
+        title: `${stage.label} error`,
+        content: message,
+        payload: { stageKey: stage.key, attemptId: attempt.id, version: attempt.attemptNumber } as Prisma.InputJsonValue,
+      },
+    })
+    await prisma.blueprintSession.update({
+      where: { id: session.id },
+      data: {
+        status: BlueprintSessionStatus.FAILED,
+        metadata: stateToMetadata(latest ?? session, {
+          ...failedState,
+          currentStageKey: stage.key,
+          stageAttempts: attempts,
+          reviewEvents: [...failedState.reviewEvents, reviewEvent('STAGE_RUN_FAILED', `${stage.label} failed: ${message}`, actorId, { stageKey: stage.key, attemptId: attempt.id })],
+        }),
+      },
+    })
+    return loadSession(session.id)
+  }
+}
+
+async function saveStageVerdict(
+  sessionId: string,
+  stageKey: string,
+  body: z.infer<typeof verdictSchema>,
+  actorId: string,
+) {
+  const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
+  if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+  const state = readLoopState(session)
+  const stage = findLoopStage(state, stageKey)
+  const latestAttempt = latestStageAttempt(state, stage.key)
+  if (!latestAttempt || latestAttempt.status === 'RUNNING') {
+    throw new ValidationError(`Run ${stage.label} before saving a verdict`)
+  }
+  const mergedAnswers = mergeDecisionAnswers(state.decisionAnswers, body.answers ?? [], actorId)
+  const missing = missingRequiredQuestions(stage, mergedAnswers)
+  if ((body.verdict === 'PASS' || body.verdict === 'ACCEPTED_WITH_RISK') && missing.length > 0 && !body.acceptRisk) {
+    throw new ValidationError(`Required questions must be answered before approval: ${missing.join(', ')}`)
+  }
+
+  const accepted = body.verdict === 'PASS' || body.verdict === 'ACCEPTED_WITH_RISK'
+  const attempts = state.stageAttempts.map(item => item.id === latestAttempt.id ? {
+    ...item,
+    status: verdictToAttemptStatus(body.verdict),
+    verdict: body.verdict,
+    confidence: body.confidence,
+    feedback: body.feedback,
+    acceptedAt: accepted ? new Date().toISOString() : item.acceptedAt,
+    acceptedById: accepted ? actorId : item.acceptedById,
+  } : item)
+  const nextStageKey = accepted ? stage.next ?? null : stage.key
+  const nextState: LoopState = {
+    ...state,
+    decisionAnswers: mergedAnswers,
+    currentStageKey: nextStageKey,
+    stageAttempts: attempts,
+    reviewEvents: [...state.reviewEvents, reviewEvent('STAGE_VERDICT', `${stage.label} marked ${body.verdict}.`, actorId, {
+      stageKey: stage.key,
+      attemptId: latestAttempt.id,
+      verdict: body.verdict,
+      feedback: body.feedback,
+      missingQuestionsAcceptedWithRisk: missing,
+    })],
+  }
+  await prisma.blueprintSession.update({
+    where: { id: session.id },
+    data: {
+      status: isLoopGreen(nextState) ? BlueprintSessionStatus.COMPLETED : BlueprintSessionStatus.SNAPSHOTTED,
+      metadata: stateToMetadata(session, nextState),
+    },
+  })
+  return loadSession(session.id)
+}
+
+async function sendStageBack(
+  sessionId: string,
+  stageKey: string,
+  body: z.infer<typeof sendBackSchema>,
+  actorId: string,
+) {
+  const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
+  if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+  const state = readLoopState(session)
+  const stage = findLoopStage(state, stageKey)
+  const target = findLoopStage(state, body.targetStageKey)
+  if (!(stage.allowedSendBackTo ?? []).includes(target.key)) {
+    throw new ValidationError(`${stage.label} cannot send work back to ${target.label}`)
+  }
+  if (sendBackCount(state) >= state.loopDefinition.maxTotalSendBacks) {
+    throw new ValidationError(`Session reached the max send-back count (${state.loopDefinition.maxTotalSendBacks})`)
+  }
+  const latestAttempt = latestStageAttempt(state, stage.key)
+  const attempts = latestAttempt ? state.stageAttempts.map(item => item.id === latestAttempt.id ? {
+    ...item,
+    status: 'NEEDS_REWORK' as const,
+    verdict: item.verdict ?? 'NEEDS_REWORK' as const,
+    feedback: body.reason,
+  } : item) : state.stageAttempts
+  const nextState: LoopState = {
+    ...state,
+    currentStageKey: target.key,
+    stageAttempts: attempts,
+    reviewEvents: [...state.reviewEvents, reviewEvent('SEND_BACK', `${stage.label} sent back to ${target.label}: ${body.reason}`, actorId, {
+      stageKey: stage.key,
+      targetStageKey: target.key,
+      attemptId: latestAttempt?.id,
+      reason: body.reason,
+      requiredChanges: body.requiredChanges,
+      blockingQuestions: body.blockingQuestions ?? [],
+    })],
+  }
+  await prisma.blueprintSession.update({
+    where: { id: session.id },
+    data: { status: BlueprintSessionStatus.SNAPSHOTTED, metadata: stateToMetadata(session, nextState) },
+  })
+  return loadSession(session.id)
+}
+
+async function finalizeLoop(sessionId: string, actorId: string) {
+  const session = await prisma.blueprintSession.findUnique({
+    where: { id: sessionId },
+    include: { artifacts: { orderBy: { createdAt: 'asc' } } },
+  })
+  if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+  const state = readLoopState(session)
+  if (!isLoopGreen(state)) {
+    throw new ValidationError('All required loop stages must be passed or accepted with risk before finalizing')
+  }
+  const finalPack = buildFinalPack(state, session.artifacts, actorId)
+  const artifact = await prisma.blueprintArtifact.create({
+    data: {
+      sessionId: session.id,
+      kind: 'final_implementation_pack',
+      title: 'Final implementation pack',
+      content: buildFinalPackMarkdown(finalPack, state),
+      payload: { finalPack, stageKey: state.currentStageKey, version: 1 } as Prisma.InputJsonValue,
+    },
+  })
+  const stampedPack: FinalPack = {
+    ...finalPack,
+    artifactKinds: [...finalPack.artifactKinds, artifact.kind],
+  }
+  const finalizedState: LoopState = {
+    ...state,
+    finalPack: stampedPack,
+    reviewEvents: [...state.reviewEvents, reviewEvent('FINALIZED', 'Final implementation pack generated for workflow handoff.', actorId, { artifactId: artifact.id })],
+  }
+  await prisma.blueprintSession.update({
+    where: { id: session.id },
+    data: {
+      status: BlueprintSessionStatus.APPROVED,
+      approvedById: actorId,
+      approvedAt: new Date(),
+      metadata: stateToMetadata(session, finalizedState),
+    },
+  })
+  await attachFinalPackToWorkflowNode(session, stampedPack)
+  await logEvent('BlueprintFinalized', 'BlueprintSession', session.id, actorId, { sessionId: session.id, artifactId: artifact.id })
+  return loadSession(session.id)
+}
+
+async function runLoopStageExecute(
+  session: Awaited<ReturnType<typeof prisma.blueprintSession.findUnique>> & { id: string },
+  snapshot: { summary: Prisma.JsonValue; manifest: Prisma.JsonValue; rootHash: string | null },
+  stage: LoopStageDefinition,
+  agentTemplateId: string,
+  task: string,
+): Promise<ExecuteResponse> {
+  const traceId = `blueprint-${session.id}-${stage.key}`
+  return contextFabricClient.execute({
+    trace_id: traceId,
+    idempotency_key: `${session.id}:${stage.key}:${Date.now()}`,
+    run_context: {
+      workflow_instance_id: session.workflowInstanceId ?? `blueprint-${session.id}`,
+      workflow_node_id: readLoopState(session).workflowNodeId ?? session.phaseId ?? `blueprint-${stage.key}`,
+      capability_id: session.capabilityId,
+      agent_template_id: agentTemplateId,
+      user_id: session.createdById ?? undefined,
+      trace_id: traceId,
+    },
+    task,
+    vars: {
+      blueprintSessionId: session.id,
+      sourceType: session.sourceType,
+      sourceUri: session.sourceUri,
+      sourceRef: session.sourceRef,
+      stageKey: stage.key,
+      stageLabel: stage.label,
+      agentRole: stage.agentRole,
+    },
+    artifacts: [
+      {
+        label: 'Source snapshot',
+        role: 'CONTEXT',
+        mediaType: 'application/json',
+        content: JSON.stringify({
+          rootHash: snapshot.rootHash,
+          summary: snapshot.summary,
+          manifest: snapshot.manifest,
+        }, null, 2).slice(0, 120_000),
+      },
+    ],
+    overrides: {
+      systemPromptAppend: loopStageSystemPrompt(stage),
+      extraContext: 'This workbench is read-only. Produce implementation guidance, QA proof, and reviewable artifacts without mutating source files.',
+    },
+    model_overrides: { provider: 'mock', model: 'mock-fast', temperature: 0.2 },
+    context_policy: { optimizationMode: 'code_aware', maxContextTokens: 16000, compareWithRaw: true },
+    limits: { maxSteps: 8, timeoutSec: 180 },
+  })
+}
+
+async function createLoopStageArtifacts(
+  session: ArtifactSession,
+  snapshot: ArtifactSnapshot,
+  stage: LoopStageDefinition,
+  attempt: StageAttempt,
+  result: ExecuteResponse,
+  gateRecommendation: GateRecommendation,
+): Promise<string[]> {
+  const ctx = buildSnapshotContext(snapshot)
+  const response = isUsefulModelResponse(result.finalResponse) ? result.finalResponse ?? '' : ''
+  const commonPayload = {
+    stageKey: stage.key,
+    attemptId: attempt.id,
+    version: attempt.attemptNumber,
+    gateRecommendation,
+    cfCallId: result.correlation.cfCallId,
+    traceId: result.correlation.traceId,
+    promptAssemblyId: result.correlation.promptAssemblyId,
+    mcpInvocationId: result.correlation.mcpInvocationId,
+    codeChangeIds: result.correlation.codeChangeIds ?? [],
+    warnings: result.warnings ?? [],
+  }
+  const baseContent = buildLoopStageMarkdown(session, ctx, stage, attempt, response, gateRecommendation)
+  const specs: Array<{ kind: string; title: string; content: string; payload?: Record<string, unknown> }> = [
+    {
+      kind: `loop_${stage.key}_attempt`,
+      title: `${stage.label} attempt ${attempt.attemptNumber}`,
+      content: baseContent,
+    },
+  ]
+  if (stage.key === 'plan') {
+    specs.push(
+      { kind: 'mental_model', title: `Mental model v${attempt.attemptNumber}`, content: buildMentalModel(session, ctx) },
+      { kind: 'gaps', title: `Gaps v${attempt.attemptNumber}`, content: buildGaps(session, ctx) },
+    )
+  } else if (stage.key === 'design') {
+    specs.push(
+      { kind: 'solution_architecture', title: `Solution architecture v${attempt.attemptNumber}`, content: buildSolutionArchitecture(session, ctx) },
+      { kind: 'approved_spec_draft', title: `Spec draft v${attempt.attemptNumber}`, content: buildApprovedSpec(session, ctx, response) },
+    )
+  } else if (stage.agentRole === 'DEVELOPER') {
+    specs.push(
+      { kind: 'developer_task_pack', title: `Developer task pack v${attempt.attemptNumber}`, content: buildDeveloperTaskPack(session, ctx, response) },
+      { kind: 'simulated_code_change', title: `Code-change evidence v${attempt.attemptNumber}`, content: buildCodeChangeEvidence(session, ctx) },
+    )
+  } else if (stage.key.includes('test') || stage.terminal) {
+    specs.push(
+      { kind: 'verification_rules', title: `Verification rules v${attempt.attemptNumber}`, content: buildVerificationRules(session, ctx) },
+      { kind: 'traceability_matrix', title: `Traceability matrix v${attempt.attemptNumber}`, content: buildTraceabilityMatrix() },
+      { kind: 'certification_receipt', title: `Certification receipt v${attempt.attemptNumber}`, content: buildCertificationReceipt(session, ctx) },
+    )
+  } else {
+    specs.push({ kind: 'qa_task_pack', title: `QA task pack v${attempt.attemptNumber}`, content: buildQaTaskPack(session, ctx, response) })
+  }
+
+  const created = await Promise.all(specs.map(spec => prisma.blueprintArtifact.create({
+    data: {
+      sessionId: session.id,
+      stage: legacyStage(stage),
+      kind: spec.kind,
+      title: spec.title,
+      content: spec.content,
+      payload: { ...commonPayload, ...(spec.payload ?? {}) } as Prisma.InputJsonValue,
+    },
+    select: { id: true },
+  })))
+  return created.map(item => item.id)
+}
+
+function loopStageTask(session: ArtifactSession, stage: LoopStageDefinition, state: LoopState): string {
+  const latestAccepted = state.stageAttempts
+    .filter(attempt => attempt.verdict === 'PASS' || attempt.verdict === 'ACCEPTED_WITH_RISK')
+    .map(attempt => `${attempt.stageLabel}#${attempt.attemptNumber}: ${attempt.verdict}`)
+    .join('\n') || 'No accepted stages yet.'
+  const questions = (stage.questions ?? []).map(question => `- ${question.id}: ${question.question}${question.required ? ' (required)' : ''}`).join('\n') || '- No configured questions.'
+  const sendBacks = state.reviewEvents.filter(event => event.type === 'SEND_BACK' || event.type === 'AUTO_SEND_BACK').slice(-5)
+    .map(event => `- ${event.message}`)
+    .join('\n') || '- No send-backs yet.'
+  return [
+    `Run Blueprint loop stage: ${stage.label}`,
+    '',
+    `Goal: ${session.goal}`,
+    `Stage key: ${stage.key}`,
+    `Agent role: ${stage.agentRole}`,
+    '',
+    'Stage description:',
+    stage.description ?? 'No description supplied.',
+    '',
+    'Configured questions:',
+    questions,
+    '',
+    'Latest accepted stage decisions:',
+    latestAccepted,
+    '',
+    'Recent feedback loops:',
+    sendBacks,
+    '',
+    'Return concise, structured workbench output with: decisions, risks, artifact updates, open questions, and a gate recommendation of PASS, NEEDS_REWORK, or BLOCKED.',
+  ].join('\n')
+}
+
+function loopStageSystemPrompt(stage: LoopStageDefinition): string {
+  return [
+    `You are the ${stage.label} stage agent in a governed agentic delivery loop.`,
+    'Be explicit about what should pass, what should go back, and why.',
+    'When uncertain, ask targeted questions and preserve traceability to files, requirements, and tests.',
+    stage.agentRole === 'DEVELOPER'
+      ? 'Do not write source files. Produce a proposed implementation pack and simulated code-change evidence.'
+      : stage.agentRole === 'QA'
+        ? 'Focus on verification, regressions, acceptance criteria, and certification proof.'
+        : 'Focus on architecture, planning, constraints, and design decisions.',
+  ].join(' ')
+}
+
+function buildGateRecommendation(result: ExecuteResponse, stage: LoopStageDefinition): GateRecommendation {
+  if (result.status === 'FAILED') {
+    return {
+      verdict: 'BLOCKED',
+      confidence: 0.95,
+      reason: result.finishReason ?? 'Context Fabric reported a failed stage.',
+      targetStageKey: stage.allowedSendBackTo?.[0],
+    }
+  }
+  const warningCount = result.warnings?.length ?? 0
+  if (warningCount > 1) {
+    return {
+      verdict: 'NEEDS_REWORK',
+      confidence: 0.86,
+      reason: `${warningCount} execution warnings were produced; human review should decide whether to send work back.`,
+      targetStageKey: stage.allowedSendBackTo?.[0],
+    }
+  }
+  return {
+    verdict: 'PASS',
+    confidence: 0.74,
+    reason: 'No blocking execution signal was detected. Human review still owns the stage verdict.',
+  }
+}
+
+function maybeApplyAutoGate(state: LoopState, stage: LoopStageDefinition, attemptId: string, actorId: string): LoopState {
+  if (state.gateMode !== 'auto') return state
+  const attempt = state.stageAttempts.find(item => item.id === attemptId)
+  const rec = attempt?.gateRecommendation
+  if (!attempt || !rec || rec.verdict === 'PASS' || rec.confidence < 0.9) return state
+  const target = rec.targetStageKey && (stage.allowedSendBackTo ?? []).includes(rec.targetStageKey) ? rec.targetStageKey : undefined
+  if (!target || sendBackCount(state) >= state.loopDefinition.maxTotalSendBacks) return state
+  return {
+    ...state,
+    currentStageKey: target,
+    stageAttempts: state.stageAttempts.map(item => item.id === attemptId ? {
+      ...item,
+      status: 'NEEDS_REWORK',
+      verdict: rec.verdict,
+      feedback: rec.reason,
+    } : item),
+    reviewEvents: [...state.reviewEvents, reviewEvent('AUTO_SEND_BACK', `${stage.label} automatically sent back to ${titleFromKey(target)}: ${rec.reason}`, actorId, {
+      stageKey: stage.key,
+      targetStageKey: target,
+      attemptId,
+      gateRecommendation: rec,
+    })],
+  }
+}
+
+function buildLoopStageMarkdown(
+  session: ArtifactSession,
+  ctx: SnapshotContext,
+  stage: LoopStageDefinition,
+  attempt: StageAttempt,
+  response: string,
+  gateRecommendation: GateRecommendation,
+) {
+  return [
+    `# ${stage.label} Attempt ${attempt.attemptNumber}`,
+    '',
+    `Goal: ${session.goal}`,
+    `Stage key: ${stage.key}`,
+    `Agent role: ${stage.agentRole}`,
+    '',
+    '## Gate Recommendation',
+    '',
+    `- Verdict: ${gateRecommendation.verdict}`,
+    `- Confidence: ${gateRecommendation.confidence}`,
+    `- Reason: ${gateRecommendation.reason}`,
+    '',
+    '## Source Signals',
+    '',
+    `- Snapshot files: ${ctx.files.length}`,
+    `- Key files: ${ctx.keyFiles.map(file => `\`${file}\``).join(', ') || 'none detected'}`,
+    '',
+    '## Model Notes',
+    '',
+    response || 'No model notes returned.',
+  ].join('\n')
+}
+
+function findLoopStage(state: LoopState, stageKey: string): LoopStageDefinition {
+  const stage = state.loopDefinition.stages.find(item => item.key === slug(stageKey) || item.key === stageKey)
+  if (!stage) throw new NotFoundError('BlueprintLoopStage', stageKey)
+  return stage
+}
+
+function latestStageAttempt(state: LoopState, stageKey: string): StageAttempt | undefined {
+  return state.stageAttempts.filter(attempt => attempt.stageKey === stageKey).at(-1)
+}
+
+function verdictToAttemptStatus(verdict: LoopVerdict): LoopAttemptStatus {
+  return verdict === 'PASS' ? 'PASSED' : verdict
+}
+
+function missingRequiredQuestions(stage: LoopStageDefinition, answers: DecisionAnswer[]): string[] {
+  const answered = new Set(answers.filter(answer =>
+    answer.selectedOptionLabel?.trim() || answer.customAnswer?.trim() || answer.notes?.trim(),
+  ).map(answer => answer.questionId))
+  return (stage.questions ?? []).filter(question => question.required && !answered.has(question.id)).map(question => question.id)
+}
+
+function mergeDecisionAnswers(existing: DecisionAnswer[], incoming: DecisionAnswer[], actorId: string): DecisionAnswer[] {
+  const byId = new Map(existing.map(answer => [answer.questionId, answer]))
+  const updatedAt = new Date().toISOString()
+  for (const answer of incoming) {
+    byId.set(answer.questionId, {
+      questionId: answer.questionId,
+      answerType: answer.answerType,
+      selectedOptionLabel: answer.selectedOptionLabel?.trim() || undefined,
+      customAnswer: answer.customAnswer?.trim() || undefined,
+      notes: answer.notes?.trim() || undefined,
+      updatedAt,
+      updatedById: actorId,
+    })
+  }
+  return Array.from(byId.values())
+}
+
+function isLoopGreen(state: LoopState): boolean {
+  return state.loopDefinition.stages
+    .filter(stage => stage.required !== false)
+    .every(stage => {
+      const attempt = latestStageAttempt(state, stage.key)
+      return attempt?.verdict === 'PASS' || attempt?.verdict === 'ACCEPTED_WITH_RISK'
+    })
+}
+
+function sendBackCount(state: LoopState): number {
+  return state.reviewEvents.filter(event => event.type === 'SEND_BACK' || event.type === 'AUTO_SEND_BACK').length
+}
+
+function reviewEvent(type: string, message: string, actorId: string, payload: Record<string, unknown> = {}): ReviewEvent {
+  return {
+    id: crypto.randomUUID(),
+    type,
+    stageKey: typeof payload.stageKey === 'string' ? payload.stageKey : undefined,
+    targetStageKey: typeof payload.targetStageKey === 'string' ? payload.targetStageKey : undefined,
+    attemptId: typeof payload.attemptId === 'string' ? payload.attemptId : undefined,
+    message,
+    actorId,
+    payload,
+    createdAt: new Date().toISOString(),
+  }
+}
+
+function legacyStage(stage: LoopStageDefinition): BlueprintStage {
+  return stage.agentRole === 'DEVELOPER' ? BlueprintStage.DEVELOPER : stage.agentRole === 'QA' ? BlueprintStage.QA : BlueprintStage.ARCHITECT
+}
+
+function buildFinalPack(state: LoopState, artifacts: Array<{ id: string; kind: string; payload?: Prisma.JsonValue | null }>, actorId: string): FinalPack {
+  const latestAccepted = state.loopDefinition.stages.reduce<FinalPack['stages']>((acc, stage) => {
+    const attempt = latestStageAttempt(state, stage.key)
+    if (!attempt || (attempt.verdict !== 'PASS' && attempt.verdict !== 'ACCEPTED_WITH_RISK')) return acc
+    acc.push({
+      stageKey: stage.key,
+      label: stage.label,
+      verdict: attempt.verdict,
+      attemptNumber: attempt.attemptNumber,
+      artifactIds: attempt.artifactIds ?? [],
+    })
+    return acc
+  }, [])
+  const artifactKinds = new Set<string>()
+  for (const artifact of artifacts) {
+    const payload = isRecord(artifact.payload) ? artifact.payload : {}
+    if (latestAccepted.some(stage => stage.artifactIds.includes(artifact.id)) || payload.stageKey) artifactKinds.add(artifact.kind)
+  }
+  return {
+    id: crypto.randomUUID(),
+    status: 'READY_FOR_WORKFLOW_HANDOFF',
+    generatedAt: new Date().toISOString(),
+    generatedById: actorId,
+    summary: `Final pack combines ${latestAccepted.length} accepted loop stages with ${state.decisionAnswers.length} captured stakeholder answers.`,
+    stages: latestAccepted,
+    artifactKinds: Array.from(artifactKinds).sort(),
+  }
+}
+
+function buildFinalPackMarkdown(finalPack: FinalPack, state: LoopState) {
+  return [
+    '# Final Implementation Pack',
+    '',
+    `Status: ${finalPack.status}`,
+    `Generated: ${finalPack.generatedAt}`,
+    '',
+    '## Summary',
+    '',
+    finalPack.summary,
+    '',
+    '## Accepted Stages',
+    '',
+    ...finalPack.stages.map(stage => `- ${stage.label}: ${stage.verdict} on attempt ${stage.attemptNumber}`),
+    '',
+    '## Stakeholder Answers',
+    '',
+    ...(state.decisionAnswers.length
+      ? state.decisionAnswers.map(answer => `- ${answer.questionId}: ${answer.selectedOptionLabel ?? answer.customAnswer ?? answer.notes ?? 'answered'}`)
+      : ['- No stakeholder answers captured.']),
+    '',
+    '## Artifact Kinds',
+    '',
+    ...finalPack.artifactKinds.map(kind => `- ${kind}`),
+  ].join('\n')
+}
+
+async function attachFinalPackToWorkflowNode(session: { id: string; workflowInstanceId?: string | null; metadata?: Prisma.JsonValue }, finalPack: FinalPack) {
+  const state = readLoopState(session as LoopSessionSeed)
+  if (!session.workflowInstanceId || !state.workflowNodeId) return
+  const node = await prisma.workflowNode.findFirst({
+    where: { id: state.workflowNodeId, instanceId: session.workflowInstanceId },
+    select: { id: true, config: true },
+  })
+  if (!node) return
+  const config = isRecord(node.config) ? node.config : {}
+  const blueprintWorkbench = isRecord(config.blueprintWorkbench) ? config.blueprintWorkbench : {}
+  await prisma.workflowNode.update({
+    where: { id: node.id },
+    data: {
+      config: {
+        ...config,
+        blueprintWorkbench: {
+          ...blueprintWorkbench,
+          enabled: true,
+          sessionId: session.id,
+          finalPack,
+          finalizedAt: finalPack.generatedAt,
+        },
+      } as Prisma.InputJsonValue,
+    },
+  })
 }
 
 async function runStage(
@@ -1071,6 +2163,40 @@ function buildCertificationReceipt(_session: ArtifactSession, ctx: SnapshotConte
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function isDecisionAnswerRecord(value: unknown): value is DecisionAnswer {
+  return readDecisionAnswers([value]).length === 1
+}
+
+function isStageAttempt(value: unknown): value is StageAttempt {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.stageKey === 'string'
+    && typeof value.stageLabel === 'string'
+    && (value.agentRole === 'ARCHITECT' || value.agentRole === 'DEVELOPER' || value.agentRole === 'QA')
+    && typeof value.agentTemplateId === 'string'
+    && typeof value.attemptNumber === 'number'
+    && typeof value.status === 'string'
+    && typeof value.startedAt === 'string'
+}
+
+function isReviewEvent(value: unknown): value is ReviewEvent {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.type === 'string'
+    && typeof value.message === 'string'
+    && typeof value.createdAt === 'string'
+}
+
+function isFinalPack(value: unknown): value is FinalPack {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.status === 'string'
+    && typeof value.generatedAt === 'string'
+    && typeof value.summary === 'string'
+    && Array.isArray(value.stages)
+    && Array.isArray(value.artifactKinds)
 }
 
 function readSessionDecisionAnswers(session: { metadata?: Prisma.JsonValue | null }) {

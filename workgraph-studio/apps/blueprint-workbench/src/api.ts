@@ -2,6 +2,17 @@ export type SourceType = 'github' | 'localdir'
 export type Stage = 'ARCHITECT' | 'DEVELOPER' | 'QA'
 export type SessionStatus = 'DRAFT' | 'SNAPSHOTTED' | 'RUNNING' | 'COMPLETED' | 'APPROVED' | 'FAILED'
 export type StageStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+export type GateMode = 'manual' | 'auto'
+export type LoopVerdict = 'PASS' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_RISK'
+export type LoopAttemptStatus =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'PASSED'
+  | 'NEEDS_REWORK'
+  | 'BLOCKED'
+  | 'ACCEPTED_WITH_RISK'
 
 export type LookupCapability = {
   id: string
@@ -58,11 +69,22 @@ export type BlueprintStageRun = {
 export type BlueprintArtifact = {
   id: string
   stage?: Stage
+  stageKey?: string
+  attemptId?: string
+  version?: number
   kind: string
   title: string
   content?: string
   payload?: Record<string, unknown>
   createdAt: string
+}
+
+export type LoopQuestion = {
+  id: string
+  question: string
+  required?: boolean
+  options?: Array<{ label: string; impact?: string; recommended?: boolean }>
+  freeform?: boolean
 }
 
 export type DecisionAnswer = {
@@ -73,6 +95,85 @@ export type DecisionAnswer = {
   notes?: string
   updatedAt?: string
   updatedById?: string
+}
+
+export type LoopStage = {
+  key: string
+  label: string
+  agentRole: Stage
+  agentTemplateId?: string
+  description?: string
+  next?: string | null
+  terminal?: boolean
+  required?: boolean
+  allowedSendBackTo?: string[]
+  questions?: LoopQuestion[]
+}
+
+export type LoopDefinition = {
+  version: number
+  name: string
+  stages: LoopStage[]
+  maxLoopsPerStage: number
+  maxTotalSendBacks: number
+}
+
+export type GateRecommendation = {
+  verdict: LoopVerdict
+  confidence: number
+  reason: string
+  targetStageKey?: string
+}
+
+export type StageAttempt = {
+  id: string
+  stageKey: string
+  stageLabel: string
+  agentRole: Stage
+  agentTemplateId: string
+  attemptNumber: number
+  status: LoopAttemptStatus
+  startedAt: string
+  completedAt?: string
+  response?: string
+  error?: string
+  verdict?: LoopVerdict
+  confidence?: number
+  feedback?: string
+  acceptedAt?: string
+  acceptedById?: string
+  artifactIds?: string[]
+  gateRecommendation?: GateRecommendation
+  correlation?: BlueprintStageRun['correlation']
+  tokensUsed?: BlueprintStageRun['tokensUsed']
+}
+
+export type ReviewEvent = {
+  id: string
+  type: string
+  stageKey?: string
+  targetStageKey?: string
+  attemptId?: string
+  message: string
+  actorId?: string
+  payload?: Record<string, unknown>
+  createdAt: string
+}
+
+export type FinalPack = {
+  id: string
+  status: string
+  generatedAt: string
+  generatedById?: string
+  summary: string
+  stages: Array<{
+    stageKey: string
+    label: string
+    verdict: LoopVerdict
+    attemptNumber: number
+    artifactIds: string[]
+  }>
+  artifactKinds: string[]
 }
 
 export type BlueprintSession = {
@@ -87,6 +188,16 @@ export type BlueprintSession = {
   qaAgentTemplateId: string
   status: SessionStatus
   approvedAt?: string
+  workflowInstanceId?: string
+  workflowNodeId?: string
+  phaseId?: string
+  gateMode?: GateMode
+  currentStageKey?: string | null
+  loopDefinition?: LoopDefinition
+  stageAttempts?: StageAttempt[]
+  reviewEvents?: ReviewEvent[]
+  decisionAnswers?: DecisionAnswer[]
+  finalPack?: FinalPack
   snapshots: BlueprintSnapshot[]
   stageRuns: BlueprintStageRun[]
   artifacts: BlueprintArtifact[]
@@ -108,6 +219,11 @@ export type CreateSessionRequest = {
   architectAgentTemplateId: string
   developerAgentTemplateId: string
   qaAgentTemplateId: string
+  workflowInstanceId?: string
+  workflowNodeId?: string
+  phaseId?: string
+  loopDefinition?: LoopDefinition
+  gateMode?: GateMode
 }
 
 type PersistedAuth = { state?: { token?: string | null } }
@@ -171,9 +287,15 @@ export const api = {
   listSessions: () => request<{ items: BlueprintSession[] }>('/blueprint/sessions'),
   createSession: (body: CreateSessionRequest) => request<BlueprintSession>('/blueprint/sessions', { method: 'POST', body: JSON.stringify(body) }),
   snapshot: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/snapshot`, { method: 'POST' }),
-	  run: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/run`, { method: 'POST' }),
-	  approve: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/approve`, { method: 'POST' }),
-	  saveDecisionAnswers: (id: string, answers: DecisionAnswer[]) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/decision-answers`, { method: 'POST', body: JSON.stringify({ answers }) }),
-	  capabilities: async () => unwrap<LookupCapability>(await request('/lookup/capabilities?size=200')),
+  run: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/run`, { method: 'POST' }),
+  runStage: (id: string, stageKey: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/run`, { method: 'POST' }),
+  verdict: (id: string, stageKey: string, body: { verdict: LoopVerdict; feedback?: string; confidence?: number; acceptRisk?: boolean; answers?: DecisionAnswer[] }) =>
+    request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/verdict`, { method: 'POST', body: JSON.stringify(body) }),
+  sendBack: (id: string, stageKey: string, body: { targetStageKey: string; reason: string; requiredChanges?: string; blockingQuestions?: string[] }) =>
+    request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/send-back`, { method: 'POST', body: JSON.stringify(body) }),
+  finalize: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/finalize`, { method: 'POST' }),
+  approve: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/approve`, { method: 'POST' }),
+  saveDecisionAnswers: (id: string, answers: DecisionAnswer[]) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/decision-answers`, { method: 'POST', body: JSON.stringify({ answers }) }),
+  capabilities: async () => unwrap<LookupCapability>(await request('/lookup/capabilities?size=200')),
   agents: async (capabilityId: string) => unwrap<LookupAgent>(await request(`/lookup/agent-templates?size=200&capability_id=${encodeURIComponent(capabilityId)}`)),
 }

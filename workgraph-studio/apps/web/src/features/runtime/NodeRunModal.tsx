@@ -15,7 +15,7 @@ import { useEffect, useState } from 'react'
 import {
   X, CheckCircle2, XCircle, GitBranch,
   Paperclip, Upload, Link2, ExternalLink, FileText, AlertCircle,
-  UserCheck, ListTodo, Check, Trash2, User,
+  UserCheck, ListTodo, Check, Trash2, User, Route,
 } from 'lucide-react'
 import type {
   BrowserWorkflowRuntime,
@@ -45,6 +45,8 @@ export function NodeRunModal({ runtime, node, nodeState, actorEmail, onClose }: 
 
   const isApproval   = node.nodeType === 'APPROVAL'
   const isDecision   = node.nodeType === 'DECISION_GATE'
+  const blueprintWorkbenchConfig = isPlainRecord(config.blueprintWorkbench) ? config.blueprintWorkbench : undefined
+  const isBlueprintWorkbench = node.nodeType === 'AGENT_TASK' && blueprintWorkbenchConfig?.enabled === true
   const isInteractive = !isDecision
 
   const [panel, setPanel] = useState<Panel>('none')
@@ -197,7 +199,19 @@ export function NodeRunModal({ runtime, node, nodeState, actorEmail, onClose }: 
             />
           )}
 
-          {isDecision ? (
+          {isBlueprintWorkbench ? (
+            <BlueprintWorkbenchBody
+              runtime={runtime}
+              node={node}
+              config={blueprintWorkbenchConfig}
+              actorEmail={actorEmail}
+              claimed={!!nodeState.claimedBy}
+              onComplete={(output) => {
+                runtime.complete(node.id, output, actorEmail)
+                onClose()
+              }}
+            />
+          ) : isDecision ? (
             <DecisionPreview previews={runtime.previewBranches(node.id)} />
           ) : isApproval ? (
             <ApprovalBody
@@ -234,6 +248,111 @@ export function NodeRunModal({ runtime, node, nodeState, actorEmail, onClose }: 
       </div>
     </div>
   )
+}
+
+function BlueprintWorkbenchBody({
+  runtime,
+  node,
+  config,
+  actorEmail,
+  claimed,
+  onComplete,
+}: {
+  runtime: BrowserWorkflowRuntime
+  node: EngineNodeDef
+  config?: Record<string, unknown>
+  actorEmail?: string
+  claimed: boolean
+  onComplete: (output: Record<string, unknown>) => void
+}) {
+  const [sessionId, setSessionId] = useState('')
+  const runState = runtime.getState()
+  const workbenchUrl = buildWorkbenchUrl(runState.runId, node.id, config)
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, opacity: claimed ? 1 : 0.55, pointerEvents: claimed ? 'auto' : 'none' }}>
+      <div style={{
+        border: '1px solid rgba(0,75,141,0.22)',
+        borderRadius: 12,
+        padding: 12,
+        background: 'rgba(0,75,141,0.06)',
+      }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+          <Route size={15} style={{ color: '#004b8d' }} />
+          <strong style={{ fontSize: 13, color: 'var(--color-on-surface)' }}>Blueprint Workbench loop</strong>
+        </div>
+        <p style={{ margin: 0, fontSize: 12, lineHeight: 1.45, color: 'var(--color-outline)' }}>
+          This Agent Task is configured to use the modal-ready Blueprint Workbench. The session is linked to this workflow run and node through URL parameters; finalization can be returned as this node output.
+        </p>
+      </div>
+
+      <iframe
+        title="Blueprint Workbench"
+        src={workbenchUrl}
+        style={{
+          width: '100%',
+          height: 520,
+          border: '1px solid var(--color-outline-variant)',
+          borderRadius: 12,
+          background: '#fff',
+        }}
+      />
+
+      <label style={{ fontSize: 11, fontWeight: 700, color: '#334155' }}>
+        Blueprint session / final pack reference
+      </label>
+      <input
+        value={sessionId}
+        onChange={event => setSessionId(event.target.value)}
+        placeholder="Paste finalized Blueprint session id or final pack id"
+        style={inputStyle()}
+      />
+
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center' }}>
+        <a href={workbenchUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: '#004b8d', fontWeight: 700 }}>
+          Open full workbench
+        </a>
+        <button
+          disabled={!sessionId.trim()}
+          onClick={() => onComplete({
+            blueprintWorkbench: {
+              enabled: true,
+              sessionId: sessionId.trim(),
+              workbenchUrl,
+              workflowInstanceId: runState.runId,
+              workflowNodeId: node.id,
+              completedBy: actorEmail,
+            },
+          })}
+          style={btnPrimary(!sessionId.trim())}
+        >
+          <CheckCircle2 size={14} /> Complete with final pack
+        </button>
+      </div>
+
+      {!claimed && (
+        <p style={{ fontSize: 10, color: 'var(--color-outline)', textAlign: 'right' }}>
+          Claim this node to use the embedded workbench.
+        </p>
+      )}
+    </div>
+  )
+}
+
+function buildWorkbenchUrl(workflowInstanceId: string, workflowNodeId: string, config?: Record<string, unknown>) {
+  const url = new URL('http://localhost:5176/')
+  url.searchParams.set('workflowInstanceId', workflowInstanceId)
+  url.searchParams.set('workflowNodeId', workflowNodeId)
+  if (typeof config?.phaseId === 'string') url.searchParams.set('phaseId', config.phaseId)
+  if (config?.gateMode === 'auto' || config?.gateMode === 'manual') url.searchParams.set('gateMode', config.gateMode)
+  if (config?.loopDefinition && typeof window !== 'undefined') {
+    try {
+      url.searchParams.set('loopDefinition', window.btoa(JSON.stringify(config.loopDefinition)))
+    } catch {
+      // Keep the modal usable even when a non-serializable config sneaks in.
+    }
+  }
+  return url.toString()
 }
 
 // ─── Delegate panel ──────────────────────────────────────────────────────────
@@ -964,6 +1083,10 @@ function formatBytes(b: number): string {
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
   if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`
   return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 function inputStyle(): React.CSSProperties {
