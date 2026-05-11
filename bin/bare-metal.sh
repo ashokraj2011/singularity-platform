@@ -123,6 +123,7 @@ EOF
     fi
   }
   ensure_install agent-and-tools          npm
+  ensure_install agent-and-tools/web      npm
   ensure_install workgraph-studio         pnpm
   ensure_install pseudo-iam-service       npm
   ensure_install audit-governance-service npm
@@ -183,7 +184,9 @@ EOF
 
   boot workgraph-api    "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
 
-  boot agent-web        "cd agent-and-tools/web        && AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" npm run dev"
+  # PORT=3000 forces Next.js to fail loudly on a port collision rather than
+  # silently auto-bumping to 3001 (which would dodge the SPA proxy rewrites).
+  boot agent-web        "cd agent-and-tools/web        && PORT=3000 AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" npm run dev"
   boot workgraph-web    "cd workgraph-studio/apps/web  && VITE_API_BASE=http://localhost:8080 VITE_PSEUDO_IAM_URL=http://localhost:8101/api/v1 VITE_AUTO_LOGIN=1 npm run dev"
 
   echo
