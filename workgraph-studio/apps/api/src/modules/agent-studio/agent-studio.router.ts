@@ -47,6 +47,11 @@ function shapeAgent(raw: AgentTemplate): StudioAgent {
   const r = raw as Record<string, unknown>
   const capabilityId = (r.capabilityId as string | undefined) ?? null
   const lockedReason = (r.lockedReason as string | undefined) ?? null
+  // Prefer the actor-aware `editable` flag agent-runtime now computes
+  // server-side (platform-admin / capability-owner aware). Fall back to a
+  // pessimistic heuristic when the upstream doesn't supply it.
+  const upstreamEditable = typeof r.editable === 'boolean' ? (r.editable as boolean) : undefined
+  const editable = upstreamEditable ?? (capabilityId != null && lockedReason == null)
   return {
     id:                  raw.id,
     name:                raw.name,
@@ -55,7 +60,7 @@ function shapeAgent(raw: AgentTemplate): StudioAgent {
     capabilityId,
     baseTemplateId:      (r.baseTemplateId as string | undefined) ?? null,
     scope:               capabilityId ? 'capability' : 'common',
-    editable:            capabilityId != null && lockedReason == null,
+    editable,
     lockedReason,
     basePromptProfileId: (r.basePromptProfileId as string | undefined) ?? null,
     status:              (r.status as string | undefined),

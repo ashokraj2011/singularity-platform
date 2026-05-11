@@ -38,7 +38,7 @@ export async function activateForeach(
   if (collection.length === 0) {
     await prisma.workflowNode.update({
       where: { id: node.id },
-      data: { status: 'COMPLETED' },
+      data: { status: 'COMPLETED', completedAt: new Date() },
     })
   }
 }

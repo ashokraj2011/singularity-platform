@@ -15,6 +15,7 @@ export async function activateParallelJoin(
     where: { id: node.id },
     data: {
       status: 'ACTIVE',
+      startedAt: new Date(),
       config: { ...cfg, expected_joins: expectedBranches, completed_joins: 0 } as Prisma.InputJsonValue,
     },
   })

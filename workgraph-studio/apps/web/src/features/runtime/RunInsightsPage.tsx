@@ -22,7 +22,10 @@ interface InsightNode {
   status: string
   createdAt: string
   updatedAt: string
+  startedAt: string | null
+  completedAt: string | null
   durationMs: number | null
+  durationPrecise: boolean
   documents: Array<{ id: string; name: string; kind: string; sizeBytes: number | null; mimeType: string | null; uploadedAt: string }>
   consumables: Array<{ id: string; name: string; status: string; currentVersion: number; updatedAt: string }>
   eventCount: number
@@ -184,7 +187,7 @@ export function RunInsightsPage() {
                       display: 'flex', alignItems: 'center', padding: '0 8px',
                       fontSize: 10, color: '#0f172a',
                     }}>
-                      {n.durationMs != null ? `≈ ${fmtDuration(n.durationMs)}` : n.status.toLowerCase()}
+                      {n.durationMs != null ? `${n.durationPrecise ? '' : '≈ '}${fmtDuration(n.durationMs)}` : n.status.toLowerCase()}
                       {(n.documents.length > 0 || n.consumables.length > 0 || n.eventCount > 0) && (
                         <span style={{ marginLeft: 'auto', fontSize: 9, color: '#475569', display: 'flex', gap: 8 }}>
                           {n.documents.length > 0  && <span>📎 {n.documents.length}</span>}
@@ -201,7 +204,7 @@ export function RunInsightsPage() {
               )
             })}
             <p style={{ fontSize: 9, color: '#94a3b8', marginTop: 6 }}>
-              Per-step durations are inferred from <code>createdAt → updatedAt</code> on completed nodes (precision is approximate).
+              Durations without "≈" are precise (M24.5: runtime-stamped <code>startedAt</code>/<code>completedAt</code>). The "≈" prefix means the value falls back to <code>createdAt → updatedAt</code> on older runs that pre-date the timing columns.
             </p>
           </div>
         )}

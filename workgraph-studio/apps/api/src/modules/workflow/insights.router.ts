@@ -27,7 +27,14 @@ interface NodeInsight {
   positionY: number
   createdAt: string
   updatedAt: string
-  durationMs: number | null   // null for non-COMPLETED
+  startedAt: string | null
+  completedAt: string | null
+  // True duration when startedAt + completedAt are written (M24.5+); else
+  // null for non-terminal nodes; falls back to updatedAt - createdAt for
+  // older runs that pre-date the timing columns.
+  durationMs: number | null
+  // True when the duration came from authoritative startedAt/completedAt.
+  durationPrecise: boolean
   documents: Array<{ id: string; name: string; kind: string; sizeBytes: number | null; mimeType: string | null; uploadedAt: string }>
   consumables: Array<{ id: string; name: string; status: string; currentVersion: number; updatedAt: string }>
   // M22 emits agent.template.* + tool.execution.* + cf.execute.completed
@@ -76,9 +83,21 @@ interface InsightsResponse {
   }>
 }
 
-function durationOf(node: { status: string; createdAt: Date; updatedAt: Date }): number | null {
-  if (node.status !== 'COMPLETED') return null
-  return Math.max(0, node.updatedAt.getTime() - node.createdAt.getTime())
+function durationOf(node: {
+  status: string; createdAt: Date; updatedAt: Date;
+  startedAt: Date | null; completedAt: Date | null;
+}): { durationMs: number | null; precise: boolean } {
+  // Authoritative: startedAt + completedAt written by the runtime (M24.5+).
+  if (node.startedAt && node.completedAt) {
+    return { durationMs: Math.max(0, node.completedAt.getTime() - node.startedAt.getTime()), precise: true }
+  }
+  // No timing yet recorded — only emit a number when the node has reached a
+  // terminal status, falling back to the historic createdAt → updatedAt
+  // heuristic for runs that pre-date the timing columns.
+  if (node.status === 'COMPLETED' || node.status === 'FAILED' || node.status === 'SKIPPED') {
+    return { durationMs: Math.max(0, node.updatedAt.getTime() - node.createdAt.getTime()), precise: false }
+  }
+  return { durationMs: null, precise: false }
 }
 
 function runDuration(run: { startedAt: Date | null; completedAt: Date | null; createdAt: Date; updatedAt: Date }): number | null {
@@ -109,6 +128,7 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
           id: true, label: true, nodeType: true, status: true,
           positionX: true, positionY: true,
           createdAt: true, updatedAt: true,
+          startedAt: true, completedAt: true,
           documents: {
             select: { id: true, name: true, kind: true, sizeBytes: true, mimeType: true, uploadedAt: true },
             orderBy: { uploadedAt: 'asc' },
@@ -156,7 +176,9 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
     const nodesByStatus: Record<string, number> = {}
     for (const n of nodes) nodesByStatus[n.status] = (nodesByStatus[n.status] ?? 0) + 1
 
-    const nodeInsights: NodeInsight[] = nodes.map((n) => ({
+    const nodeInsights: NodeInsight[] = nodes.map((n) => {
+      const d = durationOf(n)
+      return ({
       id: n.id,
       label: n.label,
       nodeType: String(n.nodeType),
@@ -165,7 +187,10 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
       positionY: n.positionY,
       createdAt: n.createdAt.toISOString(),
       updatedAt: n.updatedAt.toISOString(),
-      durationMs: durationOf(n),
+      startedAt:   n.startedAt?.toISOString()   ?? null,
+      completedAt: n.completedAt?.toISOString() ?? null,
+      durationMs: d.durationMs,
+      durationPrecise: d.precise,
       documents: n.documents.map((d) => ({
         id: d.id, name: d.name, kind: d.kind,
         sizeBytes: d.sizeBytes == null ? null : Number(d.sizeBytes),
@@ -177,7 +202,8 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
         currentVersion: c.currentVersion, updatedAt: c.updatedAt.toISOString(),
       })),
       eventCount: eventsByNodeId.get(n.id) ?? 0,
-    }))
+      })
+    })
 
     const response: InsightsResponse = {
       run: {

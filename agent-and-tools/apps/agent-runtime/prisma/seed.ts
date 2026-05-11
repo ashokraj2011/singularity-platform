@@ -99,12 +99,24 @@ async function main() {
       },
     });
 
+    // Prisma 5.x upsert on this table emits an ON CONFLICT shape that
+    // Postgres rejects intermittently after force-resets; explicit find +
+    // create/update sidesteps that.
     for (const [pl, pr] of [[platformConstitution.id, 10], [layer.id, 100], [outputContract.id, 950]] as const) {
-      await prisma.promptProfileLayer.upsert({
-        where: { promptProfileId_promptLayerId: { promptProfileId: profile.id, promptLayerId: pl } },
-        update: { priority: pr, isEnabled: true },
-        create: { promptProfileId: profile.id, promptLayerId: pl, priority: pr, isEnabled: true },
+      const existing = await prisma.promptProfileLayer.findFirst({
+        where: { promptProfileId: profile.id, promptLayerId: pl },
+        select: { id: true },
       });
+      if (existing) {
+        await prisma.promptProfileLayer.update({
+          where: { id: existing.id },
+          data:  { priority: pr, isEnabled: true },
+        });
+      } else {
+        await prisma.promptProfileLayer.create({
+          data: { promptProfileId: profile.id, promptLayerId: pl, priority: pr, isEnabled: true },
+        });
+      }
     }
 
     const templateId = IDS.templates[rc.role];

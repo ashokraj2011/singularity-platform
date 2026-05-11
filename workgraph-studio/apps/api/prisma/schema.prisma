@@ -695,6 +695,11 @@ model WorkflowNode {
   documents          Document[]
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
+  // M24.5 — authoritative per-step timing. Written by the runtime when a
+  // node transitions PENDING → ACTIVE → COMPLETED/FAILED. Falls back to
+  // createdAt/updatedAt in the insights view when these are null (older runs).
+  startedAt          DateTime?
+  completedAt        DateTime?
 
   @@map("workflow_nodes")
 }

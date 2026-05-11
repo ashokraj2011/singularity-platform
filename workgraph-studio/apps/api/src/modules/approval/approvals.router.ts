@@ -169,7 +169,7 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
     if (decision === 'REJECTED' && approvalRequest.nodeId) {
       await prisma.workflowNode.update({
         where: { id: approvalRequest.nodeId },
-        data: { status: 'FAILED' },
+        data: { status: 'FAILED', completedAt: new Date() },
       })
     }
 

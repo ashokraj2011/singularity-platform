@@ -84,10 +84,11 @@ export async function advance(
   const beforeStatus = completedNode.status
 
   // 1. Mark node COMPLETED + write mutation
+  // M24.5 — write completedAt for the insights Gantt
   await prisma.$transaction([
     prisma.workflowNode.update({
       where: { id: completedNodeId },
-      data: { status: 'COMPLETED' },
+      data: { status: 'COMPLETED', completedAt: new Date() },
     }),
     prisma.workflowMutation.create({
       data: {
@@ -179,7 +180,10 @@ async function activateDownstream(
     const fresh = await prisma.workflowNode.findUnique({ where: { id: nextNode.id } })
     if (!fresh || fresh.status !== 'PENDING') continue
 
-    await prisma.workflowNode.update({ where: { id: nextNode.id }, data: { status: 'ACTIVE' } })
+    await prisma.workflowNode.update({
+      where: { id: nextNode.id },
+      data: { status: 'ACTIVE', startedAt: new Date() },
+    })
 
     await prisma.workflowMutation.create({
       data: {
@@ -333,7 +337,10 @@ export async function startInstance(instanceId: string, actorId?: string): Promi
   })
 
   for (const node of startNodes) {
-    await prisma.workflowNode.update({ where: { id: node.id }, data: { status: 'ACTIVE' } })
+    await prisma.workflowNode.update({
+      where: { id: node.id },
+      data: { status: 'ACTIVE', startedAt: new Date() },
+    })
     await prisma.workflowMutation.create({
       data: {
         instanceId,
@@ -430,7 +437,7 @@ export async function failNode(
   // Retries exhausted (or non-retryable). Mark FAILED first.
   await prisma.workflowNode.update({
     where: { id: nodeId },
-    data: { status: 'FAILED' },
+    data: { status: 'FAILED', completedAt: new Date() },
   })
   await prisma.workflowMutation.create({
     data: {
@@ -467,7 +474,10 @@ export async function failNode(
       if (!target || target.status !== 'PENDING') continue
       // Treat the failed node as if it had completed (with error context) for routing purposes.
       // We bypass evaluateEdge filter and call activateDownstream's body directly for these edges.
-      await prisma.workflowNode.update({ where: { id: target.id }, data: { status: 'ACTIVE' } })
+      await prisma.workflowNode.update({
+        where: { id: target.id },
+        data: { status: 'ACTIVE', startedAt: new Date() },
+      })
       await prisma.workflowMutation.create({
         data: {
           instanceId,
@@ -662,7 +672,10 @@ export async function cancelInstance(
     where: { instanceId, status: { in: ['PENDING', 'ACTIVE'] } },
   })
   for (const node of liveNodes) {
-    await prisma.workflowNode.update({ where: { id: node.id }, data: { status: 'SKIPPED' } })
+    await prisma.workflowNode.update({
+      where: { id: node.id },
+      data: { status: 'SKIPPED', completedAt: new Date() },
+    })
     await prisma.workflowMutation.create({
       data: {
         instanceId,

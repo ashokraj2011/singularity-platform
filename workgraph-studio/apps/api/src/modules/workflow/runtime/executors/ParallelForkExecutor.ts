@@ -10,6 +10,6 @@ export async function activateParallelFork(
 ): Promise<void> {
   await prisma.workflowNode.update({
     where: { id: node.id },
-    data: { status: 'ACTIVE' },
+    data: { status: 'ACTIVE', startedAt: new Date() },
   })
 }
