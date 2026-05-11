@@ -130,18 +130,21 @@ EOF
   ensure_install mcp-server               npm
 
   # ── 4. Push schemas + seed ────────────────────────────────────────────────
-  info "applying agent-runtime schema + seed…"
+  info "applying agent-runtime schema…"
   ( cd agent-and-tools/apps/agent-runtime \
     && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma db push --skip-generate >/dev/null 2>&1 \
-    && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate >/dev/null 2>&1 \
-    && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma db seed >/dev/null 2>&1 ) \
-    || warn "agent-runtime push/seed had warnings — check logs/agent-runtime.log after boot"
+    && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate >/dev/null 2>&1 ) \
+    || warn "agent-runtime schema push had warnings"
 
   info "applying workgraph-api schema…"
   ( cd workgraph-studio/apps/api \
     && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx prisma db push --skip-generate >/dev/null 2>&1 \
     && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx prisma generate >/dev/null 2>&1 ) \
-    || warn "workgraph push had warnings — check logs/workgraph-api.log after boot"
+    || warn "workgraph schema push had warnings"
+
+  info "applying SQL seed data…"
+  ( "$ROOT/seed/apply.sh" "$db_user" "$db_pass" "$db_host" "$db_port" >/dev/null 2>&1 ) \
+    || warn "seed/apply.sh had warnings — run it manually: seed/apply.sh $db_user"
 
   # ── 5. Python deps (best-effort) ──────────────────────────────────────────
   if command -v pip >/dev/null 2>&1; then
