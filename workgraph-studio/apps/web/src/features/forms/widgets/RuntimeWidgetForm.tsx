@@ -112,10 +112,36 @@ export function RuntimeWidgetForm({
   }
 
   if (widgets.length === 0) {
+    // No designer-defined fields → still render the primary action so the
+    // assignee can advance the workflow. (Save-draft is meaningless without
+    // fields, so it's omitted.)
     return (
-      <p style={{ padding: 16, fontSize: 11, color: 'var(--color-outline)', fontStyle: 'italic' }}>
-        No form is defined for this node.
-      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <p style={{ padding: '0 0 4px 0', fontSize: 11, color: 'var(--color-outline)', fontStyle: 'italic' }}>
+          No form is defined for this node — review any attachments above and mark complete to continue.
+        </p>
+        {error && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 7,
+            padding: '8px 12px', borderRadius: 8,
+            background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', fontSize: 12,
+          }}>
+            <AlertCircle size={13} /> {error}
+          </div>
+        )}
+        {!hideActions && (
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button
+              onClick={() => handleSubmit(true)}
+              disabled={submitting || (submitTo.kind === 'task' && !canComplete)}
+              style={btnPrimary(submitting)}
+            >
+              <Send size={12} />
+              {submitting ? 'Submitting…' : (primaryLabel ?? (submitTo.kind === 'task' ? 'Submit & complete' : 'Submit'))}
+            </button>
+          </div>
+        )}
+      </div>
     )
   }
 
