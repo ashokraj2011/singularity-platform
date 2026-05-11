@@ -61,7 +61,12 @@ services:
       # M8 — AGENT_TASK executor calls context-fabric /execute
       CONTEXT_FABRIC_URL: ${CONTEXT_FABRIC_URL:-http://host.docker.internal:8000}
       # M10 — federated /api/lookup/* sources
-      AUTH_PROVIDER:     ${AUTH_PROVIDER:-local}
+      # 'iam' so the middleware verifies the bearer against pseudo-IAM (or
+      # real IAM via IAM_BASE_URL) AND lazily mirrors the user into the local
+      # workgraph User table. 'local' only verifies the HS256 signature and
+      # expects a userId claim — pseudo-IAM JWTs carry 'sub', so the local
+      # path leaves req.user.userId undefined and Prisma blows up.
+      AUTH_PROVIDER:     ${AUTH_PROVIDER:-iam}
       # Point at pseudo-IAM by default so /login → /context-picker → API calls
       # all use one token authority. Override to :8100 when running real IAM.
       IAM_BASE_URL:      ${IAM_BASE_URL:-http://host.docker.internal:8101/api/v1}

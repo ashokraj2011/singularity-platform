@@ -203,7 +203,8 @@ export async function listAgentTemplates(
     {
       scope: query.scope,
       capabilityId: query.capabilityId,
-      limit: query.limit ? String(query.limit) : '200',
+      // agent-runtime caps limit at 100 per call.
+      limit: String(Math.min(query.limit ?? 100, 100)),
     },
     authHeader,
   )
