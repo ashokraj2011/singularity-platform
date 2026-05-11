@@ -129,6 +129,18 @@ documentsRouter.post('/upload', upload.single('file'), async (req, res, next) =>
       'Content-Type': file.mimetype,
     })
 
+    // Browser-driven /play sessions pass design-time WorkflowDesignNode ids
+    // and IndexedDB-local run ids, neither of which exist as rows in
+    // WorkflowNode / WorkflowInstance. Drop the link to null when the FK
+    // target is missing so the upload still succeeds — the audit log below
+    // keeps the originally-supplied ids for traceability.
+    const [nodeExists, instanceExists] = await Promise.all([
+      nodeId     ? prisma.workflowNode.findUnique({ where: { id: nodeId }, select: { id: true } })     : Promise.resolve(null),
+      instanceId ? prisma.workflowInstance.findUnique({ where: { id: instanceId }, select: { id: true } }) : Promise.resolve(null),
+    ])
+    const resolvedNodeId     = nodeExists     ? nodeId     : null
+    const resolvedInstanceId = instanceExists ? instanceId : null
+
     const doc = await prisma.document.create({
       data: {
         kind:         'UPLOAD',
@@ -139,8 +151,8 @@ documentsRouter.post('/upload', upload.single('file'), async (req, res, next) =>
         bucket,
         uploadedById: req.user!.userId,
         taskId:       taskId ?? null,
-        nodeId:       nodeId ?? null,
-        instanceId:   instanceId ?? null,
+        nodeId:       resolvedNodeId,
+        instanceId:   resolvedInstanceId,
       },
     })
 
