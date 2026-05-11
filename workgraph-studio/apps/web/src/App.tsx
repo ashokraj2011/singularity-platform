@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { useAuthStore } from './store/auth.store'
 import { AppLayout } from './components/AppLayout'
 import { LoginPage } from './features/identity/LoginPage'
@@ -26,6 +26,14 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   const token = useAuthStore(s => s.token)
   if (!token) return <Navigate to="/login" replace />
   return <>{children}</>
+}
+
+// Legacy /workflow/:instanceId used to render the designer canvas in
+// read-only mode for live runs — that conflated authoring with execution.
+// All callers now route to /runs/:id directly; this preserves old links.
+function NavigateLegacyWorkflowInstance() {
+  const { instanceId } = useParams<{ instanceId: string }>()
+  return <Navigate to={`/runs/${instanceId ?? ''}`} replace />
 }
 
 export default function App() {
@@ -64,7 +72,9 @@ export default function App() {
           <Route path="workflows"          element={<WorkflowsListPage />} />
           <Route path="node-types"         element={<CustomNodeTypesPage />} />
           <Route path="design/:workflowId"   element={<WorkflowStudioPage />} />
-          <Route path="workflow/:instanceId" element={<WorkflowStudioPage />} />
+          {/* Retired — runtime view lives at /runs/:id (RunViewerPage). The
+              designer canvas is no longer reused for live instances. */}
+          <Route path="workflow/:instanceId" element={<NavigateLegacyWorkflowInstance />} />
           <Route path="runs"                 element={<RunsDashboardPage />} />
           <Route path="runs/:id"             element={<RunViewerPage />} />
           <Route path="runs/:id/insights"    element={<RunInsightsPage />} />

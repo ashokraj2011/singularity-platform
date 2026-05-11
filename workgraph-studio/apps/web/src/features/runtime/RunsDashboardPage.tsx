@@ -221,7 +221,6 @@ export function RunsDashboardPage() {
               run={r}
               workflow={r.templateId ? workflowById[r.templateId] : null}
               onOpen={() => navigate(r.source === 'browser' ? `/play/${r.id}` : `/runs/${r.id}`)}
-              onOpenCanvas={() => navigate(r.source === 'browser' ? `/play/${r.id}` : `/workflow/${r.id}`)}
             />
           ))}
         </div>
@@ -246,12 +245,11 @@ function Chip({ label, value, color }: { label: string; value: number; color: st
 }
 
 function RunRowCard({
-  run, workflow, onOpen, onOpenCanvas,
+  run, workflow, onOpen,
 }: {
   run: RunRow
   workflow: Workflow | null
   onOpen: () => void
-  onOpenCanvas: () => void
 }) {
   const v = STATUS_VISUAL[run.status] ?? STATUS_VISUAL.DRAFT
   const startedAt   = run.startedAt   ? new Date(run.startedAt).toLocaleString()   : null
@@ -322,13 +320,6 @@ function RunRowCard({
 
       <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
         <button
-          onClick={onOpenCanvas}
-          title="Open the live graph in the studio"
-          style={btnSecondary()}
-        >
-          Canvas
-        </button>
-        <button
           onClick={onOpen}
           title="Open the step-by-step run viewer"
           style={btnPrimary()}
@@ -363,14 +354,5 @@ function btnPrimary(): React.CSSProperties {
     padding: '6px 12px', borderRadius: 8, border: 'none',
     background: 'var(--color-primary)', color: '#fff',
     fontSize: 12, fontWeight: 700, cursor: 'pointer',
-  }
-}
-function btnSecondary(): React.CSSProperties {
-  return {
-    display: 'flex', alignItems: 'center', gap: 4,
-    padding: '6px 12px', borderRadius: 8,
-    border: '1px solid var(--color-outline-variant)', background: '#fff',
-    color: 'var(--color-on-surface)',
-    fontSize: 12, fontWeight: 600, cursor: 'pointer',
   }
 }

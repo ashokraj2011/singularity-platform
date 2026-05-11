@@ -190,7 +190,7 @@ function WorkflowTab({ initiativeId }: { initiativeId: string }) {
       qc.invalidateQueries({ queryKey: ['workflow-instances', { initiativeId }] })
       setCreating(false)
       setNewName('')
-      navigate(`/workflow/${res.data.id}`)
+      navigate(`/runs/${res.data.id}`)
     },
   })
 
@@ -271,7 +271,7 @@ function WorkflowTab({ initiativeId }: { initiativeId: string }) {
               transition={{ duration: 0.2, delay: i * 0.04 }}
               className="glass-card rounded-xl p-4 hover:bg-white/[0.03] cursor-pointer transition-all duration-200 group"
               style={{ border: '1px solid rgba(255,255,255,0.06)' }}
-              onClick={() => navigate(`/workflow/${inst.id}`)}
+              onClick={() => navigate(`/runs/${inst.id}`)}
             >
               <div className="flex items-center gap-3">
                 <div
