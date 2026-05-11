@@ -72,6 +72,8 @@ services:
       # M11 follow-up — OpenTelemetry → Jaeger
       - OTEL_SERVICE_NAME=context-api
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
+      # M22 — central audit & governance ledger
+      - AUDIT_GOV_URL=${AUDIT_GOV_URL:-http://host.docker.internal:8500}
     ports:
       - "8000:8000"
     volumes:

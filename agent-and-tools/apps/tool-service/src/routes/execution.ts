@@ -2,9 +2,43 @@ import { Router, Request, Response } from "express";
 import { query, queryOne } from "../database";
 import { optionalAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
+import { emitAuditEvent } from "../lib/audit-gov-emit";
 
 export const executionRoutes = Router();
 executionRoutes.use(optionalAuth);
+
+// M22 — central audit-governance ledger. One call per terminal status
+// transition on tool.tool_executions. Fire-and-forget; never blocks.
+function emitToolStatus(args: {
+  execId: string;
+  status: string;
+  capabilityId: string;
+  agentUid: string;
+  toolName: string;
+  toolVersion: string;
+  riskLevel?: string;
+  output?: Record<string, unknown> | null;
+  error?: string | null;
+  traceId?: string;
+}) {
+  emitAuditEvent({
+    trace_id:       args.traceId,
+    source_service: "tool-service",
+    kind:           `tool.execution.${args.status}`,
+    subject_type:   "ToolExecution",
+    subject_id:     args.execId,
+    actor_id:       args.agentUid,
+    capability_id:  args.capabilityId,
+    severity:       args.status === "error" ? "error" : "info",
+    payload: {
+      tool_name:    args.toolName,
+      tool_version: args.toolVersion,
+      risk_level:   args.riskLevel,
+      output:       args.output ?? undefined,
+      error:        args.error ?? undefined,
+    },
+  });
+}
 
 // POST /api/v1/tools/invoke
 executionRoutes.post("/invoke", async (req: Request, res: Response) => {
@@ -85,6 +119,8 @@ executionRoutes.post("/invoke", async (req: Request, res: Response) => {
       [execId]
     );
 
+    emitToolStatus({ execId, status: "client_execution_required", capabilityId: capability_id, agentUid: agent_uid, toolName: tool_name, toolVersion: version, riskLevel: risk });
+
     res.json({
       status: "client_execution_required",
       tool_execution_id: execId,
@@ -120,10 +156,15 @@ executionRoutes.post("/invoke", async (req: Request, res: Response) => {
         [JSON.stringify(output), execId]
       );
 
+      emitToolStatus({ execId, status: "success", capabilityId: capability_id, agentUid: agent_uid, toolName: tool_name, toolVersion: version, riskLevel: risk, output });
+
       res.json({ status: "success", tool_execution_id: execId, tool_name, output });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       await query("UPDATE tool.tool_executions SET status='error', error=$1, completed_at=now() WHERE id=$2", [msg, execId]);
+
+      emitToolStatus({ execId, status: "error", capabilityId: capability_id, agentUid: agent_uid, toolName: tool_name, toolVersion: version, riskLevel: risk, error: msg });
+
       res.json({ status: "error", tool_execution_id: execId, error: msg });
     }
     return;
@@ -131,6 +172,9 @@ executionRoutes.post("/invoke", async (req: Request, res: Response) => {
 
   if (location === "browser") {
     await query("UPDATE tool.tool_executions SET status='browser_execution_required' WHERE id=$1", [execId]);
+
+    emitToolStatus({ execId, status: "browser_execution_required", capabilityId: capability_id, agentUid: agent_uid, toolName: tool_name, toolVersion: version, riskLevel: risk });
+
     res.json({
       status: "browser_execution_required",
       tool_execution_id: execId,

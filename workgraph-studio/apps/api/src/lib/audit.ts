@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client'
 import { prisma } from './prisma'
 import { publishEvent } from './eventbus/publisher'
+import { emitAuditEvent } from './audit-gov-emit'
 
 /**
  * M11.e — convert legacy PascalCase eventType strings (e.g. "AgentRunCompleted",
@@ -79,4 +80,18 @@ export async function publishOutbox(
     // never let event-bus problems break audit
     console.warn('[eventbus] publishEvent failed:', (err as Error).message)
   }
+
+  // M22 — central audit-governance ledger (fire-and-forget). Every workgraph
+  // state transition that goes through publishOutbox lands in audit_events.
+  emitAuditEvent({
+    trace_id:       (payload.traceId as string | undefined),
+    source_service: 'workgraph-api',
+    kind:           toCanonicalEventName(eventType),
+    subject_type:   aggregateType,
+    subject_id:     aggregateId,
+    actor_id:       (payload.actorId as string | undefined),
+    capability_id:  (payload.capabilityId as string | undefined),
+    severity:       'info',
+    payload,
+  })
 }

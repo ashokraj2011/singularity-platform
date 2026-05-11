@@ -31,6 +31,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import call_log, events_store
+from .audit_gov_emit import emit_audit_event
 from .config import settings
 from .iam_service_token import get_iam_service_token
 
@@ -437,6 +438,28 @@ async def execute(req: ExecuteRequest):
         "pending_tool_name": (pending_approval or {}).get("tool_name"),
         "pending_tool_args": (pending_approval or {}).get("tool_args"),
     })
+
+    # M22 — central audit-governance ledger (fire-and-forget). One event per
+    # /execute completion with the full correlation tail.
+    emit_audit_event(
+        kind="cf.execute.completed",
+        trace_id=trace_id,
+        subject_type="CfCallLog",
+        subject_id=cf_call_id,
+        capability_id=req.run_context.capability_id,
+        severity="warn" if status == "FAILED" else "info",
+        payload={
+            "status": status,
+            "finish_reason": finish_reason,
+            "steps_taken": steps_taken,
+            "input_tokens": tokens_used.get("input"),
+            "output_tokens": tokens_used.get("output"),
+            "total_tokens": tokens_used.get("total"),
+            "mcp_latency_ms": mcp_latency_ms,
+            "agent_run_id": req.run_context.agent_run_id,
+            "workflow_instance_id": req.run_context.workflow_instance_id,
+        },
+    )
 
     return {
         "status": status,

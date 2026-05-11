@@ -27,6 +27,7 @@ import {
 import { extractCodeChange } from "../audit/provenanceExtractor";
 import { events } from "../events/bus";
 import { emitAuditEvent } from "../lib/audit-gov-emit";
+import { checkBudget, checkRateLimit } from "../lib/audit-gov-check";
 import {
   savePending, takePending, peekPending, PendingToolDescriptor,
 } from "../audit/pending";
@@ -112,10 +113,49 @@ type LoopOutcome =
       pendingToolCall: ToolCall;
       pendingDescriptor: PendingToolDescriptor;
       finishReason: "approval_required";
+    }
+  | {
+      kind: "denied";
+      // M22 — pre-flight governance denial (budget exhausted or rate-limit hit)
+      finishReason: "governance_denied";
+      reason: string;
+      check: "budget" | "rate_limit";
+      details?: Record<string, unknown>;
     };
 
 async function runLoop(state: LoopState): Promise<LoopOutcome> {
   while (state.stepIndex < state.maxSteps) {
+    // M22 — pre-flight governance checks. Audit-gov is fail-open; only an
+    // explicit `allowed:false` blocks. Both checks run in parallel.
+    const [budgetRes, rateRes] = await Promise.all([
+      checkBudget(state.correlation.capabilityId, undefined),
+      checkRateLimit(state.correlation.capabilityId, undefined),
+    ]);
+    if (!budgetRes.allowed) {
+      const reason = budgetRes.reason ?? "budget exhausted";
+      emitAuditEvent({
+        trace_id: state.correlation.traceId,
+        source_service: "mcp-server",
+        kind: "governance.denied",
+        capability_id: state.correlation.capabilityId,
+        severity: "warn",
+        payload: { check: "budget", reason, budgets: budgetRes.budgets ?? [] },
+      });
+      return { kind: "denied", finishReason: "governance_denied", reason, check: "budget", details: { budgets: budgetRes.budgets } };
+    }
+    if (!rateRes.allowed) {
+      const reason = rateRes.reason ?? "rate limit exceeded";
+      emitAuditEvent({
+        trace_id: state.correlation.traceId,
+        source_service: "mcp-server",
+        kind: "governance.denied",
+        capability_id: state.correlation.capabilityId,
+        severity: "warn",
+        payload: { check: "rate_limit", reason, rate_limits: rateRes.rate_limits ?? [] },
+      });
+      return { kind: "denied", finishReason: "governance_denied", reason, check: "rate_limit", details: { rate_limits: rateRes.rate_limits } };
+    }
+
     events.publish({
       kind: "llm.request",
       correlation: { ...state.correlation },
@@ -339,7 +379,9 @@ function buildResponseBody(
     kind: "run.event",
     correlation: { ...state.correlation },
     payload: {
-      phase: outcome.kind === "paused" ? "waiting_approval" : "complete",
+      phase: outcome.kind === "paused" ? "waiting_approval"
+           : outcome.kind === "denied" ? "governance_denied"
+           : "complete",
       finishReason: outcome.finishReason,
       stepsTaken: state.stepIndex,
       llmCalls: state.llmCallIds.length,
@@ -363,6 +405,7 @@ function buildResponseBody(
 
   const status =
     outcome.kind === "paused" ? "WAITING_APPROVAL"
+    : outcome.kind === "denied" ? "DENIED"
     : outcome.finishReason === "max_steps" ? "FAILED"
     : "COMPLETED";
 
@@ -397,6 +440,14 @@ function buildResponseBody(
       tool_descriptor: outcome.pendingDescriptor,
     };
     (correlationOut as Record<string, unknown>).continuationToken = outcome.continuationToken;
+  }
+
+  if (outcome.kind === "denied") {
+    out.governance = {
+      check: outcome.check,
+      reason: outcome.reason,
+      details: outcome.details,
+    };
   }
 
   return out;
