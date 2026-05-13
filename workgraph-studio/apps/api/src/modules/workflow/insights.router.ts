@@ -45,6 +45,14 @@ interface NodeInsight {
     astIndexedFiles?: number
     astIndexedSymbols?: number
   }>
+  // M26 — present when the AGENT_TASK ran on a connected user laptop. The
+  // SPA renders "🖥 served by your laptop ({device_name})" on the Gantt step.
+  // Populated from cf.invoke.via_laptop events emitted by context-fabric.
+  laptopDevice?: {
+    user_id:     string
+    device_id:   string
+    device_name?: string
+  }
   // M22 emits agent.template.* + tool.execution.* + cf.execute.completed
   // etc. with subject_id = a sub-resource (not the node). We hand the SPA
   // the raw event count keyed to a node label when the payload has nodeId
@@ -178,11 +186,25 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
     // Bucket events by node-id payload hint (workgraph publishOutbox doesn't
     // include nodeId today, but cf/mcp events sometimes do via correlation).
     const eventsByNodeId = new Map<string, number>()
+    // M26 — pluck out cf.invoke.via_laptop events so each AGENT_TASK can be
+    // labelled with the laptop device it ran on.
+    const laptopByNodeId = new Map<string, NodeInsight['laptopDevice']>()
     for (const e of events) {
-      const nodeId = (e.payload && typeof e.payload === 'object'
-        ? (e.payload as Record<string, unknown>).nodeId ?? (e.payload as Record<string, unknown>).workflow_node_id
-        : undefined) as string | undefined
+      const p = (e.payload && typeof e.payload === 'object'
+        ? e.payload as Record<string, unknown>
+        : {}) as Record<string, unknown>
+      const nodeId = (p.nodeId ?? p.workflow_node_id) as string | undefined
       if (nodeId) eventsByNodeId.set(nodeId, (eventsByNodeId.get(nodeId) ?? 0) + 1)
+      if (e.kind === 'cf.invoke.via_laptop') {
+        const targetNode = (p.workflow_node_id ?? p.workflowNodeId ?? nodeId) as string | undefined
+        if (targetNode) {
+          laptopByNodeId.set(targetNode, {
+            user_id:     String(p.user_id ?? ''),
+            device_id:   String(p.device_id ?? ''),
+            device_name: typeof p.device_name === 'string' ? p.device_name : undefined,
+          })
+        }
+      }
     }
 
     const consumablesByNode = new Map<string, typeof consumables>()
@@ -246,6 +268,7 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
         currentVersion: c.currentVersion, updatedAt: c.updatedAt.toISOString(),
       })),
       workspace: workspaceByNode.get(n.id) ?? [],
+      laptopDevice: laptopByNodeId.get(n.id),
       eventCount: eventsByNodeId.get(n.id) ?? 0,
       })
     })

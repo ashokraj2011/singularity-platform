@@ -36,6 +36,11 @@ interface InsightNode {
     astIndexedFiles?: number
     astIndexedSymbols?: number
   }>
+  laptopDevice?: {
+    user_id: string
+    device_id: string
+    device_name?: string
+  }
   eventCount: number
 }
 interface InsightEvent {
@@ -300,12 +305,17 @@ export function RunInsightsPage() {
                       fontSize: 10, color: '#0f172a',
                     }}>
                       {n.durationMs != null ? `${n.durationPrecise ? '' : '≈ '}${fmtDuration(n.durationMs)}` : n.status.toLowerCase()}
-                      {(n.documents.length > 0 || n.consumables.length > 0 || n.workspace.length > 0 || n.eventCount > 0) && (
+                      {(n.documents.length > 0 || n.consumables.length > 0 || n.workspace.length > 0 || n.eventCount > 0 || !!n.laptopDevice) && (
                         <span style={{ marginLeft: 'auto', fontSize: 9, color: '#475569', display: 'flex', gap: 8 }}>
                           {n.documents.length > 0  && <span>📎 {n.documents.length}</span>}
                           {n.consumables.length > 0 && <span>📦 {n.consumables.length}</span>}
                           {n.workspace.length > 0 && <span>⑂ {n.workspace[0].branch ?? 'workspace'}</span>}
                           {n.eventCount > 0        && <span>⚡ {n.eventCount}</span>}
+                          {n.laptopDevice && (
+                            <span title={`Served by ${n.laptopDevice.device_name ?? 'laptop'} (device ${n.laptopDevice.device_id.slice(0, 8)}, user ${n.laptopDevice.user_id.slice(0, 8)})`} style={{ color: '#0369a1', fontWeight: 600 }}>
+                              🖥 {n.laptopDevice.device_name ?? 'laptop'}
+                            </span>
+                          )}
                         </span>
                       )}
                     </div>

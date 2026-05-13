@@ -33,7 +33,7 @@ import {
   savePending, takePending, peekPending, PendingToolDescriptor,
 } from "../audit/pending";
 import {
-  branchNameForWork, finishWorkBranch, prepareWorkBranch, WorkBranchInfo,
+  branchNameForWork, finishWorkBranch, prepareWorkBranch, restoreWorkBranch, WorkBranchInfo,
 } from "../workspace/git-workspace";
 import { indexWorkspace, lastAstStats } from "../workspace/ast-index";
 
@@ -663,6 +663,25 @@ invokeRouter.post("/resume", async (req, res) => {
     totalInputTokens: env.total_input_tokens,
     totalOutputTokens: env.total_output_tokens,
   };
+
+  // M27.5 — re-establish the persisted work-branch on disk before resuming
+  // the loop. Without this, an mcp-server restart between /pause and
+  // /resume would leave HEAD on whatever branch the process woke up on
+  // (often `main`), and the subsequent tool dispatches + finishWorkBranch
+  // would commit to the wrong branch. The persisted envelope already
+  // carries `workspace.branch` (branch name, baseBranch, captured headSha)
+  // so we just need to checkout the branch and refresh the live headSha.
+  if (env.workspace?.branch) {
+    try {
+      const restored = await restoreWorkBranch(env.workspace.branch, state.correlation);
+      if (restored && state.workspace) {
+        state.workspace.branch = restored;
+      }
+    } catch (err) {
+      log.warn({ err: (err as Error).message, token: body.continuation_token },
+        "[mcp-server] /mcp/resume could not restore work-branch; continuing on current HEAD");
+    }
+  }
 
   const tc = env.pending_tool_call;
   const args = body.args_override ?? tc.args;

@@ -118,9 +118,24 @@ services:
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       CONTEXT_FABRIC_URL: ${CONTEXT_FABRIC_URL:-http://host.docker.internal:8000}
+      # M21 — central audit ledger; composer fires events on every compose call.
+      AUDIT_GOV_URL:    ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      # M25.5.next — mcp-server reachable for LLM-capsule compile. Default
+      # mode is RAW (no LLM call); flip CAPSULE_COMPILE_MODE=LLM to enable.
+      MCP_SERVER_URL:   ${MCP_SERVER_URL:-http://host.docker.internal:7100}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      CAPSULE_COMPILE_MODE:     ${CAPSULE_COMPILE_MODE:-RAW}
+      CAPSULE_COMPILE_PROVIDER: ${CAPSULE_COMPILE_PROVIDER:-mock}
+      CAPSULE_COMPILE_MODEL:    ${CAPSULE_COMPILE_MODEL:-mock-fast}
       # M11.a — self-register
       PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       PUBLIC_BASE_URL:       ${PROMPT_COMPOSER_PUBLIC_URL:-http://host.docker.internal:3004}
+    # M25.5.next — composer reaches mcp-server-demo on the host (different
+    # compose stack); host-gateway makes host.docker.internal resolve to the
+    # host's gateway inside the container, so :7100 works through the host
+    # port mapping.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy

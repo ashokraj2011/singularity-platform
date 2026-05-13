@@ -31,6 +31,10 @@ export interface FinishBranchResult {
   patch?: string;
   committed: boolean;
   message: string;
+  /** M27.5 — set only when caller asked for `push: true`. */
+  pushed?: boolean;
+  /** M27.5 — non-empty when the push attempt failed but the local commit succeeded. */
+  pushError?: string;
 }
 
 let activeBranch: WorkBranchInfo | null = null;
@@ -142,7 +146,72 @@ export async function dirtyPaths(): Promise<string[]> {
     .filter(Boolean);
 }
 
-export async function finishWorkBranch(message?: string): Promise<FinishBranchResult> {
+/**
+ * M27.5 — re-establish the active work-branch after an mcp-server restart
+ * without minting a fresh branch name. Called by /mcp/resume when the
+ * consumed PendingApproval envelope carries a `workspace.branch` block.
+ *
+ * Pre-restart: prepareWorkBranch() created "sg/<wf>/<node>/<wi>" and
+ * activeBranch is set in-memory. Process dies → in-memory state lost,
+ * git tree is intact on disk. On resume we already have the persisted
+ * branch identifier in the LoopState envelope; we just need to make
+ * sure HEAD points at it again.
+ *
+ * Returns the live WorkBranchInfo (with refreshed headSha) on success,
+ * or null when the persisted branch ref no longer exists locally (e.g.
+ * sandbox switched between mcp-server invocations — see M27.5 followup
+ * "AST index lifecycle when sandbox root changes mid-session").
+ */
+export async function restoreWorkBranch(
+  persisted: WorkBranchInfo,
+  correlation?: CorrelationIds,
+): Promise<WorkBranchInfo | null> {
+  await ensureGitRepo();
+  const branch = persisted.branch;
+  if (!branch) return null;
+  const exists = Boolean(await git(["show-ref", "--verify", `refs/heads/${branch}`], { allowFail: true }));
+  if (!exists) {
+    if (persisted.baseBranch) {
+      await git(["checkout", "-B", branch, persisted.baseBranch]);
+    } else {
+      await git(["checkout", "-B", branch]);
+    }
+  } else {
+    const head = await currentBranch();
+    if (head !== branch) await git(["checkout", branch]);
+  }
+  activeBranch = {
+    branch,
+    baseBranch: persisted.baseBranch,
+    headSha: await currentHeadSha(),
+    reused: true,
+  };
+  events.publish({
+    kind: "workspace.branch.created",
+    correlation: correlation ?? { mcpInvocationId: "workspace" },
+    severity: "info",
+    payload: {
+      branch,
+      baseBranch: activeBranch.baseBranch,
+      headSha: activeBranch.headSha,
+      reused: true,
+      restored: true,
+      persistedHeadSha: persisted.headSha,
+      drift: persisted.headSha && persisted.headSha !== activeBranch.headSha,
+    },
+  });
+  return activeBranch;
+}
+
+export interface FinishBranchOptions {
+  push?: boolean;
+  remote?: string;
+}
+
+export async function finishWorkBranch(
+  message?: string,
+  options?: FinishBranchOptions,
+): Promise<FinishBranchResult> {
   await ensureGitRepo();
   const branch = await currentBranch() ?? getActiveBranch()?.branch ?? "main";
   const changedPaths = await dirtyPaths();
@@ -162,6 +231,28 @@ export async function finishWorkBranch(message?: string): Promise<FinishBranchRe
   const committedPatch = commitSha
     ? await git(["show", "--format=", commitSha], { allowFail: true, maxBuffer: 20 * 1024 * 1024 })
     : patch;
+
+  // M27.5 — optional upstream push. Off by default; opt-in per tool call.
+  // We don't gate on `requires_approval` here because finish_work_branch
+  // itself is the gate at the agent-loop level (and the new `push` arg is
+  // explicitly opt-in by the caller).
+  let pushed = false;
+  let pushError: string | undefined;
+  if (options?.push && commitSha) {
+    const remote = options.remote?.trim() || "origin";
+    try {
+      const hasRemote = Boolean(await git(["remote", "get-url", remote], { allowFail: true }));
+      if (!hasRemote) {
+        pushError = `remote '${remote}' is not configured`;
+      } else {
+        await git(["push", "-u", remote, branch], { maxBuffer: 10 * 1024 * 1024 });
+        pushed = true;
+      }
+    } catch (err) {
+      pushError = (err as Error).message;
+    }
+  }
+
   return {
     branch,
     commitSha,
@@ -169,5 +260,7 @@ export async function finishWorkBranch(message?: string): Promise<FinishBranchRe
     patch: committedPatch || patch,
     committed: true,
     message: commitMessage,
-  };
+    pushed: options?.push ? pushed : undefined,
+    pushError,
+  } as FinishBranchResult;
 }

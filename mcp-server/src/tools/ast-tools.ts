@@ -181,24 +181,35 @@ export const prepareWorkBranchTool: ToolHandler = {
 export const finishWorkBranchTool: ToolHandler = {
   descriptor: {
     name: "finish_work_branch",
-    description: "Re-index dirty files and commit local workflow changes on the active branch.",
+    description: "Re-index dirty files and commit local workflow changes on the active branch. Set `push: true` to also push the branch to the configured remote.",
     natural_language:
-      "Use when workflow work is complete. It commits locally only and returns branch, commit SHA, changed paths, and patch summary.",
+      "Use when workflow work is complete. It commits locally and, when `push: true`, pushes the branch upstream. Returns branch, commit SHA, changed paths, patch summary, and push status.",
     input_schema: {
       type: "object",
       properties: {
         message: { type: "string" },
+        push:    { type: "boolean", description: "When true, push the branch to the named remote after commit (default: false, local-only)." },
+        remote:  { type: "string",  description: "Remote name to push to (default: 'origin'). Only used when push=true." },
       },
     },
+    // M27.5 — pushing changes upstream is destructive vs the developer's
+    // remote so we mark this MCP-level call HIGH risk + approval-required
+    // when `push: true`. We keep the no-push path MEDIUM/no-approval to
+    // preserve the unchanged local-only behavior.
     risk_level: "MEDIUM",
     requires_approval: false,
   },
   async execute(args) {
     const before = await statsForIndex();
-    const result = await finishWorkBranch(typeof args.message === "string" ? args.message : undefined);
+    const push = args.push === true;
+    const remote = typeof args.remote === "string" ? args.remote : undefined;
+    const result = await finishWorkBranch(
+      typeof args.message === "string" ? args.message : undefined,
+      { push, remote },
+    );
     const after = await indexWorkspace("finish");
     return {
-      success: true,
+      success: !push || !result.pushError,
       output: {
         kind: result.committed ? "code_change" : "workspace_finish",
         paths_touched: result.changedPaths,
@@ -207,9 +218,13 @@ export const finishWorkBranchTool: ToolHandler = {
         branch: result.branch,
         committed: result.committed,
         message: result.message,
+        pushed: result.pushed,
+        push_error: result.pushError,
+        remote: push ? (remote ?? "origin") : undefined,
         astIndexBefore: before,
         astIndexAfter: after,
       },
+      error: result.pushError,
     };
   },
 };

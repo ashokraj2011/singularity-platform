@@ -513,11 +513,15 @@ async def execute(req: ExecuteRequest):
     #   • req.prefer_laptop is None  → auto-prefer laptop when one is connected
     user_id = req.run_context.user_id
     use_laptop = False
+    laptop_device_id: Optional[str] = None
+    laptop_device_name: Optional[str] = None
     if user_id and req.prefer_laptop is not False:
         from .laptop_registry import REGISTRY as _LAPTOP_REGISTRY
         conn = await _LAPTOP_REGISTRY.any_for_user(user_id)
         if conn is not None:
             use_laptop = True
+            laptop_device_id = conn.device_id
+            laptop_device_name = conn.device_name
         elif req.prefer_laptop is True:
             # Required but missing — fail fast (decision #2).
             _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
@@ -528,6 +532,27 @@ async def execute(req: ExecuteRequest):
                 "message": "Your laptop mcp-server is not connected. Run `singularity-mcp start` and retry.",
                 "user_id": user_id,
             })
+
+    # M26 — emit a per-invoke event tying this run to the specific laptop
+    # device. Workgraph Run Insights buckets these by trace_id to render the
+    # "🖥 served by your laptop" badge with the device name.
+    if use_laptop and laptop_device_id:
+        emit_audit_event(
+            kind="cf.invoke.via_laptop",
+            trace_id=trace_id,
+            subject_type="LaptopDevice",
+            subject_id=laptop_device_id,
+            actor_id=user_id,
+            capability_id=req.run_context.capability_id,
+            severity="info",
+            payload={
+                "user_id":      user_id,
+                "device_id":    laptop_device_id,
+                "device_name":  laptop_device_name,
+                "workflow_instance_id": req.run_context.workflow_instance_id,
+                "workflow_node_id":     req.run_context.workflow_node_id,
+            },
+        )
 
     try:
         mcp_started = time.time()

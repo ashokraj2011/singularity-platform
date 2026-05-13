@@ -15,6 +15,7 @@ import {
   reciprocalRankFusion, retrievalMode, taskSignature,
 } from "./retrieval";
 import { compileCapsuleViaLlm, compileMode } from "./llm-capsule-compiler";
+import { emitAuditEvent } from "../../lib/audit-gov-emit";
 
 // M15 — hybrid scoring helper. Cosine ∈ [-1, 1] → [0, 2] via (cos+1)/2 only
 // when the caller asks; default keeps raw cosine because pgvector's `<=>`
@@ -485,6 +486,34 @@ export const composeService = {
 
     const layersUsed = layers.map(l => ({ layerType: l.layerType, priority: l.priority, layerHash: l.layerHash, inclusionReason: l.inclusionReason }));
     const dedupedWarnings = Array.from(new Set([...warnings, ...budgetWarnings]));
+
+    // M22 fan-out — emit prompt-composer's contribution to the central audit
+    // ledger. Fire-and-forget; failures are logged at warn but don't block
+    // composition.
+    emitAuditEvent({
+      trace_id:       input.workflowContext.instanceId,
+      source_service: "prompt-composer",
+      kind:           "prompt.assembly.created",
+      subject_type:   "PromptAssembly",
+      subject_id:     assembly.id,
+      capability_id:  capabilityId ?? undefined,
+      severity:       "info",
+      payload: {
+        agentTemplateId:   input.agentTemplateId,
+        agentBindingId:    input.agentBindingId ?? null,
+        workflowNodeId:    input.workflowContext.nodeId,
+        promptHash:        finalPromptHash,
+        estimatedTokens:   assembly.estimatedInputTokens,
+        layersUsedCount:   layersUsed.length,
+        evidenceCount:     evidenceChunks.length,
+        retrievalStats,
+        previewOnly:       input.previewOnly === true,
+        capsuleHit:        retrievalStats.capsuleHit,
+        // First few citation_keys for quick eyeballing in /audit. Full chunks
+        // stay in PromptAssembly.evidenceRefs.
+        citations: evidenceChunks.slice(0, 6).map(c => c.citation_key),
+      },
+    });
 
     if (input.previewOnly) {
       return {
