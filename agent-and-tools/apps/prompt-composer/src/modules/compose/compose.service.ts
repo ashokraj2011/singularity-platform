@@ -14,6 +14,7 @@ import {
   clampConfidence, includeCodeContext, recencyBoost as recencyBoostShared,
   reciprocalRankFusion, retrievalMode, taskSignature,
 } from "./retrieval";
+import { compileCapsuleViaLlm, compileMode } from "./llm-capsule-compiler";
 
 // M15 — hybrid scoring helper. Cosine ∈ [-1, 1] → [0, 2] via (cos+1)/2 only
 // when the caller asks; default keeps raw cosine because pgvector's `<=>`
@@ -863,7 +864,7 @@ Input contract: available to the execution layer; ask for only the fields needed
     capabilityId:    string;
     agentTemplateId: string;
     intent:          string;
-  }): Promise<{ id: string; layers: AssembledLayer[]; chunks: RetrievedChunk[] } | null> {
+  }): Promise<{ id: string; layers: AssembledLayer[]; chunks: RetrievedChunk[]; mode: "RAW" | "LLM" } | null> {
     try {
       const contentRevision = await this.capabilityContentRevision(opts.capabilityId);
       const sig = taskSignature({
@@ -877,17 +878,28 @@ Input contract: available to the execution layer; ask for only the fields needed
       });
       if (!row) return null;
       if (row.status !== "READY") return null;
-      // The capsule stores RetrievedChunk[] in `citations` and the layer
-      // snapshots in `compiledContent` as a JSON-encoded array (so we don't
-      // need a sibling table just for cached layers).
-      let layersArr: AssembledLayer[] = [];
-      try { layersArr = JSON.parse(row.compiledContent) as AssembledLayer[]; }
-      catch { return null; }
-      return {
-        id: row.id,
-        layers: layersArr,
-        chunks: (row.citations as unknown as RetrievedChunk[]) ?? [],
-      };
+      const mode = (row.compileMode === "LLM" ? "LLM" : "RAW") as "RAW" | "LLM";
+      const chunks = (row.citations as unknown as RetrievedChunk[]) ?? [];
+
+      let layers: AssembledLayer[] = [];
+      if (mode === "LLM") {
+        // M25.5.next — compiledContent is a single LLM-synthesised paragraph.
+        // Replay as ONE RUNTIME_EVIDENCE layer at the same priority used by
+        // raw retrieval. Tokens drop from ~Σ(chunk excerpts) to ~paragraph.
+        const paragraph = row.compiledContent;
+        layers = [{
+          layerType:      "RUNTIME_EVIDENCE",
+          priority:       PRIORITY.RUNTIME_EVIDENCE,
+          inclusionReason: "capsule (LLM-compiled paragraph)",
+          contentSnapshot: paragraph,
+          layerHash:       sha256(paragraph),
+        }];
+      } else {
+        // M25.5 v1 — compiledContent is JSON-stringified layer snapshots.
+        try { layers = JSON.parse(row.compiledContent) as AssembledLayer[]; }
+        catch { return null; }
+      }
+      return { id: row.id, layers, chunks, mode };
     } catch (err) {
       logger.warn({ err: (err as Error).message }, "[compose] lookupCapsule failed (continuing without cache)");
       return null;
@@ -908,7 +920,20 @@ Input contract: available to the execution layer; ask for only the fields needed
       intent:          opts.intent,
       contentRevision,
     });
-    const compiledContent = JSON.stringify(opts.layers);
+
+    // M25.5.next — when CAPSULE_COMPILE_MODE=LLM we attempt to compress the
+    // chunks into one paragraph via mcp-server. Failure path silently falls
+    // back to RAW mode so the cache is never empty.
+    let mode: "RAW" | "LLM" = "RAW";
+    let compiledContent = JSON.stringify(opts.layers);
+    if (compileMode() === "LLM" && opts.chunks.length > 0) {
+      const llm = await compileCapsuleViaLlm(opts.intent, opts.chunks);
+      if (llm && llm.paragraph) {
+        mode = "LLM";
+        compiledContent = llm.paragraph;
+      }
+    }
+
     const estimatedTokens = estimateTokens(compiledContent);
     await prisma.capabilityCompiledContext.upsert({
       where: { taskSignature: sig },
@@ -918,12 +943,14 @@ Input contract: available to the execution layer; ask for only the fields needed
         taskSignature:   sig,
         intent:          opts.intent.slice(0, 2000),
         compiledContent,
+        compileMode:     mode,
         citations:       opts.chunks as never,
         estimatedTokens,
         status:          "READY",
       },
       update: {
         compiledContent,
+        compileMode:   mode,
         citations:     opts.chunks as never,
         estimatedTokens,
         status:        "READY",

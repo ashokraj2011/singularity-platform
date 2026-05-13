@@ -183,8 +183,12 @@ model CapabilityCompiledContext {
   agentTemplateId   String
   taskSignature     String   @unique
   intent            String
-  // The compiled paragraph the agent gets, with 〔cite: …〕 markers preserved.
+  // The compiled body the agent gets, with 〔cite: …〕 markers preserved.
+  // Interpretation depends on compileMode:
+  //   RAW — JSON-stringified AssembledLayer[] (M25.5 v1: latency win only)
+  //   LLM — natural-language paragraph (M25.5.next: token + latency win)
   compiledContent   String
+  compileMode       String   @default("RAW")
   // RetrievedChunk[] that backed the compile, kept for audit + Run Insights.
   citations         Json
   // Token estimate so callers can compare hot-path vs cold-path budgets.

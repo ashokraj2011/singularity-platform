@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same branch so a fast follow-up doesn't
+# queue behind the older run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Conservative permissions — read-only is enough; no write/push from CI.
+permissions:
+  contents: read
+
+jobs:
+  # ─── TypeScript services — one job per package so failures localise ─────────
+  typecheck-ts:
+    name: typecheck ${{ matrix.service.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - { name: mcp-server,           dir: mcp-server,                          mgr: npm }
+          - { name: pseudo-iam,           dir: pseudo-iam-service,                  mgr: npm }
+          - { name: audit-governance,     dir: audit-governance-service,            mgr: npm }
+          - { name: agent-service,        dir: agent-and-tools/apps/agent-service,  mgr: workspace }
+          - { name: tool-service,         dir: agent-and-tools/apps/tool-service,   mgr: workspace }
+          - { name: agent-runtime,        dir: agent-and-tools/apps/agent-runtime,  mgr: workspace, prisma: true }
+          - { name: prompt-composer,      dir: agent-and-tools/apps/prompt-composer, mgr: workspace, prisma: true }
+          - { name: agent-and-tools/web,  dir: agent-and-tools/web,                  mgr: workspace }
+          - { name: workgraph-api,        dir: workgraph-studio/apps/api,            mgr: pnpm-workspace, prisma: true }
+          - { name: workgraph-web,        dir: workgraph-studio/apps/web,            mgr: pnpm-workspace }
+          - { name: blueprint-workbench,  dir: workgraph-studio/apps/blueprint-workbench, mgr: pnpm-workspace }
+          - { name: portal,               dir: singularity-portal,                   mgr: npm }
+          - { name: user-and-capability,  dir: UserAndCapabillity,                   mgr: npm }
+          - { name: platform-registry,    dir: platform-registry,                    mgr: npm }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # workspace = the npm workspace root carries the lockfile, so we install
+      # from the monorepo root and the workspace child resolves through it.
+      - name: install (npm workspace)
+        if: matrix.service.mgr == 'workspace'
+        working-directory: agent-and-tools
+        run: npm ci --ignore-scripts
+
+      - name: install (pnpm workspace)
+        if: matrix.service.mgr == 'pnpm-workspace'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: |
+            - cwd: workgraph-studio
+              args: [--frozen-lockfile, --ignore-scripts]
+
+      - name: install (npm standalone)
+        if: matrix.service.mgr == 'npm'
+        working-directory: ${{ matrix.service.dir }}
+        run: npm ci --ignore-scripts
+
+      # Prisma client generation reads schema.prisma; doesn't need a live DB
+      # for `generate`, only for `db push`.
+      - name: prisma generate
+        if: matrix.service.prisma == true
+        working-directory: ${{ matrix.service.dir }}
+        run: npx prisma generate
+
+      - name: typecheck
+        working-directory: ${{ matrix.service.dir }}
+        # Prefer the workspace's own `lint` script when it exists (some
+        # services map it to `tsc --noEmit`); fall back to a direct tsc.
+        run: |
+          if jq -e '.scripts.lint' package.json >/dev/null 2>&1; then
+            npm run lint --if-present
+          else
+            npx tsc --noEmit
+          fi
+
+  # ─── Python service (context-fabric) ────────────────────────────────────────
+  python-syntax:
+    name: python syntax (context-fabric)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: compile all .py
+        working-directory: context-fabric/services
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            python3 -m py_compile "$f" || fail=1
+          done < <(find . -name "*.py" -not -path "*/.venv/*")
+          exit $fail
+
+  # ─── Shell scripts — bin/ + singularity.sh + seed/apply.sh ──────────────────
+  shellcheck:
+    name: shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n every .sh
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            bash -n "$f" || { echo "syntax error in $f"; fail=1; }
+          done < <(find . -name "*.sh" -not -path "*/node_modules/*")
+          exit $fail
+
+  # ─── SQL seed + audit-governance schema syntax check ────────────────────────
+  sql-syntax:
+    name: SQL seed + schema syntax
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ci_sql_check
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: load extensions
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -U postgres -d ci_sql_check \
+            -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+      - name: apply audit-governance init schema
+        env:
+          PGPASSWORD: postgres
+        run: psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d ci_sql_check -f audit-governance-service/db/init.sql
+      - name: smoke seed/*.sql (syntax only; expects empty agent-runtime schema)
+        env:
+          PGPASSWORD: postgres
+        run: |
+          # The two non-audit-gov seeds reference tables that only exist
+          # AFTER prisma db push lands the agent-runtime / workgraph schemas
+          # in the real stack. Here we only sanity-check that each file is
+          # well-formed SQL via a dry-parse (psql --set=ON_ERROR_STOP without
+          # actually running it isn't possible; instead use psql to compile
+          # via 'EXPLAIN'... no, simpler: just run the audit-gov one which
+          # is self-contained, and lint the others with `pg_query` if it
+          # were installed. For now we accept that 01/02 will fail without
+          # their parent schemas and check only that 03 applies clean.
+          psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d ci_sql_check -f seed/03-audit-governance.sql
+
+  # ─── Docker compose files parse cleanly ─────────────────────────────────────
+  compose-syntax:
+    name: docker compose syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config (every compose file)
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            dir=$(dirname "$f")
+            ( cd "$dir" && docker compose -f "$(basename "$f")" config -q ) \
+              || { echo "compose syntax error in $f"; fail=1; }
+          done < <(find . -name "docker-compose.yml" -not -path "*/node_modules/*")
+          exit $fail
