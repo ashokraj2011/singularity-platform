@@ -1,6 +1,6 @@
 # Workflow Node Types Guide
 
-This guide explains each node type in the Workflow Designer and when to use them.
+This guide explains each node type in Workflow Manager and when to use them.
 
 ---
 
@@ -329,4 +329,4 @@ Check the Runtime tab to see each node's current state and any error messages.
 
 ---
 
-**Questions?** Check the node's description in the NodeInspector panel, or ask in the Audit Log (events are logged for all node executions).
+**Questions?** Check the node's description in the NodeInspector panel, or ask in Audit (events are logged for all node executions).

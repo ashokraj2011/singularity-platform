@@ -557,7 +557,7 @@ export function WorkflowsListPage() {
               }}>
                 <GitBranch size={16} style={{ color: 'var(--color-primary)' }} />
               </div>
-              <h1 className="page-header">Workflow Designer</h1>
+              <h1 className="page-header">Workflow Manager</h1>
             </div>
             <p style={{ fontSize: 12, color: 'var(--color-outline)', fontFamily: 'monospace' }}>
               {instances.length} workflows · {active} active · {draft} draft
@@ -1066,7 +1066,7 @@ export function WorkflowsListPage() {
                       value={createCapabilityId}
                       onChange={v => setCreateCapabilityId(v)}
                       placeholder="Select a capability…"
-                      hint="Federated from IAM and Agent & Tools. Membership capabilities are filtered to your access."
+                      hint="Federated from Identity & Access and Agent Studio. Membership capabilities are filtered to your access."
                     />
                     <p style={{ fontSize: 11, color: '#64748b', marginTop: 4, lineHeight: 1.4 }}>
                       Capability is the authorization boundary for view / edit / start.
@@ -1948,7 +1948,7 @@ function RunModal({
           <button
             onClick={submit}
             disabled={submitting || !name.trim()}
-            title="Server-side run: persisted via the backend engine; participates in My Work inbox + queue routing."
+            title="Server-side run: persisted via the backend engine; participates in the Inbox + queue routing."
             style={{
               display: 'flex', alignItems: 'center', gap: 5,
               padding: '8px 14px', borderRadius: 8,

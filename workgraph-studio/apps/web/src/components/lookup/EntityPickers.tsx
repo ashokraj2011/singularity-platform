@@ -88,7 +88,7 @@ export function CapabilityPicker({ value, onChange, placeholder, filterToMembers
         </option>
         {caps.map(c => (
           <option key={c.id} value={c.id} style={optionStyle}>
-            {c.name}{c.capability_type ? ` · ${c.capability_type}` : ''}{c.source === 'agent-runtime' ? ' · Agent & Tools' : ''}
+            {c.name}{c.capability_type ? ` · ${c.capability_type}` : ''}{c.source === 'agent-runtime' ? ' · Agent Studio' : ''}
           </option>
         ))}
       </select>

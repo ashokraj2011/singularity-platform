@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
-import { ApiError, runtimeApi } from "@/lib/api";
+import { ApiError, hasAgentToolsToken, identityApi, runtimeApi, saveAgentToolsToken } from "@/lib/api";
 import { AlertCircle, Bot, GitBranch, Layers, Lock, ShieldCheck, Sparkles, X } from "lucide-react";
 
 /**
@@ -77,10 +77,15 @@ function apiErrorSummary(error: unknown): { title: string; message: string; deta
   return { title: "Request failed", message: (error as Error)?.message ?? "Unknown error" };
 }
 
+function isUnauthorized(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
+}
+
 export default function AgentStudioPage() {
   const [capabilityId, setCapabilityId] = useState("");
   const [selected, setSelected] = useState<Agent | null>(null);
   const [deriveTarget, setDeriveTarget] = useState<Agent | null>(null);
+  const [signedIn, setSignedIn] = useState(false);
 
   const { data: capabilities = [], error: capabilitiesError, isLoading: capabilitiesLoading } = useSWR(
     "runtime-capabilities-for-agent-studio",
@@ -109,6 +114,12 @@ export default function AgentStudioPage() {
     [items, capabilityId],
   );
 
+  useEffect(() => {
+    setSignedIn(hasAgentToolsToken());
+  }, []);
+
+  const authNeeded = !signedIn || isUnauthorized(error) || isUnauthorized(capabilitiesError);
+
   return (
     <div>
       <div className="mb-6">
@@ -117,6 +128,15 @@ export default function AgentStudioPage() {
           Common library baselines (locked) + capability-derived agents (editable).
         </p>
       </div>
+
+      {authNeeded && (
+        <AgentStudioAuthCard
+          onAuthenticated={() => {
+            setSignedIn(true);
+            mutate();
+          }}
+        />
+      )}
 
       {/* Capability selector */}
       <div className="card p-3 mb-6">
@@ -195,10 +215,75 @@ export default function AgentStudioPage() {
         <DeriveDialog
           base={deriveTarget}
           capabilityId={capabilityId}
+          onAuthRequired={() => setSignedIn(false)}
           onClose={() => setDeriveTarget(null)}
           onDone={() => { setDeriveTarget(null); mutate(); }}
         />
       )}
+    </div>
+  );
+}
+
+function AgentStudioAuthCard({ onAuthenticated }: { onAuthenticated: () => void }) {
+  const [email, setEmail] = useState("admin@singularity.local");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await identityApi.login({ email, password });
+      saveAgentToolsToken(res.access_token);
+      onAuthenticated();
+    } catch (e) {
+      setError((e as Error).message ?? "Sign in failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card p-4 mb-6 border-emerald-200 bg-emerald-50/50">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+            <ShieldCheck size={16} className="text-emerald-700" />
+            Sign in for governed agent changes
+          </div>
+          <p className="mt-1 text-xs text-slate-600">
+            Agent Studio runs on port 3000, so it needs its own IAM bearer before creating or editing governed templates.
+          </p>
+        </div>
+        <div className="grid min-w-0 flex-1 grid-cols-1 gap-2 sm:grid-cols-[1fr_180px_auto]">
+          <input
+            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="email"
+            autoComplete="username"
+          />
+          <input
+            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="password"
+            type="password"
+            autoComplete="current-password"
+            onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}
+          />
+          <button
+            type="button"
+            onClick={() => void submit()}
+            disabled={busy || !email || !password}
+            className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy ? "Signing in..." : "Sign in"}
+          </button>
+        </div>
+      </div>
+      {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
     </div>
   );
 }
@@ -423,8 +508,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 function DeriveDialog({
-  base, capabilityId, onClose, onDone,
-}: { base: Agent; capabilityId: string; onClose: () => void; onDone: () => void }) {
+  base, capabilityId, onAuthRequired, onClose, onDone,
+}: { base: Agent; capabilityId: string; onAuthRequired: () => void; onClose: () => void; onDone: () => void }) {
   const [name, setName]               = useState(`${base.name.split(" Agent")[0]}-${capabilityId.slice(0, 8)}`);
   const [description, setDescription] = useState(base.description ?? "");
   const [submitting, setSubmitting]   = useState(false);
@@ -441,6 +526,7 @@ function DeriveDialog({
       await runtimeApi.deriveTemplate(base.id, { capabilityId, name, description });
       onDone();
     } catch (e) {
+      if (isUnauthorized(e)) onAuthRequired();
       const formatted = apiErrorSummary(e);
       setErr(`${formatted.title}: ${formatted.message}${formatted.detail ? ` (${formatted.detail})` : ""}`);
     } finally {

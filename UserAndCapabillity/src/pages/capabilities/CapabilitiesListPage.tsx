@@ -23,11 +23,11 @@ export function CapabilitiesListPage() {
     <div className="p-8">
       <PageHeader
         title="Capabilities"
-        subtitle="IAM authorization references for capabilities bootstrapped in Agent & Tools"
+        subtitle="Identity references for capabilities bootstrapped in Agent Studio"
         action={
           <a href="http://localhost:3000/capabilities" target="_blank" rel="noreferrer">
             <Button className="bg-[#00843D] hover:bg-[#006830]">
-              <ExternalLink className="w-4 h-4 mr-1.5" /> Bootstrap in Agent & Tools
+              <ExternalLink className="w-4 h-4 mr-1.5" /> Bootstrap in Agent Studio
             </Button>
           </a>
         }
@@ -38,7 +38,7 @@ export function CapabilitiesListPage() {
         <div>
           <p className="text-sm font-semibold text-gray-900">Single owner for bootstrapping</p>
           <p className="text-sm text-gray-600 mt-0.5">
-            Capability onboarding, repo/document learning, generated agents, and approval packets live in Agent & Tools.
+            Capability onboarding, repo/document learning, generated agents, and approval packets live in Agent Studio.
             IAM keeps the authorization reference used for members, roles, relationships, sharing, and authz checks.
           </p>
         </div>
@@ -67,7 +67,7 @@ export function CapabilitiesListPage() {
         {isLoading ? (
           <div className="p-8 text-center text-sm text-gray-400">Loading…</div>
         ) : !data?.items.length ? (
-          <EmptyState icon={Layers} title="No capability references" description="Bootstrap capabilities in Agent & Tools; IAM references will appear here for governance." />
+          <EmptyState icon={Layers} title="No capability references" description="Bootstrap capabilities in Agent Studio; identity references will appear here for governance." />
         ) : (
           <table className="w-full text-sm">
             <thead>

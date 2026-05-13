@@ -1,8 +1,8 @@
 /**
- * Run a Workflow — end-user catalog page.
+ * Start Workflow — end-user catalog page.
  *
  * Lists every workflow the user can see, with a single "Run" action per row.
- * Stripped-down read-only view of the Workflow Designer list (which lives
+ * Stripped-down read-only view of the Workflow Manager list (which lives
  * under Administration). Clicking Run pushes the user straight into the
  * browser-runtime player, skipping any design / archive / metadata UI.
  */
@@ -60,7 +60,7 @@ export function RunWorkflowPage() {
         </div>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--color-on-surface)', margin: 0, letterSpacing: '-0.01em' }}>
-            Run a Workflow
+            Start Workflow
           </h1>
           <p style={{ fontSize: 12, color: 'var(--color-outline)', margin: 0 }}>
             Pick a workflow and start a run. Designs and edits live under Administration.

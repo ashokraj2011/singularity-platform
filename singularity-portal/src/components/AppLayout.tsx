@@ -14,9 +14,9 @@ const internalNav = [
 ]
 
 const externalNav: { label: string; href: string; icon: typeof Workflow; subtitle: string }[] = [
-  { label: 'Workgraph Designer', href: env.links.workgraphDesigner, icon: Workflow, subtitle: 'Workflow design + runtime' },
-  { label: 'Agent & Tools',      href: env.links.agentAdmin,        icon: Bot,      subtitle: 'Agents, prompts, tools' },
-  { label: 'IAM Admin',          href: env.links.iamAdmin,          icon: Users,    subtitle: 'Users, roles, capabilities' },
+  { label: 'Workflow Manager',   href: env.links.workgraphDesigner, icon: Workflow, subtitle: 'Design, run, and review workflows' },
+  { label: 'Agent Studio',       href: env.links.agentAdmin,        icon: Bot,      subtitle: 'Agents, prompts, tools, learning' },
+  { label: 'Identity & Access',  href: env.links.iamAdmin,          icon: Users,    subtitle: 'Users, teams, roles, capabilities' },
 ]
 
 export function AppLayout({ children }: { children: ReactNode }) {

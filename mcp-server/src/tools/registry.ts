@@ -203,6 +203,10 @@ import {
 // M26 — gh copilot headless wrappers (only meaningful in laptop mode where the
 // user has run `gh auth login` and `gh extension install github/gh-copilot`).
 import { copilotSuggestTool, copilotExplainTool } from "./copilot-headless";
+import {
+  indexWorkspaceTool, findSymbolTool, getSymbolTool, getAstSliceTool,
+  getDependenciesTool, prepareWorkBranchTool, finishWorkBranchTool,
+} from "./ast-tools";
 
 const REGISTRY = new Map<string, ToolHandler>([
   [echoTool.descriptor.name, echoTool],
@@ -219,6 +223,13 @@ const REGISTRY = new Map<string, ToolHandler>([
   [webFetchTool.descriptor.name, webFetchTool],
   [copilotSuggestTool.descriptor.name, copilotSuggestTool],
   [copilotExplainTool.descriptor.name, copilotExplainTool],
+  [indexWorkspaceTool.descriptor.name, indexWorkspaceTool],
+  [findSymbolTool.descriptor.name, findSymbolTool],
+  [getSymbolTool.descriptor.name, getSymbolTool],
+  [getAstSliceTool.descriptor.name, getAstSliceTool],
+  [getDependenciesTool.descriptor.name, getDependenciesTool],
+  [prepareWorkBranchTool.descriptor.name, prepareWorkBranchTool],
+  [finishWorkBranchTool.descriptor.name, finishWorkBranchTool],
 ]);
 
 export function listLocalTools(): ToolDescriptor[] {

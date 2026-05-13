@@ -28,6 +28,14 @@ interface InsightNode {
   durationPrecise: boolean
   documents: Array<{ id: string; name: string; kind: string; sizeBytes: number | null; mimeType: string | null; uploadedAt: string }>
   consumables: Array<{ id: string; name: string; status: string; currentVersion: number; updatedAt: string }>
+  workspace: Array<{
+    branch?: string
+    commitSha?: string
+    changedPaths: string[]
+    astIndexStatus?: string
+    astIndexedFiles?: number
+    astIndexedSymbols?: number
+  }>
   eventCount: number
 }
 interface InsightEvent {
@@ -292,10 +300,11 @@ export function RunInsightsPage() {
                       fontSize: 10, color: '#0f172a',
                     }}>
                       {n.durationMs != null ? `${n.durationPrecise ? '' : '≈ '}${fmtDuration(n.durationMs)}` : n.status.toLowerCase()}
-                      {(n.documents.length > 0 || n.consumables.length > 0 || n.eventCount > 0) && (
+                      {(n.documents.length > 0 || n.consumables.length > 0 || n.workspace.length > 0 || n.eventCount > 0) && (
                         <span style={{ marginLeft: 'auto', fontSize: 9, color: '#475569', display: 'flex', gap: 8 }}>
                           {n.documents.length > 0  && <span>📎 {n.documents.length}</span>}
                           {n.consumables.length > 0 && <span>📦 {n.consumables.length}</span>}
+                          {n.workspace.length > 0 && <span>⑂ {n.workspace[0].branch ?? 'workspace'}</span>}
                           {n.eventCount > 0        && <span>⚡ {n.eventCount}</span>}
                         </span>
                       )}
@@ -313,6 +322,35 @@ export function RunInsightsPage() {
           </div>
         )}
       </Section>
+
+      {data.nodes.some(n => n.workspace.length > 0) && (
+        <Section title="Workspace branches">
+          <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: '#64748b' }}>
+                <th style={th()}>Step</th>
+                <th style={th()}>Branch</th>
+                <th style={th()}>Commit</th>
+                <th style={th(true)}>AST files</th>
+                <th style={th(true)}>AST symbols</th>
+                <th style={th()}>Changed paths</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.nodes.flatMap(n => n.workspace.map((w, idx) => (
+                <tr key={`${n.id}-${idx}`} style={{ borderTop: '1px solid #f1f5f9' }}>
+                  <td style={td()}>{n.label}</td>
+                  <td style={td()}><code>{w.branch ?? '—'}</code></td>
+                  <td style={td()}>{w.commitSha ? <code>{w.commitSha.slice(0, 10)}</code> : '—'}</td>
+                  <td style={td(true)}>{w.astIndexedFiles ?? '—'}</td>
+                  <td style={td(true)}>{w.astIndexedSymbols ?? '—'}</td>
+                  <td style={td()}>{w.changedPaths.length > 0 ? w.changedPaths.slice(0, 4).join(', ') : '—'}</td>
+                </tr>
+              )))}
+            </tbody>
+          </table>
+        </Section>
+      )}
 
       {/* Artifacts panel */}
       {(data.documents.length > 0 || data.consumables.length > 0) && (

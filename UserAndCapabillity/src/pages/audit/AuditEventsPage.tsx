@@ -19,7 +19,7 @@ export function AuditEventsPage() {
 
   return (
     <div className="p-8">
-      <PageHeader title="Audit Log" subtitle="Complete trail of IAM actions" />
+      <PageHeader title="Audit" subtitle="Complete trail of identity and access actions" />
 
       <div className="flex gap-3 mb-4">
         <div className="flex-1 space-y-1.5">

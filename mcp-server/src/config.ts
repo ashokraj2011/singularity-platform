@@ -44,6 +44,10 @@ const schema = z.object({
   // Default is the workdir; ops can mount a host directory in via docker-compose
   // and point this at it.
   MCP_SANDBOX_ROOT: z.string().default("/workspace"),
+  MCP_AST_DB_PATH: z.string().optional(),
+  MCP_AST_MAX_FILE_BYTES: z.coerce.number().int().positive().default(200_000),
+  MCP_AST_MAX_WORKSPACE_BYTES: z.coerce.number().int().positive().default(24_000_000),
+  MCP_WORK_BRANCH_PREFIX: z.string().default("sg"),
 });
 
 const parsed = schema.safeParse(process.env);

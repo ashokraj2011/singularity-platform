@@ -52,7 +52,7 @@ export default function RuntimeExecutionsPage() {
     <div>
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Runtime Executions</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Runtime Runs</h1>
           <p className="text-slate-500 mt-1">Live agent runs · auto-refreshes every 5s</p>
         </div>
         <button className="btn-primary" onClick={() => setShowCreate(true)}><Plus size={16} /> New Execution</button>

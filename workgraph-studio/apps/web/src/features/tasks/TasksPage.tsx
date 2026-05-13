@@ -38,7 +38,7 @@ export function TasksPage() {
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2 }} className="mb-6">
         <div className="flex items-center gap-2 mb-1">
           <CheckSquare className="w-5 h-5" style={{ color: '#22d3ee' }} />
-          <h1 className="page-header">My Work</h1>
+          <h1 className="page-header">Inbox</h1>
         </div>
         <p className="text-sm text-slate-500 font-mono">{taskList.length} tasks · {taskList.filter(t => t.status === 'OPEN').length} open</p>
       </motion.div>

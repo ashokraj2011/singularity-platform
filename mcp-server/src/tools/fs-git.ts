@@ -20,25 +20,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { config } from "../config";
 import type { ToolHandler } from "./registry";
+import { resolveSandboxedPath, sandboxRoot } from "../workspace/sandbox";
+import { indexChangedFiles, indexWorkspace } from "../workspace/ast-index";
+import { ensureGitRepo } from "../workspace/git-workspace";
 
 const execFileP = promisify(execFile);
-
-function resolveSandboxedPath(relPath: string): string {
-  if (typeof relPath !== "string" || relPath.length === 0) {
-    throw new Error("path is required");
-  }
-  if (relPath.startsWith("/") || relPath.startsWith("\\")) {
-    throw new Error("absolute paths are not allowed");
-  }
-  const root = path.resolve(config.MCP_SANDBOX_ROOT);
-  const joined = path.resolve(root, relPath);
-  if (joined !== root && !joined.startsWith(root + path.sep)) {
-    throw new Error("path escapes the sandbox root");
-  }
-  return joined;
-}
 
 function unifiedDiffForNewFile(relPath: string, content: string): string {
   const lines = content.split("\n");
@@ -72,6 +59,7 @@ export const writeFileTool: ToolHandler = {
       const existed = fs.existsSync(abs);
       const prevContent = existed ? await fs.promises.readFile(abs, "utf8") : "";
       await fs.promises.writeFile(abs, content, "utf8");
+      await indexChangedFiles([rel], "write_file");
       const diff = existed
         // Existing-file diff is synthetic (line-by-line replacement). For a
         // real diff, follow with git_commit.
@@ -111,15 +99,13 @@ export const gitCommitTool: ToolHandler = {
     requires_approval: false,
   },
   async execute(args) {
-    const cwd = path.resolve(config.MCP_SANDBOX_ROOT);
+    const cwd = sandboxRoot();
     const message = String(args.message ?? "");
     if (!message) return { success: false, output: null, error: "commit message is required" };
     try {
       // Init the repo lazily so first-run doesn't require manual setup. No-op
       // on an existing repo because git init is idempotent.
-      await execFileP("git", ["init", "-q"], { cwd });
-      await execFileP("git", ["config", "user.email", "mcp@local"], { cwd });
-      await execFileP("git", ["config", "user.name",  "MCP Server"], { cwd });
+      await ensureGitRepo();
       // Diff BEFORE staging so we can include it in the envelope.
       const { stdout: pathsRaw } = await execFileP("git", ["diff", "--name-only"], { cwd });
       const { stdout: untrackedRaw } = await execFileP("git", ["ls-files", "--others", "--exclude-standard"], { cwd });
@@ -137,6 +123,7 @@ export const gitCommitTool: ToolHandler = {
       const { stdout: diffRaw } = await execFileP("git", ["show", "--format=", sha], {
         cwd, maxBuffer: 10 * 1024 * 1024,
       });
+      await indexWorkspace("git_commit");
       return {
         success: true,
         output: {

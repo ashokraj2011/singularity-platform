@@ -32,6 +32,10 @@ import { persistApproval, consumeApproval } from "../lib/audit-gov-approvals";
 import {
   savePending, takePending, peekPending, PendingToolDescriptor,
 } from "../audit/pending";
+import {
+  branchNameForWork, finishWorkBranch, prepareWorkBranch, WorkBranchInfo,
+} from "../workspace/git-workspace";
+import { indexWorkspace, lastAstStats } from "../workspace/ast-index";
 
 const ToolDescSchema = z.object({
   name: z.string(),
@@ -67,6 +71,10 @@ const InvokeSchema = z.object({
     runStepId: z.string().optional(),
     workItemId: z.string().optional(),
     traceId: z.string().optional(),
+    workflowInstanceId: z.string().optional(),
+    nodeId: z.string().optional(),
+    branchBase: z.string().optional(),
+    branchName: z.string().optional(),
   }).default({}),
   limits: z.object({
     maxSteps: z.number().int().positive().optional(),
@@ -106,6 +114,14 @@ interface LoopState {
   codeChangeIds: string[];
   totalInputTokens: number;
   totalOutputTokens: number;
+  workspace?: {
+    branch?: WorkBranchInfo | null;
+    commitSha?: string;
+    changedPaths?: string[];
+    astIndexStatus?: string;
+    astIndexedFiles?: number;
+    astIndexedSymbols?: number;
+  };
 }
 
 type LoopOutcome =
@@ -265,6 +281,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
             tool_invocation_ids: state.toolInvocationIds,
             artifact_ids: state.artifactIds,
             code_change_ids: state.codeChangeIds,
+            workspace: state.workspace,
             total_input_tokens: state.totalInputTokens,
             total_output_tokens: state.totalOutputTokens,
           });
@@ -344,15 +361,58 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
   return { kind: "complete", finalContent: "", finishReason: "max_steps" };
 }
 
-function buildResponseBody(
+async function buildResponseBody(
   state: LoopState,
   outcome: LoopOutcome,
   startedAt: number,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   let finalArtifactId: string | undefined;
   let finalContent = "";
 
   if (outcome.kind === "complete") {
+    if (state.workspace?.branch) {
+      const finish = await finishWorkBranch(`Singularity work item ${state.correlation.workItemId ?? state.workspace.branch.branch}`);
+      const stats = await indexWorkspace("auto_finish");
+      state.workspace.commitSha = finish.commitSha;
+      state.workspace.changedPaths = finish.changedPaths;
+      state.workspace.astIndexStatus = stats.status;
+      state.workspace.astIndexedFiles = stats.indexedFiles;
+      state.workspace.astIndexedSymbols = stats.indexedSymbols;
+      if (finish.committed && finish.commitSha) {
+        const codeChange = recordCodeChange({
+          correlation: { ...state.correlation },
+          paths_touched: finish.changedPaths,
+          patch: finish.patch,
+          commit_sha: finish.commitSha,
+          tool_name: "finish_work_branch_auto",
+          source: "heuristic",
+          metadata: { branch: finish.branch, message: finish.message },
+        });
+        state.codeChangeIds.push(codeChange.id);
+        events.publish({
+          kind: "code_change.detected",
+          correlation: { ...state.correlation, artifactId: codeChange.id },
+          payload: {
+            code_change_id: codeChange.id,
+            tool_name: codeChange.tool_name,
+            paths_touched: codeChange.paths_touched,
+            has_patch: Boolean(codeChange.patch),
+            has_commit: true,
+            source: codeChange.source,
+          },
+        });
+        events.publish({
+          kind: "git.commit.created",
+          correlation: { ...state.correlation, artifactId: codeChange.id },
+          payload: {
+            code_change_id: codeChange.id,
+            branch: finish.branch,
+            commit_sha: finish.commitSha,
+            paths_touched: finish.changedPaths,
+          },
+        });
+      }
+    }
     finalContent = outcome.finalContent;
     if (finalContent) {
       const art = recordArtifact({
@@ -430,6 +490,14 @@ function buildResponseBody(
       output: state.totalOutputTokens,
       total: state.totalInputTokens + state.totalOutputTokens,
     },
+    workspace: {
+      workspaceBranch: state.workspace?.branch?.branch,
+      workspaceCommitSha: state.workspace?.commitSha,
+      changedPaths: state.workspace?.changedPaths ?? [],
+      astIndexStatus: state.workspace?.astIndexStatus ?? lastAstStats()?.status,
+      astIndexedFiles: state.workspace?.astIndexedFiles ?? lastAstStats()?.indexedFiles,
+      astIndexedSymbols: state.workspace?.astIndexedSymbols ?? lastAstStats()?.indexedSymbols,
+    },
   };
 
   if (outcome.kind === "paused") {
@@ -468,8 +536,23 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
 
   const correlation: CorrelationIds = {
     ...body.runContext,
+    runId: body.runContext.runId ?? body.runContext.workflowInstanceId,
+    runStepId: body.runContext.runStepId ?? body.runContext.nodeId,
+    workItemId: body.runContext.workItemId,
     mcpInvocationId: uuidv4(),
   };
+
+  const branchRequest = {
+    workflowInstanceId: body.runContext.workflowInstanceId ?? body.runContext.runId,
+    nodeId: body.runContext.nodeId ?? body.runContext.runStepId,
+    workItemId: body.runContext.workItemId,
+    branchBase: body.runContext.branchBase,
+    branchName: body.runContext.branchName,
+  };
+  const branch = branchNameForWork(branchRequest)
+    ? await prepareWorkBranch(branchRequest, correlation)
+    : null;
+  const astStats = branch ? await indexWorkspace("branch_start") : await indexWorkspace("invoke_start");
 
   const messages: ChatMessage[] = [];
   if (body.systemPrompt) messages.push({ role: "system", content: body.systemPrompt });
@@ -511,6 +594,12 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     codeChangeIds: [],
     totalInputTokens: 0,
     totalOutputTokens: 0,
+    workspace: {
+      branch,
+      astIndexStatus: astStats.status,
+      astIndexedFiles: astStats.indexedFiles,
+      astIndexedSymbols: astStats.indexedSymbols,
+    },
   };
 
   const outcome = await runLoop(state);
@@ -570,6 +659,7 @@ invokeRouter.post("/resume", async (req, res) => {
     toolInvocationIds: env.tool_invocation_ids,
     artifactIds: env.artifact_ids,
     codeChangeIds: env.code_change_ids ?? [],
+    workspace: env.workspace,
     totalInputTokens: env.total_input_tokens,
     totalOutputTokens: env.total_output_tokens,
   };
@@ -626,7 +716,7 @@ invokeRouter.post("/resume", async (req, res) => {
   const outcome = await runLoop(state);
   res.json({
     success: true,
-    data: buildResponseBody(state, outcome, startedAt),
+    data: await buildResponseBody(state, outcome, startedAt),
     requestId: res.locals.requestId,
   });
 });

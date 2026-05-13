@@ -379,7 +379,7 @@ export function ArtifactDesignerPage() {
             <FileText size={16} style={{ color: '#6366f1' }} />
           </div>
           <div>
-            <h1 className="page-header" style={{ marginBottom: 0 }}>Artifact Designer</h1>
+            <h1 className="page-header" style={{ marginBottom: 0 }}>Artifact Studio</h1>
             <p style={{ fontSize: 11, color: 'var(--color-outline)', fontFamily: 'monospace', marginTop: 1 }}>
               {templates.length} template{templates.length !== 1 ? 's' : ''} · contracts, deliverables & specs
             </p>

@@ -4,7 +4,7 @@ import { Sidebar } from "@/components/ui/Sidebar";
 import { Bell, Settings } from "lucide-react";
 
 export const metadata: Metadata = {
-  title: "Singularity — Agent & Tools",
+  title: "Singularity — Agent Studio",
   description: "Governed Agentic Delivery — agent and tool runtime platform.",
   icons: { icon: "/favicon.png" },
 };

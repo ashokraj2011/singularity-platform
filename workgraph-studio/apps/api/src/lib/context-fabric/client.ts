@@ -21,6 +21,8 @@ export interface ExecuteRunContext {
   agent_template_id?: string
   user_id?: string
   trace_id?: string
+  branch_base?: string
+  branch_name?: string
 }
 
 export interface ExecuteRequest {
@@ -83,6 +85,20 @@ export interface ExecuteResponse {
     toolInvocationIds: string[]
     artifactIds: string[]
     codeChangeIds?: string[]
+    workspaceBranch?: string
+    workspaceCommitSha?: string
+    changedPaths?: string[]
+    astIndexStatus?: string
+    astIndexedFiles?: number
+    astIndexedSymbols?: number
+  }
+  workspace?: {
+    workspaceBranch?: string
+    workspaceCommitSha?: string
+    changedPaths?: string[]
+    astIndexStatus?: string
+    astIndexedFiles?: number
+    astIndexedSymbols?: number
   }
   tokensUsed?: { input: number; output: number; total: number }
   usage?: {

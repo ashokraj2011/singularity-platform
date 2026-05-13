@@ -20,10 +20,10 @@ const registry = [
 
 const runtime = [
   { label: "Capabilities",        href: "/capabilities",        icon: GitBranch },
-  { label: "Prompt Profiles",     href: "/prompt-profiles",     icon: Layers },
-  { label: "Prompt Layers",       href: "/prompt-layers",       icon: ScrollText },
+  { label: "Behavior Profiles",   href: "/prompt-profiles",     icon: Layers },
+  { label: "Instruction Blocks",  href: "/prompt-layers",       icon: ScrollText },
   { label: "Tool Grants",         href: "/tool-grants",         icon: ShieldCheck },
-  { label: "Runtime Executions",  href: "/runtime-executions",  icon: Activity },
+  { label: "Runtime Runs",        href: "/runtime-executions",  icon: Activity },
   { label: "Memory",              href: "/memory",              icon: Brain },
 ];
 
@@ -55,14 +55,14 @@ function NavItem({
               width: 3,
               height: 20,
               borderRadius: "2px 0 0 2px",
-              background: "var(--color-primary)",
-              boxShadow: "0 0 8px var(--color-primary-glow)",
+              background: "var(--brand-green-accent)",
+              boxShadow: "0 0 8px rgba(0,166,81,0.45)",
             }}
           />
         )}
         <Icon
           size={16}
-          style={{ color: active ? "var(--color-primary)" : "#6a7486", flexShrink: 0 }}
+          style={{ color: active ? "var(--brand-green-accent)" : "rgba(245,242,234,0.5)", flexShrink: 0 }}
         />
         {!collapsed && <span>{label}</span>}
       </div>
@@ -101,7 +101,7 @@ export function Sidebar() {
           justifyContent: collapsed ? "space-around" : "space-between",
           gap: collapsed ? 0 : 12,
           padding: "18px 16px 14px",
-          borderBottom: "1px solid var(--color-outline-variant)",
+          borderBottom: "1px solid rgba(245,242,234,0.08)",
           flexShrink: 0,
         }}
       >
@@ -133,10 +133,10 @@ export function Sidebar() {
           <div>
             <h2
               style={{
-                fontFamily: "Inter, 'Public Sans', sans-serif",
+                fontFamily: "var(--font-sans)",
                 fontSize: "0.9375rem",
                 fontWeight: 700,
-                color: "var(--color-on-surface)",
+                color: "var(--brand-warm-white)",
                 letterSpacing: "0.04em",
                 lineHeight: 1.2,
                 margin: 0,
@@ -150,7 +150,7 @@ export function Sidebar() {
                 fontWeight: 600,
                 textTransform: "uppercase",
                 letterSpacing: "0.18em",
-                color: "var(--color-primary)",
+                color: "rgba(245,242,234,0.55)",
                 opacity: 0.85,
                 marginTop: 2,
                 marginBottom: 0,
@@ -167,13 +167,13 @@ export function Sidebar() {
           title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           style={{
             width: 32, height: 32, borderRadius: 8, border: "none",
-            background: "rgba(0,132,61,0.08)", cursor: "pointer",
+            background: "rgba(245,242,234,0.08)", cursor: "pointer",
             display: "flex", alignItems: "center", justifyContent: "center",
-            color: "var(--color-primary)", transition: "all 0.15s",
+            color: "var(--brand-green-accent)", transition: "all 0.15s",
             flexShrink: 0,
           }}
-          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(0,132,61,0.15)"; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(0,132,61,0.08)"; }}
+          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(245,242,234,0.14)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(245,242,234,0.08)"; }}
         >
           {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
         </button>
@@ -234,10 +234,10 @@ export function Sidebar() {
         <div
           style={{
             padding: "8px 16px 16px",
-            borderTop: "1px solid var(--color-outline-variant)",
-            fontFamily: "ui-monospace, monospace",
+            borderTop: "1px solid rgba(245,242,234,0.08)",
+            fontFamily: "var(--font-mono)",
             fontSize: "0.6875rem",
-            color: "var(--color-outline)",
+            color: "rgba(245,242,234,0.45)",
             opacity: 0.6,
             flexShrink: 0,
           }}

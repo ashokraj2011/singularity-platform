@@ -129,6 +129,8 @@ class RunContext(BaseModel):
     agent_template_id: Optional[str] = None
     user_id: Optional[str] = None
     trace_id: Optional[str] = None
+    branch_base: Optional[str] = None
+    branch_name: Optional[str] = None
 
 
 class ExecuteRequest(BaseModel):
@@ -479,6 +481,11 @@ async def execute(req: ExecuteRequest):
             "agentId": req.run_context.agent_template_id,
             "runId": req.run_context.workflow_instance_id,
             "runStepId": req.run_context.workflow_node_id,
+            "workflowInstanceId": req.run_context.workflow_instance_id,
+            "nodeId": req.run_context.workflow_node_id,
+            "workItemId": req.run_context.agent_run_id,
+            "branchBase": req.run_context.branch_base,
+            "branchName": req.run_context.branch_name,
             "traceId": trace_id,
         }),
         "limits": _strip_nones({
@@ -586,6 +593,7 @@ async def execute(req: ExecuteRequest):
     mcp_data = mcp_resp.get("data") or {}
     final_response = mcp_data.get("finalResponse", "")
     correlation = mcp_data.get("correlation") or {}
+    workspace = mcp_data.get("workspace") or {}
     tokens_used = mcp_data.get("tokensUsed") or {}
     finish_reason = mcp_data.get("finishReason")
     steps_taken = mcp_data.get("stepsTaken")
@@ -705,7 +713,14 @@ async def execute(req: ExecuteRequest):
             "toolInvocationIds": correlation.get("toolInvocationIds") or [],
             "artifactIds": correlation.get("artifactIds") or [],
             "codeChangeIds": correlation.get("codeChangeIds") or [],
+            "workspaceBranch": workspace.get("workspaceBranch"),
+            "workspaceCommitSha": workspace.get("workspaceCommitSha"),
+            "changedPaths": workspace.get("changedPaths") or [],
+            "astIndexStatus": workspace.get("astIndexStatus"),
+            "astIndexedFiles": workspace.get("astIndexedFiles"),
+            "astIndexedSymbols": workspace.get("astIndexedSymbols"),
         },
+        "workspace": workspace,
         "tokensUsed": tokens_used,
         "usage": usage,
         "modelUsage": {
@@ -1008,6 +1023,7 @@ async def execute_resume(req: ResumeRequest):
     new_status = mcp_data.get("status", "UNKNOWN")
     final_response = mcp_data.get("finalResponse", "")
     correlation = mcp_data.get("correlation") or {}
+    workspace = mcp_data.get("workspace") or {}
     tokens_used = mcp_data.get("tokensUsed") or {}
     finish_reason = mcp_data.get("finishReason")
     steps_taken = mcp_data.get("stepsTaken")
@@ -1057,7 +1073,14 @@ async def execute_resume(req: ResumeRequest):
             "toolInvocationIds": correlation.get("toolInvocationIds") or [],
             "artifactIds": correlation.get("artifactIds") or [],
             "codeChangeIds": correlation.get("codeChangeIds") or [],
+            "workspaceBranch": workspace.get("workspaceBranch"),
+            "workspaceCommitSha": workspace.get("workspaceCommitSha"),
+            "changedPaths": workspace.get("changedPaths") or [],
+            "astIndexStatus": workspace.get("astIndexStatus"),
+            "astIndexedFiles": workspace.get("astIndexedFiles"),
+            "astIndexedSymbols": workspace.get("astIndexedSymbols"),
         },
+        "workspace": workspace,
         "tokensUsed": tokens_used,
         "usage": usage,
         "modelUsage": {

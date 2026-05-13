@@ -4,7 +4,7 @@
  * One widget = one input (or one display element).  Forms are flat, ordered
  * lists of widgets; each carries its own label, key, required flag, and any
  * type-specific config.  This is a deliberate departure from the
- * section-based shape used by the Artifact Designer — task forms are about
+ * section-based shape used by Artifact Studio — task forms are about
  * collecting data, artifacts are about composing documents.
  */
 

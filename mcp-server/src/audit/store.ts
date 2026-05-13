@@ -16,6 +16,8 @@ export interface CorrelationIds {
   runId?: string;
   runStepId?: string;
   workItemId?: string;
+  workflowInstanceId?: string;
+  nodeId?: string;
   agentId?: string;
   capabilityId?: string;
   mcpInvocationId: string;

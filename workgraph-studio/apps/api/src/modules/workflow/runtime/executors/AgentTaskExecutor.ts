@@ -187,6 +187,8 @@ export async function activateAgentTask(
       // /mcp/invoke to the user's laptop mcp-server via the WS bridge.
       user_id: run.initiatedById ?? undefined,
       trace_id: traceId,
+      branch_base: typeof cfg.branchBase === 'string' ? cfg.branchBase : undefined,
+      branch_name: typeof cfg.branchName === 'string' ? cfg.branchName : undefined,
     },
     task,
     vars,
@@ -249,6 +251,13 @@ export async function activateAgentTask(
     tokensUsed: result.tokensUsed,
     modelUsage: result.modelUsage,
     metrics: result.metrics,
+    workspace: result.workspace,
+    workspaceBranch: result.correlation.workspaceBranch ?? result.workspace?.workspaceBranch,
+    workspaceCommitSha: result.correlation.workspaceCommitSha ?? result.workspace?.workspaceCommitSha,
+    changedPaths: result.correlation.changedPaths ?? result.workspace?.changedPaths,
+    astIndexStatus: result.correlation.astIndexStatus ?? result.workspace?.astIndexStatus,
+    astIndexedFiles: result.correlation.astIndexedFiles ?? result.workspace?.astIndexedFiles,
+    astIndexedSymbols: result.correlation.astIndexedSymbols ?? result.workspace?.astIndexedSymbols,
     warnings: [...(result.warnings ?? []), ...budgetDecision.warnings],
     contextFabricUrl: config.CONTEXT_FABRIC_URL,
   }

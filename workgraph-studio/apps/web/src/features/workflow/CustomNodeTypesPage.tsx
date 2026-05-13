@@ -621,7 +621,7 @@ export function CustomNodeTypesPage() {
             fontFamily: "'Public Sans', sans-serif", margin: 0,
           }}>Node Type Designer</h1>
           <p style={{ fontSize: 13, color: 'var(--color-outline)', marginTop: 4 }}>
-            Create reusable custom node types that appear in the Workflow Studio palette.
+            Create reusable custom node types that appear in the Workflow Manager palette.
           </p>
         </div>
         <button
@@ -653,7 +653,7 @@ export function CustomNodeTypesPage() {
         <div>
           <p style={{ fontSize: 12, fontWeight: 600, color: '#00843D', marginBottom: 3 }}>How it works</p>
           <p style={{ fontSize: 11, color: 'var(--color-outline)', lineHeight: 1.6 }}>
-            Custom node types appear in the Workflow Studio palette alongside built-in types.
+            Custom node types appear in the Workflow Manager palette alongside built-in types.
             Each type maps to a <strong>base executor</strong> (Human Task, Tool Request, etc.) that handles runtime behaviour.
             You define the <strong>config fields</strong> your team sees in the inspector — keeping workflows consistent and descriptive.
           </p>
@@ -676,7 +676,7 @@ export function CustomNodeTypesPage() {
           </div>
           <p style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-on-surface)', marginBottom: 6 }}>No custom node types yet</p>
           <p style={{ fontSize: 12, color: 'var(--color-outline)', marginBottom: 18 }}>
-            Design your first custom node type to extend the Workflow Studio palette.
+            Design your first custom node type to extend the Workflow Manager palette.
           </p>
           <button
             onClick={() => setShowDesigner(true)}

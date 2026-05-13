@@ -61,7 +61,7 @@ export function CapabilityGraphPage() {
   return (
     <div className="flex flex-col h-full">
       <div className="px-8 pt-8 pb-4">
-        <PageHeader title="Capability Graph" subtitle="Visual map of capability relationships" />
+        <PageHeader title="Capability Map" subtitle="Visual map of capability relationships" />
         <div className="flex flex-wrap gap-2">
           {Object.entries(REL_COLORS).map(([type, color]) => (
             <div key={type} className="flex items-center gap-1.5">

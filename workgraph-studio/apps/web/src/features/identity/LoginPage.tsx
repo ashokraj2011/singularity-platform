@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'motion/react'
-import { Zap, AlertCircle, Loader2, ExternalLink, KeyRound, ShieldCheck } from 'lucide-react'
+import { AlertCircle, Loader2, ExternalLink, KeyRound, ShieldCheck } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAuthStore } from '../../store/auth.store'
 import { useActiveContextStore, type Membership } from '../../store/activeContext.store'
 
-const AUTH_PROVIDER  = (import.meta.env.VITE_AUTH_PROVIDER ?? 'local') as 'local' | 'iam'
+const AUTH_PROVIDER  = (import.meta.env.VITE_AUTH_PROVIDER ?? 'iam') as 'local' | 'iam'
 const IAM_LOGIN_URL  = import.meta.env.VITE_IAM_LOGIN_URL  ?? 'http://localhost:5175/login'
 
 // M12 — pseudo-IAM auto-login support. When VITE_PSEUDO_IAM_URL is set, the
@@ -30,6 +30,17 @@ async function fetchMemberships(token: string): Promise<Membership[]> {
   }
 }
 
+async function verifyWorkgraphToken(token: string) {
+  const res = await api.get('/auth/me', { headers: { Authorization: `Bearer ${token}` } })
+  return {
+    id: res.data.id,
+    email: res.data.email,
+    displayName: res.data.displayName,
+    teamId: res.data.teamId,
+    roles: res.data.roles?.map((r: { name: string }) => r.name) ?? [],
+  }
+}
+
 export function LoginPage() {
   const navigate = useNavigate()
   const setAuth = useAuthStore(s => s.setAuth)
@@ -39,8 +50,9 @@ export function LoginPage() {
   // Local-mode form state
   const [email, setEmail]       = useState('admin@workgraph.local')
   const [password, setPassword] = useState('admin123')
-  // IAM-mode paste-token state
-  const [iamToken, setIamToken] = useState('')
+  // IAM-mode form state
+  const [iamEmail, setIamEmail]       = useState('admin@singularity.local')
+  const [iamPassword, setIamPassword] = useState('Admin1234!')
 
   const [error,   setError]   = useState('')
   const [loading, setLoading] = useState(false)
@@ -63,12 +75,8 @@ export function LoginPage() {
         throw new Error(`pseudo-IAM ${res.status}: ${(await res.text()).slice(0, 200)}`)
       }
       const body = await res.json() as { access_token: string; user: { id: string; email: string; display_name?: string; is_super_admin?: boolean } }
-      setAuth(body.access_token, {
-        id:          body.user.id,
-        email:       body.user.email,
-        displayName: body.user.display_name ?? body.user.email,
-        roles:       body.user.is_super_admin ? ['super-admin'] : [],
-      })
+      const verifiedUser = await verifyWorkgraphToken(body.access_token)
+      setAuth(body.access_token, verifiedUser)
       // Multi-tenant model: fetch memberships, then either auto-pick (1 option)
       // or send the user to the picker page (>1).
       const ms = await fetchMemberships(body.access_token)
@@ -82,7 +90,13 @@ export function LoginPage() {
         navigate('/dashboard')
       }
     } catch (err) {
-      setError((err as Error).message)
+      const msg = (err as { response?: { data?: { message?: string } }; message?: string })?.response?.data?.message
+        ?? (err as Error).message
+      setError(
+        msg.includes('IAM rejected token')
+          ? 'Pseudo-IAM is running, but Workgraph API is pointed at real IAM. Use Singularity IAM sign in, or restart Workgraph API with IAM_BASE_URL=http://host.docker.internal:8101/api/v1 for pseudo mode.'
+          : msg,
+      )
       setLoading(false)
     }
   }
@@ -100,7 +114,8 @@ export function LoginPage() {
     setError(''); setLoading(true)
     try {
       const res = await api.post('/auth/login', { email, password })
-      setAuth(res.data.token, res.data.user)
+      const verifiedUser = await verifyWorkgraphToken(res.data.token)
+      setAuth(res.data.token, verifiedUser)
       navigate('/dashboard')
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Authentication failed'
@@ -114,18 +129,10 @@ export function LoginPage() {
     e.preventDefault()
     setError(''); setLoading(true)
     try {
-      // We don't call /auth/login in IAM mode — the IAM-issued bearer goes
-      // straight to the auth middleware, which mirrors the user on first hit.
-      // Verify by calling /auth/me; if it succeeds, we're good.
-      const res = await api.get('/auth/me', { headers: { Authorization: `Bearer ${iamToken.trim()}` } })
-      const user = {
-        id: res.data.id,
-        email: res.data.email,
-        displayName: res.data.displayName,
-        teamId: res.data.teamId,
-        roles: res.data.roles?.map((r: { name: string }) => r.name) ?? [],
-      }
-      setAuth(iamToken.trim(), user)
+      const login = await api.post('/auth/iam-login', { email: iamEmail, password: iamPassword })
+      const token = login.data.access_token as string
+      const user = await verifyWorkgraphToken(token)
+      setAuth(token, user)
       navigate('/dashboard')
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
@@ -138,13 +145,16 @@ export function LoginPage() {
 
   return (
     <div
-      className="min-h-screen flex items-center justify-center canvas-grid"
-      style={{ background: '#020617' }}
+      className="min-h-screen flex items-center justify-center p-6"
+      style={{
+        background:
+          'radial-gradient(ellipse at top, var(--brand-forest-light, #155041) 0%, var(--brand-forest, #0E3B2D) 45%, var(--brand-forest-deep, #082821) 100%)',
+      }}
     >
       <div
         className="fixed inset-0 pointer-events-none"
         style={{
-          background: 'radial-gradient(ellipse 60% 50% at 50% -10%, rgba(34,211,238,0.06) 0%, transparent 70%)',
+          background: 'radial-gradient(ellipse 60% 50% at 50% -10%, rgba(0,166,81,0.12) 0%, transparent 70%)',
         }}
       />
 
@@ -155,29 +165,36 @@ export function LoginPage() {
         className="relative w-full max-w-sm"
       >
         <div
-          className="glass-panel rounded-2xl p-8"
-          style={{ boxShadow: '0 0 40px rgba(34,211,238,0.06), 0 25px 50px rgba(0,0,0,0.5)' }}
+          className="rounded-xl p-7 shadow-2xl"
+          style={{
+            background: 'var(--surface-card, #ffffff)',
+            border: '1px solid rgba(245,242,234,0.1)',
+            boxShadow: '0 24px 60px rgba(8,40,33,0.35)',
+          }}
         >
           {/* Logo */}
           <div className="flex items-center justify-center gap-3 mb-6">
-            <div
-              className="w-10 h-10 rounded-xl flex items-center justify-center"
-              style={{ background: 'rgba(34,211,238,0.15)', border: '1px solid rgba(34,211,238,0.3)' }}
-            >
-              <Zap className="w-5 h-5" style={{ color: '#22d3ee' }} />
-            </div>
+            <img
+              src="/singularity-mark.png"
+              alt="Singularity"
+              width={44}
+              height={44}
+              className="shrink-0 select-none"
+              style={{ filter: 'drop-shadow(0 2px 8px rgba(8,40,33,0.25))' }}
+              onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/singularity-logo.png' }}
+            />
             <div>
-              <h1 className="text-base font-bold text-slate-100 neon-glow" style={{ letterSpacing: '0.08em' }}>
-                WORKGRAPH
+              <h1 className="text-base font-bold" style={{ color: 'var(--text-strong, #0A2240)', letterSpacing: '0.04em' }}>
+                Singularity
               </h1>
-              <p className="text-[10px] font-mono" style={{ color: '#22d3ee', opacity: 0.75 }}>
-                ENTERPRISE STUDIO
+              <p className="text-[10px] font-semibold uppercase" style={{ color: 'var(--brand-green, #00843D)', letterSpacing: '0.18em' }}>
+                Workflow Manager
               </p>
             </div>
           </div>
 
-          <h2 className="text-lg font-semibold text-slate-200 mb-1">Sign in</h2>
-          <p className="text-sm text-slate-500 mb-5">Choose how you want to authenticate</p>
+          <h2 className="text-lg font-semibold mb-1 text-center" style={{ color: 'var(--text-strong, #0A2240)' }}>Sign in</h2>
+          <p className="text-sm mb-5 text-center" style={{ color: 'var(--text-muted, #64748b)' }}>Choose how you want to authenticate</p>
 
           {/* M12 — one-click pseudo-IAM sign-in. Always visible so even if
               auto-login is disabled or fails, a single click gets you in. */}
@@ -186,31 +203,32 @@ export function LoginPage() {
             disabled={loading}
             className="w-full mb-5 h-11 rounded-lg flex items-center justify-center gap-2 font-semibold text-sm transition-all"
             style={{
-              background: 'linear-gradient(135deg, rgba(34,211,238,0.15), rgba(34,211,238,0.05))',
-              border: '1px solid rgba(34,211,238,0.4)',
-              color: '#22d3ee',
+              background: 'var(--brand-green-tint, #e6f4ed)',
+              border: '1px solid rgba(0,132,61,0.18)',
+              color: 'var(--brand-green-dark, #006236)',
             }}
           >
             {loading
               ? <><Loader2 className="w-4 h-4 animate-spin" /> Signing in…</>
               : <><ShieldCheck className="w-4 h-4" /> Continue as super admin (Pseudo IAM)</>}
           </button>
-          <p className="text-[11px] text-slate-500 -mt-3 mb-5 text-center">
+          <p className="text-[11px] -mt-3 mb-5 text-center" style={{ color: 'var(--text-muted, #64748b)' }}>
             For local dev — pseudo-IAM accepts any credentials.{' '}
-            <span className="text-slate-600">Auto-login: {AUTO_LOGIN ? 'on' : 'off'} · target: {PSEUDO_IAM_URL}</span>
+            <span style={{ color: 'var(--text-faint, #94a3b8)' }}>Auto-login: {AUTO_LOGIN ? 'on' : 'off'} · target: {PSEUDO_IAM_URL}</span>
           </p>
 
           {/* Tab switcher */}
           <div
             className="flex gap-1 p-1 rounded-lg mb-5"
-            style={{ background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(255,255,255,0.06)' }}
+            style={{ background: 'var(--surface-light, #F0F4F8)', border: '1px solid var(--surface-border, #E2E8F0)' }}
           >
             <button
               onClick={() => { setTab('iam'); setError('') }}
               className="flex-1 h-8 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all"
               style={{
-                background: tab === 'iam' ? 'rgba(34,211,238,0.15)' : 'transparent',
-                color: tab === 'iam' ? '#22d3ee' : '#64748b',
+                background: tab === 'iam' ? 'var(--surface-card, #ffffff)' : 'transparent',
+                color: tab === 'iam' ? 'var(--brand-green, #00843D)' : 'var(--text-muted, #64748b)',
+                boxShadow: tab === 'iam' ? '0 1px 3px rgba(10,34,64,0.08)' : 'none',
               }}
             >
               <ExternalLink className="w-3 h-3" />
@@ -220,8 +238,9 @@ export function LoginPage() {
               onClick={() => { setTab('local'); setError('') }}
               className="flex-1 h-8 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all"
               style={{
-                background: tab === 'local' ? 'rgba(34,211,238,0.15)' : 'transparent',
-                color: tab === 'local' ? '#22d3ee' : '#64748b',
+                background: tab === 'local' ? 'var(--surface-card, #ffffff)' : 'transparent',
+                color: tab === 'local' ? 'var(--brand-green, #00843D)' : 'var(--text-muted, #64748b)',
+                boxShadow: tab === 'local' ? '0 1px 3px rgba(10,34,64,0.08)' : 'none',
               }}
             >
               <KeyRound className="w-3 h-3" />
@@ -232,30 +251,48 @@ export function LoginPage() {
           {tab === 'iam' && (
             <form onSubmit={handleIamSubmit} className="space-y-4">
               <div className="space-y-2">
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  Sign in to{' '}
-                  <a href={IAM_LOGIN_URL} target="_blank" rel="noreferrer" className="underline" style={{ color: '#22d3ee' }}>
+                <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted, #64748b)' }}>
+                  Sign in with your{' '}
+                  <a href={IAM_LOGIN_URL} target="_blank" rel="noreferrer" className="underline" style={{ color: 'var(--brand-green, #00843D)' }}>
                     Singularity IAM
                   </a>
-                  , copy your access token from there, and paste it below.
+                  {' '}credentials. Workgraph verifies the IAM token before opening the studio.
                 </p>
               </div>
 
               <div className="space-y-1.5">
-                <label className="label-xs">IAM access token</label>
-                <textarea
-                  value={iamToken}
-                  onChange={e => setIamToken(e.target.value)}
+                <label className="label-xs">Email address</label>
+                <input
+                  type="email"
+                  value={iamEmail}
+                  onChange={e => setIamEmail(e.target.value)}
                   required
-                  rows={3}
-                  placeholder="eyJhbGciOiJIUzI1NiIs..."
-                  className="w-full rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 outline-none transition-all duration-200 resize-none"
+                  className="w-full h-10 rounded-md px-3 text-sm outline-none transition-all duration-200"
                   style={{
-                    background: 'rgba(15,23,42,0.8)',
-                    border: '1px solid rgba(255,255,255,0.08)',
+                    background: 'var(--surface-card, #ffffff)',
+                    border: '1px solid var(--surface-border, #E2E8F0)',
+                    color: 'var(--text-strong, #0A2240)',
                   }}
-                  onFocus={e => { e.currentTarget.style.borderColor = 'rgba(34,211,238,0.4)' }}
-                  onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)' }}
+                  onFocus={e => { e.currentTarget.style.borderColor = 'var(--brand-green, #00843D)' }}
+                  onBlur={e => { e.currentTarget.style.borderColor = 'var(--surface-border, #E2E8F0)' }}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="label-xs">Password</label>
+                <input
+                  type="password"
+                  value={iamPassword}
+                  onChange={e => setIamPassword(e.target.value)}
+                  required
+                  className="w-full h-10 rounded-md px-3 text-sm outline-none transition-all duration-200"
+                  style={{
+                    background: 'var(--surface-card, #ffffff)',
+                    border: '1px solid var(--surface-border, #E2E8F0)',
+                    color: 'var(--text-strong, #0A2240)',
+                  }}
+                  onFocus={e => { e.currentTarget.style.borderColor = 'var(--brand-green, #00843D)' }}
+                  onBlur={e => { e.currentTarget.style.borderColor = 'var(--surface-border, #E2E8F0)' }}
                 />
               </div>
 
@@ -273,15 +310,15 @@ export function LoginPage() {
 
               <button
                 type="submit"
-                disabled={loading || !iamToken.trim()}
+                disabled={loading || !iamEmail.trim() || !iamPassword}
                 className="w-full h-10 rounded-lg text-sm font-semibold transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 style={{
-                  background: loading ? 'rgba(34,211,238,0.5)' : '#22d3ee',
-                  color: '#020617',
-                  boxShadow: loading ? 'none' : '0 0 16px rgba(34,211,238,0.2)',
+                  background: loading ? 'rgba(0,132,61,0.55)' : 'var(--brand-green, #00843D)',
+                  color: 'var(--brand-warm-white, #F5F2EA)',
+                  boxShadow: loading ? 'none' : '0 8px 18px rgba(0,132,61,0.18)',
                 }}
               >
-                {loading ? (<><Loader2 className="w-4 h-4 animate-spin" /> Verifying with IAM…</>) : 'Continue'}
+                {loading ? (<><Loader2 className="w-4 h-4 animate-spin" /> Signing in with IAM…</>) : 'Sign in with IAM'}
               </button>
             </form>
           )}
@@ -295,13 +332,14 @@ export function LoginPage() {
                   value={email}
                   onChange={e => setEmail(e.target.value)}
                   required
-                  className="w-full h-10 rounded-lg px-3 text-sm text-slate-200 placeholder-slate-600 outline-none transition-all duration-200"
+                  className="w-full h-10 rounded-md px-3 text-sm outline-none transition-all duration-200"
                   style={{
-                    background: 'rgba(15,23,42,0.8)',
-                    border: '1px solid rgba(255,255,255,0.08)',
+                    background: 'var(--surface-card, #ffffff)',
+                    border: '1px solid var(--surface-border, #E2E8F0)',
+                    color: 'var(--text-strong, #0A2240)',
                   }}
-                  onFocus={e => { e.currentTarget.style.borderColor = 'rgba(34,211,238,0.4)' }}
-                  onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)' }}
+                  onFocus={e => { e.currentTarget.style.borderColor = 'var(--brand-green, #00843D)' }}
+                  onBlur={e => { e.currentTarget.style.borderColor = 'var(--surface-border, #E2E8F0)' }}
                 />
               </div>
 
@@ -312,13 +350,14 @@ export function LoginPage() {
                   value={password}
                   onChange={e => setPassword(e.target.value)}
                   required
-                  className="w-full h-10 rounded-lg px-3 text-sm text-slate-200 placeholder-slate-600 outline-none transition-all duration-200"
+                  className="w-full h-10 rounded-md px-3 text-sm outline-none transition-all duration-200"
                   style={{
-                    background: 'rgba(15,23,42,0.8)',
-                    border: '1px solid rgba(255,255,255,0.08)',
+                    background: 'var(--surface-card, #ffffff)',
+                    border: '1px solid var(--surface-border, #E2E8F0)',
+                    color: 'var(--text-strong, #0A2240)',
                   }}
-                  onFocus={e => { e.currentTarget.style.borderColor = 'rgba(34,211,238,0.4)' }}
-                  onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)' }}
+                  onFocus={e => { e.currentTarget.style.borderColor = 'var(--brand-green, #00843D)' }}
+                  onBlur={e => { e.currentTarget.style.borderColor = 'var(--surface-border, #E2E8F0)' }}
                 />
               </div>
 
@@ -339,9 +378,9 @@ export function LoginPage() {
                 disabled={loading}
                 className="w-full h-10 rounded-lg text-sm font-semibold transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 style={{
-                  background: loading ? 'rgba(34,211,238,0.5)' : '#22d3ee',
-                  color: '#020617',
-                  boxShadow: loading ? 'none' : '0 0 16px rgba(34,211,238,0.2)',
+                  background: loading ? 'rgba(0,132,61,0.55)' : 'var(--brand-green, #00843D)',
+                  color: 'var(--brand-warm-white, #F5F2EA)',
+                  boxShadow: loading ? 'none' : '0 8px 18px rgba(0,132,61,0.18)',
                 }}
               >
                 {loading ? (<><Loader2 className="w-4 h-4 animate-spin" /> Authenticating…</>) : 'Sign in'}
@@ -349,7 +388,7 @@ export function LoginPage() {
             </form>
           )}
 
-          <div className="mt-6 pt-4 border-t border-white/[0.06]">
+          <div className="mt-6 pt-4" style={{ borderTop: '1px solid var(--surface-border, #E2E8F0)' }}>
             <p className="label-xs text-center">
               {tab === 'iam'
                 ? 'Authentication delegated to Singularity IAM'

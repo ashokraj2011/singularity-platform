@@ -5,7 +5,7 @@ import { SECTION_TYPES, SectionIcon } from './SectionEditor'
 
 /**
  * SectionListEditor — list of sections with reorder/delete + "add section" buttons.
- * Used inside both the Artifact Designer and the NodeInspector form-builder tab.
+ * Used inside both Artifact Studio and the NodeInspector form-builder tab.
  */
 export function SectionListEditor({
   sections,

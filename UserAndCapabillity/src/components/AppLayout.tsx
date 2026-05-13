@@ -23,10 +23,10 @@ const navGroups: { title: string; items: NavItem[] }[] = [
     ],
   },
   {
-    title: 'Access Control',
+    title: 'Governance',
     items: [
       { to: '/capabilities', icon: Layers, label: 'Capabilities' },
-      { to: '/capability-graph', icon: GitBranch, label: 'Capability Graph' },
+      { to: '/capability-graph', icon: GitBranch, label: 'Capability Map' },
       { to: '/roles', icon: ShieldCheck, label: 'Roles' },
       { to: '/permissions', icon: Key, label: 'Permissions' },
       { to: '/sharing-grants', icon: Share2, label: 'Sharing Grants' },
@@ -35,8 +35,8 @@ const navGroups: { title: string; items: NavItem[] }[] = [
   {
     title: 'Operations',
     items: [
-      { to: '/authz-check', icon: BarChart3, label: 'Authz Playground' },
-      { to: '/audit', icon: ClipboardList, label: 'Audit Log' },
+      { to: '/authz-check', icon: BarChart3, label: 'Authorization Check' },
+      { to: '/audit', icon: ClipboardList, label: 'Audit' },
     ],
   },
 ]

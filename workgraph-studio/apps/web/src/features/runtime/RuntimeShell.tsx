@@ -36,7 +36,7 @@ export function RuntimeShell() {
         <div style={{ width: 1, height: 22, background: 'var(--color-outline-variant)' }} />
 
         <h1 style={{ fontSize: 16, fontWeight: 800, color: 'var(--color-on-surface)', letterSpacing: '-0.01em' }}>
-          My Work
+          Inbox
         </h1>
 
         <nav style={{ marginLeft: 14, display: 'flex', gap: 4 }}>

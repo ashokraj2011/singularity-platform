@@ -1,5 +1,5 @@
 /**
- * Form section type system — shared between Artifact Designer, NodeInspector
+ * Form section type system — shared between Artifact Studio, NodeInspector
  * (HUMAN_TASK / APPROVAL / CONSUMABLE_CREATION), and the runtime form panel.
  */
 

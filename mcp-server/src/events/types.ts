@@ -21,6 +21,9 @@ export type EventKind =
   | "approval.wait.created"
   | "approval.wait.resolved"
   | "code_change.detected"
+  | "workspace.branch.created"
+  | "workspace.ast.indexed"
+  | "workspace.ast.updated"
   | "git.session.updated"
   | "git.commit.created"
   | "run.event";
@@ -30,6 +33,8 @@ export interface EventCorrelation {
   runId?: string;
   runStepId?: string;
   workItemId?: string;
+  workflowInstanceId?: string;
+  nodeId?: string;
   agentId?: string;
   capabilityId?: string;
   mcpInvocationId?: string;

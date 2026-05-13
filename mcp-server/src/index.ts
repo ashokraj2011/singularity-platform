@@ -6,6 +6,7 @@ import { log } from "./shared/log";
 import { attachWsBridge } from "./mcp/ws";
 import { startSelfRegistration } from "./lib/platform-registry/register";
 import { LaptopRelayClient, ensureDeviceId } from "./laptop/relay-client";
+import { indexWorkspace } from "./workspace/ast-index";
 
 // M26 — laptop mode. When LAPTOP_MODE=true, skip the inbound HTTP server
 // (laptops can't open ports behind NAT) and open an outbound WSS to the
@@ -19,6 +20,7 @@ if (LAPTOP_MODE) {
 }
 
 function bootLaptopMode(): void {
+  warmAstIndex();
   const bridgeUrl   = process.env.LAPTOP_BRIDGE_URL ?? "ws://localhost:8000/api/laptop-bridge/connect";
   const deviceToken = process.env.SINGULARITY_DEVICE_TOKEN;
   if (!deviceToken) {
@@ -46,6 +48,7 @@ function bootLaptopMode(): void {
 }
 
 function bootServerMode(): void {
+  warmAstIndex();
   const server = http.createServer(app);
 
   // WebSocket bridge (PLAN_mcp.md §4) on the SAME http server, path-mounted at
@@ -86,4 +89,18 @@ function bootServerMode(): void {
       "[mcp-server] listening",
     );
   });
+}
+
+function warmAstIndex(): void {
+  setTimeout(() => {
+    void indexWorkspace("startup").then((stats) => {
+      log.info({
+        status: stats.status,
+        files: stats.indexedFiles,
+        symbols: stats.indexedSymbols,
+        dbPath: stats.dbPath,
+        error: stats.error,
+      }, "[mcp-server] local AST index warmup complete");
+    });
+  }, 2_000);
 }

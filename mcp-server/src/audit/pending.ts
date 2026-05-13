@@ -49,6 +49,20 @@ export interface PendingApproval {
   artifact_ids: string[];
   /** M13 — preserved across approval pauses so code-change provenance survives. */
   code_change_ids?: string[];
+  /** Workspace branch/index metadata preserved across approval pauses. */
+  workspace?: {
+    branch?: {
+      branch: string;
+      baseBranch?: string;
+      headSha?: string;
+      reused: boolean;
+    } | null;
+    commitSha?: string;
+    changedPaths?: string[];
+    astIndexStatus?: string;
+    astIndexedFiles?: number;
+    astIndexedSymbols?: number;
+  };
   total_input_tokens: number;
   total_output_tokens: number;
 }

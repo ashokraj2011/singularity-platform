@@ -11,8 +11,8 @@ import { useActiveContextStore } from '../store/activeContext.store'
 
 // Top-level (everyday) navigation — no design / authoring access required.
 const navItems = [
-  { to: '/runtime',         label: 'My Work',            icon: Inbox },
-  { to: '/run',             label: 'Run a Workflow',     icon: Play },
+  { to: '/runtime',         label: 'Inbox',              icon: Inbox },
+  { to: '/run',             label: 'Start Workflow',     icon: Play },
   { to: '/runs',            label: 'Runs',               icon: Activity },
   { to: '/dashboard',       label: 'Dashboard',          icon: LayoutDashboard },
 ]
@@ -21,12 +21,12 @@ const navItems = [
 // header in the sidebar; users with no edit rights see it but can choose to
 // ignore it.
 const adminItems: { to: string; label: string; icon: typeof LayoutDashboard }[] = [
-  { to: '/workflows',         label: 'Workflow Designer', icon: GitBranch },
-  { to: '/artifacts',         label: 'Artifact Designer', icon: ScrollText },
+  { to: '/workflows',         label: 'Workflow Manager',  icon: GitBranch },
+  { to: '/artifacts',         label: 'Artifact Studio',   icon: ScrollText },
   { to: '/node-types',        label: 'Node Types',        icon: Puzzle },
-  { to: '/global-variables',  label: 'Global Variables',  icon: Globe },
+  { to: '/global-variables',  label: 'Variables',         icon: Globe },
   { to: '/connectors',        label: 'Connectors',        icon: Link2 },
-  { to: '/audit',             label: 'Audit Log',         icon: FileText },
+  { to: '/audit',             label: 'Audit',             icon: FileText },
 ]
 
 function ActiveContextChip() {
@@ -76,8 +76,8 @@ function NavItem({ to, label, icon: Icon, collapsed }: { to: string; label: stri
             padding: collapsed ? '8px' : undefined,
             justifyContent: collapsed ? 'center' : undefined,
             ...(isActive ? {
-              background: 'rgba(0,132,61,0.10)',
-              color: '#00843D',
+              background: 'rgba(245,242,234,0.08)',
+              color: 'var(--brand-warm-white)',
               fontWeight: 600,
             } : {}),
           }}
@@ -87,14 +87,14 @@ function NavItem({ to, label, icon: Icon, collapsed }: { to: string; label: stri
               layoutId="sing-nav-indicator"
               style={{
                 position: 'absolute', ...(collapsed ? { left: 0, top: '50%', transform: 'translateY(-50%)', width: 3, height: 20, borderRadius: '0 2px 2px 0' } : { right: 0, top: '50%', transform: 'translateY(-50%)', width: 3, height: 20, borderRadius: '2px 0 0 2px' }),
-                background: '#00843D',
-                boxShadow: '0 0 8px rgba(0,132,61,0.5)',
+                background: 'var(--brand-green-accent)',
+                boxShadow: '0 0 8px rgba(0,166,81,0.45)',
               }}
             />
           )}
           <Icon
             className="w-4 h-4 shrink-0"
-            style={{ color: isActive ? '#00843D' : '#6a7486' }}
+            style={{ color: isActive ? 'var(--brand-green-accent)' : 'rgba(245,242,234,0.5)' }}
           />
           {!collapsed && <span>{label}</span>}
         </div>
@@ -136,7 +136,7 @@ export function AppLayout() {
           display: 'flex', alignItems: 'center', justifyContent: sidebarCollapsed ? 'space-around' : 'space-between',
           gap: sidebarCollapsed ? 0 : 12,
           padding: '18px 16px 14px',
-          borderBottom: '1px solid var(--color-outline-variant)',
+          borderBottom: '1px solid rgba(245,242,234,0.08)',
         }}>
           <div style={{
             display: 'flex', alignItems: 'center', gap: 12, minWidth: 0,
@@ -158,9 +158,9 @@ export function AppLayout() {
             />
             <div>
               <h2 style={{
-                fontFamily: "Inter, 'Public Sans', sans-serif",
+                fontFamily: "var(--font-sans)",
                 fontSize: '0.9375rem', fontWeight: 700,
-                color: 'var(--color-on-surface)',
+                color: 'var(--brand-warm-white)',
                 letterSpacing: '0.04em', lineHeight: 1.2,
               }}>
                 Singularity
@@ -168,7 +168,7 @@ export function AppLayout() {
               <p style={{
                 fontSize: '0.5625rem', fontWeight: 600,
                 textTransform: 'uppercase', letterSpacing: '0.18em',
-                color: 'var(--color-primary)', opacity: 0.85, marginTop: 1,
+                color: 'rgba(245,242,234,0.55)', opacity: 1, marginTop: 1,
               }}>
                 Governed Agentic Delivery
               </p>
@@ -179,16 +179,16 @@ export function AppLayout() {
             title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             style={{
               width: 32, height: 32, borderRadius: 8, border: 'none',
-              background: 'rgba(0,132,61,0.08)', cursor: 'pointer',
+              background: 'rgba(245,242,234,0.08)', cursor: 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: 'var(--color-primary)', transition: 'all 0.15s',
+              color: 'var(--brand-green-accent)', transition: 'all 0.15s',
               flexShrink: 0,
             }}
             onMouseEnter={e => {
-              (e.currentTarget as HTMLButtonElement).style.background = 'rgba(0,132,61,0.15)'
+              (e.currentTarget as HTMLButtonElement).style.background = 'rgba(245,242,234,0.14)'
             }}
             onMouseLeave={e => {
-              (e.currentTarget as HTMLButtonElement).style.background = 'rgba(0,132,61,0.08)'
+              (e.currentTarget as HTMLButtonElement).style.background = 'rgba(245,242,234,0.08)'
             }}
           >
             {sidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
@@ -198,7 +198,7 @@ export function AppLayout() {
         {/* User info */}
         <div style={{
           padding: sidebarCollapsed ? '10px 8px' : '10px 16px',
-          borderBottom: '1px solid var(--color-outline-variant)',
+          borderBottom: '1px solid rgba(245,242,234,0.08)',
           display: 'flex', alignItems: 'center', justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
           gap: 10,
           opacity: sidebarCollapsed ? 0.6 : 1,
@@ -209,19 +209,19 @@ export function AppLayout() {
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontFamily: "'Public Sans', sans-serif",
             fontSize: 13, fontWeight: 700,
-            background: 'rgba(0,132,61,0.12)', color: 'var(--color-primary)',
-            border: '1.5px solid rgba(0,132,61,0.2)',
+            background: 'rgba(0,166,81,0.18)', color: 'var(--brand-warm-white)',
+            border: '1.5px solid rgba(0,166,81,0.35)',
           }}>
             {user?.displayName?.charAt(0) ?? 'U'}
           </div>
           {!sidebarCollapsed && (
             <div style={{ minWidth: 0 }}>
-              <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-on-surface)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              <p style={{ fontSize: 12, fontWeight: 600, color: 'rgba(245,242,234,0.9)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {user?.displayName}
               </p>
               <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 2 }}>
                 <span className="status-dot active" />
-                <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.14em', color: 'var(--color-outline)' }}>
+                <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.14em', color: 'rgba(245,242,234,0.45)' }}>
                   Online
                 </span>
               </div>
@@ -251,7 +251,7 @@ export function AppLayout() {
         </nav>
 
         {/* Sign out */}
-        <div style={{ padding: '8px 8px 16px', borderTop: '1px solid var(--color-outline-variant)' }}>
+        <div style={{ padding: '8px 8px 16px', borderTop: '1px solid rgba(245,242,234,0.08)' }}>
           <button
             onClick={handleLogout}
             title="Sign out"
@@ -259,7 +259,7 @@ export function AppLayout() {
               display: 'flex', alignItems: 'center', justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
               gap: 8, width: '100%',
               padding: '8px 12px', borderRadius: 12, border: 'none', cursor: 'pointer',
-              background: 'transparent', color: 'var(--color-outline)',
+              background: 'transparent', color: 'rgba(245,242,234,0.45)',
               fontSize: 14, fontWeight: 500, transition: 'all 0.15s',
             }}
             onMouseEnter={e => {
@@ -268,7 +268,7 @@ export function AppLayout() {
             }}
             onMouseLeave={e => {
               (e.currentTarget as HTMLButtonElement).style.background = 'transparent'
-              ;(e.currentTarget as HTMLButtonElement).style.color = 'var(--color-outline)'
+              ;(e.currentTarget as HTMLButtonElement).style.color = 'rgba(245,242,234,0.45)'
             }}
           >
             <LogOut size={15} />

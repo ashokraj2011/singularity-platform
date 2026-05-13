@@ -36,7 +36,7 @@ export function AuditPage() {
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2 }} className="mb-6">
         <div className="flex items-center gap-2 mb-1">
           <ScrollText className="w-5 h-5" style={{ color: '#22d3ee' }} />
-          <h1 className="page-header">Audit Log</h1>
+          <h1 className="page-header">Audit</h1>
         </div>
         <p className="text-sm text-slate-500 font-mono">{events.length} events · Immutable append-only</p>
       </motion.div>

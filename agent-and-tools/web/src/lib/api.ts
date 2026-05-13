@@ -15,26 +15,52 @@ export class ApiError extends Error {
   }
 }
 
+function bearerHeader(token?: string | null): Record<string, string> | null {
+  const trimmed = token?.trim();
+  if (!trimmed) return null;
+  return { Authorization: trimmed.startsWith("Bearer ") ? trimmed : `Bearer ${trimmed}` };
+}
+
+function tokenFromPersistedStore(key: string): string | null {
+  const raw = localStorage.getItem(key);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { state?: { token?: string | null }; token?: string | null };
+    return parsed.state?.token ?? parsed.token ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function hasAgentToolsToken(): boolean {
+  if (typeof window === "undefined") return false;
+  return Boolean(authHeaders().Authorization);
+}
+
+export function saveAgentToolsToken(token: string): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem("agent-tools-token", token);
+}
+
+export function clearAgentToolsToken(): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem("agent-tools-token");
+}
+
 function authHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {};
-  const direct = localStorage.getItem("agent-tools-token") ||
-    localStorage.getItem("auth-token") ||
-    localStorage.getItem("token");
-  if (direct) return { Authorization: direct.startsWith("Bearer ") ? direct : `Bearer ${direct}` };
+  for (const key of ["agent-tools-token", "auth-token", "token"]) {
+    const header = bearerHeader(localStorage.getItem(key));
+    if (header) return header;
+  }
 
-  const workgraph = localStorage.getItem("workgraph-auth");
-  if (workgraph) {
-    try {
-      const parsed = JSON.parse(workgraph) as { state?: { token?: string } };
-      const token = parsed.state?.token;
-      if (token) return { Authorization: `Bearer ${token}` };
-    } catch {
-      // Ignore malformed localStorage and continue anonymously.
-    }
+  for (const key of ["iam-auth", "singularity-portal.auth", "workgraph-auth"]) {
+    const header = bearerHeader(tokenFromPersistedStore(key));
+    if (header) return header;
   }
 
   const envToken = process.env.NEXT_PUBLIC_AGENT_TOOLS_TOKEN;
-  return envToken ? { Authorization: envToken.startsWith("Bearer ") ? envToken : `Bearer ${envToken}` } : {};
+  return bearerHeader(envToken) ?? {};
 }
 
 async function req<T>(url: string, opts?: RequestInit): Promise<T> {
@@ -187,6 +213,11 @@ function unwrapList<T>(data: unknown, key?: string): T[] {
 }
 
 export const identityApi = {
+  login: (body: { email: string; password: string }) =>
+    req<{ access_token: string; token_type?: string; user: Row }>("/api/iam/auth/local/login", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   listTeams: async () => unwrapList<IamTeam>(await req<unknown>("/api/iam/teams?page=1&size=200"), "items"),
   listBusinessUnits: async () => unwrapList<IamBusinessUnit>(await req<unknown>("/api/iam/business-units?page=1&size=200"), "items"),
 };

@@ -127,7 +127,7 @@ export function TeamVariablesPage() {
           <Globe size={18} />
         </div>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--color-on-surface)', margin: 0 }}>Global Variables</h1>
+          <h1 style={{ fontSize: 22, fontWeight: 800, color: 'var(--color-on-surface)', margin: 0 }}>Variables</h1>
           <p style={{ fontSize: 12, color: 'var(--color-outline)', margin: 0 }}>
             Constants referenced as <code style={{ fontFamily: 'monospace', background: 'rgba(0,0,0,0.04)', padding: '1px 4px', borderRadius: 3 }}>globals.key</code>. Visibility decides which workflows see them; SYSTEM-tagged ones are admin-only.
           </p>

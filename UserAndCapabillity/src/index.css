@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
@@ -5,7 +6,7 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme {
-  /* Fidelity brand palette */
+  /* Singularity brand palette */
   --color-navy: #0A2240;
   --color-navy-light: #0D2D52;
   --color-navy-dark: #071829;
@@ -27,7 +28,7 @@
 }
 
 :root {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'Public Sans', system-ui, -apple-system, sans-serif;
   font-size: 14px;
   color: #0A2240;
   background: #F0F4F8;
@@ -82,7 +83,7 @@ body {
 
 @theme inline {
   --font-heading: var(--font-sans);
-  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-sans: 'Public Sans', system-ui, sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);

@@ -37,6 +37,14 @@ interface NodeInsight {
   durationPrecise: boolean
   documents: Array<{ id: string; name: string; kind: string; sizeBytes: number | null; mimeType: string | null; uploadedAt: string }>
   consumables: Array<{ id: string; name: string; status: string; currentVersion: number; updatedAt: string }>
+  workspace: Array<{
+    branch?: string
+    commitSha?: string
+    changedPaths: string[]
+    astIndexStatus?: string
+    astIndexedFiles?: number
+    astIndexedSymbols?: number
+  }>
   // M22 emits agent.template.* + tool.execution.* + cf.execute.completed
   // etc. with subject_id = a sub-resource (not the node). We hand the SPA
   // the raw event count keyed to a node label when the payload has nodeId
@@ -113,7 +121,7 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
     // to capabilities the user can already see.
     await assertInstancePermission(req.user!.userId, id, 'view')
 
-    const [instance, nodes, documents, consumables] = await Promise.all([
+    const [instance, nodes, documents, consumables, agentRuns] = await Promise.all([
       prisma.workflowInstance.findUnique({
         where: { id },
         select: {
@@ -145,6 +153,18 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
         orderBy: { updatedAt: 'asc' },
         select: { id: true, name: true, status: true, currentVersion: true, nodeId: true, updatedAt: true },
       }),
+      prisma.agentRun.findMany({
+        where: { instanceId: id },
+        select: {
+          nodeId: true,
+          outputs: {
+            where: { outputType: 'LLM_RESPONSE' },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: { structuredPayload: true },
+          },
+        },
+      }),
     ])
 
     if (!instance) {
@@ -171,6 +191,30 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
       const arr = consumablesByNode.get(c.nodeId) ?? []
       arr.push(c)
       consumablesByNode.set(c.nodeId, arr)
+    }
+
+    const workspaceByNode = new Map<string, NodeInsight['workspace']>()
+    for (const r of agentRuns) {
+      if (!r.nodeId) continue
+      const payload = r.outputs[0]?.structuredPayload as Record<string, unknown> | null
+      if (!payload) continue
+      const branch = (payload.workspaceBranch ?? (payload.workspace as Record<string, unknown> | undefined)?.workspaceBranch) as string | undefined
+      const commitSha = (payload.workspaceCommitSha ?? (payload.workspace as Record<string, unknown> | undefined)?.workspaceCommitSha) as string | undefined
+      const changedPaths = (payload.changedPaths ?? (payload.workspace as Record<string, unknown> | undefined)?.changedPaths) as unknown
+      const astIndexStatus = (payload.astIndexStatus ?? (payload.workspace as Record<string, unknown> | undefined)?.astIndexStatus) as string | undefined
+      const astIndexedFiles = (payload.astIndexedFiles ?? (payload.workspace as Record<string, unknown> | undefined)?.astIndexedFiles) as number | undefined
+      const astIndexedSymbols = (payload.astIndexedSymbols ?? (payload.workspace as Record<string, unknown> | undefined)?.astIndexedSymbols) as number | undefined
+      if (!branch && !commitSha && !astIndexStatus) continue
+      const arr = workspaceByNode.get(r.nodeId) ?? []
+      arr.push({
+        branch,
+        commitSha,
+        changedPaths: Array.isArray(changedPaths) ? changedPaths.map(String) : [],
+        astIndexStatus,
+        astIndexedFiles: typeof astIndexedFiles === 'number' ? astIndexedFiles : undefined,
+        astIndexedSymbols: typeof astIndexedSymbols === 'number' ? astIndexedSymbols : undefined,
+      })
+      workspaceByNode.set(r.nodeId, arr)
     }
 
     const nodesByStatus: Record<string, number> = {}
@@ -201,6 +245,7 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
         id: c.id, name: c.name, status: String(c.status),
         currentVersion: c.currentVersion, updatedAt: c.updatedAt.toISOString(),
       })),
+      workspace: workspaceByNode.get(n.id) ?? [],
       eventCount: eventsByNodeId.get(n.id) ?? 0,
       })
     })

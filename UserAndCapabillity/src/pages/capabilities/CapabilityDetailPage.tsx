@@ -77,14 +77,14 @@ export function CapabilityDetailPage() {
           <div>
             <p className="text-sm font-semibold text-gray-900">IAM reference only</p>
             <p className="text-sm text-gray-600 mt-0.5">
-              Bootstrap, generated agents, repo/doc learning, and approval packets are owned by Agent & Tools.
+              Bootstrap, generated agents, repo/doc learning, and approval packets are owned by Agent Studio.
               Use IAM here for members, roles, relationships, sharing, and authorization checks.
             </p>
           </div>
         </div>
         <a href={agentToolsCapabilityHref} target="_blank" rel="noreferrer">
           <Button variant="outline" size="sm">
-            <ExternalLink className="w-3.5 h-3.5 mr-1.5" /> Open in Agent & Tools
+            <ExternalLink className="w-3.5 h-3.5 mr-1.5" /> Open in Agent Studio
           </Button>
         </a>
       </div>

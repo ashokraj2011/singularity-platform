@@ -36,7 +36,7 @@ export function AuthzCheckPage() {
 
   return (
     <div className="p-8">
-      <PageHeader title="Authz Playground" subtitle="Test authorization decisions in real time" />
+      <PageHeader title="Authorization Check" subtitle="Test authorization decisions in real time" />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl border border-gray-200 p-6">

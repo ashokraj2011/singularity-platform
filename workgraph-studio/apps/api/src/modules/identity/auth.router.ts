@@ -5,6 +5,7 @@ import { prisma } from '../../lib/prisma'
 import { signToken } from '../../lib/jwt'
 import { validate } from '../../middleware/validate'
 import { authMiddleware } from '../../middleware/auth'
+import { config } from '../../config'
 
 export const authRouter: Router = Router()
 
@@ -15,6 +16,14 @@ const loginSchema = z.object({
 
 authRouter.post('/login', validate(loginSchema), async (req, res, next) => {
   try {
+    if (config.AUTH_PROVIDER === 'iam') {
+      res.status(400).json({
+        code: 'IAM_AUTH_REQUIRED',
+        message: 'Local Workgraph login is disabled while AUTH_PROVIDER=iam. Use Singularity IAM sign in.',
+      })
+      return
+    }
+
     const { email, password } = req.body as z.infer<typeof loginSchema>
 
     const user = await prisma.user.findUnique({
@@ -51,6 +60,44 @@ authRouter.post('/login', validate(loginSchema), async (req, res, next) => {
         roles: user.roles.map(ur => ({ id: ur.role.id, name: ur.role.name })),
       },
     })
+  } catch (err) {
+    next(err)
+  }
+})
+
+authRouter.post('/iam-login', validate(loginSchema), async (req, res, next) => {
+  try {
+    if (!config.IAM_BASE_URL) {
+      res.status(500).json({ code: 'CONFIG', message: 'IAM_BASE_URL is not set' })
+      return
+    }
+
+    const upstream = await fetch(`${config.IAM_BASE_URL.replace(/\/$/, '')}/auth/local/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(req.body),
+    })
+
+    const text = await upstream.text()
+    let body: unknown = text
+    try {
+      body = text ? JSON.parse(text) : {}
+    } catch {
+      // Keep the raw upstream body for diagnostics below.
+    }
+
+    if (!upstream.ok) {
+      const message =
+        typeof body === 'object' && body && 'detail' in body
+          ? String((body as { detail?: unknown }).detail)
+          : typeof body === 'object' && body && 'message' in body
+            ? String((body as { message?: unknown }).message)
+            : 'IAM sign in failed'
+      res.status(upstream.status).json({ code: 'IAM_LOGIN_FAILED', message })
+      return
+    }
+
+    res.status(upstream.status).json(body)
   } catch (err) {
     next(err)
   }

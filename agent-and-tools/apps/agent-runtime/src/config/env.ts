@@ -8,6 +8,8 @@ const schema = z.object({
   PORT: z.coerce.number().default(3003),
   DATABASE_URL: z.string().url(),
   JWT_SECRET: z.string().min(8).default("dev-secret-change-in-prod"),
+  IAM_SERVICE_URL: z.string().url().optional(),
+  IAM_BASE_URL: z.string().url().optional(),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   DEFAULT_MODEL_PROVIDER: z.string().default("stub"),
   DEFAULT_MODEL_NAME: z.string().default("stub-model"),

@@ -271,7 +271,7 @@ export function DashboardPage() {
               <Activity size={16} style={{ color: 'var(--color-primary)' }} />
             </div>
             <div>
-              <h1 className="page-header" style={{ marginBottom: 0 }}>Workflow Designer</h1>
+              <h1 className="page-header" style={{ marginBottom: 0 }}>Workflow Manager</h1>
               <p style={{ fontSize: 11, color: 'var(--color-outline)', fontFamily: 'monospace', marginTop: 1 }}>
                 Design catalog · {teams.length > 0 ? teams.join(', ') : 'All teams'}
               </p>
