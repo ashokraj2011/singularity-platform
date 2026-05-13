@@ -18,6 +18,7 @@ import httpx
 log = logging.getLogger(__name__)
 
 AUDIT_GOV_URL = os.environ.get("AUDIT_GOV_URL", "http://host.docker.internal:8500")
+AUDIT_GOV_SERVICE_TOKEN = os.environ.get("AUDIT_GOV_SERVICE_TOKEN", "")
 TIMEOUT_S = 5.0
 
 
@@ -25,9 +26,12 @@ async def _post(payload: dict[str, Any]) -> None:
     if not AUDIT_GOV_URL:
         return
     url = AUDIT_GOV_URL.rstrip("/") + "/api/v1/events"
+    headers = {}
+    if AUDIT_GOV_SERVICE_TOKEN:
+        headers["Authorization"] = f"Bearer {AUDIT_GOV_SERVICE_TOKEN}"
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
-            res = await client.post(url, json=payload)
+            res = await client.post(url, json=payload, headers=headers)
             if res.status_code >= 400:
                 log.warning(
                     "audit-gov emit %s -> %s: %s",

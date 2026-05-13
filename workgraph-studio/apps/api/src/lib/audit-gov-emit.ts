@@ -7,6 +7,13 @@
  */
 const AUDIT_GOV_URL = process.env.AUDIT_GOV_URL ?? "http://host.docker.internal:8500";
 const TIMEOUT_MS    = 5_000;
+const AUDIT_GOV_SERVICE_TOKEN = process.env.AUDIT_GOV_SERVICE_TOKEN ?? "";
+
+function auditHeaders(): Record<string, string> {
+  return AUDIT_GOV_SERVICE_TOKEN
+    ? { "content-type": "application/json", authorization: `Bearer ${AUDIT_GOV_SERVICE_TOKEN}` }
+    : { "content-type": "application/json" };
+}
 
 export interface EmitInput {
   trace_id?: string;
@@ -27,7 +34,7 @@ export function emitAuditEvent(input: EmitInput): void {
     try {
       const res = await fetch(`${AUDIT_GOV_URL.replace(/\/$/, "")}/api/v1/events`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: auditHeaders(),
         body: JSON.stringify(input),
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });

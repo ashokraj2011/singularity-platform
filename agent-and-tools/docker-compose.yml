@@ -63,6 +63,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
       # M22 — central audit & governance ledger
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     depends_on:
       postgres:
         condition: service_healthy
@@ -93,6 +94,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
       # M22/M23 — central audit & governance ledger
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       IAM_SERVICE_URL: ${IAM_SERVICE_URL:-http://host.docker.internal:8100}
     depends_on:
       postgres:
@@ -120,6 +122,7 @@ services:
       CONTEXT_FABRIC_URL: ${CONTEXT_FABRIC_URL:-http://host.docker.internal:8000}
       # M21 — central audit ledger; composer fires events on every compose call.
       AUDIT_GOV_URL:    ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       # M25.5.next — mcp-server reachable for LLM-capsule compile. Default
       # mode is RAW (no LLM call); flip CAPSULE_COMPILE_MODE=LLM to enable.
       MCP_SERVER_URL:   ${MCP_SERVER_URL:-http://host.docker.internal:7100}
@@ -162,6 +165,7 @@ services:
       IAM_BASE_URL: ${IAM_BASE_URL:-http://host.docker.internal:8100/api/v1}
       # M21 — central audit & governance ledger lives outside this compose stack
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     depends_on:
       - agent-service
       - tool-service

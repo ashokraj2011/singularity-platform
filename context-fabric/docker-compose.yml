@@ -67,6 +67,7 @@ services:
       - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       - PUBLIC_BASE_URL=${CONTEXT_API_PUBLIC_URL:-http://host.docker.internal:8000}
       # M11 follow-up — bootstrap auto-mint of IAM service token
+      - IAM_SERVICE_TOKEN=${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
       - IAM_BOOTSTRAP_USERNAME=${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
       - IAM_BOOTSTRAP_PASSWORD=${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
       # M11 follow-up — OpenTelemetry → Jaeger
@@ -74,6 +75,7 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
       # M22 — central audit & governance ledger
       - AUDIT_GOV_URL=${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      - AUDIT_GOV_SERVICE_TOKEN=${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     ports:
       - "8000:8000"
     volumes:

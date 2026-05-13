@@ -130,7 +130,7 @@ function contextBudget(input: ComposeInput) {
 
 export const composeService = {
   /**
-   * Full pipeline: assemble layered prompt → call context-fabric /chat/respond → return unified response.
+   * Full pipeline: assemble layered prompt → call context-fabric /execute → return unified response.
    * If previewOnly is true, skip the LLM call and return the assembled package.
    */
   async composeAndRespond(input: ComposeInput) {
@@ -551,32 +551,41 @@ export const composeService = {
       };
     }
 
-    // 11. Call context-fabric /chat/respond
+    // 11. Call context-fabric /execute. Direct /chat/respond is intentionally
+    // bypassed so every real LLM-backed agent call uses the governed MCP path.
     const sessionId = `wf:${input.workflowContext.instanceId}:${input.workflowContext.nodeId}`;
-    const cfResp = await contextFabricClient.chatRespond({
-      session_id: sessionId,
-      agent_id: input.agentTemplateId,
-      message: taskRendered.rendered,
-      provider: input.modelOverrides.provider,
-      model: input.modelOverrides.model,
-      temperature: input.modelOverrides.temperature,
-      max_output_tokens: input.modelOverrides.maxOutputTokens,
+    const cfResp = await contextFabricClient.executeRespond({
+      trace_id: input.workflowContext.instanceId,
+      run_context: {
+        workflow_instance_id: input.workflowContext.instanceId || sessionId,
+        workflow_node_id: input.workflowContext.nodeId || "compose-and-respond",
+        capability_id: capabilityId ?? undefined,
+      },
+      task: taskRendered.rendered,
       system_prompt: finalPrompt,
+      model_overrides: {
+        provider: input.modelOverrides.provider,
+        model: input.modelOverrides.model,
+        temperature: input.modelOverrides.temperature,
+        maxOutputTokens: input.modelOverrides.maxOutputTokens,
+      },
       context_policy: input.contextPolicy.optimizationMode || input.contextPolicy.maxContextTokens || input.contextPolicy.compareWithRaw !== undefined ? {
         optimization_mode: input.contextPolicy.optimizationMode,
         max_context_tokens: input.contextPolicy.maxContextTokens,
         compare_with_raw: input.contextPolicy.compareWithRaw,
       } : undefined,
-      metadata: {
-        promptAssemblyId: assembly.id,
-        workflowInstanceId: input.workflowContext.instanceId,
-        nodeId: input.workflowContext.nodeId,
-        phaseId: input.workflowContext.phaseId,
-        capabilityId,
+      limits: {
+        outputTokenBudget: input.modelOverrides.maxOutputTokens,
       },
     });
 
-    logger.info({ promptAssemblyId: assembly.id, modelCallId: cfResp.model_call_id, tokensSaved: cfResp.optimization.tokens_saved }, "compose-and-respond complete");
+    const optimization = cfResp.metrics?.contextOptimization ?? {};
+    const modelUsage = cfResp.modelUsage ?? {};
+    logger.info({
+      promptAssemblyId: assembly.id,
+      cfCallId: cfResp.correlation?.cfCallId,
+      tokensSaved: optimization.tokens_saved ?? optimization.tokensSaved,
+    }, "compose-and-respond complete");
 
     return {
       promptAssemblyId: assembly.id,
@@ -586,11 +595,28 @@ export const composeService = {
       warnings: dedupedWarnings,
       budgetWarnings,
       retrievalStats,
-      modelCallId: cfResp.model_call_id,
-      contextPackageId: cfResp.context_package_id,
-      response: cfResp.response,
-      optimization: cfResp.optimization,
-      modelUsage: cfResp.model_usage,
+      modelCallId: cfResp.correlation?.llmCallIds?.[0] ?? cfResp.correlation?.cfCallId,
+      contextPackageId: cfResp.correlation?.cfCallId ?? "",
+      response: cfResp.finalResponse,
+      optimization: {
+        mode: input.contextPolicy.optimizationMode ?? "medium",
+        raw_input_tokens: Number(optimization.raw_input_tokens ?? optimization.rawInputTokens ?? modelUsage.inputTokens ?? 0),
+        optimized_input_tokens: Number(optimization.optimized_input_tokens ?? optimization.optimizedInputTokens ?? modelUsage.inputTokens ?? 0),
+        tokens_saved: Number(optimization.tokens_saved ?? optimization.tokensSaved ?? cfResp.usage?.tokensSaved ?? 0),
+        percent_saved: Number(optimization.percent_saved ?? optimization.percentSaved ?? 0),
+        estimated_raw_cost: Number(optimization.estimated_raw_cost ?? optimization.estimatedRawCost ?? 0),
+        estimated_optimized_cost: Number(optimization.estimated_optimized_cost ?? optimization.estimatedOptimizedCost ?? modelUsage.estimatedCost ?? 0),
+        estimated_cost_saved: Number(optimization.estimated_cost_saved ?? optimization.estimatedCostSaved ?? 0),
+      },
+      modelUsage: {
+        provider: String(modelUsage.provider ?? cfResp.usage?.provider ?? input.modelOverrides.provider ?? "unknown"),
+        model: String(modelUsage.model ?? cfResp.usage?.model ?? input.modelOverrides.model ?? "unknown"),
+        input_tokens: Number(modelUsage.inputTokens ?? cfResp.usage?.inputTokens ?? 0),
+        output_tokens: Number(modelUsage.outputTokens ?? cfResp.usage?.outputTokens ?? 0),
+        total_tokens: Number(modelUsage.totalTokens ?? cfResp.usage?.totalTokens ?? 0),
+        estimated_cost: Number(modelUsage.estimatedCost ?? cfResp.usage?.estimatedCost ?? 0),
+        latency_ms: 0,
+      },
     };
   },
 

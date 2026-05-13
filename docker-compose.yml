@@ -104,6 +104,7 @@ services:
       DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
       IAM_SERVICE_URL: http://iam-service:8100
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     ports:
       - "3001:3001"
     depends_on:
@@ -146,6 +147,7 @@ services:
       DEFAULT_MODEL_PROVIDER: stub
       DEFAULT_MODEL_NAME: stub-model
       IAM_SERVICE_URL: http://iam-service:8100
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     ports:
       - "3003:3003"
     depends_on:
@@ -170,6 +172,7 @@ services:
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       CONTEXT_FABRIC_URL: http://context-api:8000
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     ports:
       - "3004:3004"
     depends_on:
@@ -195,6 +198,7 @@ services:
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
       IAM_BASE_URL: http://iam-service:8100/api/v1
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     ports:
       - "3000:3000"
     depends_on:
@@ -259,6 +263,8 @@ services:
       CONTEXT_MEMORY_URL: http://context-memory:8002
       METRICS_LEDGER_URL: http://metrics-ledger:8003
       IAM_BASE_URL: http://iam-service:8100/api/v1
+      IAM_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     ports:
       - "8000:8000"
     depends_on:
@@ -327,8 +333,10 @@ services:
       AGENT_SERVICE_URL: http://agent-service:3001
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
-      CONTEXT_FABRIC_URL: http://context-api:8000
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
+      CONTEXT_FABRIC_URL: http://context-api:8000
+      CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
     volumes:
       - ${HOST_DOWNLOADS_DIR:-/Users/ashokraj/Downloads}:/Users/ashokraj/Downloads:ro
     ports:
@@ -400,6 +408,9 @@ services:
       PUBLIC_BASE_URL:       ${MCP_PUBLIC_BASE_URL:-http://host.docker.internal:7100}
       # M21 — central audit & governance ledger (fire-and-forget POST)
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
+      CONTEXT_FABRIC_URL: http://context-api:8000
+      CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
     ports:
       - "7100:7100"
     volumes:

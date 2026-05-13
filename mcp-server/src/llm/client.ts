@@ -3,7 +3,7 @@ import { mockLlmRespond } from "./mock";
 import { openaiRespond } from "./providers/openai";
 import { anthropicRespond } from "./providers/anthropic";
 import { copilotRespond } from "./providers/copilot";
-import { LlmRequest, LlmResponse } from "./types";
+import { LlmRequest, LlmResponse, LlmStreamHooks } from "./types";
 
 /**
  * M11 follow-up — embedded LLM gateway.
@@ -16,13 +16,13 @@ import { LlmRequest, LlmResponse } from "./types";
  * a new provider is purely additive: drop a file under src/llm/providers/
  * and switch on the name here.
  */
-export async function llmRespond(req: LlmRequest): Promise<LlmResponse> {
+export async function llmRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promise<LlmResponse> {
   const provider = (req.provider || config.LLM_PROVIDER).toLowerCase();
   switch (provider) {
-    case "mock":      return mockLlmRespond(req);
-    case "openai":    return openaiRespond(req);
-    case "anthropic": return anthropicRespond(req);
-    case "copilot":   return copilotRespond(req);
+    case "mock":      return mockLlmRespond(req, hooks);
+    case "openai":    return openaiRespond(req, hooks);
+    case "anthropic": return anthropicRespond(req, hooks);
+    case "copilot":   return copilotRespond(req, hooks);
     default:
       throw new Error(`unknown LLM provider: ${provider}. Supported: mock, openai, anthropic, copilot.`);
   }

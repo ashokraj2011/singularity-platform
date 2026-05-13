@@ -14,6 +14,7 @@ import {
   ArrowLeft, Clock, Activity, Coins, AlertTriangle, FileText, Box, ShieldCheck, GitBranch,
 } from 'lucide-react'
 import { api } from '../../lib/api'
+import { LiveEventsPanel } from './LiveEventsPanel'
 
 interface InsightNode {
   id: string
@@ -269,6 +270,8 @@ export function RunInsightsPage() {
           </table>
         </Section>
       )}
+
+      {id && <LiveEventsPanel runId={id} />}
 
       {/* Gantt per step */}
       <Section title={`Steps (${data.nodes.length})`}>

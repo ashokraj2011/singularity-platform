@@ -111,6 +111,19 @@ export async function activateAgentTask(
   const globals = (instanceCtx._globals ?? instanceCtx.globals ?? {}) as Record<string, unknown>
 
   const traceId = `wf-${instance.id}-${node.id}-${run.id.slice(0, 8)}`
+  await prisma.agentRunOutput.create({
+    data: {
+      runId: run.id,
+      outputType: 'EXECUTION_TRACE',
+      rawContent: traceId,
+      structuredPayload: {
+        traceId,
+        nodeId: node.id,
+        instanceId: instance.id,
+        contextFabricUrl: config.CONTEXT_FABRIC_URL,
+      },
+    },
+  })
   const modelOverrides = {
     maxOutputTokens: 1200,
     ...((cfg.modelOverrides as Record<string, unknown> | undefined) ?? {}),
@@ -182,6 +195,7 @@ export async function activateAgentTask(
       workflow_node_id: node.id,
       agent_run_id: run.id,
       capability_id: capabilityId,
+      tenant_id: typeof cfg.tenantId === 'string' ? cfg.tenantId : undefined,
       agent_template_id: agentTemplateId,
       // M26 — the calling user's IAM sub. context-fabric uses this to route
       // /mcp/invoke to the user's laptop mcp-server via the WS bridge.

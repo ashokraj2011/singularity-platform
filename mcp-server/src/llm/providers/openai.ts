@@ -9,7 +9,7 @@
  * Same wire format is used by GitHub Copilot Headless — see ./copilot.ts.
  */
 import { v4 as uuidv4 } from "uuid";
-import type { LlmRequest, LlmResponse, ToolCall, ChatMessage } from "../types";
+import type { LlmRequest, LlmResponse, LlmStreamHooks, ToolCall, ChatMessage } from "../types";
 import { config } from "../../config";
 
 interface OAToolSpec {
@@ -104,6 +104,7 @@ export async function callOpenAiCompatible(opts: {
   apiKey:   string;
   model:    string;
   request:  LlmRequest;
+  hooks?: LlmStreamHooks;
   /** Extra headers (Copilot needs editor-version etc.). */
   extraHeaders?: Record<string, string>;
   /** Path under baseUrl. Defaults to /chat/completions. */
@@ -123,6 +124,11 @@ export async function callOpenAiCompatible(opts: {
   }
 
   const url = `${opts.baseUrl.replace(/\/$/, "")}${opts.path ?? "/chat/completions"}`;
+  const hooks = opts.hooks;
+  if (hooks?.onDelta) {
+    return callOpenAiCompatibleStreaming({ ...opts, hooks, body, url });
+  }
+
   const res = await fetch(url, {
     method:  "POST",
     headers: {
@@ -164,12 +170,122 @@ export async function callOpenAiCompatible(opts: {
   };
 }
 
-export async function openaiRespond(req: LlmRequest): Promise<LlmResponse> {
+async function callOpenAiCompatibleStreaming(opts: {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  request: LlmRequest;
+  hooks: LlmStreamHooks;
+  extraHeaders?: Record<string, string>;
+  path?: string;
+  body: Record<string, unknown>;
+  url?: string;
+}): Promise<LlmResponse> {
+  const start = Date.now();
+  const body = {
+    ...opts.body,
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+  const url = opts.url ?? `${opts.baseUrl.replace(/\/$/, "")}${opts.path ?? "/chat/completions"}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${opts.apiKey}`,
+      ...(opts.extraHeaders ?? {}),
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout((config.TIMEOUT_SEC ?? 240) * 1000),
+  });
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`OpenAI-compatible provider returned ${res.status}: ${text.slice(0, 400)}`);
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  let finishReason = "stop";
+  let inputTokens = 0;
+  let outputTokens = 0;
+  const toolFragments = new Map<number, { id?: string; name?: string; args: string }>();
+
+  for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+    buffer += decoder.decode(chunk, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+    for (const part of parts) {
+      for (const line of part.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        const event = JSON.parse(payload) as {
+          choices?: Array<{
+            delta?: {
+              content?: string;
+              tool_calls?: Array<{
+                index: number;
+                id?: string;
+                function?: { name?: string; arguments?: string };
+              }>;
+            };
+            finish_reason?: string | null;
+          }>;
+          usage?: { prompt_tokens?: number; completion_tokens?: number };
+        };
+        if (event.usage) {
+          inputTokens = event.usage.prompt_tokens ?? inputTokens;
+          outputTokens = event.usage.completion_tokens ?? outputTokens;
+        }
+        const choice = event.choices?.[0];
+        if (!choice) continue;
+        if (choice.finish_reason) finishReason = choice.finish_reason;
+        const delta = choice.delta;
+        if (delta?.content) {
+          content += delta.content;
+          await opts.hooks.onDelta?.({ content: delta.content, raw: event });
+        }
+        for (const call of delta?.tool_calls ?? []) {
+          const current = toolFragments.get(call.index) ?? { args: "" };
+          current.id = call.id ?? current.id;
+          current.name = call.function?.name ?? current.name;
+          current.args += call.function?.arguments ?? "";
+          toolFragments.set(call.index, current);
+        }
+      }
+    }
+  }
+
+  const tool_calls: ToolCall[] = Array.from(toolFragments.values())
+    .filter((c) => c.name)
+    .map((c) => {
+      let args: Record<string, unknown> = {};
+      try { args = JSON.parse(c.args || "{}"); } catch { /* keep empty */ }
+      return { id: c.id || `tc-${uuidv4().slice(0, 8)}`, name: c.name!, args };
+    });
+
+  return {
+    content,
+    tool_calls: tool_calls.length ? tool_calls : undefined,
+    finish_reason: tool_calls.length > 0 ? "tool_call"
+      : finishReason === "length" ? "length"
+      : finishReason === "error" ? "error"
+      : "stop",
+    input_tokens: inputTokens,
+    output_tokens: outputTokens || Math.ceil(content.length / 4),
+    latency_ms: Date.now() - start,
+  };
+}
+
+export async function openaiRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promise<LlmResponse> {
   if (!config.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
   return callOpenAiCompatible({
     baseUrl: config.OPENAI_BASE_URL,
     apiKey:  config.OPENAI_API_KEY,
     model:   req.model || config.OPENAI_DEFAULT_MODEL,
     request: req,
+    hooks,
   });
 }

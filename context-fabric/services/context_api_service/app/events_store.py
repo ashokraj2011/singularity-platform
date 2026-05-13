@@ -37,6 +37,7 @@ def init_db() -> None:
                 work_item_id TEXT,
                 agent_id TEXT,
                 capability_id TEXT,
+                tenant_id TEXT,
                 mcp_invocation_id TEXT,
                 tool_invocation_id TEXT,
                 artifact_id TEXT,
@@ -46,9 +47,14 @@ def init_db() -> None:
             );
             """
         )
+        try:
+            conn.execute("ALTER TABLE events ADD COLUMN tenant_id TEXT")
+        except Exception:
+            pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_trace ON events(trace_id, timestamp);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, timestamp);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, timestamp);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_tenant ON events(tenant_id, timestamp);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_inserted ON events(inserted_at);")
 
 
@@ -67,10 +73,10 @@ def upsert_many(events: list[dict]) -> int:
                     INSERT INTO events (
                         id, kind, timestamp, severity,
                         trace_id, run_id, run_step_id, work_item_id,
-                        agent_id, capability_id,
+                        agent_id, capability_id, tenant_id,
                         mcp_invocation_id, tool_invocation_id, artifact_id, llm_call_id,
                         payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         ev.get("id"),
@@ -83,6 +89,7 @@ def upsert_many(events: list[dict]) -> int:
                         corr.get("workItemId"),
                         corr.get("agentId"),
                         corr.get("capabilityId"),
+                        corr.get("tenantId"),
                         corr.get("mcpInvocationId"),
                         corr.get("toolInvocationId"),
                         corr.get("artifactId"),
@@ -110,9 +117,13 @@ def _hydrate(row: Optional[dict]) -> Optional[dict]:
 
 def list_by_trace(trace_id: str, since_id: Optional[str] = None,
                   since_timestamp: Optional[str] = None,
-                  limit: int = 500) -> list[dict]:
+                  limit: int = 500,
+                  tenant_id: Optional[str] = None) -> list[dict]:
     sql = "SELECT * FROM events WHERE trace_id = ?"
     params: list = [trace_id]
+    if tenant_id:
+        sql += " AND tenant_id = ?"
+        params.append(tenant_id)
     if since_timestamp:
         sql += " AND timestamp > ?"
         params.append(since_timestamp)
@@ -127,12 +138,16 @@ def list_by_trace(trace_id: str, since_id: Optional[str] = None,
         return [r for r in (_hydrate(d) for d in rows_to_dicts(cur.fetchall())) if r]
 
 
-def list_by_run(run_id: str, limit: int = 500) -> list[dict]:
+def list_by_run(run_id: str, limit: int = 500, tenant_id: Optional[str] = None) -> list[dict]:
+    sql = "SELECT * FROM events WHERE run_id = ?"
+    params: list = [run_id]
+    if tenant_id:
+        sql += " AND tenant_id = ?"
+        params.append(tenant_id)
+    sql += " ORDER BY timestamp ASC LIMIT ?"
+    params.append(limit)
     with sqlite_conn(DB_PATH) as conn:
-        cur = conn.execute(
-            "SELECT * FROM events WHERE run_id = ? ORDER BY timestamp ASC LIMIT ?",
-            (run_id, limit),
-        )
+        cur = conn.execute(sql, params)
         return [r for r in (_hydrate(d) for d in rows_to_dicts(cur.fetchall())) if r]
 
 

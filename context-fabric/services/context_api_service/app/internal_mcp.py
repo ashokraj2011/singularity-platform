@@ -16,16 +16,32 @@ Auth:
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from .config import settings
 from .iam_service_token import get_iam_service_token
 
 
 router = APIRouter(prefix="/internal/mcp", tags=["internal-mcp"])
+
+
+class ServerToolCallRequest(BaseModel):
+    traceId: Optional[str] = None
+    capabilityId: Optional[str] = None
+    agentId: Optional[str] = None
+    agentUid: Optional[str] = None
+    sessionId: Optional[str] = None
+    workflowInstanceId: Optional[str] = None
+    nodeId: Optional[str] = None
+    workItemId: Optional[str] = None
+    toolName: Optional[str] = None
+    toolVersion: Optional[str] = None
+    approvalId: Optional[str] = None
+    args: dict[str, Any] = Field(default_factory=dict)
 
 
 def _check_service_token(provided: Optional[str]) -> None:
@@ -37,6 +53,60 @@ def _check_service_token(provided: Optional[str]) -> None:
         )
     if not provided or provided != expected:
         raise HTTPException(status_code=401, detail="invalid service token")
+
+
+@router.post("/tools/{tool_name}/call")
+async def call_server_tool(
+    tool_name: str,
+    body: ServerToolCallRequest,
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+):
+    """Execute a SERVER-target tool through tool-service.
+
+    MCP owns the agent loop, but SERVER tools stay behind Context Fabric so
+    tool-service policy, approvals, and receipts remain centralized.
+    """
+    _check_service_token(x_service_token)
+
+    capability_id = body.capabilityId
+    if not capability_id:
+        raise HTTPException(status_code=400, detail="capabilityId is required for SERVER tools")
+    agent_uid = body.agentUid or body.agentId or f"{capability_id}:mcp-agent"
+    payload = {
+        "capability_id": capability_id,
+        "agent_uid": agent_uid,
+        "agent_id": body.agentId,
+        "session_id": body.sessionId,
+        "workflow_id": body.workflowInstanceId,
+        "task_id": body.workItemId or body.nodeId,
+        "tool_name": body.toolName or tool_name,
+        "tool_version": body.toolVersion,
+        "approval_id": body.approvalId,
+        "arguments": body.args,
+        "context_package_id": None,
+    }
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        try:
+            resp = await client.post(
+                f"{settings.tool_service_url.rstrip('/')}/api/v1/tools/invoke",
+                json=payload,
+                headers={"X-Trace-Id": body.traceId or ""},
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"tool-service unreachable: {exc}")
+
+    text = resp.text
+    parsed: Any
+    try:
+        parsed = resp.json()
+    except Exception:
+        parsed = {"status": "error", "error": text[:1000]}
+    if resp.status_code >= 500:
+        raise HTTPException(status_code=502, detail=f"tool-service returned {resp.status_code}: {text[:500]}")
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=parsed)
+    return parsed
 
 
 @router.get("/servers")

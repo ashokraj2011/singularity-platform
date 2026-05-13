@@ -72,6 +72,7 @@ export interface PendingToolDescriptor {
   description: string;
   input_schema: Record<string, unknown>;
   execution_target: "LOCAL" | "SERVER";
+  version?: string;
   natural_language?: string;
   risk_level?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
   requires_approval?: boolean;

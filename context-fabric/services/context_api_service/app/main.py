@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from pydantic import BaseModel, Field
 
 from context_fabric_shared.schemas import ContextPolicy
@@ -114,7 +114,10 @@ async def maybe_update_summary(session_id: str, agent_id: str, force: bool = Fal
 
 
 @app.post("/chat/respond", response_model=ChatRespondResponse)
-async def chat_respond(req: ChatRespondRequest):
+async def chat_respond(req: ChatRespondRequest, response: Response):
+    response.headers["Deprecation"] = "true"
+    response.headers["Sunset"] = "2026-07-01"
+    response.headers["Link"] = '</execute>; rel="successor-version"'
     memory_url = settings.context_memory_url.rstrip("/")
     llm_url = settings.llm_gateway_url.rstrip("/")
     metrics_url = settings.metrics_ledger_url.rstrip("/")

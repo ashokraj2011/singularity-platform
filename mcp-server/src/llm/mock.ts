@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import { ChatMessage, LlmRequest, LlmResponse, ToolCall } from "./types";
+import { ChatMessage, LlmRequest, LlmResponse, LlmStreamHooks, ToolCall } from "./types";
 
 /**
  * Deterministic mock LLM provider — exercises the LLM↔tool agent loop
@@ -106,7 +106,7 @@ function decideToolCall(
   return null;
 }
 
-export async function mockLlmRespond(req: LlmRequest): Promise<LlmResponse> {
+export async function mockLlmRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promise<LlmResponse> {
   const start = Date.now();
   await delay(40); // simulate latency
 
@@ -126,6 +126,7 @@ export async function mockLlmRespond(req: LlmRequest): Promise<LlmResponse> {
       parsed = lastTool.content;
     }
     const reply = `[mock] Tool '${lastTool.tool_name}' returned: ${JSON.stringify(parsed)}. Done.`;
+    await hooks?.onDelta?.({ content: reply });
     return {
       content: reply,
       finish_reason: "stop",
@@ -151,6 +152,7 @@ export async function mockLlmRespond(req: LlmRequest): Promise<LlmResponse> {
   }
 
   const reply = `[mock] Received ${req.messages.length} message(s) (${inputTextSize} chars). No tool call needed.`;
+  await hooks?.onDelta?.({ content: reply });
   return {
     content: reply,
     finish_reason: "stop",

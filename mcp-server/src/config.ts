@@ -52,6 +52,14 @@ const schema = z.object({
   // monorepos; tune down on laptops with constrained disk.
   MCP_AST_MAX_SYMBOLS: z.coerce.number().int().positive().default(250_000),
   MCP_WORK_BRANCH_PREFIX: z.string().default("sg"),
+  MCP_AUDIT_LOG_PATH: z.string().optional(),
+  MCP_AUDIT_RESTORE_LIMIT: z.coerce.number().int().positive().default(5000),
+
+  // Context Fabric internal adapter used when the LLM selects a SERVER-target
+  // tool. MCP remains the agent loop owner, but governed server tools still
+  // execute through Context Fabric + tool-service.
+  CONTEXT_FABRIC_URL: z.string().default("http://localhost:8000"),
+  CONTEXT_FABRIC_SERVICE_TOKEN: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);

@@ -94,7 +94,11 @@ async function mirrorIamUser(iamUser: IamUser): Promise<{ id: string; email: str
 }
 
 export const authMiddleware: RequestHandler = async (req, res, next) => {
-  const authHeader = req.headers.authorization
+  let authHeader = req.headers.authorization
+  if (!authHeader?.startsWith('Bearer ') && req.path.endsWith('/events/stream')) {
+    const queryToken = typeof req.query.access_token === 'string' ? req.query.access_token : undefined
+    if (queryToken) authHeader = `Bearer ${queryToken}`
+  }
   if (!authHeader?.startsWith('Bearer ')) {
     res.status(401).json({ code: 'UNAUTHORIZED', message: 'Missing or invalid Authorization header' })
     return

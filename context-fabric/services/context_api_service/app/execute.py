@@ -126,6 +126,7 @@ class RunContext(BaseModel):
     workflow_node_id: Optional[str] = None
     agent_run_id: Optional[str] = None
     capability_id: Optional[str] = None
+    tenant_id: Optional[str] = None
     agent_template_id: Optional[str] = None
     user_id: Optional[str] = None
     trace_id: Optional[str] = None
@@ -138,6 +139,7 @@ class ExecuteRequest(BaseModel):
     idempotency_key: Optional[str] = None
     run_context: RunContext = Field(default_factory=RunContext)
     task: str
+    system_prompt: Optional[str] = None
     vars: dict[str, Any] = Field(default_factory=dict)
     globals: dict[str, Any] = Field(default_factory=dict)
     prior_outputs: dict[str, Any] = Field(default_factory=dict)
@@ -321,7 +323,7 @@ async def execute(req: ExecuteRequest):
 
     # ── 1. Compose the prompt (preview mode → just assembled prompt) ────
     prompt_assembly_id: Optional[str] = None
-    system_prompt: Optional[str] = None
+    system_prompt: Optional[str] = req.system_prompt
     user_message = req.task
     composer_warnings: list[str] = []
 
@@ -396,6 +398,8 @@ async def execute(req: ExecuteRequest):
     # ── 3. Resolve MCP server for this capability ───────────────────────
     if not req.run_context.capability_id:
         raise HTTPException(status_code=400, detail="run_context.capability_id is required")
+    if settings.require_tenant_id and not req.run_context.tenant_id:
+        raise HTTPException(status_code=400, detail="run_context.tenant_id is required when REQUIRE_TENANT_ID=true")
 
     try:
         servers_resp = await _get(
@@ -478,6 +482,7 @@ async def execute(req: ExecuteRequest):
         "runContext": _strip_nones({
             "sessionId": session_id,
             "capabilityId": req.run_context.capability_id,
+            "tenantId": req.run_context.tenant_id,
             "agentId": req.run_context.agent_template_id,
             "runId": req.run_context.workflow_instance_id,
             "runStepId": req.run_context.workflow_node_id,
@@ -828,6 +833,7 @@ async def list_calls(trace_id: Optional[str] = None,
 async def list_events(
     trace_id: Optional[str] = None,
     run_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
     since_id: Optional[str] = None,
     since_timestamp: Optional[str] = None,
     limit: int = 500,
@@ -842,12 +848,14 @@ async def list_events(
         raise HTTPException(status_code=400, detail="trace_id or run_id is required")
     if trace_id:
         items = events_store.list_by_trace(trace_id, since_id=since_id,
-                                           since_timestamp=since_timestamp, limit=limit)
+                                           since_timestamp=since_timestamp, limit=limit,
+                                           tenant_id=tenant_id)
     else:
-        items = events_store.list_by_run(run_id, limit=limit)
+        items = events_store.list_by_run(run_id, limit=limit, tenant_id=tenant_id)
     return {
         "trace_id": trace_id,
         "run_id": run_id,
+        "tenant_id": tenant_id,
         "count": len(items),
         "events": items,
         "tail_id": items[-1]["id"] if items else None,
@@ -861,6 +869,7 @@ async def list_events(
 @router.get("/execute/events/stream")
 async def stream_events(
     trace_id: str,
+    tenant_id: Optional[str] = None,
     since_id: Optional[str] = None,
     poll_interval_ms: int = 800,
     max_idle_seconds: int = 60,
@@ -879,7 +888,7 @@ async def stream_events(
         idle_since = time.time()
         # First flush: anything already there for this trace.
         try:
-            initial = events_store.list_by_trace(trace_id, since_id=cursor_id, limit=1000)
+            initial = events_store.list_by_trace(trace_id, since_id=cursor_id, limit=1000, tenant_id=tenant_id)
         except Exception:
             initial = []
         for ev in initial:
@@ -892,7 +901,7 @@ async def stream_events(
             await asyncio.sleep(poll_interval)
             try:
                 new_rows = events_store.list_by_trace(
-                    trace_id, since_id=cursor_id, limit=200,
+                    trace_id, since_id=cursor_id, limit=200, tenant_id=tenant_id,
                 )
             except Exception:
                 yield ": db-error\n\n"

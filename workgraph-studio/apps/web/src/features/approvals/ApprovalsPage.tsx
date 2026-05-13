@@ -4,6 +4,24 @@ import { ThumbsUp, ThumbsDown, Loader2 } from 'lucide-react'
 import { api } from '../../lib/api'
 
 type Approval = { id: string; subjectType: string; subjectId: string; status: string; createdAt: string }
+type AgentRunApproval = {
+  id: string
+  status: string
+  startedAt?: string
+  agent?: { name?: string | null }
+  outputs?: Array<{
+    structuredPayload?: {
+      pendingApproval?: {
+        continuation_token?: string
+        tool_name?: string
+        tool_args?: Record<string, unknown>
+        tool_descriptor?: { risk_level?: string; execution_target?: string }
+      } | null
+      cfCallId?: string
+      traceId?: string
+    } | null
+  }>
+}
 
 export function ApprovalsPage() {
   const qc = useQueryClient()
@@ -13,14 +31,28 @@ export function ApprovalsPage() {
     queryFn: () => api.get('/approvals/my-approvals').then(r => r.data),
     refetchInterval: 10_000,
   })
+  const { data: agentApprovals, isLoading: agentApprovalsLoading } = useQuery({
+    queryKey: ['agent-runs', 'pending-approval'],
+    queryFn: () => api.get('/agent-runs/pending-approval').then(r => r.data),
+    refetchInterval: 10_000,
+  })
 
   const decide = useMutation({
     mutationFn: ({ id, decision }: { id: string; decision: string }) =>
       api.post(`/approvals/${id}/decision`, { decision }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['approvals'] }),
   })
+  const decideAgentRun = useMutation({
+    mutationFn: ({ id, decision }: { id: string; decision: 'approved' | 'rejected' }) =>
+      api.post(`/agent-runs/${id}/approve`, { decision }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agent-runs', 'pending-approval'] })
+      qc.invalidateQueries({ queryKey: ['approvals'] })
+    },
+  })
 
   const approvals: Approval[] = data?.content ?? (Array.isArray(data) ? data : [])
+  const pendingAgentRuns: AgentRunApproval[] = agentApprovals?.content ?? (Array.isArray(agentApprovals) ? agentApprovals : [])
   const pending = approvals.filter(a => a.status === 'PENDING')
   const decided = approvals.filter(a => a.status !== 'PENDING')
 
@@ -74,6 +106,49 @@ export function ApprovalsPage() {
     )
   }
 
+  function AgentRunApprovalRow({ run }: { run: AgentRunApproval }) {
+    const pending = run.outputs?.[0]?.structuredPayload?.pendingApproval ?? null
+    const toolName = pending?.tool_name ?? 'tool call'
+    const risk = pending?.tool_descriptor?.risk_level ?? 'approval'
+    return (
+      <div className="glass-card rounded-xl p-4" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>
+        <div className="flex items-start gap-3">
+          <div className="w-1 h-10 rounded-full shrink-0 mt-0.5" style={{ background: '#f97316' }} />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-slate-200">Agent tool approval</p>
+            <p className="text-xs text-slate-500 truncate">
+              {run.agent?.name ?? 'Agent run'} wants to run <span className="font-mono text-slate-400">{toolName}</span>
+            </p>
+            <p className="text-xs font-mono text-slate-600 truncate">
+              {pending?.continuation_token ?? run.id}
+            </p>
+            <p className="text-xs text-slate-600 mt-0.5">
+              {risk} · {run.startedAt ? new Date(run.startedAt).toLocaleString() : 'paused'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+              onClick={() => decideAgentRun.mutate({ id: run.id, decision: 'approved' })}
+              disabled={decideAgentRun.isPending}
+              title="Approve agent tool call"
+            >
+              {decideAgentRun.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ThumbsUp className="w-3.5 h-3.5" />}
+            </button>
+            <button
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-red-400 hover:bg-red-500/10 transition-colors"
+              onClick={() => decideAgentRun.mutate({ id: run.id, decision: 'rejected' })}
+              disabled={decideAgentRun.isPending}
+              title="Reject agent tool call"
+            >
+              <ThumbsDown className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="p-6 max-w-3xl">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2 }} className="mb-6">
@@ -81,15 +156,28 @@ export function ApprovalsPage() {
           <ThumbsUp className="w-5 h-5" style={{ color: '#22d3ee' }} />
           <h1 className="page-header">Approvals</h1>
         </div>
-        <p className="text-sm text-slate-500 font-mono">{pending.length} pending · {decided.length} decided</p>
+        <p className="text-sm text-slate-500 font-mono">{pending.length + pendingAgentRuns.length} pending · {decided.length} decided</p>
       </motion.div>
 
-      {isLoading ? (
+      {isLoading || agentApprovalsLoading ? (
         <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => <div key={i} className="skeleton h-16 rounded-xl" />)}
         </div>
       ) : (
         <div className="space-y-4">
+          {pendingAgentRuns.length > 0 && (
+            <section>
+              <p className="label-xs mb-2 px-1">Agent tool approvals</p>
+              <div className="space-y-2">
+                {pendingAgentRuns.map((run, i) => (
+                  <motion.div key={run.id} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}>
+                    <AgentRunApprovalRow run={run} />
+                  </motion.div>
+                ))}
+              </div>
+            </section>
+          )}
+
           {pending.length > 0 && (
             <section>
               <p className="label-xs mb-2 px-1">Awaiting decision</p>
@@ -112,7 +200,7 @@ export function ApprovalsPage() {
             </section>
           )}
 
-          {approvals.length === 0 && (
+          {approvals.length === 0 && pendingAgentRuns.length === 0 && (
             <div className="glass-panel rounded-xl py-16 text-center">
               <ThumbsUp className="w-10 h-10 text-slate-700 mx-auto mb-3" />
               <p className="text-slate-500 text-sm">No pending approvals</p>

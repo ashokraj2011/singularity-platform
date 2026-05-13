@@ -1,12 +1,18 @@
 /**
  * Prompt Composer HTTP client — M5 wire.
  *
- * Workgraph's AGENT_TASK executor calls POST /api/v1/compose-and-respond on
- * prompt-composer (port 3004 inside the agent-and-tools network), which:
+ * Legacy Prompt Composer HTTP client.
+ *
+ * Workgraph AGENT_TASK now calls context-fabric /execute directly. Context
+ * Fabric invokes prompt-composer in preview mode, then dispatches through MCP.
+ * This client is kept for older code paths and direct preview tooling.
+ *
+ * POST /api/v1/compose-and-respond on prompt-composer:
  *   1. Assembles the layered prompt from PromptProfile + capability context +
  *      knowledge artifacts + distilled memory + tool grants + workflow vars +
  *      artifacts + EXECUTION_OVERRIDE layers.
- *   2. POSTs to context-fabric /chat/respond and returns the unified response.
+ *   2. For non-preview calls, delegates to context-fabric /execute and returns
+ *      the unified response.
  *
  * Returns three correlation IDs we persist on AgentRunOutput.structuredPayload:
  *   - promptAssemblyId  → composer.PromptAssembly

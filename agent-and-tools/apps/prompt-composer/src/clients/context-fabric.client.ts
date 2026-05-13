@@ -46,8 +46,75 @@ export interface ChatRespondResponse {
   metrics_run_id: string | null;
 }
 
+export interface ExecuteRespondRequest {
+  trace_id?: string;
+  run_context: {
+    workflow_instance_id?: string;
+    workflow_node_id?: string;
+    capability_id?: string;
+    agent_template_id?: string;
+  };
+  task: string;
+  system_prompt?: string;
+  model_overrides?: Record<string, unknown>;
+  context_policy?: Record<string, unknown>;
+  limits?: Record<string, unknown>;
+}
+
+export interface ExecuteRespondResponse {
+  status: string;
+  finalResponse: string;
+  correlation?: {
+    cfCallId?: string;
+    promptAssemblyId?: string;
+    llmCallIds?: string[];
+  };
+  usage?: {
+    provider?: string;
+    model?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    estimatedCost?: number | null;
+    tokensSaved?: number | null;
+  };
+  modelUsage?: {
+    provider?: string;
+    model?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    estimatedCost?: number | null;
+  };
+  metrics?: {
+    contextOptimization?: Record<string, unknown>;
+  };
+  warnings?: string[];
+}
+
 export const contextFabricClient = {
+  async executeRespond(input: ExecuteRespondRequest): Promise<ExecuteRespondResponse> {
+    const url = `${env.CONTEXT_FABRIC_URL}/execute`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(240_000),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new AppError(
+        `context-fabric /execute returned ${res.status}: ${text.slice(0, 500)}`,
+        502,
+        "CONTEXT_FABRIC_ERROR",
+      );
+    }
+    return await res.json() as ExecuteRespondResponse;
+  },
+
   async chatRespond(input: ChatRespondRequest): Promise<ChatRespondResponse> {
+    // Legacy direct path. Agent execution should use executeRespond() so
+    // Context Fabric can enforce budgets and route through MCP.
     const url = `${env.CONTEXT_FABRIC_URL}/chat/respond`;
     const res = await fetch(url, {
       method: "POST",

@@ -22,6 +22,10 @@ export interface LlmRequest {
   max_output_tokens?: number;
 }
 
+export interface LlmStreamHooks {
+  onDelta?: (delta: { content: string; index?: number; raw?: unknown }) => void | Promise<void>;
+}
+
 export interface ToolCall {
   id: string;
   name: string;

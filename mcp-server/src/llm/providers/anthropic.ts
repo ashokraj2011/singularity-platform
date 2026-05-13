@@ -11,7 +11,7 @@
  * We translate to/from MCP's unified types.
  */
 import { v4 as uuidv4 } from "uuid";
-import type { LlmRequest, LlmResponse, ToolCall, ChatMessage } from "../types";
+import type { LlmRequest, LlmResponse, LlmStreamHooks, ToolCall, ChatMessage } from "../types";
 import { config } from "../../config";
 
 interface AntToolSpec {
@@ -97,7 +97,7 @@ function toAnthropicTools(req: LlmRequest): AntToolSpec[] | undefined {
   }));
 }
 
-export async function anthropicRespond(req: LlmRequest): Promise<LlmResponse> {
+export async function anthropicRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promise<LlmResponse> {
   if (!config.ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not configured");
   const start = Date.now();
 
@@ -139,6 +139,7 @@ export async function anthropicRespond(req: LlmRequest): Promise<LlmResponse> {
       });
     }
   }
+  if (textContent) await hooks?.onDelta?.({ content: textContent, raw: data });
 
   const finish_reason: LlmResponse["finish_reason"] =
       tool_calls.length > 0      ? "tool_call"

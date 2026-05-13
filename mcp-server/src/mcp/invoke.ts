@@ -42,6 +42,7 @@ const ToolDescSchema = z.object({
   description: z.string(),
   input_schema: z.record(z.unknown()),
   execution_target: z.enum(["LOCAL", "SERVER"]).default("LOCAL"),
+  version: z.string().optional(),
   natural_language: z.string().optional(),
   risk_level: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).optional(),
   requires_approval: z.boolean().optional(),
@@ -66,6 +67,7 @@ const InvokeSchema = z.object({
   runContext: z.object({
     sessionId: z.string().optional(),
     capabilityId: z.string().optional(),
+    tenantId: z.string().optional(),
     agentId: z.string().optional(),
     runId: z.string().optional(),
     runStepId: z.string().optional(),
@@ -142,6 +144,15 @@ type LoopOutcome =
       details?: Record<string, unknown>;
     };
 
+type DispatchToolResult = {
+  record: ToolInvocationRecord;
+  codeChange?: CodeChangeRecord;
+  approvalRequired?: {
+    reason?: string;
+    riskLevel?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  };
+};
+
 async function runLoop(state: LoopState): Promise<LoopOutcome> {
   while (state.stepIndex < state.maxSteps) {
     // M22 — pre-flight governance checks. Audit-gov is fail-open; only an
@@ -194,6 +205,21 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
       tools: state.availableTools,
       temperature: state.modelConfig.temperature,
       max_output_tokens: state.modelConfig.maxTokens,
+    }, {
+      onDelta: async (delta) => {
+        if (!delta.content) return;
+        events.publish({
+          kind: "llm.stream.delta",
+          correlation: { ...state.correlation },
+          payload: {
+            provider: state.modelConfig.provider,
+            model: state.modelConfig.model,
+            stepIndex: state.stepIndex,
+            content: delta.content,
+            index: delta.index,
+          },
+        });
+      },
     });
     state.totalInputTokens += llmResp.input_tokens;
     state.totalOutputTokens += llmResp.output_tokens;
@@ -256,91 +282,16 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         const requiresApproval = desc?.requires_approval || handler?.descriptor.requires_approval;
 
         if (requiresApproval) {
-          // Pause: persist the loop state and return a WAITING_APPROVAL outcome.
-          // Subsequent tool_calls in the same response are deferred until resume.
-          const env = savePending({
-            trace_id: state.correlation.traceId,
-            mcp_invocation_id: state.correlation.mcpInvocationId,
-            messages: state.messages,
-            pending_tool_call: tc,
-            pending_tool_descriptor: {
-              name: tc.name,
-              description: desc?.description ?? "",
-              input_schema: desc?.input_schema ?? {},
-              execution_target: desc?.execution_target ?? "LOCAL",
-              risk_level: desc?.risk_level,
-            },
-            available_tools: state.availableTools,
-            full_tool_descriptors: state.fullToolDescriptors,
-            model_config: state.modelConfig,
-            correlation: state.correlation,
-            step_index: state.stepIndex,
-            max_steps: state.maxSteps,
-            max_tool_result_chars: state.maxToolResultChars,
-            llm_call_ids: state.llmCallIds,
-            tool_invocation_ids: state.toolInvocationIds,
-            artifact_ids: state.artifactIds,
-            code_change_ids: state.codeChangeIds,
-            workspace: state.workspace,
-            total_input_tokens: state.totalInputTokens,
-            total_output_tokens: state.totalOutputTokens,
-          });
-          events.publish({
-            kind: "approval.wait.created",
-            correlation: { ...state.correlation },
-            severity: "warn",
-            payload: {
-              continuation_token: env.continuation_token,
-              tool_name: tc.name,
-              tool_args: tc.args,
-              risk_level: desc?.risk_level,
-              expires_at: env.expires_at,
-            },
-          });
-          // M21.5 — audit-gov is now AUTHORITATIVE for pending approvals.
-          // We persist the full continuation_payload (LoopState envelope) so
-          // mcp-server restart doesn't drop in-flight approvals. Synchronous
-          // so the loop knows durability is intact before pausing. On audit-gov
-          // failure we degrade to in-memory-only and log — the approval still
-          // proceeds, but a restart will lose it.
-          const persisted = await persistApproval(env, {
-            capability_id: state.correlation.capabilityId,
-            tool_name: tc.name,
-            tool_args: tc.args ?? {},
-            risk_level: desc?.risk_level,
-          });
-          if (!persisted) {
-            // Best-effort surfacing — the loop continues but operators will
-            // see a warn in mcp-server logs if audit-gov is misconfigured.
-          }
-          emitAuditEvent({
-            trace_id: state.correlation.traceId,
-            source_service: "mcp-server",
-            kind: "approval.wait.created",
-            subject_type: "Approval",
-            subject_id: env.continuation_token,
-            capability_id: state.correlation.capabilityId,
-            severity: "warn",
-            payload: {
-              tool_name: tc.name,
-              tool_args: tc.args,
-              risk_level: desc?.risk_level,
-              expires_at: env.expires_at,
-            },
-          });
-          return {
-            kind: "paused",
-            continuationToken: env.continuation_token,
-            pendingToolCall: tc,
-            pendingDescriptor: env.pending_tool_descriptor,
-            finishReason: "approval_required",
-          };
+          return await pauseForApproval(state, tc, desc);
         }
 
         // Normal dispatch path.
         const result = await dispatchToolCall(tc, state.fullToolDescriptors, state.correlation);
         state.toolInvocationIds.push(result.record.id);
         if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
+        if (result.approvalRequired) {
+          return await pauseForApproval(state, tc, desc, result.approvalRequired.reason, result.record.id);
+        }
         state.messages.push({
           role: "tool",
           content: trimToolResult(JSON.stringify(result.record.output), state.maxToolResultChars),
@@ -359,6 +310,84 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
     };
   }
   return { kind: "complete", finalContent: "", finishReason: "max_steps" };
+}
+
+async function pauseForApproval(
+  state: LoopState,
+  tc: ToolCall,
+  desc?: PendingToolDescriptor,
+  reason?: string,
+  blockedToolInvocationId?: string,
+): Promise<LoopOutcome> {
+  // Pause: persist the loop state and return a WAITING_APPROVAL outcome.
+  // Subsequent tool_calls in the same response are deferred until resume.
+  const env = savePending({
+    trace_id: state.correlation.traceId,
+    mcp_invocation_id: state.correlation.mcpInvocationId,
+    messages: state.messages,
+    pending_tool_call: tc,
+    pending_tool_descriptor: {
+      name: tc.name,
+      description: desc?.description ?? "",
+      input_schema: desc?.input_schema ?? {},
+      execution_target: desc?.execution_target ?? "LOCAL",
+      version: desc?.version,
+      risk_level: desc?.risk_level,
+      requires_approval: desc?.requires_approval,
+    },
+    available_tools: state.availableTools,
+    full_tool_descriptors: state.fullToolDescriptors,
+    model_config: state.modelConfig,
+    correlation: state.correlation,
+    step_index: state.stepIndex,
+    max_steps: state.maxSteps,
+    max_tool_result_chars: state.maxToolResultChars,
+    llm_call_ids: state.llmCallIds,
+    tool_invocation_ids: state.toolInvocationIds,
+    artifact_ids: state.artifactIds,
+    code_change_ids: state.codeChangeIds,
+    workspace: state.workspace,
+    total_input_tokens: state.totalInputTokens,
+    total_output_tokens: state.totalOutputTokens,
+  });
+  const payload = {
+    continuation_token: env.continuation_token,
+    tool_name: tc.name,
+    tool_args: tc.args,
+    risk_level: desc?.risk_level,
+    reason,
+    blocked_tool_invocation_id: blockedToolInvocationId,
+    expires_at: env.expires_at,
+  };
+  events.publish({
+    kind: "approval.wait.created",
+    correlation: { ...state.correlation },
+    severity: "warn",
+    payload,
+  });
+  await persistApproval(env, {
+    capability_id: state.correlation.capabilityId,
+    tool_name: tc.name,
+    tool_args: tc.args ?? {},
+    risk_level: desc?.risk_level,
+  });
+  emitAuditEvent({
+    trace_id: state.correlation.traceId,
+    source_service: "mcp-server",
+    kind: "approval.wait.created",
+    subject_type: "Approval",
+    subject_id: env.continuation_token,
+    capability_id: state.correlation.capabilityId,
+    severity: "warn",
+    payload,
+  });
+  return {
+    kind: "paused",
+    continuationToken: env.continuation_token,
+    pendingToolCall: tc,
+    pendingDescriptor: env.pending_tool_descriptor,
+    finishReason: "approval_required",
+  };
 }
 
 async function buildResponseBody(
@@ -720,6 +749,7 @@ invokeRouter.post("/resume", async (req, res) => {
         requires_approval: false,
       })) as never,
       state.correlation,
+      body.continuation_token,
     );
     state.toolInvocationIds.push(result.record.id);
     if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
@@ -796,7 +826,8 @@ async function dispatchToolCall(
   tc: ToolCall,
   available: PendingToolDescriptor[],
   correlation: CorrelationIds,
-): Promise<{ record: ToolInvocationRecord; codeChange?: CodeChangeRecord }> {
+  approvedContinuationToken?: string,
+): Promise<DispatchToolResult> {
   const start = Date.now();
   events.publish({
     kind: "tool.invocation.created",
@@ -846,14 +877,81 @@ async function dispatchToolCall(
   }
 
   if (desc.execution_target === "SERVER") {
-    return finishWith(
-      recordToolInvocation({
-        correlation, tool_name: tc.name, args: tc.args, output: null,
-        success: false, error: "execution_target=SERVER tools not implemented in v0",
-        latency_ms: Date.now() - start,
-      }),
-      "error",
-    );
+    try {
+      const token = config.CONTEXT_FABRIC_SERVICE_TOKEN ?? config.MCP_BEARER_TOKEN;
+      const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, "")}/internal/mcp/tools/${encodeURIComponent(tc.name)}/call`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "X-Service-Token": token,
+        },
+        body: JSON.stringify({
+          traceId: correlation.traceId,
+          capabilityId: correlation.capabilityId,
+          agentId: correlation.agentId,
+          agentUid: correlation.agentId ?? correlation.capabilityId ?? "mcp-agent",
+          sessionId: correlation.sessionId,
+          workflowInstanceId: correlation.workflowInstanceId ?? correlation.runId,
+          nodeId: correlation.nodeId ?? correlation.runStepId,
+          workItemId: correlation.workItemId,
+          toolName: tc.name,
+          toolVersion: desc.version,
+          approvalId: approvedContinuationToken,
+          args: tc.args ?? {},
+        }),
+        signal: AbortSignal.timeout((config.TIMEOUT_SEC ?? 240) * 1000),
+      });
+      const body = await response.json().catch(() => ({})) as {
+        status?: string;
+        error?: unknown;
+        reason?: unknown;
+      };
+      if (!response.ok) {
+        throw new Error(`context-fabric SERVER tool adapter returned ${response.status}: ${JSON.stringify(body).slice(0, 400)}`);
+      }
+      if (body.status === "waiting_approval") {
+        const rec = recordToolInvocation({
+          correlation,
+          tool_name: tc.name,
+          args: tc.args,
+          output: body,
+          success: false,
+          error: String(body.reason ?? "SERVER tool requires approval"),
+          latency_ms: Date.now() - start,
+        });
+        const out = finishWith(rec, "info");
+        return {
+          ...out,
+          approvalRequired: {
+            reason: String(body.reason ?? "SERVER tool requires approval"),
+            riskLevel: desc.risk_level,
+          },
+        };
+      }
+      const success = body.status === "success";
+      return finishWith(
+        recordToolInvocation({
+          correlation,
+          tool_name: tc.name,
+          args: tc.args,
+          output: body,
+          success,
+          error: success ? undefined : String(body.error ?? body.reason ?? `SERVER tool returned ${body.status ?? "unknown"}`),
+          latency_ms: Date.now() - start,
+        }),
+        success ? "info" : "error",
+      );
+    } catch (err) {
+      return finishWith(
+        recordToolInvocation({
+          correlation, tool_name: tc.name, args: tc.args, output: null,
+          success: false, error: (err as Error).message,
+          latency_ms: Date.now() - start,
+        }),
+        "error",
+      );
+    }
   }
 
   const handler = getLocalTool(tc.name);

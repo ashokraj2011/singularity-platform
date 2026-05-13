@@ -67,6 +67,11 @@ function previewPayload(p?: Record<string, unknown>): string {
   }).join(', ')
 }
 
+function deltaText(p?: Record<string, unknown>): string {
+  const raw = p?.content
+  return typeof raw === 'string' ? raw : ''
+}
+
 function timeOnly(iso: string): string {
   try { return new Date(iso).toISOString().slice(11, 23) } catch { return iso }
 }
@@ -74,6 +79,7 @@ function timeOnly(iso: string): string {
 export function LiveEventsPanel({ runId }: { runId: string }) {
   const token = useAuthStore((s) => s.token)
   const [events, setEvents] = useState<EventRow[]>([])
+  const [liveText, setLiveText] = useState('')
   const [status, setStatus] = useState<'connecting' | 'streaming' | 'polling' | 'idle' | 'error'>('connecting')
   const [error, setError] = useState<string | null>(null)
   const seenIds = useRef<Set<string>>(new Set())
@@ -81,6 +87,10 @@ export function LiveEventsPanel({ runId }: { runId: string }) {
   function pushEvent(ev: EventRow) {
     if (seenIds.current.has(ev.id)) return
     seenIds.current.add(ev.id)
+    if (ev.kind === 'llm.stream.delta') {
+      const chunk = deltaText(ev.payload)
+      if (chunk) setLiveText((prev) => `${prev}${chunk}`)
+    }
     setEvents((prev) => [...prev, ev].sort((a, b) => a.timestamp.localeCompare(b.timestamp)))
   }
 
@@ -90,12 +100,10 @@ export function LiveEventsPanel({ runId }: { runId: string }) {
     let pollTimer: ReturnType<typeof setTimeout> | undefined
     let es: EventSource | undefined
 
-    // Browsers can't add Authorization to EventSource, so we use a token query
-    // param? — workgraph-api doesn't support that today. Path of least resistance:
-    // open SSE direct to the proxy with cookies (same-origin) — but our token is
-    // in localStorage, not a cookie. So fall straight to fetch-loop polling
-    // (which DOES carry the bearer header) for v0. SSE happens once we add a
-    // cookie session or query-token escape hatch on the backend.
+    function startPolling(sinceId?: string) {
+      if (!stopped) pollTimer = setTimeout(() => poll(sinceId), 250)
+    }
+
     async function poll(sinceId?: string) {
       if (stopped) return
       try {
@@ -119,7 +127,38 @@ export function LiveEventsPanel({ runId }: { runId: string }) {
       if (!stopped) pollTimer = setTimeout(() => poll(sinceId), 1500)
     }
 
-    poll()
+    const streamUrl = new URL(`/api/workflow-instances/${runId}/events/stream`, window.location.origin)
+    streamUrl.searchParams.set('access_token', token)
+    streamUrl.searchParams.set('max_idle_seconds', '120')
+    es = new EventSource(streamUrl.toString())
+    es.onopen = () => {
+      if (stopped) return
+      setStatus('streaming')
+      setError(null)
+    }
+    es.onmessage = (event) => {
+      try {
+        pushEvent(JSON.parse(event.data) as EventRow)
+      } catch {
+        // Ignore malformed payloads. SSE heartbeats are comments and do not
+        // reach this handler.
+      }
+    }
+    es.addEventListener('done', () => {
+      if (stopped) return
+      setStatus('idle')
+      es?.close()
+      const last = Array.from(seenIds.current).at(-1)
+      startPolling(last)
+    })
+    es.onerror = () => {
+      if (stopped) return
+      setStatus('polling')
+      setError('stream unavailable; polling')
+      es?.close()
+      const last = Array.from(seenIds.current).at(-1)
+      startPolling(last)
+    }
 
     return () => {
       stopped = true
@@ -167,38 +206,49 @@ export function LiveEventsPanel({ runId }: { runId: string }) {
           No events yet. Run an AGENT_TASK to populate.
         </div>
       ) : (
-        <div style={{ maxHeight: 380, overflowY: 'auto', background: '#fff', borderRadius: 8 }}>
-          {events.map((ev) => (
-            <div
-              key={ev.id}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 10,
-                padding: '6px 10px',
-                borderBottom: '1px solid #f1f5f9',
-                background: KIND_BG[ev.kind] ?? 'transparent',
-              }}
-            >
-              <span style={{
-                fontFamily: 'ui-monospace, SFMono-Regular, monospace',
-                fontSize: 10.5, color: '#64748b', minWidth: 86, flexShrink: 0,
-              }}>
-                {timeOnly(ev.timestamp)}
-              </span>
-              <span style={{
-                fontSize: 11, fontWeight: 600, color: SEV_COLORS[ev.severity] ?? '#475569',
-                minWidth: 200, flexShrink: 0,
-              }}>
-                {ev.kind}
-              </span>
-              <span style={{
-                fontSize: 11, color: '#475569', overflow: 'hidden',
-                textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
-              }}>
-                {previewPayload(ev.payload)}
-              </span>
+        <>
+          {liveText && (
+            <div style={{
+              whiteSpace: 'pre-wrap', fontSize: 12, lineHeight: 1.55, color: '#0f172a',
+              background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8,
+              padding: 12, marginBottom: 10, maxHeight: 220, overflowY: 'auto',
+            }}>
+              {liveText}
             </div>
-          ))}
-        </div>
+          )}
+          <div style={{ maxHeight: 380, overflowY: 'auto', background: '#fff', borderRadius: 8 }}>
+            {events.map((ev) => (
+              <div
+                key={ev.id}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '6px 10px',
+                  borderBottom: '1px solid #f1f5f9',
+                  background: KIND_BG[ev.kind] ?? 'transparent',
+                }}
+              >
+                <span style={{
+                  fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                  fontSize: 10.5, color: '#64748b', minWidth: 86, flexShrink: 0,
+                }}>
+                  {timeOnly(ev.timestamp)}
+                </span>
+                <span style={{
+                  fontSize: 11, fontWeight: 600, color: SEV_COLORS[ev.severity] ?? '#475569',
+                  minWidth: 200, flexShrink: 0,
+                }}>
+                  {ev.kind}
+                </span>
+                <span style={{
+                  fontSize: 11, color: '#475569', overflow: 'hidden',
+                  textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
+                }}>
+                  {previewPayload(ev.payload)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </div>
   )

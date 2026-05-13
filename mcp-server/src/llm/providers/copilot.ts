@@ -16,17 +16,18 @@
  * claude-3.7-sonnet, o1, o1-mini, o3-mini. Tool-calling support varies per
  * model (gpt-4o & claude-3.5-sonnet do; o1 family does NOT).
  */
-import type { LlmRequest, LlmResponse } from "../types";
+import type { LlmRequest, LlmResponse, LlmStreamHooks } from "../types";
 import { config } from "../../config";
 import { callOpenAiCompatible } from "./openai";
 
-export async function copilotRespond(req: LlmRequest): Promise<LlmResponse> {
+export async function copilotRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promise<LlmResponse> {
   if (!config.COPILOT_TOKEN) throw new Error("COPILOT_TOKEN is not configured");
   return callOpenAiCompatible({
     baseUrl: config.COPILOT_BASE_URL,
     apiKey:  config.COPILOT_TOKEN,
     model:   req.model || config.COPILOT_DEFAULT_MODEL,
     request: req,
+    hooks,
     extraHeaders: {
       // These mirror what the official Copilot extensions send; the proxy
       // rejects requests without an editor identity. Values are arbitrary

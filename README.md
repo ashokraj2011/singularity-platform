@@ -472,7 +472,7 @@ cd singularity-portal             && npm install && npm run dev
 | **agent-runtime** | http://localhost:3003/api/v1 | optional JWT | agent templates, memory |
 | **tool-service** | http://localhost:3002/api/v1 | optional JWT | tool registry, `/tools/discover`, `/tools/invoke` |
 | **agent-service** | http://localhost:3001/api/v1 | optional JWT | agent CRUD |
-| **context-api** | http://localhost:8000 | none | `/chat/respond`, `/docs` (OpenAPI) |
+| **context-api** | http://localhost:8000 | service token for internal routes | `/execute`, `/execute/events`, legacy `/chat/respond` |
 | **llm-gateway** | http://localhost:8001 | none | `/llm/respond`, `/llm/models`, `/docs` |
 | **context-memory** | http://localhost:8002 | none | `/memory/messages`, `/context/compile` |
 | **metrics-ledger** | http://localhost:8003 | none | `/metrics/dashboard` |
@@ -625,7 +625,10 @@ help                usage
 - `POST /api/v1/prompt-assemblies` (legacy assemble — same contract as agent-runtime used to expose)
 - `POST /api/v1/compose-and-respond` (the new value-add)
 
-`/compose-and-respond` is what workgraph's `AgentTaskExecutor` calls. It:
+`/compose-and-respond` is now a direct/debug surface. Workgraph `AGENT_TASK`
+uses Context Fabric `/execute`; Context Fabric calls composer in
+`previewOnly=true` mode, then dispatches through the governed MCP/LLM path. A
+non-preview composer call also delegates to `/execute`, not `/chat/respond`.
 
 1. Builds a substitution context from `workflowContext` (`{{instance.vars.x}}`, `{{node.priorOutputs.y}}`, `{{capability.metadata.z}}`, `{{artifacts.<label>.excerpt}}`, `{{task}}`)
 2. Loads the template's base profile + binding overlay layers
@@ -636,8 +639,8 @@ help                usage
 7. Adds `TASK_CONTEXT` (priority 900)
 8. Appends node-level `EXECUTION_OVERRIDE` layers (priority 9999)
 9. Sorts by priority, concatenates, hashes, persists `PromptAssembly` + `PromptAssemblyLayer` rows
-10. Calls `context-fabric /chat/respond` with the assembled `system_prompt` and `task` as `message`
-11. Returns a unified response with **three correlation IDs**: `promptAssemblyId`, `modelCallId`, `contextPackageId`
+10. Calls `context-fabric /execute` with the assembled `system_prompt` and `task` as `message`
+11. Returns a unified response with `promptAssemblyId` plus Context Fabric/MCP correlation IDs
 
 ### Workgraph wire (M5)
 
@@ -646,7 +649,7 @@ help                usage
 - Reads `node.config` for `agentTemplateId`, `task`, optional `artifacts`/`overrides`/`modelOverrides`/`contextPolicy`
 - Reads `instance.context._vars` and `instance.context._globals`
 - Walks prior `AgentRun` outputs to populate `priorOutputs`
-- POSTs to `prompt-composer /compose-and-respond`
+- POSTs to `context-fabric /execute`; Context Fabric calls `prompt-composer /compose-and-respond` in preview mode
 - Persists the response on `AgentRunOutput.structuredPayload` with full correlation
 - Sets `AgentRun.status = AWAITING_REVIEW` on success, `FAILED` on composer error
 - Emits `AgentRunStarted`/`AgentRunCompleted`/`AgentRunFailed` outbox events
@@ -749,15 +752,15 @@ docker compose down -v --remove-orphans  # raw equivalent
 
 These are real gaps, not nice-to-haves:
 
-- **SSO** — only IAM is authoritative for the portal. Workgraph-api needs `AUTH_PROVIDER=iam` flipped on so the same IAM JWT works platform-wide.
-- **Workgraph Agent table vs. agent-and-tools `AgentTemplate`** — two parallel registries today. The "mirror / federate / collapse" decision is unresolved.
+- **SSO** — IAM is the platform identity source. Workgraph supports `AUTH_PROVIDER=iam`; local auth remains only for offline dev.
+- **Agent source of truth** — agent-and-tools `AgentTemplate` is authoritative. Workgraph `Agent` rows are execution snapshots only and are created from selected templates at run time.
 - **AgentRun correlation columns** — `promptAssemblyId`, `modelCallId`, `contextPackageId` are stuffed in `structuredPayload` JSON. Promote to dedicated columns for queryability.
-- **Streaming** — composer + workgraph still synchronous on `/chat/respond`. No SSE token streaming yet.
-- **MCP bridge** — slated to live inside context-fabric on `:8004`; not built. Needs a per-capability MCP server registry in IAM (`mcp_servers`, `mcp_server_secrets`, `mcp_capability_bindings`).
-- **Knowledge / learning pipeline** — `CapabilityCodeSymbol`/`CapabilityCodeEmbedding`/`CapabilityKnowledgeArtifact` schemas exist in agent-runtime; no symbol extractor or embedder service populates them. The `learning_candidates → learning_profiles → DistilledMemory` pipeline lacks a distillation worker + promotion UI.
-- **Per-tenant multi-tenancy** — capability scoping is the soft boundary; no schema-per-tenant or hard isolation yet.
+- **Streaming UI polish** — MCP emits `llm.stream.delta` and Workgraph exposes SSE; the remaining work is richer per-step transcript UX and reconnect history controls.
+- **SERVER-tool approval UX** — MCP now pauses/resumes when tool-service requires approval; Workgraph still needs a dedicated approval action surface for that continuation token.
+- **Knowledge / learning pipeline** — code symbols, knowledge artifacts, bootstrap approval, and retrieval exist in slices; remaining work is M25 typed citations/compiler/hybrid retrieval hardening.
+- **Per-tenant multi-tenancy** — tenant IDs are propagated for audit/event filtering. Hard isolation still needs tenant-scoped service tokens and database-level controls.
 - **Observability** — no OpenTelemetry/Jaeger across the stack; correlation IDs exist but aren't wired into traces.
-- **Production deploy** — the Dockerfiles work; CI/CD configs (`.github/workflows`) do not exist yet.
+- **Production deploy** — Dockerfiles and CI image builds exist; environment promotion/release automation is still next.
 
 ---
 

@@ -13,10 +13,99 @@
  */
 import { Router, type Request, type Response } from 'express'
 import { prisma } from '../../lib/prisma'
+import { config } from '../../config'
 import { assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { fetchEventsForInstance, rollupFromEvents, type AuditEvent } from '../../lib/audit-gov/client'
 
 export const insightsRouter: Router = Router()
+
+type StreamEvent = {
+  id: string
+  trace_id?: string | null
+  kind?: string
+  timestamp?: string
+  payload?: unknown
+}
+
+function sseWrite(res: Response, event: string, data: unknown, id?: string) {
+  if (id) res.write(`id: ${id}\n`)
+  res.write(`event: ${event}\n`)
+  res.write(`data: ${JSON.stringify(data)}\n\n`)
+}
+
+async function traceIdsForInstance(instanceId: string): Promise<string[]> {
+  const runs = await prisma.agentRun.findMany({
+    where: { instanceId },
+    select: {
+      outputs: {
+        where: { outputType: { in: ['EXECUTION_TRACE', 'LLM_RESPONSE', 'APPROVAL_REQUIRED'] } },
+        select: { structuredPayload: true },
+      },
+    },
+  })
+  const ids = new Set<string>()
+  for (const run of runs) {
+    for (const out of run.outputs) {
+      const payload = out.structuredPayload as Record<string, unknown> | null
+      const trace = payload?.traceId
+      if (typeof trace === 'string' && trace.length > 0) ids.add(trace)
+    }
+  }
+  return Array.from(ids)
+}
+
+insightsRouter.get('/:id/events/stream', async (req: Request, res: Response, next) => {
+  try {
+    const instanceId = String(req.params.id)
+    const instance = await prisma.workflowInstance.findUnique({
+      where: { id: instanceId },
+      select: { id: true, templateId: true },
+    })
+    if (!instance) return res.status(404).json({ code: 'NOT_FOUND', message: 'Workflow instance not found' })
+    await assertInstancePermission(req.user!.userId, instance.id, 'view')
+
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+    })
+    res.write(': connected\n\n')
+
+    const seen = new Set(String(req.query.since_id ?? '').split(',').filter(Boolean))
+    const started = Date.now()
+    const maxMs = Math.min(Number(req.query.max_ms ?? 120_000), 10 * 60_000)
+    const intervalMs = Math.max(Number(req.query.poll_ms ?? 800), 250)
+    let closed = false
+    req.on('close', () => { closed = true })
+
+    while (!closed && Date.now() - started < maxMs) {
+      const traceIds = await traceIdsForInstance(instance.id)
+      for (const traceId of traceIds) {
+        const url = new URL('/execute/events', config.CONTEXT_FABRIC_URL)
+        url.searchParams.set('trace_id', traceId)
+        url.searchParams.set('limit', '200')
+        const cf = await fetch(url, {
+          headers: config.CONTEXT_FABRIC_SERVICE_TOKEN
+            ? { 'X-Service-Token': config.CONTEXT_FABRIC_SERVICE_TOKEN }
+            : undefined,
+        }).catch(() => null)
+        if (!cf?.ok) continue
+        const body = await cf.json().catch(() => ({})) as { events?: StreamEvent[] }
+        for (const ev of body.events ?? []) {
+          if (!ev.id || seen.has(ev.id)) continue
+          seen.add(ev.id)
+          sseWrite(res, ev.kind ?? 'event', ev, ev.id)
+        }
+      }
+      res.write(': heartbeat\n\n')
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    }
+    sseWrite(res, 'done', { reason: closed ? 'client_closed' : 'timeout' })
+    res.end()
+  } catch (err) {
+    next(err)
+  }
+})
 
 interface NodeInsight {
   id: string

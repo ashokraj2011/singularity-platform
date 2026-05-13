@@ -1,0 +1,87 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub environment to deploy to
+        required: true
+        default: office-laptop
+      image_tag:
+        description: Image tag to deploy
+        required: true
+        default: main
+      compose_profile:
+        description: Optional docker compose profile
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    name: deploy ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      HAS_DEPLOY_SECRETS: ${{ secrets.DEPLOY_HOST != '' && secrets.DEPLOY_USER != '' && secrets.DEPLOY_SSH_KEY != '' && secrets.DEPLOY_PATH != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate deployment inputs
+        run: |
+          set -euo pipefail
+          test -n "${{ inputs.image_tag }}"
+          echo "Deploying tag ${{ inputs.image_tag }} to ${{ inputs.environment }}"
+
+      - name: Render deployment plan
+        run: |
+          cat <<'PLAN'
+          This workflow deploys through SSH when these environment secrets are set:
+            DEPLOY_HOST
+            DEPLOY_USER
+            DEPLOY_SSH_KEY
+            DEPLOY_PATH
+
+          The remote host is expected to have Docker Compose and this repo
+          checked out at DEPLOY_PATH. It runs:
+            git fetch && git checkout main && git pull --ff-only
+            IMAGE_TAG=<tag> docker compose pull
+            IMAGE_TAG=<tag> docker compose up -d --remove-orphans
+          PLAN
+
+      - name: Configure SSH
+        if: env.HAS_DEPLOY_SECRETS == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy over SSH
+        if: env.HAS_DEPLOY_SECRETS == 'true'
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          COMPOSE_PROFILE: ${{ inputs.compose_profile }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd '$DEPLOY_PATH' && \
+             git fetch origin main && git checkout main && git pull --ff-only && \
+             export IMAGE_TAG='$IMAGE_TAG' && \
+             if [ -n '$COMPOSE_PROFILE' ]; then export COMPOSE_PROFILES='$COMPOSE_PROFILE'; fi && \
+             docker compose config -q && \
+             docker compose pull && \
+             docker compose up -d --remove-orphans"
+
+      - name: No-op without deployment secrets
+        if: env.HAS_DEPLOY_SECRETS != 'true'
+        run: |
+          echo "Deployment secrets are not configured for this environment."
+          echo "CI image build/publish still runs from ci.yml; configure secrets to enable remote deploy."
