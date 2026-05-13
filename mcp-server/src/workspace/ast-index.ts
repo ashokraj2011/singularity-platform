@@ -8,7 +8,7 @@ import { events } from "../events/bus";
 import { currentBranch, currentHeadSha } from "./git-workspace";
 import { sandboxRoot, SOURCE_EXT, SKIP_DIRS, toRelativeSandboxPath } from "./sandbox";
 
-type LangKey = "python" | "typescript" | "tsx" | "javascript";
+type LangKey = "python" | "typescript" | "tsx" | "javascript" | "go" | "java";
 
 type TreeNode = {
   type: string;
@@ -62,6 +62,11 @@ const LANG_FILE: Record<LangKey, string> = {
   typescript: "tree-sitter-typescript.wasm",
   tsx: "tree-sitter-tsx.wasm",
   javascript: "tree-sitter-javascript.wasm",
+  // M27.5 — both ship in tree-sitter-wasms/out/ already; no additional
+  // npm dep needed. Verify present at module load and degrade gracefully
+  // if a deployment strips the WASM files.
+  go: "tree-sitter-go.wasm",
+  java: "tree-sitter-java.wasm",
 };
 
 let SQL: SqlJsStatic | null = null;
@@ -280,6 +285,8 @@ function detectLanguage(filePath: string): LangKey | null {
   if (filePath.endsWith(".tsx")) return "tsx";
   if (filePath.endsWith(".ts")) return "typescript";
   if (/\.(js|jsx|mjs|cjs)$/.test(filePath)) return "javascript";
+  if (filePath.endsWith(".go")) return "go";
+  if (filePath.endsWith(".java")) return "java";
   return null;
 }
 
@@ -336,12 +343,15 @@ function signatureOf(content: string, startLine: number, endLine: number): strin
 function kindOf(node: TreeNode): string | null {
   switch (node.type) {
     case "function_definition":
-    case "function_declaration":
+    case "function_declaration":   // TS/JS top-level; Go top-level func
       return "function";
     case "class_definition":
     case "class_declaration":
+    case "record_declaration":     // Java 14+ record (semantically a class)
       return "class";
-    case "method_definition":
+    case "method_definition":      // TS/JS
+    case "method_declaration":     // Java + Go (Go method = func + receiver)
+    case "constructor_declaration":// Java
       return "method";
     case "interface_declaration":
       return "interface";
@@ -351,10 +361,26 @@ function kindOf(node: TreeNode): string | null {
       return "enum";
     case "lexical_declaration":
     case "variable_declaration":
+    case "field_declaration":      // Java class field
+    case "const_spec":             // Go: actual name-bearing node inside const_declaration
+    case "var_spec":               // Go: actual name-bearing node inside var_declaration
       return "const";
     default:
       return null;
   }
+}
+
+// M27.5 — Go's `type X struct {...}` and `type X interface {...}` are nested
+// inside `type_declaration > type_spec > {struct_type|interface_type}`. The
+// generic kindOf() can't see across that boundary, so extractSymbols() peeks
+// at the type-field child here and re-classifies the type_spec.
+function goKindForTypeSpec(node: TreeNode): string | null {
+  const typeChild = node.childForFieldName("type");
+  if (!typeChild) return null;
+  if (typeChild.type === "struct_type")    return "class";
+  if (typeChild.type === "interface_type") return "interface";
+  // Aliases (`type Foo = bar`) are still useful to surface.
+  return "type";
 }
 
 function directDeclaratorName(node: TreeNode, content: string): string | null {
@@ -377,14 +403,22 @@ function extractImports(root: TreeNode, content: string, filePath: string): Arra
     if ([
       "import_statement", "import_from_statement", "import_declaration", "export_statement",
       "export_declaration",
+      // M27.5 — Java single import + on-demand (`import a.b.*;`).
+      "import_spec_list",
+      // Go: top-level `import "fmt"` parses as `import_declaration` (already
+      // covered) which contains `import_spec` children when grouped.
+      // We capture the spec_list once to avoid duplicating each spec.
     ].includes(node.type)) {
       const raw = nodeText(content, node).trim().slice(0, 1000);
-      const match = raw.match(/from\s+["']([^"']+)["']|import\s+["']([^"']+)["']|require\(["']([^"']+)["']\)/);
+      const match = raw.match(
+        // ts/js/py + go-style "fmt" / java "java.util.Map"
+        /from\s+["']([^"']+)["']|import\s+["']([^"']+)["']|require\(["']([^"']+)["']\)|^import\s+(?:static\s+)?([\w.*]+)\s*;?$/m,
+      );
       deps.push({
         id: sha256(`${filePath}:${node.startPosition.row + 1}:${raw}`).slice(0, 32),
         filePath,
         kind: node.type.includes("export") ? "export" : "import",
-        target: match?.[1] ?? match?.[2] ?? match?.[3],
+        target: match?.[1] ?? match?.[2] ?? match?.[3] ?? match?.[4],
         raw,
         line: node.startPosition.row + 1,
       });
@@ -402,11 +436,18 @@ function extractSymbols(root: TreeNode, content: string, filePath: string): Symb
   const hits: SymbolHit[] = [];
   const classStack: string[] = [];
   function visit(node: TreeNode): void {
-    const kind = kindOf(node);
+    // M27.5 — Go's `type X struct/interface {...}` is two levels deep; fall
+    // through to a Go-specific classifier when kindOf() declines.
+    let kind = kindOf(node);
+    if (!kind && node.type === "type_spec") kind = goKindForTypeSpec(node);
     let pushedClass = false;
     if (kind) {
-      let name = nameOf(node, content);
-      if (!name && kind === "const") name = directDeclaratorName(node, content);
+      // M27.5 — for `const` kind, prefer the variable_declarator name over
+      // nameOf's identifier fallback. Otherwise Java `private String foo;`
+      // grabs the *type* `String` (a type_identifier) instead of `foo`.
+      let name = kind === "const"
+        ? (directDeclaratorName(node, content) ?? nameOf(node, content))
+        : nameOf(node, content);
       if (name) {
         const startLine = node.startPosition.row + 1;
         const endLine = node.endPosition.row + 1;
@@ -424,7 +465,8 @@ function extractSymbols(root: TreeNode, content: string, filePath: string): Symb
           parentName,
           summary: `${kind} ${name} in ${filePath}:${startLine}-${endLine}`,
         });
-        if (kind === "class") {
+        if (kind === "class" || kind === "interface") {
+          // Java methods inside an interface should also pick up parentName.
           classStack.push(name);
           pushedClass = true;
         }
