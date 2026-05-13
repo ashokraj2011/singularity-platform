@@ -15,6 +15,9 @@ import {
   reciprocalRankFusion, retrievalMode, taskSignature,
 } from "./retrieval";
 import { compileCapsuleViaLlm, compileMode } from "./llm-capsule-compiler";
+import {
+  tryAcquireCompileSlot, releaseCompileSlot, capsuleExpiry,
+} from "./capsule-gc";
 import { emitAuditEvent } from "../../lib/audit-gov-emit";
 
 // M15 — hybrid scoring helper. Cosine ∈ [-1, 1] → [0, 2] via (cos+1)/2 only
@@ -150,6 +153,10 @@ export const composeService = {
       codeContextSkipped: false as boolean,
       // M25.5 — true when served from CapabilityCompiledContext cache.
       capsuleHit: false as boolean,
+      // M25.5 C6 — true when ?nocache=1 / Bypass-Cache / bypassCache:true
+      // forced the cold path. Surfaced on the response + audit emit so
+      // operators can correlate edits to refreshed retrievals.
+      capsuleBypassed: false as boolean,
     };
 
     // Build the substitution context once.
@@ -187,11 +194,20 @@ export const composeService = {
         // Skip the 3 semantic queries + reranking when a precompiled capsule
         // matches this (capability, agentTemplate, intent, contentRevision).
         // Hot path: serve the cached layers + chunks directly.
-        compiledCapsule = await this.lookupCapsule({
-          capabilityId,
-          agentTemplateId: input.agentTemplateId,
-          intent: input.task,
-        });
+        //
+        // M25.5 C6 — when the caller asked for a bypass (operator editing
+        // knowledge, debugging, regression-testing) we skip the lookup
+        // entirely. We still let the cold path run + store a fresh capsule
+        // below unless bypassCache is set, which suppresses that too.
+        if (input.bypassCache) {
+          retrievalStats.capsuleBypassed = true;
+        } else {
+          compiledCapsule = await this.lookupCapsule({
+            capabilityId,
+            agentTemplateId: input.agentTemplateId,
+            intent: input.task,
+          });
+        }
         if (compiledCapsule) {
           retrievalStats.capsuleHit = true;
           // Replay the capsule's cached layers + chunks. We trust the capsule
@@ -363,7 +379,10 @@ export const composeService = {
       } // !compiledCapsule — end of retrieval block
       // M25.5 — on cache miss, fire-and-forget write the capsule so the NEXT
       // request with the same task signature can skip retrieval entirely.
-      if (!compiledCapsule && evidenceChunks.length > 0) {
+      // M25.5 C6 — when the caller bypassed the cache, also suppress the
+      // store. An operator editing content shouldn't accidentally re-seed a
+      // capsule from a not-yet-final state of the knowledge base.
+      if (!compiledCapsule && !input.bypassCache && evidenceChunks.length > 0) {
         // Only cache layers that came from semantic retrieval (RUNTIME_EVIDENCE
         // / MEMORY_CONTEXT / CODE_CONTEXT). Other layer types are profile- or
         // workflow-scoped and recompute correctly every call.
@@ -509,6 +528,7 @@ export const composeService = {
         retrievalStats,
         previewOnly:       input.previewOnly === true,
         capsuleHit:        retrievalStats.capsuleHit,
+        capsuleBypassed:   retrievalStats.capsuleBypassed,
         // First few citation_keys for quick eyeballing in /audit. Full chunks
         // stay in PromptAssembly.evidenceRefs.
         citations: evidenceChunks.slice(0, 6).map(c => c.citation_key),
@@ -942,50 +962,69 @@ Input contract: available to the execution layer; ask for only the fields needed
     layers:          AssembledLayer[];
     chunks:          RetrievedChunk[];
   }): Promise<void> {
-    const contentRevision = await this.capabilityContentRevision(opts.capabilityId);
-    const sig = taskSignature({
-      capabilityId:    opts.capabilityId,
-      agentTemplateId: opts.agentTemplateId,
-      intent:          opts.intent,
-      contentRevision,
-    });
-
-    // M25.5.next — when CAPSULE_COMPILE_MODE=LLM we attempt to compress the
-    // chunks into one paragraph via mcp-server. Failure path silently falls
-    // back to RAW mode so the cache is never empty.
-    let mode: "RAW" | "LLM" = "RAW";
-    let compiledContent = JSON.stringify(opts.layers);
-    if (compileMode() === "LLM" && opts.chunks.length > 0) {
-      const llm = await compileCapsuleViaLlm(opts.intent, opts.chunks);
-      if (llm && llm.paragraph) {
-        mode = "LLM";
-        compiledContent = llm.paragraph;
-      }
+    // M25.5 C3 — cap concurrent compiles per capability. Without this, an
+    // invalidation that takes 20 task signatures cold + 50 concurrent
+    // requesters would fire 50 parallel mcp-server compile calls. Bail
+    // early instead — the cold path already served raw chunks to this
+    // request, so we just skip the storeCapsule write.
+    if (!tryAcquireCompileSlot(opts.capabilityId)) {
+      logger.info({ capabilityId: opts.capabilityId },
+        "[compose] storeCapsule skipped — compile-slot cap reached (C3)");
+      return;
     }
-
-    const estimatedTokens = estimateTokens(compiledContent);
-    await prisma.capabilityCompiledContext.upsert({
-      where: { taskSignature: sig },
-      create: {
+    try {
+      const contentRevision = await this.capabilityContentRevision(opts.capabilityId);
+      const sig = taskSignature({
         capabilityId:    opts.capabilityId,
         agentTemplateId: opts.agentTemplateId,
-        taskSignature:   sig,
-        intent:          opts.intent.slice(0, 2000),
-        compiledContent,
-        compileMode:     mode,
-        citations:       opts.chunks as never,
-        estimatedTokens,
-        status:          "READY",
-      },
-      update: {
-        compiledContent,
-        compileMode:   mode,
-        citations:     opts.chunks as never,
-        estimatedTokens,
-        status:        "READY",
-        intent:        opts.intent.slice(0, 2000),
-      },
-    });
+        intent:          opts.intent,
+        contentRevision,
+      });
+
+      // M25.5.next — when CAPSULE_COMPILE_MODE=LLM we attempt to compress the
+      // chunks into one paragraph via mcp-server. Failure path silently falls
+      // back to RAW mode so the cache is never empty.
+      let mode: "RAW" | "LLM" = "RAW";
+      let compiledContent = JSON.stringify(opts.layers);
+      if (compileMode() === "LLM" && opts.chunks.length > 0) {
+        const llm = await compileCapsuleViaLlm(opts.intent, opts.chunks);
+        if (llm && llm.paragraph) {
+          mode = "LLM";
+          compiledContent = llm.paragraph;
+        }
+      }
+
+      // M25.5 C9 — stamp TTL on every write so the GC sweeper has a
+      // predicate to act on. capsuleExpiry() reads CAPSULE_TTL_DAYS.
+      const expiresAt = capsuleExpiry();
+      const estimatedTokens = estimateTokens(compiledContent);
+      await prisma.capabilityCompiledContext.upsert({
+        where: { taskSignature: sig },
+        create: {
+          capabilityId:    opts.capabilityId,
+          agentTemplateId: opts.agentTemplateId,
+          taskSignature:   sig,
+          intent:          opts.intent.slice(0, 2000),
+          compiledContent,
+          compileMode:     mode,
+          citations:       opts.chunks as never,
+          estimatedTokens,
+          status:          "READY",
+          expiresAt,
+        },
+        update: {
+          compiledContent,
+          compileMode:   mode,
+          citations:     opts.chunks as never,
+          estimatedTokens,
+          status:        "READY",
+          intent:        opts.intent.slice(0, 2000),
+          expiresAt,
+        },
+      });
+    } finally {
+      releaseCompileSlot(opts.capabilityId);
+    }
   },
 };
 

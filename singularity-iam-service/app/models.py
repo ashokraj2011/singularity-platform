@@ -413,6 +413,40 @@ class Skill(Base):
 
 
 # ---------------------------------------------------------------------------
+# M26 — User devices (laptop-resident mcp-server)
+# ---------------------------------------------------------------------------
+# One row per (user, laptop). The `singularity-mcp` CLI mints a device JWT
+# via `POST /api/v1/auth/device-token`, stores it in the OS keychain, and
+# uses it on every reconnect to context-fabric's laptop-bridge WS. Revoking
+# a row (DELETE /api/v1/devices/:id sets revoked_at) makes the bridge drop
+# the matching live connection on the next 60s sweep.
+
+class UserDevice(Base):
+    __tablename__ = "user_devices"
+    __table_args__ = (
+        UniqueConstraint("user_id", "device_id", name="uq_user_devices_user_device"),
+        Index("idx_user_devices_user", "user_id"),
+        Index("idx_user_devices_revoked", "revoked_at"),
+        {"schema": "iam"},
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("iam.users.id", ondelete="CASCADE"), nullable=False,
+    )
+    # Client-generated UUID (kept stable across keychain rotations on the
+    # same laptop). Plan P5: don't trust MAC / hostname.
+    device_id: Mapped[str] = mapped_column(String, nullable=False)
+    device_name: Mapped[Optional[str]] = mapped_column(String)
+    scopes: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
+    # Bridge updates this on every heartbeat so operators can see how long
+    # the laptop has been quiet. Not used for revocation by itself.
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(_tstz())
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(_tstz())
+
+
+# ---------------------------------------------------------------------------
 # M11.e — Event Bus
 # ---------------------------------------------------------------------------
 # Mirror of the workgraph-side schema so subscribers see the same canonical

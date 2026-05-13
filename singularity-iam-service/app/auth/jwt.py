@@ -43,6 +43,43 @@ def create_service_token(
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
+def create_device_token(
+    *,
+    user_id: str,
+    email: str,
+    device_id: str,
+    device_name: str,
+    scopes: list[str],
+    ttl_days: int = 90,
+) -> str:
+    """M26 — long-lived JWT for a user's laptop-resident mcp-server.
+
+    Minted by `POST /api/v1/auth/device-token` after the user logs into the
+    platform; stored in the laptop's OS keychain by the `singularity-mcp`
+    CLI. The platform's reverse-WebSocket bridge (context-fabric
+    `/api/laptop-bridge/connect`) verifies these tokens to identify which
+    user's machine is on the other end of the socket.
+
+    Wire-compat with the pseudo-IAM mint at `pseudo-iam-service/src/index.ts`:
+    same claim shape (`kind:"device"`, `sub:user_id`, `device_id`,
+    `device_name`, `email`, `scopes`) signed with the shared `JWT_SECRET`.
+    """
+    expire = datetime.now(timezone.utc) + timedelta(days=ttl_days)
+    payload = {
+        "sub":          user_id,
+        "kind":         "device",
+        "email":        email,
+        "device_id":    device_id,
+        "device_name":  device_name,
+        "scopes":       list(scopes),
+        "exp":          expire,
+        # Devices are tied to a real user — they inherit the user's super-admin
+        # status, but downstream consumers should prefer `scopes` for gating.
+        "is_super_admin": True,
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
 def decode_token(token: str) -> dict:
     try:
         return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])

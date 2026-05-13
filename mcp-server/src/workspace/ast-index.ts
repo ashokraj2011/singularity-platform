@@ -39,6 +39,9 @@ export interface AstIndexStats {
   branch?: string;
   headSha?: string;
   error?: string;
+  /** M27.5 — count of files dropped from the on-disk index during this run
+   *  to keep symbol count under MCP_AST_MAX_SYMBOLS. */
+  evictedFiles?: number;
 }
 
 export interface SymbolHit {
@@ -66,11 +69,37 @@ let db: Database | null = null;
 let parserInited = false;
 const langCache = new Map<LangKey, Language>();
 let lastStats: AstIndexStats | null = null;
+// M27.5 — record which sandbox the loaded SQLite DB belongs to so we can
+// detect a swap (e.g. the user re-runs `singularity-mcp start` against a
+// different repo) and reopen the file from disk instead of corrupting
+// the previous index by writing to the new path.
+let loadedSandboxRoot: string | null = null;
 
 function astDbPath(): string {
   return config.MCP_AST_DB_PATH
     ? path.resolve(config.MCP_AST_DB_PATH)
     : path.join(sandboxRoot(), ".singularity", "mcp-ast.sqlite");
+}
+
+/** M27.5 — drop the in-memory database handle when the sandbox path has
+ *  changed since we opened it. Callers that mutate the DB (indexFile,
+ *  persistDb) must call this first so they don't write the previous
+ *  workspace's index to disk under a different repo's path. */
+function ensureDbMatchesSandbox(): void {
+  const current = sandboxRoot();
+  if (loadedSandboxRoot && loadedSandboxRoot !== current) {
+    // The next `getDb()` call will read from `current`'s `.singularity/`
+    // path (or create a fresh DB). We deliberately don't `persistDb()`
+    // here — the old handle's bytes belong to the OLD sandbox path; the
+    // last persist while we were operating on it already covered it.
+    db = null;
+    loadedSandboxRoot = null;
+    events.publish({
+      kind: "workspace.ast.updated",
+      correlation: { mcpInvocationId: "workspace" },
+      payload: { reason: "sandbox_swap", previousSandbox: loadedSandboxRoot, newSandbox: current },
+    });
+  }
 }
 
 async function loadSql(): Promise<SqlJsStatic> {
@@ -81,6 +110,7 @@ async function loadSql(): Promise<SqlJsStatic> {
 }
 
 async function getDb(): Promise<Database> {
+  ensureDbMatchesSandbox();
   if (db) return db;
   const sql = await loadSql();
   const file = astDbPath();
@@ -90,6 +120,7 @@ async function getDb(): Promise<Database> {
   } else {
     db = new sql.Database();
   }
+  loadedSandboxRoot = sandboxRoot();
   db.run(`
     CREATE TABLE IF NOT EXISTS metadata (
       key TEXT PRIMARY KEY,
@@ -147,6 +178,72 @@ function persistDb(): void {
   if (!db) return;
   fs.mkdirSync(path.dirname(astDbPath()), { recursive: true });
   fs.writeFileSync(astDbPath(), Buffer.from(db.export()));
+}
+
+/**
+ * M27.5 — LRU eviction. When `symbols` rowcount exceeds
+ * `MCP_AST_MAX_SYMBOLS`, drop the oldest-indexed files (and their symbols /
+ * deps / slices) until the count is back under cap. Returns the number of
+ * files evicted. No-op + harmless if the table is under cap.
+ *
+ * The cap is on rows in `symbols`, not file count, so a monorepo with many
+ * small files behaves the same as one with a few huge ones.
+ */
+async function evictIfOversize(): Promise<number> {
+  const database = await getDb();
+  const max = config.MCP_AST_MAX_SYMBOLS;
+  let current = Number(database.exec("SELECT count(*) FROM symbols")[0]?.values[0]?.[0] ?? 0);
+  if (current <= max) return 0;
+
+  // Walk files oldest-first. Bound the loop with the actual deletion count
+  // so a runaway query can't loop forever.
+  const stmt = database.prepare("SELECT path FROM files ORDER BY indexed_at ASC LIMIT 5000");
+  const orderedPaths: string[] = [];
+  try {
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      const p = row.path as string;
+      if (p) orderedPaths.push(p);
+    }
+  } finally {
+    stmt.free();
+  }
+
+  let evicted = 0;
+  for (const p of orderedPaths) {
+    if (current <= max) break;
+    const droppedRows = database.exec(`SELECT count(*) FROM symbols WHERE file_path = ?`, [p])[0]?.values[0]?.[0];
+    const dropped = Number(droppedRows ?? 0);
+    if (dropped <= 0) {
+      // Still delete the file row + deps to keep the index consistent.
+      database.run("DELETE FROM dependencies WHERE file_path = ?", [p]);
+      database.run("DELETE FROM ast_slices WHERE file_path = ?", [p]);
+      database.run("DELETE FROM files WHERE path = ?", [p]);
+      evicted += 1;
+      continue;
+    }
+    database.run("DELETE FROM symbols WHERE file_path = ?", [p]);
+    database.run("DELETE FROM dependencies WHERE file_path = ?", [p]);
+    database.run("DELETE FROM ast_slices WHERE file_path = ?", [p]);
+    database.run("DELETE FROM files WHERE path = ?", [p]);
+    current -= dropped;
+    evicted += 1;
+  }
+
+  if (evicted > 0) {
+    persistDb();
+    events.publish({
+      kind: "workspace.ast.updated",
+      correlation: { mcpInvocationId: "workspace" },
+      payload: {
+        reason: "evict_lru",
+        evictedFiles: evicted,
+        symbolsAfter: current,
+        capacity: max,
+      },
+    });
+  }
+  return evicted;
 }
 
 async function ensureParser(): Promise<void> {
@@ -400,6 +497,8 @@ async function indexFile(file: FileToIndex): Promise<{ symbols: number; dependen
 
 export async function indexWorkspace(reason = "manual"): Promise<AstIndexStats> {
   try {
+    // M27.5 — bail in-memory handle if the sandbox swapped since last call.
+    ensureDbMatchesSandbox();
     const files: FileToIndex[] = [];
     await walk(sandboxRoot(), files, { bytes: 0 });
     let indexedSymbols = 0;
@@ -409,6 +508,11 @@ export async function indexWorkspace(reason = "manual"): Promise<AstIndexStats> 
       indexedSymbols += result.symbols;
       indexedDependencies += result.dependencies;
     }
+    // M27.5 — cap the on-disk index size by evicting the oldest-indexed
+    // files until symbol count is back under MCP_AST_MAX_SYMBOLS (default
+    // 250k). Touched files indexed during this call have fresh
+    // indexed_at so they survive eviction.
+    const evicted = await evictIfOversize();
     lastStats = {
       status: "READY",
       indexedFiles: files.length,
@@ -417,6 +521,7 @@ export async function indexWorkspace(reason = "manual"): Promise<AstIndexStats> 
       dbPath: astDbPath(),
       branch: await currentBranch(),
       headSha: await currentHeadSha(),
+      ...(evicted > 0 ? { evictedFiles: evicted } as Partial<AstIndexStats> : {}),
     };
     events.publish({
       kind: reason === "startup" ? "workspace.ast.indexed" : "workspace.ast.updated",

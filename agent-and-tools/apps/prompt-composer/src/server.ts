@@ -2,6 +2,7 @@ import { app } from "./app";
 import { env } from "./config/env";
 import { logger } from "./config/logger";
 import { startSelfRegistration } from "./lib/platform-registry/register";
+import { startCapsuleGc } from "./modules/compose/capsule-gc";
 
 // M11.a — self-register with platform-registry (no-op if env unset)
 startSelfRegistration({
@@ -20,6 +21,12 @@ startSelfRegistration({
     { capability_key: "prompt.compose-and-respond", description: "Full pipeline: compose -> context-fabric -> response" },
   ],
 }, { log: (m) => logger.info(`[platform-registry] ${m}`) });
+
+// M25.5 C9 — capsule GC sweeper. Drops `expiresAt < now()` rows + cold
+// `hitCount=0` rows older than COLD_DAYS so storage stays bounded as task
+// signatures churn. interval/TTL configurable via CAPSULE_GC_INTERVAL_MS,
+// CAPSULE_TTL_DAYS, CAPSULE_COLD_DAYS. No-ops in test envs that mock Prisma.
+startCapsuleGc();
 
 app.listen(env.PORT, () => {
   logger.info(`[prompt-composer] listening on port ${env.PORT}`);

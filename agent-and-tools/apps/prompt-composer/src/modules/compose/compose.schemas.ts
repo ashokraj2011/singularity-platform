@@ -58,5 +58,11 @@ export const composeSchema = z.object({
     limit: z.number().int().default(8),
   }).default({ enabled: true, riskMax: "medium", limit: 8 }),
   previewOnly: z.boolean().default(false),
+  // M25.5 C6 — operator escape hatch. When true, lookupCapsule() is skipped
+  // (cold path runs every time) AND no fresh capsule is stored. Use this
+  // when editing knowledge artifacts and you need to see the live retrieval
+  // result, not a stale compiled paragraph. Set via `?nocache=1` query
+  // param or `Bypass-Cache: 1` header at the route level.
+  bypassCache: z.boolean().default(false),
 });
 export type ComposeInput = z.infer<typeof composeSchema>;

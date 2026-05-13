@@ -8,6 +8,7 @@ from app.authz.schemas import (
     AuthzCheckRequest, AuthzCheckResponse, BulkCheckRequest, BulkCheckResponse,
 )
 from app.audit.service import record_event
+from app.audit_gov_emit import emit_audit_event
 
 router = APIRouter(prefix="/authz", tags=["authz"])
 
@@ -42,6 +43,31 @@ async def authz_check(
             payload={"action": body.action, "resource_type": body.resource_type},
         )
         await db.commit()
+
+    # M22 / fan-out — emit a single `iam.authz.decision` event into audit-gov
+    # for every decision (allow + deny + super-admin). The local audit_events
+    # table stays the IAM-internal source of truth; this gives the platform a
+    # cross-service ledger for compliance and SIEM. Fire-and-forget; failure
+    # MUST NOT block the authz response.
+    emit_audit_event(
+        kind="iam.authz.decision",
+        actor_id=body.user_id,
+        subject_type="Capability",
+        subject_id=body.capability_id,
+        capability_id=body.capability_id,
+        severity="info" if result.allowed else "warn",
+        payload={
+            "allowed":                     result.allowed,
+            "reason":                      result.reason,
+            "action":                      body.action,
+            "resource_type":               body.resource_type,
+            "resource_id":                 body.resource_id,
+            "requesting_capability_id":    body.requesting_capability_id,
+            "roles":                       result.roles,
+            "permissions":                 result.permissions,
+            "source":                      result.source,
+        },
+    )
 
     return AuthzCheckResponse(
         allowed=result.allowed,

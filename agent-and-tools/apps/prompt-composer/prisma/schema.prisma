@@ -202,6 +202,9 @@ model CapabilityCompiledContext {
 
   @@index([capabilityId, agentTemplateId])
   @@index([taskSignature])
+  // M25.5 C9 — GC sweep predicate hits this. Without it, the periodic
+  // delete-where-expired query is a seq scan at scale.
+  @@index([expiresAt])
 }
 
 model PromptAssemblyLayer {

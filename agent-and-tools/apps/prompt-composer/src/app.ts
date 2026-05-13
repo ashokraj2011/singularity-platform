@@ -7,6 +7,7 @@ import { requestIdMiddleware } from "./middleware/request-id.middleware";
 import { optionalAuth } from "./middleware/auth.middleware";
 import { promptProfileRoutes, promptLayerRoutes, promptAssemblyRoutes } from "./modules/prompts/prompt.routes";
 import { composeRoutes, composeDebugRoutes } from "./modules/compose/compose.routes";
+import { compiledContextRoutes } from "./modules/compose/compiled-context.routes";
 
 export const app = express();
 
@@ -30,5 +31,7 @@ app.use("/api/v1/prompt-layers", promptLayerRoutes);
 app.use("/api/v1/prompt-assemblies", promptAssemblyRoutes);
 app.use("/api/v1/compose-and-respond", composeRoutes);
 app.use("/api/v1/compose-and-respond/debug-retrieval", composeDebugRoutes);
+// M25.5 C8 — operator audit hatch for compiled-context capsules.
+app.use("/api/v1/compiled-contexts", compiledContextRoutes);
 
 app.use(errorMiddleware);

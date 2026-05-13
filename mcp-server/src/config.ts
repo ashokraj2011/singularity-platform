@@ -47,6 +47,10 @@ const schema = z.object({
   MCP_AST_DB_PATH: z.string().optional(),
   MCP_AST_MAX_FILE_BYTES: z.coerce.number().int().positive().default(200_000),
   MCP_AST_MAX_WORKSPACE_BYTES: z.coerce.number().int().positive().default(24_000_000),
+  // M27.5 — symbol cap. When the on-disk SQLite grows past this many rows
+  // we LRU-evict the oldest-indexed files until back under cap. Tune up for
+  // monorepos; tune down on laptops with constrained disk.
+  MCP_AST_MAX_SYMBOLS: z.coerce.number().int().positive().default(250_000),
   MCP_WORK_BRANCH_PREFIX: z.string().default("sg"),
 });
 
