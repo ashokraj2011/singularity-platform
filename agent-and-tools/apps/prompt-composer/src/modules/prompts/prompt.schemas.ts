@@ -30,6 +30,19 @@ export const createLayerSchema = z.object({
   isRequired: z.boolean().default(false),
 });
 
+export const updateLayerSchema = z.object({
+  name: z.string().min(2).optional(),
+  layerType: promptLayerType.optional(),
+  scopeType: promptScopeType.optional(),
+  scopeId: z.string().optional().nullable(),
+  content: z.string().min(1).optional(),
+  priority: z.number().int().optional(),
+  isRequired: z.boolean().optional(),
+  status: z.enum(["DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"]).optional(),
+}).refine((value) => Object.keys(value).length > 0, {
+  message: "At least one editable field is required.",
+});
+
 export const attachLayerSchema = z.object({
   promptLayerId: z.string().uuid(),
   priority: z.number().int().default(100),

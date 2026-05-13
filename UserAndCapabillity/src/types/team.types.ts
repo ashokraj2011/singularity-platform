@@ -4,7 +4,9 @@ export interface Team {
   name: string
   description?: string
   bu_id?: string
+  parent_team_id?: string
   metadata: Record<string, unknown>
+  tags: string[]
   created_at: string
   updated_at: string
 }
@@ -22,7 +24,9 @@ export interface CreateTeamRequest {
   name: string
   description?: string
   bu_key?: string
+  parent_team_id?: string
   metadata?: Record<string, unknown>
+  tags?: string[]
 }
 
 export interface AddTeamMemberRequest {

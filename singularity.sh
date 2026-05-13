@@ -72,14 +72,9 @@ case "$cmd" in
     else
       info "starting master stack …"
       docker compose up -d
-      # Side stacks that live in their own compose files but are part of the
-      # showcase: pseudo-IAM (auth authority for the SPA) + audit-governance
-      # (cross-service ledger). Bring them up too so `./singularity.sh up`
-      # is a single-command boot.
-      if [ -d pseudo-iam-service ]; then
-        info "starting pseudo-iam …"
-        ( cd pseudo-iam-service && docker compose up -d )
-      fi
+      # Side stack that lives in its own compose file but is part of the
+      # showcase: audit-governance (cross-service ledger). Real IAM is part
+      # of the master compose and remains the default source of truth.
       if [ -d audit-governance-service ]; then
         info "starting audit-governance …"
         ( cd audit-governance-service && docker compose up -d )
@@ -92,9 +87,6 @@ case "$cmd" in
     require_compose
     info "stopping master stack (volumes preserved) …"
     docker compose down
-    if [ -d pseudo-iam-service ]; then
-      ( cd pseudo-iam-service && docker compose down )
-    fi
     if [ -d audit-governance-service ]; then
       ( cd audit-governance-service && docker compose down )
     fi
@@ -110,9 +102,6 @@ case "$cmd" in
       exit 1
     fi
     docker compose down -v
-    if [ -d pseudo-iam-service ]; then
-      ( cd pseudo-iam-service && docker compose down -v )
-    fi
     if [ -d audit-governance-service ]; then
       ( cd audit-governance-service && docker compose down -v )
     fi

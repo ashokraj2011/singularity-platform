@@ -5,6 +5,7 @@ export interface BusinessUnit {
   description?: string
   parent_bu_id?: string
   metadata: Record<string, unknown>
+  tags?: string[]
   created_at: string
   updated_at: string
 }
@@ -15,4 +16,5 @@ export interface CreateBusinessUnitRequest {
   description?: string
   parent_bu_id?: string
   metadata?: Record<string, unknown>
+  tags?: string[]
 }

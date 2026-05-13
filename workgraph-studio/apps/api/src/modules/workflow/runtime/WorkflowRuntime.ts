@@ -33,6 +33,8 @@ type ArtifactBinding = {
   required?: boolean
 }
 
+type KVPair = { key?: string; path?: string; value?: string }
+
 /**
  * For each OUTPUT artifact with a bindingPath, write the corresponding output
  * field into context at that path. Looks up the output value first by artifact
@@ -70,6 +72,47 @@ function setPath(target: Record<string, unknown>, path: string, value: unknown):
     cursor = cursor[key] as Record<string, unknown>
   }
   cursor[segments[segments.length - 1]] = value
+}
+
+function walk(root: Record<string, unknown> | undefined, path: string): unknown {
+  if (!root) return undefined
+  return path.split('.').reduce<unknown>((acc, key) => {
+    if (acc !== null && typeof acc === 'object') return (acc as Record<string, unknown>)[key]
+    return undefined
+  }, root)
+}
+
+function resolveRuntimeRef(context: Record<string, unknown>, path: string): unknown {
+  if (path.startsWith('globals.')) return walk(context._globals as Record<string, unknown>, path.slice('globals.'.length))
+  if (path.startsWith('vars.')) return walk(context._vars as Record<string, unknown>, path.slice('vars.'.length))
+  if (path.startsWith('params.')) return walk(context._params as Record<string, unknown>, path.slice('params.'.length))
+  const stripped = path.startsWith('context.') ? path.slice('context.'.length)
+    : path.startsWith('output.') ? path.slice('output.'.length)
+    : path
+  return walk(context, stripped)
+}
+
+function resolveAssignmentValue(raw: unknown, context: Record<string, unknown>): unknown {
+  if (typeof raw !== 'string') return raw
+  const match = raw.match(/^\{\{(.+?)\}\}$/)
+  if (match) return resolveRuntimeRef(context, match[1].trim())
+  try { return JSON.parse(raw) } catch { return raw }
+}
+
+function applyGlobalAssignments(context: Record<string, unknown>, node: WorkflowNode): void {
+  const cfg = (node.config ?? {}) as Record<string, unknown>
+  const assignments: KVPair[] = Array.isArray(cfg.globalAssignments) ? cfg.globalAssignments as KVPair[] : []
+  if (assignments.length === 0) return
+  const globals = { ...((context._globals ?? {}) as Record<string, unknown>) }
+  context._globals = globals
+  for (const entry of assignments) {
+    const rawKey = (entry.key ?? entry.path ?? '').trim()
+    if (!rawKey) continue
+    const path = rawKey.startsWith('globals.') ? rawKey.slice('globals.'.length)
+      : rawKey.startsWith('_globals.') ? rawKey.slice('_globals.'.length)
+      : rawKey
+    setPath(globals, path, resolveAssignmentValue(entry.value, context))
+  }
 }
 
 export async function advance(
@@ -116,6 +159,7 @@ export async function advance(
   const currentContext = (instance.context ?? {}) as Record<string, unknown>
   const mergedContext: Record<string, unknown> = { ...currentContext, ...output }
   applyOutputBindings(mergedContext, completedNode, output)
+  applyGlobalAssignments(mergedContext, completedNode)
 
   // Gate: if instance is not ACTIVE, queue this advance and stop.
   // resume() will replay queued advances when the instance is reactivated.
@@ -222,6 +266,9 @@ async function activateDownstream(
         await advance(instance.id, nextNode.id, context, actorId)
         break
       case 'HUMAN_TASK':
+        await activateHumanTask(nextNode, instance)
+        break
+      case 'WORKBENCH_TASK':
         await activateHumanTask(nextNode, instance)
         break
       case 'AGENT_TASK':
@@ -490,6 +537,9 @@ export async function failNode(
       })
       switch (target.nodeType) {
         case 'HUMAN_TASK':
+          await activateHumanTask(target, instance)
+          break
+        case 'WORKBENCH_TASK':
           await activateHumanTask(target, instance)
           break
         case 'AGENT_TASK':

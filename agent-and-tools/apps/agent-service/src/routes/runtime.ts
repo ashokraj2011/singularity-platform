@@ -271,6 +271,29 @@ runtimeRoutes.post("/learning-candidates/distill", async (req: Request, res: Res
       [capability_id, candidate_type, e.title, e.content, JSON.stringify(candidate_ids), e.confidence ?? 0.7],
     );
     try {
+      const reused = await query<Record<string, unknown>>(
+        `UPDATE public."DistilledMemory" target
+         SET embedding = source.embedding
+         FROM (
+           SELECT embedding FROM public."DistilledMemory"
+           WHERE "scopeType" = 'CAPABILITY'
+             AND "scopeId" = $1
+             AND "memoryType" = $2
+             AND title = $3
+             AND content = $4
+             AND id <> $5
+             AND embedding IS NOT NULL
+           ORDER BY "createdAt" DESC
+           LIMIT 1
+         ) source
+         WHERE target.id = $5
+         RETURNING target.id`,
+        [capability_id, candidate_type, e.title, e.content, row.id],
+      );
+      if (reused.length > 0) {
+        written.push(row);
+        continue;
+      }
       const embedded = await embedder.embed({ text: `${e.title}\n${e.content}`.slice(0, 8_000) });
       assertDimMatches(embedded.dim, `${embedded.provider}:${embedded.model}`);
       await query(

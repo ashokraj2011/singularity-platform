@@ -6,6 +6,7 @@ import {
   createCapabilitySchema, attachRepositorySchema, bindAgentSchema, knowledgeArtifactSchema,
   extractSymbolsSchema,
   updateRepoPollSchema, knowledgeSourceSchema, updateKnowledgeSourceSchema,
+  bootstrapCapabilitySchema, reviewBootstrapSchema, syncCapabilitySchema, updateCapabilitySchema,
 } from "./capability.schemas";
 
 // M15 — multipart upload (knowledge artifacts). Memory storage keeps things
@@ -18,9 +19,19 @@ const knowledgeUpload = multer({
 
 export const capabilityRoutes = Router();
 
+capabilityRoutes.post("/bootstrap", validate(bootstrapCapabilitySchema), capabilityController.bootstrap);
 capabilityRoutes.post("/", validate(createCapabilitySchema), capabilityController.create);
 capabilityRoutes.get("/", capabilityController.list);
 capabilityRoutes.get("/:id", capabilityController.get);
+capabilityRoutes.patch("/:id", validate(updateCapabilitySchema), capabilityController.update);
+capabilityRoutes.post("/:id/archive", capabilityController.archive);
+capabilityRoutes.get("/:id/bootstrap-runs/:runId", capabilityController.getBootstrapRun);
+capabilityRoutes.post(
+  "/:id/bootstrap-runs/:runId/review",
+  validate(reviewBootstrapSchema),
+  capabilityController.reviewBootstrapRun,
+);
+capabilityRoutes.post("/:id/sync", validate(syncCapabilitySchema), capabilityController.sync);
 
 capabilityRoutes.post("/:id/repositories", validate(attachRepositorySchema), capabilityController.attachRepo);
 

@@ -19,12 +19,14 @@ import { createHash } from 'crypto'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
 import { ValidationError } from '../../../lib/errors'
+import { createWorkflowRunBudgetSnapshot } from '../runtime/budget'
 
 export type CloneOpts = {
   templateId:      string
   name?:           string                    // optional run name
   vars?:           Record<string, unknown>   // override template variable defaults
   globals?:        Record<string, unknown>   // override INSTANCE-scoped team globals
+  budgetOverride?: unknown                    // optional run-level lowering of the template budget
   createdById?:    string
   initiativeId?:   string
 }
@@ -155,7 +157,7 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
   // ── 1. Load the workflow + its design graph from the dedicated design tables
   const workflow = await prisma.workflow.findUnique({
     where:  { id: templateId },
-    select: { id: true, teamId: true, variables: true, name: true, capabilityId: true },
+    select: { id: true, teamId: true, variables: true, name: true, capabilityId: true, budgetPolicy: true },
   })
   if (!workflow) throw new Error(`Workflow ${templateId} not found`)
 
@@ -246,6 +248,13 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
         createdById: opts.createdById,
         initiativeId: opts.initiativeId,
       },
+    })
+
+    await createWorkflowRunBudgetSnapshot(tx, {
+      instanceId: run.id,
+      templateId,
+      templatePolicy: workflow.budgetPolicy,
+      runOverride: opts.budgetOverride,
     })
 
     // 4b. Phases (id-mapped)

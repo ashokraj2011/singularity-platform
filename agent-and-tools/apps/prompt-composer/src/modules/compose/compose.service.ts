@@ -15,7 +15,7 @@ import {
 // returns 1-cosine (a distance), not similarity. We compute similarity as
 // `1 - distance` in the SQL query.
 const RECENCY_BOOST_DAYS = Number(process.env.EMBEDDING_RECENCY_DAYS ?? 30);
-const RECENCY_BOOST_MAX  = Number(process.env.EMBEDDING_RECENCY_BOOST ?? 0.2);
+const RECENCY_BOOST_MAX = Number(process.env.EMBEDDING_RECENCY_BOOST ?? 0.2);
 
 function recencyBoost(ageDays: number): number {
   if (ageDays >= RECENCY_BOOST_DAYS) return 0;
@@ -57,6 +57,36 @@ const PRIORITY = {
   EXECUTION_OVERRIDE: 9999,
 };
 
+const DEFAULT_CONTEXT_BUDGET = {
+  knowledgeTopK: 5,
+  memoryTopK: 3,
+  codeTopK: 5,
+  maxLayerChars: 2_500,
+  maxPromptChars: 48_000,
+};
+
+function clampInt(value: unknown, fallback: number, min = 0, max = 100_000): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(min, Math.min(max, Math.floor(value)))
+    : fallback;
+}
+
+function trimText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 80)).trimEnd()}\n...[trimmed to ${maxChars} chars by token budget]`;
+}
+
+function contextBudget(input: ComposeInput) {
+  const policy = input.contextPolicy ?? {};
+  return {
+    knowledgeTopK: clampInt(policy.knowledgeTopK, DEFAULT_CONTEXT_BUDGET.knowledgeTopK, 0, 50),
+    memoryTopK: clampInt(policy.memoryTopK, DEFAULT_CONTEXT_BUDGET.memoryTopK, 0, 50),
+    codeTopK: clampInt(policy.codeTopK, DEFAULT_CONTEXT_BUDGET.codeTopK, 0, 50),
+    maxLayerChars: clampInt(policy.maxLayerChars, DEFAULT_CONTEXT_BUDGET.maxLayerChars, 500, 100_000),
+    maxPromptChars: clampInt(policy.maxPromptChars, DEFAULT_CONTEXT_BUDGET.maxPromptChars, 2_000, 500_000),
+  };
+}
+
 export const composeService = {
   /**
    * Full pipeline: assemble layered prompt → call context-fabric /chat/respond → return unified response.
@@ -65,6 +95,14 @@ export const composeService = {
   async composeAndRespond(input: ComposeInput) {
     const layers: AssembledLayer[] = [];
     const warnings: string[] = [];
+    const budget = contextBudget(input);
+    const retrievalStats = {
+      knowledgeIncluded: 0,
+      memoryIncluded: 0,
+      codeIncluded: 0,
+      toolContractsIncluded: 0,
+      trimmedLayers: 0,
+    };
 
     // Build the substitution context once.
     const ctx = await this.buildVarsContext(input);
@@ -112,13 +150,14 @@ export const composeService = {
         }
 
         // ── Knowledge artifacts → RUNTIME_EVIDENCE ──────────────────────────
-        const artifacts = taskVec
-          ? await this.semanticKnowledge(capabilityId, taskVec)
-          : (await prisma.capabilityKnowledgeArtifact.findMany({ where: { capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: 10 }))
-              .map(a => ({ ...a, cosineSimilarity: 0, ageDays: 0, finalScore: 0 }));
+        const artifacts = budget.knowledgeTopK === 0 ? [] : taskVec
+          ? await this.semanticKnowledge(capabilityId, taskVec, budget.knowledgeTopK)
+          : (await prisma.capabilityKnowledgeArtifact.findMany({ where: { capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: budget.knowledgeTopK }))
+            .map(a => ({ ...a, cosineSimilarity: 0, ageDays: 0, finalScore: 0 }));
         for (const a of artifacts) {
-          const c = `[${a.artifactType}] ${a.title}\n${a.content}`;
+          const c = `[${a.artifactType}] ${a.title}\n${trimText(a.content, budget.maxLayerChars)}`;
           const r2 = renderMustache(c, ctx); warnings.push(...r2.warnings);
+          if (a.content.length > budget.maxLayerChars) retrievalStats.trimmedLayers += 1;
           layers.push({
             layerType: "RUNTIME_EVIDENCE",
             priority: PRIORITY.RUNTIME_EVIDENCE,
@@ -128,16 +167,18 @@ export const composeService = {
             contentSnapshot: r2.rendered,
             layerHash: sha256(r2.rendered),
           });
+          retrievalStats.knowledgeIncluded += 1;
         }
 
         // ── Distilled memory → MEMORY_CONTEXT ──────────────────────────────
-        const memory = taskVec
-          ? await this.semanticMemory(capabilityId, taskVec)
-          : (await prisma.distilledMemory.findMany({ where: { scopeType: "CAPABILITY", scopeId: capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: 10 }))
-              .map(m => ({ ...m, cosineSimilarity: 0, ageDays: 0, finalScore: 0 }));
+        const memory = budget.memoryTopK === 0 ? [] : taskVec
+          ? await this.semanticMemory(capabilityId, taskVec, budget.memoryTopK)
+          : (await prisma.distilledMemory.findMany({ where: { scopeType: "CAPABILITY", scopeId: capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: budget.memoryTopK }))
+            .map(m => ({ ...m, cosineSimilarity: 0, ageDays: 0, finalScore: 0 }));
         for (const m of memory) {
-          const c = `[${m.memoryType}] ${m.title}\n${m.content}`;
+          const c = `[${m.memoryType}] ${m.title}\n${trimText(m.content, budget.maxLayerChars)}`;
           const r3 = renderMustache(c, ctx); warnings.push(...r3.warnings);
+          if (m.content.length > budget.maxLayerChars) retrievalStats.trimmedLayers += 1;
           layers.push({
             layerType: "MEMORY_CONTEXT",
             priority: PRIORITY.MEMORY_CONTEXT,
@@ -147,22 +188,23 @@ export const composeService = {
             contentSnapshot: r3.rendered,
             layerHash: sha256(r3.rendered),
           });
+          retrievalStats.memoryIncluded += 1;
         }
 
         // ── Code symbols → CODE_CONTEXT ────────────────────────────────────
-        const symbols = taskVec
-          ? await this.semanticSymbols(capabilityId, taskVec)
+        const symbols = budget.codeTopK === 0 ? [] : taskVec
+          ? await this.semanticSymbols(capabilityId, taskVec, budget.codeTopK)
           : (await prisma.capabilityCodeSymbol.findMany({
-              where: { capabilityId }, orderBy: { createdAt: "desc" }, take: 8,
-              include: { repository: true },
-            })).map(s => ({
-              symbol_id: s.id, symbolName: s.symbolName, symbolType: s.symbolType,
-              filePath: s.filePath, startLine: s.startLine, summary: s.summary,
-              language: s.language, repoName: s.repository?.repoName ?? "repo",
-              cosineSimilarity: 0, ageDays: 0, finalScore: 0,
-            }));
+            where: { capabilityId }, orderBy: { createdAt: "desc" }, take: budget.codeTopK,
+            include: { repository: true },
+          })).map(s => ({
+            symbol_id: s.id, symbolName: s.symbolName, symbolType: s.symbolType,
+            filePath: s.filePath, startLine: s.startLine, summary: s.summary,
+            language: s.language, repoName: s.repository?.repoName ?? "repo",
+            cosineSimilarity: 0, ageDays: 0, finalScore: 0,
+          }));
         for (const s of symbols) {
-          const body = s.summary ?? `${s.symbolType ?? "symbol"} ${s.symbolName ?? ""}`;
+          const body = trimText(s.summary ?? `${s.symbolType ?? "symbol"} ${s.symbolName ?? ""}`, budget.maxLayerChars);
           const c = `[${s.symbolType ?? "symbol"}] ${s.repoName}/${s.filePath}:${s.startLine ?? "?"}\n${body}`;
           const r4 = renderMustache(c, ctx); warnings.push(...r4.warnings);
           layers.push({
@@ -174,6 +216,8 @@ export const composeService = {
             contentSnapshot: r4.rendered,
             layerHash: sha256(r4.rendered),
           });
+          if ((s.summary ?? "").length > budget.maxLayerChars) retrievalStats.trimmedLayers += 1;
+          retrievalStats.codeIncluded += 1;
         }
       }
     }
@@ -188,9 +232,10 @@ export const composeService = {
     }
 
     // 5. Tool contracts — both DB-grant-driven and dynamic discovery
-    const toolsLayer = await this.buildToolContractLayer(input, capabilityId, template.id);
+    const toolsLayer = await this.buildToolContractLayer(input, capabilityId, template.id, retrievalStats);
     if (toolsLayer) {
-      const r = renderMustache(toolsLayer, ctx); warnings.push(...r.warnings);
+      const r = renderMustache(trimText(toolsLayer, budget.maxLayerChars * 2), ctx); warnings.push(...r.warnings);
+      if (toolsLayer.length > budget.maxLayerChars * 2) retrievalStats.trimmedLayers += 1;
       layers.push({ layerType: "TOOL_CONTRACT", priority: PRIORITY.TOOL_CONTRACT, inclusionReason: "tool grants + dynamic discovery", contentSnapshot: r.rendered, layerHash: sha256(r.rendered) });
     }
 
@@ -198,7 +243,9 @@ export const composeService = {
     for (const art of input.artifacts) {
       const rendered = await this.renderArtifact(art);
       if (!rendered) continue;
-      const r = renderMustache(rendered, ctx); warnings.push(...r.warnings);
+      const trimmed = trimText(rendered, budget.maxLayerChars * 2);
+      const r = renderMustache(trimmed, ctx); warnings.push(...r.warnings);
+      if (rendered.length > trimmed.length) retrievalStats.trimmedLayers += 1;
       layers.push({ layerType: "ARTIFACT_CONTEXT", priority: PRIORITY.ARTIFACT_CONTEXT, inclusionReason: `artifact ${art.label} (${art.role})`, contentSnapshot: r.rendered, layerHash: sha256(r.rendered) });
     }
 
@@ -223,11 +270,33 @@ export const composeService = {
 
     // 9. Sort + concat
     layers.sort((a, b) => a.priority - b.priority);
-    const finalPrompt = layers.map(l => `# ${humanLayer(l.layerType)}\n${l.contentSnapshot}`).join("\n\n");
+    let finalPrompt = layers.map(l => `# ${humanLayer(l.layerType)}\n${l.contentSnapshot}`).join("\n\n");
+    const budgetWarnings: string[] = [];
+    if (finalPrompt.length > budget.maxPromptChars) {
+      budgetWarnings.push(`Prompt stack trimmed from ${finalPrompt.length} chars to ${budget.maxPromptChars} chars.`);
+      finalPrompt = trimText(finalPrompt, budget.maxPromptChars);
+    }
     const finalPromptHash = sha256(finalPrompt);
+    const estimatedInputTokens = estimateTokens(finalPrompt);
+    if (input.contextPolicy.maxContextTokens && estimatedInputTokens > input.contextPolicy.maxContextTokens) {
+      budgetWarnings.push(`Estimated input tokens ${estimatedInputTokens} exceeds maxContextTokens ${input.contextPolicy.maxContextTokens}.`);
+    }
 
-    // 10. Persist PromptAssembly
-    const assembly = await prisma.promptAssembly.create({
+    // 10. Persist PromptAssembly, reusing an unchanged stack when possible.
+    // The final prompt hash already includes task text, rendered artifacts,
+    // layer content, runtime overrides, and retrieved context.
+    const cachedAssembly = await prisma.promptAssembly.findFirst({
+      where: {
+        agentTemplateId: input.agentTemplateId,
+        agentBindingId: input.agentBindingId ?? null,
+        capabilityId: capabilityId ?? null,
+        finalPromptHash,
+        modelProvider: input.modelOverrides.provider ?? null,
+        modelName: input.modelOverrides.model ?? null,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    const assembly = cachedAssembly ?? await prisma.promptAssembly.create({
       data: {
         agentTemplateId: input.agentTemplateId,
         agentBindingId: input.agentBindingId ?? null,
@@ -238,7 +307,7 @@ export const composeService = {
         modelName: input.modelOverrides.model ?? null,
         finalPromptHash,
         finalPromptPreview: finalPrompt.slice(0, 4000),
-        estimatedInputTokens: estimateTokens(finalPrompt),
+        estimatedInputTokens,
         layers: {
           create: layers.map(l => ({
             promptLayerId: l.promptLayerId ?? null,
@@ -248,9 +317,10 @@ export const composeService = {
         },
       },
     });
+    if (cachedAssembly) budgetWarnings.push(`Prompt assembly reused from cache: ${cachedAssembly.id}.`);
 
     const layersUsed = layers.map(l => ({ layerType: l.layerType, priority: l.priority, layerHash: l.layerHash, inclusionReason: l.inclusionReason }));
-    const dedupedWarnings = Array.from(new Set(warnings));
+    const dedupedWarnings = Array.from(new Set([...warnings, ...budgetWarnings]));
 
     if (input.previewOnly) {
       return {
@@ -259,6 +329,8 @@ export const composeService = {
         estimatedInputTokens: assembly.estimatedInputTokens,
         layersUsed,
         warnings: dedupedWarnings,
+        budgetWarnings,
+        retrievalStats,
         assembled: {
           systemPrompt: finalPrompt,
           message: taskRendered.rendered,
@@ -299,6 +371,8 @@ export const composeService = {
       estimatedInputTokens: assembly.estimatedInputTokens,
       layersUsed,
       warnings: dedupedWarnings,
+      budgetWarnings,
+      retrievalStats,
       modelCallId: cfResp.model_call_id,
       contextPackageId: cfResp.context_package_id,
       response: cfResp.response,
@@ -359,7 +433,7 @@ export const composeService = {
       });
   },
 
-  async buildToolContractLayer(input: ComposeInput, capabilityId: string | null, agentTemplateId: string): Promise<string | null> {
+  async buildToolContractLayer(input: ComposeInput, capabilityId: string | null, agentTemplateId: string, retrievalStats?: { toolContractsIncluded: number }): Promise<string | null> {
     // Static grants (existing model)
     const scopeFilters: Array<{ grantScopeType: string; grantScopeId: string }> = [
       { grantScopeType: "AGENT_TEMPLATE", grantScopeId: agentTemplateId },
@@ -380,10 +454,10 @@ export const composeService = {
       blocks.push(this.renderToolBlock({
         tool_name: fullName,
         natural_language: g.tool.description ?? "",
-        json_schema: { input: c?.inputSchema ?? {}, output: c?.outputSchema ?? {} },
         risk_level: c?.riskLevel ?? "LOW",
         requires_approval: c?.requiresApproval ?? false,
       }));
+      if (retrievalStats) retrievalStats.toolContractsIncluded += 1;
     }
 
     // Dynamic tool discovery via tool-service (only if capability is provided and discovery enabled)
@@ -402,10 +476,10 @@ export const composeService = {
         blocks.push(this.renderToolBlock({
           tool_name: t.tool_name,
           natural_language: t.description,
-          json_schema: { input: t.input_schema, output: {} },
           risk_level: t.risk_level,
           requires_approval: false,
         }));
+        if (retrievalStats) retrievalStats.toolContractsIncluded += 1;
       }
     }
 
@@ -416,17 +490,13 @@ export const composeService = {
   renderToolBlock(t: {
     tool_name: string;
     natural_language: string;
-    json_schema: { input: unknown; output: unknown };
     risk_level: string;
     requires_approval: boolean;
   }): string {
     return `## Tool: ${t.tool_name}
 Description: ${t.natural_language}
 Risk: ${t.risk_level}${t.requires_approval ? " (requires approval)" : ""}
-JSON Schema:
-\`\`\`json
-${JSON.stringify(t.json_schema, null, 2)}
-\`\`\``;
+Input contract: available to the execution layer; ask for only the fields needed.`;
   },
 
   async renderArtifact(art: ArtifactInput): Promise<string | null> {
@@ -450,9 +520,9 @@ ${JSON.stringify(t.json_schema, null, 2)}
   // index-friendly distance form. Final hybrid score is JS-computed via
   // rerankByHybrid() so we keep the recency-boost math out of SQL.
 
-  async semanticKnowledge(capabilityId: string, taskVec: string) {
+  async semanticKnowledge(capabilityId: string, taskVec: string, take = DEFAULT_CONTEXT_BUDGET.knowledgeTopK) {
     const candidatePool = 30;
-    const finalTake = 10;
+    const finalTake = take;
     type Row = {
       id: string; artifactType: string; title: string; content: string;
       cosine_similarity: number; age_days: number;
@@ -476,9 +546,9 @@ ${JSON.stringify(t.json_schema, null, 2)}
     );
   },
 
-  async semanticMemory(capabilityId: string, taskVec: string) {
+  async semanticMemory(capabilityId: string, taskVec: string, take = DEFAULT_CONTEXT_BUDGET.memoryTopK) {
     const candidatePool = 30;
-    const finalTake = 10;
+    const finalTake = take;
     type Row = {
       id: string; memoryType: string; title: string; content: string;
       cosine_similarity: number; age_days: number;
@@ -502,9 +572,9 @@ ${JSON.stringify(t.json_schema, null, 2)}
     );
   },
 
-  async semanticSymbols(capabilityId: string, taskVec: string) {
+  async semanticSymbols(capabilityId: string, taskVec: string, take = DEFAULT_CONTEXT_BUDGET.codeTopK) {
     const candidatePool = 30;
-    const finalTake = 8;
+    const finalTake = take;
     type Row = {
       symbol_id: string;
       symbolName: string | null; symbolType: string | null;
@@ -531,17 +601,17 @@ ${JSON.stringify(t.json_schema, null, 2)}
     );
     return rerankByHybrid(
       rows.map(r => ({
-        symbol_id:        r.symbol_id,
-        symbolName:       r.symbolName,
-        symbolType:       r.symbolType,
-        filePath:         r.filePath,
-        startLine:        r.startLine,
-        summary:          r.summary,
-        language:         r.language,
-        repoName:         r.repoName,
+        symbol_id: r.symbol_id,
+        symbolName: r.symbolName,
+        symbolType: r.symbolType,
+        filePath: r.filePath,
+        startLine: r.startLine,
+        summary: r.summary,
+        language: r.language,
+        repoName: r.repoName,
         cosineSimilarity: Number(r.cosine_similarity),
-        ageDays:          Number(r.age_days),
-        finalScore:       0,
+        ageDays: Number(r.age_days),
+        finalScore: 0,
       })),
       finalTake,
     );

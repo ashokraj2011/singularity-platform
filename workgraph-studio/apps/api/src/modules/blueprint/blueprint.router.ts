@@ -9,18 +9,28 @@ import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { contextFabricClient, ContextFabricError, type ExecuteResponse } from '../../lib/context-fabric/client'
+import { recordWorkflowLlmUsage } from '../workflow/runtime/budget'
 
 export const blueprintRouter: Router = Router()
 
 const MAX_FILES = 250
 const MAX_TOTAL_BYTES = 2_000_000
-const MAX_EXCERPT_BYTES = 32_000
-const MAX_EXCERPT_FILES = 40
+const MAX_EXCERPT_BYTES = 4_000
+const MAX_EXCERPT_FILES = 8
+const EXECUTE_MANIFEST_MAX_FILES = 120
+const EXECUTE_EXCERPT_MAX_FILES = 8
+const EXECUTE_EXCERPT_MAX_CHARS = 4_000
+const EXECUTE_EXCERPT_BUDGET_CHARS = 18_000
 
 const DEFAULT_EXCLUDES = new Set([
   '.git', 'node_modules', 'dist', 'build', '.next', '.turbo', '.cache',
   'coverage', 'target', 'vendor', '__pycache__', '.venv', 'venv',
 ])
+
+const optionalUuid = z.preprocess(
+  value => value === '' || value === null ? undefined : value,
+  z.string().uuid().optional(),
+)
 
 const createSessionSchema = z.object({
   goal: z.string().min(8),
@@ -30,14 +40,17 @@ const createSessionSchema = z.object({
   includeGlobs: z.array(z.string()).default([]),
   excludeGlobs: z.array(z.string()).default([]),
   capabilityId: z.string().min(1),
-  architectAgentTemplateId: z.string().uuid(),
-  developerAgentTemplateId: z.string().uuid(),
-  qaAgentTemplateId: z.string().uuid(),
+  architectAgentTemplateId: optionalUuid,
+  developerAgentTemplateId: optionalUuid,
+  qaAgentTemplateId: optionalUuid,
   workflowInstanceId: z.string().optional(),
   workflowNodeId: z.string().optional(),
   phaseId: z.string().optional(),
   loopDefinition: z.unknown().optional(),
   gateMode: z.enum(['manual', 'auto']).default('manual'),
+  snapshotMode: z.enum(['summary', 'relevant_excerpts', 'full_debug']).default('relevant_excerpts'),
+  excerptBudgetChars: z.number().int().min(2_000).max(120_000).optional(),
+  reuseUnchangedAttempt: z.boolean().default(true),
 })
 
 const decisionAnswerSchema = z.object({
@@ -77,9 +90,17 @@ const sendBackSchema = z.object({
 
 type CreateSessionInput = z.infer<typeof createSessionSchema>
 type DecisionAnswer = z.infer<typeof decisionAnswerSchema> & { updatedAt?: string; updatedById?: string }
-type LoopAgentRole = 'ARCHITECT' | 'DEVELOPER' | 'QA'
+type LoopAgentRole = string
 type LoopVerdict = 'PASS' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_RISK'
 type LoopAttemptStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'PASSED' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_RISK'
+
+type LoopExpectedArtifact = {
+  kind: string
+  title: string
+  description?: string
+  required?: boolean
+  format?: 'MARKDOWN' | 'TEXT' | 'JSON' | 'CODE'
+}
 
 type LoopQuestion = {
   id: string
@@ -98,6 +119,8 @@ type LoopStageDefinition = {
   next?: string | null
   terminal?: boolean
   required?: boolean
+  approvalRequired?: boolean
+  expectedArtifacts?: LoopExpectedArtifact[]
   allowedSendBackTo?: string[]
   questions?: LoopQuestion[]
 }
@@ -135,9 +158,11 @@ type StageAttempt = {
   acceptedAt?: string
   acceptedById?: string
   artifactIds?: string[]
+  inputSignature?: string
   gateRecommendation?: GateRecommendation
   correlation?: Record<string, unknown>
   tokensUsed?: Record<string, unknown>
+  metrics?: Record<string, unknown>
 }
 
 type ReviewEvent = {
@@ -171,6 +196,11 @@ type LoopState = {
   reviewEvents: ReviewEvent[]
   decisionAnswers: DecisionAnswer[]
   finalPack?: FinalPack
+  executionConfig?: {
+    snapshotMode?: 'summary' | 'relevant_excerpts' | 'full_debug'
+    excerptBudgetChars?: number
+    reuseUnchangedAttempt?: boolean
+  }
 }
 
 type ManifestEntry = {
@@ -209,7 +239,9 @@ blueprintRouter.get('/sessions', async (req, res, next) => {
 blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res, next) => {
   try {
     const body = req.body as CreateSessionInput
-    const loopDefinition = normalizeLoopDefinition(body.loopDefinition, body)
+    const initialLoopDefinition = normalizeLoopDefinition(body.loopDefinition, body)
+    const agentTemplateIds = resolveSessionAgentTemplateIds(body, initialLoopDefinition)
+    const loopDefinition = hydrateLoopAgentTemplates(initialLoopDefinition, agentTemplateIds)
     const now = new Date().toISOString()
     const initialLoopState: LoopState = {
       workflowNodeId: body.workflowNodeId,
@@ -227,6 +259,11 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         createdAt: now,
         payload: { gateMode: body.gateMode, workflowNodeId: body.workflowNodeId },
       }],
+      executionConfig: {
+        snapshotMode: body.snapshotMode,
+        excerptBudgetChars: body.excerptBudgetChars ?? EXECUTE_EXCERPT_BUDGET_CHARS,
+        reuseUnchangedAttempt: body.reuseUnchangedAttempt,
+      },
     }
     const session = await prisma.blueprintSession.create({
       data: {
@@ -237,30 +274,28 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         includeGlobs: body.includeGlobs as Prisma.InputJsonValue,
         excludeGlobs: body.excludeGlobs as Prisma.InputJsonValue,
         capabilityId: body.capabilityId,
-        architectAgentTemplateId: body.architectAgentTemplateId,
-        developerAgentTemplateId: body.developerAgentTemplateId,
-        qaAgentTemplateId: body.qaAgentTemplateId,
+        architectAgentTemplateId: agentTemplateIds.architectAgentTemplateId,
+        developerAgentTemplateId: agentTemplateIds.developerAgentTemplateId,
+        qaAgentTemplateId: agentTemplateIds.qaAgentTemplateId,
         workflowInstanceId: body.workflowInstanceId ?? null,
         phaseId: body.phaseId ?? null,
         metadata: initialLoopState as unknown as Prisma.InputJsonValue,
         createdById: req.user!.userId,
       },
     })
-    await logEvent('BlueprintSessionCreated', 'BlueprintSession', session.id, req.user!.userId, {
+    await recordBlueprintAudit(session.id, 'BlueprintSessionCreated', req.user!.userId, {
       capabilityId: session.capabilityId,
       sourceType: session.sourceType,
+      workflowInstanceId: session.workflowInstanceId,
+      workflowNodeId: body.workflowNodeId,
     })
-    await publishOutbox('BlueprintSession', session.id, 'BlueprintSessionCreated', {
-      sessionId: session.id,
-      capabilityId: session.capabilityId,
-    })
-    res.status(201).json(await loadSession(session.id))
+    res.status(201).json(await loadSession(session.id, req.user!.userId))
   } catch (err) { next(err) }
 })
 
 blueprintRouter.get('/sessions/:id', async (req, res, next) => {
   try {
-    res.json(await loadSession(req.params.id))
+    res.json(await loadSession(req.params.id, req.user!.userId))
   } catch (err) { next(err) }
 })
 
@@ -268,6 +303,7 @@ blueprintRouter.post('/sessions/:id/snapshot', async (req, res, next) => {
   try {
     const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
     if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    assertBlueprintAccess(session, req.user!.userId)
 
     let result: SnapshotResult
     try {
@@ -285,6 +321,10 @@ blueprintRouter.post('/sessions/:id/snapshot', async (req, res, next) => {
         },
       })
       await prisma.blueprintSession.update({ where: { id: session.id }, data: { status: BlueprintSessionStatus.FAILED } })
+      await recordBlueprintAudit(session.id, 'BlueprintSnapshotFailed', req.user!.userId, {
+        sessionId: session.id,
+        error: (err as Error).message,
+      })
       return res.status(422).json({ snapshot: failed, error: (err as Error).message })
     }
 
@@ -302,12 +342,12 @@ blueprintRouter.post('/sessions/:id/snapshot', async (req, res, next) => {
       where: { id: session.id },
       data: { status: BlueprintSessionStatus.SNAPSHOTTED },
     })
-    await logEvent('BlueprintSourceSnapshotted', 'BlueprintSession', session.id, req.user!.userId, {
+    await recordBlueprintAudit(session.id, 'BlueprintSourceSnapshotted', req.user!.userId, {
       snapshotId: snapshot.id,
       fileCount: snapshot.fileCount,
       totalBytes: snapshot.totalBytes,
     })
-    res.status(201).json(await loadSession(session.id))
+    res.status(201).json(await loadSession(session.id, req.user!.userId))
   } catch (err) { next(err) }
 })
 
@@ -321,6 +361,7 @@ blueprintRouter.post('/sessions/:id/run', async (req, res, next) => {
       },
     })
     if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    assertBlueprintAccess(session, req.user!.userId)
     const snapshot = session.snapshots[0]
     if (!snapshot || snapshot.status !== 'COMPLETED') {
       throw new ValidationError('Create a successful source snapshot before running the workbench agents')
@@ -369,6 +410,7 @@ blueprintRouter.post('/sessions/:id/run', async (req, res, next) => {
       })
       try {
         const result = await runStage(session, snapshot, stage.stage, stage.agentTemplateId, stage.task)
+        await recordBlueprintBudgetUsage(session, result, stage.stage.toLowerCase())
         await prisma.blueprintStageRun.update({
           where: { id: runId },
           data: {
@@ -415,10 +457,10 @@ blueprintRouter.post('/sessions/:id/run', async (req, res, next) => {
       where: { id: session.id },
       data: { status: failed ? BlueprintSessionStatus.FAILED : BlueprintSessionStatus.COMPLETED },
     })
-    await logEvent(failed ? 'BlueprintRunFailed' : 'BlueprintRunCompleted', 'BlueprintSession', session.id, req.user!.userId, {
+    await recordBlueprintAudit(session.id, failed ? 'BlueprintRunFailed' : 'BlueprintRunCompleted', req.user!.userId, {
       sessionId: session.id,
     })
-    res.json(await loadSession(session.id))
+    res.json(await loadSession(session.id, req.user!.userId))
   } catch (err) { next(err) }
 })
 
@@ -462,6 +504,7 @@ blueprintRouter.post('/sessions/:id/approve', async (req, res, next) => {
       include: { stageRuns: { orderBy: { createdAt: 'desc' } } },
     })
     if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    assertBlueprintAccess(session, req.user!.userId)
     const completed = new Set(
       session.stageRuns
         .filter(r => r.status === BlueprintStageStatus.COMPLETED)
@@ -490,8 +533,8 @@ blueprintRouter.post('/sessions/:id/approve', async (req, res, next) => {
         } as Prisma.InputJsonValue,
       },
     })
-    await logEvent('BlueprintApproved', 'BlueprintSession', session.id, req.user!.userId, { sessionId: session.id })
-    res.json(await loadSession(session.id))
+    await recordBlueprintAudit(session.id, 'BlueprintApproved', req.user!.userId, { sessionId: session.id })
+    res.json(await loadSession(session.id, req.user!.userId))
   } catch (err) { next(err) }
 })
 
@@ -501,6 +544,7 @@ blueprintRouter.post('/sessions/:id/decision-answers', validate(saveDecisionAnsw
     const sessionId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id
     const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
     if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+    assertBlueprintAccess(session, req.user!.userId)
 
     const metadata = isRecord(session.metadata) ? session.metadata : {}
     const updatedAt = new Date().toISOString()
@@ -551,14 +595,14 @@ blueprintRouter.post('/sessions/:id/decision-answers', validate(saveDecisionAnsw
       })
     }
 
-    await logEvent('BlueprintDecisionAnswersSaved', 'BlueprintSession', session.id, req.user!.userId, {
+    await recordBlueprintAudit(session.id, 'BlueprintDecisionAnswersSaved', req.user!.userId, {
       answerCount: body.answers.length,
     })
-    res.json(await loadSession(session.id))
+    res.json(await loadSession(session.id, req.user!.userId))
   } catch (err) { next(err) }
 })
 
-async function loadSession(id: string) {
+async function loadSession(id: string, actorId?: string) {
   const session = await prisma.blueprintSession.findUnique({
     where: { id },
     include: {
@@ -568,7 +612,23 @@ async function loadSession(id: string) {
     },
   })
   if (!session) throw new NotFoundError('BlueprintSession', id)
+  if (actorId) assertBlueprintAccess(session, actorId)
   return shapeSession(session)
+}
+
+function assertBlueprintAccess(session: { id: string; createdById?: string | null }, actorId: string) {
+  if (!session.createdById || session.createdById === actorId) return
+  throw new NotFoundError('BlueprintSession', session.id)
+}
+
+async function recordBlueprintAudit(
+  sessionId: string,
+  eventType: string,
+  actorId: string,
+  payload: Record<string, unknown> = {},
+) {
+  await logEvent(eventType, 'BlueprintSession', sessionId, actorId, { sessionId, actorId, ...payload })
+  await publishOutbox('BlueprintSession', sessionId, eventType, { sessionId, actorId, ...payload })
 }
 
 type LoopSessionSeed = {
@@ -580,6 +640,18 @@ type LoopSessionSeed = {
   metadata?: Prisma.JsonValue
   workflowInstanceId?: string | null
   phaseId?: string | null
+}
+
+type AgentTemplateSeed = {
+  architectAgentTemplateId?: string | null
+  developerAgentTemplateId?: string | null
+  qaAgentTemplateId?: string | null
+}
+
+type ResolvedAgentTemplateSeed = {
+  architectAgentTemplateId: string
+  developerAgentTemplateId: string
+  qaAgentTemplateId: string
 }
 
 function shapeSession<T extends LoopSessionSeed & { artifacts?: Array<{ payload?: Prisma.JsonValue | null }> }>(session: T) {
@@ -594,6 +666,7 @@ function shapeSession<T extends LoopSessionSeed & { artifacts?: Array<{ payload?
     reviewEvents: loop.reviewEvents,
     decisionAnswers: loop.decisionAnswers,
     finalPack: loop.finalPack,
+    executionConfig: loop.executionConfig,
     artifacts: session.artifacts?.map(shapeArtifact) ?? [],
   }
 }
@@ -623,6 +696,7 @@ function readLoopState(session: LoopSessionSeed): LoopState {
     reviewEvents: Array.isArray(metadata.reviewEvents) ? (metadata.reviewEvents as unknown[]).filter(isReviewEvent) : [],
     decisionAnswers: Array.isArray(metadata.decisionAnswers) ? (metadata.decisionAnswers as unknown[]).filter(isDecisionAnswerRecord) : [],
     finalPack: isFinalPack(metadata.finalPack) ? metadata.finalPack : undefined,
+    executionConfig: readExecutionConfig(metadata.executionConfig),
   }
 }
 
@@ -638,11 +712,21 @@ function stateToMetadata(session: LoopSessionSeed, state: LoopState): Prisma.Inp
     reviewEvents: state.reviewEvents,
     decisionAnswers: state.decisionAnswers,
     finalPack: state.finalPack,
+    executionConfig: state.executionConfig,
     decisionAnswersUpdatedAt: current.decisionAnswersUpdatedAt,
   } as Prisma.InputJsonValue
 }
 
-function normalizeLoopDefinition(input: unknown, session: Pick<LoopSessionSeed, 'architectAgentTemplateId' | 'developerAgentTemplateId' | 'qaAgentTemplateId'>): LoopDefinition {
+function readExecutionConfig(value: unknown): LoopState['executionConfig'] {
+  if (!isRecord(value)) return undefined
+  return {
+    snapshotMode: value.snapshotMode === 'summary' || value.snapshotMode === 'full_debug' ? value.snapshotMode : 'relevant_excerpts',
+    excerptBudgetChars: typeof value.excerptBudgetChars === 'number' ? value.excerptBudgetChars : undefined,
+    reuseUnchangedAttempt: value.reuseUnchangedAttempt !== false,
+  }
+}
+
+function normalizeLoopDefinition(input: unknown, session: AgentTemplateSeed): LoopDefinition {
   if (isRecord(input) && Array.isArray(input.stages)) {
     const rawStages = input.stages.filter(isRecord)
     const stages = rawStages.map((raw, index) => normalizeLoopStage(raw, index, session)).filter((stage): stage is LoopStageDefinition => Boolean(stage))
@@ -664,7 +748,7 @@ function normalizeLoopDefinition(input: unknown, session: Pick<LoopSessionSeed, 
   return defaultLoopDefinition(session)
 }
 
-function normalizeLoopStage(raw: Record<string, unknown>, index: number, session: Pick<LoopSessionSeed, 'architectAgentTemplateId' | 'developerAgentTemplateId' | 'qaAgentTemplateId'>): LoopStageDefinition | null {
+function normalizeLoopStage(raw: Record<string, unknown>, index: number, session: AgentTemplateSeed): LoopStageDefinition | null {
   const key = slug(typeof raw.key === 'string' ? raw.key : typeof raw.id === 'string' ? raw.id : `stage-${index + 1}`)
   if (!key) return null
   const agentRole = normalizeAgentRole(raw.agentRole ?? raw.role)
@@ -677,9 +761,31 @@ function normalizeLoopStage(raw: Record<string, unknown>, index: number, session
     next: typeof raw.next === 'string' ? slug(raw.next) : raw.next === null ? null : undefined,
     terminal: raw.terminal === true,
     required: raw.required !== false,
+    approvalRequired: raw.approvalRequired !== false,
+    expectedArtifacts: normalizeExpectedArtifacts(raw.expectedArtifacts),
     allowedSendBackTo: Array.isArray(raw.allowedSendBackTo) ? raw.allowedSendBackTo.filter((item): item is string => typeof item === 'string').map(slug) : [],
     questions: Array.isArray(raw.questions) ? raw.questions.filter(isRecord).map(normalizeQuestion).filter((q): q is LoopQuestion => Boolean(q)) : [],
   }
+}
+
+function normalizeExpectedArtifacts(input: unknown): LoopExpectedArtifact[] {
+  if (!Array.isArray(input)) return []
+  return input
+    .filter(isRecord)
+    .map((raw, index): LoopExpectedArtifact | null => {
+      const title = typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : undefined
+      const kind = typeof raw.kind === 'string' && raw.kind.trim() ? artifactKind(raw.kind) : title ? artifactKind(title) : `artifact_${index + 1}`
+      if (!kind || !title) return null
+      const format = raw.format === 'TEXT' || raw.format === 'JSON' || raw.format === 'CODE' ? raw.format : 'MARKDOWN'
+      return {
+        kind,
+        title,
+        description: typeof raw.description === 'string' && raw.description.trim() ? raw.description.trim() : undefined,
+        required: raw.required !== false,
+        format,
+      }
+    })
+    .filter((artifact): artifact is LoopExpectedArtifact => Boolean(artifact))
 }
 
 function normalizeQuestion(raw: Record<string, unknown>): LoopQuestion | null {
@@ -699,7 +805,7 @@ function normalizeQuestion(raw: Record<string, unknown>): LoopQuestion | null {
   }
 }
 
-function defaultLoopDefinition(session: Pick<LoopSessionSeed, 'architectAgentTemplateId' | 'developerAgentTemplateId' | 'qaAgentTemplateId'>): LoopDefinition {
+function defaultLoopDefinition(session: AgentTemplateSeed): LoopDefinition {
   return {
     version: 1,
     name: 'Blueprint implementation loop',
@@ -710,11 +816,16 @@ function defaultLoopDefinition(session: Pick<LoopSessionSeed, 'architectAgentTem
         key: 'plan',
         label: 'Plan',
         agentRole: 'ARCHITECT',
-        agentTemplateId: session.architectAgentTemplateId,
+        agentTemplateId: firstAgentTemplate(session.architectAgentTemplateId),
         description: 'Create the mental model, scope, risks, and planning questions.',
         next: 'design',
         allowedSendBackTo: [],
         required: true,
+        approvalRequired: true,
+        expectedArtifacts: [
+          { kind: 'mental_model', title: 'Mental model', required: true, format: 'MARKDOWN' },
+          { kind: 'gaps', title: 'Gaps and open risks', required: true, format: 'MARKDOWN' },
+        ],
         questions: [
           { id: 'PLAN-001', question: 'What is the smallest valuable outcome for this change?', required: true, freeform: true },
           { id: 'PLAN-002', question: 'Which constraints must not be violated?', required: false, freeform: true },
@@ -724,11 +835,16 @@ function defaultLoopDefinition(session: Pick<LoopSessionSeed, 'architectAgentTem
         key: 'design',
         label: 'Design',
         agentRole: 'ARCHITECT',
-        agentTemplateId: session.architectAgentTemplateId,
+        agentTemplateId: firstAgentTemplate(session.architectAgentTemplateId),
         description: 'Turn the plan into solution architecture, contracts, and acceptance boundaries.',
         next: 'develop',
         allowedSendBackTo: ['plan'],
         required: true,
+        approvalRequired: true,
+        expectedArtifacts: [
+          { kind: 'solution_architecture', title: 'Solution architecture', required: true, format: 'MARKDOWN' },
+          { kind: 'approved_spec_draft', title: 'Approved spec draft', required: true, format: 'MARKDOWN' },
+        ],
         questions: [
           { id: 'DESIGN-001', question: 'Is the proposed design acceptable for implementation?', required: true, options: [
             { label: 'Accept design', recommended: true, impact: 'Developer can produce the implementation task pack.' },
@@ -740,11 +856,16 @@ function defaultLoopDefinition(session: Pick<LoopSessionSeed, 'architectAgentTem
         key: 'develop',
         label: 'Develop',
         agentRole: 'DEVELOPER',
-        agentTemplateId: session.developerAgentTemplateId,
+        agentTemplateId: firstAgentTemplate(session.developerAgentTemplateId),
         description: 'Produce the proposed implementation plan, file changes, and read-only code-change evidence.',
         next: 'qa-review',
         allowedSendBackTo: ['design', 'plan'],
         required: true,
+        approvalRequired: true,
+        expectedArtifacts: [
+          { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
+          { kind: 'simulated_code_change', title: 'Simulated code-change evidence', required: true, format: 'MARKDOWN' },
+        ],
         questions: [
           { id: 'DEV-001', question: 'Is the implementation plan complete enough for QA to review?', required: true, options: [
             { label: 'Ready for QA', recommended: true, impact: 'Move into QA review.' },
@@ -756,11 +877,15 @@ function defaultLoopDefinition(session: Pick<LoopSessionSeed, 'architectAgentTem
         key: 'qa-review',
         label: 'QA Review',
         agentRole: 'QA',
-        agentTemplateId: session.qaAgentTemplateId,
+        agentTemplateId: firstAgentTemplate(session.qaAgentTemplateId),
         description: 'Review implementation evidence against requirements, edge cases, and failure modes.',
         next: 'test-certification',
         allowedSendBackTo: ['develop', 'design'],
         required: true,
+        approvalRequired: true,
+        expectedArtifacts: [
+          { kind: 'qa_task_pack', title: 'QA review pack', required: true, format: 'MARKDOWN' },
+        ],
         questions: [
           { id: 'QA-001', question: 'What must be proven before this can be certified?', required: true, freeform: true },
         ],
@@ -769,12 +894,18 @@ function defaultLoopDefinition(session: Pick<LoopSessionSeed, 'architectAgentTem
         key: 'test-certification',
         label: 'Test Certification',
         agentRole: 'QA',
-        agentTemplateId: session.qaAgentTemplateId,
+        agentTemplateId: firstAgentTemplate(session.qaAgentTemplateId),
         description: 'Stamp the testing strategy, verification notes, traceability, and final certification readiness.',
         next: null,
         terminal: true,
         allowedSendBackTo: ['develop', 'qa-review', 'design'],
         required: true,
+        approvalRequired: true,
+        expectedArtifacts: [
+          { kind: 'verification_rules', title: 'Verification rules', required: true, format: 'MARKDOWN' },
+          { kind: 'traceability_matrix', title: 'Traceability matrix', required: true, format: 'MARKDOWN' },
+          { kind: 'certification_receipt', title: 'Certification receipt', required: true, format: 'MARKDOWN' },
+        ],
         questions: [
           { id: 'TEST-001', question: 'Can this be finalized for workflow handoff?', required: true, options: [
             { label: 'Finalize', recommended: true, impact: 'Generate the final implementation pack.' },
@@ -787,16 +918,68 @@ function defaultLoopDefinition(session: Pick<LoopSessionSeed, 'architectAgentTem
 }
 
 function normalizeAgentRole(value: unknown): LoopAgentRole {
-  const role = String(value ?? '').toUpperCase().replace('-', '_')
-  return role === 'DEVELOPER' || role === 'QA' ? role : 'ARCHITECT'
+  const role = String(value ?? 'ARCHITECT').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  return role || 'ARCHITECT'
 }
 
-function defaultAgentTemplateForRole(session: Pick<LoopSessionSeed, 'architectAgentTemplateId' | 'developerAgentTemplateId' | 'qaAgentTemplateId'>, role: LoopAgentRole) {
-  return role === 'DEVELOPER' ? session.developerAgentTemplateId : role === 'QA' ? session.qaAgentTemplateId : session.architectAgentTemplateId
+function defaultAgentTemplateForRole(session: AgentTemplateSeed, role: LoopAgentRole) {
+  const normalizedRole = normalizeAgentRole(role)
+  if (normalizedRole.includes('DEV') || normalizedRole === 'ENGINEER') {
+    return firstAgentTemplate(session.developerAgentTemplateId, session.architectAgentTemplateId, session.qaAgentTemplateId)
+  }
+  if (normalizedRole.includes('QA') || normalizedRole.includes('TEST') || normalizedRole.includes('VERIFY')) {
+    return firstAgentTemplate(session.qaAgentTemplateId, session.developerAgentTemplateId, session.architectAgentTemplateId)
+  }
+  return firstAgentTemplate(session.architectAgentTemplateId, session.developerAgentTemplateId, session.qaAgentTemplateId)
+}
+
+function firstAgentTemplate(...ids: Array<string | null | undefined>) {
+  return ids.find((id): id is string => Boolean(id?.trim()))
+}
+
+function resolveSessionAgentTemplateIds(input: AgentTemplateSeed, loopDefinition: LoopDefinition): ResolvedAgentTemplateSeed {
+  const stageIds = loopDefinition.stages.map(stage => stage.agentTemplateId).filter((id): id is string => Boolean(id?.trim()))
+  const architect = input.architectAgentTemplateId ?? stageIds.find((_, index) => index === 0)
+  const developer = input.developerAgentTemplateId
+    ?? loopDefinition.stages.find(stage => normalizeAgentRole(stage.agentRole).includes('DEV') && stage.agentTemplateId)?.agentTemplateId
+    ?? stageIds[1]
+    ?? architect
+  const qa = input.qaAgentTemplateId
+    ?? loopDefinition.stages.find(stage => {
+      const role = normalizeAgentRole(stage.agentRole)
+      return (role.includes('QA') || role.includes('TEST') || role.includes('VERIFY')) && stage.agentTemplateId
+    })?.agentTemplateId
+    ?? stageIds.at(-1)
+    ?? developer
+    ?? architect
+
+  if (!architect || !developer || !qa) {
+    throw new ValidationError('At least one agent template must be selected, either as a default binding or per loop phase')
+  }
+  return {
+    architectAgentTemplateId: architect,
+    developerAgentTemplateId: developer,
+    qaAgentTemplateId: qa,
+  }
+}
+
+function hydrateLoopAgentTemplates(loopDefinition: LoopDefinition, session: ResolvedAgentTemplateSeed): LoopDefinition {
+  return {
+    ...loopDefinition,
+    stages: loopDefinition.stages.map(stage => ({
+      ...stage,
+      agentTemplateId: stage.agentTemplateId ?? defaultAgentTemplateForRole(session, stage.agentRole),
+      approvalRequired: stage.approvalRequired !== false,
+    })),
+  }
 }
 
 function slug(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+}
+
+function artifactKind(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
 }
 
 function titleFromKey(key: string): string {
@@ -816,6 +999,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
     },
   })
   if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+  assertBlueprintAccess(session, actorId)
   const snapshot = session.snapshots[0]
   if (!snapshot || snapshot.status !== 'COMPLETED') {
     throw new ValidationError('Create a successful source snapshot before running a loop stage')
@@ -824,6 +1008,43 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   const state = readLoopState(session)
   const stage = findLoopStage(state, stageKey)
   const priorAttempts = state.stageAttempts.filter(attempt => attempt.stageKey === stage.key)
+  const agentTemplateId = stage.agentTemplateId ?? defaultAgentTemplateForRole(session, stage.agentRole)
+  if (!agentTemplateId) {
+    throw new ValidationError(`Stage ${stage.label} needs an agent template before it can run`)
+  }
+  const task = loopStageTask(session, stage, state)
+  const inputSignature = buildStageInputSignature(snapshot, stage, agentTemplateId, task, state)
+  const reusable = state.executionConfig?.reuseUnchangedAttempt === false ? undefined : [...priorAttempts].reverse().find(attempt =>
+      attempt.inputSignature === inputSignature &&
+      attempt.status !== 'RUNNING' &&
+      attempt.status !== 'FAILED' &&
+      (attempt.artifactIds?.length ?? 0) > 0,
+    )
+  if (reusable) {
+    const reusedState: LoopState = {
+      ...state,
+      currentStageKey: stage.key,
+      reviewEvents: [...state.reviewEvents, reviewEvent('STAGE_RUN_REUSED', `${stage.label} reused unchanged attempt ${reusable.attemptNumber}.`, actorId, {
+        stageKey: stage.key,
+        attemptId: reusable.id,
+        inputSignature,
+        artifactIds: reusable.artifactIds ?? [],
+      })],
+    }
+    await prisma.blueprintSession.update({
+      where: { id: session.id },
+      data: { status: BlueprintSessionStatus.SNAPSHOTTED, metadata: stateToMetadata(session, reusedState) },
+    })
+    await recordBlueprintAudit(session.id, 'BlueprintStageRunReused', actorId, {
+      stageKey: stage.key,
+      stageLabel: stage.label,
+      attemptId: reusable.id,
+      attemptNumber: reusable.attemptNumber,
+      inputSignature,
+      artifactIds: reusable.artifactIds ?? [],
+    })
+    return loadSession(session.id, actorId)
+  }
   if (priorAttempts.length >= state.loopDefinition.maxLoopsPerStage) {
     throw new ValidationError(`Stage ${stage.label} reached the max loop count (${state.loopDefinition.maxLoopsPerStage})`)
   }
@@ -833,10 +1054,11 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
     stageKey: stage.key,
     stageLabel: stage.label,
     agentRole: stage.agentRole,
-    agentTemplateId: stage.agentTemplateId ?? defaultAgentTemplateForRole(session, stage.agentRole),
+    agentTemplateId,
     attemptNumber: priorAttempts.length + 1,
     status: 'RUNNING',
     startedAt: new Date().toISOString(),
+    inputSignature,
   }
   const startedState: LoopState = {
     ...state,
@@ -848,8 +1070,13 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
     where: { id: session.id },
     data: { status: BlueprintSessionStatus.RUNNING, metadata: stateToMetadata(session, startedState) },
   })
+  await recordBlueprintAudit(session.id, 'BlueprintStageRunStarted', actorId, {
+    stageKey: stage.key,
+    stageLabel: stage.label,
+    attemptId: attempt.id,
+    attemptNumber: attempt.attemptNumber,
+  })
 
-  const task = loopStageTask(session, stage, startedState)
   const dbRun = await prisma.blueprintStageRun.create({
     data: {
       sessionId: session.id,
@@ -862,6 +1089,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
 
   try {
     const result = await runLoopStageExecute(session, snapshot, stage, attempt.agentTemplateId, task)
+    await recordBlueprintBudgetUsage(session, result, stage.key, readLoopState(session).workflowNodeId)
     const completedAt = new Date().toISOString()
     const gateRecommendation = buildGateRecommendation(result, stage)
     const artifactIds = await createLoopStageArtifacts(session, snapshot, stage, attempt, result, gateRecommendation)
@@ -887,6 +1115,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
       error: result.status === 'FAILED' ? result.finishReason ?? 'stage failed' : undefined,
       correlation: result.correlation as unknown as Record<string, unknown>,
       tokensUsed: result.tokensUsed as unknown as Record<string, unknown>,
+      metrics: result.metrics as unknown as Record<string, unknown>,
       gateRecommendation,
       artifactIds,
     } : item)
@@ -894,10 +1123,18 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
       ...nextState,
       currentStageKey: stage.key,
       stageAttempts: updatedAttempts,
-      reviewEvents: [...nextState.reviewEvents, reviewEvent('STAGE_RUN_COMPLETED', `${stage.label} attempt ${attempt.attemptNumber} completed with ${gateRecommendation.verdict}.`, actorId, {
+      reviewEvents: [...nextState.reviewEvents, reviewEvent(
+        stage.approvalRequired !== false ? 'ARTIFACTS_AWAITING_APPROVAL' : 'STAGE_RUN_COMPLETED',
+        stage.approvalRequired !== false
+          ? `${stage.label} produced ${artifactIds.length} artifacts and is waiting for human approval.`
+          : `${stage.label} attempt ${attempt.attemptNumber} completed with ${gateRecommendation.verdict}.`,
+        actorId,
+        {
         stageKey: stage.key,
         attemptId: attempt.id,
         gateRecommendation,
+        artifactIds,
+        approvalRequired: stage.approvalRequired !== false,
       })],
     }
     updatedState = maybeApplyAutoGate(updatedState, stage, attempt.id, actorId)
@@ -908,7 +1145,20 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
         metadata: stateToMetadata(latest ?? session, updatedState),
       },
     })
-    return loadSession(session.id)
+    await recordBlueprintAudit(session.id, 'BlueprintStageRunCompleted', actorId, {
+      stageKey: stage.key,
+      stageLabel: stage.label,
+      attemptId: attempt.id,
+      attemptNumber: attempt.attemptNumber,
+      verdict: gateRecommendation.verdict,
+      confidence: gateRecommendation.confidence,
+      cfCallId: result.correlation?.cfCallId,
+      traceId: result.correlation?.traceId,
+      mcpInvocationId: result.correlation?.mcpInvocationId,
+    tokensUsed: result.tokensUsed,
+    metrics: result.metrics,
+  })
+    return loadSession(session.id, actorId)
   } catch (err) {
     const message = err instanceof ContextFabricError
       ? `context-fabric error (${err.status}): ${err.message}`
@@ -948,7 +1198,14 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
         }),
       },
     })
-    return loadSession(session.id)
+    await recordBlueprintAudit(session.id, 'BlueprintStageRunFailed', actorId, {
+      stageKey: stage.key,
+      stageLabel: stage.label,
+      attemptId: attempt.id,
+      attemptNumber: attempt.attemptNumber,
+      error: message,
+    })
+    return loadSession(session.id, actorId)
   }
 }
 
@@ -960,6 +1217,7 @@ async function saveStageVerdict(
 ) {
   const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
   if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+  assertBlueprintAccess(session, actorId)
   const state = readLoopState(session)
   const stage = findLoopStage(state, stageKey)
   const latestAttempt = latestStageAttempt(state, stage.key)
@@ -1003,7 +1261,16 @@ async function saveStageVerdict(
       metadata: stateToMetadata(session, nextState),
     },
   })
-  return loadSession(session.id)
+  await recordBlueprintAudit(session.id, 'BlueprintStageVerdictSaved', actorId, {
+    stageKey: stage.key,
+    stageLabel: stage.label,
+    attemptId: latestAttempt.id,
+    verdict: body.verdict,
+    confidence: body.confidence,
+    acceptRisk: body.acceptRisk === true,
+    missingQuestionsAcceptedWithRisk: missing,
+  })
+  return loadSession(session.id, actorId)
 }
 
 async function sendStageBack(
@@ -1014,6 +1281,7 @@ async function sendStageBack(
 ) {
   const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
   if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+  assertBlueprintAccess(session, actorId)
   const state = readLoopState(session)
   const stage = findLoopStage(state, stageKey)
   const target = findLoopStage(state, body.targetStageKey)
@@ -1047,7 +1315,17 @@ async function sendStageBack(
     where: { id: session.id },
     data: { status: BlueprintSessionStatus.SNAPSHOTTED, metadata: stateToMetadata(session, nextState) },
   })
-  return loadSession(session.id)
+  await recordBlueprintAudit(session.id, 'BlueprintStageSentBack', actorId, {
+    stageKey: stage.key,
+    stageLabel: stage.label,
+    targetStageKey: target.key,
+    targetStageLabel: target.label,
+    attemptId: latestAttempt?.id,
+    reason: body.reason,
+    requiredChanges: body.requiredChanges,
+    blockingQuestions: body.blockingQuestions ?? [],
+  })
+  return loadSession(session.id, actorId)
 }
 
 async function finalizeLoop(sessionId: string, actorId: string) {
@@ -1056,6 +1334,7 @@ async function finalizeLoop(sessionId: string, actorId: string) {
     include: { artifacts: { orderBy: { createdAt: 'asc' } } },
   })
   if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+  assertBlueprintAccess(session, actorId)
   const state = readLoopState(session)
   if (!isLoopGreen(state)) {
     throw new ValidationError('All required loop stages must be passed or accepted with risk before finalizing')
@@ -1088,19 +1367,32 @@ async function finalizeLoop(sessionId: string, actorId: string) {
       metadata: stateToMetadata(session, finalizedState),
     },
   })
-  await attachFinalPackToWorkflowNode(session, stampedPack)
-  await logEvent('BlueprintFinalized', 'BlueprintSession', session.id, actorId, { sessionId: session.id, artifactId: artifact.id })
-  return loadSession(session.id)
+  await attachFinalPackToWorkflowNode(session, stampedPack, actorId)
+  await recordBlueprintAudit(session.id, 'BlueprintFinalized', actorId, {
+    artifactId: artifact.id,
+    finalPackId: stampedPack.id,
+    workflowInstanceId: session.workflowInstanceId,
+    workflowNodeId: state.workflowNodeId,
+  })
+  return loadSession(session.id, actorId)
 }
 
 async function runLoopStageExecute(
   session: Awaited<ReturnType<typeof prisma.blueprintSession.findUnique>> & { id: string },
-  snapshot: { summary: Prisma.JsonValue; manifest: Prisma.JsonValue; rootHash: string | null },
+  snapshot: { id?: string; summary: Prisma.JsonValue; manifest: Prisma.JsonValue; rootHash: string | null },
   stage: LoopStageDefinition,
   agentTemplateId: string,
   task: string,
 ): Promise<ExecuteResponse> {
   const traceId = `blueprint-${session.id}-${stage.key}`
+  const executionConfig = readLoopState(session).executionConfig
+  const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
+    stageKey: stage.key,
+    stageLabel: stage.label,
+    task,
+    snapshotMode: executionConfig?.snapshotMode,
+    excerptBudgetChars: executionConfig?.excerptBudgetChars,
+  })
   return contextFabricClient.execute({
     trace_id: traceId,
     idempotency_key: `${session.id}:${stage.key}:${Date.now()}`,
@@ -1127,20 +1419,33 @@ async function runLoopStageExecute(
         label: 'Source snapshot',
         role: 'CONTEXT',
         mediaType: 'application/json',
-        content: JSON.stringify({
-          rootHash: snapshot.rootHash,
-          summary: snapshot.summary,
-          manifest: snapshot.manifest,
-        }, null, 2).slice(0, 120_000),
+        content: JSON.stringify(snapshotArtifact, null, 2),
       },
     ],
     overrides: {
       systemPromptAppend: loopStageSystemPrompt(stage),
       extraContext: 'This workbench is read-only. Produce implementation guidance, QA proof, and reviewable artifacts without mutating source files.',
     },
-    model_overrides: { provider: 'mock', model: 'mock-fast', temperature: 0.2 },
-    context_policy: { optimizationMode: 'code_aware', maxContextTokens: 16000, compareWithRaw: true },
-    limits: { maxSteps: 8, timeoutSec: 180 },
+    model_overrides: { provider: 'mock', model: 'mock-fast', temperature: 0.2, maxOutputTokens: 1200 },
+    context_policy: {
+      optimizationMode: 'code_aware',
+      maxContextTokens: 6000,
+      compareWithRaw: false,
+      knowledgeTopK: 4,
+      memoryTopK: 2,
+      codeTopK: 5,
+      maxLayerChars: 2000,
+      maxPromptChars: 24_000,
+    },
+    limits: {
+      maxSteps: 3,
+      timeoutSec: 180,
+      inputTokenBudget: 6000,
+      outputTokenBudget: 1200,
+      maxHistoryMessages: 4,
+      maxToolResultChars: 8000,
+      maxPromptChars: 24_000,
+    },
   })
 }
 
@@ -1174,7 +1479,18 @@ async function createLoopStageArtifacts(
       content: baseContent,
     },
   ]
-  if (stage.key === 'plan') {
+  if ((stage.expectedArtifacts ?? []).length > 0) {
+    specs.push(...(stage.expectedArtifacts ?? []).map(artifact => ({
+      kind: artifact.kind,
+      title: `${artifact.title} v${attempt.attemptNumber}`,
+      content: buildConfiguredArtifactMarkdown(session, ctx, stage, attempt, response, gateRecommendation, artifact),
+      payload: {
+        expectedArtifact: artifact,
+        artifactRequired: artifact.required !== false,
+        approvalRequired: stage.approvalRequired !== false,
+      },
+    })))
+  } else if (stage.key === 'plan') {
     specs.push(
       { kind: 'mental_model', title: `Mental model v${attempt.attemptNumber}`, content: buildMentalModel(session, ctx) },
       { kind: 'gaps', title: `Gaps v${attempt.attemptNumber}`, content: buildGaps(session, ctx) },
@@ -1184,7 +1500,7 @@ async function createLoopStageArtifacts(
       { kind: 'solution_architecture', title: `Solution architecture v${attempt.attemptNumber}`, content: buildSolutionArchitecture(session, ctx) },
       { kind: 'approved_spec_draft', title: `Spec draft v${attempt.attemptNumber}`, content: buildApprovedSpec(session, ctx, response) },
     )
-  } else if (stage.agentRole === 'DEVELOPER') {
+  } else if (normalizeAgentRole(stage.agentRole).includes('DEV')) {
     specs.push(
       { kind: 'developer_task_pack', title: `Developer task pack v${attempt.attemptNumber}`, content: buildDeveloperTaskPack(session, ctx, response) },
       { kind: 'simulated_code_change', title: `Code-change evidence v${attempt.attemptNumber}`, content: buildCodeChangeEvidence(session, ctx) },
@@ -1213,12 +1529,55 @@ async function createLoopStageArtifacts(
   return created.map(item => item.id)
 }
 
+function buildConfiguredArtifactMarkdown(
+  session: ArtifactSession,
+  ctx: SnapshotContext,
+  stage: LoopStageDefinition,
+  attempt: StageAttempt,
+  response: string,
+  gate: GateRecommendation,
+  artifact: LoopExpectedArtifact,
+) {
+  return [
+    `# ${artifact.title}`,
+    '',
+    `Stage: ${stage.label} (${stage.key})`,
+    `Agent role: ${stage.agentRole}`,
+    `Attempt: ${attempt.attemptNumber}`,
+    `Required: ${artifact.required !== false ? 'yes' : 'no'}`,
+    `Format: ${artifact.format ?? 'MARKDOWN'}`,
+    '',
+    artifact.description ? `## Artifact intent\n${artifact.description}` : undefined,
+    '## Workbench output',
+    response || 'The execution layer did not return a detailed response; use the generated snapshot context and gate evidence below.',
+    '',
+    '## Gate recommendation',
+    `- Verdict: ${gate.verdict}`,
+    `- Confidence: ${Math.round(gate.confidence * 100)}%`,
+    `- Reason: ${gate.reason}`,
+    '',
+    '## Source context signal',
+    `- Goal: ${session.goal}`,
+    `- Languages: ${Object.keys(ctx.languages).join(', ') || 'unknown'}`,
+    `- Key files: ${ctx.keyFiles.slice(0, 5).join(', ') || 'none detected'}`,
+    `- Sampled files: ${ctx.sampledFiles.length}`,
+    '',
+    '## Human approval',
+    stage.approvalRequired !== false
+      ? 'This artifact must be reviewed and approved, accepted with risk, or sent back before the loop can advance.'
+      : 'This stage is configured for automatic progression after execution.',
+  ].filter(Boolean).join('\n')
+}
+
 function loopStageTask(session: ArtifactSession, stage: LoopStageDefinition, state: LoopState): string {
   const latestAccepted = state.stageAttempts
     .filter(attempt => attempt.verdict === 'PASS' || attempt.verdict === 'ACCEPTED_WITH_RISK')
     .map(attempt => `${attempt.stageLabel}#${attempt.attemptNumber}: ${attempt.verdict}`)
     .join('\n') || 'No accepted stages yet.'
   const questions = (stage.questions ?? []).map(question => `- ${question.id}: ${question.question}${question.required ? ' (required)' : ''}`).join('\n') || '- No configured questions.'
+  const artifacts = (stage.expectedArtifacts ?? []).map(artifact =>
+    `- ${artifact.title} (${artifact.kind})${artifact.required !== false ? ' [required]' : ''}${artifact.description ? `: ${artifact.description}` : ''}`,
+  ).join('\n') || '- No explicit artifact contract; produce the stage default artifact pack.'
   const sendBacks = state.reviewEvents.filter(event => event.type === 'SEND_BACK' || event.type === 'AUTO_SEND_BACK').slice(-5)
     .map(event => `- ${event.message}`)
     .join('\n') || '- No send-backs yet.'
@@ -1232,6 +1591,9 @@ function loopStageTask(session: ArtifactSession, stage: LoopStageDefinition, sta
     'Stage description:',
     stage.description ?? 'No description supplied.',
     '',
+    'Expected artifacts:',
+    artifacts,
+    '',
     'Configured questions:',
     questions,
     '',
@@ -1241,7 +1603,7 @@ function loopStageTask(session: ArtifactSession, stage: LoopStageDefinition, sta
     'Recent feedback loops:',
     sendBacks,
     '',
-    'Return concise, structured workbench output with: decisions, risks, artifact updates, open questions, and a gate recommendation of PASS, NEEDS_REWORK, or BLOCKED.',
+    'Return concise, structured workbench output with: decisions, risks, artifact updates for every expected artifact, open questions, and a gate recommendation of PASS, NEEDS_REWORK, or BLOCKED.',
   ].join('\n')
 }
 
@@ -1249,13 +1611,142 @@ function loopStageSystemPrompt(stage: LoopStageDefinition): string {
   return [
     `You are the ${stage.label} stage agent in a governed agentic delivery loop.`,
     'Be explicit about what should pass, what should go back, and why.',
+    stage.approvalRequired !== false
+      ? 'Human approval is required after artifact production; prepare the artifact evidence for review.'
+      : 'This stage may proceed without human approval if policy allows.',
     'When uncertain, ask targeted questions and preserve traceability to files, requirements, and tests.',
-    stage.agentRole === 'DEVELOPER'
+    normalizeAgentRole(stage.agentRole).includes('DEV')
       ? 'Do not write source files. Produce a proposed implementation pack and simulated code-change evidence.'
-      : stage.agentRole === 'QA'
+      : normalizeAgentRole(stage.agentRole).includes('QA') || normalizeAgentRole(stage.agentRole).includes('TEST') || normalizeAgentRole(stage.agentRole).includes('VERIFY')
         ? 'Focus on verification, regressions, acceptance criteria, and certification proof.'
         : 'Focus on architecture, planning, constraints, and design decisions.',
   ].join(' ')
+}
+
+function buildStageInputSignature(
+  snapshot: { rootHash: string | null },
+  stage: LoopStageDefinition,
+  agentTemplateId: string,
+  task: string,
+  state: LoopState,
+): string {
+  const accepted = state.stageAttempts
+    .filter(attempt => attempt.verdict === 'PASS' || attempt.verdict === 'ACCEPTED_WITH_RISK')
+    .map(attempt => ({
+      stageKey: attempt.stageKey,
+      attemptNumber: attempt.attemptNumber,
+      verdict: attempt.verdict,
+      artifactIds: attempt.artifactIds ?? [],
+      acceptedAt: attempt.acceptedAt,
+    }))
+  const answers = state.decisionAnswers.map(answer => ({
+    questionId: answer.questionId,
+    answerType: answer.answerType,
+    selectedOptionLabel: answer.selectedOptionLabel,
+    customAnswer: answer.customAnswer,
+    notes: answer.notes,
+  }))
+  return sha256(JSON.stringify({
+    rootHash: snapshot.rootHash,
+    stageKey: stage.key,
+    agentRole: stage.agentRole,
+    agentTemplateId,
+    taskHash: sha256(task),
+    accepted,
+    answers,
+  }))
+}
+
+function buildSnapshotExecuteArtifact(
+  snapshot: { id?: string; summary: Prisma.JsonValue; manifest: Prisma.JsonValue; rootHash: string | null },
+  input: {
+    stageKey: string
+    stageLabel: string
+    task: string
+    snapshotMode?: 'summary' | 'relevant_excerpts' | 'full_debug'
+    excerptBudgetChars?: number
+  },
+): Record<string, unknown> {
+  const summary = isRecord(snapshot.summary) ? snapshot.summary : {}
+  const snapshotMode = input.snapshotMode ?? 'relevant_excerpts'
+  const excerptBudgetChars = Math.min(input.excerptBudgetChars ?? EXECUTE_EXCERPT_BUDGET_CHARS, snapshotMode === 'full_debug' ? 120_000 : EXECUTE_EXCERPT_BUDGET_CHARS)
+  const sampledFiles = Array.isArray(summary.sampledFiles)
+    ? summary.sampledFiles.filter((file): file is { path: string; excerpt: string } =>
+        isRecord(file) && typeof file.path === 'string' && typeof file.excerpt === 'string',
+      )
+    : []
+  const manifest = Array.isArray(snapshot.manifest) ? snapshot.manifest as ManifestEntry[] : []
+  const compactManifest = manifest.slice(0, EXECUTE_MANIFEST_MAX_FILES).map(file => ({
+    path: file.path,
+    size: file.size,
+    language: file.language,
+    sha: file.sha,
+  }))
+  const relevantExcerpts = snapshotMode === 'summary' ? [] : selectRelevantSnapshotExcerpts(sampledFiles, {
+      ...input,
+      maxFiles: snapshotMode === 'full_debug' ? MAX_EXCERPT_FILES : EXECUTE_EXCERPT_MAX_FILES,
+      maxCharsPerFile: EXECUTE_EXCERPT_MAX_CHARS,
+      totalBudgetChars: excerptBudgetChars,
+    })
+  const { sampledFiles: _omitted, ...compactSummary } = summary
+  return {
+    snapshotId: snapshot.id,
+    rootHash: snapshot.rootHash,
+    snapshotMode,
+    compactSummary,
+    compactManifest,
+    manifestTruncated: manifest.length > compactManifest.length,
+    relevantExcerpts,
+    excerptBudgetChars,
+    estimatedChars: JSON.stringify({ compactSummary, compactManifest, relevantExcerpts }).length,
+    guidance: 'Use the snapshotId/rootHash as the stable source reference. Ask for more context only when these excerpts are insufficient.',
+  }
+}
+
+function selectRelevantSnapshotExcerpts(
+  files: Array<{ path: string; excerpt: string }>,
+  input: { stageKey: string; stageLabel: string; task: string; maxFiles: number; maxCharsPerFile: number; totalBudgetChars: number },
+): Array<{ path: string; excerpt: string; score: number }> {
+  const keywords = snapshotKeywords(`${input.stageKey} ${input.stageLabel} ${input.task}`)
+  let used = 0
+  return files
+    .map(file => ({
+      ...file,
+      score: snapshotExcerptScore(file, keywords),
+    }))
+    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+    .slice(0, Math.max(input.maxFiles * 2, input.maxFiles))
+    .reduce<Array<{ path: string; excerpt: string; score: number }>>((selected, file) => {
+      if (selected.length >= input.maxFiles || used >= input.totalBudgetChars) return selected
+      const remaining = input.totalBudgetChars - used
+      const excerpt = file.excerpt.slice(0, Math.min(input.maxCharsPerFile, remaining)).trim()
+      if (!excerpt) return selected
+      selected.push({ path: file.path, excerpt, score: file.score })
+      used += excerpt.length
+      return selected
+    }, [])
+}
+
+function snapshotKeywords(value: string): Set<string> {
+  const tokens = value
+    .toLowerCase()
+    .split(/[^a-z0-9_]+/)
+    .filter(token => token.length >= 3 && !['the', 'and', 'for', 'with', 'this', 'that', 'from', 'stage', 'agent', 'return'].includes(token))
+  return new Set(tokens.slice(0, 80))
+}
+
+function snapshotExcerptScore(file: { path: string; excerpt: string }, keywords: Set<string>): number {
+  const pathText = file.path.toLowerCase()
+  const excerptText = file.excerpt.toLowerCase()
+  let score = 0
+  for (const keyword of keywords) {
+    if (pathText.includes(keyword)) score += 8
+    if (excerptText.includes(keyword)) score += 2
+  }
+  if (/readme|claude|agents|skill|instruction|docs\//i.test(file.path)) score += 12
+  if (/test|spec|rule|engine|operator|service|controller|model|schema/i.test(file.path)) score += 8
+  if (/\.(ts|tsx|js|jsx|py|java|kt|go|rs)$/i.test(file.path)) score += 4
+  return score
 }
 
 function buildGateRecommendation(result: ExecuteResponse, stage: LoopStageDefinition): GateRecommendation {
@@ -1406,7 +1897,10 @@ function reviewEvent(type: string, message: string, actorId: string, payload: Re
 }
 
 function legacyStage(stage: LoopStageDefinition): BlueprintStage {
-  return stage.agentRole === 'DEVELOPER' ? BlueprintStage.DEVELOPER : stage.agentRole === 'QA' ? BlueprintStage.QA : BlueprintStage.ARCHITECT
+  const role = normalizeAgentRole(stage.agentRole)
+  if (role.includes('DEV') || role === 'ENGINEER') return BlueprintStage.DEVELOPER
+  if (role.includes('QA') || role.includes('TEST') || role.includes('VERIFY')) return BlueprintStage.QA
+  return BlueprintStage.ARCHITECT
 }
 
 function buildFinalPack(state: LoopState, artifacts: Array<{ id: string; kind: string; payload?: Prisma.JsonValue | null }>, actorId: string): FinalPack {
@@ -1465,41 +1959,83 @@ function buildFinalPackMarkdown(finalPack: FinalPack, state: LoopState) {
   ].join('\n')
 }
 
-async function attachFinalPackToWorkflowNode(session: { id: string; workflowInstanceId?: string | null; metadata?: Prisma.JsonValue }, finalPack: FinalPack) {
+async function attachFinalPackToWorkflowNode(
+  session: { id: string; workflowInstanceId?: string | null; metadata?: Prisma.JsonValue },
+  finalPack: FinalPack,
+  actorId: string,
+) {
   const state = readLoopState(session as LoopSessionSeed)
   if (!session.workflowInstanceId || !state.workflowNodeId) return
   const node = await prisma.workflowNode.findFirst({
     where: { id: state.workflowNodeId, instanceId: session.workflowInstanceId },
-    select: { id: true, config: true },
+    select: { id: true, config: true, instanceId: true },
   })
   if (!node) return
   const config = isRecord(node.config) ? node.config : {}
-  const blueprintWorkbench = isRecord(config.blueprintWorkbench) ? config.blueprintWorkbench : {}
-  await prisma.workflowNode.update({
-    where: { id: node.id },
-    data: {
-      config: {
-        ...config,
-        blueprintWorkbench: {
-          ...blueprintWorkbench,
-          enabled: true,
-          sessionId: session.id,
-          finalPack,
-          finalizedAt: finalPack.generatedAt,
-        },
-      } as Prisma.InputJsonValue,
+  const workbench = isRecord(config.workbench) ? config.workbench : {}
+  const outputs = isRecord(workbench.outputs) ? workbench.outputs : {}
+  const finalPackKey = typeof outputs.finalPackKey === 'string' && outputs.finalPackKey.trim()
+    ? outputs.finalPackKey.trim()
+    : 'finalImplementationPack'
+  const nextConfig = {
+    ...config,
+    workbench: {
+      ...workbench,
+      sessionId: session.id,
+      finalPack,
+      output: {
+        blueprintSessionId: session.id,
+        workbenchStatus: 'FINALIZED',
+        [finalPackKey]: finalPack,
+      },
+      finalizedAt: finalPack.generatedAt,
     },
+  }
+  await prisma.$transaction([
+    prisma.workflowNode.update({
+      where: { id: node.id },
+      data: { config: nextConfig as Prisma.InputJsonValue },
+    }),
+    prisma.workflowMutation.create({
+      data: {
+        instanceId: node.instanceId,
+        nodeId: node.id,
+        mutationType: 'BLUEPRINT_FINAL_PACK_ATTACHED',
+        beforeState: { workbench } as Prisma.InputJsonValue,
+        afterState: { workbench: nextConfig.workbench } as Prisma.InputJsonValue,
+        performedById: actorId,
+      },
+    }),
+  ])
+  await logEvent('BlueprintFinalPackAttachedToWorkflowNode', 'WorkflowNode', node.id, actorId, {
+    sessionId: session.id,
+    finalPackId: finalPack.id,
+    workflowInstanceId: node.instanceId,
+  })
+  await publishOutbox('WorkflowNode', node.id, 'BlueprintFinalPackAttached', {
+    sessionId: session.id,
+    finalPackId: finalPack.id,
+    workflowInstanceId: node.instanceId,
+    actorId,
   })
 }
 
 async function runStage(
   session: Awaited<ReturnType<typeof prisma.blueprintSession.findUnique>> & { id: string },
-  snapshot: { summary: Prisma.JsonValue; manifest: Prisma.JsonValue; rootHash: string | null },
+  snapshot: { id?: string; summary: Prisma.JsonValue; manifest: Prisma.JsonValue; rootHash: string | null },
   stage: BlueprintStage,
   agentTemplateId: string,
   task: string,
 ): Promise<ExecuteResponse> {
   const traceId = `blueprint-${session.id}-${stage.toLowerCase()}`
+  const executionConfig = readLoopState(session).executionConfig
+  const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
+    stageKey: stage.toLowerCase(),
+    stageLabel: humanStage(stage),
+    task,
+    snapshotMode: executionConfig?.snapshotMode,
+    excerptBudgetChars: executionConfig?.excerptBudgetChars,
+  })
   return contextFabricClient.execute({
     trace_id: traceId,
     idempotency_key: `${session.id}:${stage}`,
@@ -1524,21 +2060,69 @@ async function runStage(
         label: 'Source snapshot',
         role: 'CONTEXT',
         mediaType: 'application/json',
-        content: JSON.stringify({
-          rootHash: snapshot.rootHash,
-          summary: snapshot.summary,
-          manifest: snapshot.manifest,
-        }, null, 2).slice(0, 120_000),
+        content: JSON.stringify(snapshotArtifact, null, 2),
       },
     ],
     overrides: {
       systemPromptAppend: stageSystemPrompt(stage),
       extraContext: 'This MVP must not mutate source code. Coding output is a simulated, reviewable proposal with evidence.',
     },
-    model_overrides: { provider: 'mock', model: 'mock-fast', temperature: 0.2 },
-    context_policy: { optimizationMode: 'code_aware', maxContextTokens: 16000, compareWithRaw: true },
-    limits: { maxSteps: 8, timeoutSec: 180 },
+    model_overrides: { provider: 'mock', model: 'mock-fast', temperature: 0.2, maxOutputTokens: 1200 },
+    context_policy: {
+      optimizationMode: 'code_aware',
+      maxContextTokens: 6000,
+      compareWithRaw: false,
+      knowledgeTopK: 4,
+      memoryTopK: 2,
+      codeTopK: 5,
+      maxLayerChars: 2000,
+      maxPromptChars: 24_000,
+    },
+    limits: {
+      maxSteps: 3,
+      timeoutSec: 180,
+      inputTokenBudget: 6000,
+      outputTokenBudget: 1200,
+      maxHistoryMessages: 4,
+      maxToolResultChars: 8000,
+      maxPromptChars: 24_000,
+    },
   })
+}
+
+async function recordBlueprintBudgetUsage(
+  session: { workflowInstanceId?: string | null; workflowNodeId?: string | null; phaseId?: string | null },
+  result: ExecuteResponse,
+  stageKey: string,
+  workflowNodeId?: string | null,
+) {
+  if (!session.workflowInstanceId) return
+  try {
+    await recordWorkflowLlmUsage(session.workflowInstanceId, {
+      nodeId: workflowNodeId ?? session.workflowNodeId ?? session.phaseId ?? null,
+      cfCallId: result.correlation.cfCallId,
+      promptAssemblyId: result.correlation.promptAssemblyId,
+      inputTokens: result.tokensUsed?.input,
+      outputTokens: result.tokensUsed?.output,
+      totalTokens: result.tokensUsed?.total,
+      estimatedCost: result.modelUsage?.estimatedCost,
+      provider: result.modelUsage?.provider,
+      model: result.modelUsage?.model,
+      metadata: {
+        source: 'blueprint-workbench',
+        stageKey,
+        finishReason: result.finishReason,
+        status: result.status,
+        tokensSaved: result.usage?.tokensSaved,
+      },
+    })
+  } catch (err) {
+    await logEvent('WorkflowBudgetUsageRecordFailed', 'WorkflowInstance', session.workflowInstanceId, undefined, {
+      stageKey,
+      cfCallId: result.correlation.cfCallId,
+      error: (err as Error).message,
+    })
+  }
 }
 
 type ArtifactSession = {
@@ -2174,7 +2758,7 @@ function isStageAttempt(value: unknown): value is StageAttempt {
     && typeof value.id === 'string'
     && typeof value.stageKey === 'string'
     && typeof value.stageLabel === 'string'
-    && (value.agentRole === 'ARCHITECT' || value.agentRole === 'DEVELOPER' || value.agentRole === 'QA')
+    && typeof value.agentRole === 'string'
     && typeof value.agentTemplateId === 'string'
     && typeof value.attemptNumber === 'number'
     && typeof value.status === 'string'

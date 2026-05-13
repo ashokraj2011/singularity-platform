@@ -8,6 +8,7 @@ import { authMiddleware } from './middleware/auth'
 import { authRouter } from './modules/identity/auth.router'
 import { usersRouter } from './modules/identity/users.router'
 import { teamsRouter } from './modules/identity/teams.router'
+import { identitySyncRouter } from './modules/identity/sync.router'
 import { rolesRouter } from './modules/identity/roles.router'
 import { skillsRouter } from './modules/identity/skills.router'
 import { permissionsRouter } from './modules/identity/permissions.router'
@@ -64,6 +65,7 @@ export function createApp(): Express {
   // Protected routes
   app.use('/api/users', authMiddleware, usersRouter)
   app.use('/api/teams', authMiddleware, teamsRouter)
+  app.use('/api/identity', authMiddleware, identitySyncRouter)
   app.use('/api/roles', authMiddleware, rolesRouter)
   app.use('/api/skills', authMiddleware, skillsRouter)
   app.use('/api/permissions', authMiddleware, permissionsRouter)

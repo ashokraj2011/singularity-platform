@@ -3,6 +3,7 @@ import { prisma } from '../../../../lib/prisma'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import {
   resolveAssignmentRouting,
+  mirrorTeamQueueRouting,
   buildEntityRoutingFields,
   getTemplateCapabilityId,
 } from '../../../task/lib/assignment'
@@ -18,7 +19,7 @@ export async function activateApproval(
   // Approvals historically used `approverUserId`; keep that as a fallback for
   // legacy workflows that haven't migrated to the structured assignmentMode.
   const legacyApprover = cfg.approverUserId as string | undefined
-  const routing = resolveAssignmentRouting(
+  const routing = await mirrorTeamQueueRouting(resolveAssignmentRouting(
     {
       assignmentMode: (cfg.assignmentMode as string | undefined) ?? (legacyApprover ? 'DIRECT_USER' : undefined),
       assignedToId:   (cfg.assignedToId  as string | undefined) ?? legacyApprover,
@@ -28,7 +29,7 @@ export async function activateApproval(
     },
     capabilityId,
     (instance.context ?? {}) as Record<string, unknown>,
-  )
+  ))
 
   const fields = buildEntityRoutingFields(routing)
 

@@ -10,6 +10,7 @@ from app.auth.deps import get_current_user
 from app.schemas import PageResponse
 from app.capabilities.schemas import (
     CapabilityOut, CreateCapabilityRequest, UpdateCapabilityRequest,
+    CapabilityReferenceRequest,
     CapabilityRelationshipOut, CreateCapabilityRelationshipRequest,
     CapabilityMembershipOut, AddCapabilityMemberRequest,
     SharingGrantOut, CreateSharingGrantRequest,
@@ -96,6 +97,7 @@ async def create_capability(
             owner_team_id = team.id
 
     cap = Capability(
+        **({"id": body.id} if body.id else {}),
         capability_id=body.capability_id, name=body.name, description=body.description,
         capability_type=body.capability_type, visibility=body.visibility,
         owner_bu_id=owner_bu_id, owner_team_id=owner_team_id,
@@ -115,6 +117,72 @@ async def create_capability(
         actor={"kind": "user", "id": current_user.id},
         correlation={"capability_id": cap.capability_id, "capability_type": cap.capability_type},
         payload={"name": cap.name, "description": cap.description, "owner_bu_id": cap.owner_bu_id},
+        db=db,
+    )
+    await db.commit()
+    await db.refresh(cap)
+    return _cap_out(cap)
+
+
+@router.put("/capabilities/reference/{capability_id}", response_model=CapabilityOut)
+async def upsert_capability_reference(
+    capability_id: str,
+    body: CapabilityReferenceRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if body.capability_id != capability_id:
+        raise HTTPException(status_code=400, detail="capability_id path/body mismatch")
+
+    cap = (await db.execute(select(Capability).where(Capability.capability_id == capability_id))).scalar_one_or_none()
+    action = "updated"
+    if cap:
+        cap.name = body.name
+        cap.description = body.description
+        cap.capability_type = body.capability_type
+        cap.status = body.status
+        cap.visibility = body.visibility
+        cap.metadata_ = body.metadata or {}
+        cap.tags = body.tags or []
+        cap.updated_at = datetime.now(timezone.utc)
+    else:
+        action = "created"
+        cap = Capability(
+            **({"id": body.id} if body.id else {}),
+            capability_id=capability_id,
+            name=body.name,
+            description=body.description,
+            capability_type=body.capability_type,
+            status=body.status,
+            visibility=body.visibility,
+            metadata_=body.metadata or {},
+            tags=body.tags or [],
+            created_by=current_user.id,
+        )
+        db.add(cap)
+        await db.flush()
+
+    await record_event(
+        db,
+        actor_user_id=current_user.id,
+        event_type=f"capability_reference_{action}",
+        capability_id=cap.capability_id,
+        target_type="capability",
+        target_id=cap.capability_id,
+        payload={
+            "name": cap.name,
+            "capability_type": cap.capability_type,
+            "source_service": (body.metadata or {}).get("sourceService"),
+        },
+    )
+    from app.eventbus import publish_event
+    await publish_event(
+        event_name=f"capability.reference.{action}",
+        subject_kind="capability",
+        subject_id=cap.id,
+        actor={"kind": "user", "id": current_user.id},
+        correlation={"capability_id": cap.capability_id, "capability_type": cap.capability_type},
+        payload={"name": cap.name, "description": cap.description, "metadata": cap.metadata_},
         db=db,
     )
     await db.commit()

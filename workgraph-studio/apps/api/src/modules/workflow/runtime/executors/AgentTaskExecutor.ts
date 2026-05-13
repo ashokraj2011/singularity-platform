@@ -6,6 +6,7 @@ import {
 } from '../../../../lib/context-fabric/client'
 import { config } from '../../../../config'
 import { snapshotAgentTemplate, snapshotCapability } from '../../../../lib/snapshot'
+import { prepareLlmBudget, recordWorkflowLlmUsage } from '../budget'
 
 /**
  * AGENT_TASK node activation (M8).
@@ -110,6 +111,69 @@ export async function activateAgentTask(
   const globals = (instanceCtx._globals ?? instanceCtx.globals ?? {}) as Record<string, unknown>
 
   const traceId = `wf-${instance.id}-${node.id}-${run.id.slice(0, 8)}`
+  const modelOverrides = {
+    maxOutputTokens: 1200,
+    ...((cfg.modelOverrides as Record<string, unknown> | undefined) ?? {}),
+  }
+  const contextPolicy = {
+    optimizationMode: 'medium',
+    maxContextTokens: 6000,
+    compareWithRaw: false,
+    knowledgeTopK: 5,
+    memoryTopK: 3,
+    codeTopK: 5,
+    maxLayerChars: 2500,
+    maxPromptChars: 24_000,
+    ...((cfg.contextPolicy as Record<string, unknown> | undefined) ?? {}),
+  }
+  const limits = {
+    maxSteps: 3,
+    timeoutSec: 240,
+    inputTokenBudget: 6000,
+    outputTokenBudget: 1200,
+    maxHistoryMessages: 6,
+    maxToolResultChars: 8000,
+    maxPromptChars: 24_000,
+    ...((cfg.limits as Record<string, unknown> | undefined) ?? {}),
+  }
+
+  const budgetDecision = await prepareLlmBudget({
+    instance,
+    node,
+    agentRunId: run.id,
+    contextPolicy,
+    limits,
+    modelOverrides,
+  })
+  if (budgetDecision.action === 'BLOCKED') {
+    await prisma.agentRunOutput.create({
+      data: {
+        runId: run.id,
+        outputType: 'BUDGET_APPROVAL_REQUIRED',
+        rawContent: budgetDecision.reason,
+        structuredPayload: { reason: budgetDecision.reason },
+      },
+    })
+    await prisma.agentRun.update({
+      where: { id: run.id },
+      data: { status: 'PAUSED' },
+    })
+    await logEvent('AgentRunPaused', 'AgentRun', run.id, undefined, {
+      reason: budgetDecision.reason,
+      nodeId: node.id,
+      instanceId: instance.id,
+    })
+    await publishOutbox('AgentRun', run.id, 'AgentRunPaused', {
+      runId: run.id,
+      reason: budgetDecision.reason,
+    })
+    return
+  }
+  if (budgetDecision.action === 'FAIL') {
+    await failRun(run.id, 'workflow-budget-exhausted', budgetDecision.reason)
+    return
+  }
+
   const executeReq: ExecuteRequest = {
     trace_id: traceId,
     idempotency_key: run.id,
@@ -127,9 +191,9 @@ export async function activateAgentTask(
     prior_outputs: await collectPriorOutputs(instance.id, node.id),
     artifacts: (cfg.artifacts as unknown[] | undefined) ?? [],
     overrides: (cfg.overrides as Record<string, unknown> | undefined) ?? {},
-    model_overrides: (cfg.modelOverrides as Record<string, unknown> | undefined) ?? {},
-    context_policy: (cfg.contextPolicy as Record<string, unknown> | undefined) ?? {},
-    limits: (cfg.limits as Record<string, unknown> | undefined) ?? {},
+    model_overrides: budgetDecision.modelOverrides,
+    context_policy: budgetDecision.contextPolicy,
+    limits: budgetDecision.limits,
     preview_only: cfg.previewOnly === true,
   }
 
@@ -159,8 +223,9 @@ export async function activateAgentTask(
     finishReason: result.finishReason,
     stepsTaken: result.stepsTaken,
     tokensUsed: result.tokensUsed,
+    modelUsage: result.modelUsage,
     metrics: result.metrics,
-    warnings: result.warnings,
+    warnings: [...(result.warnings ?? []), ...budgetDecision.warnings],
     contextFabricUrl: config.CONTEXT_FABRIC_URL,
   }
 
@@ -170,9 +235,36 @@ export async function activateAgentTask(
       outputType: 'LLM_RESPONSE',
       rawContent: result.finalResponse ?? '',
       structuredPayload: correlation,
-      tokenCount: result.tokensUsed?.input ?? null,
+      tokenCount: result.tokensUsed?.total ?? result.tokensUsed?.input ?? null,
     },
   })
+
+  try {
+    await recordWorkflowLlmUsage(instance.id, {
+      nodeId: node.id,
+      agentRunId: run.id,
+      cfCallId: result.correlation.cfCallId,
+      promptAssemblyId: result.correlation.promptAssemblyId,
+      inputTokens: result.tokensUsed?.input,
+      outputTokens: result.tokensUsed?.output,
+      totalTokens: result.tokensUsed?.total,
+      estimatedCost: result.modelUsage?.estimatedCost,
+      provider: result.modelUsage?.provider,
+      model: result.modelUsage?.model,
+      metadata: {
+        finishReason: result.finishReason,
+        status: result.status,
+        tokensSaved: result.usage?.tokensSaved,
+      },
+    })
+  } catch (err) {
+    await logEvent('WorkflowBudgetUsageRecordFailed', 'WorkflowInstance', instance.id, undefined, {
+      nodeId: node.id,
+      agentRunId: run.id,
+      cfCallId: result.correlation.cfCallId,
+      error: (err as Error).message,
+    })
+  }
 
   if (result.status === 'FAILED') {
     await prisma.agentRun.update({
@@ -289,11 +381,34 @@ async function collectPriorOutputs(
     if (!r.nodeId) continue
     const latest = r.outputs[0]
     if (!latest) continue
+    const structured = latest.structuredPayload as Record<string, unknown> | null
     out[r.nodeId] = {
       runId: r.id,
-      response: latest.rawContent ?? '',
-      structuredPayload: latest.structuredPayload ?? null,
+      responseSummary: summarizePriorOutput(latest.rawContent ?? ''),
+      outputType: latest.outputType,
+      tokenCount: latest.tokenCount,
+      artifactIds: Array.isArray(structured?.artifactIds) ? structured?.artifactIds : undefined,
+      finalArtifactId: typeof structured?.finalArtifactId === 'string' ? structured.finalArtifactId : undefined,
+      correlation: structured ? {
+        cfCallId: structured.cfCallId,
+        traceId: structured.traceId,
+        promptAssemblyId: structured.promptAssemblyId,
+        mcpInvocationId: structured.mcpInvocationId,
+        finishReason: structured.finishReason,
+      } : null,
     }
   }
   return out
+}
+
+function summarizePriorOutput(raw: string): string {
+  const compact = raw
+    .replace(/\r/g, '')
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter((line, index, lines) => line.trim() || lines[index - 1]?.trim())
+    .join('\n')
+    .trim()
+  if (compact.length <= 1200) return compact
+  return `${compact.slice(0, 1100).trimEnd()}\n...[prior output summarized; use artifact/correlation ids for full audit]`
 }

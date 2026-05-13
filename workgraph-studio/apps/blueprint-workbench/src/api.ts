@@ -1,5 +1,5 @@
 export type SourceType = 'github' | 'localdir'
-export type Stage = 'ARCHITECT' | 'DEVELOPER' | 'QA'
+export type Stage = string
 export type SessionStatus = 'DRAFT' | 'SNAPSHOTTED' | 'RUNNING' | 'COMPLETED' | 'APPROVED' | 'FAILED'
 export type StageStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
 export type GateMode = 'manual' | 'auto'
@@ -97,6 +97,14 @@ export type DecisionAnswer = {
   updatedById?: string
 }
 
+export type LoopExpectedArtifact = {
+  kind: string
+  title: string
+  description?: string
+  required?: boolean
+  format?: 'MARKDOWN' | 'TEXT' | 'JSON' | 'CODE'
+}
+
 export type LoopStage = {
   key: string
   label: string
@@ -106,6 +114,8 @@ export type LoopStage = {
   next?: string | null
   terminal?: boolean
   required?: boolean
+  approvalRequired?: boolean
+  expectedArtifacts?: LoopExpectedArtifact[]
   allowedSendBackTo?: string[]
   questions?: LoopQuestion[]
 }
@@ -146,6 +156,7 @@ export type StageAttempt = {
   gateRecommendation?: GateRecommendation
   correlation?: BlueprintStageRun['correlation']
   tokensUsed?: BlueprintStageRun['tokensUsed']
+  metrics?: Record<string, unknown>
 }
 
 export type ReviewEvent = {
@@ -216,9 +227,9 @@ export type CreateSessionRequest = {
   includeGlobs: string[]
   excludeGlobs: string[]
   capabilityId: string
-  architectAgentTemplateId: string
-  developerAgentTemplateId: string
-  qaAgentTemplateId: string
+  architectAgentTemplateId?: string
+  developerAgentTemplateId?: string
+  qaAgentTemplateId?: string
   workflowInstanceId?: string
   workflowNodeId?: string
   phaseId?: string

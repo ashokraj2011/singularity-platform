@@ -11,7 +11,7 @@
  *   Sub-tasks — ad-hoc checklist items attached to this node at runtime
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   X, CheckCircle2, XCircle, GitBranch,
   Paperclip, Upload, Link2, ExternalLink, FileText, AlertCircle,
@@ -45,8 +45,8 @@ export function NodeRunModal({ runtime, node, nodeState, actorEmail, onClose }: 
 
   const isApproval   = node.nodeType === 'APPROVAL'
   const isDecision   = node.nodeType === 'DECISION_GATE'
-  const blueprintWorkbenchConfig = isPlainRecord(config.blueprintWorkbench) ? config.blueprintWorkbench : undefined
-  const isBlueprintWorkbench = node.nodeType === 'AGENT_TASK' && blueprintWorkbenchConfig?.enabled === true
+  const workbenchConfig = isPlainRecord(config.workbench) ? config.workbench : undefined
+  const isWorkbenchTask = node.nodeType === 'WORKBENCH_TASK'
   const isInteractive = !isDecision
 
   const [panel, setPanel] = useState<Panel>('none')
@@ -70,7 +70,9 @@ export function NodeRunModal({ runtime, node, nodeState, actorEmail, onClose }: 
       <div
         onClick={e => e.stopPropagation()}
         style={{
-          width: 660, maxWidth: '94vw', maxHeight: '92vh',
+          width: isWorkbenchTask ? 'min(1280px, 96vw)' : 660,
+          maxWidth: '96vw',
+          maxHeight: '92vh',
           background: 'var(--color-surface)',
           borderRadius: 16,
           boxShadow: '0 20px 60px rgba(0,0,0,0.35)',
@@ -89,7 +91,7 @@ export function NodeRunModal({ runtime, node, nodeState, actorEmail, onClose }: 
               fontSize: 9, fontWeight: 700, textTransform: 'uppercase',
               letterSpacing: '0.16em', color: 'var(--color-outline)',
             }}>
-              {node.nodeType.replaceAll('_', ' ')}
+              {isWorkbenchTask ? 'WORKBENCH TASK' : node.nodeType.replaceAll('_', ' ')}
             </p>
             <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-on-surface)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {node.label || node.id}
@@ -199,11 +201,11 @@ export function NodeRunModal({ runtime, node, nodeState, actorEmail, onClose }: 
             />
           )}
 
-          {isBlueprintWorkbench ? (
+          {isWorkbenchTask ? (
             <BlueprintWorkbenchBody
               runtime={runtime}
               node={node}
-              config={blueprintWorkbenchConfig}
+              config={workbenchConfig}
               actorEmail={actorEmail}
               claimed={!!nodeState.claimedBy}
               onComplete={(output) => {
@@ -266,8 +268,51 @@ function BlueprintWorkbenchBody({
   onComplete: (output: Record<string, unknown>) => void
 }) {
   const [sessionId, setSessionId] = useState('')
+  const [finalizedPack, setFinalizedPack] = useState<Record<string, unknown> | null>(null)
+  const completedRef = useRef(false)
   const runState = runtime.getState()
-  const workbenchUrl = buildWorkbenchUrl(runState.runId, node.id, config)
+  const nodeConfig = (node.config ?? {}) as Record<string, unknown>
+  const workbenchConfig = isPlainRecord(config)
+    ? config
+    : isPlainRecord(nodeConfig.workbench) ? nodeConfig.workbench : {}
+  const workbenchUrl = buildWorkbenchUrl(runState.runId, node.id, workbenchConfig)
+  const outputs = isPlainRecord(workbenchConfig.outputs) ? workbenchConfig.outputs : {}
+  const finalPackKey = typeof outputs.finalPackKey === 'string' && outputs.finalPackKey.trim()
+    ? outputs.finalPackKey.trim()
+    : 'finalImplementationPack'
+
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (event.origin !== 'http://localhost:5176') return
+      const data = event.data
+      if (!data || typeof data !== 'object' || data.type !== 'blueprintWorkbench.finalized') return
+      if (data.workflowInstanceId && data.workflowInstanceId !== runState.runId) return
+      if (data.workflowNodeId && data.workflowNodeId !== node.id) return
+      const nextSessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
+      const nextFinalPack = data.finalPack && typeof data.finalPack === 'object' ? data.finalPack as Record<string, unknown> : null
+      if (nextSessionId) setSessionId(nextSessionId)
+      if (nextFinalPack) setFinalizedPack(nextFinalPack)
+      if (nextSessionId && !completedRef.current) {
+        completedRef.current = true
+        onComplete({
+          blueprintSessionId: nextSessionId,
+          workbenchStatus: typeof data.status === 'string' ? data.status : 'FINALIZED',
+          [finalPackKey]: nextFinalPack ?? undefined,
+          workbench: {
+            profile: typeof workbenchConfig.profile === 'string' ? workbenchConfig.profile : 'blueprint',
+            sessionId: nextSessionId,
+            workbenchUrl,
+            workflowInstanceId: runState.runId,
+            workflowNodeId: node.id,
+            completedBy: actorEmail,
+            completedAt: new Date().toISOString(),
+          },
+        })
+      }
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
+  }, [actorEmail, finalPackKey, node.id, onComplete, runState.runId, workbenchConfig.profile, workbenchUrl])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, opacity: claimed ? 1 : 0.55, pointerEvents: claimed ? 'auto' : 'none' }}>
@@ -279,10 +324,10 @@ function BlueprintWorkbenchBody({
       }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
           <Route size={15} style={{ color: '#004b8d' }} />
-          <strong style={{ fontSize: 13, color: 'var(--color-on-surface)' }}>Blueprint Workbench loop</strong>
+          <strong style={{ fontSize: 13, color: 'var(--color-on-surface)' }}>Workbench Task loop</strong>
         </div>
         <p style={{ margin: 0, fontSize: 12, lineHeight: 1.45, color: 'var(--color-outline)' }}>
-          This Agent Task is configured to use the modal-ready Blueprint Workbench. The session is linked to this workflow run and node through URL parameters; finalization can be returned as this node output.
+          This workflow node opens the Blueprint Workbench. The session is linked to this workflow run and node; finalization returns the approved implementation pack as this node output.
         </p>
       </div>
 
@@ -291,10 +336,10 @@ function BlueprintWorkbenchBody({
         src={workbenchUrl}
         style={{
           width: '100%',
-          height: 520,
+          height: 680,
           border: '1px solid var(--color-outline-variant)',
           borderRadius: 12,
-          background: '#fff',
+          background: '#0b1326',
         }}
       />
 
@@ -315,13 +360,17 @@ function BlueprintWorkbenchBody({
         <button
           disabled={!sessionId.trim()}
           onClick={() => onComplete({
-            blueprintWorkbench: {
-              enabled: true,
+            blueprintSessionId: sessionId.trim(),
+            workbenchStatus: finalizedPack ? 'FINALIZED' : 'MANUAL_REFERENCE',
+            [finalPackKey]: finalizedPack ?? undefined,
+            workbench: {
+              profile: typeof workbenchConfig.profile === 'string' ? workbenchConfig.profile : 'blueprint',
               sessionId: sessionId.trim(),
               workbenchUrl,
               workflowInstanceId: runState.runId,
               workflowNodeId: node.id,
               completedBy: actorEmail,
+              completedAt: new Date().toISOString(),
             },
           })}
           style={btnPrimary(!sessionId.trim())}
@@ -341,9 +390,21 @@ function BlueprintWorkbenchBody({
 
 function buildWorkbenchUrl(workflowInstanceId: string, workflowNodeId: string, config?: Record<string, unknown>) {
   const url = new URL('http://localhost:5176/')
+  const bindings = config?.agentBindings && typeof config.agentBindings === 'object' && !Array.isArray(config.agentBindings)
+    ? config.agentBindings as Record<string, unknown>
+    : {}
   url.searchParams.set('workflowInstanceId', workflowInstanceId)
   url.searchParams.set('workflowNodeId', workflowNodeId)
   if (typeof config?.phaseId === 'string') url.searchParams.set('phaseId', config.phaseId)
+  if (typeof config?.goal === 'string') url.searchParams.set('goal', config.goal)
+  else if (typeof config?.task === 'string') url.searchParams.set('goal', config.task)
+  if (config?.sourceType === 'github' || config?.sourceType === 'localdir') url.searchParams.set('sourceType', config.sourceType)
+  if (typeof config?.sourceUri === 'string') url.searchParams.set('sourceUri', config.sourceUri)
+  if (typeof config?.sourceRef === 'string') url.searchParams.set('sourceRef', config.sourceRef)
+  if (typeof config?.capabilityId === 'string') url.searchParams.set('capabilityId', config.capabilityId)
+  if (typeof bindings.architectAgentTemplateId === 'string') url.searchParams.set('architectAgentTemplateId', bindings.architectAgentTemplateId)
+  if (typeof bindings.developerAgentTemplateId === 'string') url.searchParams.set('developerAgentTemplateId', bindings.developerAgentTemplateId)
+  if (typeof bindings.qaAgentTemplateId === 'string') url.searchParams.set('qaAgentTemplateId', bindings.qaAgentTemplateId)
   if (config?.gateMode === 'auto' || config?.gateMode === 'manual') url.searchParams.set('gateMode', config.gateMode)
   if (config?.loopDefinition && typeof window !== 'undefined') {
     try {

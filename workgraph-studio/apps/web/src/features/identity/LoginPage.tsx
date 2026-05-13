@@ -12,9 +12,10 @@ const IAM_LOGIN_URL  = import.meta.env.VITE_IAM_LOGIN_URL  ?? 'http://localhost:
 // M12 — pseudo-IAM auto-login support. When VITE_PSEUDO_IAM_URL is set, the
 // "Continue as super admin" button (and the auto-login effect when
 // VITE_AUTO_LOGIN=1) calls pseudo-IAM directly and stores the token.
-// Defaults: pseudo-IAM at :8101, auto-login enabled out-of-the-box for dev.
+// Defaults: pseudo-IAM at :8101, auto-login disabled so real IAM remains the
+// default source of truth. Set VITE_AUTO_LOGIN=1 for pseudo-IAM smoke tests.
 const PSEUDO_IAM_URL    = import.meta.env.VITE_PSEUDO_IAM_URL    ?? 'http://localhost:8101/api/v1'
-const AUTO_LOGIN        = (import.meta.env.VITE_AUTO_LOGIN     ?? '1') !== '0'
+const AUTO_LOGIN        = (import.meta.env.VITE_AUTO_LOGIN     ?? '0') !== '0'
 const PSEUDO_LOGIN_EMAIL = import.meta.env.VITE_PSEUDO_LOGIN_EMAIL ?? 'admin@pseudo.local'
 
 async function fetchMemberships(token: string): Promise<Membership[]> {

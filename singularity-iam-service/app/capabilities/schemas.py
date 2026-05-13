@@ -21,6 +21,7 @@ class CapabilityOut(BaseModel):
 
 
 class CreateCapabilityRequest(BaseModel):
+    id: Optional[str] = None
     capability_id: str
     name: str
     description: Optional[str] = None
@@ -28,6 +29,18 @@ class CreateCapabilityRequest(BaseModel):
     visibility: str = "private"
     owner_bu_key: Optional[str] = None
     owner_team_key: Optional[str] = None
+    metadata: Optional[dict] = None
+    tags: Optional[list[str]] = None
+
+
+class CapabilityReferenceRequest(BaseModel):
+    id: Optional[str] = None
+    capability_id: str
+    name: str
+    description: Optional[str] = None
+    capability_type: str = "application_capability"
+    status: str = "active"
+    visibility: str = "private"
     metadata: Optional[dict] = None
     tags: Optional[list[str]] = None
 

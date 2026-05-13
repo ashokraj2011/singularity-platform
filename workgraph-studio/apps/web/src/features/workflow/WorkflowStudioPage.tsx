@@ -14,7 +14,7 @@ import {
   Clock, Radio, RadioTower, Workflow, Repeat, Shuffle, Zap,
   Sun, Moon, Box, X, ArrowLeft, ZoomIn, ZoomOut, Maximize2, Layers,
   Star, Briefcase as BriefcaseIcon, Database, Globe, Mail, Phone,
-  Calendar, AlertTriangle, Search, Filter, Activity,
+  Calendar, AlertTriangle, Search, Filter, Activity, Coins,
   SlidersHorizontal, Plus, Trash2, GitFork, ShieldAlert,
   Minimize2, GripVertical, HelpCircle, BookOpen, ChevronDown, Lock, Download, Braces, PenLine,
 } from 'lucide-react'
@@ -35,6 +35,7 @@ const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType }> = 
   END:                 { color: '#64748b', Icon: Square },
   HUMAN_TASK:          { color: '#22c55e', Icon: User },
   AGENT_TASK:          { color: '#38bdf8', Icon: Bot },
+  WORKBENCH_TASK:      { color: '#ffb786', Icon: Braces },
   APPROVAL:            { color: '#a3e635', Icon: CheckCircle },
   DECISION_GATE:       { color: '#c084fc', Icon: GitMerge },
   CONSUMABLE_CREATION: { color: '#34d399', Icon: Package },
@@ -56,7 +57,7 @@ const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType }> = 
 
 const NODE_LABELS: Record<string, string> = {
   START: 'Start', END: 'End',
-  HUMAN_TASK: 'Human Task', AGENT_TASK: 'Agent Task', APPROVAL: 'Approval',
+  HUMAN_TASK: 'Human Task', AGENT_TASK: 'Agent Task', WORKBENCH_TASK: 'Workbench Task', APPROVAL: 'Approval',
   DECISION_GATE: 'Decision Gate', CONSUMABLE_CREATION: 'Create Artifact',
   TOOL_REQUEST: 'Tool Request', POLICY_CHECK: 'Policy Check',
   TIMER: 'Timer', SIGNAL_WAIT: 'Signal Wait', SIGNAL_EMIT: 'Signal Emit',
@@ -66,9 +67,106 @@ const NODE_LABELS: Record<string, string> = {
   DATA_SINK: 'Data Sink', SET_CONTEXT: 'Set Context', ERROR_CATCH: 'Error Catch',
 }
 
+const WORKBENCH_TASK_NODE_CONFIG = {
+  workbench: {
+    profile: 'blueprint',
+    gateMode: 'manual',
+    sourceType: 'localdir',
+    goal: 'Produce the final implementation contract pack.',
+    capabilityId: '',
+    agentBindings: {
+      architectAgentTemplateId: '',
+      developerAgentTemplateId: '',
+      qaAgentTemplateId: '',
+    },
+    loopDefinition: {
+      version: 1,
+      name: 'Blueprint implementation loop',
+      maxLoopsPerStage: 3,
+      maxTotalSendBacks: 8,
+      stages: [
+        {
+          key: 'PLAN',
+          label: 'Plan',
+          agentRole: 'ARCHITECT',
+          agentTemplateId: '',
+          next: 'DESIGN',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: [],
+          expectedArtifacts: [
+            { kind: 'mental_model', title: 'Mental model', required: true, format: 'MARKDOWN' },
+            { kind: 'gaps', title: 'Gaps and risks', required: true, format: 'MARKDOWN' },
+          ],
+        },
+        {
+          key: 'DESIGN',
+          label: 'Design',
+          agentRole: 'ARCHITECT',
+          agentTemplateId: '',
+          next: 'DEVELOP',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['PLAN'],
+          expectedArtifacts: [
+            { kind: 'solution_architecture', title: 'Solution architecture', required: true, format: 'MARKDOWN' },
+            { kind: 'approved_spec_draft', title: 'Approved spec draft', required: true, format: 'MARKDOWN' },
+          ],
+        },
+        {
+          key: 'DEVELOP',
+          label: 'Develop',
+          agentRole: 'DEVELOPER',
+          agentTemplateId: '',
+          next: 'QA_REVIEW',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['PLAN', 'DESIGN'],
+          expectedArtifacts: [
+            { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
+            { kind: 'simulated_code_change', title: 'Simulated code-change evidence', required: true, format: 'MARKDOWN' },
+          ],
+        },
+        {
+          key: 'QA_REVIEW',
+          label: 'QA Review',
+          agentRole: 'QA',
+          agentTemplateId: '',
+          next: 'TEST_CERTIFICATION',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['DESIGN', 'DEVELOP'],
+          expectedArtifacts: [
+            { kind: 'qa_task_pack', title: 'QA review pack', required: true, format: 'MARKDOWN' },
+          ],
+        },
+        {
+          key: 'TEST_CERTIFICATION',
+          label: 'Test Certification',
+          agentRole: 'QA',
+          agentTemplateId: '',
+          terminal: true,
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['DESIGN', 'DEVELOP', 'QA_REVIEW'],
+          expectedArtifacts: [
+            { kind: 'verification_rules', title: 'Verification rules', required: true, format: 'MARKDOWN' },
+            { kind: 'traceability_matrix', title: 'Traceability matrix', required: true, format: 'MARKDOWN' },
+            { kind: 'certification_receipt', title: 'Certification receipt', required: true, format: 'MARKDOWN' },
+          ],
+        },
+      ],
+    },
+    outputs: {
+      finalPackKey: 'finalImplementationPack',
+    },
+  },
+}
+
 const NODE_GROUPS: Array<{ label: string; types: string[] }> = [
   { label: 'Boundary', types: ['START', 'END'] },
   { label: 'Tasks', types: ['HUMAN_TASK', 'AGENT_TASK', 'APPROVAL', 'TOOL_REQUEST'] },
+  { label: 'Agentic Workbench', types: ['WORKBENCH_TASK'] },
   { label: 'Artifacts', types: ['CONSUMABLE_CREATION', 'DATA_SINK'] },
   { label: 'Control Flow', types: ['DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY'] },
   { label: 'Data', types: ['SET_CONTEXT'] },
@@ -197,6 +295,11 @@ function validateWorkflow(
     if (n.data.nodeType === 'AGENT_TASK' && !cfg.agentId) {
       issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Agent Task) has no agent selected.`, nodeId: n.id })
     }
+    if (n.data.nodeType === 'WORKBENCH_TASK') {
+      for (const message of validateWorkbenchConfig(cfg)) {
+        issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Workbench Task) ${message}`, nodeId: n.id })
+      }
+    }
     if (n.data.nodeType === 'TIMER' && !cfg.durationMs && !cfg.fireAt) {
       issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Timer) has no duration or fire-at time configured.`, nodeId: n.id })
     }
@@ -232,6 +335,62 @@ function validateWorkflow(
   return { issues, outputs }
 }
 
+function validateWorkbenchConfig(cfg: Record<string, unknown>): string[] {
+  const messages: string[] = []
+  const workbench = cfg.workbench && typeof cfg.workbench === 'object' && !Array.isArray(cfg.workbench)
+    ? cfg.workbench as Record<string, unknown>
+    : {}
+  const bindings = workbench.agentBindings && typeof workbench.agentBindings === 'object' && !Array.isArray(workbench.agentBindings)
+    ? workbench.agentBindings as Record<string, unknown>
+    : {}
+  const loop = workbench.loopDefinition && typeof workbench.loopDefinition === 'object' && !Array.isArray(workbench.loopDefinition)
+    ? workbench.loopDefinition as Record<string, unknown>
+    : {}
+  const stages = Array.isArray(loop.stages) ? loop.stages.filter((stage): stage is Record<string, unknown> => Boolean(stage) && typeof stage === 'object' && !Array.isArray(stage)) : []
+  const keys = stages.map(stage => String(stage.key ?? '').trim()).filter(Boolean)
+  const keySet = new Set(keys)
+
+  if (workbench.profile !== 'blueprint') messages.push('must use the blueprint profile.')
+  if (typeof workbench.goal !== 'string' || !workbench.goal.trim()) messages.push('needs a goal.')
+  if (workbench.sourceType !== 'github' && workbench.sourceType !== 'localdir') messages.push('needs a source type.')
+  if (typeof workbench.capabilityId !== 'string' || !workbench.capabilityId.trim()) messages.push('needs a capability.')
+  if (stages.length === 0) messages.push('needs at least one loop phase.')
+  if (keys.length !== keySet.size) messages.push('has duplicate phase keys.')
+  if (stages.filter(stage => stage.terminal === true).length !== 1) messages.push('must have exactly one terminal phase.')
+  for (const stage of stages) {
+    const key = String(stage.key ?? '').trim()
+    if (!key) messages.push('has a phase without a key.')
+    if (typeof stage.label !== 'string' || !stage.label.trim()) messages.push(`${key || 'a phase'} needs a label.`)
+    if (typeof stage.agentRole !== 'string' || !stage.agentRole.trim()) messages.push(`${key || 'a phase'} needs an agent role.`)
+    if ((typeof stage.agentTemplateId !== 'string' || !stage.agentTemplateId.trim()) && !workflowFallbackAgentForStage(bindings, stage)) {
+      messages.push(`${key || 'a phase'} needs a phase agent or default fallback agent.`)
+    }
+    if (stage.next && typeof stage.next === 'string' && !keySet.has(stage.next)) messages.push(`${key} points to missing next phase ${stage.next}.`)
+    const sendBacks = Array.isArray(stage.allowedSendBackTo) ? stage.allowedSendBackTo : []
+    for (const target of sendBacks) {
+      if (typeof target !== 'string' || !keySet.has(target)) messages.push(`${key} has an invalid send-back target.`)
+    }
+    const artifacts = Array.isArray(stage.expectedArtifacts) ? stage.expectedArtifacts : []
+    for (const artifact of artifacts) {
+      if (!artifact || typeof artifact !== 'object' || Array.isArray(artifact)) continue
+      if (typeof artifact.kind !== 'string' || !artifact.kind.trim() || typeof artifact.title !== 'string' || !artifact.title.trim()) {
+        messages.push(`${key} has an incomplete artifact definition.`)
+      }
+    }
+  }
+  return messages
+}
+
+function workflowFallbackAgentForStage(bindings: Record<string, unknown>, stage: Record<string, unknown>) {
+  const role = String(stage.agentRole ?? '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+  const architect = typeof bindings.architectAgentTemplateId === 'string' ? bindings.architectAgentTemplateId.trim() : ''
+  const developer = typeof bindings.developerAgentTemplateId === 'string' ? bindings.developerAgentTemplateId.trim() : ''
+  const qa = typeof bindings.qaAgentTemplateId === 'string' ? bindings.qaAgentTemplateId.trim() : ''
+  if (role.includes('DEV') || role === 'ENGINEER') return developer || architect || qa
+  if (role.includes('QA') || role.includes('TEST') || role.includes('VERIFY')) return qa || developer || architect
+  return architect || developer || qa
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 const NODE_DESCRIPTIONS: Record<string, string> = {
@@ -239,6 +398,7 @@ const NODE_DESCRIPTIONS: Record<string, string> = {
   END: 'Terminal node. When all paths reach an End node, the workflow instance is marked completed.',
   HUMAN_TASK: 'A task that must be completed by a human. Supports assignment, due dates, and approval gates.',
   AGENT_TASK: 'Delegates work to an AI agent. Output always requires human review before promotion.',
+  WORKBENCH_TASK: 'Opens an interactive workbench loop and waits for the approved final implementation pack.',
   APPROVAL: 'Requires an explicit approval decision before the workflow can proceed.',
   DECISION_GATE: 'XOR gateway — evaluates conditions to branch the workflow along one path.',
   CONSUMABLE_CREATION: 'Produces a typed versioned artifact. Must be reviewed before downstream use.',
@@ -661,16 +821,17 @@ const nodeTypes: NodeTypes = { wgNode: WGNode }
 // ─── Palette icon (draggable) ─────────────────────────────────────────────────
 
 function PaletteIcon({
-  nodeType, color, Icon, label, dragPayload,
+  nodeType, color, Icon, label, dragPayload, actualNodeType,
 }: {
   nodeType: string; color: string; Icon: React.ElementType
   label: string; dragPayload?: string
+  actualNodeType?: string
 }) {
   const [showTip, setShowTip] = useState(false)
   const description = NODE_DESCRIPTIONS[nodeType] ?? ''
 
   const onDragStart = (e: React.DragEvent) => {
-    e.dataTransfer.setData('application/wg-node-type', nodeType)
+    e.dataTransfer.setData('application/wg-node-type', actualNodeType ?? nodeType)
     if (dragPayload) e.dataTransfer.setData('application/wg-node-payload', dragPayload)
     e.dataTransfer.effectAllowed = 'copy'
     setShowTip(false)
@@ -753,6 +914,7 @@ const NODE_HELP_SECTIONS = [
 const NODE_USAGE_TIPS: Record<string, string> = {
   HUMAN_TASK:        'Set a due date and assignee. Use role field to filter by team role.',
   AGENT_TASK:        'Downstream nodes read output via output.agentResponse. Requires human review in v1.',
+  WORKBENCH_TASK:    'Opens a modal workbench loop and completes only after the final pack is approved.',
   APPROVAL:          'Set Min Approvals > 1 for committee gates. Use Escalate To for timeout handling.',
   DECISION_GATE:     'Write JS expressions like output.score > 0.8 or context.status == "active".',
   PARALLEL_FORK:     'Connect to multiple nodes — all branches fire at once. Follow with Parallel Join.',
@@ -1368,6 +1530,176 @@ function WorkflowParamsPanel({
   )
 }
 
+type BudgetForm = {
+  maxInputTokens: string
+  maxOutputTokens: string
+  maxTotalTokens: string
+  maxEstimatedCost: string
+  warnAtPercent: string
+  enforcementMode: string
+}
+
+function WorkflowBudgetPanel({
+  templateId, policy, isLight, glassPanel, panelText, panelMuted, panelBdr, saving,
+  onClose, onSave,
+}: {
+  templateId?: string
+  policy: Record<string, unknown> | null
+  isLight: boolean
+  glassPanel: (l: boolean) => React.CSSProperties
+  panelText: string; panelMuted: string; panelBdr: string
+  saving: boolean
+  onClose: () => void
+  onSave: (policy: Record<string, unknown>) => void
+}) {
+  const [form, setForm] = useState<BudgetForm>(() => budgetFormFrom(policy))
+  useEffect(() => { setForm(budgetFormFrom(policy)) }, [JSON.stringify(policy ?? {})])
+
+  const inputSt: React.CSSProperties = {
+    width: '100%', boxSizing: 'border-box', padding: '7px 9px', borderRadius: 8,
+    fontSize: 11, border: `1px solid ${panelBdr}`,
+    background: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)',
+    color: panelText, outline: 'none',
+  }
+  const row = (key: keyof BudgetForm, label: string, help: string, type: 'text' | 'number' = 'number') => (
+    <label style={{ display: 'grid', gap: 4 }}>
+      <span style={{ fontSize: 10, fontWeight: 700, color: panelText }}>{label}</span>
+      <input
+        type={type}
+        value={form[key]}
+        onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+        style={inputSt}
+        placeholder="No limit"
+      />
+      <span style={{ fontSize: 9, color: panelMuted, lineHeight: 1.4 }}>{help}</span>
+    </label>
+  )
+
+  return (
+    <motion.div
+      key="budget-panel"
+      initial={{ opacity: 0, x: -16 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -16 }}
+      transition={{ duration: 0.18 }}
+      style={{
+        position: 'absolute', left: 68, top: 72, bottom: 12,
+        width: 360, zIndex: 25, pointerEvents: 'auto',
+        ...glassPanel(isLight),
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      }}
+    >
+      <div style={{ padding: '14px 16px 10px', borderBottom: `1px solid ${panelBdr}`, flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{
+              width: 26, height: 26, borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: 'rgba(245,158,11,0.14)', border: '1px solid rgba(245,158,11,0.3)',
+            }}>
+              <Coins size={12} style={{ color: '#f59e0b' }} />
+            </div>
+            <p style={{ fontSize: 11, fontWeight: 700, color: panelText }}>Workflow Run Budget</p>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ width: 24, height: 24, borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: panelMuted }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+        <p style={{ fontSize: 10, color: panelMuted, marginTop: 6, lineHeight: 1.6 }}>
+          These limits are copied into each run. Run-time overrides can lower them; extra budget uses approval.
+        </p>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'grid', gap: 12 }}>
+        {!templateId && (
+          <div style={{ fontSize: 11, color: '#f59e0b', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 8, padding: 10 }}>
+            Budget policy is only editable on workflow designs.
+          </div>
+        )}
+        {row('maxInputTokens', 'Max input tokens', 'Total prompt/context tokens allowed across this workflow run.')}
+        {row('maxOutputTokens', 'Max output tokens', 'Total generated tokens allowed across this workflow run.')}
+        {row('maxTotalTokens', 'Max total tokens', 'Combined input + output token cap.')}
+        {row('maxEstimatedCost', 'Max estimated cost', 'Optional USD cap. Leave blank when provider pricing is unavailable.')}
+        {row('warnAtPercent', 'Warn at percent', 'Run Insights flags the budget once this percentage is reached.')}
+        <label style={{ display: 'grid', gap: 4 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: panelText }}>Enforcement</span>
+          <select
+            value={form.enforcementMode}
+            onChange={e => setForm(f => ({ ...f, enforcementMode: e.target.value }))}
+            style={inputSt}
+          >
+            <option value="PAUSE_FOR_APPROVAL">Pause for approval</option>
+            <option value="FAIL_HARD">Fail hard</option>
+            <option value="WARN_ONLY">Warn only</option>
+          </select>
+          <span style={{ fontSize: 9, color: panelMuted, lineHeight: 1.4 }}>Default is governed pause before overspend.</span>
+        </label>
+      </div>
+
+      <div style={{ padding: '10px 14px', borderTop: `1px solid ${panelBdr}`, flexShrink: 0, display: 'flex', gap: 7 }}>
+        <button
+          onClick={onClose}
+          style={{
+            flex: 1, padding: '8px', borderRadius: 9, fontSize: 11, fontWeight: 600, cursor: 'pointer',
+            border: `1px solid ${panelBdr}`, background: 'transparent', color: panelMuted,
+          }}
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => onSave(policyFromBudgetForm(form))}
+          disabled={saving || !templateId}
+          style={{
+            flex: 1, padding: '8px', borderRadius: 9, fontSize: 11, fontWeight: 700, cursor: 'pointer',
+            border: '1.5px solid rgba(245,158,11,0.4)', background: 'rgba(245,158,11,0.14)', color: '#f59e0b',
+            opacity: saving || !templateId ? 0.6 : 1,
+          }}
+        >
+          Save Budget
+        </button>
+      </div>
+    </motion.div>
+  )
+}
+
+function budgetFormFrom(policy: Record<string, unknown> | null): BudgetForm {
+  const p = policy ?? {}
+  return {
+    maxInputTokens: valueText(p.maxInputTokens, '100000'),
+    maxOutputTokens: valueText(p.maxOutputTokens, '25000'),
+    maxTotalTokens: valueText(p.maxTotalTokens, '125000'),
+    maxEstimatedCost: valueText(p.maxEstimatedCost, ''),
+    warnAtPercent: valueText(p.warnAtPercent, '80'),
+    enforcementMode: typeof p.enforcementMode === 'string' ? p.enforcementMode : 'PAUSE_FOR_APPROVAL',
+  }
+}
+
+function policyFromBudgetForm(form: BudgetForm): Record<string, unknown> {
+  return {
+    maxInputTokens: numberOrNull(form.maxInputTokens),
+    maxOutputTokens: numberOrNull(form.maxOutputTokens),
+    maxTotalTokens: numberOrNull(form.maxTotalTokens),
+    maxEstimatedCost: numberOrNull(form.maxEstimatedCost),
+    warnAtPercent: numberOrNull(form.warnAtPercent) ?? 80,
+    enforcementMode: form.enforcementMode,
+  }
+}
+
+function valueText(value: unknown, fallback: string): string {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (typeof value === 'string') return value
+  return fallback
+}
+
+function numberOrNull(value: string): number | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const n = Number(trimmed)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
 // ─── Glassmorphism card style helper ─────────────────────────────────────────
 
 const glassPanel = (isLight: boolean): React.CSSProperties => ({
@@ -1417,6 +1749,7 @@ export function WorkflowStudioPage() {
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState([])
   const [paramsOpen, setParamsOpen] = useState(false)
   const [variablesOpen, setVariablesOpen] = useState(false)
+  const [budgetOpen, setBudgetOpen] = useState(false)
   const [branchTest, setBranchTest] = useState<{ sourceNodeId: string; highlightEdgeId?: string } | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
   const [validateOpen, setValidateOpen] = useState(false)
@@ -1507,7 +1840,7 @@ export function WorkflowStudioPage() {
   // it's the primary entity; in run mode it's the parent for capability /
   // permission / variable resolution.
   const workflowId = isDesignMode ? designWorkflowId : runInstance?.templateId
-  const { data: template } = useQuery<{ id: string; status?: string; name: string; teamId?: string; capabilityId?: string | null; variables?: TemplateVariableDef[] }>({
+  const { data: template } = useQuery<{ id: string; status?: string; name: string; teamId?: string; capabilityId?: string | null; variables?: TemplateVariableDef[]; budgetPolicy?: Record<string, unknown> | null }>({
     queryKey: ['workflow-templates', workflowId],
     queryFn: () => api.get(`/workflow-templates/${workflowId}`).then(r => r.data),
     enabled: !!workflowId,
@@ -1785,6 +2118,15 @@ export function WorkflowStudioPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['workflow-instances', instanceId, 'params'] }),
   })
 
+  const saveBudgetPolicy = useMutation({
+    mutationFn: (budgetPolicy: Record<string, unknown>) =>
+      api.patch(`/workflow-templates/${template?.id}`, { budgetPolicy }).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workflow-templates', workflowId] })
+      setBudgetOpen(false)
+    },
+  })
+
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleDeleteNode = useCallback((nodeId: string) => {
     setRfNodes(nds => nds.filter(n => n.id !== nodeId))
@@ -1822,8 +2164,9 @@ export function WorkflowStudioPage() {
     const bounds = reactFlowWrapper.current.getBoundingClientRect()
     const position = rfInstance.screenToFlowPosition({ x: e.clientX - bounds.left, y: e.clientY - bounds.top })
     const payloadStr = e.dataTransfer.getData('application/wg-node-payload')
-    const config = payloadStr ? JSON.parse(payloadStr) : undefined
-    const label = NODE_LABELS[nodeType] ?? nodeType
+    const payload = payloadStr ? JSON.parse(payloadStr) : undefined
+    const config = payload?.config ?? payload
+    const label = payload?.label ?? NODE_LABELS[nodeType] ?? nodeType
     addNode.mutate({ label, nodeType, positionX: Math.round(position.x), positionY: Math.round(position.y), ...(config ? { config } : {}) })
   }, [rfInstance, addNode, isReadOnly])
 
@@ -2257,6 +2600,14 @@ export function WorkflowStudioPage() {
             onClick={() => setVariablesOpen(o => !o)}
           />
 
+          <ToolBtn
+            icon={Coins}
+            title="Workflow run budget"
+            active={budgetOpen}
+            color="#f59e0b"
+            onClick={() => setBudgetOpen(o => !o)}
+          />
+
           {/* Export JSON */}
           <ToolBtn
             icon={Download}
@@ -2330,6 +2681,21 @@ export function WorkflowStudioPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, width: '100%' }}>
                   {group.types.map(type => {
                     const { color, Icon } = NODE_VISUAL[type] ?? { color: '#64748b', Icon: Box }
+                    if (type === 'WORKBENCH_TASK') {
+                      return (
+                        <PaletteIcon
+                          key={type}
+                          nodeType={type}
+                          color={color}
+                          Icon={Icon}
+                          label={NODE_LABELS[type] ?? type}
+                          dragPayload={JSON.stringify({
+                            label: 'Workbench Task',
+                            config: WORKBENCH_TASK_NODE_CONFIG,
+                          })}
+                        />
+                      )
+                    }
                     return (
                       <PaletteIcon
                         key={type} nodeType={type} color={color} Icon={Icon}
@@ -2397,6 +2763,24 @@ export function WorkflowStudioPage() {
               panelMuted={panelMuted}
               panelBdr={panelBdr}
               onClose={() => setVariablesOpen(false)}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* ─── FLOATING BUDGET PANEL ───────────────────────────────────────── */}
+        <AnimatePresence>
+          {budgetOpen && (
+            <WorkflowBudgetPanel
+              templateId={template?.id}
+              policy={template?.budgetPolicy ?? null}
+              isLight={isLight}
+              glassPanel={glassPanel}
+              panelText={panelText}
+              panelMuted={panelMuted}
+              panelBdr={panelBdr}
+              saving={saveBudgetPolicy.isPending}
+              onClose={() => setBudgetOpen(false)}
+              onSave={policy => saveBudgetPolicy.mutate(policy)}
             />
           )}
         </AnimatePresence>

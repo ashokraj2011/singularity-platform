@@ -7,6 +7,8 @@ export interface Role {
   description?: string
   role_scope: RoleScope
   system_role: boolean
+  metadata?: Record<string, unknown>
+  tags: string[]
   created_at: string
   updated_at: string
 }
@@ -16,6 +18,8 @@ export interface CreateRoleRequest {
   name: string
   description?: string
   role_scope: RoleScope
+  metadata?: Record<string, unknown>
+  tags?: string[]
 }
 
 export interface AssignPermissionRequest {

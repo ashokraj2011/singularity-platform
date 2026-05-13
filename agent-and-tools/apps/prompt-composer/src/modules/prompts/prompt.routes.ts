@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { promptController } from "./prompt.controller";
 import { validate } from "../../middleware/validate.middleware";
-import { createProfileSchema, createLayerSchema, attachLayerSchema, assembleSchema } from "./prompt.schemas";
+import { createProfileSchema, createLayerSchema, updateLayerSchema, attachLayerSchema, assembleSchema } from "./prompt.schemas";
 
 // /api/v1/prompt-profiles
 export const promptProfileRoutes = Router();
@@ -14,6 +14,7 @@ promptProfileRoutes.post("/:profileId/layers", validate(attachLayerSchema), prom
 export const promptLayerRoutes = Router();
 promptLayerRoutes.post("/", validate(createLayerSchema), promptController.createLayer);
 promptLayerRoutes.get("/", promptController.listLayers);
+promptLayerRoutes.patch("/:id", validate(updateLayerSchema), promptController.updateLayer);
 
 // /api/v1/prompt-assemblies
 export const promptAssemblyRoutes = Router();

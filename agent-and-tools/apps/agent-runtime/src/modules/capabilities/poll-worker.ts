@@ -113,6 +113,47 @@ async function pollRepositories(): Promise<void> {
   }
 }
 
+export async function syncRepositoryNow(
+  capabilityId: string,
+  repoId: string,
+): Promise<{ repoId: string; repoName: string; headSha: string; extracted: boolean }> {
+  const repo = await prisma.capabilityRepository.findFirst({
+    where: { id: repoId, capabilityId },
+  });
+  if (!repo) throw new Error("repository not found for capability");
+  if (repo.repositoryType === "LOCAL" || repo.repoUrl.startsWith("local://")) {
+    throw new Error("local repository sync requires an approved local directory upload");
+  }
+  if (repo.status !== "ACTIVE") throw new Error(`repository is ${repo.status}`);
+
+  try {
+    const result = await pollOneRepo({
+      id: repo.id,
+      capabilityId: repo.capabilityId,
+      repoName: repo.repoName,
+      repoUrl: repo.repoUrl,
+      defaultBranch: repo.defaultBranch,
+      lastPolledSha: repo.lastPolledSha,
+    });
+    await prisma.capabilityRepository.update({
+      where: { id: repo.id },
+      data: {
+        lastPolledAt: new Date(),
+        lastPolledSha: result.headSha,
+        lastPollError: null,
+      },
+    });
+    return { repoId: repo.id, repoName: repo.repoName, ...result };
+  } catch (err) {
+    const msg = (err as Error).message.slice(0, 500);
+    await prisma.capabilityRepository.update({
+      where: { id: repo.id },
+      data: { lastPolledAt: new Date(), lastPollError: msg },
+    });
+    throw err;
+  }
+}
+
 async function pollOneRepo(r: {
   id: string; capabilityId: string; repoName: string; repoUrl: string;
   defaultBranch: string | null; lastPolledSha: string | null;
@@ -215,6 +256,44 @@ async function pollKnowledgeSources(): Promise<void> {
       );
       log(`knowledge ${s.url}: error ${msg}`);
     }
+  }
+}
+
+export async function syncKnowledgeSourceNow(
+  capabilityId: string,
+  sourceId: string,
+): Promise<{ sourceId: string; url: string; contentHash: string; upserted: boolean }> {
+  const source = await prisma.capabilityKnowledgeSource.findFirst({
+    where: { id: sourceId, capabilityId },
+  });
+  if (!source) throw new Error("knowledge source not found for capability");
+  if (source.status !== "ACTIVE") throw new Error(`knowledge source is ${source.status}`);
+
+  try {
+    const result = await pollOneSource({
+      id: source.id,
+      capabilityId: source.capabilityId,
+      url: source.url,
+      artifactType: source.artifactType,
+      title: source.title,
+      lastContentHash: source.lastContentHash,
+    });
+    await prisma.capabilityKnowledgeSource.update({
+      where: { id: source.id },
+      data: {
+        lastPolledAt: new Date(),
+        lastContentHash: result.contentHash,
+        lastPollError: null,
+      },
+    });
+    return { sourceId: source.id, url: source.url, ...result };
+  } catch (err) {
+    const msg = (err as Error).message.slice(0, 500);
+    await prisma.capabilityKnowledgeSource.update({
+      where: { id: source.id },
+      data: { lastPolledAt: new Date(), lastPollError: msg },
+    });
+    throw err;
   }
 }
 

@@ -16,6 +16,7 @@ import { verifyToken as verifyLocalToken, type JWTUser } from '../lib/jwt'
 import { verifyToken as verifyIamToken, IamUnauthorizedError, IamUnavailableError, type IamUser } from '../lib/iam/client'
 import { config } from '../config'
 import { prisma } from '../lib/prisma'
+import { syncIamUserTeams } from '../lib/iam/teamMirror'
 
 declare global {
   namespace Express {
@@ -40,10 +41,9 @@ async function ensureAdminRole(userId: string): Promise<void> {
     update: {},
     create: { name: 'ADMIN', description: 'Mirrored from IAM is_super_admin', isSystemRole: true },
   })
-  await prisma.userRole.upsert({
-    where:  { userId_roleId: { userId, roleId: adminRole.id } },
-    update: {},
-    create: { userId, roleId: adminRole.id },
+  await prisma.userRole.createMany({
+    data: [{ userId, roleId: adminRole.id }],
+    skipDuplicates: true,
   })
 }
 
@@ -109,6 +109,9 @@ export const authMiddleware: RequestHandler = async (req, res, next) => {
       }
       const iamUser = await verifyIamToken(token)
       const mirrored = await mirrorIamUser(iamUser)
+      await syncIamUserTeams(mirrored.id, iamUser.id, token).catch((err) => {
+        console.warn(`[auth] IAM team mirror skipped for ${iamUser.id}: ${(err as Error).message}`)
+      })
       req.iamUser = iamUser
       req.user    = { userId: mirrored.id, email: mirrored.email, displayName: mirrored.displayName }
       next()

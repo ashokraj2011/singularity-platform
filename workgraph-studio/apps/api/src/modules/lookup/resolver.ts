@@ -141,6 +141,19 @@ export function refsForNodeConfig(nodeType: string, config: Record<string, unkno
       push(literalRef('agentTemplateId', config.agentTemplateId, 'agent-template'))
       push(literalRef('promptProfileId', config.promptProfileId, 'prompt-profile'))
       break
+    case 'WORKBENCH_TASK': {
+      const workbench = config.workbench && typeof config.workbench === 'object' && !Array.isArray(config.workbench)
+        ? config.workbench as Record<string, unknown>
+        : {}
+      const bindings = workbench.agentBindings && typeof workbench.agentBindings === 'object' && !Array.isArray(workbench.agentBindings)
+        ? workbench.agentBindings as Record<string, unknown>
+        : {}
+      push(literalRef('workbench.capabilityId', workbench.capabilityId, 'capability'))
+      push(literalRef('workbench.agentBindings.architectAgentTemplateId', bindings.architectAgentTemplateId, 'agent-template'))
+      push(literalRef('workbench.agentBindings.developerAgentTemplateId', bindings.developerAgentTemplateId, 'agent-template'))
+      push(literalRef('workbench.agentBindings.qaAgentTemplateId', bindings.qaAgentTemplateId, 'agent-template'))
+      break
+    }
     case 'TOOL_REQUEST':
       push(literalRef('tool',     config.tool,     'tool'))
       push(literalRef('toolName', config.toolName, 'tool'))

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.database import get_db
-from app.models import BusinessUnit, Team, TeamMembership, User
+from app.models import BusinessUnit, Team, TeamMembership, User, Capability, CapabilityMembership, Role
 from app.auth.deps import get_current_user
 from app.schemas import PageResponse
 from app.org.schemas import (
@@ -30,6 +30,44 @@ def _team_out(t: Team) -> TeamOut:
         metadata=t.metadata_ or {}, tags=t.tags or [],
         created_at=t.created_at, updated_at=t.updated_at,
     )
+
+
+async def _capability_memberships_for_user(db: AsyncSession, user_id: str) -> list[dict]:
+    team_ids_result = await db.execute(select(TeamMembership.team_id).where(TeamMembership.user_id == user_id))
+    team_ids = list(team_ids_result.scalars().all())
+
+    q = select(CapabilityMembership).where(
+        CapabilityMembership.status == "active",
+        CapabilityMembership.user_id == user_id,
+    )
+    if team_ids:
+        q = select(CapabilityMembership).where(
+            CapabilityMembership.status == "active",
+            (CapabilityMembership.user_id == user_id) | (CapabilityMembership.team_id.in_(team_ids)),
+        )
+
+    memberships = (await db.execute(q)).scalars().all()
+    out: list[dict] = []
+    for membership in memberships:
+        capability = (await db.execute(
+            select(Capability).where(Capability.capability_id == membership.capability_id)
+        )).scalar_one_or_none()
+        role = (await db.execute(select(Role).where(Role.id == membership.role_id))).scalar_one_or_none()
+        team = None
+        if membership.team_id:
+            team = (await db.execute(select(Team).where(Team.id == membership.team_id))).scalar_one_or_none()
+
+        role_key = role.role_key if role else ""
+        out.append({
+            "capability_id": membership.capability_id,
+            "capability_name": capability.name if capability else membership.capability_id,
+            "team_id": membership.team_id or "",
+            "team_name": team.name if team else "Direct membership",
+            "role_key": role_key,
+            "role_name": role.name if role else role_key,
+            "is_capability_owner": role_key in {"super_admin", "platform_admin", "capability_admin"},
+        })
+    return out
 
 
 # ---- Business Units ----
@@ -133,6 +171,26 @@ async def list_team_members(team_id: str, db: AsyncSession = Depends(get_db), _:
     members = result.scalars().all()
     return [TeamMembershipOut(id=m.id, team_id=m.team_id, user_id=m.user_id,
                                membership_type=m.membership_type, created_at=m.created_at) for m in members]
+
+
+@router.get("/users/{user_id}/teams", response_model=list[TeamOut])
+async def list_user_teams(user_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    result = await db.execute(
+        select(Team)
+        .join(TeamMembership, TeamMembership.team_id == Team.id)
+        .where(TeamMembership.user_id == user_id)
+    )
+    return [_team_out(t) for t in result.scalars().all()]
+
+
+@router.get("/users/{user_id}/memberships")
+async def list_user_memberships(user_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    return await _capability_memberships_for_user(db, user_id)
+
+
+@router.get("/me/memberships")
+async def list_my_memberships(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return await _capability_memberships_for_user(db, current_user.id)
 
 
 @router.post("/teams/{team_id}/members", response_model=TeamMembershipOut, status_code=201)

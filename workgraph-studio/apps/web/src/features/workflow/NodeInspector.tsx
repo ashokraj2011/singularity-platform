@@ -9,7 +9,7 @@ import {
   Clock, Radio, RadioTower, Workflow, Repeat, Shuffle, Zap, RotateCcw, FileCode,
   Box, Star, Briefcase, Database, Globe, Mail, Phone,
   Calendar, AlertTriangle, Search, Filter, Activity,
-  GitFork, ShieldAlert, SlidersHorizontal, Play, Square,
+  GitFork, ShieldAlert, SlidersHorizontal, Play, Square, Braces,
 } from 'lucide-react'
 import type { Node } from 'reactflow'
 import { fetchAgents, fetchStudioAgents, deriveStudioAgent, fetchTools, fetchCapabilities, registrySource, type RegistryAgent } from '../../lib/registry'
@@ -81,6 +81,67 @@ export type SinkConfig = {
   namePath?: string  // context path for artifact name
 }
 
+type WorkbenchQuestionOption = {
+  label: string
+  impact?: string
+  recommended?: boolean
+}
+
+type WorkbenchQuestion = {
+  id: string
+  question: string
+  required: boolean
+  freeform: boolean
+  options?: WorkbenchQuestionOption[]
+}
+
+type WorkbenchExpectedArtifact = {
+  kind: string
+  title: string
+  description?: string
+  required: boolean
+  format: 'MARKDOWN' | 'TEXT' | 'JSON' | 'CODE'
+}
+
+type WorkbenchStage = {
+  key: string
+  label: string
+  agentRole: string
+  agentTemplateId?: string
+  next?: string | null
+  terminal?: boolean
+  required: boolean
+  approvalRequired?: boolean
+  expectedArtifacts?: WorkbenchExpectedArtifact[]
+  allowedSendBackTo: string[]
+  questions?: WorkbenchQuestion[]
+}
+
+type WorkbenchConfig = {
+  profile: 'blueprint'
+  gateMode: 'manual' | 'auto'
+  goal: string
+  sourceType: 'github' | 'localdir'
+  sourceUri?: string
+  sourceRef?: string
+  capabilityId: string
+  agentBindings: {
+    architectAgentTemplateId: string
+    developerAgentTemplateId: string
+    qaAgentTemplateId: string
+  }
+  loopDefinition: {
+    version: 1
+    name: string
+    maxLoopsPerStage: number
+    maxTotalSendBacks: number
+    stages: WorkbenchStage[]
+  }
+  outputs: {
+    finalPackKey: string
+  }
+}
+
 export type NodeConfig = {
   description: string
   // Standard type-specific fields
@@ -108,6 +169,10 @@ export type NodeConfig = {
   sinkConfig?: SinkConfig
   // SET_CONTEXT assignments: key = context path, value = literal or {{path}}
   assignments?: KVPair[]
+  // Universal runtime writes into instance context._globals after this node completes.
+  globalAssignments?: KVPair[]
+  // WORKBENCH_TASK configuration.
+  workbench?: WorkbenchConfig
   // ── Assignment routing (HUMAN_TASK / APPROVAL / CONSUMABLE_CREATION) ──────
   // assignmentMode picks which of the sub-fields is meaningful.  When unset,
   // runtime defaults to DIRECT_USER (legacy behaviour).
@@ -246,6 +311,11 @@ const NODE_META: Record<string, {
       { key: 'maxTokens',       label: 'Max tokens',        placeholder: '4096' },
     ],
   },
+  WORKBENCH_TASK: {
+    label: 'Workbench Task', color: '#ffb786', Icon: Braces,
+    description: 'Opens a modal-ready workbench loop. The workflow waits here until the final implementation pack is approved.',
+    standardFields: [],
+  },
   APPROVAL: {
     label: 'Approval', color: '#a3e635', Icon: CheckCircle,
     description: 'Requires an explicit approval decision before the workflow can proceed.',
@@ -319,7 +389,7 @@ const NODE_META: Record<string, {
       { key: 'collectionPath', label: 'Collection path',  placeholder: 'segment.customers' },
       { key: 'itemVar',        label: 'Item variable',    placeholder: 'customer' },
       { key: 'parallel',       label: 'Parallel',         placeholder: 'true | false' },
-      { key: 'maxConcurrency', label: 'Max concurrency',  placeholder: '5' },
+      { key: 'maxConcurrency', label: 'Max concurrency',  placeholder: '5 or {{globals.parallelTasks}}' },
     ],
   },
   INCLUSIVE_GATEWAY: {
@@ -343,14 +413,14 @@ const NODE_META: Record<string, {
     label: 'Parallel Fork', color: '#f97316', Icon: GitFork,
     description: 'AND-split gateway. All outgoing branches fire simultaneously regardless of conditions. Connect this to multiple downstream nodes to run them in parallel.',
     standardFields: [
-      { key: 'expectedBranches', label: 'Expected branches', placeholder: '2' },
+      { key: 'expectedBranches', label: 'Expected branches', placeholder: '2 or {{globals.expectedBranches}}' },
     ],
   },
   PARALLEL_JOIN: {
     label: 'Parallel Join', color: '#d946ef', Icon: GitMerge,
     description: 'AND-join gateway. Waits until ALL incoming parallel branches have arrived before advancing. Set Expected Branches to match the number of parallel paths feeding in.',
     standardFields: [
-      { key: 'expectedBranches', label: 'Expected branches', placeholder: '2' },
+      { key: 'expectedBranches', label: 'Expected branches', placeholder: '2 or {{globals.expectedBranches}}' },
     ],
   },
   SIGNAL_EMIT: {
@@ -383,7 +453,7 @@ const STATUS_COLOR: Record<string, string> = {
 }
 
 const ARTIFACT_FORMATS = ['TEXT', 'JSON', 'MARKDOWN', 'BINARY'] as const
-const TABS = ['Overview', 'Config', 'Branches', 'Actions', 'Artifacts', 'Runtime'] as const
+const TABS = ['Overview', 'Workbench', 'Config', 'Branches', 'Actions', 'Artifacts', 'Runtime'] as const
 type Tab = typeof TABS[number]
 
 const DECISION_NODE_TYPES = new Set(['DECISION_GATE', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY'])
@@ -409,8 +479,195 @@ const CONDITION_OPS: { value: ConditionOp; label: string }[] = [
 
 function uid() { return Math.random().toString(36).slice(2, 9) }
 
+function normalizeAgentRoleInput(value: string) {
+  return value.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'AGENT'
+}
+
 function emptyConfig(): NodeConfig {
   return { description: '', standard: {}, designKV: [], runtimeKV: [], inputArtifacts: [], outputArtifacts: [], executionLocation: 'CLIENT' }
+}
+
+function defaultWorkbenchConfig(): WorkbenchConfig {
+  return {
+    profile: 'blueprint',
+    gateMode: 'manual',
+    goal: 'Produce the final implementation contract pack.',
+    sourceType: 'localdir',
+    sourceUri: '',
+    sourceRef: '',
+    capabilityId: '',
+    agentBindings: {
+      architectAgentTemplateId: '',
+      developerAgentTemplateId: '',
+      qaAgentTemplateId: '',
+    },
+    loopDefinition: {
+      version: 1,
+      name: 'Blueprint implementation loop',
+      maxLoopsPerStage: 3,
+      maxTotalSendBacks: 8,
+      stages: [
+        {
+          key: 'PLAN',
+          label: 'Plan',
+          agentRole: 'ARCHITECT',
+          agentTemplateId: '',
+          next: 'DESIGN',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: [],
+          expectedArtifacts: [
+            { kind: 'mental_model', title: 'Mental model', required: true, format: 'MARKDOWN' },
+            { kind: 'gaps', title: 'Gaps and risks', required: true, format: 'MARKDOWN' },
+          ],
+          questions: [],
+        },
+        {
+          key: 'DESIGN',
+          label: 'Design',
+          agentRole: 'ARCHITECT',
+          agentTemplateId: '',
+          next: 'DEVELOP',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['PLAN'],
+          expectedArtifacts: [
+            { kind: 'solution_architecture', title: 'Solution architecture', required: true, format: 'MARKDOWN' },
+            { kind: 'approved_spec_draft', title: 'Approved spec draft', required: true, format: 'MARKDOWN' },
+          ],
+          questions: [],
+        },
+        {
+          key: 'DEVELOP',
+          label: 'Develop',
+          agentRole: 'DEVELOPER',
+          agentTemplateId: '',
+          next: 'QA_REVIEW',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['PLAN', 'DESIGN'],
+          expectedArtifacts: [
+            { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
+            { kind: 'simulated_code_change', title: 'Simulated code-change evidence', required: true, format: 'MARKDOWN' },
+          ],
+          questions: [],
+        },
+        {
+          key: 'QA_REVIEW',
+          label: 'QA Review',
+          agentRole: 'QA',
+          agentTemplateId: '',
+          next: 'TEST_CERTIFICATION',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['DESIGN', 'DEVELOP'],
+          expectedArtifacts: [
+            { kind: 'qa_task_pack', title: 'QA review pack', required: true, format: 'MARKDOWN' },
+          ],
+          questions: [],
+        },
+        {
+          key: 'TEST_CERTIFICATION',
+          label: 'Test Certification',
+          agentRole: 'QA',
+          agentTemplateId: '',
+          next: null,
+          terminal: true,
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['DESIGN', 'DEVELOP', 'QA_REVIEW'],
+          expectedArtifacts: [
+            { kind: 'verification_rules', title: 'Verification rules', required: true, format: 'MARKDOWN' },
+            { kind: 'traceability_matrix', title: 'Traceability matrix', required: true, format: 'MARKDOWN' },
+            { kind: 'certification_receipt', title: 'Certification receipt', required: true, format: 'MARKDOWN' },
+          ],
+          questions: [],
+        },
+      ],
+    },
+    outputs: {
+      finalPackKey: 'finalImplementationPack',
+    },
+  }
+}
+
+function normalizeWorkbenchConfig(raw: unknown): WorkbenchConfig {
+  const fallback = defaultWorkbenchConfig()
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fallback
+  const r = raw as Record<string, unknown>
+  const bindings = r.agentBindings && typeof r.agentBindings === 'object' && !Array.isArray(r.agentBindings)
+    ? r.agentBindings as Record<string, unknown>
+    : {}
+  const loop = r.loopDefinition && typeof r.loopDefinition === 'object' && !Array.isArray(r.loopDefinition)
+    ? r.loopDefinition as Record<string, unknown>
+    : {}
+  const outputs = r.outputs && typeof r.outputs === 'object' && !Array.isArray(r.outputs)
+    ? r.outputs as Record<string, unknown>
+    : {}
+  const rawStages = Array.isArray(loop.stages) ? loop.stages : fallback.loopDefinition.stages
+  const stages = rawStages
+    .filter((stage): stage is Record<string, unknown> => Boolean(stage) && typeof stage === 'object' && !Array.isArray(stage))
+    .map((stage, index): WorkbenchStage => ({
+      key: typeof stage.key === 'string' && stage.key.trim() ? stage.key.trim() : `STAGE_${index + 1}`,
+      label: typeof stage.label === 'string' ? stage.label : `Stage ${index + 1}`,
+      agentRole: typeof stage.agentRole === 'string' && stage.agentRole.trim() ? normalizeAgentRoleInput(stage.agentRole) : 'ARCHITECT',
+      agentTemplateId: typeof stage.agentTemplateId === 'string' ? stage.agentTemplateId : '',
+      next: typeof stage.next === 'string' ? stage.next : stage.next === null ? null : undefined,
+      terminal: stage.terminal === true,
+      required: stage.required !== false,
+      approvalRequired: stage.approvalRequired !== false,
+      expectedArtifacts: Array.isArray(stage.expectedArtifacts)
+        ? stage.expectedArtifacts
+            .filter((artifact): artifact is Record<string, unknown> => Boolean(artifact) && typeof artifact === 'object' && !Array.isArray(artifact))
+            .map((artifact, artifactIndex): WorkbenchExpectedArtifact => ({
+              kind: typeof artifact.kind === 'string' && artifact.kind.trim() ? artifact.kind.trim() : `artifact_${artifactIndex + 1}`,
+              title: typeof artifact.title === 'string' ? artifact.title : '',
+              description: typeof artifact.description === 'string' ? artifact.description : '',
+              required: artifact.required !== false,
+              format: artifact.format === 'TEXT' || artifact.format === 'JSON' || artifact.format === 'CODE' ? artifact.format : 'MARKDOWN',
+            }))
+        : [],
+      allowedSendBackTo: Array.isArray(stage.allowedSendBackTo) ? stage.allowedSendBackTo.filter((item): item is string => typeof item === 'string') : [],
+      questions: Array.isArray(stage.questions)
+        ? stage.questions.filter((q): q is Record<string, unknown> => Boolean(q) && typeof q === 'object' && !Array.isArray(q)).map((q, qIndex): WorkbenchQuestion => ({
+            id: typeof q.id === 'string' && q.id.trim() ? q.id.trim() : `Q-${index + 1}-${qIndex + 1}`,
+            question: typeof q.question === 'string' ? q.question : '',
+            required: q.required === true,
+            freeform: q.freeform !== false,
+            options: Array.isArray(q.options)
+              ? q.options.filter((option): option is Record<string, unknown> => Boolean(option) && typeof option === 'object' && !Array.isArray(option)).map(option => ({
+                  label: String(option.label ?? ''),
+                  impact: typeof option.impact === 'string' ? option.impact : undefined,
+                  recommended: option.recommended === true,
+                })).filter(option => option.label.trim())
+              : [],
+          }))
+        : [],
+    }))
+  return {
+    profile: 'blueprint',
+    gateMode: r.gateMode === 'auto' ? 'auto' : 'manual',
+    goal: typeof r.goal === 'string' ? r.goal : fallback.goal,
+    sourceType: r.sourceType === 'github' ? 'github' : 'localdir',
+    sourceUri: typeof r.sourceUri === 'string' ? r.sourceUri : '',
+    sourceRef: typeof r.sourceRef === 'string' ? r.sourceRef : '',
+    capabilityId: typeof r.capabilityId === 'string' ? r.capabilityId : '',
+    agentBindings: {
+      architectAgentTemplateId: typeof bindings.architectAgentTemplateId === 'string' ? bindings.architectAgentTemplateId : '',
+      developerAgentTemplateId: typeof bindings.developerAgentTemplateId === 'string' ? bindings.developerAgentTemplateId : '',
+      qaAgentTemplateId: typeof bindings.qaAgentTemplateId === 'string' ? bindings.qaAgentTemplateId : '',
+    },
+    loopDefinition: {
+      version: 1,
+      name: typeof loop.name === 'string' ? loop.name : fallback.loopDefinition.name,
+      maxLoopsPerStage: typeof loop.maxLoopsPerStage === 'number' ? loop.maxLoopsPerStage : fallback.loopDefinition.maxLoopsPerStage,
+      maxTotalSendBacks: typeof loop.maxTotalSendBacks === 'number' ? loop.maxTotalSendBacks : fallback.loopDefinition.maxTotalSendBacks,
+      stages,
+    },
+    outputs: {
+      finalPackKey: typeof outputs.finalPackKey === 'string' && outputs.finalPackKey.trim() ? outputs.finalPackKey.trim() : fallback.outputs.finalPackKey,
+    },
+  }
 }
 
 function normalizeConfig(raw: unknown): NodeConfig {
@@ -454,6 +711,8 @@ function normalizeConfig(raw: unknown): NodeConfig {
         } as SinkConfig
       : undefined,
     assignments: Array.isArray(r.assignments) ? r.assignments as KVPair[] : undefined,
+    globalAssignments: Array.isArray(r.globalAssignments) ? r.globalAssignments as KVPair[] : undefined,
+    workbench: r.workbench ? normalizeWorkbenchConfig(r.workbench) : undefined,
     assignmentMode:
       r.assignmentMode === 'DIRECT_USER' || r.assignmentMode === 'TEAM_QUEUE' ||
       r.assignmentMode === 'ROLE_BASED'  || r.assignmentMode === 'SKILL_BASED' ||
@@ -787,6 +1046,514 @@ function ArtifactsTab({
       </div>
     </div>
   )
+}
+
+function WorkbenchTab({
+  config,
+  onChange,
+}: {
+  config: WorkbenchConfig | undefined
+  onChange: (config: WorkbenchConfig) => void
+}) {
+  const wb = config ?? defaultWorkbenchConfig()
+  const stages = wb.loopDefinition.stages
+  const stageKeys = stages.map(stage => stage.key).filter(Boolean)
+  const errors = validateWorkbenchBuilder(wb)
+  const update = (patch: Partial<WorkbenchConfig>) => onChange({ ...wb, ...patch })
+  const updateLoop = (patch: Partial<WorkbenchConfig['loopDefinition']>) =>
+    update({ loopDefinition: { ...wb.loopDefinition, ...patch } })
+  const updateBindings = (patch: Partial<WorkbenchConfig['agentBindings']>) =>
+    update({ agentBindings: { ...wb.agentBindings, ...patch } })
+  const updateStage = (index: number, patch: Partial<WorkbenchStage>) => {
+    updateLoop({ stages: stages.map((stage, i) => i === index ? { ...stage, ...patch } : stage) })
+  }
+  const addStage = () => {
+    const key = `STAGE_${stages.length + 1}`
+    updateLoop({
+      stages: [
+        ...stages.map(stage => stage.terminal ? { ...stage, terminal: false, next: key } : stage),
+        {
+          key,
+          label: `Stage ${stages.length + 1}`,
+          agentRole: 'AGENT',
+          agentTemplateId: '',
+          required: true,
+          approvalRequired: true,
+          terminal: true,
+          next: null,
+          allowedSendBackTo: stageKeys,
+          expectedArtifacts: [
+            { kind: `stage_${stages.length + 1}_artifact`, title: `Stage ${stages.length + 1} artifact`, required: true, format: 'MARKDOWN' },
+          ],
+          questions: [],
+        },
+      ],
+    })
+  }
+  const removeStage = (index: number) => {
+    if (stages.length <= 1) return
+    const removedKey = stages[index].key
+    const nextStages = stages
+      .filter((_, i) => i !== index)
+      .map((stage, i, arr) => ({
+        ...stage,
+        next: stage.next === removedKey ? arr[i + 1]?.key ?? null : stage.next,
+        allowedSendBackTo: stage.allowedSendBackTo.filter(key => key !== removedKey),
+      }))
+    if (!nextStages.some(stage => stage.terminal)) {
+      nextStages[nextStages.length - 1] = { ...nextStages[nextStages.length - 1], terminal: true, next: null }
+    }
+    updateLoop({ stages: nextStages })
+  }
+  const addQuestion = (stageIndex: number) => {
+    const stage = stages[stageIndex]
+    const questions = stage.questions ?? []
+    updateStage(stageIndex, {
+      questions: [
+        ...questions,
+        { id: `${stage.key || 'STAGE'}-${questions.length + 1}`, question: '', required: true, freeform: true, options: [] },
+      ],
+    })
+  }
+  const updateQuestion = (stageIndex: number, questionIndex: number, patch: Partial<WorkbenchQuestion>) => {
+    const stage = stages[stageIndex]
+    const questions = stage.questions ?? []
+    updateStage(stageIndex, {
+      questions: questions.map((question, i) => i === questionIndex ? { ...question, ...patch } : question),
+    })
+  }
+  const removeQuestion = (stageIndex: number, questionIndex: number) => {
+    const stage = stages[stageIndex]
+    updateStage(stageIndex, { questions: (stage.questions ?? []).filter((_, i) => i !== questionIndex) })
+  }
+  const addOption = (stageIndex: number, questionIndex: number) => {
+    const question = stages[stageIndex].questions?.[questionIndex]
+    if (!question) return
+    updateQuestion(stageIndex, questionIndex, { options: [...(question.options ?? []), { label: '', impact: '', recommended: false }] })
+  }
+  const updateOption = (stageIndex: number, questionIndex: number, optionIndex: number, patch: Partial<WorkbenchQuestionOption>) => {
+    const question = stages[stageIndex].questions?.[questionIndex]
+    if (!question) return
+    updateQuestion(stageIndex, questionIndex, {
+      options: (question.options ?? []).map((option, i) => i === optionIndex ? { ...option, ...patch } : option),
+    })
+  }
+  const removeOption = (stageIndex: number, questionIndex: number, optionIndex: number) => {
+    const question = stages[stageIndex].questions?.[questionIndex]
+    if (!question) return
+    updateQuestion(stageIndex, questionIndex, { options: (question.options ?? []).filter((_, i) => i !== optionIndex) })
+  }
+  const addExpectedArtifact = (stageIndex: number) => {
+    const stage = stages[stageIndex]
+    const artifacts = stage.expectedArtifacts ?? []
+    updateStage(stageIndex, {
+      expectedArtifacts: [
+        ...artifacts,
+        { kind: `${stage.key || 'stage'}_artifact_${artifacts.length + 1}`.toLowerCase(), title: `Artifact ${artifacts.length + 1}`, required: true, format: 'MARKDOWN' },
+      ],
+    })
+  }
+  const updateExpectedArtifact = (stageIndex: number, artifactIndex: number, patch: Partial<WorkbenchExpectedArtifact>) => {
+    const stage = stages[stageIndex]
+    const artifacts = stage.expectedArtifacts ?? []
+    updateStage(stageIndex, {
+      expectedArtifacts: artifacts.map((artifact, i) => i === artifactIndex ? { ...artifact, ...patch } : artifact),
+    })
+  }
+  const removeExpectedArtifact = (stageIndex: number, artifactIndex: number) => {
+    const stage = stages[stageIndex]
+    updateStage(stageIndex, { expectedArtifacts: (stage.expectedArtifacts ?? []).filter((_, i) => i !== artifactIndex) })
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{
+        padding: '10px', borderRadius: 10,
+        border: '1px solid rgba(255,183,134,0.18)',
+        background: 'rgba(255,183,134,0.07)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6 }}>
+          <Braces size={13} style={{ color: '#ffb786' }} />
+          <span style={{ fontSize: 11, fontWeight: 800, color: '#ffb786', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+            Blueprint Workbench
+          </span>
+        </div>
+        <p style={{ fontSize: 10, color: '#94a3b8', lineHeight: 1.55 }}>
+          This node pauses the workflow, opens the Workbench modal, and returns the approved implementation pack as node output.
+        </p>
+      </div>
+
+      {errors.length > 0 && (
+        <div style={{
+          padding: '8px 10px', borderRadius: 8,
+          border: '1px solid rgba(248,113,113,0.24)',
+          background: 'rgba(248,113,113,0.08)',
+        }}>
+          {errors.map(error => (
+            <p key={error} style={{ fontSize: 10, color: '#fca5a5', marginBottom: 3 }}>{error}</p>
+          ))}
+        </div>
+      )}
+
+      <div>
+        <FieldLabel>Goal</FieldLabel>
+        <NeoInput value={wb.goal} onChange={goal => update({ goal })} placeholder="What should the workbench produce?" multiline />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <div>
+          <FieldLabel>Source type</FieldLabel>
+          <NeoSelect value={wb.sourceType} onChange={sourceType => update({ sourceType: sourceType as WorkbenchConfig['sourceType'] })} options={['localdir', 'github']} />
+        </div>
+        <div>
+          <FieldLabel>Gate mode</FieldLabel>
+          <NeoSelect value={wb.gateMode} onChange={gateMode => update({ gateMode: gateMode as WorkbenchConfig['gateMode'] })} options={['manual', 'auto']} />
+        </div>
+      </div>
+
+      <div>
+        <FieldLabel>{wb.sourceType === 'github' ? 'GitHub URL' : 'Local directory'}</FieldLabel>
+        <NeoInput value={wb.sourceUri ?? ''} onChange={sourceUri => update({ sourceUri })} placeholder={wb.sourceType === 'github' ? 'https://github.com/org/repo' : '/Users/name/project'} />
+      </div>
+
+      <div>
+        <FieldLabel>Branch / path filter</FieldLabel>
+        <NeoInput value={wb.sourceRef ?? ''} onChange={sourceRef => update({ sourceRef })} placeholder="main, src/**, or leave blank" />
+      </div>
+
+      <div>
+        <FieldLabel>Capability</FieldLabel>
+        <CapabilityPicker value={wb.capabilityId} onChange={capabilityId => update({ capabilityId })} />
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <FieldLabel>Default agent fallbacks</FieldLabel>
+        <AgentBindingRow label="Architect" capabilityId={wb.capabilityId} value={wb.agentBindings.architectAgentTemplateId} onChange={architectAgentTemplateId => updateBindings({ architectAgentTemplateId })} />
+        <AgentBindingRow label="Developer" capabilityId={wb.capabilityId} value={wb.agentBindings.developerAgentTemplateId} onChange={developerAgentTemplateId => updateBindings({ developerAgentTemplateId })} />
+        <AgentBindingRow label="QA" capabilityId={wb.capabilityId} value={wb.agentBindings.qaAgentTemplateId} onChange={qaAgentTemplateId => updateBindings({ qaAgentTemplateId })} />
+        <p style={{ fontSize: 10, color: '#94a3b8', lineHeight: 1.45, margin: 0 }}>
+          Each phase can override the agent. These are used only when a phase does not bind its own agent.
+        </p>
+      </div>
+
+      <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px', gap: 8 }}>
+        <div>
+          <FieldLabel>Loop name</FieldLabel>
+          <NeoInput value={wb.loopDefinition.name} onChange={name => updateLoop({ name })} />
+        </div>
+        <div>
+          <FieldLabel>Loops/stage</FieldLabel>
+          <NeoInput value={String(wb.loopDefinition.maxLoopsPerStage)} onChange={v => updateLoop({ maxLoopsPerStage: Number(v) || 1 })} />
+        </div>
+        <div>
+          <FieldLabel>Send-backs</FieldLabel>
+          <NeoInput value={String(wb.loopDefinition.maxTotalSendBacks)} onChange={v => updateLoop({ maxTotalSendBacks: Number(v) || 1 })} />
+        </div>
+      </div>
+
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <FieldLabel>Loop phases</FieldLabel>
+          <button onClick={addStage} style={miniButton('#ffb786')}>
+            <Plus size={10} /> Add phase
+          </button>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {stages.map((stage, stageIndex) => (
+            <div key={`${stage.key}-${stageIndex}`} style={{
+              border: '1px solid rgba(255,255,255,0.08)',
+              borderRadius: 10,
+              background: 'rgba(255,255,255,0.035)',
+              padding: 10,
+            }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 128px auto', gap: 7, alignItems: 'end' }}>
+                <div>
+                  <FieldLabel>Key</FieldLabel>
+                  <NeoInput value={stage.key} onChange={key => updateStage(stageIndex, { key })} />
+                </div>
+                <div>
+                  <FieldLabel>Label</FieldLabel>
+                  <NeoInput value={stage.label} onChange={label => updateStage(stageIndex, { label })} />
+                </div>
+                <div>
+                  <FieldLabel>Agent role</FieldLabel>
+                  <NeoInput value={stage.agentRole} onChange={agentRole => updateStage(stageIndex, { agentRole: normalizeAgentRoleInput(agentRole) })} placeholder="ARCHITECT, QA, SECURITY" />
+                </div>
+                <button onClick={() => removeStage(stageIndex)} disabled={stages.length <= 1} style={iconButton(stages.length <= 1)}>
+                  <Trash2 size={11} />
+                </button>
+              </div>
+
+              <div style={{ marginTop: 8 }}>
+                <FieldLabel>Phase agent</FieldLabel>
+                <AgentPicker capabilityId={wb.capabilityId || null} value={stage.agentTemplateId ?? ''} onChange={agentTemplateId => updateStage(stageIndex, { agentTemplateId })} />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7, marginTop: 8 }}>
+                <div>
+                  <FieldLabel>Next phase</FieldLabel>
+                  <select
+                    value={stage.terminal ? '' : stage.next ?? ''}
+                    disabled={stage.terminal === true}
+                    onChange={event => updateStage(stageIndex, { next: event.target.value || null })}
+                    style={selectStyle(stage.terminal === true)}
+                  >
+                    <option value="" style={{ background: '#0f172a' }}>{stage.terminal ? 'Terminal' : 'Select next phase'}</option>
+                    {stageKeys.filter(key => key !== stage.key).map(key => <option key={key} value={key} style={{ background: '#0f172a' }}>{key}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <FieldLabel>Allowed send-back</FieldLabel>
+                  <select
+                    multiple
+                    value={stage.allowedSendBackTo}
+                    onChange={event => {
+                      const values = Array.from(event.currentTarget.selectedOptions).map(option => option.value)
+                      updateStage(stageIndex, { allowedSendBackTo: values })
+                    }}
+                    style={{ ...selectStyle(false), minHeight: 62 }}
+                  >
+                    {stageKeys.filter(key => key !== stage.key).map(key => <option key={key} value={key} style={{ background: '#0f172a' }}>{key}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
+                <label style={checkLabel()}>
+                  <input type="checkbox" checked={stage.required} onChange={event => updateStage(stageIndex, { required: event.target.checked })} />
+                  Required gate
+                </label>
+                <label style={checkLabel()}>
+                  <input type="checkbox" checked={stage.approvalRequired !== false} onChange={event => updateStage(stageIndex, { approvalRequired: event.target.checked })} />
+                  Human approval after artifacts
+                </label>
+                <label style={checkLabel()}>
+                  <input
+                    type="checkbox"
+                    checked={stage.terminal === true}
+                    onChange={event => {
+                      const terminal = event.target.checked
+                      updateLoop({
+                        stages: stages.map((item, i) => i === stageIndex
+                          ? { ...item, terminal, next: terminal ? null : item.next }
+                          : terminal ? { ...item, terminal: false } : item),
+                      })
+                    }}
+                  />
+                  Terminal
+                </label>
+              </div>
+
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ fontSize: 9, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                    Artifacts produced by this phase
+                  </span>
+                  <button onClick={() => addExpectedArtifact(stageIndex)} style={miniButton('#ffb786')}>
+                    <Plus size={10} /> Artifact
+                  </button>
+                </div>
+                {(stage.expectedArtifacts ?? []).length === 0 && (
+                  <p style={{ fontSize: 10, color: '#94a3b8', margin: 0 }}>
+                    No explicit artifact contract. The Workbench will generate a generic stage artifact.
+                  </p>
+                )}
+                {(stage.expectedArtifacts ?? []).map((artifact, artifactIndex) => (
+                  <div key={`${artifact.kind}-${artifactIndex}`} style={{
+                    border: '1px solid rgba(255,183,134,0.16)',
+                    borderRadius: 8,
+                    padding: 8,
+                    marginTop: 6,
+                    background: 'rgba(255,183,134,0.04)',
+                  }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr 92px auto', gap: 6, alignItems: 'end' }}>
+                      <div>
+                        <FieldLabel>Kind</FieldLabel>
+                        <NeoInput value={artifact.kind} onChange={kind => updateExpectedArtifact(stageIndex, artifactIndex, { kind })} placeholder="design_doc" />
+                      </div>
+                      <div>
+                        <FieldLabel>Title</FieldLabel>
+                        <NeoInput value={artifact.title} onChange={title => updateExpectedArtifact(stageIndex, artifactIndex, { title })} placeholder="Design document" />
+                      </div>
+                      <div>
+                        <FieldLabel>Format</FieldLabel>
+                        <NeoSelect value={artifact.format} onChange={format => updateExpectedArtifact(stageIndex, artifactIndex, { format: format as WorkbenchExpectedArtifact['format'] })} options={['MARKDOWN', 'TEXT', 'JSON', 'CODE']} />
+                      </div>
+                      <button onClick={() => removeExpectedArtifact(stageIndex, artifactIndex)} style={iconButton(false)}>
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
+                    <div style={{ marginTop: 6 }}>
+                      <FieldLabel>Description</FieldLabel>
+                      <NeoInput value={artifact.description ?? ''} onChange={description => updateExpectedArtifact(stageIndex, artifactIndex, { description })} placeholder="What this artifact must contain" multiline />
+                    </div>
+                    <label style={{ ...checkLabel(), marginTop: 7 }}>
+                      <input type="checkbox" checked={artifact.required} onChange={event => updateExpectedArtifact(stageIndex, artifactIndex, { required: event.target.checked })} />
+                      Required artifact for approval
+                    </label>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ fontSize: 9, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                    Questions
+                  </span>
+                  <button onClick={() => addQuestion(stageIndex)} style={miniButton('#adc6ff')}>
+                    <Plus size={10} /> Question
+                  </button>
+                </div>
+                {(stage.questions ?? []).map((question, questionIndex) => (
+                  <div key={`${question.id}-${questionIndex}`} style={{
+                    border: '1px solid rgba(173,198,255,0.14)',
+                    borderRadius: 8,
+                    padding: 8,
+                    marginTop: 6,
+                    background: 'rgba(173,198,255,0.04)',
+                  }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '96px 1fr auto', gap: 6, alignItems: 'end' }}>
+                      <div>
+                        <FieldLabel>ID</FieldLabel>
+                        <NeoInput value={question.id} onChange={id => updateQuestion(stageIndex, questionIndex, { id })} />
+                      </div>
+                      <div>
+                        <FieldLabel>Question</FieldLabel>
+                        <NeoInput value={question.question} onChange={text => updateQuestion(stageIndex, questionIndex, { question: text })} />
+                      </div>
+                      <button onClick={() => removeQuestion(stageIndex, questionIndex)} style={iconButton(false)}>
+                        <Trash2 size={11} />
+                      </button>
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, marginTop: 7 }}>
+                      <label style={checkLabel()}><input type="checkbox" checked={question.required} onChange={event => updateQuestion(stageIndex, questionIndex, { required: event.target.checked })} />Required</label>
+                      <label style={checkLabel()}><input type="checkbox" checked={question.freeform} onChange={event => updateQuestion(stageIndex, questionIndex, { freeform: event.target.checked })} />Free form</label>
+                    </div>
+                    <div style={{ marginTop: 7 }}>
+                      <button onClick={() => addOption(stageIndex, questionIndex)} style={miniButton('#c0c1ff')}>
+                        <Plus size={10} /> Option
+                      </button>
+                      {(question.options ?? []).map((option, optionIndex) => (
+                        <div key={optionIndex} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto auto', gap: 5, alignItems: 'center', marginTop: 5 }}>
+                          <NeoInput value={option.label} onChange={label => updateOption(stageIndex, questionIndex, optionIndex, { label })} placeholder="Option label" />
+                          <NeoInput value={option.impact ?? ''} onChange={impact => updateOption(stageIndex, questionIndex, optionIndex, { impact })} placeholder="Impact" />
+                          <label style={checkLabel()}><input type="checkbox" checked={option.recommended === true} onChange={event => updateOption(stageIndex, questionIndex, optionIndex, { recommended: event.target.checked })} />Rec</label>
+                          <button onClick={() => removeOption(stageIndex, questionIndex, optionIndex)} style={iconButton(false)}><Trash2 size={10} /></button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <FieldLabel>Final output key</FieldLabel>
+        <NeoInput
+          value={wb.outputs.finalPackKey}
+          onChange={finalPackKey => update({ outputs: { finalPackKey } })}
+          placeholder="finalImplementationPack"
+        />
+      </div>
+    </div>
+  )
+}
+
+function AgentBindingRow({ label, capabilityId, value, onChange }: {
+  label: string
+  capabilityId: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <div>
+      <FieldLabel>{label}</FieldLabel>
+      <AgentPicker capabilityId={capabilityId || null} value={value} onChange={onChange} />
+    </div>
+  )
+}
+
+function validateWorkbenchBuilder(config: WorkbenchConfig | undefined): string[] {
+  if (!config) return ['Workbench configuration is required.']
+  const errors: string[] = []
+  const stages = config.loopDefinition.stages
+  const keys = stages.map(stage => stage.key.trim()).filter(Boolean)
+  const keySet = new Set(keys)
+  if (!config.goal.trim()) errors.push('Goal is required.')
+  if (!config.capabilityId.trim()) errors.push('Capability is required.')
+  if (stages.length === 0) errors.push('At least one loop phase is required.')
+  if (keys.length !== stages.length) errors.push('Every phase needs a key.')
+  if (keys.length !== keySet.size) errors.push('Phase keys must be unique.')
+  if (stages.filter(stage => stage.terminal).length !== 1) errors.push('Exactly one phase must be terminal.')
+  for (const stage of stages) {
+    if (!stage.label.trim()) errors.push(`${stage.key || 'Phase'} needs a label.`)
+    if (!stage.agentRole.trim()) errors.push(`${stage.key || 'Phase'} needs an agent role.`)
+    if (!stage.agentTemplateId?.trim() && !fallbackAgentForStage(config, stage).trim()) {
+      errors.push(`${stage.key || 'Phase'} needs a phase agent or matching default fallback.`)
+    }
+    if (!stage.terminal && stage.next && !keySet.has(stage.next)) errors.push(`${stage.key} has an invalid next phase.`)
+    if (!stage.terminal && !stage.next) errors.push(`${stage.key} needs a next phase or must be terminal.`)
+    for (const target of stage.allowedSendBackTo) {
+      if (!keySet.has(target)) errors.push(`${stage.key} has an invalid send-back target.`)
+    }
+    for (const question of stage.questions ?? []) {
+      if (!question.id.trim() || !question.question.trim()) errors.push(`${stage.key} has an incomplete question.`)
+      for (const option of question.options ?? []) {
+        if (!option.label.trim()) errors.push(`${stage.key} has an option without a label.`)
+      }
+    }
+    for (const artifact of stage.expectedArtifacts ?? []) {
+      if (!artifact.kind.trim() || !artifact.title.trim()) errors.push(`${stage.key} has an incomplete artifact definition.`)
+    }
+  }
+  if (!config.outputs.finalPackKey.trim()) errors.push('Final output key is required.')
+  return Array.from(new Set(errors))
+}
+
+function fallbackAgentForStage(config: WorkbenchConfig, stage: WorkbenchStage) {
+  const role = normalizeAgentRoleInput(stage.agentRole)
+  if (role.includes('DEV') || role === 'ENGINEER') return config.agentBindings.developerAgentTemplateId || config.agentBindings.architectAgentTemplateId || config.agentBindings.qaAgentTemplateId
+  if (role.includes('QA') || role.includes('TEST') || role.includes('VERIFY')) return config.agentBindings.qaAgentTemplateId || config.agentBindings.developerAgentTemplateId || config.agentBindings.architectAgentTemplateId
+  return config.agentBindings.architectAgentTemplateId || config.agentBindings.developerAgentTemplateId || config.agentBindings.qaAgentTemplateId
+}
+
+function miniButton(color: string): React.CSSProperties {
+  return {
+    display: 'inline-flex', alignItems: 'center', gap: 4,
+    border: `1px solid ${color}33`, background: `${color}12`, color,
+    borderRadius: 6, padding: '3px 7px', fontSize: 10,
+    fontWeight: 700, cursor: 'pointer',
+  }
+}
+
+function iconButton(disabled: boolean): React.CSSProperties {
+  return {
+    width: 28, height: 28, borderRadius: 7,
+    border: '1px solid rgba(255,255,255,0.10)',
+    background: disabled ? 'rgba(255,255,255,0.03)' : 'rgba(248,113,113,0.08)',
+    color: disabled ? '#334155' : '#f87171',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  }
+}
+
+function selectStyle(disabled: boolean): React.CSSProperties {
+  return {
+    width: '100%', boxSizing: 'border-box',
+    background: disabled ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.05)',
+    border: '1px solid rgba(255,255,255,0.10)',
+    borderRadius: 8, padding: '6px 10px', fontSize: 11, color: '#e2e8f0',
+    outline: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
+  }
+}
+
+function checkLabel(): React.CSSProperties {
+  return { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10, color: '#94a3b8', fontWeight: 600 }
 }
 
 // ─── KV Tab ───────────────────────────────────────────────────────────────
@@ -2585,7 +3352,7 @@ export function NodeInspector({
 
   const { color, Icon, description, standardFields } = meta
 
-  const [tab, setTab] = useState<Tab>('Overview')
+  const [tab, setTab] = useState<Tab>(node.data.nodeType === 'WORKBENCH_TASK' ? 'Workbench' : 'Overview')
   const [label, setLabel] = useState(node.data.label)
   const [config, setConfig] = useState<NodeConfig>(() => normalizeConfig(node.data.config))
 
@@ -2593,11 +3360,14 @@ export function NodeInspector({
   useEffect(() => {
     setLabel(node.data.label)
     setConfig(normalizeConfig(node.data.config))
-    setTab('Overview')
-  }, [node.id])
+    setTab(node.data.nodeType === 'WORKBENCH_TASK' ? 'Workbench' : 'Overview')
+  }, [node.id, node.data.nodeType])
 
   const handleSave = () => onSave(node.id, label, config)
   const statusColor = STATUS_COLOR[node.data.status] ?? '#64748b'
+  const workbenchErrors = node.data.nodeType === 'WORKBENCH_TASK'
+    ? validateWorkbenchBuilder(config.workbench)
+    : []
 
   return (
     <motion.div
@@ -2658,6 +3428,7 @@ export function NodeInspector({
         <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
           {TABS
             .filter(t => t !== 'Branches' || DECISION_NODE_TYPES.has(node.data.nodeType))
+            .filter(t => t !== 'Workbench' || node.data.nodeType === 'WORKBENCH_TASK')
             .map(t => <TabBtn key={t} label={t} active={tab === t} onClick={() => setTab(t)} />)
           }
         </div>
@@ -2723,6 +3494,14 @@ export function NodeInspector({
               </div>
             )}
 
+            {/* WORKBENCH — first-class WORKBENCH_TASK builder */}
+            {tab === 'Workbench' && (
+              <WorkbenchTab
+                config={config.workbench}
+                onChange={workbench => setConfig(c => ({ ...c, workbench }))}
+              />
+            )}
+
             {/* CONFIG — standard fields + design-time KV */}
             {tab === 'Config' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -2745,6 +3524,7 @@ export function NodeInspector({
                         const isTemplatePicker   = node.data.nodeType === 'CALL_WORKFLOW' && f.key === 'templateId'
                         const isCapabilityPicker = f.key === 'capabilityId'
                         const isPriority         = f.key === 'priority'
+                        const isVariableAwareNumber = f.key === 'maxConcurrency' || f.key === 'expectedBranches'
                         const cfgCapabilityId    = (config.standard.capabilityId as string | undefined) ?? null
                         return (
                           <div key={f.key}>
@@ -2788,6 +3568,24 @@ export function NodeInspector({
                                 value={config.standard[f.key] ?? ''}
                                 onChange={v => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: v } }))}
                               />
+                            ) : isVariableAwareNumber ? (
+                              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                <div style={{ flex: 1 }}>
+                                  <NeoInput
+                                    value={config.standard[f.key] ?? ''}
+                                    onChange={v => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: v } }))}
+                                    placeholder={f.placeholder}
+                                  />
+                                </div>
+                                <VariableInsertMenu
+                                  templateVariables={templateVariables}
+                                  teamGlobals={teamGlobals}
+                                  onInsert={path => setConfig(c => ({
+                                    ...c,
+                                    standard: { ...c.standard, [f.key]: `{{${path}}}` },
+                                  }))}
+                                />
+                              </div>
                             ) : (
                               <NeoInput
                                 value={config.standard[f.key] ?? ''}
@@ -2826,6 +3624,24 @@ export function NodeInspector({
                   location={config.executionLocation}
                   onChange={loc => setConfig(c => ({ ...c, executionLocation: loc }))}
                 />
+
+                <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: -4 }}>
+                  <Globe size={11} style={{ color: '#0ea5e9' }} />
+                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#0ea5e9' }}>
+                    Runtime global writes
+                  </span>
+                </div>
+                <KVSection
+                  title=""
+                  pairs={config.globalAssignments ?? []}
+                  onChange={globalAssignments => setConfig(c => ({ ...c, globalAssignments }))}
+                  accentColor="#0ea5e9"
+                />
+                <p style={{ fontSize: 9, color: '#64748b', marginTop: -10 }}>
+                  Key = <code style={{ fontFamily: 'monospace' }}>globals.parallelTasks</code> or <code style={{ fontFamily: 'monospace' }}>parallelTasks</code>. Value may be literal JSON or <code style={{ fontFamily: 'monospace' }}>{'{{output.count}}'}</code>.
+                </p>
 
                 <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
 
@@ -3019,7 +3835,7 @@ export function NodeInspector({
       <div style={{ padding: '10px 14px', borderTop: '1px solid rgba(255,255,255,0.06)', flexShrink: 0 }}>
         <button
           onClick={handleSave}
-          disabled={saving || !label.trim()}
+          disabled={saving || !label.trim() || workbenchErrors.length > 0}
           className="workflow-neo-save-btn"
         >
           {saving

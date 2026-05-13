@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { capabilityService } from "./capability.service";
+import { syncKnowledgeSourceNow, syncRepositoryNow } from "./poll-worker";
 import { ok } from "../../shared/response";
 // pdf-parse ships a CommonJS bundle whose root index.js triggers test code
 // when imported without a file path. Importing the lib subpath skips that.
@@ -10,13 +11,40 @@ const pdfExtract = pdfParse as unknown as PdfParseFn;
 
 export const capabilityController = {
   async create(req: Request, res: Response) {
-    return ok(res, await capabilityService.create(req.body), 201);
+    return ok(res, await capabilityService.create(req.body, req.headers.authorization), 201);
+  },
+  async bootstrap(req: Request, res: Response) {
+    return ok(res, await capabilityService.bootstrap(req.body, req.user?.user_id, req.headers.authorization), 201);
   },
   async list(_req: Request, res: Response) {
     return ok(res, await capabilityService.list());
   },
   async get(req: Request, res: Response) {
     return ok(res, await capabilityService.get(req.params.id));
+  },
+  async update(req: Request, res: Response) {
+    return ok(res, await capabilityService.update(req.params.id, req.body, req.headers.authorization));
+  },
+  async archive(req: Request, res: Response) {
+    return ok(res, await capabilityService.archive(req.params.id, req.user?.user_id, req.headers.authorization));
+  },
+  async getBootstrapRun(req: Request, res: Response) {
+    return ok(res, await capabilityService.getBootstrapRun(req.params.id, req.params.runId));
+  },
+  async reviewBootstrapRun(req: Request, res: Response) {
+    return ok(
+      res,
+      await capabilityService.reviewBootstrapRun(req.params.id, req.params.runId, req.body, req.user?.user_id),
+    );
+  },
+  async sync(req: Request, res: Response) {
+    return ok(
+      res,
+      await capabilityService.syncCapability(req.params.id, req.body, {
+        syncRepository: syncRepositoryNow,
+        syncKnowledgeSource: syncKnowledgeSourceNow,
+      }),
+    );
   },
   async attachRepo(req: Request, res: Response) {
     return ok(res, await capabilityService.attachRepository(req.params.id, req.body), 201);

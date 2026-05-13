@@ -3,7 +3,15 @@ import { motion } from 'motion/react'
 import { ScrollText, Activity } from 'lucide-react'
 import { api } from '../../lib/api'
 
-type AuditEvent = { id: string; eventType: string; entityType: string; entityId: string; actorId?: string; occurredAt: string }
+type AuditEvent = {
+  id: string
+  eventType: string
+  entityType: string
+  entityId: string
+  actorId?: string
+  payload?: Record<string, unknown>
+  occurredAt: string
+}
 
 const entityColor: Record<string, string> = {
   WORKFLOW: '#22d3ee',
@@ -54,7 +62,7 @@ export function AuditPage() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     transition={{ duration: 0.15, delay: Math.min(i, 10) * 0.03 }}
-                    className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02] transition-colors"
+                    className="flex items-start gap-3 px-4 py-3 hover:bg-white/[0.02] transition-colors"
                     style={{ borderBottom: i < events.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none' }}
                   >
                     <span
@@ -63,8 +71,18 @@ export function AuditPage() {
                     >
                       {e.eventType}
                     </span>
-                    <span className="text-xs text-slate-500 shrink-0">{e.entityType}</span>
-                    <span className="font-mono text-xs text-slate-600 truncate">{e.entityId.slice(0, 12)}…</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-xs text-slate-500 shrink-0">{e.entityType}</span>
+                        <span className="font-mono text-xs text-slate-600 truncate">{e.entityId.slice(0, 12)}…</span>
+                        {e.actorId && <span className="text-[10px] font-mono text-slate-600 truncate">by {e.actorId.slice(0, 10)}…</span>}
+                      </div>
+                      {e.payload && Object.keys(e.payload).length > 0 && (
+                        <pre className="mt-1 max-h-20 overflow-auto rounded-lg bg-black/20 p-2 text-[10px] leading-relaxed text-slate-500">
+                          {JSON.stringify(e.payload, null, 2)}
+                        </pre>
+                      )}
+                    </div>
                     <span className="ml-auto text-xs font-mono text-slate-600 shrink-0">
                       {new Date(e.occurredAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                     </span>

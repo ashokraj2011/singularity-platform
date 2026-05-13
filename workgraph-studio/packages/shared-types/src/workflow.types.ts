@@ -3,6 +3,7 @@ export type NodeType =
   | 'END'
   | 'HUMAN_TASK'
   | 'AGENT_TASK'
+  | 'WORKBENCH_TASK'
   | 'APPROVAL'
   | 'DECISION_GATE'
   | 'CONSUMABLE_CREATION'

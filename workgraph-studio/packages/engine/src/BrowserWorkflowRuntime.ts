@@ -62,6 +62,15 @@ function mergeOutput<T extends Record<string, unknown>>(ctx: T, nodeId: string, 
   return next
 }
 
+type KVPair = { key?: string; path?: string; value?: unknown }
+
+function resolveAssignmentValue(raw: unknown, ctx: Record<string, unknown>): unknown {
+  if (typeof raw !== 'string') return raw
+  const match = raw.match(/^\{\{(.+?)\}\}$/)
+  if (match) return resolvePath(ctx, match[1].trim())
+  try { return JSON.parse(raw) } catch { return raw }
+}
+
 export class BrowserWorkflowRuntime {
   private state: RunState
   private definition: WorkflowDefinition
@@ -304,6 +313,15 @@ export class BrowserWorkflowRuntime {
       if (output.attachments !== undefined) n.attachmentIds = output.attachments
       n.output = output
       d.context = mergeOutput(d.context, nodeId, output)
+      const def = this.definition.nodes.find(item => item.id === nodeId)
+      const cfg = (def?.config ?? {}) as Record<string, unknown>
+      const globalAssignments: KVPair[] = Array.isArray(cfg.globalAssignments) ? cfg.globalAssignments as KVPair[] : []
+      for (const assignment of globalAssignments) {
+        const rawKey = (assignment.key ?? assignment.path ?? '').trim()
+        if (!rawKey) continue
+        const path = rawKey.startsWith('globals.') || rawKey.startsWith('_globals.') ? rawKey : `globals.${rawKey}`
+        this.applyAssignment(d, path, resolveAssignmentValue(assignment.value, d.context))
+      }
       d.log.push({ ts: nowIso(), kind: 'NodeCompleted', nodeId, message: actorId ? `By ${actorId}` : undefined })
     })
 
@@ -401,7 +419,10 @@ export class BrowserWorkflowRuntime {
       const target = this.definition.nodes.find(n => n.id === edge.targetNodeId)
       if (!target) continue
       const cfg = (target.config ?? {}) as Record<string, unknown>
-      const expected = Number(cfg.expected_joins ?? cfg.expectedBranches ?? 0)
+      const std = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard)
+        ? cfg.standard as Record<string, unknown>
+        : {}
+      const expected = Number(resolveAssignmentValue(cfg.expected_joins ?? cfg.expectedBranches ?? std.expectedBranches ?? 0, this.state.context))
       this.mutate(d => {
         const n = d.nodes[target.id]
         const completed = Number((n as any)._completed_joins ?? 0) + 1
@@ -461,10 +482,12 @@ export class BrowserWorkflowRuntime {
       // Auto-advance — handle a couple of node types' side effects, then cascade
       if (node.nodeType === 'SET_CONTEXT') {
         const cfg = (node.config ?? {}) as Record<string, unknown>
-        const assignments = Array.isArray(cfg.assignments) ? cfg.assignments as Array<{ path: string; value: unknown }> : []
+        const assignments = Array.isArray(cfg.assignments) ? cfg.assignments as KVPair[] : []
         this.mutate(d => {
           for (const a of assignments) {
-            this.applyAssignment(d, a.path, a.value)
+            const path = (a.path ?? a.key ?? '').trim()
+            if (!path) continue
+            this.applyAssignment(d, path, resolveAssignmentValue(a.value, d.context))
           }
         })
       }

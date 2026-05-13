@@ -164,6 +164,139 @@ async def _get(url: str, params: Optional[dict] = None, timeout: float = 30.0,
         resp.raise_for_status()
         return resp.json()
 
+def _int_limit(obj: dict[str, Any], *keys: str, default: Optional[int] = None) -> Optional[int]:
+    for key in keys:
+        value = obj.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+        if isinstance(value, float) and value > 0:
+            return int(value)
+    return default
+
+
+def _str_value(obj: dict[str, Any], *keys: str, default: Optional[str] = None) -> Optional[str]:
+    for key in keys:
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return default
+
+
+def _trim_text(text: str, max_chars: Optional[int]) -> str:
+    if not max_chars or len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 80)].rstrip() + f"\n...[trimmed to {max_chars} chars by token budget]"
+
+
+def _usage_metadata(
+    *,
+    tokens_used: dict[str, Any],
+    model_overrides: dict[str, Any],
+    prompt_assembly_id: Optional[str],
+    cf_call_id: str,
+    optimization_metrics: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    input_tokens = tokens_used.get("input")
+    output_tokens = tokens_used.get("output")
+    total_tokens = tokens_used.get("total")
+    provider = _str_value(model_overrides, "provider", default="mock")
+    model = _str_value(model_overrides, "model", default="mock-fast")
+    estimated_cost = tokens_used.get("estimatedCost") or tokens_used.get("estimated_cost")
+    tokens_saved = None
+    if isinstance(optimization_metrics, dict):
+        tokens_saved = optimization_metrics.get("tokens_saved") or optimization_metrics.get("tokensSaved")
+    return {
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "totalTokens": total_tokens,
+        "estimatedCost": estimated_cost,
+        "provider": provider,
+        "model": model,
+        "tokensSaved": tokens_saved,
+        "promptAssemblyId": prompt_assembly_id,
+        "cfCallId": cf_call_id,
+    }
+
+
+def _composer_context_policy(policy: dict[str, Any], limits: dict[str, Any]) -> dict[str, Any]:
+    input_budget = _int_limit(limits, "inputTokenBudget", "input_token_budget")
+    max_context = _int_limit(policy, "maxContextTokens", "max_context_tokens", default=input_budget or 8_000)
+    if input_budget:
+        max_context = min(max_context or input_budget, input_budget)
+    out = {
+        "optimizationMode": _str_value(policy, "optimizationMode", "optimization_mode", default="medium"),
+        "maxContextTokens": max_context,
+        "compareWithRaw": bool(policy.get("compareWithRaw", policy.get("compare_with_raw", False))),
+    }
+    for snake, camel in [
+        ("knowledge_top_k", "knowledgeTopK"),
+        ("memory_top_k", "memoryTopK"),
+        ("code_top_k", "codeTopK"),
+        ("max_layer_chars", "maxLayerChars"),
+        ("max_prompt_chars", "maxPromptChars"),
+    ]:
+        value = _int_limit(policy, camel, snake)
+        if value is not None:
+            out[camel] = value
+    return out
+
+
+async def _compile_execute_context(
+    session_id: str,
+    agent_id: Optional[str],
+    user_message: str,
+    system_prompt: Optional[str],
+    context_policy: dict[str, Any],
+    model_overrides: dict[str, Any],
+    limits: dict[str, Any],
+) -> tuple[list[dict], str, Optional[str], dict[str, Any], list[str]]:
+    """Return MCP history/message/systemPrompt from context-memory compile.
+
+    The MCP invoke endpoint appends `message` after `history`, so we pass all
+    compiled messages except the final user message as history. The compiled
+    system prompt stays inside history; `systemPrompt` is set to None to avoid
+    duplicating the assembled prompt.
+    """
+    max_chars = _int_limit(limits, "maxPromptChars", "max_prompt_chars")
+    input_budget = _int_limit(limits, "inputTokenBudget", "input_token_budget")
+    max_context = _int_limit(context_policy, "maxContextTokens", "max_context_tokens", default=input_budget or 8_000)
+    if input_budget:
+        max_context = min(max_context or input_budget, input_budget)
+
+    payload = {
+        "session_id": session_id,
+        "agent_id": agent_id,
+        "user_message": user_message,
+        "optimization_mode": _str_value(context_policy, "optimizationMode", "optimization_mode", default="medium"),
+        "compare_with_raw": bool(context_policy.get("compareWithRaw", context_policy.get("compare_with_raw", False))),
+        "max_context_tokens": max_context,
+        "provider": _str_value(model_overrides, "provider", default="mock"),
+        "model": _str_value(model_overrides, "model", default="mock-fast"),
+        "system_prompt": _trim_text(system_prompt or "", max_chars) if system_prompt else None,
+    }
+    compiled = await _post(
+        f"{settings.context_memory_url.rstrip('/')}/context/compile",
+        payload,
+        timeout=20.0,
+    )
+    messages = [
+        {"role": m.get("role"), "content": _trim_text(str(m.get("content") or ""), max_chars)}
+        for m in compiled.get("messages", [])
+        if m.get("role") in ("system", "user", "assistant", "tool")
+    ]
+    max_history = _int_limit(limits, "maxHistoryMessages", "max_history_messages")
+    if max_history:
+        system_messages = [m for m in messages if m["role"] == "system"]
+        other_messages = [m for m in messages if m["role"] != "system"]
+        if len(other_messages) > max_history:
+            messages = system_messages + other_messages[-max_history:]
+    if not messages:
+        return [], _trim_text(user_message, max_chars), system_prompt, {}, ["context compiler returned no messages"]
+    last = messages[-1]
+    if last["role"] == "user":
+        return messages[:-1], last["content"], None, compiled.get("optimization") or {}, []
+    return messages, _trim_text(user_message, max_chars), None, compiled.get("optimization") or {}, []
+
 
 # ── Orchestrator ──────────────────────────────────────────────────────────
 
@@ -200,7 +333,7 @@ async def execute(req: ExecuteRequest):
                 "artifacts": req.artifacts,
                 "overrides": req.overrides,
                 "modelOverrides": req.model_overrides,
-                "contextPolicy": req.context_policy,
+                "contextPolicy": _composer_context_policy(req.context_policy, req.limits),
                 "previewOnly": True,
             }
             composed = await _post(
@@ -219,19 +352,38 @@ async def execute(req: ExecuteRequest):
 
     # ── 2. Enrich: conversation history + rolling summary ───────────────
     history: list[dict] = []
+    mcp_message = user_message
+    compiled_system_prompt = system_prompt
+    optimization_metrics: dict[str, Any] = {}
     try:
-        msgs = await _get(
-            f"{settings.context_memory_url.rstrip('/')}/memory/messages/{session_id}",
-            params={"limit": 50},
-            timeout=10.0,
+        history, mcp_message, compiled_system_prompt, optimization_metrics, compile_warnings = await _compile_execute_context(
+            session_id=session_id,
+            agent_id=req.run_context.agent_template_id,
+            user_message=user_message,
+            system_prompt=system_prompt,
+            context_policy=req.context_policy,
+            model_overrides=req.model_overrides,
+            limits=req.limits,
         )
-        history = [
-            {"role": m["role"], "content": m["content"]}
-            for m in msgs.get("messages", [])
-            if m.get("role") in ("user", "assistant", "tool")
-        ]
-    except Exception:
-        pass  # fresh session; ignore
+        composer_warnings.extend(compile_warnings)
+    except Exception as exc:
+        composer_warnings.append(f"context compiler unavailable: {exc!s}")
+    if not history and mcp_message == user_message:
+        try:
+            max_history = _int_limit(req.limits, "maxHistoryMessages", "max_history_messages", default=6) or 6
+            msgs = await _get(
+                f"{settings.context_memory_url.rstrip('/')}/memory/messages/{session_id}",
+                params={"limit": max_history},
+                timeout=10.0,
+            )
+            history = [
+                {"role": m["role"], "content": m["content"]}
+                for m in msgs.get("messages", [])
+                if m.get("role") in ("user", "assistant", "tool")
+            ]
+            compiled_system_prompt = system_prompt
+        except Exception:
+            pass  # fresh session; ignore
 
     # ── 3. Resolve MCP server for this capability ───────────────────────
     if not req.run_context.capability_id:
@@ -278,7 +430,7 @@ async def execute(req: ExecuteRequest):
                 "agent_uid": req.run_context.agent_template_id or "default-agent",
                 "query": req.task,
                 "risk_max": "high",
-                "limit": 12,
+                "limit": 8,
             },
             timeout=10.0,
         )
@@ -302,13 +454,18 @@ async def execute(req: ExecuteRequest):
 
     invoke_payload: dict[str, Any] = {
         "history": history,
-        "message": user_message,
+        "message": mcp_message,
         "tools": tools_for_mcp,
         "modelConfig": _strip_nones({
             "provider": req.model_overrides.get("provider"),
             "model": req.model_overrides.get("model"),
             "temperature": req.model_overrides.get("temperature"),
-            "maxTokens": req.model_overrides.get("maxOutputTokens"),
+            "maxTokens": (
+                req.model_overrides.get("maxOutputTokens")
+                or req.model_overrides.get("max_output_tokens")
+                or req.limits.get("outputTokenBudget")
+                or req.limits.get("output_token_budget")
+            ),
         }),
         "runContext": _strip_nones({
             "sessionId": session_id,
@@ -318,13 +475,14 @@ async def execute(req: ExecuteRequest):
             "runStepId": req.run_context.workflow_node_id,
             "traceId": trace_id,
         }),
-        "limits": {
-            "maxSteps": req.limits.get("maxSteps", 12),
-            "timeoutSec": req.limits.get("timeoutSec", 240),
-        },
+        "limits": _strip_nones({
+            "maxSteps": req.limits.get("maxSteps") or req.limits.get("max_steps") or 3,
+            "timeoutSec": req.limits.get("timeoutSec") or req.limits.get("timeout_sec") or 240,
+            "maxToolResultChars": req.limits.get("maxToolResultChars") or req.limits.get("max_tool_result_chars"),
+        }),
     }
-    if system_prompt is not None:
-        invoke_payload["systemPrompt"] = system_prompt
+    if compiled_system_prompt is not None:
+        invoke_payload["systemPrompt"] = compiled_system_prompt
     # Start the live subscriber BEFORE invoking, so events are persisted
     # as they happen (M9.y). The post-invoke HTTP drain (step 7) acts as a
     # safety net for anything the WS missed (race at the tail end).
@@ -455,10 +613,21 @@ async def execute(req: ExecuteRequest):
             "input_tokens": tokens_used.get("input"),
             "output_tokens": tokens_used.get("output"),
             "total_tokens": tokens_used.get("total"),
+            "estimated_cost": tokens_used.get("estimatedCost") or tokens_used.get("estimated_cost"),
+            "provider": _str_value(req.model_overrides, "provider", default="mock"),
+            "model": _str_value(req.model_overrides, "model", default="mock-fast"),
+            "tokens_saved": optimization_metrics.get("tokens_saved") or optimization_metrics.get("tokensSaved"),
             "mcp_latency_ms": mcp_latency_ms,
             "agent_run_id": req.run_context.agent_run_id,
             "workflow_instance_id": req.run_context.workflow_instance_id,
         },
+    )
+    usage = _usage_metadata(
+        tokens_used=tokens_used,
+        model_overrides=req.model_overrides,
+        prompt_assembly_id=prompt_assembly_id,
+        cf_call_id=cf_call_id,
+        optimization_metrics=optimization_metrics,
     )
 
     return {
@@ -477,12 +646,22 @@ async def execute(req: ExecuteRequest):
             "codeChangeIds": correlation.get("codeChangeIds") or [],
         },
         "tokensUsed": tokens_used,
+        "usage": usage,
+        "modelUsage": {
+            "provider": usage["provider"],
+            "model": usage["model"],
+            "inputTokens": usage["inputTokens"],
+            "outputTokens": usage["outputTokens"],
+            "totalTokens": usage["totalTokens"],
+            "estimatedCost": usage["estimatedCost"],
+        },
         "finishReason": finish_reason,
         "stepsTaken": steps_taken,
         "metrics": {
             "mcpLatencyMs": mcp_latency_ms,
             "eventsPersistedLive": live_persisted,
             "eventsPersistedFinalDrain": drained,
+            "contextOptimization": optimization_metrics,
         },
         "warnings": composer_warnings,
         # M9.z — present when status == WAITING_APPROVAL
@@ -794,6 +973,13 @@ async def execute_resume(req: ResumeRequest):
         "pending_tool_name": (new_pending or {}).get("tool_name"),
         "pending_tool_args": (new_pending or {}).get("tool_args"),
     })
+    usage = _usage_metadata(
+        tokens_used=tokens_used,
+        model_overrides={},
+        prompt_assembly_id=rec.get("prompt_assembly_id"),
+        cf_call_id=rec["id"],
+        optimization_metrics={},
+    )
 
     return {
         "status": new_status,
@@ -812,6 +998,15 @@ async def execute_resume(req: ResumeRequest):
             "codeChangeIds": correlation.get("codeChangeIds") or [],
         },
         "tokensUsed": tokens_used,
+        "usage": usage,
+        "modelUsage": {
+            "provider": usage["provider"],
+            "model": usage["model"],
+            "inputTokens": usage["inputTokens"],
+            "outputTokens": usage["outputTokens"],
+            "totalTokens": usage["totalTokens"],
+            "estimatedCost": usage["estimatedCost"],
+        },
         "finishReason": finish_reason,
         "stepsTaken": steps_taken,
         "metrics": {

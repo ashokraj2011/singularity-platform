@@ -52,6 +52,49 @@ interface InsightsResponse {
   costByModel: Array<{ provider: string; model: string; calls: number; total_tokens: number; cost_usd: number }>
   events: InsightEvent[]
 }
+interface BudgetEvent {
+  id: string
+  eventType: string
+  nodeId: string | null
+  agentRunId: string | null
+  cfCallId: string | null
+  promptAssemblyId: string | null
+  inputTokensDelta: number
+  outputTokensDelta: number
+  totalTokensDelta: number
+  estimatedCostDelta: number | null
+  pricingStatus: string
+  createdAt: string
+}
+interface BudgetResponse {
+  id: string
+  status: string
+  pricingStatus: string
+  maxInputTokens: number | null
+  maxOutputTokens: number | null
+  maxTotalTokens: number | null
+  maxEstimatedCost: number | null
+  consumedInputTokens: number
+  consumedOutputTokens: number
+  consumedTotalTokens: number
+  consumedEstimatedCost: number
+  warnAtPercent: number
+  enforcementMode: string
+  remaining: {
+    inputTokens: number | null
+    outputTokens: number | null
+    totalTokens: number | null
+    estimatedCost: number | null
+  }
+  percentUsed: {
+    inputTokens: number | null
+    outputTokens: number | null
+    totalTokens: number | null
+    estimatedCost: number | null
+  }
+  warnings: string[]
+  events: BudgetEvent[]
+}
 
 function fmtDuration(ms: number | null | undefined): string {
   if (ms == null) return '—'
@@ -90,6 +133,12 @@ export function RunInsightsPage() {
     queryKey: ['insights', id],
     enabled:  Boolean(id),
     queryFn:  async () => (await api.get(`/workflow-instances/${id}/insights`)).data as InsightsResponse,
+    refetchInterval: 5000,
+  })
+  const { data: budget } = useQuery({
+    queryKey: ['workflow-budget', id],
+    enabled: Boolean(id),
+    queryFn: async () => (await api.get(`/workflow-instances/${id}/budget`)).data as BudgetResponse,
     refetchInterval: 5000,
   })
 
@@ -148,10 +197,65 @@ export function RunInsightsPage() {
         <Tile icon={Activity}      label="Steps"           value={`${data.totals.nodes}`} sub={`${data.totals.nodesByStatus.COMPLETED ?? 0} done · ${data.totals.nodesByStatus.FAILED ?? 0} failed`} />
         <Tile icon={GitBranch}     label="LLM calls"       value={`${data.totals.llm_calls}`} sub={`${data.totals.total_tokens.toLocaleString()} tokens`} />
         <Tile icon={Coins}         label="Total cost"      value={`$${data.totals.total_cost_usd.toFixed(4)}`} />
+        {budget && (
+          <Tile
+            icon={Coins}
+            label="Run budget"
+            value={budget.percentUsed.totalTokens == null ? 'Active' : `${budget.percentUsed.totalTokens.toFixed(1)}%`}
+            sub={`${budget.consumedTotalTokens.toLocaleString()} / ${budget.maxTotalTokens?.toLocaleString() ?? '∞'} tokens`}
+            highlight={budget.status === 'EXHAUSTED' || budget.status === 'EXCEEDED' ? 'red' : budget.status === 'WARNED' || budget.pricingStatus === 'UNPRICED' ? 'amber' : undefined}
+          />
+        )}
         <Tile icon={FileText}      label="Documents"       value={`${data.totals.documentsCount}`} />
         <Tile icon={Box}           label="Consumables"     value={`${data.totals.consumablesCount}`} />
         <Tile icon={ShieldCheck}   label="Denials"         value={`${data.totals.governance_denied}`} highlight={data.totals.governance_denied > 0 ? 'red' : undefined} />
       </div>
+
+      {budget && (
+        <Section title="Workflow run budget">
+          {budget.warnings.length > 0 && (
+            <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
+              {budget.warnings.map(w => (
+                <div key={w} style={{ fontSize: 11, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '6px 8px' }}>
+                  {w}
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginBottom: 12 }}>
+            <BudgetBar label="Input tokens" used={budget.consumedInputTokens} max={budget.maxInputTokens} pct={budget.percentUsed.inputTokens} />
+            <BudgetBar label="Output tokens" used={budget.consumedOutputTokens} max={budget.maxOutputTokens} pct={budget.percentUsed.outputTokens} />
+            <BudgetBar label="Total tokens" used={budget.consumedTotalTokens} max={budget.maxTotalTokens} pct={budget.percentUsed.totalTokens} />
+            <BudgetBar label="Estimated cost" used={budget.consumedEstimatedCost} max={budget.maxEstimatedCost} pct={budget.percentUsed.estimatedCost} money />
+          </div>
+          <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: '#64748b' }}>
+                <th style={th()}>Event</th>
+                <th style={th()}>Node</th>
+                <th style={th(true)}>Input</th>
+                <th style={th(true)}>Output</th>
+                <th style={th(true)}>Total</th>
+                <th style={th(true)}>Cost</th>
+                <th style={th()}>When</th>
+              </tr>
+            </thead>
+            <tbody>
+              {budget.events.slice(0, 30).map(e => (
+                <tr key={e.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                  <td style={td()}><code>{e.eventType}</code>{e.pricingStatus === 'UNPRICED' ? <span style={{ color: '#b45309', marginLeft: 6 }}>unpriced</span> : null}</td>
+                  <td style={td()}>{e.nodeId ?? '—'}</td>
+                  <td style={td(true)}>{e.inputTokensDelta ? e.inputTokensDelta.toLocaleString() : '—'}</td>
+                  <td style={td(true)}>{e.outputTokensDelta ? e.outputTokensDelta.toLocaleString() : '—'}</td>
+                  <td style={td(true)}>{e.totalTokensDelta ? e.totalTokensDelta.toLocaleString() : '—'}</td>
+                  <td style={td(true)}>{e.estimatedCostDelta == null ? '—' : `$${e.estimatedCostDelta.toFixed(4)}`}</td>
+                  <td style={td()}>{new Date(e.createdAt).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+      )}
 
       {/* Gantt per step */}
       <Section title={`Steps (${data.nodes.length})`}>
@@ -362,6 +466,34 @@ function Tile({
       </div>
       <div style={{ fontSize: 18, fontWeight: 800, color: colours.fg }}>{value}</div>
       {sub && <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>{sub}</div>}
+    </div>
+  )
+}
+
+function BudgetBar({
+  label, used, max, pct, money,
+}: { label: string; used: number; max: number | null; pct: number | null; money?: boolean }) {
+  const width = pct == null ? 0 : Math.max(1, Math.min(100, pct))
+  const danger = pct != null && pct >= 100
+  const warn = pct != null && pct >= 80
+  const fmt = (n: number | null) => {
+    if (n == null) return '∞'
+    if (money) return `$${n.toFixed(4)}`
+    return n.toLocaleString()
+  }
+  return (
+    <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, background: '#f8fafc' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 10, color: '#64748b', marginBottom: 6 }}>
+        <strong style={{ color: '#334155' }}>{label}</strong>
+        <span>{fmt(used)} / {fmt(max)}</span>
+      </div>
+      <div style={{ height: 7, borderRadius: 999, background: '#e2e8f0', overflow: 'hidden' }}>
+        <div style={{
+          width: `${width}%`, height: '100%',
+          background: danger ? '#dc2626' : warn ? '#f59e0b' : '#16a34a',
+        }} />
+      </div>
+      <div style={{ fontSize: 9, color: '#94a3b8', marginTop: 4 }}>{pct == null ? 'No limit' : `${pct.toFixed(1)}% used`}</div>
     </div>
   )
 }

@@ -14,6 +14,7 @@ enum NodeType {
   END
   HUMAN_TASK
   AGENT_TASK
+  WORKBENCH_TASK
   APPROVAL
   DECISION_GATE
   CONSUMABLE_CREATION
@@ -178,6 +179,31 @@ enum BlueprintStageStatus {
   FAILED
 }
 
+enum WorkflowBudgetEnforcementMode {
+  PAUSE_FOR_APPROVAL
+  FAIL_HARD
+  WARN_ONLY
+}
+
+enum WorkflowRunBudgetStatus {
+  ACTIVE
+  WARNED
+  PAUSED
+  EXCEEDED
+  EXHAUSTED
+}
+
+enum WorkflowRunBudgetEventType {
+  SNAPSHOT_CREATED
+  PRECHECK_CLAMPED
+  PRECHECK_BLOCKED
+  USAGE_RECORDED
+  WARN_THRESHOLD
+  BUDGET_EXCEEDED
+  EXTRA_APPROVED
+  UNPRICED_USAGE
+}
+
 // ─── IDENTITY ─────────────────────────────────────────────────────────────────
 
 model User {
@@ -205,6 +231,9 @@ model Team {
   id           String          @id @default(uuid())
   name         String
   description  String?
+  externalIamTeamId String?    @unique
+  externalTeamKey String?
+  source       String          @default("LOCAL")
   departmentId String?
   department   Department?     @relation(fields: [departmentId], references: [id])
   members      TeamMember[]
@@ -215,6 +244,8 @@ model Team {
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
 
+  @@index([externalTeamKey])
+  @@index([source])
   @@map("teams")
 }
 
@@ -460,6 +491,8 @@ model Workflow {
   // Workflow-scoped variables: [{key, label, type, defaultValue, description, scope}]
   // scope: 'INPUT' (provided when starting a run) | 'CONSTANT' (workflow-baked default)
   variables      Json                  @default("[]")
+  // Template-level token/cost budget policy cloned into each WorkflowInstance.
+  budgetPolicy   Json?
   // Editable design graph — runs clone these into WorkflowInstance.nodes / edges / phases.
   designPhases   WorkflowDesignPhase[]
   designNodes    WorkflowDesignNode[]
@@ -651,6 +684,7 @@ model WorkflowInstance {
   toolRuns          ToolRun[]
   pendingExecutions PendingExecution[]
   documents         Document[]
+  budget            WorkflowRunBudget?
   startedAt         DateTime?
   completedAt       DateTime?
   archivedAt        DateTime?
@@ -660,6 +694,61 @@ model WorkflowInstance {
 
   @@index([templateId])
   @@map("workflow_instances")
+}
+
+model WorkflowRunBudget {
+  id                    String                         @id @default(uuid())
+  instanceId            String                         @unique
+  templateId            String?
+  policy                Json                           @default("{}")
+  maxInputTokens        Int?
+  maxOutputTokens       Int?
+  maxTotalTokens        Int?
+  maxEstimatedCost      Float?
+  warnAtPercent         Int                            @default(80)
+  enforcementMode       WorkflowBudgetEnforcementMode  @default(PAUSE_FOR_APPROVAL)
+  consumedInputTokens   Int                            @default(0)
+  consumedOutputTokens  Int                            @default(0)
+  consumedTotalTokens   Int                            @default(0)
+  consumedEstimatedCost Float                          @default(0)
+  pricingStatus         String                         @default("PRICED")
+  status                WorkflowRunBudgetStatus        @default(ACTIVE)
+  warningEmittedAt      DateTime?
+  exceededAt            DateTime?
+  pausedAt              DateTime?
+  instance              WorkflowInstance               @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  events                WorkflowRunBudgetEvent[]
+  createdAt             DateTime                       @default(now())
+  updatedAt             DateTime                       @updatedAt
+
+  @@index([templateId])
+  @@index([status])
+  @@map("workflow_run_budgets")
+}
+
+model WorkflowRunBudgetEvent {
+  id                 String                     @id @default(uuid())
+  budgetId           String
+  instanceId         String
+  nodeId             String?
+  agentRunId         String?
+  cfCallId           String?
+  promptAssemblyId   String?
+  eventType          WorkflowRunBudgetEventType
+  inputTokensDelta   Int                        @default(0)
+  outputTokensDelta  Int                        @default(0)
+  totalTokensDelta   Int                        @default(0)
+  estimatedCostDelta Float?
+  pricingStatus      String                     @default("PRICED")
+  metadata           Json?
+  budget             WorkflowRunBudget          @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  createdAt          DateTime                   @default(now())
+
+  @@index([instanceId, createdAt])
+  @@index([nodeId])
+  @@index([agentRunId])
+  @@index([cfCallId])
+  @@map("workflow_run_budget_events")
 }
 
 model WorkflowPhase {

@@ -6,6 +6,7 @@ import {
   GitBranch, ExternalLink, Plus, MoreHorizontal, Trash2,
   Archive, ArchiveRestore, Download, FileCode, Layers,
   Tag, ChevronDown, X, Upload, Play, PenLine, GitFork,
+  Bot, Braces, UserCheck,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useActiveContextStore } from '../../store/activeContext.store'
@@ -48,6 +49,8 @@ type TemplateVariableDef = {
   scope?: 'INPUT' | 'CONSTANT'
 }
 
+type WorkflowStarter = 'EMPTY' | 'CAPABILITY_WORKBENCH_BRIDGE'
+
 type WorkflowTemplate = {
   id: string
   name: string
@@ -86,6 +89,29 @@ const STATUS_COLOR: Record<string, string> = {
   CANCELLED: '#dc2626',
   FAILED:    '#ba1a1a',
 }
+
+const STARTER_OPTIONS: Array<{
+  value: WorkflowStarter
+  title: string
+  description: string
+  Icon: typeof GitBranch
+  accent: string
+}> = [
+  {
+    value: 'EMPTY',
+    title: 'Empty canvas',
+    description: 'Start with a blank workflow and add nodes manually.',
+    Icon: GitBranch,
+    accent: '#64748b',
+  },
+  {
+    value: 'CAPABILITY_WORKBENCH_BRIDGE',
+    title: 'Agent → Workbench → Human approval',
+    description: 'Creates a capability-scoped flow where an agent prepares context, the Workbench produces approved artifacts, and a human signs off.',
+    Icon: Braces,
+    accent: '#7c3aed',
+  },
+]
 
 // ─── Shared form primitives ──────────────────────────────────────────────────
 
@@ -322,6 +348,8 @@ export function WorkflowsListPage() {
   const [createName, setCreateName] = useState('')
   const activeContext = useActiveContextStore(s => s.active)
   const [createCapabilityId, setCreateCapabilityId] = useState<string>(activeContext?.capabilityId ?? '')
+  const [createTeamId, setCreateTeamId] = useState<string>(activeContext?.teamId ?? '')
+  const [createStarter, setCreateStarter] = useState<WorkflowStarter>('EMPTY')
   const [createDesc, setCreateDesc] = useState('')
   const [createMeta, setCreateMeta] = useState<TemplateMetadata>(emptyMeta())
   const [createStep, setCreateStep] = useState<'identity' | 'config' | 'tags'>('identity')
@@ -410,8 +438,8 @@ export function WorkflowsListPage() {
   })
 
   const createWorkflowMut = useMutation({
-    mutationFn: ({ name, description, metadata, capabilityId }: { name: string; description: string; metadata: TemplateMetadata; capabilityId?: string }) =>
-      api.post('/workflow-templates', { name, description, metadata, capabilityId }).then(r => r.data as { id: string; designInstanceId?: string }),
+    mutationFn: ({ name, description, metadata, capabilityId, teamId, starter }: { name: string; description: string; metadata: TemplateMetadata; capabilityId?: string; teamId?: string; starter: WorkflowStarter }) =>
+      api.post('/workflow-templates', { name, description, metadata, capabilityId, teamId, starter }).then(r => r.data as { id: string; designInstanceId?: string }),
     onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ['workflow-templates'] })
       setCreateOpen(false)
@@ -419,6 +447,8 @@ export function WorkflowsListPage() {
       setCreateDesc('')
       setCreateMeta(emptyMeta())
       setCreateCapabilityId('')
+      setCreateTeamId('')
+      setCreateStarter('EMPTY')
       setCreateStep('identity')
       setTab('templates')
       // Drop the user straight into the studio, on the freshly-created design.
@@ -458,6 +488,8 @@ export function WorkflowsListPage() {
     if (inst.templateId) runCountByTemplate[inst.templateId] = (runCountByTemplate[inst.templateId] ?? 0) + 1
   }
   const templates: WorkflowTemplate[] = Array.isArray(templatesData) ? templatesData : (templatesData?.content ?? [])
+  const starterRequiresCapability = createStarter === 'CAPABILITY_WORKBENCH_BRIDGE' && !createCapabilityId
+  const canAdvanceCreateIdentity = createName.trim().length > 0 && !starterRequiresCapability
 
   // ?run=:workflowId — open the Run modal automatically (deep-link from the
   // design studio's "Start Run" button).
@@ -1041,12 +1073,76 @@ export function WorkflowsListPage() {
                       Leave empty to fall back to team-based permissions.
                     </p>
                   </Field>
+                  <Field label="Starter pattern">
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                      {STARTER_OPTIONS.map(option => {
+                        const selected = createStarter === option.value
+                        const Icon = option.Icon
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => setCreateStarter(option.value)}
+                            style={{
+                              textAlign: 'left',
+                              padding: 12,
+                              borderRadius: 12,
+                              border: selected ? `1.5px solid ${option.accent}` : '1px solid #e2e8f0',
+                              background: selected ? `${option.accent}10` : '#fff',
+                              color: '#0f172a',
+                              cursor: 'pointer',
+                              boxShadow: selected ? `0 10px 24px ${option.accent}16` : 'none',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 7 }}>
+                              <span style={{
+                                width: 26, height: 26, borderRadius: 8,
+                                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                background: `${option.accent}16`, color: option.accent,
+                              }}>
+                                <Icon size={14} />
+                              </span>
+                              <span style={{ fontSize: 12, fontWeight: 800 }}>{option.title}</span>
+                            </div>
+                            <p style={{ margin: 0, fontSize: 11, lineHeight: 1.45, color: '#64748b' }}>
+                              {option.description}
+                            </p>
+                          </button>
+                        )
+                      })}
+                    </div>
+                    {createStarter === 'CAPABILITY_WORKBENCH_BRIDGE' && (
+                      <div style={{
+                        marginTop: 8,
+                        padding: '9px 11px',
+                        borderRadius: 10,
+                        border: starterRequiresCapability ? '1px solid #fecaca' : '1px solid #ddd6fe',
+                        background: starterRequiresCapability ? '#fef2f2' : '#f5f3ff',
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, fontWeight: 800, color: '#6d28d9' }}>
+                            <Bot size={11} /> Agent context
+                          </span>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, fontWeight: 800, color: '#7c3aed' }}>
+                            <Braces size={11} /> Workbench artifacts
+                          </span>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, fontWeight: 800, color: '#6d28d9' }}>
+                            <UserCheck size={11} /> Human sign-off
+                          </span>
+                        </div>
+                        <p style={{ margin: 0, fontSize: 11, lineHeight: 1.45, color: starterRequiresCapability ? '#b91c1c' : '#5b21b6' }}>
+                          {starterRequiresCapability
+                            ? 'Select a capability so the Workbench can bind derived agents and save its final pack against the correct boundary.'
+                            : 'This creates Start → Agent Task → Workbench Task → Human Approval → Done. You can edit phases, agents, gates, and artifacts in the designer.'}
+                        </p>
+                      </div>
+                    )}
+                  </Field>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                    <Field label="Team (secondary tag)">
+                    <Field label="Owning team">
                       <TeamPicker
-                        value={createMeta.teamName ?? ''}
-                        onChange={v => setCreateMeta(m => ({ ...m, teamName: v || undefined }))}
-                        emit="name"
+                        value={createTeamId}
+                        onChange={setCreateTeamId}
                         placeholder="Select a team…"
                       />
                     </Field>
@@ -1214,23 +1310,23 @@ export function WorkflowsListPage() {
                 </button>
                 {createStep !== 'tags' ? (
                   <button onClick={() => setCreateStep(createStep === 'identity' ? 'config' : 'tags')}
-                    disabled={createStep === 'identity' && !createName.trim()}
+                    disabled={createStep === 'identity' && !canAdvanceCreateIdentity}
                     style={{
                       padding: '8px 18px', borderRadius: 8, border: 'none', background: '#00843D',
-                      color: '#fff', fontSize: 12, fontWeight: 700, cursor: createStep === 'identity' && !createName.trim() ? 'not-allowed' : 'pointer',
-                      opacity: createStep === 'identity' && !createName.trim() ? 0.5 : 1,
+                      color: '#fff', fontSize: 12, fontWeight: 700, cursor: createStep === 'identity' && !canAdvanceCreateIdentity ? 'not-allowed' : 'pointer',
+                      opacity: createStep === 'identity' && !canAdvanceCreateIdentity ? 0.5 : 1,
                     }}>
                     Next →
                   </button>
                 ) : (
                   <button
-                    onClick={() => createWorkflowMut.mutate({ name: createName.trim(), description: createDesc, metadata: createMeta, capabilityId: createCapabilityId || undefined })}
-                    disabled={createWorkflowMut.isPending || !createName.trim()}
+                    onClick={() => createWorkflowMut.mutate({ name: createName.trim(), description: createDesc, metadata: createMeta, capabilityId: createCapabilityId || undefined, teamId: createTeamId || undefined, starter: createStarter })}
+                    disabled={createWorkflowMut.isPending || !createName.trim() || starterRequiresCapability}
                     style={{
                       padding: '8px 18px', borderRadius: 8, border: 'none', background: '#00843D',
                       color: '#fff', fontSize: 12, fontWeight: 700,
-                      cursor: createWorkflowMut.isPending ? 'not-allowed' : 'pointer',
-                      opacity: createWorkflowMut.isPending ? 0.7 : 1,
+                      cursor: createWorkflowMut.isPending || starterRequiresCapability ? 'not-allowed' : 'pointer',
+                      opacity: createWorkflowMut.isPending || starterRequiresCapability ? 0.7 : 1,
                     }}>
                     {createWorkflowMut.isPending ? 'Creating…' : 'Create Workflow'}
                   </button>

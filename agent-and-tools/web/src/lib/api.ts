@@ -171,6 +171,26 @@ async function reqEnv<T>(url: string, opts?: RequestInit): Promise<T> {
 
 type Row = Record<string, unknown>;
 
+export type IamTeam = { id: string; team_key?: string; name: string; bu_id?: string | null };
+export type IamBusinessUnit = { id: string; bu_key?: string; name: string };
+
+function unwrapList<T>(data: unknown, key?: string): T[] {
+  if (Array.isArray(data)) return data as T[];
+  if (data && typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    if (key && Array.isArray(obj[key])) return obj[key] as T[];
+    if (Array.isArray(obj.items)) return obj.items as T[];
+    if (Array.isArray(obj.data)) return obj.data as T[];
+    if (Array.isArray(obj.content)) return obj.content as T[];
+  }
+  return [];
+}
+
+export const identityApi = {
+  listTeams: async () => unwrapList<IamTeam>(await req<unknown>("/api/iam/teams?page=1&size=200"), "items"),
+  listBusinessUnits: async () => unwrapList<IamBusinessUnit>(await req<unknown>("/api/iam/business-units?page=1&size=200"), "items"),
+};
+
 export const runtimeApi = {
   // Agent templates
   listTemplates: (params?: Record<string, string>) => {
@@ -215,6 +235,8 @@ export const runtimeApi = {
   },
   createLayer: (body: Row) =>
     reqEnv<Row>(`${COMPOSER_BASE}/prompt-layers`, { method: "POST", body: JSON.stringify(body) }),
+  updateLayer: (id: string, body: Row) =>
+    reqEnv<Row>(`${COMPOSER_BASE}/prompt-layers/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
 
   assemble: (body: Row) =>
     reqEnv<Row>(`${COMPOSER_BASE}/prompt-assemblies`, { method: "POST", body: JSON.stringify(body) }),
@@ -247,6 +269,20 @@ export const runtimeApi = {
   getCapability: (id: string) => reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${id}`),
   createCapability: (body: Row) =>
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities`, { method: "POST", body: JSON.stringify(body) }),
+  updateCapability: (id: string, body: Row) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  archiveCapability: (id: string) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${id}/archive`, { method: "POST" }),
+  bootstrapCapability: (body: Row) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/bootstrap`, { method: "POST", body: JSON.stringify(body) }),
+  getBootstrapRun: (capabilityId: string, runId: string) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/bootstrap-runs/${runId}`),
+  reviewBootstrapRun: (capabilityId: string, runId: string, body: Row) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/bootstrap-runs/${runId}/review`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  syncCapability: (capabilityId: string, body: Row) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/sync`, { method: "POST", body: JSON.stringify(body) }),
   attachRepo: (id: string, body: Row) =>
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${id}/repositories`, { method: "POST", body: JSON.stringify(body) }),
   bindAgent: (id: string, body: Row) =>

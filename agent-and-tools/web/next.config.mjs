@@ -14,6 +14,10 @@ const nextConfig = {
         destination: `${process.env.AGENT_RUNTIME_URL ?? "http://localhost:3003"}/api/v1/:path*`,
       },
       {
+        source: "/api/iam/:path*",
+        destination: `${process.env.IAM_BASE_URL ?? "http://host.docker.internal:8100/api/v1"}/:path*`,
+      },
+      {
         source: "/api/agents/:path*",
         destination: `${process.env.AGENT_SERVICE_URL ?? "http://localhost:3001"}/api/v1/:path*`,
       },

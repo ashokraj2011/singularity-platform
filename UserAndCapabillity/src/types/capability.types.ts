@@ -38,6 +38,7 @@ export interface Capability {
   owner_bu_id?: string
   owner_team_id?: string
   metadata: Record<string, unknown>
+  tags?: string[]
   created_by?: string
   created_at: string
   updated_at: string
@@ -76,6 +77,7 @@ export interface CreateCapabilityRequest {
   owner_bu_key?: string
   owner_team_key?: string
   metadata?: Record<string, unknown>
+  tags?: string[]
 }
 
 export interface CreateCapabilityRelationshipRequest {

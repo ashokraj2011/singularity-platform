@@ -70,6 +70,7 @@ const InvokeSchema = z.object({
   limits: z.object({
     maxSteps: z.number().int().positive().optional(),
     timeoutSec: z.number().int().positive().optional(),
+    maxToolResultChars: z.number().int().positive().optional(),
   }).default({}),
 });
 
@@ -97,6 +98,7 @@ interface LoopState {
   correlation: CorrelationIds;
   stepIndex: number;
   maxSteps: number;
+  maxToolResultChars?: number;
   llmCallIds: string[];
   toolInvocationIds: string[];
   artifactIds: string[];
@@ -127,8 +129,9 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
   while (state.stepIndex < state.maxSteps) {
     // M22 — pre-flight governance checks. Audit-gov is fail-open; only an
     // explicit `allowed:false` blocks. Both checks run in parallel.
+    const estimatedTokens = estimateLoopInputTokens(state);
     const [budgetRes, rateRes] = await Promise.all([
-      checkBudget(state.correlation.capabilityId, undefined),
+      checkBudget(state.correlation.capabilityId, undefined, estimatedTokens),
       checkRateLimit(state.correlation.capabilityId, undefined),
     ]);
     if (!budgetRes.allowed) {
@@ -256,6 +259,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
             correlation: state.correlation,
             step_index: state.stepIndex,
             max_steps: state.maxSteps,
+            max_tool_result_chars: state.maxToolResultChars,
             llm_call_ids: state.llmCallIds,
             tool_invocation_ids: state.toolInvocationIds,
             artifact_ids: state.artifactIds,
@@ -326,7 +330,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
         state.messages.push({
           role: "tool",
-          content: JSON.stringify(result.record.output),
+          content: trimToolResult(JSON.stringify(result.record.output), state.maxToolResultChars),
           tool_call_id: tc.id,
           tool_name: tc.name,
         });
@@ -501,6 +505,7 @@ invokeRouter.post("/invoke", async (req, res) => {
     correlation,
     stepIndex: 0,
     maxSteps: body.limits.maxSteps ?? config.MAX_AGENT_STEPS,
+    maxToolResultChars: body.limits.maxToolResultChars,
     llmCallIds: [],
     toolInvocationIds: [],
     artifactIds: [],
@@ -538,6 +543,7 @@ invokeRouter.post("/resume", async (req, res) => {
     correlation: env.correlation,
     stepIndex: env.step_index,
     maxSteps: env.max_steps,
+    maxToolResultChars: env.max_tool_result_chars,
     llmCallIds: env.llm_call_ids,
     toolInvocationIds: env.tool_invocation_ids,
     artifactIds: env.artifact_ids,
@@ -565,10 +571,10 @@ invokeRouter.post("/resume", async (req, res) => {
     // Append a tool_result that records the rejection so the LLM gets to react.
     state.messages.push({
       role: "tool",
-      content: JSON.stringify({
+      content: trimToolResult(JSON.stringify({
         status: "approval_rejected",
         reason: body.reason ?? "operator rejected the request",
-      }),
+      }), state.maxToolResultChars),
       tool_call_id: tc.id,
       tool_name: tc.name,
     });
@@ -588,7 +594,7 @@ invokeRouter.post("/resume", async (req, res) => {
     if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
     state.messages.push({
       role: "tool",
-      content: JSON.stringify(result.record.output),
+      content: trimToolResult(JSON.stringify(result.record.output), state.maxToolResultChars),
       tool_call_id: tc.id,
       tool_name: tc.name,
     });
@@ -602,6 +608,24 @@ invokeRouter.post("/resume", async (req, res) => {
     requestId: res.locals.requestId,
   });
 });
+
+function estimateTextTokens(value: string): number {
+  return Math.ceil(value.length / 4);
+}
+
+function estimateLoopInputTokens(state: LoopState): number {
+  const messageTokens = state.messages.reduce((sum, msg) => sum + estimateTextTokens(msg.content), 0);
+  const toolTokens = state.availableTools.reduce(
+    (sum, tool) => sum + estimateTextTokens(`${tool.name}\n${tool.description}\n${JSON.stringify(tool.input_schema ?? {})}`),
+    0,
+  );
+  return messageTokens + toolTokens + (state.modelConfig.maxTokens ?? 0);
+}
+
+function trimToolResult(content: string, maxChars?: number): string {
+  if (!maxChars || content.length <= maxChars) return content;
+  return `${content.slice(0, Math.max(0, maxChars - 80))}\n...[tool result trimmed to ${maxChars} chars]`;
+}
 
 // ── GET /mcp/pending — operator visibility ───────────────────────────────
 

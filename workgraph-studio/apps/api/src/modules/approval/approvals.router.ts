@@ -6,6 +6,8 @@ import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 import { advance } from '../workflow/runtime/WorkflowRuntime'
+import { approveBudgetIncreaseFromApproval } from '../workflow/runtime/budget'
+import { activateAgentTask } from '../workflow/runtime/executors/AgentTaskExecutor'
 
 export const approvalsRouter: Router = Router()
 
@@ -137,6 +139,24 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
       conditions,
     }, eventId)
     await publishOutbox('ApprovalRequest', id, 'ApprovalDecided', { requestId: id, decision })
+
+    if (
+      approvalRequest.subjectType === 'WorkflowRunBudget' &&
+      (decision === 'APPROVED' || decision === 'APPROVED_WITH_CONDITIONS')
+    ) {
+      const handled = await approveBudgetIncreaseFromApproval(id, userId)
+      if (handled && approvalRequest.instanceId && approvalRequest.nodeId) {
+        const [node, instance] = await Promise.all([
+          prisma.workflowNode.findUnique({ where: { id: approvalRequest.nodeId } }),
+          prisma.workflowInstance.findUnique({ where: { id: approvalRequest.instanceId } }),
+        ])
+        if (node?.nodeType === 'AGENT_TASK' && instance) {
+          await activateAgentTask(node, instance)
+        }
+      }
+      res.status(201).json(approvalDecision)
+      return
+    }
 
     // Handle escalation — create new request for supervisor
     if (decision === 'ESCALATED' && escalateToId) {

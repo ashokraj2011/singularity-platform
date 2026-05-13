@@ -11,6 +11,7 @@ export interface User {
   is_super_admin: boolean
   is_local_account: boolean
   metadata: Record<string, unknown>
+  tags?: string[]
   created_at: string
   updated_at: string
 }
@@ -21,6 +22,7 @@ export interface CreateUserRequest {
   auth_provider?: AuthProvider
   external_subject?: string
   metadata?: Record<string, unknown>
+  tags?: string[]
 }
 
 export interface UpdateUserRequest {

@@ -48,12 +48,17 @@ function pickScope(capabilityId?: string, tenantId?: string): { scope_type: stri
 export async function checkBudget(
   capabilityId?: string,
   tenantId?: string,
+  tokensEstimated?: number,
 ): Promise<CheckResult> {
   const scope = pickScope(capabilityId, tenantId);
   if (!scope) return { allowed: true };
   const data = await getJson<{ allowed: boolean; reason?: string; budgets?: Array<{ period: string; remaining_tokens: number; remaining_cost: number }> }>(
     "/api/v1/governance/budgets/check",
-    { scope_type: scope.scope_type, scope_id: scope.scope_id },
+    {
+      scope_type: scope.scope_type,
+      scope_id: scope.scope_id,
+      tokens_estimated: tokensEstimated ? String(Math.max(0, Math.floor(tokensEstimated))) : undefined,
+    },
   );
   // Fail-open if audit-gov is unreachable.
   if (data == null) return { allowed: true };

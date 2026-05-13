@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, GitBranch, Users } from 'lucide-react'
+import { ArrowLeft, ExternalLink, GitBranch, ShieldCheck, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -14,6 +14,7 @@ import type { RelationshipType, InheritancePolicy } from '@/types'
 
 const REL_TYPES: RelationshipType[] = ['contains','parent_child','uses','depends_on','shared_with','delivers_to','collects_from','governed_by']
 const INH_POLICIES: InheritancePolicy[] = ['none','inherit_view','inherit_execute','inherit_admin','explicit_grant_only']
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export function CapabilityDetailPage() {
   const { capabilityId } = useParams<{ capabilityId: string }>()
@@ -34,6 +35,9 @@ export function CapabilityDetailPage() {
 
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading…</div>
   if (!cap) return <div className="p-8 text-sm text-gray-500">Capability not found.</div>
+  const agentToolsCapabilityHref = UUID_RE.test(cap.capability_id)
+    ? `http://localhost:3000/capabilities/${cap.capability_id}`
+    : 'http://localhost:3000/capabilities'
 
   async function handleAddRel() {
     if (!relTarget.trim()) return
@@ -65,6 +69,24 @@ export function CapabilityDetailPage() {
           <p className="font-mono text-sm text-gray-400 mt-0.5">{cap.capability_id}</p>
           {cap.description && <p className="text-sm text-gray-500 mt-1">{cap.description}</p>}
         </div>
+      </div>
+
+      <div className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <ShieldCheck className="w-5 h-5 text-[#00843D] mt-0.5" />
+          <div>
+            <p className="text-sm font-semibold text-gray-900">IAM reference only</p>
+            <p className="text-sm text-gray-600 mt-0.5">
+              Bootstrap, generated agents, repo/doc learning, and approval packets are owned by Agent & Tools.
+              Use IAM here for members, roles, relationships, sharing, and authorization checks.
+            </p>
+          </div>
+        </div>
+        <a href={agentToolsCapabilityHref} target="_blank" rel="noreferrer">
+          <Button variant="outline" size="sm">
+            <ExternalLink className="w-3.5 h-3.5 mr-1.5" /> Open in Agent & Tools
+          </Button>
+        </a>
       </div>
 
       <Tabs defaultValue="details">

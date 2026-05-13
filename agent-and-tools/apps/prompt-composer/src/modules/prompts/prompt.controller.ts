@@ -18,6 +18,9 @@ export const promptController = {
   async createLayer(req: Request, res: Response) {
     return ok(res, await promptService.createLayer(req.body), 201);
   },
+  async updateLayer(req: Request, res: Response) {
+    return ok(res, await promptService.updateLayer(req.params.id, req.body));
+  },
   async listLayers(req: Request, res: Response) {
     return ok(res, await promptService.listLayers(req.query as never));
   },

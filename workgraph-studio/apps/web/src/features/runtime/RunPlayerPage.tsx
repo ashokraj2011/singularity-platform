@@ -46,7 +46,7 @@ const RUN_STATUS_VISUAL: Record<string, { bg: string; ring: string; color: strin
 }
 
 const INTERACTIVE_NODE_TYPES = new Set([
-  'HUMAN_TASK', 'APPROVAL', 'CONSUMABLE_CREATION', 'DECISION_GATE',
+  'HUMAN_TASK', 'WORKBENCH_TASK', 'APPROVAL', 'CONSUMABLE_CREATION', 'DECISION_GATE',
 ])
 
 // ─── Bootstrap entry: /play/new ─────────────────────────────────────────────

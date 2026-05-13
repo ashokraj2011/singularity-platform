@@ -21,13 +21,13 @@ function setNestedPath(obj: Record<string, unknown>, path: string, value: unknow
  * Map a user-facing variable path to its physical context path.
  *   vars.tier    → _vars.tier
  *   params.tier  → _params.tier (back-compat)
- *   globals.X    → reject (read-only) — fall through to literal context.path write
+ *   globals.X    → _globals.X
  *   anything else (incl. context.X / output.X) → strip the prefix and write to context root.
  */
 function physicalPath(path: string): string {
   if (path.startsWith('vars.'))    return `_vars.${path.slice('vars.'.length)}`
   if (path.startsWith('params.'))  return `_params.${path.slice('params.'.length)}`
-  if (path.startsWith('globals.')) return path  // writes blocked at the call site below
+  if (path.startsWith('globals.')) return `_globals.${path.slice('globals.'.length)}`
   if (path.startsWith('context.')) return path.slice('context.'.length)
   if (path.startsWith('output.'))  return path.slice('output.'.length)
   return path
@@ -72,10 +72,6 @@ export async function activateSetContext(
   for (const entry of assignments) {
     const path = entry.path || entry.key || ''
     if (!path) continue
-    if (path.startsWith('globals.')) {
-      // Team globals are read-only; ignore writes silently (could log later).
-      continue
-    }
     setNestedPath(ctx, physicalPath(path), resolveValue(entry.value, ctx))
   }
 

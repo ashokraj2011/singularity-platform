@@ -15,7 +15,7 @@ An enterprise AI-agent platform composed of independently-deployable application
 ### Prerequisites
 - Docker Desktop (Compose v2)
 - `git`, `curl`, `psql` (optional, for ad-hoc inspection)
-- Ports free: `3000, 5174, 5175, 5180, 7100, 8000-8003, 8080, 8100-8101, 8500, 5432, 5433, 5434, 5436, 9000-9001`
+- Ports free: `3000, 5174, 5175, 5180, 7100, 8000-8003, 8080, 8100, 8500, 5432, 5433, 5434, 5436, 9000-9001`
 - ~6 GB free RAM for the full stack
 
 ### 1. Clone
@@ -24,33 +24,33 @@ git clone https://github.com/ashokraj2011/singularity-platform.git
 cd singularity-platform
 ```
 
-### 2. Bring up — one command, three stacks
+### 2. Bring up — one command
 ```bash
 ./singularity.sh up
 ```
 
 This brings up:
-- **Master stack** (19 services): IAM + agent-and-tools (4 svcs) + context-fabric (4 svcs) + workgraph (api + web + pg + minio) + mcp-server-demo + portal + user-and-capability
-- **Pseudo-IAM** (port 8101): the SPA's auth authority — accepts any email/password, mints a JWT signed with the same secret as workgraph-api
+- **Master stack**: IAM + agent-and-tools + context-fabric + workgraph + mcp-server-demo + portal + user-and-capability
 - **Audit & governance ledger** (port 8500): the cross-service event ledger every producer fires into
 
 First boot pulls images + builds web bundles. Wait ~3–5 minutes. Tail with `./singularity.sh logs workgraph-api -f` if you want to watch.
 
-> Need to bring up just one piece? `./singularity.sh up <service-name>` works for the master-stack services (run `./singularity.sh ls` for the list). The two side stacks (pseudo-iam, audit-governance) only come up via the no-arg form.
+> Need to bring up just one piece? `./singularity.sh up <service-name>` works for the master-stack services (run `./singularity.sh ls` for the list). The audit-governance side stack comes up via the no-arg form.
 
-### 3. Seed the agent-and-tools DB
+### 3. Apply baseline seeds
 ```bash
-( cd agent-and-tools/apps/agent-runtime \
-  && DATABASE_URL="postgresql://postgres:singularity@localhost:5432/singularity" \
-     npx prisma db seed )
+PGPASSWORD=singularity       psql -h localhost -p 5433 -U singularity -d singularity_iam   -f seed/00-iam.sql
+PGPASSWORD=singularity       psql -h localhost -p 5432 -U postgres    -d singularity       -f seed/01-agent-runtime.sql
+PGPASSWORD=workgraph_secret  psql -h localhost -p 5434 -U workgraph   -d workgraph         -f seed/02-workgraph.sql
+PGPASSWORD=audit             psql -h localhost -p 5436 -U postgres    -d audit_governance  -f seed/03-audit-governance.sql
 ```
 
-Lands 9 agent templates (4 locked common baselines + 5 derived), 5 prompt profiles, 7 layers, 4 tools, 1 default capability.
+Lands IAM teams/capabilities/memberships, common agent baselines, capability bindings, the demo workflow, and audit/cost demo rows. Re-running is safe.
 
 ### 4. One-line smoke check
 ```bash
 for u in \
-  "http://localhost:8101/health" \
+  "http://localhost:8100/api/v1/health" \
   "http://localhost:8500/health" \
   "http://localhost:7100/health" \
   "http://localhost:8000/health" \
@@ -67,7 +67,7 @@ You should see `200` for all seven.
 
 | Step | URL | What to show |
 |---|---|---|
-| **1. Login** | `http://localhost:5174` | Auto-login fires through pseudo-IAM. Mention: "any user, anywhere — same JWT secret as our IAM, swap the env var to point at real IAM" |
+| **1. Login** | `http://localhost:5175/login` → then `http://localhost:5174` | Login with `admin@singularity.local` / `Admin1234!`, then use the IAM token in Workgraph. IAM is the source of truth for teams, roles, and capability memberships. |
 | **2. Agent Studio** | `http://localhost:3000/agent-studio` → pick the seeded capability from the dropdown | Show the four **Locked** common baselines (Architect / Developer / QA / Governance), click **Derive →** on one, name it. Mention: "derived agents inherit prompt profile + tool policy, become editable by capability owners, audit-gov captures `agent.template.derived`" |
 | **3. Run a workflow** | `localhost:5174/runs` → click **Run a Workflow** → pick "Business Initiative Delivery" → start | The new run lands in `/runs/<id>`. Open a HUMAN_TASK node, attach a file, click Complete. Workflow advances. |
 | **4. Run Insights** | Click the green **Insights →** pill at the top of the run viewer | The M24 dashboard — total duration, per-step Gantt with precise timing (`startedAt`/`completedAt` columns), artifacts list, cost-by-model, full audit timeline keyed to the run. Mention: "every step duration is authoritative, not inferred" |
@@ -93,7 +93,7 @@ You should see `200` for all seven.
 
 ### 7. Tear down
 ```bash
-./singularity.sh down     # stop all three stacks, keep data volumes
+./singularity.sh down     # stop stacks, keep data volumes
 ./singularity.sh nuke     # stop + WIPE all data volumes (asks for confirmation)
 ```
 
@@ -111,7 +111,7 @@ Tool Service API         http://localhost:3002
 Prompt Composer API      http://localhost:3004
 Context Fabric API       http://localhost:8000
 MCP Server               http://localhost:7100
-Pseudo-IAM               http://localhost:8101
+IAM API                  http://localhost:8100/api/v1
 Audit & Governance API   http://localhost:8500
 ```
 
@@ -121,7 +121,7 @@ Audit & Governance API   http://localhost:8500
    ```bash
    docker exec agentandtools-postgres psql -U postgres -d singularity -c "CREATE EXTENSION IF NOT EXISTS vector;"
    ```
-2. **Token errors after a long idle**: pseudo-IAM signs 24h JWTs. If your tab sat overnight, hard-refresh `localhost:5174` and let auto-login mint a fresh one.
+2. **Token errors after a long idle**: IAM tokens expire. Re-login at `localhost:5175/login` and refresh Workgraph.
 3. **Port collisions** — `lsof -i :5174` if the workgraph SPA won't start; another stack from a previous demo might still be holding it.
 
 The narrative to lead with: *"Singularity is a governed agent platform — every agent is rooted in a locked baseline, every workflow run is observable end-to-end, and every LLM call is gated against a budget."*
@@ -130,7 +130,7 @@ The narrative to lead with: *"Singularity is a governed agent platform — every
 
 ## Bare-metal alternative — single Postgres, no Docker
 
-For dev machines that already have Postgres and don't want Docker. Focused on the demo path; skips real IAM (uses pseudo-IAM), the three optional context-fabric siblings, and MinIO (file uploads will fail but everything else works).
+For dev machines that already have Postgres and don't want Docker. Focused on the demo path; runs real IAM, agent-and-tools services, Workgraph API/web, audit-governance, context-api, and the local MCP server. It skips the optional context-fabric sibling services, MinIO, portal, and UserAndCapabillity SPA.
 
 ### Just run the script (recommended)
 
@@ -143,6 +143,8 @@ bin/bare-metal.sh down       # stop everything + free ports
 ```
 
 Idempotent — re-runs of `up` skip installs and DB creation if they already happened, just re-boots. Defaults: `db_password` from `$PGPASSWORD` env or `postgres`, `db_host=localhost`, `db_port=5432`.
+
+The bare-metal path applies the same seed bundle as Docker: `seed/00-iam.sql`, `seed/01-agent-runtime.sql`, `seed/02-workgraph.sql`, and `seed/03-audit-governance.sql`.
 
 The manual recipe below is what the script does under the hood — useful if you want to step through it or diverge.
 
@@ -181,9 +183,9 @@ export DATABASE_URL_AUDIT_GOV="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${P
 # Shared JWT secret (32+ chars — workgraph-api enforces)
 export JWT_SECRET="dev-secret-change-in-prod-min-32-chars!!"
 
-# IAM points at pseudo (skip real IAM)
 export AUTH_PROVIDER="iam"
-export IAM_BASE_URL="http://localhost:8101/api/v1"
+export IAM_BASE_URL="http://localhost:8100/api/v1"
+export IAM_SERVICE_URL="http://localhost:8100"
 
 # Cross-service URLs
 export AUDIT_GOV_URL="http://localhost:8500"
@@ -207,69 +209,41 @@ source .env.local
 ```bash
 ( cd agent-and-tools          && npm install )
 ( cd workgraph-studio         && pnpm install )
-( cd pseudo-iam-service       && npm install )
 ( cd audit-governance-service && npm install )
 ( cd mcp-server               && npm install )
 
-# Prisma push + seed for agent-runtime
+# Python deps for IAM + context-api
+python3 -m pip install -e singularity-iam-service
+python3 -m pip install fastapi uvicorn httpx pydantic-settings \
+                       python-jose[cryptography] sqlalchemy aiosqlite
+
+# Prisma push for agent-runtime
 ( cd agent-and-tools/apps/agent-runtime \
-  && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma db push \
-  && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma db seed )
+  && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma db push --skip-generate \
+  && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate )
+
+# Prisma client for prompt-composer
+( cd agent-and-tools/apps/prompt-composer \
+  && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate )
 
 # Prisma push for workgraph-api
 ( cd workgraph-studio/apps/api \
-  && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx prisma db push )
-
-# Python deps for context-api
-pip install fastapi uvicorn httpx pydantic-settings python-jose[cryptography] \
-            sqlalchemy aiosqlite
+  && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx prisma db push --skip-generate \
+  && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx prisma generate )
 ```
 
-### 4. Boot — paste this script
-Saves PIDs to `.pids` so a single `kill` cleans up.
+### 4. Boot + seed
+
+Use the launcher unless you specifically need to debug one command at a time. It starts real IAM first, waits for `/api/v1/health`, applies all four seed SQL files, then starts the rest of the demo services.
 
 ```bash
-mkdir -p logs && : > .pids
-boot() {
-  local name=$1; shift
-  ( "$@" >> "logs/${name}.log" 2>&1 & echo $! >> .pids ) && \
-    echo "→ $name (PID $!)  → tail -f logs/${name}.log"
-}
-
-# ---- Tier 0: zero-dep ----
-boot pseudo-iam        bash -c "cd pseudo-iam-service        && JWT_SECRET=\"$JWT_SECRET\" PORT=8101 npm run dev"
-boot audit-gov         bash -c "cd audit-governance-service  && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8500 npm run dev"
-
-sleep 2
-
-# ---- Tier 1: agent-and-tools backend ----
-boot agent-service     bash -c "cd agent-and-tools/apps/agent-service    && PORT=3001 AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
-boot tool-service      bash -c "cd agent-and-tools/apps/tool-service     && PORT=3002 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
-boot agent-runtime     bash -c "cd agent-and-tools/apps/agent-runtime    && PORT=3003 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
-boot prompt-composer   bash -c "cd agent-and-tools/apps/prompt-composer  && PORT=3004 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
-
-# ---- Tier 2: execution + orchestrator ----
-boot mcp-server        bash -c "cd mcp-server                            && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_PROVIDER=mock LLM_MODEL=mock-fast AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
-boot context-api       bash -c "cd context-fabric/services/context_api_service && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8000 AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" uvicorn app.main:app --host 0.0.0.0 --port 8000"
-
-sleep 3
-
-# ---- Tier 3: workgraph ----
-boot workgraph-api     bash -c "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
-
-# ---- Tier 4: SPAs ----
-boot agent-web         bash -c "cd agent-and-tools/web                   && AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" npm run dev"
-boot workgraph-web     bash -c "cd workgraph-studio/apps/web             && VITE_API_BASE=http://localhost:8080 VITE_PSEUDO_IAM_URL=http://localhost:8101/api/v1 VITE_AUTO_LOGIN=1 npm run dev"
-
-echo
-echo "All booted. Tail any service with: tail -f logs/<name>.log"
-echo "Stop everything:                    kill \$(cat .pids) && rm .pids"
+bin/bare-metal.sh up postgres postgres localhost 5432
 ```
 
 ### 5. Smoke check
 ```bash
 for url in \
-  http://localhost:8101/health \
+  http://localhost:8100/api/v1/health \
   http://localhost:8500/health \
   http://localhost:7100/health \
   http://localhost:8000/health \
@@ -281,11 +255,11 @@ for url in \
 done
 ```
 
-All seven should return `200`. Open `http://localhost:5174` for the demo.
+All seven should return `200`. Open `http://localhost:5174` for Workgraph and `http://localhost:3000` for Agent Studio. IAM login is `admin@singularity.local` / `Admin1234!`.
 
 ### Tear down
 ```bash
-kill $(cat .pids) && rm .pids
+bin/bare-metal.sh down
 # Optional — wipe data:
 psql postgres -c "DROP DATABASE singularity; DROP DATABASE workgraph; DROP DATABASE audit_governance; DROP DATABASE singularity_iam;"
 ```
@@ -294,7 +268,6 @@ psql postgres -c "DROP DATABASE singularity; DROP DATABASE workgraph; DROP DATAB
 
 | Skipped | Impact |
 |---|---|
-| real IAM (`iam-service`) | None for demo — pseudo-IAM signs JWTs workgraph accepts because they share `JWT_SECRET` |
 | llm-gateway, context-memory, metrics-ledger | None — context-api calls mcp-server directly; mcp-server's embedded LLM is mock |
 | MinIO | File uploads return 5xx; insights, Agent Studio, audit, cost all still work |
 | portal (`:5180`), user-and-capability (`:5175`) | Optional UI wrappers; `:5174` + `:3000` cover the demo path |

@@ -40,7 +40,15 @@ export interface ExecuteRequest {
     maxOutputTokens?: number
   }
   context_policy?: Record<string, unknown>
-  limits?: { maxSteps?: number; timeoutSec?: number }
+  limits?: {
+    maxSteps?: number
+    timeoutSec?: number
+    inputTokenBudget?: number
+    outputTokenBudget?: number
+    maxHistoryMessages?: number
+    maxToolResultChars?: number
+    maxPromptChars?: number
+  }
   preview_only?: boolean
 }
 
@@ -73,6 +81,25 @@ export interface ExecuteResponse {
     codeChangeIds?: string[]
   }
   tokensUsed?: { input: number; output: number; total: number }
+  usage?: {
+    inputTokens?: number | null
+    outputTokens?: number | null
+    totalTokens?: number | null
+    estimatedCost?: number | null
+    provider?: string | null
+    model?: string | null
+    tokensSaved?: number | null
+    promptAssemblyId?: string | null
+    cfCallId?: string | null
+  }
+  modelUsage?: {
+    provider?: string | null
+    model?: string | null
+    inputTokens?: number | null
+    outputTokens?: number | null
+    totalTokens?: number | null
+    estimatedCost?: number | null
+  }
   finishReason?: string
   stepsTaken?: number
   metrics?: { mcpLatencyMs?: number }

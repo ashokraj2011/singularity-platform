@@ -22,6 +22,7 @@ import { Router } from 'express'
 import { prisma } from '../../lib/prisma'
 import { config } from '../../config'
 import { authzCheck, getUserTeams, getUserSkills } from '../../lib/iam/client'
+import { mapIamTeamIdsToLocal } from '../../lib/iam/teamMirror'
 
 export const runtimeRouter: Router = Router()
 
@@ -92,7 +93,7 @@ async function loadCallerContext(userId: string) {
       const usedIamTeams  = iamTeams.length  > 0
       const usedIamSkills = iamSkills.length > 0
 
-      teamIds   = usedIamTeams  ? iamTeams  : localTeamIds
+      teamIds   = usedIamTeams  ? await mapIamTeamIdsToLocal(iamTeams) : localTeamIds
       skillKeys = usedIamSkills ? iamSkills : localSkillKeys
 
       if (usedIamTeams && usedIamSkills) source = 'iam'

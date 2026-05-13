@@ -46,6 +46,11 @@ export const composeSchema = z.object({
     optimizationMode: z.string().optional(),
     maxContextTokens: z.number().int().optional(),
     compareWithRaw: z.boolean().optional(),
+    knowledgeTopK: z.number().int().min(0).max(50).optional(),
+    memoryTopK: z.number().int().min(0).max(50).optional(),
+    codeTopK: z.number().int().min(0).max(50).optional(),
+    maxLayerChars: z.number().int().min(500).max(100_000).optional(),
+    maxPromptChars: z.number().int().min(2_000).max(500_000).optional(),
   }).default({}),
   toolDiscovery: z.object({
     enabled: z.boolean().default(true),

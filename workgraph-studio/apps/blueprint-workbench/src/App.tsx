@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
+  Activity,
   ArrowDownLeft,
   BadgeCheck,
   BookOpen,
@@ -10,17 +12,21 @@ import {
   CheckCircle2,
   ClipboardCheck,
   Code2,
+  Download,
   GitBranch,
   HardDrive,
   Loader2,
   LogOut,
   Play,
   RefreshCw,
-  Route,
   ScanSearch,
+  Search,
+  Settings,
   ShieldCheck,
   Sparkles,
+  Terminal,
   Undo2,
+  X,
 } from 'lucide-react'
 import {
   api,
@@ -37,14 +43,21 @@ import {
   type LookupAgent,
   type LookupCapability,
   type SourceType,
-  type Stage,
   type StageAttempt,
 } from './api'
 
-const roleMeta: Record<Stage, { label: string; icon: typeof Brain }> = {
+const knownRoleMeta: Record<string, { label: string; icon: typeof Brain }> = {
   ARCHITECT: { label: 'Architect', icon: Brain },
   DEVELOPER: { label: 'Developer', icon: Code2 },
   QA: { label: 'QA', icon: ClipboardCheck },
+}
+
+function roleMeta(role: string) {
+  const normalized = role.toUpperCase()
+  if (knownRoleMeta[normalized]) return knownRoleMeta[normalized]
+  if (normalized.includes('DEV') || normalized.includes('ENGINEER')) return { label: titleFromRole(role), icon: Code2 }
+  if (normalized.includes('QA') || normalized.includes('TEST') || normalized.includes('VERIFY')) return { label: titleFromRole(role), icon: ClipboardCheck }
+  return { label: titleFromRole(role), icon: Brain }
 }
 
 const verdictLabels: Record<LoopVerdict, string> = {
@@ -56,8 +69,10 @@ const verdictLabels: Record<LoopVerdict, string> = {
 
 export default function App() {
   const queryClient = useQueryClient()
+  const workflowDefaults = useMemo(() => readWorkflowDefaults(), [])
   const [activeSession, setActiveSession] = useState<BlueprintSession | null>(null)
   const [authTick, setAuthTick] = useState(0)
+  const [setupOpen, setSetupOpen] = useState(false)
   const hasToken = Boolean(getToken())
 
   const sessionsQuery = useQuery({
@@ -68,12 +83,22 @@ export default function App() {
   const sessions = sessionsQuery.data?.items ?? []
 
   useEffect(() => {
-    if (sessions.length === 0) return
+    const scopedSessions = workflowDefaults.workflowInstanceId && workflowDefaults.workflowNodeId
+      ? sessions.filter(session =>
+          session.workflowInstanceId === workflowDefaults.workflowInstanceId
+          && session.workflowNodeId === workflowDefaults.workflowNodeId,
+        )
+      : sessions
+    if (workflowDefaults.workflowInstanceId && workflowDefaults.workflowNodeId && scopedSessions.length === 0) {
+      setActiveSession(null)
+      return
+    }
+    if (scopedSessions.length === 0) return
     setActiveSession(current => {
-      if (!current) return sessions[0]
-      return sessions.find(session => session.id === current.id) ?? sessions[0]
+      if (!current) return scopedSessions[0]
+      return scopedSessions.find(session => session.id === current.id) ?? scopedSessions[0]
     })
-  }, [sessions])
+  }, [sessions, workflowDefaults.workflowInstanceId, workflowDefaults.workflowNodeId])
 
   const refreshSession = (session: BlueprintSession) => {
     setActiveSession(session)
@@ -86,35 +111,103 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">Singularity</p>
-          <h1>Blueprint Workbench</h1>
-        </div>
-        <div className="topbar-actions">
-          <button className="icon-button" onClick={() => sessionsQuery.refetch()} title="Refresh sessions">
-            <RefreshCw size={16} />
-          </button>
-          <button
-            className="icon-button"
-            onClick={() => {
-              clearToken()
-              setAuthTick(authTick + 1)
-              setActiveSession(null)
-              queryClient.clear()
-            }}
-            title="Sign out"
-          >
-            <LogOut size={16} />
-          </button>
-        </div>
-      </header>
+      <WorkbenchCommandHeader
+        session={activeSession}
+        onRefresh={() => sessionsQuery.refetch()}
+        onSetup={() => setSetupOpen(true)}
+        onSignOut={() => {
+          clearToken()
+          setAuthTick(authTick + 1)
+          setActiveSession(null)
+          queryClient.clear()
+        }}
+      />
 
       <section className="loop-shell">
-        <WorkbenchSetup sessions={sessions} activeSession={activeSession} onSelect={setActiveSession} onCreated={refreshSession} />
+        <SetupDrawer open={setupOpen || !activeSession} onClose={() => setSetupOpen(false)}>
+          <WorkbenchSetup
+            sessions={sessions}
+            activeSession={activeSession}
+            onSelect={(session) => {
+              setActiveSession(session)
+              setSetupOpen(false)
+            }}
+            onCreated={(session) => {
+              refreshSession(session)
+              setSetupOpen(false)
+            }}
+          />
+        </SetupDrawer>
         <LoopWorkbench session={activeSession} onSession={refreshSession} />
       </section>
     </main>
+  )
+}
+
+function WorkbenchCommandHeader({
+  session,
+  onRefresh,
+  onSetup,
+  onSignOut,
+}: {
+  session: BlueprintSession | null
+  onRefresh: () => void
+  onSetup: () => void
+  onSignOut: () => void
+}) {
+  const attempts = session?.stageAttempts?.length ?? 0
+  const sendBacks = session?.reviewEvents?.filter(event => event.type === 'SEND_BACK' || event.type === 'AUTO_SEND_BACK').length ?? 0
+  const activeStage = session?.loopDefinition?.stages.find(stage => stage.key === session.currentStageKey)
+  return (
+    <header className="command-header">
+      <div className="brand-lockup">
+        <div className="brand-mark"><Terminal size={18} /></div>
+        <div>
+          <p className="eyebrow">Singularity Core Engine</p>
+          <h1>Blueprint Workbench</h1>
+        </div>
+      </div>
+      <nav className="command-tabs" aria-label="Workbench sections">
+        <span className="active">Workflow</span>
+        <span>Artifacts</span>
+        <span>Terminal</span>
+      </nav>
+      <div className="command-search">
+        <Search size={15} />
+        <input placeholder="Search session, stage, artifact..." />
+      </div>
+      <div className="command-metrics">
+        <MetricPill label="Stage" value={activeStage?.label ?? 'No session'} tone="primary" />
+        <MetricPill label="Iterations" value={String(attempts)} />
+        <MetricPill label="Loops" value={String(sendBacks)} tone={sendBacks > 0 ? 'warning' : 'default'} />
+      </div>
+      <div className="topbar-actions">
+        <button className="secondary-action compact-action" onClick={onSetup}><Settings size={15} /> Setup</button>
+        <button className="icon-button" onClick={onRefresh} title="Refresh sessions"><RefreshCw size={16} /></button>
+        <button className="icon-button" onClick={onSignOut} title="Sign out"><LogOut size={16} /></button>
+      </div>
+    </header>
+  )
+}
+
+function MetricPill({ label, value, tone = 'default' }: { label: string; value: string; tone?: 'default' | 'primary' | 'warning' }) {
+  return (
+    <div className={`metric-pill ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  )
+}
+
+function SetupDrawer({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
+  return (
+    <>
+      <div className={`drawer-scrim ${open ? 'open' : ''}`} onClick={onClose} />
+      <aside className={`setup-drawer ${open ? 'open' : ''}`}>
+        <button className="drawer-close" onClick={onClose} title="Close setup"><X size={16} /></button>
+        {children}
+      </aside>
+    </>
   )
 }
 
@@ -148,15 +241,15 @@ function WorkbenchSetup({
   onCreated: (session: BlueprintSession) => void
 }) {
   const workflowDefaults = useMemo(readWorkflowDefaults, [])
-  const [sourceType, setSourceType] = useState<SourceType>('localdir')
-  const [sourceUri, setSourceUri] = useState('')
-  const [sourceRef, setSourceRef] = useState('')
-  const [goal, setGoal] = useState('Create a governed planning, design, development, QA, and testing loop for this codebase.')
+  const [sourceType, setSourceType] = useState<SourceType>(workflowDefaults.sourceType ?? 'localdir')
+  const [sourceUri, setSourceUri] = useState(workflowDefaults.sourceUri ?? '')
+  const [sourceRef, setSourceRef] = useState(workflowDefaults.sourceRef ?? '')
+  const [goal, setGoal] = useState(workflowDefaults.goal ?? 'Create a governed planning, design, development, QA, and testing loop for this codebase.')
   const [gateMode, setGateMode] = useState<GateMode>(workflowDefaults.gateMode ?? 'manual')
-  const [capabilityId, setCapabilityId] = useState('')
-  const [architectAgentTemplateId, setArchitectAgentTemplateId] = useState('')
-  const [developerAgentTemplateId, setDeveloperAgentTemplateId] = useState('')
-  const [qaAgentTemplateId, setQaAgentTemplateId] = useState('')
+  const [capabilityId, setCapabilityId] = useState(workflowDefaults.capabilityId ?? '')
+  const [architectAgentTemplateId, setArchitectAgentTemplateId] = useState(workflowDefaults.architectAgentTemplateId ?? '')
+  const [developerAgentTemplateId, setDeveloperAgentTemplateId] = useState(workflowDefaults.developerAgentTemplateId ?? '')
+  const [qaAgentTemplateId, setQaAgentTemplateId] = useState(workflowDefaults.qaAgentTemplateId ?? '')
   const [includeGlobs, setIncludeGlobs] = useState('')
   const [excludeGlobs, setExcludeGlobs] = useState('**/node_modules/**,**/dist/**,**/.git/**')
 
@@ -185,12 +278,11 @@ function WorkbenchSetup({
     onSuccess: onCreated,
   })
 
+  const loopAgentReady = hasLoopAgentTemplates(workflowDefaults.loopDefinition)
   const canCreate = goal.trim().length > 7
     && sourceUri.trim()
     && capabilityId
-    && architectAgentTemplateId
-    && developerAgentTemplateId
-    && qaAgentTemplateId
+    && (loopAgentReady || architectAgentTemplateId || developerAgentTemplateId || qaAgentTemplateId)
 
   return (
     <aside className="panel setup-panel">
@@ -291,9 +383,9 @@ function WorkbenchSetup({
           includeGlobs: csv(includeGlobs),
           excludeGlobs: csv(excludeGlobs),
           capabilityId,
-          architectAgentTemplateId,
-          developerAgentTemplateId,
-          qaAgentTemplateId,
+          architectAgentTemplateId: architectAgentTemplateId || undefined,
+          developerAgentTemplateId: developerAgentTemplateId || undefined,
+          qaAgentTemplateId: qaAgentTemplateId || undefined,
           gateMode,
           workflowInstanceId: workflowDefaults.workflowInstanceId,
           workflowNodeId: workflowDefaults.workflowNodeId,
@@ -326,24 +418,24 @@ function LoopWorkbench({ session, onSession }: { session: BlueprintSession | nul
   if (!session) {
     return (
       <section className="empty-workbench">
-        <Route size={30} />
+        <Activity size={30} />
         <h2>Create or select a session</h2>
-        <p>The loop map, stage cockpit, artifact notebook, and evidence timeline will appear here.</p>
+        <p>The cyclic workbench canvas, stage controls, assets, and terminal evidence stream will appear here.</p>
       </section>
     )
   }
 
   return (
-    <section className="workbench-grid">
-      <LoopMap session={session} activeStageKey={activeStage?.key ?? null} onStage={setActiveStageKey} onSession={onSession} />
-      <StageCockpit session={session} stage={activeStage} onSession={onSession} />
-      <ArtifactNotebook session={session} activeStageKey={activeStage?.key} onSession={onSession} />
-      <EvidenceTimeline session={session} />
+    <section className="control-room-grid">
+      <CyclicLoopCanvas session={session} activeStageKey={activeStage?.key ?? null} onStage={setActiveStageKey} onSession={onSession} />
+      <StageDetailsPanel session={session} stage={activeStage} onSession={onSession} />
+      <AssetRail session={session} activeStageKey={activeStage?.key} onSession={onSession} />
+      <WorkbenchTerminal session={session} />
     </section>
   )
 }
 
-function LoopMap({
+function CyclicLoopCanvas({
   session,
   activeStageKey,
   onStage,
@@ -357,61 +449,100 @@ function LoopMap({
   const snapshotMutation = useMutation({ mutationFn: (id: string) => api.snapshot(id), onSuccess: onSession })
   const latestSnapshot = session.snapshots[0]
   const green = isLoopGreen(session)
+  const stages = session.loopDefinition?.stages ?? []
+  const currentStage = stages.find(stage => stage.key === session.currentStageKey)
+  const latestCurrent = currentStage ? attemptsFor(session, currentStage.key).at(-1) : undefined
+  const recentSendBack = [...(session.reviewEvents ?? [])].reverse().find(event => event.type === 'SEND_BACK' || event.type === 'AUTO_SEND_BACK')
   return (
-    <section className="panel loop-map-panel">
-      <div className="panel-heading">
-        <Route size={18} />
+    <section className="control-card cycle-card">
+      <div className="canvas-header">
         <div>
-          <h2>Loop Map</h2>
-          <p>{session.loopDefinition?.name ?? 'Blueprint loop'} · {session.gateMode === 'auto' ? 'conservative auto gates' : 'manual gates'}</p>
+          <h2>{session.loopDefinition?.name ?? 'Blueprint implementation loop'}</h2>
+          <div className="header-meta">
+            <span className={`status ${session.status.toLowerCase()}`}>{session.status}</span>
+            <span>{session.gateMode === 'auto' ? 'Conservative auto gates' : 'Manual gates'}</span>
+            <span>{session.sourceType}</span>
+          </div>
         </div>
-      </div>
-
-      <div className="session-strip">
-        <div>
-          <span className={`status ${session.status.toLowerCase()}`}>{session.status}</span>
-          <strong>{session.sourceType}</strong>
+        <div className="loop-actions">
+          <button className="secondary-action compact-action" disabled={snapshotMutation.isPending} onClick={() => snapshotMutation.mutate(session.id)}>
+            {snapshotMutation.isPending ? <Loader2 className="spin" size={15} /> : <ScanSearch size={15} />}
+            Snapshot
+          </button>
+          {latestSnapshot && <span className="snapshot-pill">{latestSnapshot.fileCount} files · {formatBytes(latestSnapshot.totalBytes)}</span>}
         </div>
-        <h3>{session.goal}</h3>
-        <p>{session.sourceUri}</p>
-      </div>
-
-      <div className="loop-actions">
-        <button className="secondary-action" disabled={snapshotMutation.isPending} onClick={() => snapshotMutation.mutate(session.id)}>
-          {snapshotMutation.isPending ? <Loader2 className="spin" size={15} /> : <ScanSearch size={15} />}
-          Snapshot
-        </button>
-        {latestSnapshot && (
-          <span className="snapshot-pill">{latestSnapshot.fileCount} files · {formatBytes(latestSnapshot.totalBytes)}</span>
-        )}
       </div>
       {snapshotMutation.isError && <p className="error-text">{snapshotMutation.error.message}</p>}
 
-      <div className="loop-map">
-        {(session.loopDefinition?.stages ?? []).map((stage, index) => {
+      <div className="cycle-canvas">
+        <div className="grid-dots" />
+        <svg className="cycle-lines" viewBox="0 0 800 560" aria-hidden="true">
+          <defs>
+            <marker id="arrow-muted" markerHeight="7" markerWidth="10" orient="auto" refX="8" refY="3.5">
+              <polygon fill="#424754" points="0 0, 10 3.5, 0 7" />
+            </marker>
+            <marker id="arrow-hot" markerHeight="7" markerWidth="10" orient="auto" refX="8" refY="3.5">
+              <polygon fill="#ffb786" points="0 0, 10 3.5, 0 7" />
+            </marker>
+          </defs>
+          <path d="M 150 280 Q 160 120 315 92" />
+          <path d="M 350 78 Q 400 48 455 78" />
+          <path d="M 520 108 Q 660 150 682 280" />
+          <path d="M 675 320 Q 630 465 430 488" />
+          <path d="M 370 488 Q 170 465 128 320" />
+          {recentSendBack?.stageKey && recentSendBack.targetStageKey && (
+            <path className="sendback-line" d="M 500 88 Q 400 30 300 88" markerEnd="url(#arrow-hot)" />
+          )}
+        </svg>
+
+        <div className="core-console">
+          <div className="console-top">
+            <span className="live-dot" />
+            <code>VALIDATION_STREAM: {latestCurrent?.status?.toLowerCase() ?? 'idle'}</code>
+          </div>
+          <div className="console-body">
+            <p className="log-warn">[STAGE] {currentStage?.label ?? 'No active stage'} · {latestCurrent?.verdict ?? latestCurrent?.status ?? 'waiting'}</p>
+            <p className="log-info">&gt;&gt; {session.goal}</p>
+            <div className="comparison-box">
+              <div>
+                <span>EXPECTED</span>
+                <strong>{green ? 'Loop green' : 'Stage gate'}</strong>
+              </div>
+              <div>
+                <span>ACTUAL</span>
+                <strong className={green ? 'ok' : 'warn'}>{green ? 'Ready' : 'Pending'}</strong>
+              </div>
+            </div>
+            <p>&gt;&gt; Source: {session.sourceUri}</p>
+            <p>&gt;&gt; Latest evidence: {latestCurrent?.correlation?.cfCallId ?? latestCurrent?.id ?? 'none'}</p>
+          </div>
+        </div>
+
+        {stages.map((stage, index) => {
           const attempts = attemptsFor(session, stage.key)
           const latest = attempts.at(-1)
           const status = latestStatus(latest)
-          const Icon = roleMeta[stage.agentRole].icon
+          const Icon = roleMeta(stage.agentRole).icon
+          const nodeClass = `cycle-node node-${index} ${activeStageKey === stage.key ? 'active' : ''} ${session.currentStageKey === stage.key ? 'current' : ''} ${status}`
           return (
             <button
               type="button"
               key={stage.key}
-              className={`loop-node ${activeStageKey === stage.key ? 'active' : ''} ${session.currentStageKey === stage.key ? 'current' : ''} ${status}`}
+              className={nodeClass}
               onClick={() => onStage(stage.key)}
             >
-              <span className="node-number">{index + 1}</span>
-              <span className="node-main">
-                <strong><Icon size={14} /> {stage.label}</strong>
-                <small>{roleMeta[stage.agentRole].label} · {attempts.length || 0} iteration{attempts.length === 1 ? '' : 's'}</small>
+              <span className="node-orb"><Icon size={index === stages.findIndex(item => item.key === session.currentStageKey) ? 28 : 22} /></span>
+              <span className="node-label">{stage.label}</span>
+              <span className="node-actions">
+                <small>{attempts.length || 0} iter</small>
+                <small>{latest?.verdict ? verdictLabels[latest.verdict] : latest?.status ?? 'Ready'}</small>
               </span>
-              <span className="node-verdict">{latest?.verdict ? verdictLabels[latest.verdict] : latest?.status ?? 'Ready'}</span>
             </button>
           )
         })}
       </div>
 
-      <div className="greenline">
+      <div className="session-status-strip">
         <div>
           <strong>{green ? 'Loop is green' : 'Loop is not green yet'}</strong>
           <span>{green ? 'Final pack can be generated.' : 'Each required stage needs a pass or accepted-risk verdict.'}</span>
@@ -422,7 +553,7 @@ function LoopMap({
   )
 }
 
-function StageCockpit({
+function StageDetailsPanel({
   session,
   stage,
   onSession,
@@ -482,7 +613,7 @@ function StageCockpit({
   })
 
   if (!stage) {
-    return <section className="panel cockpit-panel"><p className="empty">No stage selected.</p></section>
+    return <section className="control-card stage-details-panel"><p className="empty">No stage selected.</p></section>
   }
 
   const latest = attemptsFor(session, stage.key).at(-1)
@@ -492,19 +623,19 @@ function StageCockpit({
     .map(question => question.id)
 
   return (
-    <section className="panel cockpit-panel">
+    <aside className="control-card stage-details-panel">
       <div className="panel-heading">
         {(() => {
-          const Icon = roleMeta[stage.agentRole].icon
+          const Icon = roleMeta(stage.agentRole).icon
           return <Icon size={18} />
         })()}
         <div>
-          <h2>Stage Cockpit</h2>
-          <p>{stage.label} · {roleMeta[stage.agentRole].label}</p>
+          <h2>Stage Details</h2>
+          <p>{stage.label} · {roleMeta(stage.agentRole).label}</p>
         </div>
       </div>
 
-      <div className="stage-hero">
+      <div className="anomaly-card">
         <div>
           <span className="stage-key">{stage.key}</span>
           <h3>{stage.label}</h3>
@@ -521,18 +652,45 @@ function StageCockpit({
         <p className="error-text">{(runMutation.error ?? verdictMutation.error ?? sendBackMutation.error)?.message}</p>
       )}
 
+      <div className="metric-grid">
+        <div className="metric-card">
+          <span>Confidence</span>
+          <strong>{latest?.gateRecommendation?.confidence ? `${Math.round(latest.gateRecommendation.confidence * 100)}%` : '--'}</strong>
+          <div className="meter"><i style={{ width: `${Math.round((latest?.gateRecommendation?.confidence ?? 0) * 100)}%` }} /></div>
+        </div>
+        <div className="metric-card">
+          <span>Iterations</span>
+          <strong>#{attemptsFor(session, stage.key).length}</strong>
+          <div className="meter amber"><i style={{ width: `${Math.min(attemptsFor(session, stage.key).length * 22, 100)}%` }} /></div>
+        </div>
+      </div>
+
       <div className="attempt-card">
         <strong>Latest attempt</strong>
         {latest ? (
           <>
             <span className={`status ${latestStatus(latest)}`}>{latest.verdict ? verdictLabels[latest.verdict] : latest.status}</span>
             <p>{latest.gateRecommendation?.reason ?? latest.error ?? 'Awaiting human verdict.'}</p>
+            {latest.status === 'COMPLETED' && !latest.verdict && stage.approvalRequired !== false && (
+              <p className="warning-text">Human approval is required before this artifact set can move forward.</p>
+            )}
             {latest.correlation && <code>{latest.correlation.cfCallId ?? latest.correlation.traceId ?? latest.id}</code>}
           </>
         ) : (
           <p>No attempt yet. Run this stage to generate artifacts and a gate recommendation.</p>
         )}
       </div>
+
+      {(stage.expectedArtifacts ?? []).length > 0 && (
+        <div className="attempt-card">
+          <strong>Expected artifacts</strong>
+          {(stage.expectedArtifacts ?? []).map(artifact => (
+            <p key={`${artifact.kind}-${artifact.title}`}>
+              <code>{artifact.kind}</code> {artifact.title}{artifact.required !== false ? ' · approval item' : ''}
+            </p>
+          ))}
+        </div>
+      )}
 
       <div className="question-stack">
         {(stage.questions ?? []).map(question => (
@@ -599,7 +757,7 @@ function StageCockpit({
 
       <div className="verdict-row">
         <button className="secondary-action approve" disabled={!latest || verdictMutation.isPending} onClick={() => verdictMutation.mutate('PASS')}>
-          <CheckCircle2 size={15} /> Pass
+          <CheckCircle2 size={15} /> Approve artifacts
         </button>
         <button className="secondary-action" disabled={!latest || verdictMutation.isPending} onClick={() => verdictMutation.mutate('ACCEPTED_WITH_RISK')}>
           <AlertTriangle size={15} /> Accept risk
@@ -639,13 +797,19 @@ function StageCockpit({
           </button>
         </div>
       )}
-    </section>
+    </aside>
   )
 }
 
-function ArtifactNotebook({ session, activeStageKey, onSession }: { session: BlueprintSession; activeStageKey?: string; onSession: (session: BlueprintSession) => void }) {
+function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintSession; activeStageKey?: string; onSession: (session: BlueprintSession) => void }) {
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null)
-  const finalizeMutation = useMutation({ mutationFn: () => api.finalize(session.id), onSuccess: onSession })
+  const finalizeMutation = useMutation({
+    mutationFn: () => api.finalize(session.id),
+    onSuccess: (nextSession) => {
+      onSession(nextSession)
+      notifyWorkflowFinalized(nextSession)
+    },
+  })
   const artifacts = useMemo(() => {
     const ordered = [...session.artifacts]
     ordered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
@@ -661,12 +825,12 @@ function ArtifactNotebook({ session, activeStageKey, onSession }: { session: Blu
   const green = isLoopGreen(session)
 
   return (
-    <section className="panel artifact-panel">
+    <section className="control-card asset-rail">
       <div className="panel-heading">
         <BookOpen size={18} />
         <div>
-          <h2>Artifact Notebook</h2>
-          <p>Versioned stage outputs and the final implementation pack.</p>
+          <h2>Current Assets</h2>
+          <p>Contract pack artifacts, versions, and final handoff status.</p>
         </div>
       </div>
 
@@ -689,7 +853,7 @@ function ArtifactNotebook({ session, activeStageKey, onSession }: { session: Blu
           <nav className="artifact-tabs">
             {visible.map(artifact => <ArtifactTab key={artifact.id} artifact={artifact} active={artifact.id === active?.id} onClick={() => setActiveArtifactId(artifact.id)} />)}
           </nav>
-          <article>
+          <article className="artifact-reader">
             <h3>{active?.title}</h3>
             <pre>{renderArtifact(active)}</pre>
           </article>
@@ -708,38 +872,54 @@ function ArtifactTab({ artifact, active, onClick }: { artifact: BlueprintArtifac
   )
 }
 
-function EvidenceTimeline({ session }: { session: BlueprintSession }) {
+function WorkbenchTerminal({ session }: { session: BlueprintSession }) {
   const events = [...(session.reviewEvents ?? [])].reverse()
   const attempts = [...(session.stageAttempts ?? [])].reverse()
   return (
-    <section className="panel evidence-panel">
-      <div className="panel-heading">
-        <ShieldCheck size={18} />
+    <section className="control-card terminal-panel">
+      <div className="terminal-header">
         <div>
-          <h2>Evidence Timeline</h2>
-          <p>Review events, Context Fabric calls, MCP IDs, and tokens.</p>
+          <ShieldCheck size={16} />
+          <span>Console - raw_blueprint_stream</span>
+        </div>
+        <div>
+          <button className="terminal-tool"><Download size={13} /> Export JSON</button>
         </div>
       </div>
 
-      <div className="timeline">
+      <div className="terminal-log">
         {events.length === 0 && attempts.length === 0 && <p className="empty">No loop events yet.</p>}
         {events.map(event => (
-          <div className="timeline-row" key={event.id}>
-            <span>{event.type.replaceAll('_', ' ')}</span>
+          <div className={`log-row ${event.type.includes('SEND_BACK') ? 'fail-block' : ''}`} key={event.id}>
+            <time>{new Date(event.createdAt).toLocaleTimeString()}</time>
+            <span>[{event.type.replaceAll('_', ' ')}]</span>
             <strong>{event.message}</strong>
-            <small>{new Date(event.createdAt).toLocaleString()}</small>
           </div>
         ))}
         {attempts.filter(attempt => attempt.correlation).map(attempt => (
-          <div className="timeline-row evidence" key={attempt.id}>
-            <span>{attempt.stageLabel} evidence</span>
-            <strong>{attempt.correlation?.cfCallId ?? attempt.correlation?.traceId ?? attempt.id}</strong>
-            <small>{attempt.tokensUsed?.total ? `${attempt.tokensUsed.total} tokens` : 'correlation captured'}</small>
+          <div className="log-row evidence" key={attempt.id}>
+            <time>{attempt.completedAt ? new Date(attempt.completedAt).toLocaleTimeString() : '--:--:--'}</time>
+            <span>[EVIDENCE]</span>
+            <strong>{attempt.stageLabel}: {attempt.correlation?.cfCallId ?? attempt.correlation?.traceId ?? attempt.id}</strong>
+            <small>{stageCostEvidence(attempt)}</small>
           </div>
         ))}
+        <div className="terminal-input"><span>TERMINAL &gt;</span><em>Waiting for developer approval...</em></div>
       </div>
     </section>
   )
+}
+
+function stageCostEvidence(attempt: StageAttempt) {
+  const tokens = attempt.tokensUsed?.total
+    ? `${attempt.tokensUsed.total} actual tokens`
+    : 'actual tokens pending'
+  const optimization = attempt.metrics?.contextOptimization
+  if (optimization && typeof optimization === 'object' && 'tokens_saved' in optimization) {
+    const saved = (optimization as { tokens_saved?: unknown }).tokens_saved
+    return `${tokens} · saved ${saved ?? 0}`
+  }
+  return tokens
 }
 
 function AgentSelect({ label, agents, value, onChange }: { label: string; agents: LookupAgent[]; value: string; onChange: (value: string) => void }) {
@@ -791,6 +971,15 @@ function stageLabel(session: BlueprintSession, stageKey: string) {
   return session.loopDefinition?.stages.find(stage => stage.key === stageKey)?.label ?? stageKey
 }
 
+function titleFromRole(role: string) {
+  return role
+    .toLowerCase()
+    .split(/[_\-\s]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || 'Agent'
+}
+
 function renderArtifact(artifact?: BlueprintArtifact) {
   if (!artifact) return ''
   if (artifact.content) return artifact.content
@@ -807,6 +996,14 @@ function capLabel(cap: LookupCapability) {
 
 function csv(value: string) {
   return value.split(',').map(item => item.trim()).filter(Boolean)
+}
+
+function hasLoopAgentTemplates(loopDefinition: unknown) {
+  if (!loopDefinition || typeof loopDefinition !== 'object' || Array.isArray(loopDefinition)) return false
+  const stages = (loopDefinition as { stages?: unknown }).stages
+  return Array.isArray(stages) && stages.some(stage =>
+    Boolean(stage && typeof stage === 'object' && !Array.isArray(stage) && typeof (stage as { agentTemplateId?: unknown }).agentTemplateId === 'string' && (stage as { agentTemplateId: string }).agentTemplateId.trim()),
+  )
 }
 
 function formatBytes(bytes: number) {
@@ -833,7 +1030,27 @@ function readWorkflowDefaults() {
     workflowInstanceId: params.get('workflowInstanceId') ?? undefined,
     workflowNodeId: params.get('workflowNodeId') ?? undefined,
     phaseId: params.get('phaseId') ?? undefined,
+    goal: params.get('goal') ?? undefined,
+    sourceType: params.get('sourceType') === 'github' ? 'github' as const : params.get('sourceType') === 'localdir' ? 'localdir' as const : undefined,
+    sourceUri: params.get('sourceUri') ?? undefined,
+    sourceRef: params.get('sourceRef') ?? undefined,
+    capabilityId: params.get('capabilityId') ?? undefined,
+    architectAgentTemplateId: params.get('architectAgentTemplateId') ?? undefined,
+    developerAgentTemplateId: params.get('developerAgentTemplateId') ?? undefined,
+    qaAgentTemplateId: params.get('qaAgentTemplateId') ?? undefined,
     gateMode,
     loopDefinition,
   }
+}
+
+function notifyWorkflowFinalized(session: BlueprintSession) {
+  if (typeof window === 'undefined' || window.parent === window) return
+  window.parent.postMessage({
+    type: 'blueprintWorkbench.finalized',
+    sessionId: session.id,
+    workflowInstanceId: session.workflowInstanceId,
+    workflowNodeId: session.workflowNodeId,
+    finalPack: session.finalPack,
+    status: session.status,
+  }, window.location.origin === 'http://localhost:5176' ? 'http://localhost:5174' : '*')
 }

@@ -3,6 +3,7 @@ import { prisma } from '../../../../lib/prisma'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import {
   resolveAssignmentRouting,
+  mirrorTeamQueueRouting,
   buildTaskAssignmentInputs,
   getTemplateCapabilityId,
 } from '../../../task/lib/assignment'
@@ -14,7 +15,7 @@ export async function activateHumanTask(
   const cfg = (node.config ?? {}) as Record<string, unknown>
 
   const capabilityId = await getTemplateCapabilityId(instance)
-  const routing = resolveAssignmentRouting(
+  const routing = await mirrorTeamQueueRouting(resolveAssignmentRouting(
     {
       assignmentMode: cfg.assignmentMode as string | undefined,
       assignedToId:   cfg.assignedToId   as string | undefined,
@@ -24,7 +25,7 @@ export async function activateHumanTask(
     },
     capabilityId,
     (instance.context ?? {}) as Record<string, unknown>,
-  )
+  ))
 
   const inputs = buildTaskAssignmentInputs(routing)
 

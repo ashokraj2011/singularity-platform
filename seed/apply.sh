@@ -5,6 +5,9 @@
 #   seed/apply.sh <db_user> [db_pass] [db_host] [db_port]   ← run by hand
 #
 # Idempotent — every file uses ON CONFLICT semantics and re-runs cleanly.
+#
+# Note: 00-iam.sql expects singularity-iam-service to have started once so
+# SQLAlchemy has created the iam.* tables and default roles/admin user.
 
 set -e
 
@@ -23,6 +26,7 @@ run() {
     2>&1 | grep -vE "^(SET|BEGIN|COMMIT|INSERT|UPDATE|NOTICE|DO)" || true
 }
 
+run singularity_iam  00-iam.sql
 run singularity      01-agent-runtime.sql
 run workgraph        02-workgraph.sql
 run audit_governance 03-audit-governance.sql

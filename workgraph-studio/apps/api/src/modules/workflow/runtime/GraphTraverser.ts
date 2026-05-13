@@ -66,6 +66,32 @@ function pickAllMatching(edges: EdgeWithMeta[], context: Record<string, unknown>
   return def ? [def] : []
 }
 
+function walk(root: Record<string, unknown> | undefined, path: string): unknown {
+  if (!root) return undefined
+  return path.split('.').reduce<unknown>((acc, key) => {
+    if (acc !== null && typeof acc === 'object') return (acc as Record<string, unknown>)[key]
+    return undefined
+  }, root)
+}
+
+function resolveRef(context: Record<string, unknown>, value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  const match = value.trim().match(/^\{\{(.+?)\}\}$/)
+  const ref = (match ? match[1] : value).trim()
+  if (ref.startsWith('globals.')) return walk(context._globals as Record<string, unknown>, ref.slice('globals.'.length))
+  if (ref.startsWith('vars.')) return walk(context._vars as Record<string, unknown>, ref.slice('vars.'.length))
+  if (ref.startsWith('params.')) return walk(context._params as Record<string, unknown>, ref.slice('params.'.length))
+  return value
+}
+
+function expectedJoinCount(cfg: Record<string, unknown>, context: Record<string, unknown>): number {
+  const std = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard)
+    ? cfg.standard as Record<string, unknown>
+    : {}
+  const n = Number(resolveRef(context, cfg.expected_joins ?? cfg.expectedBranches ?? std.expectedBranches ?? 0))
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
+}
+
 export async function resolveNextNodes(
   instance: WorkflowInstance,
   completedNode: WorkflowNode,
@@ -135,9 +161,9 @@ export async function resolveNextNodes(
     const refreshed = await prisma.workflowNode.findUnique({ where: { id: targetNode.id } })
     if (!refreshed) continue
     const cfg = refreshed.config as Record<string, unknown>
-    const expected  = Number(cfg.expected_joins ?? 0)
+    const expected  = expectedJoinCount(cfg, context)
     const completed = Number(cfg.completed_joins ?? 0)
-    if (completed >= expected) out.push(refreshed)
+    if (expected > 0 && completed >= expected) out.push(refreshed)
   }
 
   return out

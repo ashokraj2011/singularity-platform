@@ -4,12 +4,15 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
-import { NotFoundError } from '../../lib/errors'
+import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { assertTemplatePermission, resolveDefaultTeamId } from '../../lib/permissions/workflowTemplate'
 import { cloneDesignToRun, getDesignInstanceId } from './lib/cloneDesignToRun'
 import { startInstance } from './runtime/WorkflowRuntime'
 import { validateNodeConfig } from '../lookup/resolver'
+import { listAgentTemplates, type AgentTemplate } from '../../lib/agent-and-tools/client'
+import { normalizeBudgetPolicy } from './runtime/budget'
+import { resolveTeamIdForWorkflow, tokenFromAuthorizationHeader } from '../../lib/iam/teamMirror'
 
 export const workflowTemplatesRouter: Router = Router()
 
@@ -46,6 +49,8 @@ const createTemplateSchema = z.object({
   capabilityId: z.string().optional(),
   metadata:     metadataSchema,
   variables:    z.array(variableDefSchema).optional(),
+  budgetPolicy: z.record(z.unknown()).optional(),
+  starter:      z.enum(['EMPTY', 'CAPABILITY_WORKBENCH_BRIDGE']).optional(),
 })
 
 const updateTemplateSchema = z.object({
@@ -55,13 +60,20 @@ const updateTemplateSchema = z.object({
   capabilityId: z.string().nullable().optional(),
   metadata:     metadataSchema,
   variables:    z.array(variableDefSchema).optional(),
+  budgetPolicy: z.record(z.unknown()).nullable().optional(),
 })
 
 workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, res, next) => {
   try {
-    const { name, description, teamId, capabilityId, metadata, variables } =
+    const { name, description, teamId, capabilityId, metadata, variables, budgetPolicy, starter } =
       req.body as z.infer<typeof createTemplateSchema>
-    const ownerTeamId = teamId ?? (await resolveDefaultTeamId(req.user!.userId))
+    if (starter === 'CAPABILITY_WORKBENCH_BRIDGE' && !capabilityId) {
+      throw new ValidationError('Capability is required for the Agent → Workbench → Human approval starter')
+    }
+    const callerToken = tokenFromAuthorizationHeader(req.headers.authorization)
+    const ownerTeamId = teamId
+      ? await resolveTeamIdForWorkflow(teamId, callerToken)
+      : await resolveDefaultTeamId(req.user!.userId)
 
     const template = await prisma.workflow.create({
       data: {
@@ -71,15 +83,25 @@ workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, re
         createdById:  req.user!.userId,
         metadata:     metadata as any ?? {},
         variables:    (variables ?? []) as unknown as Prisma.InputJsonValue,
+        budgetPolicy: normalizeBudgetPolicy(budgetPolicy) as unknown as Prisma.InputJsonValue,
       },
     })
 
-    // The design graph (phases/nodes/edges) is now owned directly by the
-    // Workflow row in workflow_design_* tables; no auxiliary design-instance
-    // is created up front.  Clients use the design CRUD endpoints to author
-    // the graph (POST /workflow-templates/:id/design/nodes etc).
+    if (starter === 'CAPABILITY_WORKBENCH_BRIDGE') {
+      await createCapabilityWorkbenchBridgeGraph({
+        workflowId: template.id,
+        capabilityId: capabilityId ?? '',
+        actorId: req.user!.userId,
+        authHeader: req.headers.authorization,
+        goal: description?.trim() || name,
+      })
+    }
+
+    // The design graph (phases/nodes/edges) is owned directly by the
+    // Workflow row in workflow_design_* tables. Starter templates may create
+    // an initial graph; otherwise clients use the design CRUD endpoints.
     await logEvent('WorkflowCreated', 'Workflow', template.id, req.user!.userId, {
-      name: template.name, teamId: ownerTeamId, capabilityId,
+      name: template.name, teamId: ownerTeamId, capabilityId, starter: starter ?? 'EMPTY',
     })
     res.status(201).json({ ...template, designInstanceId: template.id })
   } catch (err) {
@@ -87,12 +109,306 @@ workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, re
   }
 })
 
+type StarterAgentBindings = {
+  architectAgentTemplateId: string
+  developerAgentTemplateId: string
+  qaAgentTemplateId: string
+}
+
+async function createCapabilityWorkbenchBridgeGraph({
+  workflowId,
+  capabilityId,
+  actorId,
+  authHeader,
+  goal,
+}: {
+  workflowId: string
+  capabilityId: string
+  actorId: string
+  authHeader?: string
+  goal: string
+}) {
+  const { bindings, warnings } = await resolveStarterAgentBindings(capabilityId, authHeader)
+  const workbenchGoal = goal || 'Produce an approved implementation contract pack.'
+  const workbenchConfig = buildWorkbenchConfig(capabilityId, bindings, workbenchGoal)
+
+  const [startNode, agentNode, workbenchNode, approvalNode, endNode] = await prisma.$transaction(async tx => {
+    const start = await tx.workflowDesignNode.create({
+      data: {
+        workflowId,
+        nodeType: 'START' as any,
+        label: 'Start',
+        config: {},
+        executionLocation: 'SERVER' as any,
+        positionX: 80,
+        positionY: 220,
+      },
+    })
+    const agent = await tx.workflowDesignNode.create({
+      data: {
+        workflowId,
+        nodeType: 'AGENT_TASK' as any,
+        label: 'Agent context brief',
+        config: {
+          capabilityId,
+          agentTemplateId: bindings.architectAgentTemplateId,
+          task: [
+            'Prepare a concise implementation context brief for the Blueprint Workbench.',
+            'Summarize capability assumptions, risk areas, source hints, and any questions the Workbench loop must resolve.',
+            `Goal: ${workbenchGoal}`,
+          ].join('\n'),
+          outputBindings: {
+            agentContextBrief: 'agentContextBrief',
+          },
+          starterWarnings: warnings,
+        } as Prisma.InputJsonValue,
+        executionLocation: 'SERVER' as any,
+        positionX: 280,
+        positionY: 220,
+      },
+    })
+    const workbench = await tx.workflowDesignNode.create({
+      data: {
+        workflowId,
+        nodeType: 'WORKBENCH_TASK' as any,
+        label: 'Blueprint Workbench',
+        config: {
+          assignmentMode: 'DIRECT_USER',
+          assignedToId: actorId,
+          workbench: workbenchConfig,
+          starterWarnings: warnings,
+        } as Prisma.InputJsonValue,
+        executionLocation: 'SERVER' as any,
+        positionX: 520,
+        positionY: 220,
+      },
+    })
+    const approval = await tx.workflowDesignNode.create({
+      data: {
+        workflowId,
+        nodeType: 'APPROVAL' as any,
+        label: 'Human final sign-off',
+        config: {
+          assignmentMode: 'DIRECT_USER',
+          assignedToId: actorId,
+          subject: 'Blueprint final implementation pack',
+          formWidgets: [
+            {
+              id: 'approvalNotes',
+              type: 'textarea',
+              label: 'Approval notes',
+              required: false,
+              placeholder: 'Capture any rollout conditions, risk acceptance, or follow-up work.',
+            },
+          ],
+        } as Prisma.InputJsonValue,
+        executionLocation: 'SERVER' as any,
+        positionX: 780,
+        positionY: 220,
+      },
+    })
+    const end = await tx.workflowDesignNode.create({
+      data: {
+        workflowId,
+        nodeType: 'END' as any,
+        label: 'Done',
+        config: {},
+        executionLocation: 'SERVER' as any,
+        positionX: 1010,
+        positionY: 220,
+      },
+    })
+    await tx.workflowDesignEdge.createMany({
+      data: [
+        { workflowId, sourceNodeId: start.id, targetNodeId: agent.id, edgeType: 'SEQUENTIAL' as any },
+        { workflowId, sourceNodeId: agent.id, targetNodeId: workbench.id, edgeType: 'SEQUENTIAL' as any },
+        { workflowId, sourceNodeId: workbench.id, targetNodeId: approval.id, edgeType: 'SEQUENTIAL' as any },
+        { workflowId, sourceNodeId: approval.id, targetNodeId: end.id, edgeType: 'SEQUENTIAL' as any },
+      ],
+    })
+    return [start, agent, workbench, approval, end] as const
+  })
+
+  await logEvent('WorkflowStarterApplied', 'Workflow', workflowId, actorId, {
+    starter: 'CAPABILITY_WORKBENCH_BRIDGE',
+    capabilityId,
+    nodeIds: {
+      start: startNode.id,
+      agent: agentNode.id,
+      workbench: workbenchNode.id,
+      approval: approvalNode.id,
+      end: endNode.id,
+    },
+    warnings,
+  })
+}
+
+async function resolveStarterAgentBindings(
+  capabilityId: string,
+  authHeader?: string,
+): Promise<{ bindings: StarterAgentBindings; warnings: string[] }> {
+  const warnings: string[] = []
+  if (!capabilityId) {
+    warnings.push('No capability selected; choose a capability before running this workflow.')
+    return { bindings: emptyBindings(), warnings }
+  }
+
+  let templates: AgentTemplate[] = []
+  try {
+    templates = await listAgentTemplates(authHeader, { scope: 'all', capabilityId, limit: 100 })
+  } catch (err) {
+    warnings.push(`Could not prefetch capability agent templates: ${(err as Error).message}`)
+  }
+
+  const pick = (role: 'ARCHITECT' | 'DEVELOPER' | 'QA') => {
+    const normalized = templates
+      .map(t => ({ template: t, role: roleOfTemplate(t), name: String(t.name ?? '').toLowerCase() }))
+      .filter(x => isUsableTemplate(x.template))
+    return (
+      normalized.find(x => x.template.capabilityId === capabilityId && x.role === role)?.template.id ??
+      normalized.find(x => x.role === role)?.template.id ??
+      normalized.find(x => x.template.capabilityId === capabilityId && x.name.includes(role.toLowerCase()))?.template.id ??
+      normalized.find(x => x.name.includes(role.toLowerCase()))?.template.id ??
+      ''
+    )
+  }
+
+  const bindings = {
+    architectAgentTemplateId: pick('ARCHITECT'),
+    developerAgentTemplateId: pick('DEVELOPER'),
+    qaAgentTemplateId: pick('QA'),
+  }
+
+  if (!bindings.architectAgentTemplateId) warnings.push('Architect agent template was not found; bind one in the Workbench node inspector.')
+  if (!bindings.developerAgentTemplateId) warnings.push('Developer agent template was not found; bind one in the Workbench node inspector.')
+  if (!bindings.qaAgentTemplateId) warnings.push('QA agent template was not found; bind one in the Workbench node inspector.')
+
+  return { bindings, warnings }
+}
+
+function emptyBindings(): StarterAgentBindings {
+  return {
+    architectAgentTemplateId: '',
+    developerAgentTemplateId: '',
+    qaAgentTemplateId: '',
+  }
+}
+
+function isUsableTemplate(t: AgentTemplate): boolean {
+  const status = String(t.status ?? (t.isActive === false ? 'INACTIVE' : 'ACTIVE')).toUpperCase()
+  return status !== 'ARCHIVED' && status !== 'INACTIVE' && status !== 'DELETED'
+}
+
+function roleOfTemplate(t: AgentTemplate): string {
+  const raw = t.roleType ?? t.role ?? t.agentRole ?? t.category ?? ''
+  return String(raw).toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+}
+
+function buildWorkbenchConfig(
+  capabilityId: string,
+  bindings: StarterAgentBindings,
+  goal: string,
+) {
+  return {
+    profile: 'blueprint',
+    gateMode: 'manual',
+    sourceType: 'localdir',
+    sourceUri: '',
+    sourceRef: '',
+    goal,
+    capabilityId,
+    agentBindings: bindings,
+    loopDefinition: {
+      version: 1,
+      name: 'Capability implementation workbench loop',
+      maxLoopsPerStage: 3,
+      maxTotalSendBacks: 8,
+      stages: [
+        {
+          key: 'PLAN',
+          label: 'Plan',
+          agentRole: 'ARCHITECT',
+          agentTemplateId: bindings.architectAgentTemplateId,
+          next: 'DESIGN',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: [],
+          expectedArtifacts: [
+            { kind: 'mental_model', title: 'Mental model', required: true, format: 'MARKDOWN' },
+            { kind: 'gaps', title: 'Gaps and risks', required: true, format: 'MARKDOWN' },
+          ],
+        },
+        {
+          key: 'DESIGN',
+          label: 'Design',
+          agentRole: 'ARCHITECT',
+          agentTemplateId: bindings.architectAgentTemplateId,
+          next: 'DEVELOP',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['PLAN'],
+          expectedArtifacts: [
+            { kind: 'solution_architecture', title: 'Solution architecture', required: true, format: 'MARKDOWN' },
+            { kind: 'approved_spec_draft', title: 'Approved spec draft', required: true, format: 'MARKDOWN' },
+          ],
+        },
+        {
+          key: 'DEVELOP',
+          label: 'Develop',
+          agentRole: 'DEVELOPER',
+          agentTemplateId: bindings.developerAgentTemplateId,
+          next: 'QA_REVIEW',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['PLAN', 'DESIGN'],
+          expectedArtifacts: [
+            { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
+            { kind: 'simulated_code_change', title: 'Simulated code-change evidence', required: true, format: 'MARKDOWN' },
+          ],
+        },
+        {
+          key: 'QA_REVIEW',
+          label: 'QA Review',
+          agentRole: 'QA',
+          agentTemplateId: bindings.qaAgentTemplateId,
+          next: 'TEST_CERTIFICATION',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['DESIGN', 'DEVELOP'],
+          expectedArtifacts: [
+            { kind: 'qa_task_pack', title: 'QA review pack', required: true, format: 'MARKDOWN' },
+          ],
+        },
+        {
+          key: 'TEST_CERTIFICATION',
+          label: 'Test Certification',
+          agentRole: 'QA',
+          agentTemplateId: bindings.qaAgentTemplateId,
+          terminal: true,
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['DESIGN', 'DEVELOP', 'QA_REVIEW'],
+          expectedArtifacts: [
+            { kind: 'verification_rules', title: 'Verification rules', required: true, format: 'MARKDOWN' },
+            { kind: 'traceability_matrix', title: 'Traceability matrix', required: true, format: 'MARKDOWN' },
+            { kind: 'certification_receipt', title: 'Certification receipt', required: true, format: 'MARKDOWN' },
+          ],
+        },
+      ],
+    },
+    outputs: {
+      finalPackKey: 'finalImplementationPack',
+    },
+  }
+}
+
 // ─── Runs (instances cloned from the design) ─────────────────────────────────
 
 const startRunSchema = z.object({
   name:    z.string().optional(),
   vars:    z.record(z.unknown()).optional(),
   globals: z.record(z.unknown()).optional(),
+  budgetOverride: z.record(z.unknown()).optional(),
   initiativeId: z.string().uuid().optional(),
 })
 
@@ -108,6 +424,7 @@ workflowTemplatesRouter.post('/:id/runs', validate(startRunSchema), async (req, 
       name:         body.name,
       vars:         body.vars,
       globals:      body.globals,
+      budgetOverride: body.budgetOverride,
       createdById:  req.user!.userId,
       initiativeId: body.initiativeId,
     })
@@ -416,15 +733,20 @@ workflowTemplatesRouter.patch('/:id', validate(updateTemplateSchema), async (req
     await assertTemplatePermission(req.user!.userId, id, 'edit')
     const body = req.body as z.infer<typeof updateTemplateSchema>
 
+    const resolvedTeamId = body.teamId !== undefined
+      ? await resolveTeamIdForWorkflow(body.teamId, tokenFromAuthorizationHeader(req.headers.authorization))
+      : undefined
+
     const t = await prisma.workflow.update({
       where: { id },
       data: {
         ...(body.name         !== undefined ? { name:         body.name }                                              : {}),
         ...(body.description  !== undefined ? { description:  body.description }                                       : {}),
-        ...(body.teamId       !== undefined ? { teamId:       body.teamId }                                            : {}),
+        ...(resolvedTeamId    !== undefined ? { teamId:       resolvedTeamId }                                        : {}),
         ...(body.capabilityId !== undefined ? { capabilityId: body.capabilityId }                                      : {}),
         ...(body.metadata     !== undefined ? { metadata:     body.metadata as any }                                   : {}),
         ...(body.variables    !== undefined ? { variables:    body.variables as unknown as Prisma.InputJsonValue }     : {}),
+        ...(body.budgetPolicy !== undefined ? { budgetPolicy: normalizeBudgetPolicy(body.budgetPolicy) as unknown as Prisma.InputJsonValue } : {}),
       },
     })
     await logEvent('TemplateUpdated', 'WorkflowTemplate', t.id, req.user!.userId, {
@@ -707,7 +1029,7 @@ workflowTemplatesRouter.post('/import-bpmn', async (req, res, next) => {
 // ─── BPMN helpers ─────────────────────────────────────────────────────────────
 
 const BPMN_NODE_MAP: Record<string, string> = {
-  HUMAN_TASK: 'userTask', AGENT_TASK: 'serviceTask', APPROVAL: 'userTask',
+  HUMAN_TASK: 'userTask', AGENT_TASK: 'serviceTask', WORKBENCH_TASK: 'serviceTask', APPROVAL: 'userTask',
   TOOL_REQUEST: 'serviceTask', POLICY_CHECK: 'serviceTask', DATA_SINK: 'serviceTask',
   CONSUMABLE_CREATION: 'serviceTask', CALL_WORKFLOW: 'callActivity',
   FOREACH: 'subProcess', TIMER: 'intermediateCatchEvent',

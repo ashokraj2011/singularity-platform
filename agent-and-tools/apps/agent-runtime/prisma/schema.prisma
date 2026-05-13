@@ -171,6 +171,8 @@ model Capability {
   repositories       CapabilityRepository[]
   knowledgeArtifacts CapabilityKnowledgeArtifact[]
   knowledgeSources   CapabilityKnowledgeSource[]
+  bootstrapRuns      CapabilityBootstrapRun[]
+  learningCandidates CapabilityLearningCandidate[]
   executions         AgentExecution[]
 }
 
@@ -403,6 +405,55 @@ model CapabilityKnowledgeArtifact {
   capability Capability @relation(fields: [capabilityId], references: [id])
 }
 
+model CapabilityBootstrapRun {
+  id                String    @id @default(uuid())
+  capabilityId      String
+  status            String    @default("RUNNING")
+  sourceSummary     Json      @default("{}")
+  generatedAgentIds Json      @default("[]")
+  warnings          Json      @default("[]")
+  errors            Json      @default("[]")
+  createdBy         String?
+  startedAt         DateTime  @default(now())
+  completedAt       DateTime?
+  reviewedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  capability Capability                    @relation(fields: [capabilityId], references: [id])
+  candidates CapabilityLearningCandidate[]
+
+  @@index([capabilityId, createdAt])
+  @@index([status, createdAt])
+}
+
+model CapabilityLearningCandidate {
+  id                     String   @id @default(uuid())
+  capabilityId           String
+  bootstrapRunId         String?
+  groupKey               String
+  groupTitle             String
+  artifactType           String
+  title                  String
+  content                String
+  sourceType             String?
+  sourceRef              String?
+  confidence             Decimal? @db.Decimal(5, 2)
+  status                 String   @default("PENDING")
+  materializedArtifactId String?
+  reviewedBy             String?
+  reviewedAt             DateTime?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  capability   Capability              @relation(fields: [capabilityId], references: [id])
+  bootstrapRun CapabilityBootstrapRun? @relation(fields: [bootstrapRunId], references: [id])
+
+  @@index([capabilityId, status])
+  @@index([bootstrapRunId, groupKey])
+  @@index([sourceType, sourceRef])
+}
+
 model CapabilityCodeSymbol {
   id             String   @id @default(uuid())
   capabilityId   String
@@ -584,4 +635,3 @@ model EventDelivery {
   @@index([status, createdAt])
   @@map("event_deliveries")
 }
-

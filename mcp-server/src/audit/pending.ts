@@ -42,6 +42,7 @@ export interface PendingApproval {
   correlation: CorrelationIds;
   step_index: number;
   max_steps: number;
+  max_tool_result_chars?: number;
   // Accumulated audit so the resumed run preserves history across the pause
   llm_call_ids: string[];
   tool_invocation_ids: string[];

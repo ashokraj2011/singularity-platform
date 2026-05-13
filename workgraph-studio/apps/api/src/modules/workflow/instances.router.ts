@@ -9,6 +9,7 @@ import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, start
 import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { cloneDesignToRun } from './lib/cloneDesignToRun'
+import { getWorkflowBudgetOverview } from './runtime/budget'
 
 export const workflowInstancesRouter: Router = Router()
 
@@ -21,11 +22,14 @@ const createInstanceSchema = z.object({
   // Optional: per-instance overrides for INSTANCE-scoped team variables.
   // GLOBAL-scoped team variables ignore this; the team default is always used.
   globals: z.record(z.unknown()).optional(),
+  // Optional: run-level budget override. Overrides may lower template limits;
+  // raising limits is blocked unless a budget approval flow grants more later.
+  budgetOverride: z.record(z.unknown()).optional(),
 })
 
 const createNodeSchema = z.object({
   phaseId: z.string().uuid().optional(),
-  nodeType: z.enum(['HUMAN_TASK', 'AGENT_TASK', 'APPROVAL', 'DECISION_GATE', 'CONSUMABLE_CREATION', 'TOOL_REQUEST', 'POLICY_CHECK', 'TIMER', 'SIGNAL_WAIT', 'CALL_WORKFLOW', 'FOREACH', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'CUSTOM']),
+  nodeType: z.enum(['HUMAN_TASK', 'AGENT_TASK', 'WORKBENCH_TASK', 'APPROVAL', 'DECISION_GATE', 'CONSUMABLE_CREATION', 'TOOL_REQUEST', 'POLICY_CHECK', 'TIMER', 'SIGNAL_WAIT', 'CALL_WORKFLOW', 'FOREACH', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'CUSTOM']),
   label: z.string().min(1),
   config: z.record(z.unknown()).default({}),
   positionX: z.number().default(0),
@@ -92,6 +96,7 @@ workflowInstancesRouter.post('/', validate(createInstanceSchema), async (req, re
         name:         body.name,
         vars:         body.vars,
         globals:      body.globals,
+        budgetOverride: body.budgetOverride,
         createdById:  req.user!.userId,
         initiativeId: body.initiativeId,
       })
@@ -151,6 +156,16 @@ workflowInstancesRouter.get('/:id', async (req, res, next) => {
     })
     if (!instance) throw new NotFoundError('WorkflowInstance', req.params.id)
     res.json(instance)
+  } catch (err) {
+    next(err)
+  }
+})
+
+workflowInstancesRouter.get('/:id/budget', async (req, res, next) => {
+  try {
+    await assertInstancePermission(req.user!.userId, req.params.id, 'view')
+    const budget = await getWorkflowBudgetOverview(req.params.id)
+    res.json(budget)
   } catch (err) {
     next(err)
   }

@@ -32,6 +32,7 @@
 
 import type { Prisma, WorkflowInstance } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
+import { resolveTeamIdForWorkflow } from '../../../lib/iam/teamMirror'
 
 /** Look up the owning capabilityId for the workflow that produced this instance. */
 export async function getTemplateCapabilityId(instance: WorkflowInstance): Promise<string | null> {
@@ -147,6 +148,14 @@ export function resolveAssignmentRouting(
     skillKey:     mode === 'SKILL_BASED' ? resolve(cfg.skillKey)     : null,
     // ROLE_BASED *requires* a capability scope; other modes ignore it.
     capabilityId: mode === 'ROLE_BASED'  ? templateCapabilityId       : null,
+  }
+}
+
+export async function mirrorTeamQueueRouting(routing: ResolvedRouting): Promise<ResolvedRouting> {
+  if (routing.mode !== 'TEAM_QUEUE' || !routing.teamId) return routing
+  return {
+    ...routing,
+    teamId: await resolveTeamIdForWorkflow(routing.teamId),
   }
 }
 
