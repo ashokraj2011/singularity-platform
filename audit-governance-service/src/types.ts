@@ -38,6 +38,9 @@ export const approvalCreateSchema = z.object({
   risk_level:     z.string().optional(),
   requested_by:   z.string().optional(),
   expires_at:     z.string().optional(),              // ISO timestamp
+  // M21.5 — authoritative LoopState envelope so mcp-server can resume after
+  // a restart. Opaque blob, audit-gov doesn't inspect it.
+  continuation_payload: z.record(z.unknown()).optional(),
 });
 
 export const approvalDecideSchema = z.object({

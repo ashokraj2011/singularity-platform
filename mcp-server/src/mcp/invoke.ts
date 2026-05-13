@@ -28,6 +28,7 @@ import { extractCodeChange } from "../audit/provenanceExtractor";
 import { events } from "../events/bus";
 import { emitAuditEvent } from "../lib/audit-gov-emit";
 import { checkBudget, checkRateLimit } from "../lib/audit-gov-check";
+import { persistApproval, consumeApproval } from "../lib/audit-gov-approvals";
 import {
   savePending, takePending, peekPending, PendingToolDescriptor,
 } from "../audit/pending";
@@ -279,27 +280,22 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
               expires_at: env.expires_at,
             },
           });
-          // M21 — register the approval in the central authority + write
-          // the audit_event so the dashboard can see who's waiting.
-          //
-          // Production hardening will MOVE the PendingApproval store from
-          // mcp-server's in-memory map into audit-governance entirely (M21.5);
-          // for v0 we mirror so the surface is visible without breaking M9.z.
-          void fetch(`${process.env.AUDIT_GOV_URL ?? "http://host.docker.internal:8500"}/api/v1/governance/approvals`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              id: env.continuation_token,
-              trace_id: state.correlation.traceId,
-              capability_id: state.correlation.capabilityId,
-              source_service: "mcp-server",
-              tool_name: tc.name,
-              tool_args: tc.args,
-              risk_level: desc?.risk_level,
-              expires_at: env.expires_at,
-            }),
-            signal: AbortSignal.timeout(5_000),
-          }).catch(() => { /* fire-and-forget */ });
+          // M21.5 — audit-gov is now AUTHORITATIVE for pending approvals.
+          // We persist the full continuation_payload (LoopState envelope) so
+          // mcp-server restart doesn't drop in-flight approvals. Synchronous
+          // so the loop knows durability is intact before pausing. On audit-gov
+          // failure we degrade to in-memory-only and log — the approval still
+          // proceeds, but a restart will lose it.
+          const persisted = await persistApproval(env, {
+            capability_id: state.correlation.capabilityId,
+            tool_name: tc.name,
+            tool_args: tc.args ?? {},
+            risk_level: desc?.risk_level,
+          });
+          if (!persisted) {
+            // Best-effort surfacing — the loop continues but operators will
+            // see a warn in mcp-server logs if audit-gov is misconfigured.
+          }
           emitAuditEvent({
             trace_id: state.correlation.traceId,
             source_service: "mcp-server",
@@ -540,7 +536,25 @@ invokeRouter.post("/resume", async (req, res) => {
   const body = parsed.data;
   const startedAt = Date.now();
 
-  const env = takePending(body.continuation_token);  // single-use
+  // M21.5 — try in-memory first (hot path, same instance), fall through to
+  // audit-gov on miss so a restarted mcp-server can still resume the run.
+  // /consume is single-use atomic: the audit-gov row flips to 'consumed' on
+  // first call, so concurrent resumers can't both succeed.
+  let env = takePending(body.continuation_token);
+  if (!env) {
+    const consumed = await consumeApproval(body.continuation_token);
+    if (consumed && consumed.payload) {
+      env = consumed.payload;
+      // Trust audit-gov's decision over the request body if they disagree
+      // (operator may have changed mind between /decide and /resume).
+      if (body.decision !== consumed.decision) {
+        log.warn({ token: body.continuation_token, sent: body.decision, audit: consumed.decision },
+          "[mcp-server] /mcp/resume decision arg differs from audit-gov; using audit-gov");
+        body.decision = consumed.decision;
+        if (consumed.decision_reason) body.reason = consumed.decision_reason;
+      }
+    }
+  }
   if (!env) throw new NotFoundError(`continuation_token not found or already consumed: ${body.continuation_token}`);
 
   const state: LoopState = {

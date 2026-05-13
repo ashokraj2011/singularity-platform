@@ -89,12 +89,23 @@ CREATE TABLE IF NOT EXISTS approvals (
   risk_level          TEXT,
   requested_by        TEXT,
   requested_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  status              TEXT NOT NULL DEFAULT 'pending',  -- pending | approved | rejected | expired
+  -- M21 + M21.5: status lifecycle now has 'consumed' so /consume marks the
+  -- continuation_payload as fetched-by-mcp-server (single-use semantics).
+  status              TEXT NOT NULL DEFAULT 'pending',  -- pending | approved | rejected | consumed | expired
   decided_by          TEXT,
   decided_at          TIMESTAMPTZ,
   decision_reason     TEXT,
-  expires_at          TIMESTAMPTZ
+  expires_at          TIMESTAMPTZ,
+  -- M21.5 — authoritative LoopState envelope so mcp-server can resume after
+  -- a restart. JSON blob; opaque to audit-gov but persisted alongside the
+  -- approval row.
+  continuation_payload JSONB,
+  consumed_at         TIMESTAMPTZ
 );
+
+-- M21.5 — additive column for existing audit-gov DBs that pre-date this.
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS continuation_payload JSONB;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS consumed_at         TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_approvals_status_capability ON approvals(status, capability_id);
 CREATE INDEX IF NOT EXISTS idx_approvals_trace             ON approvals(trace_id);

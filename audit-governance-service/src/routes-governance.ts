@@ -23,15 +23,70 @@ governanceRouter.post("/approvals", async (req: Request, res: Response) => {
   const row = await queryOne<Record<string, unknown>>(
     `INSERT INTO audit_governance.approvals
        (id, trace_id, capability_id, tenant_id, source_service,
-        tool_name, tool_args, risk_level, requested_by, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)
+        tool_name, tool_args, risk_level, requested_by, expires_at,
+        continuation_payload)
+     VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11::jsonb)
      ON CONFLICT (id) DO NOTHING
      RETURNING *`,
     [p.id, p.trace_id ?? null, p.capability_id ?? null, p.tenant_id ?? null,
      p.source_service, p.tool_name, JSON.stringify(p.tool_args), p.risk_level ?? null,
-     p.requested_by ?? null, p.expires_at ?? null],
+     p.requested_by ?? null, p.expires_at ?? null,
+     p.continuation_payload ? JSON.stringify(p.continuation_payload) : null],
   );
   res.status(201).json(row ?? { id: p.id, status: "exists" });
+});
+
+// M21.5 — atomic single-use claim. mcp-server's takePending() now hits this
+// instead of the in-memory map. Status transitions:
+//   pending  → 409 (caller must /decide first)
+//   approved → 200 with continuation_payload + decision='approved'; row → 'consumed'
+//   rejected → 200 with continuation_payload + decision='rejected'; row → 'consumed'
+//   consumed → 409 (single-use; already claimed)
+//   expired  → 410
+//
+// Implementation: a CTE captures the row's pre-update status (=decision) and
+// the UPDATE flips it to 'consumed' atomically — no race window where two
+// callers could both succeed.
+governanceRouter.post("/approvals/:id/consume", async (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  const row = await queryOne<{
+    id: string; decision: "approved" | "rejected";
+    decided_by: string | null; decision_reason: string | null;
+    continuation_payload: unknown; expires_at: string | null;
+  }>(
+    `WITH claim AS (
+       UPDATE audit_governance.approvals AS a
+       SET status = 'consumed', consumed_at = now()
+       FROM audit_governance.approvals AS pre
+       WHERE a.id = $1
+         AND pre.id = $1
+         AND pre.status IN ('approved', 'rejected')
+         AND (pre.expires_at IS NULL OR pre.expires_at > now())
+       RETURNING a.id, pre.status AS decision, a.decided_by, a.decision_reason,
+                a.continuation_payload, a.expires_at
+     )
+     SELECT * FROM claim`,
+    [id],
+  );
+  if (!row) {
+    const cur = await queryOne<{ status: string; expires_at: string | null }>(
+      `SELECT status, expires_at FROM audit_governance.approvals WHERE id = $1`, [id],
+    );
+    if (!cur) return res.status(404).json({ error: "approval not found" });
+    if (cur.expires_at && new Date(cur.expires_at as unknown as string) <= new Date()) {
+      return res.status(410).json({ error: "approval expired" });
+    }
+    return res.status(409).json({
+      error: `approval is ${cur.status} (need approved or rejected; single-use)`,
+    });
+  }
+  res.json({
+    id: row.id,
+    decision: row.decision,
+    decided_by: row.decided_by,
+    decision_reason: row.decision_reason,
+    continuation_payload: row.continuation_payload,
+  });
 });
 
 governanceRouter.get("/approvals/:id", async (req: Request, res: Response) => {
