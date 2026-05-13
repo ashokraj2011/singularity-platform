@@ -593,6 +593,60 @@ docker exec singularity-at-postgres psql -U postgres -d singularity -tAc \
 # → "# Current Task\nAudit auth-service for OWASP issues."   ✓ var substituted
 ```
 
+### Deploy Environment Check
+
+For the office laptop or any remote Docker host, configure the GitHub
+environment secrets used by `.github/workflows/deploy.yml`:
+
+- `DEPLOY_HOST`
+- `DEPLOY_USER`
+- `DEPLOY_SSH_KEY`
+- `DEPLOY_PATH`
+
+On a target host, run this before using the deploy workflow:
+
+```bash
+DEPLOY_HOST=localhost DEPLOY_USER="$USER" DEPLOY_PATH="$PWD" DEPLOY_SSH_KEY_FILE=~/.ssh/id_rsa \
+  ./bin/check-deploy-env.sh
+```
+
+### M25 Knowledge / Citation Check
+
+Prompt Composer now stores typed retrieval evidence on each `PromptAssembly`
+so Run Insights can show citations per agent step. Before demoing or after a
+DB rebuild, verify the pgvector and citation surfaces:
+
+```bash
+PROMPT_COMPOSER_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/singularity" \
+  ./bin/check-m25-knowledge.sh
+```
+
+Pass criteria:
+
+- `vector` extension exists.
+- `PromptAssembly.evidenceRefs` exists.
+- `CapabilityCompiledContext` exists.
+- Recent `evidenceRefs` rows stay small enough for audit replay.
+
+### Execution Governance Surfaces
+
+These are now implemented and should be checked during smoke tests:
+
+- **Live streaming:** MCP emits `llm.stream.delta`; Workgraph exposes
+  `/api/workflow-instances/:id/events/stream`; Run Viewer and Run Insights show
+  live transcript/events with polling fallback.
+- **Approval resume:** MCP pauses on `requires_approval` and SERVER-tool
+  `waiting_approval`; Context Fabric resumes through `/execute/resume`;
+  Workgraph Approvals shows paused agent tool calls, allows reason capture, and
+  lets operators edit JSON tool arguments before approving.
+- **Citations:** Prompt Composer writes typed `RetrievedChunk[]` evidence refs;
+  Run Insights renders per-step citation drill-through.
+- **Tenant guardrails:** Context Fabric can require `run_context.tenant_id` with
+  `REQUIRE_TENANT_ID=true`; call logs and event rows persist `tenant_id` so
+  event replay and rollups can be tenant-filtered.
+- **Deploy readiness:** `.github/workflows/deploy.yml` is manual and SSH-based.
+  It is active only after the GitHub environment secrets above are configured.
+
 ---
 
 ## `singularity.sh` cheatsheet
@@ -752,15 +806,12 @@ docker compose down -v --remove-orphans  # raw equivalent
 
 These are real gaps, not nice-to-haves:
 
-- **SSO** — IAM is the platform identity source. Workgraph supports `AUTH_PROVIDER=iam`; local auth remains only for offline dev.
-- **Agent source of truth** — agent-and-tools `AgentTemplate` is authoritative. Workgraph `Agent` rows are execution snapshots only and are created from selected templates at run time.
-- **AgentRun correlation columns** — `promptAssemblyId`, `modelCallId`, `contextPackageId` are stuffed in `structuredPayload` JSON. Promote to dedicated columns for queryability.
-- **Streaming UI polish** — MCP emits `llm.stream.delta` and Workgraph exposes SSE; the remaining work is richer per-step transcript UX and reconnect history controls.
-- **SERVER-tool approval UX** — MCP now pauses/resumes when tool-service requires approval; Workgraph still needs a dedicated approval action surface for that continuation token.
-- **Knowledge / learning pipeline** — code symbols, knowledge artifacts, bootstrap approval, and retrieval exist in slices; remaining work is M25 typed citations/compiler/hybrid retrieval hardening.
-- **Per-tenant multi-tenancy** — tenant IDs are propagated for audit/event filtering. Hard isolation still needs tenant-scoped service tokens and database-level controls.
-- **Observability** — no OpenTelemetry/Jaeger across the stack; correlation IDs exist but aren't wired into traces.
-- **Production deploy** — Dockerfiles and CI image builds exist; environment promotion/release automation is still next.
+- **SSO deployment mode** — IAM is the platform identity source. Workgraph supports `AUTH_PROVIDER=iam`; make sure deployed stacks do not leave Workgraph in local auth except for offline dev.
+- **AgentRun correlation columns** — `promptAssemblyId`, `modelCallId`, `contextPackageId`, `cfCallId`, and MCP IDs are still stored in `structuredPayload` JSON. Promote to dedicated columns for faster reporting.
+- **M25 production hardening** — typed citations, compiled context, and hybrid retrieval exist, but still need benchmark enforcement, FTS migration/backfill checks, and quality comparison reviews before calling it production-grade.
+- **Hard tenant isolation** — tenant IDs are now propagated, persisted, and filterable. True isolation still needs tenant-scoped service tokens, row-level checks everywhere, and possibly database RLS/schema separation.
+- **Observability depth** — Jaeger is available and several services have OTel, but the full Workgraph → Context Fabric → MCP trace is not yet stitched as one distributed trace.
+- **Deploy secrets** — Dockerfiles, CI image builds, and manual deploy workflow exist. The GitHub environment secrets must still be configured per target.
 
 ---
 

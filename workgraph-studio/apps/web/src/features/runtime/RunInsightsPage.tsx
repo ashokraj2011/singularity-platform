@@ -37,6 +37,13 @@ interface InsightNode {
     astIndexedFiles?: number
     astIndexedSymbols?: number
   }>
+  citations: Array<{
+    citationKey: string
+    sourceKind: string
+    sourceId: string
+    confidence: number | null
+    excerpt: string
+  }>
   laptopDevice?: {
     user_id: string
     device_id: string
@@ -283,49 +290,69 @@ export function RunInsightsPage() {
               const widthPct = n.durationMs ? Math.max(2, (n.durationMs / maxStep) * 100) : (n.status === 'ACTIVE' ? 4 : 1)
               const color = STATUS_COLOR[n.status] ?? '#64748b'
               return (
-                <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11 }}>
-                  <div style={{ width: 220, minWidth: 220, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{
-                      width: 7, height: 7, borderRadius: 4, background: color, flexShrink: 0,
-                    }} />
-                    <span style={{ fontWeight: 600, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {n.label}
-                    </span>
-                    <span style={{ fontSize: 9, color: '#94a3b8', fontFamily: 'monospace' }}>
-                      {n.nodeType}
-                    </span>
-                  </div>
-                  <div style={{
-                    flex: 1, height: 22, background: '#f1f5f9', borderRadius: 4, position: 'relative', overflow: 'hidden',
-                  }}>
+                <div key={n.id} style={{ display: 'grid', gap: 6, fontSize: 11 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ width: 220, minWidth: 220, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{
+                        width: 7, height: 7, borderRadius: 4, background: color, flexShrink: 0,
+                      }} />
+                      <span style={{ fontWeight: 600, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {n.label}
+                      </span>
+                      <span style={{ fontSize: 9, color: '#94a3b8', fontFamily: 'monospace' }}>
+                        {n.nodeType}
+                      </span>
+                    </div>
                     <div style={{
-                      width: `${widthPct}%`, height: '100%',
-                      background: color, opacity: n.status === 'COMPLETED' ? 0.9 : 0.6,
-                    }} />
-                    <div style={{
-                      position: 'absolute', inset: 0,
-                      display: 'flex', alignItems: 'center', padding: '0 8px',
-                      fontSize: 10, color: '#0f172a',
+                      flex: 1, height: 22, background: '#f1f5f9', borderRadius: 4, position: 'relative', overflow: 'hidden',
                     }}>
-                      {n.durationMs != null ? `${n.durationPrecise ? '' : '≈ '}${fmtDuration(n.durationMs)}` : n.status.toLowerCase()}
-                      {(n.documents.length > 0 || n.consumables.length > 0 || n.workspace.length > 0 || n.eventCount > 0 || !!n.laptopDevice) && (
-                        <span style={{ marginLeft: 'auto', fontSize: 9, color: '#475569', display: 'flex', gap: 8 }}>
-                          {n.documents.length > 0  && <span>📎 {n.documents.length}</span>}
-                          {n.consumables.length > 0 && <span>📦 {n.consumables.length}</span>}
-                          {n.workspace.length > 0 && <span>⑂ {n.workspace[0].branch ?? 'workspace'}</span>}
-                          {n.eventCount > 0        && <span>⚡ {n.eventCount}</span>}
-                          {n.laptopDevice && (
-                            <span title={`Served by ${n.laptopDevice.device_name ?? 'laptop'} (device ${n.laptopDevice.device_id.slice(0, 8)}, user ${n.laptopDevice.user_id.slice(0, 8)})`} style={{ color: '#0369a1', fontWeight: 600 }}>
-                              🖥 {n.laptopDevice.device_name ?? 'laptop'}
-                            </span>
-                          )}
-                        </span>
-                      )}
+                      <div style={{
+                        width: `${widthPct}%`, height: '100%',
+                        background: color, opacity: n.status === 'COMPLETED' ? 0.9 : 0.6,
+                      }} />
+                      <div style={{
+                        position: 'absolute', inset: 0,
+                        display: 'flex', alignItems: 'center', padding: '0 8px',
+                        fontSize: 10, color: '#0f172a',
+                      }}>
+                        {n.durationMs != null ? `${n.durationPrecise ? '' : '≈ '}${fmtDuration(n.durationMs)}` : n.status.toLowerCase()}
+                        {(n.documents.length > 0 || n.consumables.length > 0 || n.workspace.length > 0 || n.eventCount > 0 || !!n.laptopDevice || n.citations.length > 0) && (
+                          <span style={{ marginLeft: 'auto', fontSize: 9, color: '#475569', display: 'flex', gap: 8 }}>
+                            {n.documents.length > 0  && <span>docs {n.documents.length}</span>}
+                            {n.consumables.length > 0 && <span>artifacts {n.consumables.length}</span>}
+                            {n.workspace.length > 0 && <span>branch {n.workspace[0].branch ?? 'workspace'}</span>}
+                            {n.citations.length > 0 && <span>cites {n.citations.length}</span>}
+                            {n.eventCount > 0        && <span>events {n.eventCount}</span>}
+                            {n.laptopDevice && (
+                              <span title={`Served by ${n.laptopDevice.device_name ?? 'laptop'} (device ${n.laptopDevice.device_id.slice(0, 8)}, user ${n.laptopDevice.user_id.slice(0, 8)})`} style={{ color: '#0369a1', fontWeight: 600 }}>
+                                laptop {n.laptopDevice.device_name ?? ''}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ width: 80, minWidth: 80, fontSize: 10, color: '#64748b', textAlign: 'right' }}>
+                      {n.status}
                     </div>
                   </div>
-                  <div style={{ width: 80, minWidth: 80, fontSize: 10, color: '#64748b', textAlign: 'right' }}>
-                    {n.status}
-                  </div>
+                  {n.citations.length > 0 && (
+                    <details style={{ marginLeft: 230, border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 8px', background: '#f8fafc' }}>
+                      <summary style={{ cursor: 'pointer', color: '#334155', fontWeight: 700, fontSize: 10 }}>Citations</summary>
+                      <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
+                        {n.citations.map((c) => (
+                          <div key={`${n.id}-${c.citationKey}-${c.sourceId}`} style={{ fontSize: 10, color: '#475569' }}>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                              <code style={{ color: '#0f172a' }}>{c.citationKey || c.sourceId}</code>
+                              <span>{c.sourceKind}</span>
+                              {c.confidence != null && <span>{Math.round(c.confidence * 100)}%</span>}
+                            </div>
+                            {c.excerpt && <div style={{ marginTop: 2, color: '#64748b' }}>{c.excerpt}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
                 </div>
               )
             })}

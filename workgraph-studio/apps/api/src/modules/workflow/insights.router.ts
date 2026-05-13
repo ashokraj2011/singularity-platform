@@ -134,6 +134,13 @@ interface NodeInsight {
     astIndexedFiles?: number
     astIndexedSymbols?: number
   }>
+  citations: Array<{
+    citationKey: string
+    sourceKind: string
+    sourceId: string
+    confidence: number | null
+    excerpt: string
+  }>
   // M26 — present when the AGENT_TASK ran on a connected user laptop. The
   // SPA renders "🖥 served by your laptop ({device_name})" on the Gantt step.
   // Populated from cf.invoke.via_laptop events emitted by context-fabric.
@@ -209,6 +216,29 @@ function runDuration(run: { startedAt: Date | null; completedAt: Date | null; cr
   if (run.startedAt && run.completedAt) return run.completedAt.getTime() - run.startedAt.getTime()
   if (run.completedAt) return run.completedAt.getTime() - run.createdAt.getTime()
   return null
+}
+
+async function fetchAssemblyCitations(promptAssemblyId: string): Promise<NodeInsight['citations']> {
+  try {
+    const url = `${config.PROMPT_COMPOSER_URL.replace(/\/$/, '')}/api/v1/prompt-assemblies/${encodeURIComponent(promptAssemblyId)}`
+    const resp = await fetch(url, { signal: AbortSignal.timeout(5000) })
+    if (!resp.ok) return []
+    const body = await resp.json() as { data?: { evidenceRefs?: unknown } }
+    const refs = body.data?.evidenceRefs
+    if (!Array.isArray(refs)) return []
+    return refs.slice(0, 12).map((raw) => {
+      const r = raw as Record<string, unknown>
+      return {
+        citationKey: String(r.citation_key ?? ''),
+        sourceKind: String(r.source_kind ?? ''),
+        sourceId: String(r.source_id ?? ''),
+        confidence: typeof r.confidence === 'number' ? r.confidence : null,
+        excerpt: String(r.excerpt ?? r.content ?? '').slice(0, 500),
+      }
+    }).filter(c => c.citationKey || c.excerpt)
+  } catch {
+    return []
+  }
 }
 
 insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) => {
@@ -305,10 +335,14 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
     }
 
     const workspaceByNode = new Map<string, NodeInsight['workspace']>()
+    const assemblyIdsByNode = new Map<string, string>()
     for (const r of agentRuns) {
       if (!r.nodeId) continue
       const payload = r.outputs[0]?.structuredPayload as Record<string, unknown> | null
       if (!payload) continue
+      const promptAssemblyId = (payload.promptAssemblyId
+        ?? (payload.correlation as Record<string, unknown> | undefined)?.promptAssemblyId) as string | undefined
+      if (promptAssemblyId) assemblyIdsByNode.set(r.nodeId, promptAssemblyId)
       const branch = (payload.workspaceBranch ?? (payload.workspace as Record<string, unknown> | undefined)?.workspaceBranch) as string | undefined
       const commitSha = (payload.workspaceCommitSha ?? (payload.workspace as Record<string, unknown> | undefined)?.workspaceCommitSha) as string | undefined
       const changedPaths = (payload.changedPaths ?? (payload.workspace as Record<string, unknown> | undefined)?.changedPaths) as unknown
@@ -327,6 +361,11 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
       })
       workspaceByNode.set(r.nodeId, arr)
     }
+
+    const citationsByNode = new Map<string, NodeInsight['citations']>()
+    await Promise.all(Array.from(assemblyIdsByNode.entries()).map(async ([nodeId, assemblyId]) => {
+      citationsByNode.set(nodeId, await fetchAssemblyCitations(assemblyId))
+    }))
 
     const nodesByStatus: Record<string, number> = {}
     for (const n of nodes) nodesByStatus[n.status] = (nodesByStatus[n.status] ?? 0) + 1
@@ -357,6 +396,7 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
         currentVersion: c.currentVersion, updatedAt: c.updatedAt.toISOString(),
       })),
       workspace: workspaceByNode.get(n.id) ?? [],
+      citations: citationsByNode.get(n.id) ?? [],
       laptopDevice: laptopByNodeId.get(n.id),
       eventCount: eventsByNodeId.get(n.id) ?? 0,
       })

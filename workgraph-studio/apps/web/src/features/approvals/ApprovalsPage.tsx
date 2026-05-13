@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { motion } from 'motion/react'
 import { ThumbsUp, ThumbsDown, Loader2 } from 'lucide-react'
 import { api } from '../../lib/api'
@@ -25,6 +26,8 @@ type AgentRunApproval = {
 
 export function ApprovalsPage() {
   const qc = useQueryClient()
+  const [agentReasons, setAgentReasons] = useState<Record<string, string>>({})
+  const [agentArgs, setAgentArgs] = useState<Record<string, string>>({})
 
   const { data, isLoading } = useQuery({
     queryKey: ['approvals', 'my'],
@@ -43,8 +46,13 @@ export function ApprovalsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['approvals'] }),
   })
   const decideAgentRun = useMutation({
-    mutationFn: ({ id, decision }: { id: string; decision: 'approved' | 'rejected' }) =>
-      api.post(`/agent-runs/${id}/approve`, { decision }),
+    mutationFn: ({ id, decision, reason, argsText }: { id: string; decision: 'approved' | 'rejected'; reason?: string; argsText?: string }) => {
+      let args_override: Record<string, unknown> | undefined
+      if (argsText?.trim()) {
+        args_override = JSON.parse(argsText)
+      }
+      return api.post(`/agent-runs/${id}/approve`, { decision, reason, args_override })
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['agent-runs', 'pending-approval'] })
       qc.invalidateQueries({ queryKey: ['approvals'] })
@@ -110,6 +118,9 @@ export function ApprovalsPage() {
     const pending = run.outputs?.[0]?.structuredPayload?.pendingApproval ?? null
     const toolName = pending?.tool_name ?? 'tool call'
     const risk = pending?.tool_descriptor?.risk_level ?? 'approval'
+    const args = pending?.tool_args ?? {}
+    const argsText = agentArgs[run.id] ?? JSON.stringify(args, null, 2)
+    const reason = agentReasons[run.id] ?? ''
     return (
       <div className="glass-card rounded-xl p-4" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>
         <div className="flex items-start gap-3">
@@ -125,11 +136,31 @@ export function ApprovalsPage() {
             <p className="text-xs text-slate-600 mt-0.5">
               {risk} · {run.startedAt ? new Date(run.startedAt).toLocaleString() : 'paused'}
             </p>
+            <div className="mt-3 grid gap-2">
+              <label className="text-xs text-slate-500">
+                Reason
+                <input
+                  className="mt-1 w-full rounded-lg bg-slate-950/70 border border-slate-800 px-3 py-2 text-xs text-slate-200 outline-none focus:border-cyan-500"
+                  value={reason}
+                  onChange={(e) => setAgentReasons(prev => ({ ...prev, [run.id]: e.target.value }))}
+                  placeholder="Why this tool call is approved or rejected"
+                />
+              </label>
+              <label className="text-xs text-slate-500">
+                Tool arguments
+                <textarea
+                  className="mt-1 w-full min-h-24 rounded-lg bg-slate-950/70 border border-slate-800 px-3 py-2 text-xs text-slate-200 font-mono outline-none focus:border-cyan-500"
+                  value={argsText}
+                  onChange={(e) => setAgentArgs(prev => ({ ...prev, [run.id]: e.target.value }))}
+                  spellCheck={false}
+                />
+              </label>
+            </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button
               className="w-7 h-7 flex items-center justify-center rounded-lg text-emerald-400 hover:bg-emerald-500/10 transition-colors"
-              onClick={() => decideAgentRun.mutate({ id: run.id, decision: 'approved' })}
+              onClick={() => decideAgentRun.mutate({ id: run.id, decision: 'approved', reason, argsText })}
               disabled={decideAgentRun.isPending}
               title="Approve agent tool call"
             >
@@ -137,7 +168,7 @@ export function ApprovalsPage() {
             </button>
             <button
               className="w-7 h-7 flex items-center justify-center rounded-lg text-red-400 hover:bg-red-500/10 transition-colors"
-              onClick={() => decideAgentRun.mutate({ id: run.id, decision: 'rejected' })}
+              onClick={() => decideAgentRun.mutate({ id: run.id, decision: 'rejected', reason, argsText })}
               disabled={decideAgentRun.isPending}
               title="Reject agent tool call"
             >

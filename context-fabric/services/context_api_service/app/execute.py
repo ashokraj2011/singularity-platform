@@ -670,6 +670,7 @@ async def execute(req: ExecuteRequest):
         "workflow_node_id": req.run_context.workflow_node_id,
         "agent_run_id": req.run_context.agent_run_id,
         "capability_id": req.run_context.capability_id,
+        "tenant_id": req.run_context.tenant_id,
         "agent_template_id": req.run_context.agent_template_id,
         "session_id": session_id,
         "prompt_assembly_id": prompt_assembly_id,
@@ -789,6 +790,7 @@ def _persist_failure(
             "workflow_node_id": req.run_context.workflow_node_id,
             "agent_run_id": req.run_context.agent_run_id,
             "capability_id": req.run_context.capability_id,
+            "tenant_id": req.run_context.tenant_id,
             "agent_template_id": req.run_context.agent_template_id,
             "session_id": session_id,
             "prompt_assembly_id": prompt_assembly_id,
@@ -815,11 +817,12 @@ async def get_call(call_id: str):
 @router.get("/execute/calls")
 async def list_calls(trace_id: Optional[str] = None,
                      workflow_run_id: Optional[str] = None,
+                     tenant_id: Optional[str] = None,
                      limit: int = 50):
     if trace_id:
         return {"items": call_log.list_by_trace(trace_id, limit)}
     if workflow_run_id:
-        return {"items": call_log.list_by_workflow(workflow_run_id, limit)}
+        return {"items": call_log.list_by_workflow(workflow_run_id, limit, tenant_id=tenant_id)}
     return {"items": call_log.list_recent(limit)}
 
 

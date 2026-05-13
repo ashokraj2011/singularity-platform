@@ -36,6 +36,7 @@ def init_db() -> None:
                 workflow_node_id TEXT,
                 agent_run_id TEXT,
                 capability_id TEXT,
+                tenant_id TEXT,
                 agent_template_id TEXT,
                 session_id TEXT,
                 prompt_assembly_id TEXT,
@@ -68,6 +69,7 @@ def init_db() -> None:
             "ALTER TABLE call_log ADD COLUMN pending_tool_name TEXT",
             "ALTER TABLE call_log ADD COLUMN pending_tool_args_json TEXT",
             "ALTER TABLE call_log ADD COLUMN code_change_ids_json TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE call_log ADD COLUMN tenant_id TEXT",
         ):
             try:
                 conn.execute(stmt)
@@ -75,6 +77,7 @@ def init_db() -> None:
                 pass  # already present
         conn.execute("CREATE INDEX IF NOT EXISTS idx_call_log_trace ON call_log(trace_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_call_log_workflow ON call_log(workflow_run_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_call_log_tenant ON call_log(tenant_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_call_log_session ON call_log(session_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_call_log_continuation ON call_log(continuation_token);")
 
@@ -89,7 +92,7 @@ def insert(record: dict) -> str:
             """
             INSERT INTO call_log (
                 id, trace_id, workflow_run_id, workflow_node_id, agent_run_id,
-                capability_id, agent_template_id, session_id,
+                capability_id, tenant_id, agent_template_id, session_id,
                 prompt_assembly_id, mcp_server_id, mcp_invocation_id,
                 llm_call_ids_json, tool_invocation_ids_json, artifact_ids_json,
                 code_change_ids_json,
@@ -97,7 +100,7 @@ def insert(record: dict) -> str:
                 input_tokens, output_tokens, total_tokens, estimated_cost,
                 started_at, completed_at, error,
                 continuation_token, pending_tool_name, pending_tool_args_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row_id,
@@ -106,6 +109,7 @@ def insert(record: dict) -> str:
                 record.get("workflow_node_id"),
                 record.get("agent_run_id"),
                 record.get("capability_id"),
+                record.get("tenant_id"),
                 record.get("agent_template_id"),
                 record.get("session_id"),
                 record.get("prompt_assembly_id"),
@@ -235,12 +239,16 @@ def list_by_trace(trace_id: str, limit: int = 50) -> list[dict]:
         return [r for r in (_hydrate(d) for d in rows_to_dicts(cur.fetchall())) if r]
 
 
-def list_by_workflow(workflow_run_id: str, limit: int = 50) -> list[dict]:
+def list_by_workflow(workflow_run_id: str, limit: int = 50, tenant_id: Optional[str] = None) -> list[dict]:
+    sql = "SELECT * FROM call_log WHERE workflow_run_id = ?"
+    params: list = [workflow_run_id]
+    if tenant_id:
+        sql += " AND tenant_id = ?"
+        params.append(tenant_id)
+    sql += " ORDER BY started_at DESC LIMIT ?"
+    params.append(limit)
     with sqlite_conn(DB_PATH) as conn:
-        cur = conn.execute(
-            "SELECT * FROM call_log WHERE workflow_run_id = ? ORDER BY started_at DESC LIMIT ?",
-            (workflow_run_id, limit),
-        )
+        cur = conn.execute(sql, params)
         return [r for r in (_hydrate(d) for d in rows_to_dicts(cur.fetchall())) if r]
 
 

@@ -167,6 +167,15 @@ export function LiveEventsPanel({ runId }: { runId: string }) {
     }
   }, [runId, token])
 
+  const transcriptGroups = Array.from(events.reduce((acc, ev) => {
+    if (ev.kind !== 'llm.stream.delta') return acc
+    const chunk = deltaText(ev.payload)
+    if (!chunk) return acc
+    const key = ev.run_step_id ?? ev.agent_id ?? ev.trace_id ?? 'run'
+    acc.set(key, `${acc.get(key) ?? ''}${chunk}`)
+    return acc
+  }, new Map<string, string>()).entries())
+
   return (
     <div
       style={{
@@ -214,6 +223,23 @@ export function LiveEventsPanel({ runId }: { runId: string }) {
               padding: 12, marginBottom: 10, maxHeight: 220, overflowY: 'auto',
             }}>
               {liveText}
+            </div>
+          )}
+          {transcriptGroups.length > 1 && (
+            <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
+              {transcriptGroups.map(([key, text]) => (
+                <details key={key} style={{
+                  background: '#fff', border: '1px solid #e2e8f0',
+                  borderRadius: 8, padding: '8px 10px',
+                }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 700, color: '#334155' }}>
+                    Transcript group {key.slice(0, 12)}
+                  </summary>
+                  <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, lineHeight: 1.55, color: '#0f172a', marginTop: 8 }}>
+                    {text}
+                  </div>
+                </details>
+              ))}
             </div>
           )}
           <div style={{ maxHeight: 380, overflowY: 'auto', background: '#fff', borderRadius: 8 }}>
