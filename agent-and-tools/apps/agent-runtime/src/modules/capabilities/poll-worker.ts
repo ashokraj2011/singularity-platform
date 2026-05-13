@@ -4,8 +4,18 @@
  * Two responsibilities, one in-process loop:
  *   1. CapabilityRepository.pollIntervalSec — clone or pull the repo, walk
  *      every source file, call extractRepositorySymbols() if HEAD SHA changed.
+ *      **Disabled by default post-M27.** Code symbols now live wherever
+ *      mcp-server runs (laptop, VPC, dev server) inside its local AST
+ *      index; the agent fetches them via `find_symbol`/`get_symbol` tools
+ *      instead of relying on a server-side mirror. Flip
+ *      POLL_REPOSITORIES_ENABLED=true to bring the clone loop back for
+ *      tenants that haven't migrated. The symbol-write path is gated
+ *      independently by EXTRACTOR_MODE (default `off`).
  *   2. CapabilityKnowledgeSource.pollIntervalSec — fetch the URL, compare
- *      sha256 hash to lastContentHash, addKnowledge() if changed.
+ *      sha256 hash to lastContentHash, addKnowledge() if changed. **Always
+ *      enabled** — this path produces KnowledgeArtifact rows that the
+ *      composer reads at compose-time and is unrelated to the code-symbol
+ *      pipeline.
  *
  * Single setInterval loop ticks every TICK_SEC and processes any row whose
  * `lastPolledAt + pollIntervalSec` is in the past. Errors stamp
@@ -76,7 +86,22 @@ async function tick(): Promise<void> {
 
 // ── Repositories ────────────────────────────────────────────────────────────
 
+// M25.7 #3 — opt-in. Code symbols moved to mcp-server's local AST index
+// (M27) — wherever mcp-server runs. The platform-side clone/fetch loop
+// produces no useful work in that world, just CPU + disk churn. Flip
+// POLL_REPOSITORIES_ENABLED=true to restore the legacy path. Note that
+// EXTRACTOR_MODE still gates the symbol writes independently.
+const POLL_REPOSITORIES_ENABLED = (process.env.POLL_REPOSITORIES_ENABLED ?? "false").toLowerCase() === "true";
+let warnedRepoPollDisabled = false;
+
 async function pollRepositories(): Promise<void> {
+  if (!POLL_REPOSITORIES_ENABLED) {
+    if (!warnedRepoPollDisabled) {
+      log("repository polling disabled (POLL_REPOSITORIES_ENABLED=false); set to 'true' to restore the M17 clone loop");
+      warnedRepoPollDisabled = true;
+    }
+    return;
+  }
   const due = await prisma.$queryRawUnsafe<Array<{
     id: string; capabilityId: string; repoName: string; repoUrl: string;
     defaultBranch: string | null; lastPolledSha: string | null;

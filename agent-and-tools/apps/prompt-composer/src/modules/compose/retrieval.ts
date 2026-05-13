@@ -6,7 +6,8 @@
  * (vector + FTS) retrieval, and the taskSignature hash for capsule caching.
  *
  * Only the artifact + memory tables are in scope (per the M27 reconciliation):
- * code symbols moved per-laptop into the mcp-server AST index.
+ * code symbols moved into the mcp-server local AST index, which lives
+ * wherever mcp-server runs (laptop, customer VPC, shared dev host).
  */
 import { createHash } from "node:crypto";
 
@@ -146,8 +147,9 @@ export function taskSignature(parts: {
 
 // ── Composer toggles for M25.7 wind-down ───────────────────────────────────
 export function includeCodeContext(): boolean {
-  // M27 moved code symbols per-laptop. Composer's CODE_CONTEXT layer is now
-  // opt-in. Set PROMPT_INCLUDE_CODE_CONTEXT=true to bring it back (legacy
-  // parity for capabilities that pre-date M27).
+  // M27 moved code symbols into mcp-server's local AST index — wherever
+  // mcp-server runs (laptop, customer VPC, shared dev host). Composer's
+  // CODE_CONTEXT layer is now opt-in. Set PROMPT_INCLUDE_CODE_CONTEXT=true
+  // to bring it back (legacy parity for capabilities that pre-date M27).
   return String(process.env.PROMPT_INCLUDE_CODE_CONTEXT ?? "false").toLowerCase() === "true";
 }

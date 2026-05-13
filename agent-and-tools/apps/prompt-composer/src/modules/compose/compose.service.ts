@@ -17,6 +17,7 @@ import {
 import { compileCapsuleViaLlm, compileMode } from "./llm-capsule-compiler";
 import {
   tryAcquireCompileSlot, releaseCompileSlot, capsuleExpiry,
+  recordCompileAttempt, scheduleCompileRetry,
 } from "./capsule-gc";
 import { emitAuditEvent } from "../../lib/audit-gov-emit";
 
@@ -31,6 +32,24 @@ function recencyBoost(ageDays: number): number {
   if (ageDays >= RECENCY_BOOST_DAYS) return 0;
   if (ageDays <= 0) return RECENCY_BOOST_MAX;
   return ((RECENCY_BOOST_DAYS - ageDays) / RECENCY_BOOST_DAYS) * RECENCY_BOOST_MAX;
+}
+
+// M25.6 H3 — when both vector AND FTS return only useless rows we'd be
+// shipping noise to the LLM (cosine 0.02 matches against an unrelated
+// artifact). The threshold is conservative — at 0.2 we're saying "even
+// the LEAST-bad row is below half-faith"; the fallback then pulls the
+// 3 most-recent rows so the agent has *some* context but isn't pretending
+// it found a semantic match.
+const EMPTY_FALLBACK_COSINE_MIN = Number(process.env.RETRIEVAL_EMPTY_COSINE_THRESHOLD ?? 0.2);
+const EMPTY_FALLBACK_ENABLED    = (process.env.RETRIEVAL_EMPTY_FALLBACK ?? "true").toLowerCase() !== "false";
+const EMPTY_FALLBACK_TOPK       = 3;
+
+function noMeaningfulHits<S extends { cosineSimilarity: number; fts_score?: number }>(rows: S[]): boolean {
+  if (rows.length === 0) return true;
+  return rows.every(r =>
+    (r.cosineSimilarity ?? 0) < EMPTY_FALLBACK_COSINE_MIN &&
+    ((r.fts_score ?? 0) <= 0)
+  );
 }
 
 interface SemanticHit {
@@ -157,6 +176,12 @@ export const composeService = {
       // forced the cold path. Surfaced on the response + audit emit so
       // operators can correlate edits to refreshed retrievals.
       capsuleBypassed: false as boolean,
+      // M25.6 H3 — flips to true when at least one retrieval branch fell
+      // back to recency-only because both vector + FTS came back empty/weak.
+      // Operators reading Run Insights need to see this — "the agent saw
+      // 3 unrelated artifacts" is very different from "the agent saw 3
+      // semantically-matched artifacts".
+      recencyFallback: false as boolean,
     };
 
     // Build the substitution context once.
@@ -259,6 +284,8 @@ export const composeService = {
             .map(a => ({ ...a, cosineSimilarity: 0, ageDays: 0, finalScore: 0, fts_score: 0, rrf_rank: null as number | null }));
         for (const a of artifacts) {
           const citation = makeCitationKey("knowledge", a.title, a.id);
+          const fallback = (a as { fallbackKind?: string }).fallbackKind;
+          if (fallback === "recency_only") retrievalStats.recencyFallback = true;
           const chunk: RetrievedChunk = {
             source_kind: "knowledge",
             source_id: a.id,
@@ -269,7 +296,12 @@ export const composeService = {
             fts_score: (a as { fts_score?: number }).fts_score,
             rrf_rank: (a as { rrf_rank?: number | null }).rrf_rank ?? undefined,
             age_days: a.ageDays,
-            metadata: { artifactType: a.artifactType, capabilityId, version: 1 },
+            metadata: {
+              artifactType: a.artifactType,
+              capabilityId,
+              version: 1,
+              ...(fallback ? { fallbackKind: fallback } : {}),
+            },
           };
           evidenceChunks.push(chunk);
           // M25 — cite marker BEFORE the body, so the LLM can echo it in
@@ -296,6 +328,8 @@ export const composeService = {
             .map(m => ({ ...m, cosineSimilarity: 0, ageDays: 0, finalScore: 0, fts_score: 0, rrf_rank: null as number | null }));
         for (const m of memory) {
           const citation = makeCitationKey("memory", m.title, m.id);
+          const fallback = (m as { fallbackKind?: string }).fallbackKind;
+          if (fallback === "recency_only") retrievalStats.recencyFallback = true;
           const chunk: RetrievedChunk = {
             source_kind: "memory",
             source_id: m.id,
@@ -306,7 +340,11 @@ export const composeService = {
             fts_score: (m as { fts_score?: number }).fts_score,
             rrf_rank: (m as { rrf_rank?: number | null }).rrf_rank ?? undefined,
             age_days: m.ageDays,
-            metadata: { memoryType: m.memoryType, capabilityId },
+            metadata: {
+              memoryType: m.memoryType,
+              capabilityId,
+              ...(fallback ? { fallbackKind: fallback } : {}),
+            },
           };
           evidenceChunks.push(chunk);
           const c = `${formatCiteMarker(citation)}\n[${m.memoryType}] ${m.title}\n${trimText(m.content, budget.maxLayerChars)}`;
@@ -325,11 +363,12 @@ export const composeService = {
         }
 
         // ── Code symbols → CODE_CONTEXT ────────────────────────────────────
-        // M25.7 / M27 — opt-in. Code symbols now live per-laptop in the
-        // mcp-server AST index; the agent fetches them via tool calls
-        // (find_symbol / get_symbol / get_ast_slice) instead of paying
-        // tokens for top-N on every prompt. Set PROMPT_INCLUDE_CODE_CONTEXT=true
-        // to bring back the legacy behaviour for capabilities that pre-date M27.
+        // M25.7 / M27 — opt-in. Code symbols now live in mcp-server's local
+        // AST index (wherever mcp-server runs — laptop, VPC, dev host); the
+        // agent fetches them via tool calls (find_symbol / get_symbol /
+        // get_ast_slice) instead of paying tokens for top-N on every prompt.
+        // Set PROMPT_INCLUDE_CODE_CONTEXT=true to bring back the legacy
+        // behaviour for capabilities that pre-date M27.
         if (includeCodeContext()) {
           const symbols = budget.codeTopK === 0 ? [] : taskVec
             ? await this.semanticSymbols(capabilityId, taskVec, budget.codeTopK)
@@ -800,11 +839,33 @@ Input contract: available to the execution layer; ask for only the fields needed
         logger.warn({ err: (err as Error).message }, "[compose] FTS skipped — content_tsv missing on CapabilityKnowledgeArtifact");
       }
     }
-    return fuseAndRerank(vectorRows, ftsRows, take, (r) => ({
+    const ranked = fuseAndRerank(vectorRows, ftsRows, take, (r) => ({
       id: r.id, artifactType: r.artifactType, title: r.title, content: r.content,
       cosineSimilarity: Number(r.cosine_similarity), ageDays: Number(r.age_days),
       fts_score: Number((r as { fts_score?: number }).fts_score ?? 0),
     }));
+    // M25.6 H3 — empty / all-weak result → fall back to "just give me the
+    // most recent N rows". The flag on the returned objects lets the caller
+    // tag the chunk so Run Insights can show "(recency fallback — no
+    // semantic match)" instead of pretending the cosine score is real.
+    if (EMPTY_FALLBACK_ENABLED && noMeaningfulHits(ranked)) {
+      const recencyRows = await prisma.capabilityKnowledgeArtifact.findMany({
+        where: { capabilityId, status: "ACTIVE" },
+        orderBy: { createdAt: "desc" },
+        take: EMPTY_FALLBACK_TOPK,
+        select: { id: true, artifactType: true, title: true, content: true, createdAt: true },
+      });
+      return recencyRows.map(r => ({
+        id: r.id, artifactType: r.artifactType, title: r.title, content: r.content,
+        cosineSimilarity: 0,
+        ageDays: Math.max(0, (Date.now() - r.createdAt.getTime()) / 86_400_000),
+        fts_score: 0,
+        finalScore: 0,
+        rrf_rank: null as number | null,
+        fallbackKind: "recency_only" as const,
+      }));
+    }
+    return ranked;
   },
 
   async semanticMemory(capabilityId: string, taskVec: string, take = DEFAULT_CONTEXT_BUDGET.memoryTopK, taskText?: string) {
@@ -843,11 +904,31 @@ Input contract: available to the execution layer; ask for only the fields needed
         logger.warn({ err: (err as Error).message }, "[compose] FTS skipped — content_tsv missing on DistilledMemory");
       }
     }
-    return fuseAndRerank(vectorRows, ftsRows, take, (r) => ({
+    const ranked = fuseAndRerank(vectorRows, ftsRows, take, (r) => ({
       id: r.id, memoryType: r.memoryType, title: r.title, content: r.content,
       cosineSimilarity: Number(r.cosine_similarity), ageDays: Number(r.age_days),
       fts_score: Number((r as { fts_score?: number }).fts_score ?? 0),
     }));
+    // M25.6 H3 — see semanticKnowledge for rationale. Same shape as the
+    // hybrid result so the caller stays uniform.
+    if (EMPTY_FALLBACK_ENABLED && noMeaningfulHits(ranked)) {
+      const recencyRows = await prisma.distilledMemory.findMany({
+        where: { scopeType: "CAPABILITY", scopeId: capabilityId, status: "ACTIVE" },
+        orderBy: { createdAt: "desc" },
+        take: EMPTY_FALLBACK_TOPK,
+        select: { id: true, memoryType: true, title: true, content: true, createdAt: true },
+      });
+      return recencyRows.map(r => ({
+        id: r.id, memoryType: r.memoryType, title: r.title, content: r.content,
+        cosineSimilarity: 0,
+        ageDays: Math.max(0, (Date.now() - r.createdAt.getTime()) / 86_400_000),
+        fts_score: 0,
+        finalScore: 0,
+        rrf_rank: null as number | null,
+        fallbackKind: "recency_only" as const,
+      }));
+    }
+    return ranked;
   },
 
   async semanticSymbols(capabilityId: string, taskVec: string, take = DEFAULT_CONTEXT_BUDGET.codeTopK) {
@@ -1010,13 +1091,39 @@ Input contract: available to the execution layer; ask for only the fields needed
       // M25.5.next — when CAPSULE_COMPILE_MODE=LLM we attempt to compress the
       // chunks into one paragraph via mcp-server. Failure path silently falls
       // back to RAW mode so the cache is never empty.
+      // M25.5 C5 — every LLM attempt is recorded in the failure-rate window;
+      // a single 30s retry is scheduled per signature when the attempt fails
+      // so transient errors self-heal without operator action.
       let mode: "RAW" | "LLM" = "RAW";
       let compiledContent = JSON.stringify(opts.layers);
       if (compileMode() === "LLM" && opts.chunks.length > 0) {
         const llm = await compileCapsuleViaLlm(opts.intent, opts.chunks);
-        if (llm && llm.paragraph) {
+        const success = Boolean(llm && llm.paragraph);
+        recordCompileAttempt(success);
+        if (success && llm) {
           mode = "LLM";
           compiledContent = llm.paragraph;
+        } else {
+          // Schedule a retry: re-attempt compile after RETRY_DELAY_MS and
+          // upgrade the existing RAW row to LLM if it succeeds. The retry
+          // bypasses C3's concurrency cap because there's exactly one
+          // in-flight retry per signature (de-duplicated by pendingRetries).
+          const captured = { intent: opts.intent, chunks: opts.chunks, signature: sig };
+          scheduleCompileRetry(sig, async () => {
+            const retry = await compileCapsuleViaLlm(captured.intent, captured.chunks);
+            recordCompileAttempt(Boolean(retry?.paragraph));
+            if (!retry?.paragraph) return;
+            // The row was written below as RAW + status=READY. UPGRADE it
+            // in place — taskSignature is unique so updateMany is safe.
+            await prisma.capabilityCompiledContext.updateMany({
+              where: { taskSignature: captured.signature },
+              data: {
+                compiledContent: retry.paragraph,
+                compileMode: "LLM",
+                estimatedTokens: estimateTokens(retry.paragraph),
+              },
+            }).catch((err: Error) => logger.warn({ err: err.message }, "[capsule] retry UPDATE failed"));
+          });
         }
       }
 

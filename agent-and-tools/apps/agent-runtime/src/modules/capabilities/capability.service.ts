@@ -576,8 +576,28 @@ export const capabilityService = {
     if (!repo || repo.capabilityId !== capabilityId) {
       throw new NotFoundError("Repository not found for this capability");
     }
+    // M25.7 #4 — CapabilityCodeSymbol / CapabilityCodeEmbedding are
+    // superseded by mcp-server's local AST index (lives wherever
+    // mcp-server runs — laptop, VPC, dev box). EXTRACTOR_MODE defaults
+    // to `off`; when set, extractSymbols() short-circuits to [] and we
+    // return early without touching the symbol tables. This keeps
+    // existing rows queryable (read-only) without churning new ones.
     await assertCodeExtractionApproved(capabilityId, repo);
     const symbols = await extractSymbols(files);
+    if (symbols.length === 0) {
+      // Either EXTRACTOR_MODE=off OR the files genuinely produced no
+      // symbols. Either way there's nothing to persist; short-circuit
+      // before allocating the embedder + maps.
+      return {
+        inserted: 0,
+        skippedDuplicate: 0,
+        embeddingErrors: 0,
+        llmSummaries: 0,
+        parentLinked: 0,
+        scannedFiles: files.length,
+        extractorMode: process.env.EXTRACTOR_MODE ?? "off",
+      };
+    }
     const embedder = getEmbeddingProvider();
 
     // Index files by path so we can pull a snippet for the LLM summariser.

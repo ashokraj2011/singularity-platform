@@ -2,7 +2,7 @@ import { app } from "./app";
 import { env } from "./config/env";
 import { logger } from "./config/logger";
 import { startSelfRegistration } from "./lib/platform-registry/register";
-import { startCapsuleGc } from "./modules/compose/capsule-gc";
+import { startCapsuleGc, startCapsuleFailureAlerts } from "./modules/compose/capsule-gc";
 
 // M11.a — self-register with platform-registry (no-op if env unset)
 startSelfRegistration({
@@ -27,6 +27,13 @@ startSelfRegistration({
 // signatures churn. interval/TTL configurable via CAPSULE_GC_INTERVAL_MS,
 // CAPSULE_TTL_DAYS, CAPSULE_COLD_DAYS. No-ops in test envs that mock Prisma.
 startCapsuleGc();
+
+// M25.5 C5 — periodic check of LLM-compile failure rate; emits
+// `compose.capsule.compile.alert` to audit-gov when > CAPSULE_FAILURE_ALERT_RATE
+// (default 5%) over CAPSULE_FAILURE_WINDOW_MS (default 60min). Without
+// this an audit-gov outage or model regression silently leaves capsules
+// stuck on the RAW fallback indefinitely.
+startCapsuleFailureAlerts();
 
 app.listen(env.PORT, () => {
   logger.info(`[prompt-composer] listening on port ${env.PORT}`);

@@ -14,7 +14,7 @@
  */
 import { Router } from "express";
 import { prisma } from "../../config/prisma";
-import { compileSlotSnapshot } from "./capsule-gc";
+import { compileSlotSnapshot, compileFailureSnapshot } from "./capsule-gc";
 
 export const compiledContextRoutes = Router();
 
@@ -38,7 +38,14 @@ compiledContextRoutes.get("/", async (req, res, next) => {
     });
     res.json({
       success: true,
-      data: { items: rows, total: rows.length, inflight: compileSlotSnapshot() },
+      data: {
+        items: rows,
+        total: rows.length,
+        inflight: compileSlotSnapshot(),
+        // M25.5 C5 — surface failure-rate so operators don't need to query
+        // audit-gov to see whether LLM compile is healthy.
+        failureRate: compileFailureSnapshot(),
+      },
       requestId: res.locals.requestId,
     });
   } catch (err) { next(err); }
