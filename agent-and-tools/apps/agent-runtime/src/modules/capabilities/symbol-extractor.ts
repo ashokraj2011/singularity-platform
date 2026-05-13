@@ -160,8 +160,14 @@ export function extractSymbolsRegex(files: InputFile[]): ExtractedSymbol[] {
 
 // M15 — async dispatcher. Picks tree-sitter by default; falls back to regex
 // on init failure or when EXTRACTOR_MODE=regex.
+//
+// M25.7 / M27 — `EXTRACTOR_MODE=off` short-circuits to an empty array. Code
+// symbols are now per-laptop in mcp-server's AST index (M27); the platform-
+// side extractor is legacy. Operators on tenants that pre-date M27 can
+// keep `EXTRACTOR_MODE=treesitter` to preserve the old behaviour.
 export async function extractSymbols(files: InputFile[]): Promise<ExtractedSymbol[]> {
-  const mode = (process.env.EXTRACTOR_MODE ?? "treesitter").toLowerCase();
+  const mode = (process.env.EXTRACTOR_MODE ?? "off").toLowerCase();
+  if (mode === "off") return [];
   if (mode === "regex") return extractSymbolsRegex(files);
   try {
     const { extractSymbolsTs } = await import("./symbol-extractor-treesitter");

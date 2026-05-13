@@ -9,6 +9,11 @@ import { ComposeInput, ArtifactInput } from "./compose.schemas";
 import {
   getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral,
 } from "@agentandtools/shared";
+import {
+  type RetrievedChunk, makeCitationKey, toExcerpt, formatCiteMarker,
+  clampConfidence, includeCodeContext, recencyBoost as recencyBoostShared,
+  reciprocalRankFusion, retrievalMode, taskSignature,
+} from "./retrieval";
 
 // M15 — hybrid scoring helper. Cosine ∈ [-1, 1] → [0, 2] via (cos+1)/2 only
 // when the caller asks; default keeps raw cosine because pgvector's `<=>`
@@ -32,6 +37,37 @@ function rerankByHybrid<T extends SemanticHit>(rows: T[], take: number): T[] {
   for (const r of rows) r.finalScore = r.cosineSimilarity * (1 + recencyBoost(r.ageDays));
   rows.sort((a, b) => b.finalScore - a.finalScore);
   return rows.slice(0, take);
+}
+
+// M25.6 — Reciprocal Rank Fusion of vector + FTS results. Each branch
+// independently ranks; RRF merges by 1/(k+rank) summed across appearances.
+// Then the recency boost is applied to the fused score and the top-N is
+// returned. Caller's shape() builds the final row from the raw DB row.
+function fuseAndRerank<R extends { id: string }, S extends { cosineSimilarity: number; ageDays: number; fts_score?: number }>(
+  vectorRows: R[],
+  ftsRows:    R[],
+  take:       number,
+  shape:      (row: R) => S,
+): Array<S & { finalScore: number; rrf_rank: number | null }> {
+  if (vectorRows.length === 0 && ftsRows.length === 0) return [];
+  if (ftsRows.length === 0) {
+    const shaped = vectorRows.map(r => ({ ...shape(r), finalScore: 0, rrf_rank: null as number | null }));
+    return rerankByHybrid(shaped, take);
+  }
+  const fused = reciprocalRankFusion(
+    vectorRows.map(r => ({ id: r.id, row: r })),
+    ftsRows.map(r => ({ id: r.id, row: r })),
+  );
+  const shaped = fused.map((f, i) => {
+    const base = shape(f.row as R);
+    return {
+      ...base,
+      finalScore: f.rrf_score * (1 + recencyBoost(base.ageDays)),
+      rrf_rank:   i + 1 as number | null,
+    };
+  });
+  shaped.sort((a, b) => b.finalScore - a.finalScore);
+  return shaped.slice(0, take);
 }
 
 interface AssembledLayer {
@@ -96,12 +132,22 @@ export const composeService = {
     const layers: AssembledLayer[] = [];
     const warnings: string[] = [];
     const budget = contextBudget(input);
+    // M25 — typed retrieval chunks collected as layers are assembled. Mirrored
+    // into PromptAssembly.evidenceRefs at the end so Run Insights can show
+    // per-step citations and the LLM can ground its answers via 〔cite: …〕.
+    const evidenceChunks: RetrievedChunk[] = [];
+    // M25.5 — set when a precompiled context capsule was served.
+    let compiledCapsule: { id: string; layers: AssembledLayer[]; chunks: RetrievedChunk[] } | null = null;
     const retrievalStats = {
       knowledgeIncluded: 0,
       memoryIncluded: 0,
       codeIncluded: 0,
       toolContractsIncluded: 0,
       trimmedLayers: 0,
+      // M25.7 — true when PROMPT_INCLUDE_CODE_CONTEXT=false (default post-M27).
+      codeContextSkipped: false as boolean,
+      // M25.5 — true when served from CapabilityCompiledContext cache.
+      capsuleHit: false as boolean,
     };
 
     // Build the substitution context once.
@@ -135,27 +181,82 @@ export const composeService = {
         const r = renderMustache(capContent, ctx); warnings.push(...r.warnings);
         layers.push({ layerType: "CAPABILITY_CONTEXT", priority: PRIORITY.CAPABILITY_CONTEXT, inclusionReason: "capability scope provided", contentSnapshot: r.rendered, layerHash: sha256(r.rendered) });
 
-        // M15 — embed the task once; reuse for all three retrieval queries.
-        // Failure falls back to createdAt ordering so retrieval never blocks
-        // composition.
-        let taskVec: string | null = null;
-        try {
-          if (input.task && input.task.trim().length > 0) {
-            const embedded = await getEmbeddingProvider().embed({ text: input.task.slice(0, 8_000) });
-            assertDimMatches(embedded.dim, `${embedded.provider}:${embedded.model}`);
-            taskVec = toVectorLiteral(embedded.vector);
+        // ── M25.5 — Context Compiler cache lookup ──────────────────────────
+        // Skip the 3 semantic queries + reranking when a precompiled capsule
+        // matches this (capability, agentTemplate, intent, contentRevision).
+        // Hot path: serve the cached layers + chunks directly.
+        compiledCapsule = await this.lookupCapsule({
+          capabilityId,
+          agentTemplateId: input.agentTemplateId,
+          intent: input.task,
+        });
+        if (compiledCapsule) {
+          retrievalStats.capsuleHit = true;
+          // Replay the capsule's cached layers + chunks. We trust the capsule
+          // hash discipline (taskSignature) to make stale serves impossible.
+          const cachedLayers = compiledCapsule.layers as AssembledLayer[];
+          for (const cl of cachedLayers) {
+            layers.push({
+              ...cl,
+              inclusionReason: `${cl.inclusionReason} (capsule)`,
+            });
           }
-        } catch (err) {
-          warnings.push(`embedding failed: ${(err as Error).message}`);
+          const cachedChunks = compiledCapsule.chunks as RetrievedChunk[];
+          for (const c of cachedChunks) evidenceChunks.push(c);
+          retrievalStats.knowledgeIncluded = cachedChunks.filter(c => c.source_kind === "knowledge").length;
+          retrievalStats.memoryIncluded    = cachedChunks.filter(c => c.source_kind === "memory").length;
+          // Increment hitCount in the background — don't block compose.
+          void prisma.capabilityCompiledContext.update({
+            where: { id: compiledCapsule.id },
+            data: { hitCount: { increment: 1 } },
+          }).catch(() => { /* best-effort */ });
         }
 
+        // M15 — embed the task once; reuse for all three retrieval queries.
+        // Failure falls back to createdAt ordering so retrieval never blocks
+        // composition. Skipped entirely on capsule hit.
+        let taskVec: string | null = null;
+        if (!compiledCapsule) {
+          try {
+            if (input.task && input.task.trim().length > 0) {
+              const embedded = await getEmbeddingProvider().embed({ text: input.task.slice(0, 8_000) });
+              assertDimMatches(embedded.dim, `${embedded.provider}:${embedded.model}`);
+              taskVec = toVectorLiteral(embedded.vector);
+            }
+          } catch (err) {
+            warnings.push(`embedding failed: ${(err as Error).message}`);
+          }
+        }
+        // Skip the entire retrieval block on capsule hit.
+        if (compiledCapsule) {
+          // jump to step 4 (workflow phase) — Function-level early-out is awkward
+          // inside the if-block, so use a flag the existing block checks.
+        }
+
+      if (!compiledCapsule) {
         // ── Knowledge artifacts → RUNTIME_EVIDENCE ──────────────────────────
         const artifacts = budget.knowledgeTopK === 0 ? [] : taskVec
-          ? await this.semanticKnowledge(capabilityId, taskVec, budget.knowledgeTopK)
+          ? await this.semanticKnowledge(capabilityId, taskVec, budget.knowledgeTopK, input.task)
           : (await prisma.capabilityKnowledgeArtifact.findMany({ where: { capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: budget.knowledgeTopK }))
-            .map(a => ({ ...a, cosineSimilarity: 0, ageDays: 0, finalScore: 0 }));
+            .map(a => ({ ...a, cosineSimilarity: 0, ageDays: 0, finalScore: 0, fts_score: 0, rrf_rank: null as number | null }));
         for (const a of artifacts) {
-          const c = `[${a.artifactType}] ${a.title}\n${trimText(a.content, budget.maxLayerChars)}`;
+          const citation = makeCitationKey("knowledge", a.title, a.id);
+          const chunk: RetrievedChunk = {
+            source_kind: "knowledge",
+            source_id: a.id,
+            citation_key: citation,
+            excerpt: toExcerpt(a.content),
+            confidence: clampConfidence((a as { finalScore?: number }).finalScore ?? 0),
+            cosine_similarity: a.cosineSimilarity,
+            fts_score: (a as { fts_score?: number }).fts_score,
+            rrf_rank: (a as { rrf_rank?: number | null }).rrf_rank ?? undefined,
+            age_days: a.ageDays,
+            metadata: { artifactType: a.artifactType, capabilityId, version: 1 },
+          };
+          evidenceChunks.push(chunk);
+          // M25 — cite marker BEFORE the body, so the LLM can echo it in
+          // its output and operators can trace each claim back to a source.
+          const c = `${formatCiteMarker(citation)}\n[${a.artifactType}] ${a.title}\n${trimText(a.content, budget.maxLayerChars)}`;
           const r2 = renderMustache(c, ctx); warnings.push(...r2.warnings);
           if (a.content.length > budget.maxLayerChars) retrievalStats.trimmedLayers += 1;
           layers.push({
@@ -172,11 +273,25 @@ export const composeService = {
 
         // ── Distilled memory → MEMORY_CONTEXT ──────────────────────────────
         const memory = budget.memoryTopK === 0 ? [] : taskVec
-          ? await this.semanticMemory(capabilityId, taskVec, budget.memoryTopK)
+          ? await this.semanticMemory(capabilityId, taskVec, budget.memoryTopK, input.task)
           : (await prisma.distilledMemory.findMany({ where: { scopeType: "CAPABILITY", scopeId: capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: budget.memoryTopK }))
-            .map(m => ({ ...m, cosineSimilarity: 0, ageDays: 0, finalScore: 0 }));
+            .map(m => ({ ...m, cosineSimilarity: 0, ageDays: 0, finalScore: 0, fts_score: 0, rrf_rank: null as number | null }));
         for (const m of memory) {
-          const c = `[${m.memoryType}] ${m.title}\n${trimText(m.content, budget.maxLayerChars)}`;
+          const citation = makeCitationKey("memory", m.title, m.id);
+          const chunk: RetrievedChunk = {
+            source_kind: "memory",
+            source_id: m.id,
+            citation_key: citation,
+            excerpt: toExcerpt(m.content),
+            confidence: clampConfidence((m as { finalScore?: number }).finalScore ?? 0),
+            cosine_similarity: m.cosineSimilarity,
+            fts_score: (m as { fts_score?: number }).fts_score,
+            rrf_rank: (m as { rrf_rank?: number | null }).rrf_rank ?? undefined,
+            age_days: m.ageDays,
+            metadata: { memoryType: m.memoryType, capabilityId },
+          };
+          evidenceChunks.push(chunk);
+          const c = `${formatCiteMarker(citation)}\n[${m.memoryType}] ${m.title}\n${trimText(m.content, budget.maxLayerChars)}`;
           const r3 = renderMustache(c, ctx); warnings.push(...r3.warnings);
           if (m.content.length > budget.maxLayerChars) retrievalStats.trimmedLayers += 1;
           layers.push({
@@ -192,33 +307,77 @@ export const composeService = {
         }
 
         // ── Code symbols → CODE_CONTEXT ────────────────────────────────────
-        const symbols = budget.codeTopK === 0 ? [] : taskVec
-          ? await this.semanticSymbols(capabilityId, taskVec, budget.codeTopK)
-          : (await prisma.capabilityCodeSymbol.findMany({
-            where: { capabilityId }, orderBy: { createdAt: "desc" }, take: budget.codeTopK,
-            include: { repository: true },
-          })).map(s => ({
-            symbol_id: s.id, symbolName: s.symbolName, symbolType: s.symbolType,
-            filePath: s.filePath, startLine: s.startLine, summary: s.summary,
-            language: s.language, repoName: s.repository?.repoName ?? "repo",
-            cosineSimilarity: 0, ageDays: 0, finalScore: 0,
-          }));
-        for (const s of symbols) {
-          const body = trimText(s.summary ?? `${s.symbolType ?? "symbol"} ${s.symbolName ?? ""}`, budget.maxLayerChars);
-          const c = `[${s.symbolType ?? "symbol"}] ${s.repoName}/${s.filePath}:${s.startLine ?? "?"}\n${body}`;
-          const r4 = renderMustache(c, ctx); warnings.push(...r4.warnings);
-          layers.push({
-            layerType: "CODE_CONTEXT" as never,
-            priority: PRIORITY.CODE_CONTEXT,
-            inclusionReason: taskVec
-              ? `code ${s.symbolName ?? ""} (cos=${s.cosineSimilarity.toFixed(3)}, age=${s.ageDays.toFixed(1)}d)`
-              : `code symbol ${s.symbolName ?? ""} (${s.language ?? ""})`,
-            contentSnapshot: r4.rendered,
-            layerHash: sha256(r4.rendered),
-          });
-          if ((s.summary ?? "").length > budget.maxLayerChars) retrievalStats.trimmedLayers += 1;
-          retrievalStats.codeIncluded += 1;
+        // M25.7 / M27 — opt-in. Code symbols now live per-laptop in the
+        // mcp-server AST index; the agent fetches them via tool calls
+        // (find_symbol / get_symbol / get_ast_slice) instead of paying
+        // tokens for top-N on every prompt. Set PROMPT_INCLUDE_CODE_CONTEXT=true
+        // to bring back the legacy behaviour for capabilities that pre-date M27.
+        if (includeCodeContext()) {
+          const symbols = budget.codeTopK === 0 ? [] : taskVec
+            ? await this.semanticSymbols(capabilityId, taskVec, budget.codeTopK)
+            : (await prisma.capabilityCodeSymbol.findMany({
+              where: { capabilityId }, orderBy: { createdAt: "desc" }, take: budget.codeTopK,
+              include: { repository: true },
+            })).map(s => ({
+              symbol_id: s.id, symbolName: s.symbolName, symbolType: s.symbolType,
+              filePath: s.filePath, startLine: s.startLine, summary: s.summary,
+              language: s.language, repoName: s.repository?.repoName ?? "repo",
+              cosineSimilarity: 0, ageDays: 0, finalScore: 0,
+            }));
+          for (const s of symbols) {
+            const body = trimText(s.summary ?? `${s.symbolType ?? "symbol"} ${s.symbolName ?? ""}`, budget.maxLayerChars);
+            const citation = makeCitationKey("symbol", s.symbolName ?? "symbol", s.symbol_id);
+            evidenceChunks.push({
+              source_kind: "symbol",
+              source_id: s.symbol_id,
+              citation_key: citation,
+              excerpt: toExcerpt(body),
+              confidence: clampConfidence((s as { finalScore?: number }).finalScore ?? 0),
+              cosine_similarity: s.cosineSimilarity,
+              age_days: s.ageDays,
+              metadata: {
+                repoName: s.repoName, filePath: s.filePath, startLine: s.startLine,
+                symbolType: s.symbolType, language: s.language,
+              },
+            });
+            const c = `${formatCiteMarker(citation)}\n[${s.symbolType ?? "symbol"}] ${s.repoName}/${s.filePath}:${s.startLine ?? "?"}\n${body}`;
+            const r4 = renderMustache(c, ctx); warnings.push(...r4.warnings);
+            layers.push({
+              layerType: "CODE_CONTEXT" as never,
+              priority: PRIORITY.CODE_CONTEXT,
+              inclusionReason: taskVec
+                ? `code ${s.symbolName ?? ""} (cos=${s.cosineSimilarity.toFixed(3)}, age=${s.ageDays.toFixed(1)}d)`
+                : `code symbol ${s.symbolName ?? ""} (${s.language ?? ""})`,
+              contentSnapshot: r4.rendered,
+              layerHash: sha256(r4.rendered),
+            });
+            if ((s.summary ?? "").length > budget.maxLayerChars) retrievalStats.trimmedLayers += 1;
+            retrievalStats.codeIncluded += 1;
+          }
+        } else {
+          // Note in retrievalStats so callers can see we skipped the layer.
+          retrievalStats.codeContextSkipped = true;
         }
+      } // !compiledCapsule — end of retrieval block
+      // M25.5 — on cache miss, fire-and-forget write the capsule so the NEXT
+      // request with the same task signature can skip retrieval entirely.
+      if (!compiledCapsule && evidenceChunks.length > 0) {
+        // Only cache layers that came from semantic retrieval (RUNTIME_EVIDENCE
+        // / MEMORY_CONTEXT / CODE_CONTEXT). Other layer types are profile- or
+        // workflow-scoped and recompute correctly every call.
+        const cacheableLayers = layers.filter(l =>
+          l.layerType === "RUNTIME_EVIDENCE" ||
+          l.layerType === "MEMORY_CONTEXT" ||
+          (l.layerType as string) === "CODE_CONTEXT"
+        );
+        void this.storeCapsule({
+          capabilityId,
+          agentTemplateId: input.agentTemplateId,
+          intent: input.task,
+          layers: cacheableLayers,
+          chunks: evidenceChunks,
+        }).catch((err: Error) => logger.warn({ err: err.message }, "[compose] storeCapsule failed"));
+      }
       }
     }
 
@@ -308,6 +467,10 @@ export const composeService = {
         finalPromptHash,
         finalPromptPreview: finalPrompt.slice(0, 4000),
         estimatedInputTokens,
+        // M25 — per-step citations for Run Insights + audit-replay.
+        evidenceRefs: (evidenceChunks.length > 0
+          ? evidenceChunks
+          : null) as never,
         layers: {
           create: layers.map(l => ({
             promptLayerId: l.promptLayerId ?? null,
@@ -520,14 +683,18 @@ Input contract: available to the execution layer; ask for only the fields needed
   // index-friendly distance form. Final hybrid score is JS-computed via
   // rerankByHybrid() so we keep the recency-boost math out of SQL.
 
-  async semanticKnowledge(capabilityId: string, taskVec: string, take = DEFAULT_CONTEXT_BUDGET.knowledgeTopK) {
+  // M25.6 — hybrid retrieval. Runs the vector + (optional) FTS query in
+  // parallel, fuses with Reciprocal Rank Fusion, then applies the recency
+  // boost. Falls back to vector-only when RETRIEVAL_MODE=vector or when the
+  // FTS column doesn't yet exist on this DB (older deployments).
+  async semanticKnowledge(capabilityId: string, taskVec: string, take = DEFAULT_CONTEXT_BUDGET.knowledgeTopK, taskText?: string) {
     const candidatePool = 30;
-    const finalTake = take;
+    const mode = retrievalMode();
     type Row = {
       id: string; artifactType: string; title: string; content: string;
       cosine_similarity: number; age_days: number;
     };
-    const rows = await prisma.$queryRawUnsafe<Row[]>(
+    const vectorRows = mode === "fts" ? [] : await prisma.$queryRawUnsafe<Row[]>(
       `SELECT id, "artifactType", title, content,
               1 - (embedding <=> $1::vector) AS cosine_similarity,
               EXTRACT(EPOCH FROM (now() - "createdAt")) / 86400.0 AS age_days
@@ -537,23 +704,41 @@ Input contract: available to the execution layer; ask for only the fields needed
        LIMIT ${candidatePool}`,
       taskVec, capabilityId,
     );
-    return rerankByHybrid(
-      rows.map(r => ({
-        id: r.id, artifactType: r.artifactType, title: r.title, content: r.content,
-        cosineSimilarity: Number(r.cosine_similarity), ageDays: Number(r.age_days), finalScore: 0,
-      })),
-      finalTake,
-    );
+    let ftsRows: Array<Row & { fts_score: number }> = [];
+    if (mode !== "vector" && taskText && taskText.trim().length > 0) {
+      try {
+        ftsRows = await prisma.$queryRawUnsafe<Array<Row & { fts_score: number }>>(
+          `SELECT id, "artifactType", title, content,
+                  0::float AS cosine_similarity,
+                  EXTRACT(EPOCH FROM (now() - "createdAt")) / 86400.0 AS age_days,
+                  ts_rank(content_tsv, websearch_to_tsquery('english', $1)) AS fts_score
+           FROM "CapabilityKnowledgeArtifact"
+           WHERE "capabilityId" = $2 AND status = 'ACTIVE'
+             AND content_tsv @@ websearch_to_tsquery('english', $1)
+           ORDER BY fts_score DESC
+           LIMIT ${candidatePool}`,
+          taskText, capabilityId,
+        );
+      } catch (err) {
+        // tsvector column doesn't exist yet on this DB — skip the FTS branch.
+        logger.warn({ err: (err as Error).message }, "[compose] FTS skipped — content_tsv missing on CapabilityKnowledgeArtifact");
+      }
+    }
+    return fuseAndRerank(vectorRows, ftsRows, take, (r) => ({
+      id: r.id, artifactType: r.artifactType, title: r.title, content: r.content,
+      cosineSimilarity: Number(r.cosine_similarity), ageDays: Number(r.age_days),
+      fts_score: Number((r as { fts_score?: number }).fts_score ?? 0),
+    }));
   },
 
-  async semanticMemory(capabilityId: string, taskVec: string, take = DEFAULT_CONTEXT_BUDGET.memoryTopK) {
+  async semanticMemory(capabilityId: string, taskVec: string, take = DEFAULT_CONTEXT_BUDGET.memoryTopK, taskText?: string) {
     const candidatePool = 30;
-    const finalTake = take;
+    const mode = retrievalMode();
     type Row = {
       id: string; memoryType: string; title: string; content: string;
       cosine_similarity: number; age_days: number;
     };
-    const rows = await prisma.$queryRawUnsafe<Row[]>(
+    const vectorRows = mode === "fts" ? [] : await prisma.$queryRawUnsafe<Row[]>(
       `SELECT id, "memoryType", title, content,
               1 - (embedding <=> $1::vector) AS cosine_similarity,
               EXTRACT(EPOCH FROM (now() - "createdAt")) / 86400.0 AS age_days
@@ -563,13 +748,30 @@ Input contract: available to the execution layer; ask for only the fields needed
        LIMIT ${candidatePool}`,
       taskVec, capabilityId,
     );
-    return rerankByHybrid(
-      rows.map(r => ({
-        id: r.id, memoryType: r.memoryType, title: r.title, content: r.content,
-        cosineSimilarity: Number(r.cosine_similarity), ageDays: Number(r.age_days), finalScore: 0,
-      })),
-      finalTake,
-    );
+    let ftsRows: Array<Row & { fts_score: number }> = [];
+    if (mode !== "vector" && taskText && taskText.trim().length > 0) {
+      try {
+        ftsRows = await prisma.$queryRawUnsafe<Array<Row & { fts_score: number }>>(
+          `SELECT id, "memoryType", title, content,
+                  0::float AS cosine_similarity,
+                  EXTRACT(EPOCH FROM (now() - "createdAt")) / 86400.0 AS age_days,
+                  ts_rank(content_tsv, websearch_to_tsquery('english', $1)) AS fts_score
+           FROM "DistilledMemory"
+           WHERE "scopeType" = 'CAPABILITY' AND "scopeId" = $2 AND status = 'ACTIVE'
+             AND content_tsv @@ websearch_to_tsquery('english', $1)
+           ORDER BY fts_score DESC
+           LIMIT ${candidatePool}`,
+          taskText, capabilityId,
+        );
+      } catch (err) {
+        logger.warn({ err: (err as Error).message }, "[compose] FTS skipped — content_tsv missing on DistilledMemory");
+      }
+    }
+    return fuseAndRerank(vectorRows, ftsRows, take, (r) => ({
+      id: r.id, memoryType: r.memoryType, title: r.title, content: r.content,
+      cosineSimilarity: Number(r.cosine_similarity), ageDays: Number(r.age_days),
+      fts_score: Number((r as { fts_score?: number }).fts_score ?? 0),
+    }));
   },
 
   async semanticSymbols(capabilityId: string, taskVec: string, take = DEFAULT_CONTEXT_BUDGET.codeTopK) {
@@ -615,6 +817,119 @@ Input contract: available to the execution layer; ask for only the fields needed
       })),
       finalTake,
     );
+  },
+
+  // ── M25.5 — Context Compiler cache ──────────────────────────────────────
+  //
+  // The capsule cache is keyed by a stable hash of (capability, agent template,
+  // normalized intent, content revision). The content revision is derived from
+  // a single SQL roll-up (MAX(updatedAt) + COUNT across the three source
+  // tables) so any artifact / memory write — including soft-deletes that bump
+  // updatedAt — invalidates the capsule by making the key unreachable.
+  //
+  // The lookup returns the rendered layers + the typed chunks. Caller replays
+  // those into the current assembly. We don't materialise the capsule's
+  // compiledContent as a single paragraph in v0 — that's the M25.5.next LLM-
+  // compile step. v0 saves the layers-and-chunks shape directly.
+
+  async capabilityContentRevision(capabilityId: string): Promise<string> {
+    type Row = {
+      ka_max: string | null; ka_count: bigint | number | null;
+      dm_max: string | null; dm_count: bigint | number | null;
+    };
+    const rows = await prisma.$queryRawUnsafe<Row[]>(
+      `SELECT
+         (SELECT MAX("updatedAt") FROM "CapabilityKnowledgeArtifact"
+            WHERE "capabilityId" = $1) AS ka_max,
+         (SELECT COUNT(*) FROM "CapabilityKnowledgeArtifact"
+            WHERE "capabilityId" = $1) AS ka_count,
+         (SELECT MAX("updatedAt") FROM "DistilledMemory"
+            WHERE "scopeType" = 'CAPABILITY' AND "scopeId" = $1) AS dm_max,
+         (SELECT COUNT(*) FROM "DistilledMemory"
+            WHERE "scopeType" = 'CAPABILITY' AND "scopeId" = $1) AS dm_count`,
+      capabilityId,
+    );
+    const r = rows[0] ?? { ka_max: null, ka_count: 0, dm_max: null, dm_count: 0 };
+    const parts = [
+      r.ka_max ?? "-",   String(r.ka_count ?? 0),
+      r.dm_max ?? "-",   String(r.dm_count ?? 0),
+    ].join("|");
+    // Hash client-side (avoids depending on Postgres' pgcrypto). 16 hex chars
+    // is plenty for cache-key disambiguation.
+    return sha256(parts).slice(0, 16);
+  },
+
+  async lookupCapsule(opts: {
+    capabilityId:    string;
+    agentTemplateId: string;
+    intent:          string;
+  }): Promise<{ id: string; layers: AssembledLayer[]; chunks: RetrievedChunk[] } | null> {
+    try {
+      const contentRevision = await this.capabilityContentRevision(opts.capabilityId);
+      const sig = taskSignature({
+        capabilityId:    opts.capabilityId,
+        agentTemplateId: opts.agentTemplateId,
+        intent:          opts.intent,
+        contentRevision,
+      });
+      const row = await prisma.capabilityCompiledContext.findUnique({
+        where: { taskSignature: sig },
+      });
+      if (!row) return null;
+      if (row.status !== "READY") return null;
+      // The capsule stores RetrievedChunk[] in `citations` and the layer
+      // snapshots in `compiledContent` as a JSON-encoded array (so we don't
+      // need a sibling table just for cached layers).
+      let layersArr: AssembledLayer[] = [];
+      try { layersArr = JSON.parse(row.compiledContent) as AssembledLayer[]; }
+      catch { return null; }
+      return {
+        id: row.id,
+        layers: layersArr,
+        chunks: (row.citations as unknown as RetrievedChunk[]) ?? [],
+      };
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, "[compose] lookupCapsule failed (continuing without cache)");
+      return null;
+    }
+  },
+
+  async storeCapsule(opts: {
+    capabilityId:    string;
+    agentTemplateId: string;
+    intent:          string;
+    layers:          AssembledLayer[];
+    chunks:          RetrievedChunk[];
+  }): Promise<void> {
+    const contentRevision = await this.capabilityContentRevision(opts.capabilityId);
+    const sig = taskSignature({
+      capabilityId:    opts.capabilityId,
+      agentTemplateId: opts.agentTemplateId,
+      intent:          opts.intent,
+      contentRevision,
+    });
+    const compiledContent = JSON.stringify(opts.layers);
+    const estimatedTokens = estimateTokens(compiledContent);
+    await prisma.capabilityCompiledContext.upsert({
+      where: { taskSignature: sig },
+      create: {
+        capabilityId:    opts.capabilityId,
+        agentTemplateId: opts.agentTemplateId,
+        taskSignature:   sig,
+        intent:          opts.intent.slice(0, 2000),
+        compiledContent,
+        citations:       opts.chunks as never,
+        estimatedTokens,
+        status:          "READY",
+      },
+      update: {
+        compiledContent,
+        citations:     opts.chunks as never,
+        estimatedTokens,
+        status:        "READY",
+        intent:        opts.intent.slice(0, 2000),
+      },
+    });
   },
 };
 

@@ -159,7 +159,45 @@ model PromptAssembly {
   estimatedInputTokens Int?
   createdAt            DateTime @default(now())
 
+  // M25 — typed RetrievedChunk[] used to assemble this prompt. Stored as
+  // {source_kind, source_id, citation_key, excerpt, confidence, …} per
+  // chunk so Run Insights can show citations + the LLM can ground its
+  // output via the matching 〔cite: …〕 markers in the prompt itself.
+  evidenceRefs         Json?
+  // M25.5 — capsule id when this assembly was served from a precompiled
+  // task context cache. NULL means we ran fresh retrieval.
+  compiledContextId    String?
+
   layers PromptAssemblyLayer[]
+}
+
+// M25.5 — Context Compiler: precompiled task contexts (capsules) so that
+// repeated AGENT_TASK shapes skip the three semantic queries + reranking
+// and serve a stable paragraph directly. Cache key = SHA256 over
+// (capability_id, agent_template_id, normalized intent, contentRevision).
+// Any source-artifact change bumps the revision → cache key diverges →
+// stale capsules become unreachable on the next lookup.
+model CapabilityCompiledContext {
+  id                String   @id @default(uuid())
+  capabilityId      String
+  agentTemplateId   String
+  taskSignature     String   @unique
+  intent            String
+  // The compiled paragraph the agent gets, with 〔cite: …〕 markers preserved.
+  compiledContent   String
+  // RetrievedChunk[] that backed the compile, kept for audit + Run Insights.
+  citations         Json
+  // Token estimate so callers can compare hot-path vs cold-path budgets.
+  estimatedTokens   Int      @default(0)
+  hitCount          Int      @default(0)
+  // status: PENDING (compiling) | READY | FAILED. Hot path needs READY.
+  status            String   @default("READY")
+  expiresAt         DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([capabilityId, agentTemplateId])
+  @@index([taskSignature])
 }
 
 model PromptAssemblyLayer {

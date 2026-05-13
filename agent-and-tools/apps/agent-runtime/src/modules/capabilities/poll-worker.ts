@@ -189,6 +189,14 @@ async function pollOneRepo(r: {
   const headSha = shaRaw.trim();
   if (headSha === r.lastPolledSha) return { headSha, extracted: false };
 
+  // M25.7 / M27 — when EXTRACTOR_MODE=off the platform-side symbol mirror is
+  // disabled (code symbols moved per-laptop). Walking + indexing on every
+  // poll wastes CPU; skip cleanly. Polling continues to track HEAD SHA so
+  // when an operator re-enables the extractor it picks up where it left off.
+  if ((process.env.EXTRACTOR_MODE ?? "off").toLowerCase() === "off") {
+    return { headSha, extracted: false };
+  }
+
   const files: InputFile[] = [];
   let bytes = 0;
   await walkSourceFiles(repoDir, repoDir, files, () => bytes, (n) => bytes = n);
