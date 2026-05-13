@@ -3,8 +3,12 @@
   "version": "0.1.0",
   "description": "Reference MCP server for the Singularity platform — runs in the customer VPC, holds provider/tool secrets locally, drives the LLM↔tool agent loop.",
   "private": true,
+  "bin": {
+    "singularity-mcp": "./dist/cli/index.js"
+  },
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "dev:cli": "ts-node --transpile-only src/cli/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit"

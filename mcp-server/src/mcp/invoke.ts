@@ -459,8 +459,11 @@ function buildResponseBody(
 
 // ── POST /mcp/invoke ─────────────────────────────────────────────────────
 
-invokeRouter.post("/invoke", async (req, res) => {
-  const parsed = InvokeSchema.safeParse(req.body);
+// M26 — extracted so the laptop relay-client can reuse the exact same logic
+// without going through Express. Parses + validates + runs the loop + builds
+// the response body. Throws AppError on bad input.
+export async function executeInvokePayload(rawBody: unknown): Promise<Record<string, unknown>> {
+  const parsed = InvokeSchema.safeParse(rawBody);
   if (!parsed.success) {
     throw new AppError("invalid /mcp/invoke payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
   }
@@ -515,9 +518,14 @@ invokeRouter.post("/invoke", async (req, res) => {
   };
 
   const outcome = await runLoop(state);
+  return buildResponseBody(state, outcome, startedAt);
+}
+
+invokeRouter.post("/invoke", async (req, res) => {
+  const data = await executeInvokePayload(req.body);
   res.json({
     success: true,
-    data: buildResponseBody(state, outcome, startedAt),
+    data,
     requestId: res.locals.requestId,
   });
 });

@@ -183,6 +183,9 @@ export async function activateAgentTask(
       agent_run_id: run.id,
       capability_id: capabilityId,
       agent_template_id: agentTemplateId,
+      // M26 — the calling user's IAM sub. context-fabric uses this to route
+      // /mcp/invoke to the user's laptop mcp-server via the WS bridge.
+      user_id: run.initiatedById ?? undefined,
       trace_id: traceId,
     },
     task,
@@ -195,6 +198,12 @@ export async function activateAgentTask(
     context_policy: budgetDecision.contextPolicy,
     limits: budgetDecision.limits,
     preview_only: cfg.previewOnly === true,
+    // M26 — node-level opt-in. When the design sets preferLaptop:true, cf
+    // requires a connected laptop and fails fast with MCP_NOT_CONNECTED
+    // otherwise. Default (undefined) lets cf auto-prefer when available.
+    prefer_laptop: cfg.preferLaptop === true ? true
+      : cfg.preferLaptop === false ? false
+      : undefined,
   }
 
   // 4. Call context-fabric /execute.
@@ -202,10 +211,25 @@ export async function activateAgentTask(
   try {
     result = await contextFabricClient.execute(executeReq)
   } catch (err) {
-    const message = err instanceof ContextFabricError
-      ? `context-fabric error (${err.status}): ${err.message}`
-      : (err as Error).message
-    await failRun(run.id, 'context-fabric-error', message)
+    if (err instanceof ContextFabricError) {
+      // M26 — surface MCP_NOT_CONNECTED / MCP_LAPTOP_TIMEOUT as friendlier
+      // operator-facing failures with a retry hint.
+      const detail = err.detail as { code?: string; message?: string } | undefined
+      if (detail?.code === 'MCP_NOT_CONNECTED') {
+        await failRun(run.id, 'mcp-not-connected',
+          `${detail.message ?? 'Your laptop mcp-server is not connected.'} Run \`singularity-mcp start\` and retry this node.`)
+        return
+      }
+      if (detail?.code === 'MCP_LAPTOP_TIMEOUT') {
+        await failRun(run.id, 'mcp-laptop-timeout',
+          `${detail.message ?? 'The laptop mcp-server did not respond in time.'} Re-run the node, or check \`singularity-mcp status\`.`)
+        return
+      }
+      await failRun(run.id, 'context-fabric-error',
+        `context-fabric error (${err.status}): ${err.message}`)
+      return
+    }
+    await failRun(run.id, 'context-fabric-error', (err as Error).message)
     return
   }
 

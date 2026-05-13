@@ -145,6 +145,12 @@ class ExecuteRequest(BaseModel):
     context_policy: dict[str, Any] = Field(default_factory=dict)
     limits: dict[str, Any] = Field(default_factory=dict)
     preview_only: bool = False
+    # M26 — route the /mcp/invoke to the user's laptop-resident mcp-server via
+    # the WebSocket bridge instead of the shared HTTP mcp-server. Requires
+    # run_context.user_id. Fails fast with MCP_NOT_CONNECTED if no live
+    # laptop. When None, the bridge is used opportunistically (auto-prefer
+    # if a connection exists for the user).
+    prefer_laptop: Optional[bool] = None
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────
@@ -491,15 +497,70 @@ async def execute(req: ExecuteRequest):
         _live_subscribe(mcp_base_url, mcp_bearer, trace_id, stop_subscriber)
     )
 
+    # ── M26 — laptop-bridge dispatch ───────────────────────────────────────
+    # When a laptop mcp-server is connected for run_context.user_id, route
+    # the invoke through the WebSocket bridge instead of the shared HTTP
+    # mcp-server. Behaviour:
+    #   • req.prefer_laptop == True  → require laptop, fail with MCP_NOT_CONNECTED
+    #   • req.prefer_laptop == False → never use laptop (force HTTP path)
+    #   • req.prefer_laptop is None  → auto-prefer laptop when one is connected
+    user_id = req.run_context.user_id
+    use_laptop = False
+    if user_id and req.prefer_laptop is not False:
+        from .laptop_registry import REGISTRY as _LAPTOP_REGISTRY
+        conn = await _LAPTOP_REGISTRY.any_for_user(user_id)
+        if conn is not None:
+            use_laptop = True
+        elif req.prefer_laptop is True:
+            # Required but missing — fail fast (decision #2).
+            _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
+                             "MCP_NOT_CONNECTED: laptop mcp-server is not online for this user",
+                             session_id, mcp_server_id=mcp_server_id)
+            raise HTTPException(status_code=503, detail={
+                "code": "MCP_NOT_CONNECTED",
+                "message": "Your laptop mcp-server is not connected. Run `singularity-mcp start` and retry.",
+                "user_id": user_id,
+            })
+
     try:
         mcp_started = time.time()
-        mcp_resp = await _post(
-            f"{mcp_base_url}/mcp/invoke",
-            invoke_payload,
-            timeout=float(req.limits.get("timeoutSec", 240)),
-            headers={"Authorization": f"Bearer {mcp_bearer}"},
-        )
+        if use_laptop:
+            from .laptop_registry import REGISTRY as _LAPTOP_REGISTRY, LaptopInvokeError, LaptopInvokeTimeout
+            try:
+                mcp_data = await _LAPTOP_REGISTRY.invoke(
+                    user_id=user_id,  # type: ignore[arg-type]
+                    payload=invoke_payload,
+                    timeout=float(req.limits.get("timeoutSec", 240)),
+                )
+                # Wrap in mcp-server's standard envelope so downstream code
+                # treats this identically to an HTTP response.
+                mcp_resp = {"success": True, "data": mcp_data}
+            except LaptopInvokeTimeout as t_exc:
+                raise HTTPException(status_code=504, detail={
+                    "code": "MCP_LAPTOP_TIMEOUT", "message": str(t_exc),
+                })
+            except LaptopInvokeError as l_exc:
+                raise HTTPException(status_code=502, detail={
+                    "code": l_exc.code, "message": l_exc.message,
+                    "details": l_exc.details,
+                })
+        else:
+            mcp_resp = await _post(
+                f"{mcp_base_url}/mcp/invoke",
+                invoke_payload,
+                timeout=float(req.limits.get("timeoutSec", 240)),
+                headers={"Authorization": f"Bearer {mcp_bearer}"},
+            )
         mcp_latency_ms = int((time.time() - mcp_started) * 1000)
+    except HTTPException:
+        # Stop the live subscriber and clean up before bubbling the structured
+        # error up to the caller (don't masquerade as a 502 below).
+        stop_subscriber.set()
+        try:
+            await asyncio.wait_for(subscriber_task, timeout=1.0)
+        except Exception:
+            pass
+        raise
     except Exception as exc:
         # Stop the subscriber and discard its result; failure path goes to drain.
         stop_subscriber.set()

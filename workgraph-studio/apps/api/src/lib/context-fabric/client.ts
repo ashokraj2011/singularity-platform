@@ -50,6 +50,10 @@ export interface ExecuteRequest {
     maxPromptChars?: number
   }
   preview_only?: boolean
+  // M26 — when true, require the calling user's laptop mcp-server (via the
+  // context-fabric laptop-bridge). When false, force the shared HTTP mcp.
+  // When unset, cf auto-prefers laptop if a connection exists for the user.
+  prefer_laptop?: boolean
 }
 
 export interface PendingApproval {
@@ -156,9 +160,17 @@ export const contextFabricClient = {
     })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
+      // FastAPI returns structured errors as { detail: { code, message, ... } }.
+      // Parse so callers (M26 AgentTaskExecutor) can branch on err.detail.code.
+      let parsedDetail: unknown
+      try {
+        const obj = JSON.parse(text) as { detail?: unknown }
+        parsedDetail = obj?.detail
+      } catch { /* leave undefined */ }
       throw new ContextFabricError(
         `context-fabric /execute returned ${res.status}: ${text.slice(0, 500)}`,
         res.status,
+        parsedDetail,
       )
     }
     return (await res.json()) as ExecuteResponse

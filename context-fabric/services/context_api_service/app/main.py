@@ -10,6 +10,11 @@ from .config import settings
 from .internal_mcp import router as internal_mcp_router
 from .execute import router as execute_router
 from .receipts import router as receipts_router
+from .laptop_bridge import (
+    router as laptop_bridge_router,
+    start_sweep_task as start_laptop_sweep,
+    stop_sweep_task as stop_laptop_sweep,
+)
 
 app = FastAPI(title="Context Fabric - Context API Service", version="0.1.0")
 
@@ -21,6 +26,8 @@ setup_otel(app, service_name="context-api")
 app.include_router(internal_mcp_router)
 app.include_router(execute_router)
 app.include_router(receipts_router)
+# M26 — laptop-resident mcp-server bridge (WS endpoint + connection registry)
+app.include_router(laptop_bridge_router)
 
 
 @app.get("/health")
@@ -52,10 +59,17 @@ async def _register_with_platform() -> None:
     })
 
 
+@app.on_event("startup")
+async def _start_laptop_sweep_task() -> None:
+    # M26 — periodic sweep of stale laptop-bridge connections.
+    start_laptop_sweep()
+
+
 @app.on_event("shutdown")
 async def _stop_platform_register() -> None:
     from .platform_registry import stop_self_registration
     await stop_self_registration()
+    stop_laptop_sweep()
 
 
 class ChatRespondRequest(BaseModel):

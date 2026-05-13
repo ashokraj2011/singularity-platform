@@ -72,6 +72,50 @@ async function mintServiceToken(opts: {
     .sign(JWT_SECRET);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// M26 — device tokens (laptop-resident mcp-server)
+// ─────────────────────────────────────────────────────────────────────────────
+// In-memory registry. Real IAM persists in iam.user_devices (Postgres); for
+// the pseudo-iam path everything lives in process.
+type DeviceRecord = {
+  device_id:   string;
+  user_id:     string;
+  email:       string;
+  device_name: string;
+  scopes:      string[];
+  created_at:  string;
+  last_seen_at: string | null;
+  revoked_at:  string | null;
+};
+const DEVICES = new Map<string, DeviceRecord>();           // keyed by device_id
+const DEVICES_BY_USER = new Map<string, Set<string>>();    // user_id → device_ids
+
+function rememberDevice(rec: DeviceRecord) {
+  DEVICES.set(rec.device_id, rec);
+  const set = DEVICES_BY_USER.get(rec.user_id) ?? new Set();
+  set.add(rec.device_id);
+  DEVICES_BY_USER.set(rec.user_id, set);
+}
+
+async function mintDeviceToken(opts: {
+  user_id: string; email: string; device_id: string; device_name: string;
+  scopes: string[]; ttl_days: number;
+}): Promise<string> {
+  return await new SignJWT({
+    sub:         opts.user_id,
+    kind:        "device",
+    email:       opts.email,
+    device_id:   opts.device_id,
+    device_name: opts.device_name,
+    scopes:      opts.scopes,
+    is_super_admin: true,
+  })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime(`${opts.ttl_days}d`)
+    .sign(JWT_SECRET);
+}
+
 async function decodeAny(authHeader: string | undefined): Promise<{ payload: any; userOut: any } | null> {
   if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
   const tok = authHeader.slice(7);
@@ -157,6 +201,57 @@ v1.post("/auth/service-token", async (req, res) => {
     expires_in_hours: ttl_hours,
     note: PSEUDO_NOTE,
   });
+});
+
+// ─── M26 — device tokens ────────────────────────────────────────────────────
+// POST /auth/device-token — mint a 90-day device JWT for the calling user.
+// The 'singularity-mcp login' CLI calls this with the user's IAM JWT in the
+// Authorization header. Returns a long-lived token + device record metadata.
+v1.post("/auth/device-token", async (req, res) => {
+  const decoded = await decodeAny(req.headers.authorization);
+  // Pseudo-IAM accepts anyone — fall back to a synthetic user if no bearer.
+  const user_id = String(decoded?.payload?.sub  ?? "anon-user");
+  const email   = String(decoded?.payload?.email ?? "anon@pseudo.local");
+
+  const device_id   = String(req.body?.device_id   ?? randomUUID());
+  const device_name = String(req.body?.device_name ?? "unknown-device");
+  const scopes: string[] = Array.isArray(req.body?.scopes) ? req.body.scopes : [];
+  const ttl_days = Math.min(Number(req.body?.ttl_days ?? 90), 365);
+
+  const access_token = await mintDeviceToken({ user_id, email, device_id, device_name, scopes, ttl_days });
+
+  const rec: DeviceRecord = {
+    device_id, user_id, email, device_name, scopes,
+    created_at:  new Date().toISOString(),
+    last_seen_at: null,
+    revoked_at:  null,
+  };
+  rememberDevice(rec);
+
+  res.status(201).json({
+    access_token,
+    device_id, user_id, email, device_name, scopes,
+    expires_in_days: ttl_days,
+    note: PSEUDO_NOTE,
+  });
+});
+
+// GET /me/devices — list devices for the calling user.
+v1.get("/me/devices", async (req, res) => {
+  const decoded = await decodeAny(req.headers.authorization);
+  const user_id = String(decoded?.payload?.sub ?? "anon-user");
+  const ids = DEVICES_BY_USER.get(user_id) ?? new Set();
+  const items = Array.from(ids).map(id => DEVICES.get(id)).filter(Boolean);
+  res.json({ items, total: items.length });
+});
+
+// DELETE /devices/:id — revoke a device. Pseudo-IAM never enforces (accepts
+// any caller); real IAM gates on owner_id.
+v1.delete("/devices/:id", async (req, res) => {
+  const rec = DEVICES.get(String(req.params.id));
+  if (!rec) return res.status(404).json({ error: "device not found" });
+  rec.revoked_at = new Date().toISOString();
+  res.json({ ok: true, device: rec });
 });
 
 v1.post("/auth/verify", async (req, res) => {

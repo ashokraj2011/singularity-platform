@@ -200,6 +200,9 @@ import { writeFileTool, gitCommitTool } from "./fs-git";
 import {
   readFileTool, listDirectoryTool, searchCodeTool, httpGetTool, webFetchTool,
 } from "./core";
+// M26 — gh copilot headless wrappers (only meaningful in laptop mode where the
+// user has run `gh auth login` and `gh extension install github/gh-copilot`).
+import { copilotSuggestTool, copilotExplainTool } from "./copilot-headless";
 
 const REGISTRY = new Map<string, ToolHandler>([
   [echoTool.descriptor.name, echoTool],
@@ -214,6 +217,8 @@ const REGISTRY = new Map<string, ToolHandler>([
   [searchCodeTool.descriptor.name, searchCodeTool],
   [httpGetTool.descriptor.name, httpGetTool],
   [webFetchTool.descriptor.name, webFetchTool],
+  [copilotSuggestTool.descriptor.name, copilotSuggestTool],
+  [copilotExplainTool.descriptor.name, copilotExplainTool],
 ]);
 
 export function listLocalTools(): ToolDescriptor[] {
