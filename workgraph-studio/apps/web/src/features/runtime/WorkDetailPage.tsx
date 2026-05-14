@@ -374,12 +374,15 @@ function WorkbenchTaskCard({
     onSuccess: onSubmitted,
   })
 
-  const completeWith = (nextSessionId: string, nextFinalPack: Record<string, unknown> | null, status: string) => {
+  const completeWith = (nextSessionId: string, nextFinalPack: Record<string, unknown> | null, status: string, data?: unknown) => {
     if (!nextSessionId || !canComplete || completeMut.isPending) return
+    const consumableFields = workbenchCompletionFields(data, nextFinalPack)
     completeMut.mutate({
       blueprintSessionId: nextSessionId,
       workbenchStatus: status,
+      finalImplementationPack: nextFinalPack ?? undefined,
       [finalPackKey]: nextFinalPack ?? undefined,
+      ...consumableFields,
       workbench: {
         profile: typeof workbenchConfig.profile === 'string' ? workbenchConfig.profile : 'blueprint',
         sessionId: nextSessionId,
@@ -387,6 +390,7 @@ function WorkbenchTaskCard({
         workflowInstanceId: task.instanceId,
         workflowNodeId: task.nodeId,
         completedAt: new Date().toISOString(),
+        ...consumableFields,
       },
     })
   }
@@ -408,7 +412,7 @@ function WorkbenchTaskCard({
       if (nextFinalPack) setFinalizedPack(nextFinalPack)
       if (nextSessionId && canComplete && !completedRef.current) {
         completedRef.current = true
-        completeWith(nextSessionId, nextFinalPack, typeof data.status === 'string' ? data.status : 'FINALIZED')
+        completeWith(nextSessionId, nextFinalPack, typeof data.status === 'string' ? data.status : 'FINALIZED', data)
       }
     }
     window.addEventListener('message', handler)
@@ -579,6 +583,40 @@ function useFormForNode(
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function workbenchCompletionFields(data: unknown, finalPack: Record<string, unknown> | null) {
+  const record = isPlainRecord(data) ? data : {}
+  const stageConsumables = Array.isArray(record.stageConsumables)
+    ? record.stageConsumables
+    : Array.isArray(finalPack?.stageConsumables) ? finalPack.stageConsumables : []
+  const consumableIds = Array.from(new Set([
+    ...(Array.isArray(record.consumableIds) ? record.consumableIds : []),
+    ...(Array.isArray(finalPack?.consumableIds) ? finalPack.consumableIds : []),
+    typeof record.finalPackConsumableId === 'string' ? record.finalPackConsumableId : undefined,
+    typeof finalPack?.finalPackConsumableId === 'string' ? finalPack.finalPackConsumableId : undefined,
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0)))
+  const finalPackConsumableId = typeof record.finalPackConsumableId === 'string'
+    ? record.finalPackConsumableId
+    : typeof finalPack?.finalPackConsumableId === 'string' ? finalPack.finalPackConsumableId : undefined
+  const stageArtifactsByKind = isPlainRecord(record.stageArtifactsByKind)
+    ? record.stageArtifactsByKind
+    : groupConsumablesByKind(stageConsumables)
+  return {
+    finalPackConsumableId,
+    stageConsumables,
+    consumableIds,
+    stageArtifactsByKind,
+  }
+}
+
+function groupConsumablesByKind(refs: unknown[]) {
+  return refs.reduce<Record<string, unknown[]>>((acc, ref) => {
+    if (!isPlainRecord(ref)) return acc
+    const key = typeof ref.artifactKind === 'string' && ref.artifactKind ? ref.artifactKind : 'artifact'
+    acc[key] = [...(acc[key] ?? []), ref]
+    return acc
+  }, {})
 }
 
 function buildWorkbenchUrl(workflowInstanceId: string, workflowNodeId: string, config?: Record<string, unknown>) {

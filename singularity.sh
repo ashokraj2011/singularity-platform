@@ -13,8 +13,9 @@
 #   ./singularity.sh urls                  print all service URLs
 #   ./singularity.sh ls                    list known service names
 #   ./singularity.sh login                 quick smoke: IAM /auth/local/login
+#   ./singularity.sh doctor                validate config, ports, health, keys
 #   ./singularity.sh config <command>      configure DBs, keys, endpoints, LLMs, MCP
-#     common: show | doctor | write | interactive | mcp-catalog | mcp-register
+#     common: init | show | doctor | set | mcp | models | export | write
 #
 # Service names match the docker-compose `services:` keys. Quick reference:
 #   portal                 the wrapper SPA on :5180
@@ -205,6 +206,10 @@ EOF
 
   config)
     python3 "$SCRIPT_DIR/bin/configure-platform.py" "$@"
+    ;;
+
+  doctor)
+    python3 "$SCRIPT_DIR/bin/configure-platform.py" doctor
     ;;
 
   help|--help|-h|"")

@@ -120,6 +120,10 @@ interface LoopState {
   codeChangeIds: string[];
   totalInputTokens: number;
   totalOutputTokens: number;
+  // Repetition detector (catches gpt-4o pathology where the LLM loops on the
+  // same tool call without progressing). Trims to last LOOP_REPETITION_WINDOW
+  // entries — we only care about consecutive repetitions, not lifetime.
+  toolCallHistory: Array<{ name: string; argsHash: string; stepIndex: number }>;
   workspace?: {
     branch?: WorkBranchInfo | null;
     commitSha?: string;
@@ -142,11 +146,40 @@ type LoopOutcome =
   | {
       kind: "denied";
       // M22 — pre-flight governance denial (budget exhausted or rate-limit hit)
-      finishReason: "governance_denied";
+      // M28 — agent_loop.repetition_detected uses kind:"denied" too
+      finishReason: "governance_denied" | "agent_loop_repetition";
       reason: string;
-      check: "budget" | "rate_limit";
+      check: "budget" | "rate_limit" | "loop_repetition";
       details?: Record<string, unknown>;
     };
+
+// M28 boot-1 — repetition detector tunables. The LLM is loop-pathological when
+// it calls the SAME tool with the SAME args ≥ N times consecutively without
+// progress. Default: 3 strikes within a 5-call window. Env-gated so demos can
+// loosen if a model legitimately needs to re-read.
+const LOOP_REPETITION_THRESHOLD = Number(process.env.MCP_LOOP_REPETITION_THRESHOLD ?? 3);
+const LOOP_REPETITION_WINDOW    = Number(process.env.MCP_LOOP_REPETITION_WINDOW ?? 5);
+
+function argsHash(args: Record<string, unknown> | undefined): string {
+  // Stable hash via sorted JSON. Empty/undefined hashes consistently so
+  // a no-arg tool called repeatedly is also caught.
+  if (!args) return "∅";
+  try { return JSON.stringify(args, Object.keys(args).sort()); }
+  catch { return String(args); }
+}
+
+function detectRepetition(history: LoopState["toolCallHistory"]): { name: string; count: number } | null {
+  if (history.length < LOOP_REPETITION_THRESHOLD) return null;
+  const window = history.slice(-LOOP_REPETITION_WINDOW);
+  // Count consecutive matches at the tail.
+  const tail = window[window.length - 1];
+  let count = 0;
+  for (let i = window.length - 1; i >= 0; i--) {
+    if (window[i].name === tail.name && window[i].argsHash === tail.argsHash) count++;
+    else break;
+  }
+  return count >= LOOP_REPETITION_THRESHOLD ? { name: tail.name, count } : null;
+}
 
 type DispatchToolResult = {
   record: ToolInvocationRecord;
@@ -307,6 +340,29 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
           tool_call_id: tc.id,
           tool_name: tc.name,
         });
+
+        // M28 boot-1 — repetition detector.
+        state.toolCallHistory.push({
+          name: tc.name,
+          argsHash: argsHash(tc.args),
+          stepIndex: state.stepIndex,
+        });
+        if (state.toolCallHistory.length > LOOP_REPETITION_WINDOW * 2) {
+          state.toolCallHistory.splice(0, state.toolCallHistory.length - LOOP_REPETITION_WINDOW * 2);
+        }
+        const rep = detectRepetition(state.toolCallHistory);
+        if (rep) {
+          const reason = `LLM looped on ${rep.name} (${rep.count} consecutive identical calls, threshold=${LOOP_REPETITION_THRESHOLD}). Agent is not making progress.`;
+          emitAuditEvent({
+            trace_id:      state.correlation.traceId,
+            source_service: "mcp-server",
+            kind:          "agent_loop.repetition_detected",
+            capability_id: state.correlation.capabilityId,
+            severity:      "warn",
+            payload: { tool_name: rep.name, repetition_count: rep.count, threshold: LOOP_REPETITION_THRESHOLD, stepIndex: state.stepIndex },
+          });
+          return { kind: "denied", finishReason: "agent_loop_repetition", reason, check: "loop_repetition", details: { tool_name: rep.name, repetition_count: rep.count } };
+        }
       }
       state.stepIndex += 1;
       continue;
@@ -478,7 +534,7 @@ async function buildResponseBody(
     correlation: { ...state.correlation },
     payload: {
       phase: outcome.kind === "paused" ? "waiting_approval"
-           : outcome.kind === "denied" ? "governance_denied"
+           : outcome.kind === "denied" ? (outcome.finishReason === "agent_loop_repetition" ? "agent_loop_repetition" : "governance_denied")
            : "complete",
       finishReason: outcome.finishReason,
       stepsTaken: state.stepIndex,
@@ -673,6 +729,7 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     codeChangeIds: [],
     totalInputTokens: 0,
     totalOutputTokens: 0,
+    toolCallHistory: [],
     workspace: {
       branch,
       astIndexStatus: astStats.status,
@@ -738,6 +795,10 @@ invokeRouter.post("/resume", async (req, res) => {
     toolInvocationIds: env.tool_invocation_ids,
     artifactIds: env.artifact_ids,
     codeChangeIds: env.code_change_ids ?? [],
+    // Resumed loops start with a fresh history — the repetition detector
+    // only meaningfully fires on consecutive identical calls within a single
+    // invocation, not across approval pauses.
+    toolCallHistory: [],
     workspace: env.workspace,
     totalInputTokens: env.total_input_tokens,
     totalOutputTokens: env.total_output_tokens,

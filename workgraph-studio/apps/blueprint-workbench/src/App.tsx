@@ -40,17 +40,45 @@ import {
   type DecisionAnswer,
   type GateMode,
   type LoopStage,
+  type LoopDefinition,
   type LoopVerdict,
   type LookupAgent,
   type LookupCapability,
   type SourceType,
   type StageAttempt,
+  type WorkflowInstanceDetail,
+  type WorkflowInstanceListItem,
 } from './api'
 
 const knownRoleMeta: Record<string, { label: string; icon: typeof Brain }> = {
   ARCHITECT: { label: 'Architect', icon: Brain },
   DEVELOPER: { label: 'Developer', icon: Code2 },
   QA: { label: 'QA', icon: ClipboardCheck },
+}
+
+const defaultWorkbenchGoal = 'Create a governed planning, design, development, QA, and testing loop for this codebase.'
+
+type WorkbenchHydratedDefaults = {
+  goal?: string
+  sourceType?: SourceType
+  sourceUri?: string
+  sourceRef?: string
+  capabilityId?: string
+  architectAgentTemplateId?: string
+  developerAgentTemplateId?: string
+  qaAgentTemplateId?: string
+  gateMode?: GateMode
+  loopDefinition?: LoopDefinition
+}
+
+function requestWorkbenchAuthFromHost() {
+  const message = { type: 'blueprintWorkbench.auth.request' }
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage(message, 'http://localhost:5174')
+  }
+  if (window.opener && window.opener !== window) {
+    window.opener.postMessage(message, 'http://localhost:5174')
+  }
 }
 
 function roleMeta(role: string) {
@@ -94,9 +122,7 @@ export default function App() {
       setAuthTick(v => v + 1)
     }
     window.addEventListener('message', handler)
-    if (window.parent && window.parent !== window) {
-      window.parent.postMessage({ type: 'blueprintWorkbench.auth.request' }, 'http://localhost:5174')
-    }
+    requestWorkbenchAuthFromHost()
     return () => window.removeEventListener('message', handler)
   }, [])
 
@@ -262,15 +288,27 @@ function WorkbenchSetup({
   const [sourceType, setSourceType] = useState<SourceType>(workflowDefaults.sourceType ?? 'localdir')
   const [sourceUri, setSourceUri] = useState(workflowDefaults.sourceUri ?? '')
   const [sourceRef, setSourceRef] = useState(workflowDefaults.sourceRef ?? '')
-  const [goal, setGoal] = useState(workflowDefaults.goal ?? 'Create a governed planning, design, development, QA, and testing loop for this codebase.')
+  const [goal, setGoal] = useState(workflowDefaults.goal ?? defaultWorkbenchGoal)
   const [gateMode, setGateMode] = useState<GateMode>(workflowDefaults.gateMode ?? 'manual')
   const [capabilityId, setCapabilityId] = useState(workflowDefaults.capabilityId ?? '')
   const [architectAgentTemplateId, setArchitectAgentTemplateId] = useState(workflowDefaults.architectAgentTemplateId ?? '')
   const [developerAgentTemplateId, setDeveloperAgentTemplateId] = useState(workflowDefaults.developerAgentTemplateId ?? '')
   const [qaAgentTemplateId, setQaAgentTemplateId] = useState(workflowDefaults.qaAgentTemplateId ?? '')
+  const [loopDefinition, setLoopDefinition] = useState<LoopDefinition | undefined>(workflowDefaults.loopDefinition as LoopDefinition | undefined)
   const [includeGlobs, setIncludeGlobs] = useState('')
   const [excludeGlobs, setExcludeGlobs] = useState('**/node_modules/**,**/dist/**,**/.git/**')
 
+  const workflowInstanceQuery = useQuery({
+    queryKey: ['workflowInstanceDefaults', workflowDefaults.workflowInstanceId, workflowDefaults.workflowNodeId],
+    queryFn: () => api.workflowInstance(workflowDefaults.workflowInstanceId!),
+    enabled: Boolean(workflowDefaults.workflowInstanceId && workflowDefaults.workflowNodeId),
+  })
+  const workflowFallbackQuery = useQuery({
+    queryKey: ['workflowWorkbenchFallbackDefaults', workflowDefaults.capabilityId],
+    queryFn: () => loadWorkflowWorkbenchFallbackDefaults(workflowDefaults.capabilityId),
+    enabled: Boolean(workflowDefaults.workflowInstanceId && (!workflowDefaults.goal || !workflowDefaults.sourceUri)),
+    retry: false,
+  })
   const capabilitiesQuery = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities })
   const capabilities = capabilitiesQuery.data ?? []
   const agentsQuery = useQuery({
@@ -279,24 +317,49 @@ function WorkbenchSetup({
     enabled: Boolean(capabilityId),
   })
   const agents = agentsQuery.data ?? []
+  const fallbackCapability = workflowDefaults.capabilityId
+    && capabilityId === workflowDefaults.capabilityId
+    && !capabilities.some(capability => capability.id === workflowDefaults.capabilityId)
+      ? { id: workflowDefaults.capabilityId, name: 'Workflow capability' } as LookupCapability
+      : null
 
   useEffect(() => {
+    const hydrated = hydrateDefaultsFromWorkflow(workflowInstanceQuery.data, workflowDefaults.workflowNodeId) ?? workflowFallbackQuery.data
+    if (!hydrated) return
+    if (hydrated.goal) setGoal(current => current === defaultWorkbenchGoal || !current.trim() ? hydrated.goal! : current)
+    if (hydrated.sourceUri) setSourceUri(current => current || hydrated.sourceUri!)
+    if (hydrated.sourceType === 'github' || hydrated.sourceType === 'localdir') setSourceType(hydrated.sourceType)
+    if (hydrated.sourceRef) setSourceRef(current => current || hydrated.sourceRef!)
+    if (hydrated.capabilityId) setCapabilityId(current => current || hydrated.capabilityId!)
+    if (hydrated.gateMode === 'auto' || hydrated.gateMode === 'manual') setGateMode(hydrated.gateMode)
+    if (hydrated.architectAgentTemplateId) setArchitectAgentTemplateId(current => current || hydrated.architectAgentTemplateId!)
+    if (hydrated.developerAgentTemplateId) setDeveloperAgentTemplateId(current => current || hydrated.developerAgentTemplateId!)
+    if (hydrated.qaAgentTemplateId) setQaAgentTemplateId(current => current || hydrated.qaAgentTemplateId!)
+    if (hydrated.loopDefinition) setLoopDefinition(current => current ?? hydrated.loopDefinition)
+  }, [workflowFallbackQuery.data, workflowInstanceQuery.data, workflowDefaults.workflowNodeId])
+
+  useEffect(() => {
+    if (workflowDefaults.capabilityId) {
+      setCapabilityId(workflowDefaults.capabilityId)
+      return
+    }
     if (!capabilityId && capabilities[0]) setCapabilityId(capabilities[0].id)
-  }, [capabilityId, capabilities])
+  }, [capabilityId, capabilities, workflowDefaults.capabilityId])
 
   useEffect(() => {
+    if (workflowDefaults.architectAgentTemplateId || workflowDefaults.developerAgentTemplateId || workflowDefaults.qaAgentTemplateId) return
     if (!agents[0]) return
     setArchitectAgentTemplateId(v => v || preferredAgent(agents, 'architect')?.id || agents[0].id)
     setDeveloperAgentTemplateId(v => v || preferredAgent(agents, 'developer')?.id || agents[0].id)
     setQaAgentTemplateId(v => v || preferredAgent(agents, 'qa')?.id || agents[0].id)
-  }, [agents])
+  }, [agents, workflowDefaults.architectAgentTemplateId, workflowDefaults.developerAgentTemplateId, workflowDefaults.qaAgentTemplateId])
 
   const createMutation = useMutation({
     mutationFn: (body: CreateSessionRequest) => api.createSession(body),
     onSuccess: onCreated,
   })
 
-  const loopAgentReady = hasLoopAgentTemplates(workflowDefaults.loopDefinition)
+  const loopAgentReady = hasLoopAgentTemplates(loopDefinition)
   const canCreate = goal.trim().length > 7
     && sourceUri.trim()
     && capabilityId
@@ -379,14 +442,15 @@ function WorkbenchSetup({
         <span>Capability</span>
         <select value={capabilityId} onChange={event => setCapabilityId(event.target.value)}>
           <option value="">{capabilitiesQuery.isLoading ? 'Loading...' : 'Select capability'}</option>
+          {fallbackCapability && <option value={fallbackCapability.id}>{capLabel(fallbackCapability)} · from workflow</option>}
           {capabilities.map(capability => <option key={capability.id} value={capability.id}>{capLabel(capability)}</option>)}
         </select>
       </label>
 
       <div className="agent-grid">
-        <AgentSelect label="Architect" agents={agents} value={architectAgentTemplateId} onChange={setArchitectAgentTemplateId} />
-        <AgentSelect label="Developer" agents={agents} value={developerAgentTemplateId} onChange={setDeveloperAgentTemplateId} />
-        <AgentSelect label="QA" agents={agents} value={qaAgentTemplateId} onChange={setQaAgentTemplateId} />
+        <AgentSelect label="Architect" role="architect" agents={agents} value={architectAgentTemplateId} onChange={setArchitectAgentTemplateId} />
+        <AgentSelect label="Developer" role="developer" agents={agents} value={developerAgentTemplateId} onChange={setDeveloperAgentTemplateId} />
+        <AgentSelect label="QA" role="qa" agents={agents} value={qaAgentTemplateId} onChange={setQaAgentTemplateId} />
       </div>
 
       {createMutation.isError && <p className="error-text">{createMutation.error.message}</p>}
@@ -408,7 +472,7 @@ function WorkbenchSetup({
           workflowInstanceId: workflowDefaults.workflowInstanceId,
           workflowNodeId: workflowDefaults.workflowNodeId,
           phaseId: workflowDefaults.phaseId,
-          loopDefinition: workflowDefaults.loopDefinition,
+          loopDefinition,
         })}
       >
         {createMutation.isPending ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
@@ -602,6 +666,9 @@ function StageDetailsPanel({
   const runMutation = useMutation({
     mutationFn: () => {
       if (!stage) throw new Error('No stage selected')
+      if (!session.snapshots[0]) {
+        return api.snapshot(session.id).then(() => api.runStage(session.id, stage.key))
+      }
       return api.runStage(session.id, stage.key)
     },
     onSuccess: onSession,
@@ -635,7 +702,7 @@ function StageDetailsPanel({
   }
 
   const latest = attemptsFor(session, stage.key).at(-1)
-  const canRun = Boolean(session.snapshots[0]) && latest?.status !== 'RUNNING'
+  const canRun = latest?.status !== 'RUNNING'
   const requiredMissing = (stage.questions ?? [])
     .filter(question => question.required && !hasAnswer(answers[question.id]))
     .map(question => question.id)
@@ -661,11 +728,11 @@ function StageDetailsPanel({
         </div>
         <button className="primary-action compact" disabled={!canRun || runMutation.isPending} onClick={() => runMutation.mutate()}>
           {runMutation.isPending ? <Loader2 className="spin" size={15} /> : <Play size={15} />}
-          Run stage
+          {session.snapshots[0] ? 'Run stage' : 'Snapshot + run'}
         </button>
       </div>
 
-      {!session.snapshots[0] && <p className="warning-text">Snapshot the source before running stages.</p>}
+      {!session.snapshots[0] && <p className="warning-text">No snapshot yet. Running this stage will snapshot the source first.</p>}
       {(runMutation.error || verdictMutation.error || sendBackMutation.error) && (
         <p className="error-text">{(runMutation.error ?? verdictMutation.error ?? sendBackMutation.error)?.message}</p>
       )}
@@ -856,6 +923,9 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
         <div>
           <strong>{session.finalPack ? 'Final pack stamped' : green ? 'Ready to finalize' : 'Final pack locked'}</strong>
           <span>{session.finalPack?.summary ?? (green ? 'All required gates are green.' : 'Pass or accept risk on every required stage first.')}</span>
+          {session.finalPack?.finalPackConsumableId && (
+            <span>Workflow consumable: {session.finalPack.finalPackConsumableId.slice(0, 8)}</span>
+          )}
         </div>
         <button className="secondary-action approve" disabled={!green || Boolean(session.finalPack) || finalizeMutation.isPending} onClick={() => finalizeMutation.mutate()}>
           {finalizeMutation.isPending ? <Loader2 className="spin" size={15} /> : <BadgeCheck size={15} />}
@@ -886,6 +956,11 @@ function ArtifactTab({ artifact, active, onClick }: { artifact: BlueprintArtifac
     <button className={active ? 'active' : ''} onClick={onClick}>
       <strong>{artifact.title}</strong>
       <span>{artifact.stageKey ? `${artifact.stageKey} · v${artifact.version ?? 1}` : artifact.kind}</span>
+      {artifact.consumableId && (
+        <em className={`consumable-badge ${String(artifact.consumableStatus ?? '').toLowerCase()}`}>
+          {artifact.consumableStatus ? artifact.consumableStatus.replaceAll('_', ' ') : 'Consumable'}
+        </em>
+      )}
     </button>
   )
 }
@@ -940,12 +1015,26 @@ function stageCostEvidence(attempt: StageAttempt) {
   return tokens
 }
 
-function AgentSelect({ label, agents, value, onChange }: { label: string; agents: LookupAgent[]; value: string; onChange: (value: string) => void }) {
+function AgentSelect({
+  label,
+  role,
+  agents,
+  value,
+  onChange,
+}: {
+  label: string
+  role: string
+  agents: LookupAgent[]
+  value: string
+  onChange: (value: string) => void
+}) {
+  const hasSelectedAgent = value && agents.some(agent => agent.id === value)
   return (
     <label>
       <span>{label}</span>
       <select value={value} onChange={event => onChange(event.target.value)}>
         <option value="">{agents.length ? 'Select agent' : 'Load capability first'}</option>
+        {value && !hasSelectedAgent && <option value={value}>{titleFromRole(role)} agent · from workflow</option>}
         {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
       </select>
     </label>
@@ -1030,6 +1119,103 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+async function loadWorkflowWorkbenchFallbackDefaults(capabilityId?: string): Promise<WorkbenchHydratedDefaults | null> {
+  let instances: WorkflowInstanceListItem[] = []
+  try {
+    instances = await api.workflowInstances()
+  } catch {
+    return null
+  }
+
+  for (const item of instances) {
+    try {
+      const instance = await api.workflowInstance(item.id)
+      const nodes = instance.nodes ?? []
+      for (const node of nodes) {
+        if (!asRecord(node.config?.workbench)) continue
+        const hydrated = hydrateDefaultsFromWorkflow(instance, node.id)
+        if (!hydrated) continue
+        if (capabilityId && hydrated.capabilityId && hydrated.capabilityId !== capabilityId) continue
+        if (hydrated.sourceUri || hydrated.goal) return hydrated
+      }
+    } catch {
+      // Stale runs or inaccessible instances should not block fallback recovery.
+    }
+  }
+  return null
+}
+
+function hydrateDefaultsFromWorkflow(instance: WorkflowInstanceDetail | undefined, workflowNodeId: string | undefined): WorkbenchHydratedDefaults | null {
+  if (!instance || !workflowNodeId) return null
+  const node = instance.nodes?.find(node => node.id === workflowNodeId)
+  const workbench = asRecord(node?.config?.workbench)
+  if (!workbench) return null
+  const context = asRecord(instance.context) ?? {}
+  const rendered = renderWorkflowValue(workbench, {
+    context,
+    instance: {
+      vars: asRecord(context._vars) ?? {},
+      globals: asRecord(context._globals) ?? {},
+      params: asRecord(context._params) ?? {},
+    },
+    vars: asRecord(context._vars) ?? {},
+    globals: asRecord(context._globals) ?? {},
+    params: asRecord(context._params) ?? {},
+  }) as Record<string, unknown>
+  const bindings = asRecord(rendered.agentBindings) ?? {}
+  const sourceType = rendered.sourceType === 'github' || rendered.sourceType === 'localdir' ? rendered.sourceType : undefined
+  const gateMode = rendered.gateMode === 'auto' || rendered.gateMode === 'manual' ? rendered.gateMode : undefined
+  return {
+    goal: cleanText(typeof rendered.goal === 'string' ? rendered.goal : typeof rendered.task === 'string' ? rendered.task : undefined),
+    sourceType,
+    sourceUri: cleanText(rendered.sourceUri),
+    sourceRef: cleanText(rendered.sourceRef),
+    capabilityId: cleanText(rendered.capabilityId),
+    architectAgentTemplateId: cleanText(bindings.architectAgentTemplateId),
+    developerAgentTemplateId: cleanText(bindings.developerAgentTemplateId),
+    qaAgentTemplateId: cleanText(bindings.qaAgentTemplateId),
+    gateMode,
+    loopDefinition: rendered.loopDefinition && typeof rendered.loopDefinition === 'object' && !Array.isArray(rendered.loopDefinition)
+      ? rendered.loopDefinition as LoopDefinition
+      : undefined,
+  }
+}
+
+function renderWorkflowValue(value: unknown, context: Record<string, unknown>): unknown {
+  if (typeof value === 'string') return renderWorkflowTemplate(value, context)
+  if (Array.isArray(value)) return value.map(item => renderWorkflowValue(item, context))
+  const object = asRecord(value)
+  if (object) return Object.fromEntries(Object.entries(object).map(([key, child]) => [key, renderWorkflowValue(child, context)]))
+  return value
+}
+
+function renderWorkflowTemplate(template: string, context: Record<string, unknown>): string {
+  return template.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_match, rawPath: string) => {
+    const value = lookupWorkflowPath(context, rawPath.trim())
+    return value === undefined || value === null ? '' : String(value)
+  })
+}
+
+function lookupWorkflowPath(root: Record<string, unknown>, path: string): unknown {
+  const direct = root[path]
+  if (direct !== undefined) return direct
+  return path.split('.').reduce<unknown>((cursor, segment) => {
+    const object = asRecord(cursor)
+    return object ? object[segment] : undefined
+  }, root)
+}
+
+function cleanText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  if (!text || /\{\{[^}]+}}/.test(text)) return undefined
+  return text
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
 function readWorkflowDefaults() {
   if (typeof window === 'undefined') return {}
   const params = new URLSearchParams(window.location.search)
@@ -1045,30 +1231,77 @@ function readWorkflowDefaults() {
     }
   }
   return {
-    workflowInstanceId: params.get('workflowInstanceId') ?? undefined,
-    workflowNodeId: params.get('workflowNodeId') ?? undefined,
-    phaseId: params.get('phaseId') ?? undefined,
-    goal: params.get('goal') ?? undefined,
+    workflowInstanceId: cleanQueryParam(params.get('workflowInstanceId')),
+    workflowNodeId: cleanQueryParam(params.get('workflowNodeId')),
+    phaseId: cleanQueryParam(params.get('phaseId')),
+    goal: cleanQueryParam(params.get('goal')),
     sourceType: params.get('sourceType') === 'github' ? 'github' as const : params.get('sourceType') === 'localdir' ? 'localdir' as const : undefined,
-    sourceUri: params.get('sourceUri') ?? undefined,
-    sourceRef: params.get('sourceRef') ?? undefined,
-    capabilityId: params.get('capabilityId') ?? undefined,
-    architectAgentTemplateId: params.get('architectAgentTemplateId') ?? undefined,
-    developerAgentTemplateId: params.get('developerAgentTemplateId') ?? undefined,
-    qaAgentTemplateId: params.get('qaAgentTemplateId') ?? undefined,
+    sourceUri: cleanQueryParam(params.get('sourceUri')),
+    sourceRef: cleanQueryParam(params.get('sourceRef')),
+    capabilityId: cleanQueryParam(params.get('capabilityId')),
+    architectAgentTemplateId: cleanQueryParam(params.get('architectAgentTemplateId')),
+    developerAgentTemplateId: cleanQueryParam(params.get('developerAgentTemplateId')),
+    qaAgentTemplateId: cleanQueryParam(params.get('qaAgentTemplateId')),
+    productOwnerAgentTemplateId: cleanQueryParam(params.get('productOwnerAgentTemplateId')),
+    securityAgentTemplateId: cleanQueryParam(params.get('securityAgentTemplateId')),
+    devopsAgentTemplateId: cleanQueryParam(params.get('devopsAgentTemplateId')),
     gateMode,
     loopDefinition,
   }
 }
 
+function cleanQueryParam(value: string | null): string | undefined {
+  const text = value?.trim()
+  if (!text || /\{\{[^}]+}}/.test(text)) return undefined
+  return text
+}
+
 function notifyWorkflowFinalized(session: BlueprintSession) {
   if (typeof window === 'undefined' || window.parent === window) return
+  const stageConsumables = collectStageConsumables(session)
+  const consumableIds = Array.from(new Set([
+    ...(session.finalPack?.consumableIds ?? []),
+    ...stageConsumables.map(ref => ref.consumableId).filter(Boolean),
+    session.finalPack?.finalPackConsumableId,
+  ].filter((id): id is string => Boolean(id))))
   window.parent.postMessage({
     type: 'blueprintWorkbench.finalized',
     sessionId: session.id,
     workflowInstanceId: session.workflowInstanceId,
     workflowNodeId: session.workflowNodeId,
     finalPack: session.finalPack,
+    finalPackConsumableId: session.finalPack?.finalPackConsumableId,
+    stageConsumables,
+    consumableIds,
+    stageArtifactsByKind: groupStageConsumablesByKind(stageConsumables),
     status: session.status,
   }, window.location.origin === 'http://localhost:5176' ? 'http://localhost:5174' : '*')
+}
+
+function collectStageConsumables(session: BlueprintSession): Array<Record<string, any>> {
+  const fromPack = session.finalPack?.stageConsumables
+  if (Array.isArray(fromPack) && fromPack.length > 0) return fromPack
+  return session.artifacts.flatMap(artifact => {
+    const consumable = artifact.payload?.consumable
+    if (consumable && typeof consumable === 'object') return [consumable as Record<string, any>]
+    if (!artifact.consumableId) return []
+    return [{
+      artifactId: artifact.id,
+      artifactKind: artifact.kind,
+      title: artifact.title,
+      consumableId: artifact.consumableId,
+      consumableVersion: artifact.consumableVersion ?? 1,
+      status: artifact.consumableStatus ?? 'UNDER_REVIEW',
+      stageKey: artifact.stageKey,
+      attemptId: artifact.attemptId,
+    }]
+  })
+}
+
+function groupStageConsumablesByKind(refs: Array<Record<string, any>>) {
+  return refs.reduce<Record<string, Array<Record<string, any>>>>((acc, ref) => {
+    const key = typeof ref.artifactKind === 'string' && ref.artifactKind ? ref.artifactKind : 'artifact'
+    acc[key] = [...(acc[key] ?? []), ref]
+    return acc
+  }, {})
 }

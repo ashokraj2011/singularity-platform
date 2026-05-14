@@ -276,7 +276,7 @@ function BlueprintWorkbenchBody({
   const workbenchConfig = isPlainRecord(config)
     ? config
     : isPlainRecord(nodeConfig.workbench) ? nodeConfig.workbench : {}
-  const workbenchUrl = buildWorkbenchUrl(runState.runId, node.id, workbenchConfig)
+  const workbenchUrl = buildWorkbenchUrl(runState.runId, node.id, workbenchConfig, runState.context)
   const outputs = isPlainRecord(workbenchConfig.outputs) ? workbenchConfig.outputs : {}
   const finalPackKey = typeof outputs.finalPackKey === 'string' && outputs.finalPackKey.trim()
     ? outputs.finalPackKey.trim()
@@ -303,6 +303,7 @@ function BlueprintWorkbenchBody({
       if (data.workflowNodeId && data.workflowNodeId !== node.id) return
       const nextSessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
       const nextFinalPack = data.finalPack && typeof data.finalPack === 'object' ? data.finalPack as Record<string, unknown> : null
+      const consumableFields = workbenchCompletionFields(data, nextFinalPack)
       if (nextSessionId) setSessionId(nextSessionId)
       if (nextFinalPack) setFinalizedPack(nextFinalPack)
       if (nextSessionId && !completedRef.current) {
@@ -310,7 +311,9 @@ function BlueprintWorkbenchBody({
         onComplete({
           blueprintSessionId: nextSessionId,
           workbenchStatus: typeof data.status === 'string' ? data.status : 'FINALIZED',
+          finalImplementationPack: nextFinalPack ?? undefined,
           [finalPackKey]: nextFinalPack ?? undefined,
+          ...consumableFields,
           workbench: {
             profile: typeof workbenchConfig.profile === 'string' ? workbenchConfig.profile : 'blueprint',
             sessionId: nextSessionId,
@@ -319,6 +322,7 @@ function BlueprintWorkbenchBody({
             workflowNodeId: node.id,
             completedBy: actorEmail,
             completedAt: new Date().toISOString(),
+            ...consumableFields,
           },
         })
       }
@@ -332,7 +336,7 @@ function BlueprintWorkbenchBody({
   }, [actorEmail, finalPackKey, node.id, onComplete, runState.runId, workbenchConfig.profile, workbenchUrl])
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, opacity: claimed ? 1 : 0.55, pointerEvents: claimed ? 'auto' : 'none' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{
         border: '1px solid rgba(0,75,141,0.22)',
         borderRadius: 12,
@@ -373,7 +377,7 @@ function BlueprintWorkbenchBody({
       />
 
       <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center' }}>
-        <a href={workbenchUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: '#004b8d', fontWeight: 700 }}>
+        <a href={workbenchUrl} target="_blank" rel="opener" style={{ fontSize: 12, color: '#004b8d', fontWeight: 700 }}>
           Open full workbench
         </a>
         <button
@@ -381,7 +385,9 @@ function BlueprintWorkbenchBody({
           onClick={() => onComplete({
             blueprintSessionId: sessionId.trim(),
             workbenchStatus: finalizedPack ? 'FINALIZED' : 'MANUAL_REFERENCE',
+            finalImplementationPack: finalizedPack ?? undefined,
             [finalPackKey]: finalizedPack ?? undefined,
+            ...workbenchCompletionFields(null, finalizedPack),
             workbench: {
               profile: typeof workbenchConfig.profile === 'string' ? workbenchConfig.profile : 'blueprint',
               sessionId: sessionId.trim(),
@@ -390,6 +396,7 @@ function BlueprintWorkbenchBody({
               workflowNodeId: node.id,
               completedBy: actorEmail,
               completedAt: new Date().toISOString(),
+              ...workbenchCompletionFields(null, finalizedPack),
             },
           })}
           style={btnPrimary(!sessionId.trim())}
@@ -400,7 +407,7 @@ function BlueprintWorkbenchBody({
 
       {!claimed && (
         <p style={{ fontSize: 10, color: 'var(--color-outline)', textAlign: 'right' }}>
-          Claim this node to use the embedded workbench.
+          Claim this node before completing the workflow task. The embedded workbench remains available for inspection and setup.
         </p>
       )}
     </div>
@@ -418,32 +425,80 @@ function readWorkgraphToken(): string {
   }
 }
 
-function buildWorkbenchUrl(workflowInstanceId: string, workflowNodeId: string, config?: Record<string, unknown>) {
+function buildWorkbenchUrl(
+  workflowInstanceId: string,
+  workflowNodeId: string,
+  config?: Record<string, unknown>,
+  runtimeContext?: Record<string, unknown>,
+) {
   const url = new URL('http://localhost:5176/')
-  const bindings = config?.agentBindings && typeof config.agentBindings === 'object' && !Array.isArray(config.agentBindings)
-    ? config.agentBindings as Record<string, unknown>
+  const renderedConfig = renderWorkbenchConfig(config ?? {}, runtimeContext ?? {})
+  const bindings = renderedConfig.agentBindings && typeof renderedConfig.agentBindings === 'object' && !Array.isArray(renderedConfig.agentBindings)
+    ? renderedConfig.agentBindings as Record<string, unknown>
     : {}
   url.searchParams.set('workflowInstanceId', workflowInstanceId)
   url.searchParams.set('workflowNodeId', workflowNodeId)
-  if (typeof config?.phaseId === 'string') url.searchParams.set('phaseId', config.phaseId)
-  if (typeof config?.goal === 'string') url.searchParams.set('goal', config.goal)
-  else if (typeof config?.task === 'string') url.searchParams.set('goal', config.task)
-  if (config?.sourceType === 'github' || config?.sourceType === 'localdir') url.searchParams.set('sourceType', config.sourceType)
-  if (typeof config?.sourceUri === 'string') url.searchParams.set('sourceUri', config.sourceUri)
-  if (typeof config?.sourceRef === 'string') url.searchParams.set('sourceRef', config.sourceRef)
-  if (typeof config?.capabilityId === 'string') url.searchParams.set('capabilityId', config.capabilityId)
+  if (typeof renderedConfig.phaseId === 'string') url.searchParams.set('phaseId', renderedConfig.phaseId)
+  if (typeof renderedConfig.goal === 'string') url.searchParams.set('goal', renderedConfig.goal)
+  else if (typeof renderedConfig.task === 'string') url.searchParams.set('goal', renderedConfig.task)
+  if (renderedConfig.sourceType === 'github' || renderedConfig.sourceType === 'localdir') url.searchParams.set('sourceType', renderedConfig.sourceType)
+  if (typeof renderedConfig.sourceUri === 'string') url.searchParams.set('sourceUri', renderedConfig.sourceUri)
+  if (typeof renderedConfig.sourceRef === 'string') url.searchParams.set('sourceRef', renderedConfig.sourceRef)
+  if (typeof renderedConfig.capabilityId === 'string') url.searchParams.set('capabilityId', renderedConfig.capabilityId)
   if (typeof bindings.architectAgentTemplateId === 'string') url.searchParams.set('architectAgentTemplateId', bindings.architectAgentTemplateId)
   if (typeof bindings.developerAgentTemplateId === 'string') url.searchParams.set('developerAgentTemplateId', bindings.developerAgentTemplateId)
   if (typeof bindings.qaAgentTemplateId === 'string') url.searchParams.set('qaAgentTemplateId', bindings.qaAgentTemplateId)
-  if (config?.gateMode === 'auto' || config?.gateMode === 'manual') url.searchParams.set('gateMode', config.gateMode)
-  if (config?.loopDefinition && typeof window !== 'undefined') {
+  if (typeof bindings.productOwnerAgentTemplateId === 'string') url.searchParams.set('productOwnerAgentTemplateId', bindings.productOwnerAgentTemplateId)
+  if (typeof bindings.securityAgentTemplateId === 'string') url.searchParams.set('securityAgentTemplateId', bindings.securityAgentTemplateId)
+  if (typeof bindings.devopsAgentTemplateId === 'string') url.searchParams.set('devopsAgentTemplateId', bindings.devopsAgentTemplateId)
+  if (renderedConfig.gateMode === 'auto' || renderedConfig.gateMode === 'manual') url.searchParams.set('gateMode', renderedConfig.gateMode)
+  if (renderedConfig.loopDefinition && typeof window !== 'undefined') {
     try {
-      url.searchParams.set('loopDefinition', window.btoa(JSON.stringify(config.loopDefinition)))
+      url.searchParams.set('loopDefinition', window.btoa(JSON.stringify(renderedConfig.loopDefinition)))
     } catch {
       // Keep the modal usable even when a non-serializable config sneaks in.
     }
   }
   return url.toString()
+}
+
+function renderWorkbenchConfig(config: Record<string, unknown>, runtimeContext: Record<string, unknown>): Record<string, unknown> {
+  return renderWorkbenchValue(config, {
+    context: runtimeContext,
+    instance: {
+      vars: isPlainRecord(runtimeContext._vars) ? runtimeContext._vars : {},
+      globals: isPlainRecord(runtimeContext._globals) ? runtimeContext._globals : {},
+      params: isPlainRecord(runtimeContext._params) ? runtimeContext._params : {},
+    },
+    vars: isPlainRecord(runtimeContext._vars) ? runtimeContext._vars : {},
+    globals: isPlainRecord(runtimeContext._globals) ? runtimeContext._globals : {},
+    params: isPlainRecord(runtimeContext._params) ? runtimeContext._params : {},
+  }) as Record<string, unknown>
+}
+
+function renderWorkbenchValue(value: unknown, context: Record<string, unknown>): unknown {
+  if (typeof value === 'string') return renderWorkbenchTemplate(value, context)
+  if (Array.isArray(value)) return value.map(item => renderWorkbenchValue(item, context))
+  if (isPlainRecord(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, renderWorkbenchValue(child, context)]))
+  }
+  return value
+}
+
+function renderWorkbenchTemplate(template: string, context: Record<string, unknown>): string {
+  return template.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_match, rawPath: string) => {
+    const value = lookupWorkbenchPath(context, rawPath.trim())
+    return value === undefined || value === null ? '' : String(value)
+  })
+}
+
+function lookupWorkbenchPath(root: Record<string, unknown>, path: string): unknown {
+  const direct = root[path]
+  if (direct !== undefined) return direct
+  return path.split('.').reduce<unknown>((cursor, segment) => {
+    if (isPlainRecord(cursor)) return cursor[segment]
+    return undefined
+  }, root)
 }
 
 // ─── Delegate panel ──────────────────────────────────────────────────────────
@@ -1178,6 +1233,40 @@ function formatBytes(b: number): string {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function workbenchCompletionFields(data: unknown, finalPack: Record<string, unknown> | null) {
+  const record = isPlainRecord(data) ? data : {}
+  const stageConsumables = Array.isArray(record.stageConsumables)
+    ? record.stageConsumables
+    : Array.isArray(finalPack?.stageConsumables) ? finalPack.stageConsumables : []
+  const consumableIds = Array.from(new Set([
+    ...(Array.isArray(record.consumableIds) ? record.consumableIds : []),
+    ...(Array.isArray(finalPack?.consumableIds) ? finalPack.consumableIds : []),
+    typeof record.finalPackConsumableId === 'string' ? record.finalPackConsumableId : undefined,
+    typeof finalPack?.finalPackConsumableId === 'string' ? finalPack.finalPackConsumableId : undefined,
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0)))
+  const finalPackConsumableId = typeof record.finalPackConsumableId === 'string'
+    ? record.finalPackConsumableId
+    : typeof finalPack?.finalPackConsumableId === 'string' ? finalPack.finalPackConsumableId : undefined
+  const stageArtifactsByKind = isPlainRecord(record.stageArtifactsByKind)
+    ? record.stageArtifactsByKind
+    : groupConsumablesByKind(stageConsumables)
+  return {
+    finalPackConsumableId,
+    stageConsumables,
+    consumableIds,
+    stageArtifactsByKind,
+  }
+}
+
+function groupConsumablesByKind(refs: unknown[]) {
+  return refs.reduce<Record<string, unknown[]>>((acc, ref) => {
+    if (!isPlainRecord(ref)) return acc
+    const key = typeof ref.artifactKind === 'string' && ref.artifactKind ? ref.artifactKind : 'artifact'
+    acc[key] = [...(acc[key] ?? []), ref]
+    return acc
+  }, {})
 }
 
 function inputStyle(): React.CSSProperties {

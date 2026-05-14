@@ -12,6 +12,7 @@ import { resourcesRouter } from "./mcp/resources";
 import { eventsRouter } from "./mcp/events";
 import { listConfiguredProviders } from "./llm/client";
 import { modelCatalogResponse } from "./llm/model-catalog";
+import { runInvariantChecks } from "./healthz-strict";
 
 export const app = express();
 
@@ -33,6 +34,22 @@ app.get("/health", (_req, res) => {
       model: config.LLM_MODEL,
       timestamp: new Date().toISOString(),
     },
+    requestId: res.locals.requestId,
+  });
+});
+
+// M28 boot-1 — strict health invariants. Returns 200 only when every declared
+// invariant passes; 503 with the failing check names otherwise.  Used by:
+//   - bin/demo-up.sh as the boot-time gate
+//   - CI compose smoke for misconfig regression catch
+//   - operators as a first-line diagnostic
+// Unauthenticated by design — operators must be able to call it without
+// holding the bearer token (e.g. when the bearer is what's misconfigured).
+app.get("/healthz/strict", async (_req, res) => {
+  const result = await runInvariantChecks();
+  res.status(result.ok ? 200 : 503).json({
+    success: result.ok,
+    data: { ok: result.ok, service: "singularity-mcp-server", checks: result.checks },
     requestId: res.locals.requestId,
   });
 });

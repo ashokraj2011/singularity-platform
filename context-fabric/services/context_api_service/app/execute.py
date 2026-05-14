@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from . import call_log, events_store
 from .audit_gov_emit import emit_audit_event
 from .config import settings
-from .iam_service_token import get_iam_service_token
+from .iam_service_token import get_iam_service_token, invalidate_iam_service_token
 
 
 router = APIRouter()
@@ -174,6 +174,18 @@ async def _get(url: str, params: Optional[dict] = None, timeout: float = 30.0,
         resp.raise_for_status()
         return resp.json()
 
+
+async def _iam_get(url: str, params: Optional[dict] = None, timeout: float = 30.0) -> dict:
+    token = await get_iam_service_token()
+    try:
+        return await _get(url, params=params, headers={"Authorization": f"Bearer {token or ''}"}, timeout=timeout)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 401:
+            raise
+        invalidate_iam_service_token()
+        token = await get_iam_service_token()
+        return await _get(url, params=params, headers={"Authorization": f"Bearer {token or ''}"}, timeout=timeout)
+
 def _int_limit(obj: dict[str, Any], *keys: str, default: Optional[int] = None) -> Optional[int]:
     for key in keys:
         value = obj.get(key)
@@ -190,6 +202,66 @@ def _str_value(obj: dict[str, Any], *keys: str, default: Optional[str] = None) -
         if isinstance(value, str) and value.strip():
             return value
     return default
+
+
+def _default_mcp_record() -> Optional[dict[str, Any]]:
+    base_url = (settings.mcp_default_base_url or "").strip().rstrip("/")
+    bearer = (settings.mcp_default_bearer_token or "").strip()
+    if not base_url or not bearer:
+        return None
+    return {
+        "id": (settings.mcp_default_server_id or "default-mcp").strip() or "default-mcp",
+        "base_url": base_url,
+        "bearer_token": bearer,
+        "source": "default",
+    }
+
+
+async def _resolve_mcp_record(capability_id: str) -> tuple[dict[str, Any], list[str]]:
+    """Resolve an MCP runtime without making capability registration mandatory.
+
+    Capability remains the scope for prompts, knowledge, memory, tools, and
+    governance. MCP is the execution/workspace endpoint, so a deployment-wide
+    default is valid when there is no per-capability override.
+    """
+    warnings: list[str] = []
+    default_record = _default_mcp_record()
+    try:
+        servers_resp = await _iam_get(
+            f"{settings.iam_base_url.rstrip('/')}/capabilities/{capability_id}/mcp-servers",
+            params={"status": "active"},
+            timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        if default_record:
+            warnings.append(f"IAM MCP lookup failed; using default MCP runtime: {exc!s}")
+            return default_record, warnings
+        raise
+
+    servers = servers_resp if isinstance(servers_resp, list) else servers_resp.get("servers", [])
+    if not servers:
+        if default_record:
+            warnings.append("No capability-specific MCP server registered; using default MCP runtime.")
+            return default_record, warnings
+        raise HTTPException(status_code=409, detail="no MCP runtime configured")
+
+    chosen = servers[0]
+    full = await _iam_get(
+        f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{chosen['id']}",
+        timeout=10.0,
+    )
+    full["source"] = "capability"
+    return full, warnings
+
+
+async def _mcp_record_by_id(mcp_server_id: str) -> dict[str, Any]:
+    default_record = _default_mcp_record()
+    if default_record and mcp_server_id == default_record["id"]:
+        return default_record
+    return await _iam_get(
+        f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{mcp_server_id}",
+        timeout=10.0,
+    )
 
 
 def _trim_text(text: str, max_chars: Optional[int]) -> str:
@@ -343,6 +415,10 @@ async def execute(req: ExecuteRequest):
                 "workflowContext": {
                     "instanceId": req.run_context.workflow_instance_id or session_id,
                     "nodeId": req.run_context.workflow_node_id or "single-shot",
+                    # M28 spine-2 — propagate the trace_id so PromptAssembly
+                    # rows are joinable against tool invocations, llm calls,
+                    # audit events, and code changes by the same key.
+                    "traceId": trace_id,
                     "vars": req.vars,
                     "globals": req.globals,
                     "priorOutputs": req.prior_outputs,
@@ -407,40 +483,20 @@ async def execute(req: ExecuteRequest):
         except Exception:
             pass  # fresh session; ignore
 
-    # ── 3. Resolve MCP server for this capability ───────────────────────
+    # ── 3. Resolve MCP runtime ──────────────────────────────────────────
     if not req.run_context.capability_id:
         raise HTTPException(status_code=400, detail="run_context.capability_id is required")
     if settings.require_tenant_id and not req.run_context.tenant_id:
         raise HTTPException(status_code=400, detail="run_context.tenant_id is required when REQUIRE_TENANT_ID=true")
 
     try:
-        servers_resp = await _get(
-            f"{settings.iam_base_url.rstrip('/')}/capabilities/{req.run_context.capability_id}/mcp-servers",
-            params={"status": "active"},
-            headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
-            timeout=10.0,
-        )
+        full, mcp_warnings = await _resolve_mcp_record(req.run_context.capability_id)
+        composer_warnings.extend(mcp_warnings)
     except httpx.HTTPError as exc:
         _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
                          f"IAM unreachable while resolving MCP servers: {exc!s}", session_id)
         raise HTTPException(status_code=502, detail=f"IAM unreachable: {exc!s}")
-
-    servers = servers_resp if isinstance(servers_resp, list) else servers_resp.get("servers", [])
-    if not servers:
-        _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
-                         f"no active MCP server registered for capability {req.run_context.capability_id}",
-                         session_id)
-        raise HTTPException(status_code=409, detail="no active MCP server for this capability")
-
-    chosen = servers[0]  # v0: just pick the first; v1 can do health/affinity scoring
-    mcp_server_id = chosen["id"]
-    # `chosen` from /capabilities/{id}/mcp-servers is the redacted shape (no bearer).
-    # Fetch the full record (incl bearer) via the per-id endpoint.
-    full = await _get(
-        f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{mcp_server_id}",
-        headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
-        timeout=10.0,
-    )
+    mcp_server_id = full["id"]
     mcp_base_url = full["base_url"].rstrip("/")
     mcp_bearer = full["bearer_token"]
 
@@ -990,10 +1046,7 @@ async def refresh_events_for_call(call_id: str):
     if not rec.get("trace_id"):
         raise HTTPException(status_code=409, detail="call has no trace_id")
 
-    full = await _get(
-        f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{rec['mcp_server_id']}",
-        headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
-    )
+    full = await _mcp_record_by_id(rec["mcp_server_id"])
     persisted = await _drain_mcp_events(
         full["base_url"].rstrip("/"), full["bearer_token"], rec["trace_id"],
     )
@@ -1045,10 +1098,7 @@ async def execute_resume(req: ResumeRequest):
     trace_id = rec.get("trace_id")
 
     # Fetch the MCP credentials from IAM (cached service token).
-    full = await _get(
-        f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{mcp_server_id}",
-        headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
-    )
+    full = await _mcp_record_by_id(mcp_server_id)
     mcp_base_url = full["base_url"].rstrip("/")
     mcp_bearer = full["bearer_token"]
 

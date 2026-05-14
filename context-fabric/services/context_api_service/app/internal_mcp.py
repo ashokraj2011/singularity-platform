@@ -23,7 +23,7 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .config import settings
-from .iam_service_token import get_iam_service_token
+from .iam_service_token import get_iam_service_token, invalidate_iam_service_token
 
 
 router = APIRouter(prefix="/internal/mcp", tags=["internal-mcp"])
@@ -53,6 +53,18 @@ def _check_service_token(provided: Optional[str]) -> None:
         )
     if not provided or provided != expected:
         raise HTTPException(status_code=401, detail="invalid service token")
+
+
+async def _iam_get(url: str, params: Optional[dict[str, str]] = None, timeout: float = 10.0) -> httpx.Response:
+    token = await get_iam_service_token()
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {token or ''}"})
+        if resp.status_code != 401:
+            return resp
+    invalidate_iam_service_token()
+    token = await get_iam_service_token()
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        return await client.get(url, params=params, headers={"Authorization": f"Bearer {token or ''}"})
 
 
 @router.post("/tools/{tool_name}/call")
@@ -129,15 +141,10 @@ async def list_mcp_servers_for_capability(
     if status:
         params["status"] = status
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.get(
-                url,
-                params=params,
-                headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
-            )
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"IAM unreachable: {exc}")
+    try:
+        resp = await _iam_get(url, params=params, timeout=10.0)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"IAM unreachable: {exc}")
     if resp.status_code != 200:
         raise HTTPException(
             status_code=resp.status_code,
@@ -157,11 +164,7 @@ async def list_mcp_servers_for_capability(
 
 async def _fetch_mcp_server(server_id: str) -> dict:
     url = f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{server_id}"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(
-            url,
-            headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
-        )
+    resp = await _iam_get(url, timeout=10.0)
     if resp.status_code == 404:
         raise HTTPException(status_code=404, detail="mcp server not found")
     if resp.status_code != 200:
@@ -282,14 +285,10 @@ async def get_mcp_server(
     _check_service_token(x_service_token)
 
     url = f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{server_id}"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.get(
-                url,
-                headers={"Authorization": f"Bearer {await get_iam_service_token() or ''}"},
-            )
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"IAM unreachable: {exc}")
+    try:
+        resp = await _iam_get(url, timeout=10.0)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"IAM unreachable: {exc}")
     if resp.status_code == 404:
         raise HTTPException(status_code=404, detail="mcp server not found")
     if resp.status_code != 200:

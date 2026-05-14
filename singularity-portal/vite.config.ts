@@ -98,6 +98,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api\/cf/, ''),
       },
+      '/api/mcp': {
+        target: 'http://localhost:7100',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/api\/mcp/, ''),
+      },
       // Agent-runtime / agent-service / tool-service (rare; mostly for debug)
       '/api/runtime': {
         target: 'http://localhost:3003',

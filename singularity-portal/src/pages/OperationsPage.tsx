@@ -21,6 +21,13 @@ interface ServiceCheck {
   critical?: boolean
 }
 
+interface DoctorSummary {
+  generatedAt?: string
+  configPath?: string
+  summary?: { failures: number; warnings: number; checks: number }
+  checks?: Array<{ status: 'OK' | 'WARN' | 'FAIL'; message: string; fix?: string }>
+}
+
 const services: ServiceCheck[] = [
   { id: 'iam', name: 'IAM', group: 'Control Plane', endpoint: '/ops-health/iam', description: 'Users, teams, roles, capabilities', critical: true },
   { id: 'workgraph-api', name: 'Workflow API', group: 'Orchestration', endpoint: '/ops-health/workgraph-api', description: 'Workflow runs, tasks, approvals', critical: true },
@@ -41,18 +48,18 @@ const commandGroups = [
     title: 'One Command Doctor',
     icon: ShieldCheck,
     commands: [
-      { label: 'Check env files, ports, keys, DBs, MCP', command: './singularity.sh config doctor' },
+      { label: 'Check env files, ports, keys, DBs, MCP', command: './singularity.sh doctor' },
       { label: 'Show masked configuration', command: './singularity.sh config show' },
       { label: 'List services', command: './singularity.sh status' },
     ],
   },
   {
-    title: 'Databases And Endpoints',
+    title: 'Canonical Config Profile',
     icon: Database,
     commands: [
-      { label: 'Write standard local endpoint config', command: './singularity.sh config write' },
-      { label: 'Use pseudo IAM for local demos', command: './singularity.sh config write --pseudo-iam' },
-      { label: 'Print shell exports for a profile', command: './singularity.sh config export --llm-provider openai --llm-model gpt-4o-mini' },
+      { label: 'Create office-laptop profile', command: './singularity.sh config init --profile office-laptop' },
+      { label: 'Rewrite all generated env files from profile', command: './singularity.sh config write' },
+      { label: 'Print shell exports from profile', command: './singularity.sh config export' },
     ],
   },
   {
@@ -60,18 +67,18 @@ const commandGroups = [
     icon: KeyRound,
     commands: [
       { label: 'Create MCP model aliases', command: './singularity.sh config mcp-catalog --default-alias fast' },
-      { label: 'Configure OpenAI-backed MCP routing', command: './singularity.sh config write --llm-provider openai --llm-model gpt-4o-mini --openai-api-key sk-...' },
-      { label: 'Configure OpenRouter-backed MCP routing', command: './singularity.sh config write --llm-provider openrouter --llm-model openai/gpt-4o-mini --openrouter-api-key sk-or-...' },
-      { label: 'Use mock mode when offline', command: './singularity.sh config write --llm-provider mock --llm-model mock-fast' },
+      { label: 'Store OpenAI key locally', command: './singularity.sh config set llm.openai.apiKey sk-...' },
+      { label: 'Store OpenRouter key locally', command: './singularity.sh config set llm.openrouter.apiKey sk-or-...' },
+      { label: 'Show model alias readiness', command: './singularity.sh config models' },
     ],
   },
   {
-    title: 'MCP Server',
+    title: 'Default MCP Runtime',
     icon: ServerCog,
     commands: [
-      { label: 'Register this local MCP server for a capability', command: './singularity.sh config mcp-register --capability-id <iam-capability-id> --base-url http://host.docker.internal:7100' },
+      { label: 'Point workflows at the local MCP runtime', command: './singularity.sh config mcp --base-url http://localhost:7100 --public-base-url http://host.docker.internal:7100' },
+      { label: 'Set local workspace root for AST and git branches', command: './singularity.sh config mcp --sandbox-root /path/to/repo' },
       { label: 'Laptop MCP login', command: 'cd mcp-server && npm run build && npx singularity-mcp login --email admin@singularity.local --platform http://localhost:8100/api/v1' },
-      { label: 'Start laptop MCP bridge mode', command: 'cd mcp-server && npx singularity-mcp start --bridge ws://localhost:8000/api/laptop-bridge/connect' },
     ],
   },
 ]
@@ -147,6 +154,17 @@ export function OperationsPage() {
     refetchInterval: 30000,
   })
 
+  const doctor = useQuery({
+    queryKey: ['ops-doctor'],
+    queryFn: async () => {
+      const res = await fetch(`/ops-doctor.json?t=${Date.now()}`, { headers: { accept: 'application/json' } })
+      if (!res.ok) throw new Error('Run ./singularity.sh doctor to generate the setup summary.')
+      return res.json() as Promise<DoctorSummary>
+    },
+    retry: false,
+    refetchInterval: 30000,
+  })
+
   const summary = useMemo(() => {
     const states = healthQueries.map(stateFromQuery)
     const online = states.filter((s) => s === 'ONLINE').length
@@ -178,10 +196,10 @@ export function OperationsPage() {
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h1 className="text-2xl font-semibold" style={{ color: '#0A2240' }}>
-            Operations Command Center
+            Setup Center
           </h1>
           <p className="mt-1 max-w-3xl text-sm" style={{ color: '#64748b' }}>
-            Monitor service health, model readiness, endpoint wiring, database reachability, and MCP setup from one place.
+            Configure Singularity from one place: service health, DNS, DBs, IAM mode, local MCP runtime, model aliases, and token budget posture.
           </p>
         </div>
         <div className="flex gap-2">
@@ -192,6 +210,33 @@ export function OperationsPage() {
             {summary.criticalOffline} critical offline
           </Badge>
         </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
+        <SetupTile
+          title="Canonical profile"
+          value={doctor.data?.configPath ?? '.singularity/config.local.json'}
+          status={doctor.data ? 'OK' : 'WARN'}
+          detail={doctor.data ? `Doctor generated ${formatDate(doctor.data.generatedAt)}` : 'Run ./singularity.sh config init --profile office-laptop'}
+        />
+        <SetupTile
+          title="Doctor checks"
+          value={doctor.data?.summary ? `${doctor.data.summary.checks}` : 'Not generated'}
+          status={doctor.data?.summary?.failures ? 'FAIL' : doctor.data?.summary?.warnings ? 'WARN' : doctor.data ? 'OK' : 'WARN'}
+          detail={doctor.data?.summary ? `${doctor.data.summary.failures} failures, ${doctor.data.summary.warnings} warnings` : 'Run ./singularity.sh doctor'}
+        />
+        <SetupTile
+          title="Token mode"
+          value="Balanced"
+          status="OK"
+          detail="Workflow budgets clamp every LLM-backed step."
+        />
+        <SetupTile
+          title="MCP ownership"
+          value="Default runtime"
+          status="OK"
+          detail="MCP owns local files, AST, branches, tools, and model routing."
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.4fr_0.9fr]">
@@ -283,8 +328,37 @@ export function OperationsPage() {
 
       <Card>
         <CardHeader
+          title="Operator Doctor"
+          subtitle="Last generated by ./singularity.sh doctor. Secrets stay local and masked."
+          action={<ShieldCheck className="h-4 w-4 text-slate-400" />}
+        />
+        <CardBody>
+          {doctor.isError ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+              Run <code>./singularity.sh doctor</code> to generate the local setup report that appears here.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              {(doctor.data?.checks ?? []).slice(0, 12).map((check, idx) => (
+                <div key={`${check.message}-${idx}`} className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-slate-900">{check.message}</div>
+                      {check.fix && <div className="mt-1 font-mono text-[11px] text-slate-500">{check.fix}</div>}
+                    </div>
+                    <Badge tone={check.status === 'OK' ? 'ok' : check.status === 'WARN' ? 'warn' : 'danger'}>{check.status}</Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
           title="Configuration Utility"
-          subtitle="Use the CLI for secrets and writes; the portal shows the exact commands operators need."
+          subtitle="Use the CLI for secret writes; the portal shows the exact commands operators need."
           action={<Terminal className="h-4 w-4 text-slate-400" />}
         />
         <CardBody>
@@ -313,12 +387,12 @@ export function OperationsPage() {
         <InfoCard
           icon={SlidersHorizontal}
           title="What Can Be Configured"
-          body="DB URLs, IAM mode, service endpoints, Context Fabric tokens, MCP bearer token, sandbox root, AST limits, LLM provider, model aliases, and provider keys."
+          body="One local profile controls DB URLs, IAM mode, service endpoints, Context Fabric tokens, MCP bearer token, sandbox root, AST limits, model aliases, and provider keys."
         />
         <InfoCard
           icon={Network}
-          title="MCP Registration"
-          body="Register the MCP server against an IAM capability so Context Fabric can resolve the local tool server and bearer token for that capability."
+          title="Default MCP Runtime"
+          body="MCP is configured once as the local execution runtime. It does not need to belong to a capability; capability-specific MCP overrides are advanced-only."
         />
         <InfoCard
           icon={ShieldCheck}
@@ -327,6 +401,42 @@ export function OperationsPage() {
         />
       </div>
     </div>
+  )
+}
+
+function formatDate(value?: string) {
+  if (!value) return 'unknown'
+  try {
+    return new Date(value).toLocaleString()
+  } catch {
+    return value
+  }
+}
+
+function SetupTile({
+  title,
+  value,
+  detail,
+  status,
+}: {
+  title: string
+  value: string
+  detail: string
+  status: 'OK' | 'WARN' | 'FAIL'
+}) {
+  return (
+    <Card>
+      <CardBody>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</div>
+            <div className="mt-2 truncate text-sm font-semibold text-slate-900">{value}</div>
+            <div className="mt-1 text-xs leading-5 text-slate-600">{detail}</div>
+          </div>
+          <Badge tone={status === 'OK' ? 'ok' : status === 'WARN' ? 'warn' : 'danger'}>{status}</Badge>
+        </div>
+      </CardBody>
+    </Card>
   )
 }
 

@@ -59,7 +59,7 @@ services:
       # M8 — orchestrator dependencies
       - COMPOSER_URL=http://host.docker.internal:3004
       - TOOL_SERVICE_URL=http://host.docker.internal:3002
-      - IAM_BASE_URL=${IAM_BASE_URL:-http://host.docker.internal:8101/api/v1}
+      - IAM_BASE_URL=${IAM_BASE_URL:-http://host.docker.internal:8100/api/v1}
       - CALL_LOG_DB=/data/call_log.db
       # M9.x — persisted MCP events (drained at end of /execute)
       - EVENTS_STORE_DB=/data/call_log_events.db
@@ -70,6 +70,9 @@ services:
       - IAM_SERVICE_TOKEN=${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
       - IAM_BOOTSTRAP_USERNAME=${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
       - IAM_BOOTSTRAP_PASSWORD=${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
+      - MCP_DEFAULT_BASE_URL=${MCP_DEFAULT_BASE_URL:-http://host.docker.internal:7100}
+      - MCP_DEFAULT_BEARER_TOKEN=${MCP_DEFAULT_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      - MCP_DEFAULT_SERVER_ID=${MCP_DEFAULT_SERVER_ID:-local-default-mcp}
       # M11 follow-up — OpenTelemetry → Jaeger
       - OTEL_SERVICE_NAME=context-api
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}

@@ -26,6 +26,9 @@ export const composeSchema = z.object({
     instanceId: z.string().min(1),
     nodeId: z.string().min(1),
     phaseId: z.string().optional(),
+    // M28 spine-2 — TraceId is the run evidence spine. Optional for back-compat;
+    // when absent the composer derives it from instanceId at persist time.
+    traceId: z.string().optional(),
     vars: z.record(z.unknown()).default({}),
     globals: z.record(z.unknown()).default({}),
     priorOutputs: z.record(z.unknown()).default({}),

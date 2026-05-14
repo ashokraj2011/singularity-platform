@@ -160,6 +160,7 @@ async function createCapabilityWorkbenchBridgeGraph({
           assignmentMode: 'DIRECT_USER',
           assignedToId: actorId,
           workbench: workbenchConfig,
+          outputArtifacts: workbenchOutputBindings(),
           starterWarnings: warnings,
         } as Prisma.InputJsonValue,
         executionLocation: 'SERVER' as any,
@@ -434,6 +435,15 @@ function buildWorkbenchConfig(
       finalPackKey: 'finalImplementationPack',
     },
   }
+}
+
+function workbenchOutputBindings() {
+  return [
+    { id: 'workbench-final-pack', name: 'finalImplementationPack', bindingPath: 'workbench.finalPack', required: true },
+    { id: 'workbench-final-pack-consumable', name: 'finalPackConsumableId', bindingPath: 'workbench.finalPackConsumableId', required: false },
+    { id: 'workbench-consumable-ids', name: 'consumableIds', bindingPath: 'workbench.consumableIds', required: false },
+    { id: 'workbench-stage-artifacts-by-kind', name: 'stageArtifactsByKind', bindingPath: 'workbench.stageArtifactsByKind', required: false },
+  ]
 }
 
 function withCapabilityWorkbenchInputs(

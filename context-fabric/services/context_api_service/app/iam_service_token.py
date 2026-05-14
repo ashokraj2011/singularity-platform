@@ -106,8 +106,12 @@ async def get_iam_service_token() -> Optional[str]:
     override). Otherwise auto-mints + caches; refreshes when <24h to expiry.
     Coalesces concurrent callers via an asyncio.Lock.
     """
-    if settings.iam_service_token:
-        return settings.iam_service_token
+    explicit = (settings.iam_service_token or "").strip()
+    if explicit:
+        exp = _decode_exp(explicit)
+        if exp and exp > datetime.now(timezone.utc) + timedelta(minutes=5):
+            return explicit
+        log.warning("[iam-service-token] ignoring non-JWT or expired IAM_SERVICE_TOKEN; attempting bootstrap mint")
     if _is_fresh():
         return _cached_jwt
     async with _lock:

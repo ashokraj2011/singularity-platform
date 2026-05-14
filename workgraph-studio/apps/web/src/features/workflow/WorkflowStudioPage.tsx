@@ -161,6 +161,12 @@ const WORKBENCH_TASK_NODE_CONFIG = {
       finalPackKey: 'finalImplementationPack',
     },
   },
+  outputArtifacts: [
+    { id: 'workbench-final-pack', name: 'finalImplementationPack', bindingPath: 'workbench.finalPack', required: true },
+    { id: 'workbench-final-pack-consumable', name: 'finalPackConsumableId', bindingPath: 'workbench.finalPackConsumableId', required: false },
+    { id: 'workbench-consumable-ids', name: 'consumableIds', bindingPath: 'workbench.consumableIds', required: false },
+    { id: 'workbench-stage-artifacts-by-kind', name: 'stageArtifactsByKind', bindingPath: 'workbench.stageArtifactsByKind', required: false },
+  ],
 }
 
 const NODE_GROUPS: Array<{ label: string; types: string[] }> = [

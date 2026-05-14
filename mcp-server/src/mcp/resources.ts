@@ -34,8 +34,17 @@ resourcesRouter.get("/resources/by-trace/:traceId", (req, res) => {
   });
 });
 
-resourcesRouter.get("/resources/llm-calls", (_req, res) => {
-  res.json({ success: true, data: { items: audit.llmCalls.recent(50) }, requestId: res.locals.requestId });
+// M28 spine-2 — server-side `?trace_id=…&limit=N` filtering on all list
+// endpoints. Prior to 2026-05-14 these list routes were `(_req, res) => …`
+// and silently ignored every query param — `bin/test-trace-spine.sh` exists
+// specifically to make that regression impossible to ship.
+resourcesRouter.get("/resources/llm-calls", (req, res) => {
+  const traceId = typeof req.query.trace_id === "string" ? req.query.trace_id : undefined;
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit ?? 50)));
+  const items = traceId
+    ? audit.llmCalls.byTraceId(traceId).slice(0, limit)
+    : audit.llmCalls.recent(limit);
+  res.json({ success: true, data: { items, total: items.length, traceId: traceId ?? null }, requestId: res.locals.requestId });
 });
 resourcesRouter.get("/resources/llm-calls/:id", (req, res) => {
   const r = audit.llmCalls.byId(req.params.id);
@@ -43,12 +52,13 @@ resourcesRouter.get("/resources/llm-calls/:id", (req, res) => {
   res.json({ success: true, data: r, requestId: res.locals.requestId });
 });
 
-resourcesRouter.get("/resources/tool-invocations", (_req, res) => {
-  res.json({
-    success: true,
-    data: { items: audit.toolInvocations.recent(50) },
-    requestId: res.locals.requestId,
-  });
+resourcesRouter.get("/resources/tool-invocations", (req, res) => {
+  const traceId = typeof req.query.trace_id === "string" ? req.query.trace_id : undefined;
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit ?? 50)));
+  const items = traceId
+    ? audit.toolInvocations.byTraceId(traceId).slice(0, limit)
+    : audit.toolInvocations.recent(limit);
+  res.json({ success: true, data: { items, total: items.length, traceId: traceId ?? null }, requestId: res.locals.requestId });
 });
 resourcesRouter.get("/resources/tool-invocations/:id", (req, res) => {
   const r = audit.toolInvocations.byId(req.params.id);
@@ -56,12 +66,13 @@ resourcesRouter.get("/resources/tool-invocations/:id", (req, res) => {
   res.json({ success: true, data: r, requestId: res.locals.requestId });
 });
 
-resourcesRouter.get("/resources/artifacts", (_req, res) => {
-  res.json({
-    success: true,
-    data: { items: audit.artifacts.recent(50) },
-    requestId: res.locals.requestId,
-  });
+resourcesRouter.get("/resources/artifacts", (req, res) => {
+  const traceId = typeof req.query.trace_id === "string" ? req.query.trace_id : undefined;
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit ?? 50)));
+  const items = traceId
+    ? audit.artifacts.byTraceId(traceId).slice(0, limit)
+    : audit.artifacts.recent(limit);
+  res.json({ success: true, data: { items, total: items.length, traceId: traceId ?? null }, requestId: res.locals.requestId });
 });
 resourcesRouter.get("/resources/artifacts/:id", (req, res) => {
   const r = audit.artifacts.byId(req.params.id);

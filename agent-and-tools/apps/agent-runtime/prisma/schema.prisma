@@ -278,8 +278,13 @@ model PromptAssembly {
   evidenceRefs         Json?
   // M25.5 — same rationale: composer writes this; we just preserve the column.
   compiledContextId    String?
+  // M28 spine-2 — same rationale: composer owns; we mirror so db push
+  // doesn't drop. Tracks the run-evidence-spine traceId.
+  traceId              String?
 
   layers PromptAssemblyLayer[]
+
+  @@index([traceId])
 }
 
 // M25.5 — owned by prompt-composer; mirrored here so agent-runtime's

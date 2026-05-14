@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     call_log_db: str = "/data/call_log.db"
     require_tenant_id: bool = False
 
+    # MCP execution runtime. Capabilities still scope prompts, memory, and
+    # governance; the MCP server itself can be a local/default workspace
+    # endpoint selected by file path or deployment config rather than by
+    # capability membership.
+    mcp_default_base_url: str = ""
+    mcp_default_bearer_token: str = ""
+    mcp_default_server_id: str = "default-mcp"
+
     class Config:
         env_prefix = ""
         extra = "ignore"

@@ -312,11 +312,15 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 
 .cycle-canvas {
   position: relative;
-  min-height: 500px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  min-height: 0;
   border: 1px solid rgba(66, 71, 84, 0.65);
-  border-radius: 999px;
+  border-radius: 16px;
   background: var(--surface-lowest);
-  overflow: hidden;
+  overflow: visible;
+  padding: 14px;
 }
 
 .grid-dots {
@@ -328,11 +332,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 }
 
 .cycle-lines {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 1;
+  display: none;
 }
 
 .cycle-lines path {
@@ -351,17 +351,17 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 }
 
 .core-console {
-  position: absolute;
+  position: relative;
   z-index: 4;
-  left: 50%;
-  top: 50%;
-  width: min(520px, 54%);
-  height: 55%;
-  transform: translate(-50%, -50%);
+  grid-column: 1 / -1;
+  width: auto;
+  height: auto;
+  min-height: 180px;
+  transform: none;
   border: 1px solid var(--outline-variant);
   border-radius: 12px;
   background: var(--surface);
-  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.36);
   overflow: hidden;
 }
 
@@ -394,7 +394,7 @@ code, pre, .console-top code, .terminal-log {
 }
 
 .console-body {
-  height: calc(100% - 39px);
+  max-height: 260px;
   padding: 14px;
   overflow: auto;
   color: var(--muted-low);
@@ -439,22 +439,38 @@ code, pre, .console-top code, .terminal-log {
 .comparison-box .ok { color: var(--ok); }
 
 .cycle-node {
-  position: absolute;
+  position: relative;
   z-index: 5;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  grid-template-areas:
+    "orb label"
+    "orb actions";
   align-items: center;
-  gap: 6px;
-  min-width: 124px;
-  border: 0;
-  background: transparent;
+  gap: 4px 10px;
+  min-width: 0;
+  width: 100%;
+  min-height: 84px;
+  border: 1px solid var(--outline-variant);
+  border-radius: 12px;
+  background: var(--surface-container);
   color: var(--muted);
-  text-align: center;
+  text-align: left;
+  padding: 10px;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+
+.cycle-node:hover {
+  border-color: rgba(173, 198, 255, 0.42);
+  background: var(--surface-high);
+  transform: translateY(-1px);
 }
 
 .node-orb {
-  width: 78px;
-  height: 78px;
+  grid-area: orb;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   border-radius: 999px;
@@ -466,12 +482,12 @@ code, pre, .console-top code, .terminal-log {
 
 .cycle-node.current .node-orb,
 .cycle-node.active .node-orb {
-  width: 96px;
-  height: 96px;
-  border: 4px solid var(--tertiary);
+  width: 48px;
+  height: 48px;
+  border: 2px solid var(--tertiary);
   color: var(--tertiary);
   background: rgba(223, 116, 18, 0.22);
-  box-shadow: 0 0 34px rgba(255, 183, 134, 0.34);
+  box-shadow: 0 0 22px rgba(255, 183, 134, 0.26);
 }
 
 .cycle-node.passed .node-orb {
@@ -486,16 +502,20 @@ code, pre, .console-top code, .terminal-log {
 }
 
 .node-label {
+  grid-area: label;
   color: var(--primary);
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
 }
 
 .node-actions {
+  grid-area: actions;
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
@@ -512,13 +532,10 @@ code, pre, .console-top code, .terminal-log {
   font-family: "JetBrains Mono", monospace;
 }
 
-.node-0 { left: 5%; top: 43%; }
-.node-1 { left: 23%; top: 7%; }
-.node-2 { right: 23%; top: 7%; }
-.node-3 { right: 5%; top: 43%; }
-.node-4 { left: 50%; bottom: 4%; transform: translateX(-50%); }
-.node-5 { left: 5%; bottom: 12%; }
-.node-6 { right: 5%; bottom: 12%; }
+.node-0, .node-1, .node-2, .node-3, .node-4, .node-5, .node-6 {
+  inset: auto;
+  transform: none;
+}
 
 .session-status-strip, .greenline, .finalize-strip {
   display: flex;
@@ -887,6 +904,33 @@ input:focus, textarea:focus, select:focus {
   font-family: "JetBrains Mono", monospace;
   font-size: 10px;
   overflow-wrap: anywhere;
+}
+
+.artifact-tabs .consumable-badge {
+  width: fit-content;
+  margin-top: 3px;
+  border: 1px solid rgba(126, 231, 135, 0.35);
+  border-radius: 999px;
+  background: rgba(126, 231, 135, 0.1);
+  color: var(--success);
+  padding: 2px 7px;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.artifact-tabs .consumable-badge.under_review {
+  border-color: rgba(255, 183, 134, 0.35);
+  background: rgba(255, 183, 134, 0.1);
+  color: var(--tertiary);
+}
+
+.artifact-tabs .consumable-badge.rejected,
+.artifact-tabs .consumable-badge.superseded {
+  border-color: rgba(255, 107, 107, 0.35);
+  background: rgba(255, 107, 107, 0.09);
+  color: var(--danger);
 }
 
 .artifact-reader {

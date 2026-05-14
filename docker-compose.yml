@@ -268,13 +268,20 @@ services:
       METRICS_LEDGER_URL: http://metrics-ledger:8003
       IAM_BASE_URL: http://iam-service:8100/api/v1
       IAM_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
+      IAM_BOOTSTRAP_USERNAME: ${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
+      IAM_BOOTSTRAP_PASSWORD: ${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
+      MCP_DEFAULT_BASE_URL: ${MCP_DEFAULT_BASE_URL:-http://mcp-server-demo:7100}
+      MCP_DEFAULT_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      MCP_DEFAULT_SERVER_ID: ${MCP_DEFAULT_SERVER_ID:-local-default-mcp}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     ports:
       - "8000:8000"
     depends_on:
+      - iam-service
       - llm-gateway
       - context-memory
       - metrics-ledger
+      - mcp-server-demo
 
   # ─────────────────────────────────────────────────────────────────────
   # workgraph-studio

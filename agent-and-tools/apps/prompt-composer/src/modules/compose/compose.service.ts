@@ -515,6 +515,14 @@ export const composeService = {
       },
       orderBy: { createdAt: "desc" },
     });
+    // M28 spine-2 — traceId is the run-evidence spine. Prefer the explicit
+    // value from the caller; fall back to instanceId so legacy callers keep
+    // working until they pass it explicitly.
+    const resolvedTraceId =
+      (input.workflowContext as { traceId?: string }).traceId ??
+      input.workflowContext.instanceId ??
+      null;
+
     const assembly = cachedAssembly ?? await prisma.promptAssembly.create({
       data: {
         agentTemplateId: input.agentTemplateId,
@@ -527,6 +535,7 @@ export const composeService = {
         finalPromptHash,
         finalPromptPreview: finalPrompt.slice(0, 4000),
         estimatedInputTokens,
+        traceId: resolvedTraceId,
         // M25 — per-step citations for Run Insights + audit-replay.
         evidenceRefs: (evidenceChunks.length > 0
           ? evidenceChunks

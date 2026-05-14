@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { BlueprintStage, BlueprintSessionStatus, BlueprintStageStatus, BlueprintSourceType, Prisma } from '@prisma/client'
+import { BlueprintStage, BlueprintSessionStatus, BlueprintStageStatus, BlueprintSourceType, Prisma, type ConsumableStatus } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError } from '../../lib/errors'
@@ -165,6 +165,19 @@ type StageAttempt = {
   metrics?: Record<string, unknown>
 }
 
+type WorkbenchConsumableRef = {
+  artifactId: string
+  artifactKind: string
+  title: string
+  consumableId: string
+  consumableVersion: number
+  status: string
+  stageKey?: string
+  stageLabel?: string
+  attemptId?: string
+  artifactRequired?: boolean
+}
+
 type ReviewEvent = {
   id: string
   type: string
@@ -185,6 +198,11 @@ type FinalPack = {
   summary: string
   stages: Array<{ stageKey: string; label: string; verdict: LoopVerdict; attemptNumber: number; artifactIds: string[] }>
   artifactKinds: string[]
+  stageConsumables?: WorkbenchConsumableRef[]
+  consumableIds?: string[]
+  finalPackArtifactId?: string
+  finalPackConsumableId?: string
+  finalPackConsumableVersion?: number
 }
 
 type LoopState = {
@@ -635,9 +653,9 @@ async function recordBlueprintAudit(
 type LoopSessionSeed = {
   id?: string
   goal: string
-  architectAgentTemplateId: string
-  developerAgentTemplateId: string
-  qaAgentTemplateId: string
+  architectAgentTemplateId?: string | null
+  developerAgentTemplateId?: string | null
+  qaAgentTemplateId?: string | null
   metadata?: Prisma.JsonValue
   workflowInstanceId?: string | null
   phaseId?: string | null
@@ -674,11 +692,15 @@ function shapeSession<T extends LoopSessionSeed & { artifacts?: Array<{ payload?
 
 function shapeArtifact<T extends { payload?: Prisma.JsonValue | null }>(artifact: T) {
   const payload = isRecord(artifact.payload) ? artifact.payload : {}
+  const consumable = readConsumableRefFromPayload({ ...(artifact as Record<string, unknown>), payload })
   return {
     ...artifact,
     stageKey: typeof payload.stageKey === 'string' ? payload.stageKey : undefined,
     attemptId: typeof payload.attemptId === 'string' ? payload.attemptId : undefined,
     version: typeof payload.version === 'number' ? payload.version : undefined,
+    consumableId: consumable?.consumableId,
+    consumableVersion: consumable?.consumableVersion,
+    consumableStatus: consumable?.status,
   }
 }
 
@@ -1094,7 +1116,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
     await recordBlueprintBudgetUsage(session, result, stage.key, readLoopState(session).workflowNodeId)
     const completedAt = new Date().toISOString()
     const gateRecommendation = buildGateRecommendation(result, stage)
-    const artifactIds = await createLoopStageArtifacts(session, snapshot, stage, attempt, result, gateRecommendation)
+    const artifactIds = await createLoopStageArtifacts(session, snapshot, stage, attempt, result, gateRecommendation, actorId)
     await prisma.blueprintStageRun.update({
       where: { id: dbRun.id },
       data: {
@@ -1263,6 +1285,19 @@ async function saveStageVerdict(
       metadata: stateToMetadata(session, nextState),
     },
   })
+  await transitionAttemptConsumables(
+    latestAttempt.artifactIds ?? [],
+    accepted ? 'APPROVED' : 'REJECTED',
+    actorId,
+    accepted ? 'BlueprintStageConsumablesApproved' : 'BlueprintStageConsumablesRejected',
+    {
+      sessionId: session.id,
+      stageKey: stage.key,
+      stageLabel: stage.label,
+      attemptId: latestAttempt.id,
+      verdict: body.verdict,
+    },
+  )
   await recordBlueprintAudit(session.id, 'BlueprintStageVerdictSaved', actorId, {
     stageKey: stage.key,
     stageLabel: stage.label,
@@ -1317,6 +1352,22 @@ async function sendStageBack(
     where: { id: session.id },
     data: { status: BlueprintSessionStatus.SNAPSHOTTED, metadata: stateToMetadata(session, nextState) },
   })
+  if (latestAttempt?.artifactIds?.length) {
+    await transitionAttemptConsumables(
+      latestAttempt.artifactIds,
+      'REJECTED',
+      actorId,
+      'BlueprintStageConsumablesRejected',
+      {
+        sessionId: session.id,
+        stageKey: stage.key,
+        stageLabel: stage.label,
+        targetStageKey: target.key,
+        attemptId: latestAttempt.id,
+        reason: body.reason,
+      },
+    )
+  }
   await recordBlueprintAudit(session.id, 'BlueprintStageSentBack', actorId, {
     stageKey: stage.key,
     stageLabel: stage.label,
@@ -1351,14 +1402,52 @@ async function finalizeLoop(sessionId: string, actorId: string) {
       payload: { finalPack, stageKey: state.currentStageKey, version: 1 } as Prisma.InputJsonValue,
     },
   })
+  const finalConsumable = await publishBlueprintArtifactAsConsumable({
+    session,
+    artifact,
+    actorId,
+    typeName: 'WORKBENCH_FINAL_PACK',
+    status: 'PUBLISHED',
+    extraPayload: {
+      finalPack,
+      stageConsumables: finalPack.stageConsumables ?? [],
+      consumableIds: finalPack.consumableIds ?? [],
+    },
+  })
   const stampedPack: FinalPack = {
     ...finalPack,
     artifactKinds: [...finalPack.artifactKinds, artifact.kind],
+    finalPackArtifactId: artifact.id,
+    finalPackConsumableId: finalConsumable?.consumableId,
+    finalPackConsumableVersion: finalConsumable?.consumableVersion,
+    consumableIds: uniqueStrings([
+      ...(finalPack.consumableIds ?? []),
+      finalConsumable?.consumableId,
+    ]),
   }
+  await prisma.blueprintArtifact.update({
+    where: { id: artifact.id },
+    data: {
+      payload: {
+        finalPack: stampedPack,
+        stageKey: state.currentStageKey,
+        version: 1,
+        consumableId: stampedPack.finalPackConsumableId,
+        consumableVersion: stampedPack.finalPackConsumableVersion,
+        consumableStatus: finalConsumable?.status,
+        stageConsumables: stampedPack.stageConsumables ?? [],
+        consumableIds: stampedPack.consumableIds ?? [],
+      } as Prisma.InputJsonValue,
+    },
+  })
   const finalizedState: LoopState = {
     ...state,
     finalPack: stampedPack,
-    reviewEvents: [...state.reviewEvents, reviewEvent('FINALIZED', 'Final implementation pack generated for workflow handoff.', actorId, { artifactId: artifact.id })],
+    reviewEvents: [...state.reviewEvents, reviewEvent('FINALIZED', 'Final implementation pack generated for workflow handoff.', actorId, {
+      artifactId: artifact.id,
+      finalPackConsumableId: stampedPack.finalPackConsumableId,
+      consumableIds: stampedPack.consumableIds ?? [],
+    })],
   }
   await prisma.blueprintSession.update({
     where: { id: session.id },
@@ -1373,6 +1462,8 @@ async function finalizeLoop(sessionId: string, actorId: string) {
   await recordBlueprintAudit(session.id, 'BlueprintFinalized', actorId, {
     artifactId: artifact.id,
     finalPackId: stampedPack.id,
+    finalPackConsumableId: stampedPack.finalPackConsumableId,
+    consumableIds: stampedPack.consumableIds ?? [],
     workflowInstanceId: session.workflowInstanceId,
     workflowNodeId: state.workflowNodeId,
   })
@@ -1462,19 +1553,29 @@ async function createLoopStageArtifacts(
   attempt: StageAttempt,
   result: ExecuteResponse,
   gateRecommendation: GateRecommendation,
+  actorId?: string,
 ): Promise<string[]> {
   const ctx = buildSnapshotContext(snapshot)
   const response = isUsefulModelResponse(result.finalResponse) ? result.finalResponse ?? '' : ''
   const commonPayload = {
+    workflowInstanceId: session.workflowInstanceId ?? undefined,
+    workflowNodeId: readLoopState(session).workflowNodeId ?? undefined,
     stageKey: stage.key,
+    stageLabel: stage.label,
     attemptId: attempt.id,
     version: attempt.attemptNumber,
+    agentRole: stage.agentRole,
+    agentTemplateId: attempt.agentTemplateId,
     gateRecommendation,
     cfCallId: result.correlation.cfCallId,
     traceId: result.correlation.traceId,
     promptAssemblyId: result.correlation.promptAssemblyId,
     mcpInvocationId: result.correlation.mcpInvocationId,
     codeChangeIds: result.correlation.codeChangeIds ?? [],
+    tokensUsed: result.tokensUsed ?? {},
+    modelUsage: result.modelUsage ?? {},
+    usage: result.usage ?? {},
+    metrics: result.metrics ?? {},
     warnings: result.warnings ?? [],
   }
   const baseContent = buildLoopStageMarkdown(session, ctx, stage, attempt, response, gateRecommendation)
@@ -1521,18 +1622,31 @@ async function createLoopStageArtifacts(
     specs.push({ kind: 'qa_task_pack', title: `QA task pack v${attempt.attemptNumber}`, content: buildQaTaskPack(session, ctx, response) })
   }
 
-  const created = await Promise.all(specs.map(spec => prisma.blueprintArtifact.create({
-    data: {
-      sessionId: session.id,
-      stage: legacyStage(stage),
-      kind: spec.kind,
-      title: spec.title,
-      content: spec.content,
-      payload: { ...commonPayload, ...(spec.payload ?? {}) } as Prisma.InputJsonValue,
-    },
-    select: { id: true },
-  })))
-  return created.map(item => item.id)
+  const artifactIds: string[] = []
+  for (const spec of specs) {
+    const artifact = await prisma.blueprintArtifact.create({
+      data: {
+        sessionId: session.id,
+        stage: legacyStage(stage),
+        kind: spec.kind,
+        title: spec.title,
+        content: spec.content,
+        payload: { ...commonPayload, ...(spec.payload ?? {}) } as Prisma.InputJsonValue,
+      },
+    })
+    artifactIds.push(artifact.id)
+    await publishBlueprintArtifactAsConsumable({
+      session,
+      artifact,
+      actorId,
+      typeName: 'WORKBENCH_STAGE_ARTIFACT',
+      status: stage.approvalRequired !== false ? 'UNDER_REVIEW' : 'APPROVED',
+      stage,
+      attempt,
+      extraPayload: spec.payload ?? {},
+    })
+  }
+  return artifactIds
 }
 
 function buildConfiguredArtifactMarkdown(
@@ -1927,6 +2041,11 @@ function buildFinalPack(state: LoopState, artifacts: Array<{ id: string; kind: s
     const payload = isRecord(artifact.payload) ? artifact.payload : {}
     if (latestAccepted.some(stage => stage.artifactIds.includes(artifact.id)) || payload.stageKey) artifactKinds.add(artifact.kind)
   }
+  const acceptedArtifactIds = new Set(latestAccepted.flatMap(stage => stage.artifactIds))
+  const stageConsumables = artifacts
+    .filter(artifact => acceptedArtifactIds.has(artifact.id))
+    .map(readConsumableRefFromPayload)
+    .filter((item): item is WorkbenchConsumableRef => Boolean(item))
   return {
     id: crypto.randomUUID(),
     status: 'READY_FOR_WORKFLOW_HANDOFF',
@@ -1935,6 +2054,8 @@ function buildFinalPack(state: LoopState, artifacts: Array<{ id: string; kind: s
     summary: `Final pack combines ${latestAccepted.length} accepted loop stages with ${state.decisionAnswers.length} captured stakeholder answers.`,
     stages: latestAccepted,
     artifactKinds: Array.from(artifactKinds).sort(),
+    stageConsumables,
+    consumableIds: uniqueStrings(stageConsumables.map(item => item.consumableId)),
   }
 }
 
@@ -1992,7 +2113,12 @@ async function attachFinalPackToWorkflowNode(
       output: {
         blueprintSessionId: session.id,
         workbenchStatus: 'FINALIZED',
+        finalImplementationPack: finalPack,
         [finalPackKey]: finalPack,
+        finalPackConsumableId: finalPack.finalPackConsumableId,
+        stageConsumables: finalPack.stageConsumables ?? [],
+        consumableIds: finalPack.consumableIds ?? [],
+        stageArtifactsByKind: stageConsumablesByKind(finalPack.stageConsumables ?? []),
       },
       finalizedAt: finalPack.generatedAt,
     },
@@ -2016,11 +2142,15 @@ async function attachFinalPackToWorkflowNode(
   await logEvent('BlueprintFinalPackAttachedToWorkflowNode', 'WorkflowNode', node.id, actorId, {
     sessionId: session.id,
     finalPackId: finalPack.id,
+    finalPackConsumableId: finalPack.finalPackConsumableId,
+    consumableIds: finalPack.consumableIds ?? [],
     workflowInstanceId: node.instanceId,
   })
   await publishOutbox('WorkflowNode', node.id, 'BlueprintFinalPackAttached', {
     sessionId: session.id,
     finalPackId: finalPack.id,
+    finalPackConsumableId: finalPack.finalPackConsumableId,
+    consumableIds: finalPack.consumableIds ?? [],
     workflowInstanceId: node.instanceId,
     actorId,
   })
@@ -2140,6 +2270,12 @@ type ArtifactSession = {
   goal: string
   sourceType: BlueprintSourceType
   sourceUri: string
+  sourceRef?: string | null
+  capabilityId?: string | null
+  workflowInstanceId?: string | null
+  workflowNodeId?: string | null
+  phaseId?: string | null
+  createdById?: string | null
   metadata?: Prisma.JsonValue
 }
 
@@ -2155,12 +2291,20 @@ async function createStageArtifacts(session: ArtifactSession, snapshot: Artifact
     ? `\n\n## Model notes\n\n${result.finalResponse}`
     : ''
   const commonPayload = {
+    workflowInstanceId: session.workflowInstanceId ?? undefined,
+    workflowNodeId: readLoopState(session).workflowNodeId ?? undefined,
+    stageKey: stage.toLowerCase(),
+    stageLabel: humanStage(stage),
     cfCallId: result.correlation.cfCallId,
     traceId: result.correlation.traceId,
     promptAssemblyId: result.correlation.promptAssemblyId,
     mcpInvocationId: result.correlation.mcpInvocationId,
     codeChangeIds: result.correlation.codeChangeIds ?? [],
     status: result.status,
+    tokensUsed: result.tokensUsed ?? {},
+    modelUsage: result.modelUsage ?? {},
+    usage: result.usage ?? {},
+    metrics: result.metrics ?? {},
     warnings: result.warnings ?? [],
   }
   type ArtifactSpec = { kind: string; title: string; content: string; payload?: Record<string, unknown> }
@@ -2184,16 +2328,312 @@ async function createStageArtifacts(session: ArtifactSession, snapshot: Artifact
 	      { kind: 'certification_receipt', title: 'Certification receipt', content: buildCertificationReceipt(session, ctx) },
 	    ] satisfies ArtifactSpec[]
 
-  await prisma.blueprintArtifact.createMany({
-    data: artifacts.map((artifact) => ({
-      sessionId: session.id,
-      stage,
-      kind: artifact.kind,
-      title: artifact.title,
-      content: artifact.content,
-      payload: { ...commonPayload, ...(artifact.payload ?? {}) } as Prisma.InputJsonValue,
-    })),
+  for (const artifactSpec of artifacts) {
+    const artifact = await prisma.blueprintArtifact.create({
+      data: {
+        sessionId: session.id,
+        stage,
+        kind: artifactSpec.kind,
+        title: artifactSpec.title,
+        content: artifactSpec.content,
+        payload: { ...commonPayload, ...(artifactSpec.payload ?? {}) } as Prisma.InputJsonValue,
+      },
+    })
+    await publishBlueprintArtifactAsConsumable({
+      session,
+      artifact,
+      typeName: 'WORKBENCH_STAGE_ARTIFACT',
+      status: 'UNDER_REVIEW',
+      extraPayload: artifactSpec.payload ?? {},
+    })
+  }
+}
+
+type BlueprintArtifactRecord = {
+  id: string
+  stage?: BlueprintStage | null
+  kind: string
+  title: string
+  content?: string | null
+  payload?: Prisma.JsonValue | null
+}
+
+async function publishBlueprintArtifactAsConsumable(args: {
+  session: ArtifactSession
+  artifact: BlueprintArtifactRecord
+  typeName: 'WORKBENCH_STAGE_ARTIFACT' | 'WORKBENCH_FINAL_PACK'
+  status: ConsumableStatus
+  actorId?: string
+  stage?: LoopStageDefinition
+  attempt?: StageAttempt
+  extraPayload?: Record<string, unknown>
+}): Promise<WorkbenchConsumableRef | undefined> {
+  const state = readLoopState(args.session)
+  const workflowInstanceId = args.session.workflowInstanceId ?? undefined
+  const workflowNodeId = state.workflowNodeId ?? args.session.workflowNodeId ?? args.session.phaseId ?? undefined
+  if (!workflowInstanceId || !workflowNodeId) return undefined
+
+  const type = await prisma.consumableType.upsert({
+    where: { name: args.typeName },
+    update: {},
+    create: {
+      name: args.typeName,
+      description: args.typeName === 'WORKBENCH_FINAL_PACK'
+        ? 'Approved Workbench final implementation pack for workflow handoff.'
+        : 'Reviewable Blueprint Workbench stage artifact with receipt lineage.',
+      requiresApproval: args.typeName !== 'WORKBENCH_FINAL_PACK',
+      allowVersioning: true,
+      schemaDef: {},
+    },
   })
+
+  const artifactPayload = isRecord(args.artifact.payload) ? args.artifact.payload : {}
+  const stageKey = typeof artifactPayload.stageKey === 'string' ? artifactPayload.stageKey : args.stage?.key
+  const stageLabel = typeof artifactPayload.stageLabel === 'string' ? artifactPayload.stageLabel : args.stage?.label
+  const attemptId = typeof artifactPayload.attemptId === 'string' ? artifactPayload.attemptId : args.attempt?.id
+  const attemptNumber = typeof artifactPayload.version === 'number' ? artifactPayload.version : args.attempt?.attemptNumber
+  const name = args.typeName === 'WORKBENCH_FINAL_PACK'
+    ? `Final implementation pack - ${args.session.id}`
+    : `${stageLabel ?? 'Workbench stage'} - ${args.artifact.title}`
+  const payload = {
+    artifactType: args.typeName === 'WORKBENCH_FINAL_PACK' ? 'workbench_final_pack' : 'workbench_stage_artifact',
+    blueprintArtifactId: args.artifact.id,
+    blueprintSessionId: args.session.id,
+    workflowInstanceId,
+    workflowNodeId,
+    capabilityId: args.session.capabilityId ?? undefined,
+    stageKey,
+    stageLabel,
+    artifactKind: args.artifact.kind,
+    title: args.artifact.title,
+    content: args.artifact.content ?? '',
+    attemptId,
+    attemptNumber,
+    agentRole: args.stage?.agentRole ?? artifactPayload.agentRole,
+    agentTemplateId: args.attempt?.agentTemplateId ?? artifactPayload.agentTemplateId,
+    source: {
+      sourceType: args.session.sourceType,
+      sourceUri: args.session.sourceUri,
+      sourceRef: args.session.sourceRef ?? undefined,
+    },
+    receipt: {
+      cfCallId: artifactPayload.cfCallId,
+      traceId: artifactPayload.traceId,
+      promptAssemblyId: artifactPayload.promptAssemblyId,
+      mcpInvocationId: artifactPayload.mcpInvocationId,
+      tokensUsed: artifactPayload.tokensUsed,
+      modelUsage: artifactPayload.modelUsage,
+      usage: artifactPayload.usage,
+      metrics: artifactPayload.metrics,
+      codeChangeIds: artifactPayload.codeChangeIds,
+      warnings: artifactPayload.warnings,
+    },
+    approval: {
+      approvalRequired: args.extraPayload?.approvalRequired ?? artifactPayload.approvalRequired ?? args.typeName !== 'WORKBENCH_FINAL_PACK',
+      status: args.status,
+    },
+    ...(args.extraPayload ?? {}),
+  }
+
+  const existing = await prisma.consumable.findFirst({
+    where: { typeId: type.id, instanceId: workflowInstanceId, nodeId: workflowNodeId, name },
+    select: { id: true, currentVersion: true },
+  })
+
+  let consumableId: string
+  let version: number
+  if (existing) {
+    consumableId = existing.id
+    version = existing.currentVersion + 1
+    await prisma.consumableVersion.create({
+      data: {
+        consumableId,
+        version,
+        payload: payload as Prisma.InputJsonValue,
+        createdById: args.actorId ?? args.session.createdById ?? undefined,
+      },
+    })
+    await prisma.consumable.update({
+      where: { id: consumableId },
+      data: {
+        status: args.status,
+        currentVersion: version,
+        formData: payload as Prisma.InputJsonValue,
+        capabilityId: args.session.capabilityId ?? undefined,
+      },
+    })
+  } else {
+    const created = await prisma.consumable.create({
+      data: {
+        typeId: type.id,
+        instanceId: workflowInstanceId,
+        nodeId: workflowNodeId,
+        name,
+        status: args.status,
+        currentVersion: 1,
+        formData: payload as Prisma.InputJsonValue,
+        capabilityId: args.session.capabilityId ?? undefined,
+        createdById: args.actorId ?? args.session.createdById ?? undefined,
+        versions: {
+          create: {
+            version: 1,
+            payload: payload as Prisma.InputJsonValue,
+            createdById: args.actorId ?? args.session.createdById ?? undefined,
+          },
+        },
+      },
+    })
+    consumableId = created.id
+    version = 1
+  }
+
+  const ref: WorkbenchConsumableRef = {
+    artifactId: args.artifact.id,
+    artifactKind: args.artifact.kind,
+    title: args.artifact.title,
+    consumableId,
+    consumableVersion: version,
+    status: args.status,
+    stageKey,
+    stageLabel,
+    attemptId,
+    artifactRequired: args.extraPayload?.artifactRequired === false ? false : undefined,
+  }
+  await prisma.blueprintArtifact.update({
+    where: { id: args.artifact.id },
+    data: {
+      payload: {
+        ...artifactPayload,
+        consumableId,
+        consumableVersion: version,
+        consumableStatus: args.status,
+        consumable: ref,
+      } as Prisma.InputJsonValue,
+    },
+  })
+  await logEvent(existing ? 'WorkbenchConsumableVersioned' : 'WorkbenchConsumableCreated', 'Consumable', consumableId, args.actorId ?? args.session.createdById ?? undefined, {
+    blueprintSessionId: args.session.id,
+    blueprintArtifactId: args.artifact.id,
+    workflowInstanceId,
+    workflowNodeId,
+    stageKey,
+    artifactKind: args.artifact.kind,
+    version,
+  })
+  await publishOutbox('Consumable', consumableId, existing ? 'WorkbenchConsumableVersioned' : 'WorkbenchConsumableCreated', {
+    consumableId,
+    blueprintSessionId: args.session.id,
+    blueprintArtifactId: args.artifact.id,
+    workflowInstanceId,
+    workflowNodeId,
+    stageKey,
+    artifactKind: args.artifact.kind,
+    version,
+  })
+  return ref
+}
+
+async function transitionAttemptConsumables(
+  artifactIds: string[],
+  status: ConsumableStatus,
+  actorId: string,
+  eventType: string,
+  metadata: Record<string, unknown>,
+) {
+  if (artifactIds.length === 0) return
+  const artifacts = await prisma.blueprintArtifact.findMany({
+    where: { id: { in: artifactIds } },
+    select: { id: true, kind: true, title: true, payload: true },
+  })
+  for (const artifact of artifacts) {
+    const ref = readConsumableRefFromPayload(artifact)
+    if (!ref) continue
+    const consumable = await prisma.consumable.findUnique({
+      where: { id: ref.consumableId },
+      select: { formData: true },
+    })
+    const formData = isRecord(consumable?.formData) ? consumable.formData : {}
+    const approval = isRecord(formData.approval) ? formData.approval : {}
+    await prisma.consumable.update({
+      where: { id: ref.consumableId },
+      data: {
+        status,
+        formData: {
+          ...formData,
+          approval: { ...approval, status },
+        } as Prisma.InputJsonValue,
+      },
+    })
+    const payload = isRecord(artifact.payload) ? artifact.payload : {}
+    await prisma.blueprintArtifact.update({
+      where: { id: artifact.id },
+      data: {
+        payload: {
+          ...payload,
+          consumableStatus: status,
+          consumable: { ...ref, status },
+        } as Prisma.InputJsonValue,
+      },
+    })
+    await logEvent(eventType, 'Consumable', ref.consumableId, actorId, {
+      ...metadata,
+      blueprintArtifactId: artifact.id,
+      artifactKind: artifact.kind,
+      consumableId: ref.consumableId,
+      status,
+    })
+    await publishOutbox('Consumable', ref.consumableId, eventType, {
+      ...metadata,
+      blueprintArtifactId: artifact.id,
+      artifactKind: artifact.kind,
+      consumableId: ref.consumableId,
+      status,
+    })
+  }
+}
+
+function readConsumableRefFromPayload(artifact: {
+  id?: string
+  kind?: string
+  title?: string
+  payload?: Prisma.JsonValue | Record<string, unknown> | null
+}): WorkbenchConsumableRef | undefined {
+  const payload = isRecord(artifact.payload) ? artifact.payload : {}
+  const nested = isRecord(payload.consumable) ? payload.consumable : {}
+  const consumableId = typeof payload.consumableId === 'string'
+    ? payload.consumableId
+    : typeof nested.consumableId === 'string' ? nested.consumableId : undefined
+  if (!consumableId) return undefined
+  const consumableVersion = typeof payload.consumableVersion === 'number'
+    ? payload.consumableVersion
+    : typeof nested.consumableVersion === 'number' ? nested.consumableVersion : 1
+  const status = typeof payload.consumableStatus === 'string'
+    ? payload.consumableStatus
+    : typeof nested.status === 'string' ? nested.status : 'UNDER_REVIEW'
+  return {
+    artifactId: typeof nested.artifactId === 'string' ? nested.artifactId : artifact.id ?? '',
+    artifactKind: typeof nested.artifactKind === 'string' ? nested.artifactKind : artifact.kind ?? '',
+    title: typeof nested.title === 'string' ? nested.title : artifact.title ?? '',
+    consumableId,
+    consumableVersion,
+    status,
+    stageKey: typeof payload.stageKey === 'string' ? payload.stageKey : typeof nested.stageKey === 'string' ? nested.stageKey : undefined,
+    stageLabel: typeof payload.stageLabel === 'string' ? payload.stageLabel : typeof nested.stageLabel === 'string' ? nested.stageLabel : undefined,
+    attemptId: typeof payload.attemptId === 'string' ? payload.attemptId : typeof nested.attemptId === 'string' ? nested.attemptId : undefined,
+    artifactRequired: typeof payload.artifactRequired === 'boolean' ? payload.artifactRequired : typeof nested.artifactRequired === 'boolean' ? nested.artifactRequired : undefined,
+  }
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.filter((value): value is string => Boolean(value?.trim()))))
+}
+
+function stageConsumablesByKind(refs: WorkbenchConsumableRef[]): Record<string, WorkbenchConsumableRef[]> {
+  return refs.reduce<Record<string, WorkbenchConsumableRef[]>>((acc, ref) => {
+    const key = ref.artifactKind || 'artifact'
+    acc[key] = [...(acc[key] ?? []), ref]
+    return acc
+  }, {})
 }
 
 type SnapshotContext = {

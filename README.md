@@ -26,7 +26,11 @@ cd singularity-platform
 
 ### 2. Bring up — one command
 ```bash
+./singularity.sh config init --profile office-laptop
+./singularity.sh config mcp-catalog --default-alias balanced
+./singularity.sh config write
 ./singularity.sh up
+./singularity.sh doctor
 ```
 
 This brings up:
@@ -36,6 +40,13 @@ This brings up:
 First boot pulls images + builds web bundles. Wait ~3–5 minutes. Tail with `./singularity.sh logs workgraph-api -f` if you want to watch.
 
 > Need to bring up just one piece? `./singularity.sh up <service-name>` works for the master-stack services (run `./singularity.sh ls` for the list). The audit-governance side stack comes up via the no-arg form.
+
+The local configuration flow is intentionally boring:
+- `.singularity/config.local.json` is the canonical local profile.
+- `./singularity.sh config write` generates the per-app env files.
+- Secrets stay in local ignored files, not in the Portal or git.
+- `./singularity.sh doctor` writes the masked setup report used by Portal `/operations`.
+- Operators only choose capability, workflow, budget preset, model alias, and MCP workspace; the platform resolves the service wiring.
 
 ### 3. Apply baseline seeds
 ```bash
@@ -439,7 +450,8 @@ Wraps the master compose with friendlier subcommands. Useful for starting/stoppi
 ./singularity.sh down                      # stop all (keep data)
 ./singularity.sh nuke                      # stop + delete data volumes (confirms)
 ./singularity.sh login                     # smoke-test IAM /auth/local/login
-./singularity.sh config doctor             # validate DBs, endpoints, LLM keys, MCP
+./singularity.sh doctor                    # validate DBs, endpoints, LLM keys, MCP
+./singularity.sh config init --profile office-laptop
 ./singularity.sh config interactive        # guided local configuration wizard
 ./singularity.sh ls                        # list known service names
 ./singularity.sh build [service]           # rebuild image(s)
@@ -448,7 +460,7 @@ Wraps the master compose with friendlier subcommands. Useful for starting/stoppi
 
 ### Central configuration utility
 
-Use `./singularity.sh config ...` when you need one place to manage the platform knobs that otherwise live across app-specific `.env` files.
+Use `./singularity.sh config ...` when you need one place to manage the platform knobs that otherwise live across app-specific `.env` files. The v1 model is **hybrid local-first**: the canonical profile is `.singularity/config.local.json`, generated env files are written from it, and secrets stay on the laptop. The Portal `/operations` page shows the latest `./singularity.sh doctor` summary and never asks you to paste provider keys into the browser.
 
 It configures:
 
@@ -456,22 +468,27 @@ It configures:
 - IAM vs pseudo-IAM endpoints.
 - Service endpoints for Workgraph, prompt-composer, context-fabric, agent-runtime, tool-service, agent-service, and MCP.
 - LLM provider, model, and keys for OpenAI, OpenRouter, Ollama, or mock mode.
-- MCP bearer token, public URL, sandbox root, AST index path, and local work-branch defaults.
+- Default/local MCP runtime URL, bearer token, public URL, sandbox root, AST index path, and local work-branch defaults. MCP does **not** need to belong to a capability; capability-specific MCP registration is advanced-only.
+- MCP-owned model aliases. Workflows choose aliases; MCP resolves aliases to real provider/model credentials.
+- Balanced token budget defaults. Workgraph owns run budgets, Prompt Composer owns layer/retrieval budgeting, Context Fabric enforces execution limits, and MCP owns provider/model routing.
 - UI env files for the portal, Workgraph web, IAM admin, and agent-and-tools web.
 
 Common commands:
 
 ```bash
+./singularity.sh config init --profile office-laptop
 ./singularity.sh config interactive
-./singularity.sh config write --llm-provider openai --openai-api-key "$OPENAI_API_KEY"
-./singularity.sh config write --llm-provider mock --pseudo-iam
+./singularity.sh config set llm.openai.apiKey "$OPENAI_API_KEY"
+./singularity.sh config set llm.provider openai
+./singularity.sh config mcp --base-url http://localhost:7100 --sandbox-root /path/to/repo
+./singularity.sh config mcp-catalog --default-alias balanced
+./singularity.sh config models
 ./singularity.sh config show
-./singularity.sh config doctor
-./singularity.sh config export --llm-provider openai
-./singularity.sh config mcp-register --capability-id <iam-capability-id>
+./singularity.sh doctor
+./singularity.sh config export
 ```
 
-`show` masks secrets. `doctor` checks env files, common ports, reachable service URLs, provider key presence, and MCP token length. For bare-metal runs, use `config export` to print shell exports without editing files.
+`show` masks secrets. `doctor` checks the canonical config, env drift, common ports, reachable service URLs, provider key presence, MCP token length, and model-catalog readiness. It also writes `singularity-portal/public/ops-doctor.json` so the Portal Setup Center can show the same status. For bare-metal runs, use `config export` to print shell exports without editing files.
 
 ### Option C — per-app compose files
 
@@ -696,6 +713,7 @@ build [service]     rebuild image(s)
 urls                printable URL cheatsheet
 ls                  list known service names
 login               smoke-test IAM /auth/local/login
+doctor              validate config, health, DBs, LLM keys, MCP
 config <command>    configure DBs, keys, endpoints, LLMs, MCP
 help                usage
 ```

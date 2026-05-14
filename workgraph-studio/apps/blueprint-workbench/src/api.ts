@@ -72,6 +72,9 @@ export type BlueprintArtifact = {
   stageKey?: string
   attemptId?: string
   version?: number
+  consumableId?: string
+  consumableVersion?: number
+  consumableStatus?: string
   kind: string
   title: string
   content?: string
@@ -185,6 +188,11 @@ export type FinalPack = {
     artifactIds: string[]
   }>
   artifactKinds: string[]
+  stageConsumables?: Array<Record<string, unknown>>
+  consumableIds?: string[]
+  finalPackArtifactId?: string
+  finalPackConsumableId?: string
+  finalPackConsumableVersion?: number
 }
 
 export type BlueprintSession = {
@@ -217,6 +225,32 @@ export type BlueprintSession = {
     decisionAnswersUpdatedAt?: string
     [key: string]: unknown
   }
+}
+
+export type WorkflowInstanceContext = {
+  _globals?: Record<string, unknown>
+  _vars?: Record<string, unknown>
+  _params?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+export type WorkflowInstanceNode = {
+  id: string
+  nodeType: string
+  config?: Record<string, unknown>
+}
+
+export type WorkflowInstanceDetail = {
+  id: string
+  context?: WorkflowInstanceContext
+  nodes?: WorkflowInstanceNode[]
+}
+
+export type WorkflowInstanceListItem = {
+  id: string
+  name?: string
+  status?: string
+  createdAt?: string
 }
 
 export type CreateSessionRequest = {
@@ -281,6 +315,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
+    if (res.status === 401) {
+      localStorage.removeItem('workgraph-auth')
+    }
     throw new Error(text || `Request failed with ${res.status}`)
   }
   return await res.json() as T
@@ -290,6 +327,9 @@ function unwrap<T>(data: unknown): T[] {
   if (Array.isArray(data)) return data as T[]
   if (data && typeof data === 'object' && Array.isArray((data as { items?: unknown }).items)) {
     return (data as { items: T[] }).items
+  }
+  if (data && typeof data === 'object' && Array.isArray((data as { content?: unknown }).content)) {
+    return (data as { content: T[] }).content
   }
   return []
 }
@@ -309,4 +349,6 @@ export const api = {
   saveDecisionAnswers: (id: string, answers: DecisionAnswer[]) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/decision-answers`, { method: 'POST', body: JSON.stringify({ answers }) }),
   capabilities: async () => unwrap<LookupCapability>(await request('/lookup/capabilities?size=200')),
   agents: async (capabilityId: string) => unwrap<LookupAgent>(await request(`/lookup/agent-templates?size=200&capability_id=${encodeURIComponent(capabilityId)}`)),
+  workflowInstances: async () => unwrap<WorkflowInstanceListItem>(await request('/workflow-instances?size=20')),
+  workflowInstance: (id: string) => request<WorkflowInstanceDetail>(`/workflow-instances/${encodeURIComponent(id)}`),
 }
