@@ -179,6 +179,20 @@ type WorkbenchConsumableRef = {
   artifactRequired?: boolean
 }
 
+type WorkflowLinkWarning = {
+  reason: 'workflow_instance_not_found' | 'workflow_node_not_found'
+  message: string
+  workflowInstanceId?: string
+  workflowNodeId?: string
+  suggestedFix: string
+}
+
+type WorkflowLinkResolution = {
+  workflowInstanceId?: string
+  workflowNodeId?: string
+  warning?: WorkflowLinkWarning
+}
+
 type ReviewEvent = {
   id: string
   type: string
@@ -260,26 +274,39 @@ blueprintRouter.get('/sessions', async (req, res, next) => {
 blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res, next) => {
   try {
     const body = req.body as CreateSessionInput
+    const workflowLink = await resolveWorkflowLink(body.workflowInstanceId, body.workflowNodeId)
     const initialLoopDefinition = normalizeLoopDefinition(body.loopDefinition, body)
     const agentTemplateIds = resolveSessionAgentTemplateIds(body, initialLoopDefinition)
     const loopDefinition = hydrateLoopAgentTemplates(initialLoopDefinition, agentTemplateIds)
     const now = new Date().toISOString()
+    const reviewEvents: ReviewEvent[] = [{
+      id: crypto.randomUUID(),
+      type: 'SESSION_CREATED',
+      stageKey: loopDefinition.stages[0]?.key,
+      message: `Workbench session created with ${loopDefinition.stages.length} loop stages.`,
+      actorId: req.user!.userId,
+      createdAt: now,
+      payload: { gateMode: body.gateMode, workflowNodeId: workflowLink.workflowNodeId ?? body.workflowNodeId },
+    }]
+    if (workflowLink.warning) {
+      reviewEvents.push({
+        id: crypto.randomUUID(),
+        type: 'WORKFLOW_LINK_WARNING',
+        stageKey: loopDefinition.stages[0]?.key,
+        message: workflowLink.warning.message,
+        actorId: req.user!.userId,
+        createdAt: now,
+        payload: workflowLink.warning as unknown as Record<string, unknown>,
+      })
+    }
     const initialLoopState: LoopState = {
-      workflowNodeId: body.workflowNodeId,
+      workflowNodeId: workflowLink.workflowNodeId ?? body.workflowNodeId,
       gateMode: body.gateMode,
       loopDefinition,
       currentStageKey: loopDefinition.stages[0]?.key ?? null,
       stageAttempts: [],
       decisionAnswers: [],
-      reviewEvents: [{
-        id: crypto.randomUUID(),
-        type: 'SESSION_CREATED',
-        stageKey: loopDefinition.stages[0]?.key,
-        message: `Workbench session created with ${loopDefinition.stages.length} loop stages.`,
-        actorId: req.user!.userId,
-        createdAt: now,
-        payload: { gateMode: body.gateMode, workflowNodeId: body.workflowNodeId },
-      }],
+      reviewEvents,
       executionConfig: {
         snapshotMode: body.snapshotMode,
         excerptBudgetChars: body.excerptBudgetChars ?? EXECUTE_EXCERPT_BUDGET_CHARS,
@@ -309,7 +336,8 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
       capabilityId: session.capabilityId,
       sourceType: session.sourceType,
       workflowInstanceId: session.workflowInstanceId,
-      workflowNodeId: body.workflowNodeId,
+      workflowNodeId: workflowLink.workflowNodeId ?? body.workflowNodeId,
+      workflowLinkWarning: workflowLink.warning,
     })
     res.status(201).json(await loadSession(session.id, req.user!.userId))
   } catch (err) { next(err) }
@@ -696,6 +724,7 @@ function shapeSession<T extends LoopSessionSeed & { artifacts?: Array<{ payload?
 function shapeArtifact<T extends { payload?: Prisma.JsonValue | null }>(artifact: T) {
   const payload = isRecord(artifact.payload) ? artifact.payload : {}
   const consumable = readConsumableRefFromPayload({ ...(artifact as Record<string, unknown>), payload })
+  const consumablePublish = isRecord(payload.consumablePublish) ? payload.consumablePublish : undefined
   return {
     ...artifact,
     stageKey: typeof payload.stageKey === 'string' ? payload.stageKey : undefined,
@@ -704,7 +733,59 @@ function shapeArtifact<T extends { payload?: Prisma.JsonValue | null }>(artifact
     consumableId: consumable?.consumableId,
     consumableVersion: consumable?.consumableVersion,
     consumableStatus: consumable?.status,
+    consumablePublish,
   }
+}
+
+async function resolveWorkflowLink(
+  workflowInstanceId?: string | null,
+  workflowNodeId?: string | null,
+): Promise<WorkflowLinkResolution> {
+  const instanceId = typeof workflowInstanceId === 'string' && workflowInstanceId.trim()
+    ? workflowInstanceId.trim()
+    : undefined
+  const nodeId = typeof workflowNodeId === 'string' && workflowNodeId.trim()
+    ? workflowNodeId.trim()
+    : undefined
+  if (!instanceId) return { workflowNodeId: nodeId }
+
+  const instance = await prisma.workflowInstance.findUnique({
+    where: { id: instanceId },
+    select: nodeId
+      ? { id: true, nodes: { where: { id: nodeId }, select: { id: true }, take: 1 } }
+      : { id: true },
+  })
+  if (!instance) {
+    return {
+      workflowNodeId: undefined,
+      warning: {
+        reason: 'workflow_instance_not_found',
+        message: `Workflow run ${instanceId} was not found. Workbench will continue standalone and will not publish workflow consumables.`,
+        workflowInstanceId: instanceId,
+        workflowNodeId: nodeId,
+        suggestedFix: 'Open the Workbench from an active workflow run/task so the URL contains a valid workflowInstanceId.',
+      },
+    }
+  }
+
+  const nodes = Array.isArray((instance as { nodes?: unknown }).nodes)
+    ? (instance as { nodes?: Array<{ id: string }> }).nodes ?? []
+    : []
+  if (nodeId && nodes.length === 0) {
+    return {
+      workflowInstanceId: instanceId,
+      workflowNodeId: nodeId,
+      warning: {
+        reason: 'workflow_node_not_found',
+        message: `Workflow node ${nodeId} was not found on run ${instanceId}. Consumables will still attach to the run but may not appear under the expected node.`,
+        workflowInstanceId: instanceId,
+        workflowNodeId: nodeId,
+        suggestedFix: 'Reopen the Workbench from the active Workbench Task so the workflowNodeId matches the runtime node.',
+      },
+    }
+  }
+
+  return { workflowInstanceId: instanceId, workflowNodeId: nodeId }
 }
 
 function readLoopState(session: LoopSessionSeed): LoopState {
@@ -2377,9 +2458,27 @@ async function publishBlueprintArtifactAsConsumable(args: {
   extraPayload?: Record<string, unknown>
 }): Promise<WorkbenchConsumableRef | undefined> {
   const state = readLoopState(args.session)
-  const workflowInstanceId = args.session.workflowInstanceId ?? undefined
-  const workflowNodeId = state.workflowNodeId ?? args.session.workflowNodeId ?? args.session.phaseId ?? undefined
-  if (!workflowInstanceId || !workflowNodeId) return undefined
+  const rawWorkflowInstanceId = args.session.workflowInstanceId ?? undefined
+  const rawWorkflowNodeId = state.workflowNodeId ?? args.session.workflowNodeId ?? args.session.phaseId ?? undefined
+  if (!rawWorkflowInstanceId || !rawWorkflowNodeId) return undefined
+  const workflowLink = await resolveWorkflowLink(rawWorkflowInstanceId, rawWorkflowNodeId)
+  if (!workflowLink.workflowInstanceId) {
+    await markConsumablePublishSkipped({
+      session: args.session,
+      artifact: args.artifact,
+      actorId: args.actorId,
+      warning: workflowLink.warning ?? {
+        reason: 'workflow_instance_not_found',
+        message: 'Workflow run was not found. Workbench artifact was kept locally and no workflow consumable was created.',
+        workflowInstanceId: rawWorkflowInstanceId,
+        workflowNodeId: rawWorkflowNodeId,
+        suggestedFix: 'Open the Workbench from an active workflow run/task.',
+      },
+    })
+    return undefined
+  }
+  const workflowInstanceId = workflowLink.workflowInstanceId
+  const workflowNodeId = workflowLink.workflowNodeId ?? rawWorkflowNodeId
 
   const type = await prisma.consumableType.upsert({
     where: { name: args.typeName },
@@ -2539,6 +2638,38 @@ async function publishBlueprintArtifactAsConsumable(args: {
     version,
   })
   return ref
+}
+
+async function markConsumablePublishSkipped(args: {
+  session: ArtifactSession
+  artifact: BlueprintArtifactRecord
+  actorId?: string
+  warning: WorkflowLinkWarning
+}) {
+  const artifactPayload = isRecord(args.artifact.payload) ? args.artifact.payload : {}
+  const consumablePublish = {
+    status: 'SKIPPED',
+    skippedAt: new Date().toISOString(),
+    ...args.warning,
+  }
+  await prisma.blueprintArtifact.update({
+    where: { id: args.artifact.id },
+    data: {
+      payload: {
+        ...artifactPayload,
+        consumablePublish,
+        warnings: [
+          ...jsonArray(artifactPayload.warnings),
+          args.warning.message,
+        ],
+      } as Prisma.InputJsonValue,
+    },
+  })
+  await logEvent('WorkbenchConsumablePublishSkipped', 'BlueprintArtifact', args.artifact.id, args.actorId ?? args.session.createdById ?? undefined, {
+    blueprintSessionId: args.session.id,
+    blueprintArtifactId: args.artifact.id,
+    ...args.warning,
+  })
 }
 
 async function transitionAttemptConsumables(
@@ -3316,6 +3447,10 @@ function humanStage(stage: BlueprintStage) {
 
 function jsonStrings(value: Prisma.JsonValue): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []
+}
+
+function jsonArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : []
 }
 
 async function snapshotLocalDir(root: string, includeGlobs: string[], excludeGlobs: string[]): Promise<SnapshotResult> {
