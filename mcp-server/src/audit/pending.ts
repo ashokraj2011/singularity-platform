@@ -34,10 +34,12 @@ export interface PendingApproval {
   available_tools: ToolDescriptorForLlm[];
   full_tool_descriptors: PendingToolDescriptor[];
   model_config: {
+    modelAlias?: string;
     provider: string;
     model: string;
     temperature?: number;
     maxTokens?: number;
+    warnings?: string[];
   };
   correlation: CorrelationIds;
   step_index: number;

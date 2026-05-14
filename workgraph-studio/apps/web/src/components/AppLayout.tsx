@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Outlet, NavLink, useNavigate } from 'react-router-dom'
+import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'motion/react'
 import {
   LayoutDashboard, FileText, GitBranch, ScrollText, Globe, Inbox,
@@ -76,9 +76,9 @@ function NavItem({ to, label, icon: Icon, collapsed }: { to: string; label: stri
             padding: collapsed ? '8px' : undefined,
             justifyContent: collapsed ? 'center' : undefined,
             ...(isActive ? {
-              background: 'rgba(245,242,234,0.08)',
+              background: 'rgba(245,242,234,0.13)',
               color: 'var(--brand-warm-white)',
-              fontWeight: 600,
+              fontWeight: 700,
             } : {}),
           }}
         >
@@ -94,7 +94,7 @@ function NavItem({ to, label, icon: Icon, collapsed }: { to: string; label: stri
           )}
           <Icon
             className="w-4 h-4 shrink-0"
-            style={{ color: isActive ? 'var(--brand-green-accent)' : 'rgba(245,242,234,0.5)' }}
+            style={{ color: isActive ? 'var(--brand-green-accent)' : 'rgba(245,242,234,0.78)' }}
           />
           {!collapsed && <span>{label}</span>}
         </div>
@@ -107,6 +107,7 @@ export function AppLayout() {
   const { user, logout } = useAuthStore()
   const clearContext = useActiveContextStore(s => s.clear)
   const navigate = useNavigate()
+  const location = useLocation()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === 'undefined') return false
     return localStorage.getItem('sidebar-collapsed') === 'true'
@@ -168,7 +169,7 @@ export function AppLayout() {
               <p style={{
                 fontSize: '0.5625rem', fontWeight: 600,
                 textTransform: 'uppercase', letterSpacing: '0.18em',
-                color: 'rgba(245,242,234,0.55)', opacity: 1, marginTop: 1,
+                color: 'rgba(245,242,234,0.76)', opacity: 1, marginTop: 1,
               }}>
                 Governed Agentic Delivery
               </p>
@@ -221,7 +222,7 @@ export function AppLayout() {
               </p>
               <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 2 }}>
                 <span className="status-dot active" />
-                <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.14em', color: 'rgba(245,242,234,0.45)' }}>
+                <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.14em', color: 'rgba(245,242,234,0.70)' }}>
                   Online
                 </span>
               </div>
@@ -259,7 +260,7 @@ export function AppLayout() {
               display: 'flex', alignItems: 'center', justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
               gap: 8, width: '100%',
               padding: '8px 12px', borderRadius: 12, border: 'none', cursor: 'pointer',
-              background: 'transparent', color: 'rgba(245,242,234,0.45)',
+              background: 'transparent', color: 'rgba(245,242,234,0.78)',
               fontSize: 14, fontWeight: 500, transition: 'all 0.15s',
             }}
             onMouseEnter={e => {
@@ -268,7 +269,7 @@ export function AppLayout() {
             }}
             onMouseLeave={e => {
               (e.currentTarget as HTMLButtonElement).style.background = 'transparent'
-              ;(e.currentTarget as HTMLButtonElement).style.color = 'rgba(245,242,234,0.45)'
+              ;(e.currentTarget as HTMLButtonElement).style.color = 'rgba(245,242,234,0.78)'
             }}
           >
             <LogOut size={15} />

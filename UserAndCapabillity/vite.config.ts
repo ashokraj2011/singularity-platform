@@ -11,6 +11,11 @@ export default defineConfig({
   server: {
     port: 5175,
     proxy: {
+      '/api/cf': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/api\/cf/, ''),
+      },
       '/api': {
         target: 'http://localhost:8100',
         changeOrigin: true,

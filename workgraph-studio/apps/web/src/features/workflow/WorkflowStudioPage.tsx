@@ -1531,12 +1531,41 @@ function WorkflowParamsPanel({
 }
 
 type BudgetForm = {
+  defaultModelAlias: string
   maxInputTokens: string
   maxOutputTokens: string
   maxTotalTokens: string
   maxEstimatedCost: string
   warnAtPercent: string
   enforcementMode: string
+}
+
+type LlmModelChoice = {
+  id: string
+  label?: string
+  provider?: string
+  model?: string
+  ready?: boolean
+  default?: boolean
+  supportsTools?: boolean
+  costTier?: string
+  description?: string
+  warnings?: string[]
+}
+
+type LlmModelCatalog = {
+  defaultModelAlias?: string
+  models: LlmModelChoice[]
+  warnings?: string[]
+}
+
+function unwrapModelCatalog(payload: any): LlmModelCatalog {
+  const data = payload?.data ?? payload
+  return {
+    defaultModelAlias: typeof data?.defaultModelAlias === 'string' ? data.defaultModelAlias : undefined,
+    models: Array.isArray(data?.models) ? data.models : [],
+    warnings: Array.isArray(data?.warnings) ? data.warnings : [],
+  }
 }
 
 function WorkflowBudgetPanel({
@@ -1554,6 +1583,11 @@ function WorkflowBudgetPanel({
 }) {
   const [form, setForm] = useState<BudgetForm>(() => budgetFormFrom(policy))
   useEffect(() => { setForm(budgetFormFrom(policy)) }, [JSON.stringify(policy ?? {})])
+  const { data: modelCatalog } = useQuery({
+    queryKey: ['llm-model-catalog'],
+    queryFn: () => api.get('/llm/models').then(r => unwrapModelCatalog(r.data)),
+    staleTime: 30_000,
+  })
 
   const inputSt: React.CSSProperties = {
     width: '100%', boxSizing: 'border-box', padding: '7px 9px', borderRadius: 8,
@@ -1618,6 +1652,24 @@ function WorkflowBudgetPanel({
             Budget policy is only editable on workflow designs.
           </div>
         )}
+        <label style={{ display: 'grid', gap: 4 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: panelText }}>Default model</span>
+          <select
+            value={form.defaultModelAlias}
+            onChange={e => setForm(f => ({ ...f, defaultModelAlias: e.target.value }))}
+            style={inputSt}
+          >
+            <option value="">MCP default</option>
+            {(modelCatalog?.models ?? []).map(model => (
+              <option key={model.id} value={model.id} disabled={model.ready === false}>
+                {(model.label ?? model.id)}{model.ready === false ? ' - Missing key' : ''}{model.default ? ' - Default' : ''}
+              </option>
+            ))}
+          </select>
+          <span style={{ fontSize: 9, color: panelMuted, lineHeight: 1.4 }}>
+            MCP owns the approved model catalog. Nodes can override this default.
+          </span>
+        </label>
         {row('maxInputTokens', 'Max input tokens', 'Total prompt/context tokens allowed across this workflow run.')}
         {row('maxOutputTokens', 'Max output tokens', 'Total generated tokens allowed across this workflow run.')}
         {row('maxTotalTokens', 'Max total tokens', 'Combined input + output token cap.')}
@@ -1667,6 +1719,7 @@ function WorkflowBudgetPanel({
 function budgetFormFrom(policy: Record<string, unknown> | null): BudgetForm {
   const p = policy ?? {}
   return {
+    defaultModelAlias: typeof p.defaultModelAlias === 'string' ? p.defaultModelAlias : '',
     maxInputTokens: valueText(p.maxInputTokens, '100000'),
     maxOutputTokens: valueText(p.maxOutputTokens, '25000'),
     maxTotalTokens: valueText(p.maxTotalTokens, '125000'),
@@ -1678,6 +1731,7 @@ function budgetFormFrom(policy: Record<string, unknown> | null): BudgetForm {
 
 function policyFromBudgetForm(form: BudgetForm): Record<string, unknown> {
   return {
+    defaultModelAlias: form.defaultModelAlias || null,
     maxInputTokens: numberOrNull(form.maxInputTokens),
     maxOutputTokens: numberOrNull(form.maxOutputTokens),
     maxTotalTokens: numberOrNull(form.maxTotalTokens),

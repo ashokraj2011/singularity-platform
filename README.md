@@ -15,7 +15,7 @@ An enterprise AI-agent platform composed of independently-deployable application
 ### Prerequisites
 - Docker Desktop (Compose v2)
 - `git`, `curl`, `psql` (optional, for ad-hoc inspection)
-- Ports free: `3000, 5174, 5175, 5180, 7100, 8000-8003, 8080, 8100, 8500, 5432, 5433, 5434, 5436, 9000-9001`
+- Ports free: `3000, 5174, 5175, 5176, 5180, 7100, 8000-8003, 8080, 8100, 8500, 5432, 5433, 5434, 5436, 9000-9001`
 - ~6 GB free RAM for the full stack
 
 ### 1. Clone
@@ -56,12 +56,13 @@ for u in \
   "http://localhost:8000/health" \
   "http://localhost:8080/health" \
   "http://localhost:3000/api/runtime/agents/templates?scope=common&limit=3" \
-  "http://localhost:5174/"; do
+  "http://localhost:5174/" \
+  "http://localhost:5176/"; do
   printf "%-65s %s\n" "$u" "$(curl -s -o /dev/null -w '%{http_code}' $u)"
 done
 ```
 
-You should see `200` for all seven.
+You should see `200` for all eight.
 
 ### 5. The demo path — five clicks, five "wow" moments
 
@@ -101,6 +102,7 @@ You should see `200` for all seven.
 
 ```
 Workgraph SPA            http://localhost:5174    runs, designer, insights
+Blueprint Workbench      http://localhost:5176    staged agent loop + approvals
 Agent / Tools SPA        http://localhost:3000    Agent Studio, /audit, /cost
 Singularity Portal       http://localhost:5180    branded wrapper around all of it
 User & Capability SPA    http://localhost:5175    IAM admin
@@ -250,12 +252,13 @@ for url in \
   http://localhost:8080/health \
   "http://localhost:3000/api/runtime/agents/templates?scope=common&limit=3" \
   http://localhost:5174/ \
+  http://localhost:5176/ \
   ; do
   printf "%-65s %s\n" "$url" "$(curl -s -o /dev/null -w '%{http_code}' "$url")"
 done
 ```
 
-All seven should return `200`. Open `http://localhost:5174` for Workgraph and `http://localhost:3000` for Agent Studio. IAM login is `admin@singularity.local` / `Admin1234!`.
+All eight should return `200`. Open `http://localhost:5174` for Workgraph, `http://localhost:5176` for Blueprint Workbench, and `http://localhost:3000` for Agent Studio. IAM login is `admin@singularity.local` / `Admin1234!`.
 
 ### Tear down
 ```bash
@@ -348,7 +351,7 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
 | **agent-and-tools** | Agent definitions, tool registry, prompt assembly, agent CRUD UI; per-service event bus + OTel | TypeScript monorepo · Express · Next.js · Prisma · Postgres+pgvector | `3000–3004`, postgres `5432` |
 | **context-fabric** | LLM cost optimizer (context compaction + token-saving ledger), `/execute` orchestrator, `/receipts` join, OTel | Python · 4× FastAPI · SQLite | `8000–8003` |
 | **mcp-server** | Per-tenant MCP execution engine + WS bridge + **embedded LLM gateway** (OpenAI / Anthropic / Copilot Headless / mock). Customer-deployed, holds its own provider keys. | TypeScript · Express · WebSocket | `7100` |
-| **workgraph-studio** | Visual DAG designer + workflow runtime, federated `/api/lookup/*`, snapshot layer, unified `/api/receipts`, event bus + receiver, OTel | React + ReactFlow + Zustand · Express + Prisma · MinIO | `5174` (web) / `8080` (api), postgres `5434`, minio `9000-9001` |
+| **workgraph-studio** | Visual DAG designer + workflow runtime, Blueprint Workbench stage loop, federated `/api/lookup/*`, snapshot layer, unified `/api/receipts`, event bus + receiver, OTel | React + ReactFlow + Zustand · Express + Prisma · MinIO | `5174` (web) / `5176` (workbench) / `8080` (api), postgres `5434`, minio `9000-9001` |
 | **platform-registry** | Service + Contract Registry: every service self-registers on startup with capabilities + OpenAPI/event/node contracts | TypeScript · Express · Postgres | `8090`, postgres `5435` |
 | **UserAndCapabillity** | Visual admin SPA for IAM | React 19 · Vite · Tailwind · Radix · Zustand | `5175` |
 | **singularity-portal** | The wrapper SPA — single login + dashboard tiles + deep links | React 19 · Vite · Tailwind · Radix | `5180` |
@@ -398,7 +401,7 @@ A useful mental model when deciding "which app should this feature live in?" —
 
 - Docker Desktop (or Docker Engine + the Compose v2 plugin)
 - 8 GB+ RAM available to Docker
-- Free host ports: `3000–3004`, `5174–5175`, `5180`, `5432–5434`, `8000–8003`, `8080`, `8100`, `9000–9001`
+- Free host ports: `3000–3004`, `5174–5176`, `5180`, `5432–5434`, `8000–8003`, `8080`, `8100`, `9000–9001`
 - Optional: `OPENROUTER_API_KEY` in `context-fabric/.env` for real LLM calls (otherwise uses `mock` provider)
 
 ### Option A — master compose (one shot)
@@ -436,10 +439,39 @@ Wraps the master compose with friendlier subcommands. Useful for starting/stoppi
 ./singularity.sh down                      # stop all (keep data)
 ./singularity.sh nuke                      # stop + delete data volumes (confirms)
 ./singularity.sh login                     # smoke-test IAM /auth/local/login
+./singularity.sh config doctor             # validate DBs, endpoints, LLM keys, MCP
+./singularity.sh config interactive        # guided local configuration wizard
 ./singularity.sh ls                        # list known service names
 ./singularity.sh build [service]           # rebuild image(s)
 ./singularity.sh help                      # full usage
 ```
+
+### Central configuration utility
+
+Use `./singularity.sh config ...` when you need one place to manage the platform knobs that otherwise live across app-specific `.env` files.
+
+It configures:
+
+- Database URLs for IAM, agent-and-tools, and Workgraph.
+- IAM vs pseudo-IAM endpoints.
+- Service endpoints for Workgraph, prompt-composer, context-fabric, agent-runtime, tool-service, agent-service, and MCP.
+- LLM provider, model, and keys for OpenAI, OpenRouter, Ollama, or mock mode.
+- MCP bearer token, public URL, sandbox root, AST index path, and local work-branch defaults.
+- UI env files for the portal, Workgraph web, IAM admin, and agent-and-tools web.
+
+Common commands:
+
+```bash
+./singularity.sh config interactive
+./singularity.sh config write --llm-provider openai --openai-api-key "$OPENAI_API_KEY"
+./singularity.sh config write --llm-provider mock --pseudo-iam
+./singularity.sh config show
+./singularity.sh config doctor
+./singularity.sh config export --llm-provider openai
+./singularity.sh config mcp-register --capability-id <iam-capability-id>
+```
+
+`show` masks secrets. `doctor` checks env files, common ports, reachable service URLs, provider key presence, and MCP token length. For bare-metal runs, use `config export` to print shell exports without editing files.
 
 ### Option C — per-app compose files
 
@@ -465,6 +497,7 @@ cd singularity-portal             && npm install && npm run dev
 | **portal** | http://localhost:5180 | IAM JWT | the wrapper SPA — start here |
 | **user-and-capability** | http://localhost:5175 | IAM JWT | IAM admin SPA |
 | **workgraph-web** | http://localhost:5174 | workgraph token | Designer + Runtime UI |
+| **blueprint-workbench** | http://localhost:5176 | workgraph token | Embedded staged agent workbench |
 | **agent-web** | http://localhost:3000 | optional JWT | Next.js admin |
 | **iam-service** | http://localhost:8100/api/v1 | bearer (login) | OpenAPI: `/docs` |
 | **workgraph-api** | http://localhost:8080/api | workgraph token | DAG runtime |
@@ -663,6 +696,7 @@ build [service]     rebuild image(s)
 urls                printable URL cheatsheet
 ls                  list known service names
 login               smoke-test IAM /auth/local/login
+config <command>    configure DBs, keys, endpoints, LLMs, MCP
 help                usage
 ```
 

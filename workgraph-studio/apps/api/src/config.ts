@@ -52,6 +52,9 @@ const envSchema = z.object({
   // M24 — audit-governance ledger (port 8500). Used by the run insights
   // dashboard to splice cost/token/governance rollups into the per-run view.
   AUDIT_GOV_URL: z.string().default('http://host.docker.internal:8500'),
+
+  // MCP owns the real LLM provider/model catalog for workflow execution.
+  MCP_SERVER_URL: z.string().default('http://localhost:7100'),
 })
 
 function loadConfig() {

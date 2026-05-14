@@ -1,8 +1,8 @@
 import { ReactNode } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
-  Home, Workflow, Bot, Users, BarChart3, ExternalLink,
-  LogOut, ChevronRight,
+  Home, Workflow, Bot, Users, BarChart3, ExternalLink, ServerCog,
+  LogOut, ChevronRight, Zap,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/auth.store'
 import { env } from '@/lib/env'
@@ -10,7 +10,9 @@ import { cn } from '@/lib/cn'
 import { BrandLockup } from './BrandLockup'
 
 const internalNav = [
-  { to: '/', label: 'Home', icon: Home, end: true },
+  { to: '/', label: 'Dashboard', icon: Home, end: true },
+  { to: '/engine', label: 'Engine', icon: Zap, end: false },
+  { to: '/operations', label: 'Operations', icon: ServerCog, end: false },
 ]
 
 const externalNav: { label: string; href: string; icon: typeof Workflow; subtitle: string }[] = [
@@ -136,13 +138,23 @@ export function AppLayout({ children }: { children: ReactNode }) {
             >
               Insights
             </p>
-            <div
-              className="flex items-center gap-3 px-3 py-2 rounded-md text-sm mb-0.5"
-              style={{ color: 'rgba(245,242,234,0.35)' }}
+            <NavLink
+              to="/engine"
+              className={({ isActive }) =>
+                cn(
+                  'flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-all duration-150 mb-0.5',
+                  isActive ? 'font-medium' : 'font-normal',
+                )
+              }
+              style={({ isActive }) => ({
+                color: isActive ? 'var(--brand-warm-white)' : 'rgba(245,242,234,0.65)',
+                background: isActive ? 'rgba(245,242,234,0.08)' : 'transparent',
+                borderLeft: isActive ? '3px solid var(--brand-green-accent)' : '3px solid transparent',
+              })}
             >
-              <BarChart3 className="w-4 h-4 shrink-0" />
-              <span>Analytics (soon)</span>
-            </div>
+              <BarChart3 className="w-4 h-4 shrink-0" style={{ color: 'rgba(245,242,234,0.5)' }} />
+              <span>Analytics</span>
+            </NavLink>
           </div>
         </nav>
 

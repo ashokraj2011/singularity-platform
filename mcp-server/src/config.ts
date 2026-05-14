@@ -12,12 +12,20 @@ const schema = z.object({
   // ── LLM provider router (M11 follow-up) ─────────────────────────────────────
   // Default provider when a request doesn't specify one. Per-request
   // overrides via LlmRequest.provider.
-  LLM_PROVIDER: z.enum(["mock", "openai", "anthropic", "copilot"]).default("mock"),
+  LLM_PROVIDER: z.enum(["mock", "openai", "openrouter", "anthropic", "copilot"]).default("mock"),
   LLM_MODEL: z.string().default("mock-fast"),
+  MCP_LLM_MODEL_CATALOG_JSON: z.string().optional(),
+  MCP_LLM_MODEL_CATALOG_PATH: z.string().optional(),
 
   // OpenAI Chat Completions (https://api.openai.com/v1/chat/completions).
   OPENAI_API_KEY:  z.string().optional(),
   OPENAI_BASE_URL: z.string().default("https://api.openai.com/v1"),
+  // Compatibility with context-fabric/.env naming so local demo stacks can
+  // share one provider secret without duplicating it into multiple files.
+  OPENAI_COMPATIBLE_API_KEY:  z.string().optional(),
+  OPENAI_COMPATIBLE_BASE_URL: z.string().optional(),
+  OPENROUTER_API_KEY: z.string().optional(),
+  OPENROUTER_BASE_URL: z.string().default("https://openrouter.ai/api/v1"),
 
   // Anthropic Messages API (https://api.anthropic.com/v1/messages).
   ANTHROPIC_API_KEY:  z.string().optional(),
@@ -68,4 +76,8 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const config = parsed.data;
+export const config = {
+  ...parsed.data,
+  OPENAI_API_KEY: parsed.data.OPENAI_API_KEY || parsed.data.OPENAI_COMPATIBLE_API_KEY,
+  OPENAI_BASE_URL: parsed.data.OPENAI_BASE_URL || parsed.data.OPENAI_COMPATIBLE_BASE_URL || "https://api.openai.com/v1",
+};

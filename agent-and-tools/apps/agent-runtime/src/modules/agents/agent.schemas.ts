@@ -42,8 +42,14 @@ export const updateAgentTemplateSchema = z.object({
   basePromptProfileId: z.string().uuid().optional(),
   defaultToolPolicyId: z.string().uuid().optional(),
   status: z.enum(["DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"]).optional(),
+  changeSummary: z.string().max(500).optional(),
 });
 export type UpdateAgentTemplateInput = z.infer<typeof updateAgentTemplateSchema>;
+
+export const restoreAgentTemplateVersionSchema = z.object({
+  changeSummary: z.string().max(500).optional(),
+});
+export type RestoreAgentTemplateVersionInput = z.infer<typeof restoreAgentTemplateVersionSchema>;
 
 export const createSkillSchema = z.object({
   name: z.string().min(2),

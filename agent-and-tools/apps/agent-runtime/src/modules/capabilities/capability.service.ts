@@ -46,6 +46,7 @@ type BootstrapInput = {
   ownerTeamId?: string;
   criticality?: string;
   description?: string;
+  targetWorkflowPattern?: string;
   repositories?: BootstrapRepositoryInput[];
   documentLinks?: BootstrapDocumentInput[];
   localFiles?: InputFile[];
@@ -233,6 +234,7 @@ export const capabilityService = {
             localFiles: input.localFiles?.length ?? 0,
             discoveredSignals: discovered.length,
             candidateGroups: candidates.length,
+            operatingModel: buildOperatingModel(capability.name, input.targetWorkflowPattern, generatedAgents, candidates.length),
           },
         },
         include: { candidates: true, capability: { include: { bindings: { include: { agentTemplate: true } }, repositories: true, knowledgeSources: true } } },
@@ -1061,6 +1063,56 @@ function formatCandidateContent(title: string, docs: DiscoveryDoc[]): string {
     chars += next.length;
   }
   return parts.join("");
+}
+
+function buildOperatingModel(
+  capabilityName: string,
+  targetWorkflowPattern: string | undefined,
+  generatedAgents: Array<{ id: string; roleType: string; name: string; baseTemplateId?: string | null; bindingId?: string }>,
+  candidateGroups: number,
+) {
+  const pattern = (targetWorkflowPattern?.trim() || "governed_delivery").toLowerCase();
+  const starterWorkflow = pattern.includes("support")
+    ? "Intake -> Product Owner triage -> Developer fix plan -> QA proof -> Human approval -> Handoff"
+    : pattern.includes("security")
+      ? "Intake -> Architect scope -> Security review -> Developer remediation -> QA verification -> Human approval"
+      : "Intake -> Architect plan -> Developer implementation -> QA proof -> Security review -> DevOps release note -> Human approval";
+  return {
+    name: `${capabilityName} operating model`,
+    targetWorkflowPattern: pattern,
+    starterWorkflow,
+    draftAgents: generatedAgents.map(agent => ({
+      id: agent.id,
+      roleType: agent.roleType,
+      name: agent.name,
+      bindingId: agent.bindingId,
+      activation: "requires human review",
+    })),
+    suggestedTools: [
+      { name: "repo.search", reason: "Locate code and docs without full-file prompt payloads.", status: "suggested" },
+      { name: "workbench.create_artifact", reason: "Capture architecture, implementation, QA, and release evidence as versioned artifacts.", status: "suggested" },
+      { name: "approval.request", reason: "Pause after major artifact production before downstream promotion.", status: "suggested" },
+    ],
+    artifactContracts: [
+      "architecture_decision",
+      "implementation_plan",
+      "code_patch",
+      "qa_proof",
+      "security_review",
+      "release_note",
+      "final_handoff",
+    ],
+    approvalGates: [
+      "Activate generated agents",
+      "Materialize learned knowledge",
+      "Promote major artifacts",
+      "Approve budget/tool pauses",
+    ],
+    learningReview: {
+      candidateGroups,
+      runtimeVisibleAfterApproval: true,
+    },
+  };
 }
 
 function deterministicSymbolSummary(symbol: {

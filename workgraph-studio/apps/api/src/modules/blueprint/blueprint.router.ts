@@ -200,6 +200,7 @@ type LoopState = {
     snapshotMode?: 'summary' | 'relevant_excerpts' | 'full_debug'
     excerptBudgetChars?: number
     reuseUnchangedAttempt?: boolean
+    modelAlias?: string
   }
 }
 
@@ -723,6 +724,7 @@ function readExecutionConfig(value: unknown): LoopState['executionConfig'] {
     snapshotMode: value.snapshotMode === 'summary' || value.snapshotMode === 'full_debug' ? value.snapshotMode : 'relevant_excerpts',
     excerptBudgetChars: typeof value.excerptBudgetChars === 'number' ? value.excerptBudgetChars : undefined,
     reuseUnchangedAttempt: value.reuseUnchangedAttempt !== false,
+    modelAlias: typeof value.modelAlias === 'string' && value.modelAlias.trim() ? value.modelAlias.trim() : undefined,
   }
 }
 
@@ -1426,7 +1428,11 @@ async function runLoopStageExecute(
       systemPromptAppend: loopStageSystemPrompt(stage),
       extraContext: 'This workbench is read-only. Produce implementation guidance, QA proof, and reviewable artifacts without mutating source files.',
     },
-    model_overrides: { provider: 'mock', model: 'mock-fast', temperature: 0.2, maxOutputTokens: 1200 },
+    model_overrides: {
+      ...(executionConfig?.modelAlias ? { modelAlias: executionConfig.modelAlias } : {}),
+      temperature: 0.2,
+      maxOutputTokens: 1200,
+    },
     context_policy: {
       optimizationMode: 'code_aware',
       maxContextTokens: 6000,
@@ -2067,7 +2073,11 @@ async function runStage(
       systemPromptAppend: stageSystemPrompt(stage),
       extraContext: 'This MVP must not mutate source code. Coding output is a simulated, reviewable proposal with evidence.',
     },
-    model_overrides: { provider: 'mock', model: 'mock-fast', temperature: 0.2, maxOutputTokens: 1200 },
+    model_overrides: {
+      ...(executionConfig?.modelAlias ? { modelAlias: executionConfig.modelAlias } : {}),
+      temperature: 0.2,
+      maxOutputTokens: 1200,
+    },
     context_policy: {
       optimizationMode: 'code_aware',
       maxContextTokens: 6000,

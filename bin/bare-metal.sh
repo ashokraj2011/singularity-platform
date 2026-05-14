@@ -201,7 +201,7 @@ EOF
   }
 
   info "booting services…"
-  boot iam-service      "cd singularity-iam-service  && DATABASE_URL=\"postgresql+asyncpg://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_iam\" JWT_SECRET=\"$JWT_SECRET\" JWT_EXPIRE_MINUTES=720 LOCAL_SUPER_ADMIN_EMAIL=admin@singularity.local LOCAL_SUPER_ADMIN_PASSWORD=Admin1234! CORS_ORIGINS='[\"http://localhost:3000\",\"http://localhost:5174\",\"http://localhost:5175\",\"http://localhost:5180\"]' python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8100"
+  boot iam-service      "cd singularity-iam-service  && DATABASE_URL=\"postgresql+asyncpg://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_iam\" JWT_SECRET=\"$JWT_SECRET\" JWT_EXPIRE_MINUTES=720 LOCAL_SUPER_ADMIN_EMAIL=admin@singularity.local LOCAL_SUPER_ADMIN_PASSWORD=Admin1234! CORS_ORIGINS='[\"http://localhost:3000\",\"http://localhost:5174\",\"http://localhost:5175\",\"http://localhost:5176\",\"http://localhost:5180\"]' python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8100"
   wait_http iam-service "http://localhost:8100/api/v1/health" 45
 
   info "applying SQL seed data…"
@@ -226,10 +226,12 @@ EOF
   # silently auto-bumping to 3001 (which would dodge the SPA proxy rewrites).
   boot agent-web        "cd agent-and-tools/web        && PORT=3000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" npm run dev"
   boot workgraph-web    "cd workgraph-studio/apps/web  && VITE_API_BASE=http://localhost:8080 VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" VITE_IAM_LOGIN_URL=http://localhost:5175/login VITE_AUTO_LOGIN=0 npm run dev -- --host 0.0.0.0 --port 5174"
+  boot blueprint-workbench "cd workgraph-studio/apps/blueprint-workbench && npm run dev -- --host 0.0.0.0 --port 5176"
 
   echo
   ok "all services booted — run '$0 smoke' in ~30s to verify, then open:"
   echo "    http://localhost:5174    (workgraph: runs, insights, designer)"
+  echo "    http://localhost:5176    (blueprint workbench: staged agent loop)"
   echo "    http://localhost:3000    (agent-web: Agent Studio, /audit, /cost)"
   echo "    http://localhost:8100    (real IAM API; admin@singularity.local / Admin1234!)"
   echo
@@ -250,7 +252,7 @@ cmd_down() {
     fi
   done < "$PID_FILE"
   # Hard sweep — anything still hogging our ports gets terminated.
-  for p in 3000 3001 3002 3003 3004 5174 7100 8000 8080 8100 8101 8500; do
+  for p in 3000 3001 3002 3003 3004 5174 5176 7100 8000 8080 8100 8101 8500; do
     pids=$(lsof -ti :"$p" 2>/dev/null || true)
     [ -n "$pids" ] && kill $pids 2>/dev/null && dim "  freed port $p"
   done
@@ -268,6 +270,7 @@ cmd_smoke() {
     "http://localhost:8080/health" \
     "http://localhost:3000/api/runtime/agents/templates?scope=common&limit=3" \
     "http://localhost:5174/" \
+    "http://localhost:5176/" \
   ; do
     code=$(curl -s -o /dev/null -w "%{http_code}" "$url" --max-time 3)
     if [ "$code" = "200" ] || [ "$code" = "304" ]; then

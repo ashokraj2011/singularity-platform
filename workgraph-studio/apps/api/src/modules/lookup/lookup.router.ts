@@ -25,7 +25,7 @@ import {
   type PromptProfile,
   type RuntimeCapability,
 } from '../../lib/agent-and-tools/client'
-import { resolveOne, SINGLE_KINDS } from './resolver.js'
+import { resolveOne, SINGLE_KINDS } from './resolver'
 
 export const lookupRouter: Router = Router()
 

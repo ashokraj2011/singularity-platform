@@ -31,6 +31,7 @@ export interface CorrelationIds {
 export interface LlmCallRecord {
   id: string;
   correlation: CorrelationIds;
+  model_alias?: string;
   provider: string;
   model: string;
   input_tokens: number;

@@ -11,6 +11,7 @@ import { toolsRouter } from "./mcp/tools";
 import { resourcesRouter } from "./mcp/resources";
 import { eventsRouter } from "./mcp/events";
 import { listConfiguredProviders } from "./llm/client";
+import { modelCatalogResponse } from "./llm/model-catalog";
 
 export const app = express();
 
@@ -46,6 +47,14 @@ app.get("/llm/providers", (_req, res) => {
       default_model:    config.LLM_MODEL,
       providers:        listConfiguredProviders(),
     },
+    requestId: res.locals.requestId,
+  });
+});
+
+app.get("/llm/models", (_req, res) => {
+  res.json({
+    success: true,
+    data: modelCatalogResponse(),
     requestId: res.locals.requestId,
   });
 });

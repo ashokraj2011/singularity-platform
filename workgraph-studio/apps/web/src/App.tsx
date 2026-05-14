@@ -12,7 +12,6 @@ import { ConnectorsPage } from './features/connectors/ConnectorsPage'
 import { ArtifactDesignerPage } from './features/artifact/ArtifactDesignerPage'
 import { ArtifactEditorPage } from './features/artifact/ArtifactEditorPage'
 import { TeamVariablesPage } from './features/identity/TeamVariablesPage'
-import { RuntimeShell } from './features/runtime/RuntimeShell'
 import { InboxPage } from './features/runtime/InboxPage'
 import { WorkDetailPage } from './features/runtime/WorkDetailPage'
 import { HistoryPage } from './features/runtime/HistoryPage'
@@ -21,6 +20,7 @@ import { RunInsightsPage } from './features/runtime/RunInsightsPage'
 import { RunsDashboardPage } from './features/runtime/RunsDashboardPage'
 import { RunPlayerPage, RunPlayerEntry } from './features/runtime/RunPlayerPage'
 import { RunWorkflowPage } from './features/runtime/RunWorkflowPage'
+import { EventHorizonChat } from './components/EventHorizonChat'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const token = useAuthStore(s => s.token)
@@ -43,20 +43,6 @@ export default function App() {
         <Route path="/login"          element={<LoginPage />} />
         <Route path="/context-picker" element={<RequireAuth><ContextPickerPage /></RequireAuth>} />
 
-        {/* End-user runtime — minimal shell, no studio chrome */}
-        <Route
-          path="/runtime"
-          element={
-            <RequireAuth>
-              <RuntimeShell />
-            </RequireAuth>
-          }
-        >
-          <Route index                 element={<InboxPage />} />
-          <Route path="history"        element={<HistoryPage />} />
-          <Route path="work/:kind/:id" element={<WorkDetailPage />} />
-        </Route>
-
         {/* Designer / admin shell */}
         <Route
           path="/"
@@ -68,6 +54,9 @@ export default function App() {
         >
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard"          element={<DashboardPage />} />
+          <Route path="runtime"            element={<InboxPage />} />
+          <Route path="runtime/history"    element={<HistoryPage />} />
+          <Route path="runtime/work/:kind/:id" element={<WorkDetailPage />} />
           <Route path="run"                element={<RunWorkflowPage />} />
           <Route path="workflows"          element={<WorkflowsListPage />} />
           <Route path="node-types"         element={<CustomNodeTypesPage />} />
@@ -78,6 +67,7 @@ export default function App() {
           <Route path="runs"                 element={<RunsDashboardPage />} />
           <Route path="runs/:id"             element={<RunViewerPage />} />
           <Route path="runs/:id/insights"    element={<RunInsightsPage />} />
+          <Route path="mission-control/:id"  element={<RunInsightsPage />} />
           <Route path="play/new"             element={<RunPlayerEntry />} />
           <Route path="play/:runId"          element={<RunPlayerPage />} />
           <Route path="connectors"         element={<ConnectorsPage />} />
@@ -89,6 +79,7 @@ export default function App() {
           <Route path="*"                  element={<Navigate to="/dashboard" replace />} />
         </Route>
       </Routes>
+      <EventHorizonChat />
     </BrowserRouter>
   )
 }

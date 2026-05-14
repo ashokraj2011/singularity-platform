@@ -621,6 +621,7 @@ function BootstrapTab({
   const generatedAgents = getGeneratedAgents(run, capability);
   const runWarnings = ((run.warnings as string[]) ?? []);
   const runErrors = ((run.errors as string[]) ?? []);
+  const operatingModel = getOperatingModel(run);
   const repositories = (((run.capability as Record<string, unknown> | undefined)?.repositories as Array<Record<string, unknown>> | undefined) ??
     ((capability.repositories as Array<Record<string, unknown>>) ?? []));
   const knowledgeSources = (((run.capability as Record<string, unknown> | undefined)?.knowledgeSources as Array<Record<string, unknown>> | undefined) ?? []);
@@ -700,6 +701,54 @@ function BootstrapTab({
           {runErrors.map((item, i) => <div key={`err-${i}`} className="text-sm text-red-600">Error: {item}</div>)}
           {runWarnings.map((item, i) => <div key={`warn-${i}`} className="text-sm text-amber-700">Warning: {item}</div>)}
         </div>
+      )}
+
+      {operatingModel && (
+        <section className="card p-4">
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900">Capability-to-Agent-Team Factory review</h3>
+              <p className="text-xs text-slate-500 mt-1">
+                The factory staged draft agents, a starter workflow, artifact contracts, tool suggestions, and approval gates. Nothing becomes active until this packet is reviewed.
+              </p>
+            </div>
+            <span className="rounded-full bg-singularity-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-singularity-700">
+              {String(operatingModel.targetWorkflowPattern ?? "governed_delivery").replace(/_/g, " ")}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Starter workflow</div>
+              <p className="text-sm font-medium text-slate-900">{String(operatingModel.starterWorkflow ?? "Review required")}</p>
+            </div>
+            <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Approval gates</div>
+              <div className="flex flex-wrap gap-1.5">
+                {asStringArray(operatingModel.approvalGates).map(item => (
+                  <span key={item} className="rounded-full bg-white px-2 py-1 text-[11px] text-slate-700 border border-slate-200">{item}</span>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Artifact contracts</div>
+              <div className="flex flex-wrap gap-1.5">
+                {asStringArray(operatingModel.artifactContracts).map(item => (
+                  <span key={item} className="rounded-full bg-white px-2 py-1 text-[11px] text-slate-700 border border-slate-200">{item.replace(/_/g, " ")}</span>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Suggested tools</div>
+              <div className="space-y-1">
+                {asObjectArray(operatingModel.suggestedTools).map((tool, index) => (
+                  <div key={`${tool.name ?? index}`} className="text-xs text-slate-600">
+                    <span className="font-mono text-slate-900">{String(tool.name ?? "tool")}</span> — {String(tool.reason ?? "suggested for governed execution")}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
       )}
 
       <section>
@@ -825,6 +874,22 @@ function groupCandidates(candidates: Array<Record<string, unknown>>) {
       sourceRefs: Array.from(new Set(items.map(item => String(item.sourceRef ?? "")).filter(Boolean))).join(", "),
     };
   });
+}
+
+function getOperatingModel(run: Record<string, unknown>): Record<string, unknown> | null {
+  const summary = run.sourceSummary as Record<string, unknown> | undefined;
+  const model = summary?.operatingModel;
+  return model && typeof model === "object" && !Array.isArray(model) ? model as Record<string, unknown> : null;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
+function asObjectArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter(item => item && typeof item === "object" && !Array.isArray(item)) as Array<Record<string, unknown>>
+    : [];
 }
 
 function getGeneratedAgents(run: Record<string, unknown>, capability: Record<string, unknown>) {

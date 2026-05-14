@@ -3,9 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'motion/react'
 import {
-  GitBranch, Activity, ExternalLink, Search, Filter,
+  GitBranch, ExternalLink, Search, Filter,
   ChevronDown, AlertTriangle, CheckCircle2, Clock, Users,
-  FileCode, Layers, Tag, Globe, Info,
+  FileCode, Layers, Tag, Globe, PlayCircle, LayoutDashboard,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 
@@ -52,14 +52,45 @@ const CRIT_COLOR: Record<string, string> = {
   CRITICAL: '#ef4444', HIGH: '#f97316', MEDIUM: '#f59e0b', LOW: '#22c55e',
 }
 
+const SURFACE = 'var(--color-surface-bright, #ffffff)'
+const SURFACE_LOW = 'var(--color-surface-low, #f8fbfb)'
+const BORDER = 'var(--color-outline-variant, #cfd8de)'
+const TEXT = 'var(--color-on-surface, #162033)'
+const MUTED = 'var(--color-outline, #6a7486)'
+const PRIMARY = 'var(--color-primary, #00843D)'
+const CARD_SHADOW = '0 1px 2px rgba(12,23,39,0.05)'
+const CARD_RADIUS = 8
+
+const panelStyle: React.CSSProperties = {
+  background: SURFACE,
+  border: `1px solid ${BORDER}`,
+  borderRadius: CARD_RADIUS,
+  boxShadow: CARD_SHADOW,
+}
+
+const buttonBase: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 7,
+  height: 34,
+  padding: '0 13px',
+  borderRadius: CARD_RADIUS,
+  fontSize: 12,
+  fontWeight: 700,
+  cursor: 'pointer',
+  fontFamily: 'var(--font-sans)',
+}
+
 // ─── Small helpers ───────────────────────────────────────────────────────────
 
 function Pill({ label, color }: { label: string; color: string }) {
   return (
     <span style={{
-      display: 'inline-block', fontSize: 9, fontWeight: 700, fontFamily: 'monospace',
-      textTransform: 'uppercase', letterSpacing: '0.1em',
-      padding: '2px 7px', borderRadius: 5,
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      width: 'fit-content', minHeight: 20, fontSize: 9, fontWeight: 800,
+      fontFamily: 'var(--font-sans)', textTransform: 'uppercase', letterSpacing: '0.08em',
+      padding: '2px 8px', borderRadius: 999,
       background: `${color}18`, color, border: `1px solid ${color}30`,
     }}>
       {label}
@@ -78,25 +109,24 @@ function KpiCard({ title, value, sub, icon: Icon, color = '#00843D', delay = 0 }
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.22, delay }}
       style={{
-        background: '#fff', border: '1px solid var(--color-outline-variant)',
-        borderRadius: 14, padding: '18px 20px',
-        boxShadow: '0 2px 8px rgba(12,23,39,0.04)',
+        ...panelStyle,
+        padding: '15px 16px',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 12 }}>
         <div style={{
-          width: 34, height: 34, borderRadius: 10, flexShrink: 0,
+          width: 34, height: 34, borderRadius: CARD_RADIUS, flexShrink: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           background: `${color}12`, border: `1px solid ${color}25`,
         }}>
           <Icon size={15} style={{ color }} />
         </div>
-        {sub && <span style={{ fontSize: 10, color: '#64748b', fontWeight: 600 }}>{sub}</span>}
+        {sub && <span style={{ fontSize: 10, color: MUTED, fontWeight: 700 }}>{sub}</span>}
       </div>
-      <p style={{ fontSize: 26, fontWeight: 800, color: 'var(--color-on-surface)', lineHeight: 1, marginBottom: 4, fontFamily: "'Public Sans', sans-serif" }}>
+      <p style={{ fontSize: 24, fontWeight: 800, color: TEXT, lineHeight: 1, marginBottom: 5, fontFamily: 'var(--font-sans)' }}>
         {value}
       </p>
-      <p style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-outline)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+      <p style={{ fontSize: 10, fontWeight: 800, color: MUTED, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
         {title}
       </p>
     </motion.div>
@@ -107,13 +137,13 @@ function SectionHeader({ children, action, onAction }: { children: React.ReactNo
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-        <div style={{ width: 3, height: 13, borderRadius: 2, background: 'var(--color-primary)', opacity: 0.7 }} />
-        <h2 style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-on-surface)', textTransform: 'uppercase', letterSpacing: '0.1em', fontFamily: "'Public Sans', sans-serif" }}>
+        <div style={{ width: 3, height: 13, borderRadius: 2, background: PRIMARY, opacity: 0.8 }} />
+        <h2 style={{ fontSize: 11, fontWeight: 800, color: TEXT, textTransform: 'uppercase', letterSpacing: '0.08em', fontFamily: 'var(--font-sans)' }}>
           {children}
         </h2>
       </div>
       {action && onAction && (
-        <button onClick={onAction} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600, color: 'var(--color-primary)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+        <button onClick={onAction} style={{ ...buttonBase, height: 30, border: `1px solid ${BORDER}`, color: PRIMARY, background: SURFACE }}>
           {action} <ExternalLink size={10} />
         </button>
       )}
@@ -128,10 +158,10 @@ function TypeBar({ label, count, total, color }: { label: string; count: number;
   return (
     <div style={{ marginBottom: 10 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-on-surface)' }}>{label}</span>
-        <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--color-outline)' }}>{count} · {pct}%</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: TEXT }}>{label}</span>
+        <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: MUTED }}>{count} · {pct}%</span>
       </div>
-      <div style={{ height: 5, borderRadius: 3, background: 'var(--color-outline-variant)', overflow: 'hidden' }}>
+      <div style={{ height: 5, borderRadius: 3, background: BORDER, overflow: 'hidden' }}>
         <motion.div
           initial={{ width: 0 }}
           animate={{ width: `${pct}%` }}
@@ -158,20 +188,20 @@ function WorkflowRow({ tmpl, onOpen }: { tmpl: WorkflowTemplate; onOpen: () => v
       style={{
         display: 'grid', gridTemplateColumns: '1fr 100px 82px 74px 130px 68px 32px',
         alignItems: 'center', gap: 12,
-        padding: '10px 16px', cursor: 'pointer',
-        borderTop: '1px solid var(--color-outline-variant)',
+        padding: '11px 16px', cursor: 'pointer',
+        borderTop: `1px solid ${BORDER}`,
         transition: 'background 0.1s',
       }}
-      onMouseEnter={e => (e.currentTarget.style.background = 'rgba(0,132,61,0.03)')}
+      onMouseEnter={e => (e.currentTarget.style.background = SURFACE_LOW)}
       onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
     >
       {/* Name */}
       <div style={{ minWidth: 0 }}>
-        <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-on-surface)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <p style={{ fontSize: 13, fontWeight: 700, color: TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {tmpl.name}
         </p>
         {tmpl.description && (
-          <p style={{ fontSize: 10, color: 'var(--color-outline)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 }}>
+          <p style={{ fontSize: 11, color: MUTED, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
             {tmpl.description}
           </p>
         )}
@@ -181,15 +211,15 @@ function WorkflowRow({ tmpl, onOpen }: { tmpl: WorkflowTemplate; onOpen: () => v
       {/* Status */}
       <Pill label={tmpl.status} color={statusColor} />
       {/* Criticality */}
-      {crit ? <Pill label={crit} color={CRIT_COLOR[crit] ?? '#64748b'} /> : <span style={{ fontSize: 10, color: 'var(--color-outline)' }}>—</span>}
+      {crit ? <Pill label={crit} color={CRIT_COLOR[crit] ?? '#64748b'} /> : <span style={{ fontSize: 10, color: MUTED }}>—</span>}
       {/* Owner / Team */}
-      <span style={{ fontSize: 11, color: 'var(--color-outline)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <span style={{ fontSize: 11, color: MUTED, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {owner}
       </span>
       {/* Updated */}
-      <span style={{ fontSize: 10, fontFamily: 'monospace', color: 'var(--color-outline)' }}>{updated}</span>
+      <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: MUTED }}>{updated}</span>
       {/* Open */}
-      <ExternalLink size={12} style={{ color: 'var(--color-outline)', flexShrink: 0 }} />
+      <ExternalLink size={12} style={{ color: MUTED, flexShrink: 0 }} />
     </div>
   )
 }
@@ -257,40 +287,46 @@ export function DashboardPage() {
   }
 
   return (
-    <div style={{ padding: '28px 28px 48px', maxWidth: 1160 }}>
+    <div style={{ padding: '24px 28px 48px', maxWidth: 1280, margin: '0 auto' }}>
 
       {/* ── Header ─────────────────────────────────────────────────── */}
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2 }} style={{ marginBottom: 24 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 18, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{
-              width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+              width: 38, height: 38, borderRadius: CARD_RADIUS, flexShrink: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               background: 'rgba(0,132,61,0.10)', border: '1px solid rgba(0,132,61,0.18)',
             }}>
-              <Activity size={16} style={{ color: 'var(--color-primary)' }} />
+              <LayoutDashboard size={17} style={{ color: PRIMARY }} />
             </div>
             <div>
               <h1 className="page-header" style={{ marginBottom: 0 }}>Workflow Manager</h1>
-              <p style={{ fontSize: 11, color: 'var(--color-outline)', fontFamily: 'monospace', marginTop: 1 }}>
-                Design catalog · {teams.length > 0 ? teams.join(', ') : 'All teams'}
+              <p style={{ fontSize: 12, color: MUTED, marginTop: 3, maxWidth: 620 }}>
+                Design workflows, run them, approve pauses, and inspect execution evidence.
               </p>
             </div>
           </div>
 
-          {/* Execution engine note */}
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px',
-            borderRadius: 10, background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.18)',
-          }}>
-            <Info size={12} style={{ color: '#6366f1', flexShrink: 0 }} />
-            <span style={{ fontSize: 11, color: '#6366f1', fontWeight: 600 }}>Designer only — execution runs on your connected engine</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              onClick={() => navigate('/run')}
+              style={{ ...buttonBase, color: '#ffffff', background: PRIMARY, border: `1px solid ${PRIMARY}` }}
+            >
+              <PlayCircle size={14} /> Start Run
+            </button>
+            <button
+              onClick={() => navigate('/workflows?tab=templates')}
+              style={{ ...buttonBase, color: TEXT, background: SURFACE, border: `1px solid ${BORDER}` }}
+            >
+              <GitBranch size={14} /> Manage Designs
+            </button>
           </div>
         </div>
       </motion.div>
 
       {/* ── KPI strip ──────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginBottom: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
         <KpiCard title="Total Designs"   value={total}        icon={GitBranch}    color="#00843D"  delay={0.04} />
         <KpiCard title="Published"       value={published}    icon={CheckCircle2} color="#00843D"  delay={0.07} sub={total > 0 ? `${Math.round(published/total*100)}%` : undefined} />
         <KpiCard title="In Draft"        value={draft}        icon={FileCode}     color="#94a3b8"  delay={0.10} />
@@ -300,7 +336,7 @@ export function DashboardPage() {
       </div>
 
       {/* ── Two-column: catalog + breakdown ───────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: 20, alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 300px', gap: 20, alignItems: 'start' }}>
 
         {/* ── Workflow catalog ──────────────────────────────────────── */}
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.26, delay: 0.22 }}>
@@ -308,17 +344,17 @@ export function DashboardPage() {
             Workflow Catalog
           </SectionHeader>
 
-          <div style={{ background: '#fff', border: '1px solid var(--color-outline-variant)', borderRadius: 14, boxShadow: '0 2px 8px rgba(12,23,39,0.04)', overflow: 'hidden' }}>
+          <div style={{ ...panelStyle, overflow: 'hidden' }}>
 
             {/* Search + filter bar */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', borderBottom: '1px solid var(--color-outline-variant)' }}>
-              <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 7, padding: '6px 10px', borderRadius: 8, border: '1px solid var(--color-outline-variant)', background: 'var(--color-surface)' }}>
-                <Search size={12} style={{ color: 'var(--color-outline)', flexShrink: 0 }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', borderBottom: `1px solid ${BORDER}` }}>
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 7, padding: '7px 10px', borderRadius: CARD_RADIUS, border: `1px solid ${BORDER}`, background: SURFACE_LOW }}>
+                <Search size={12} style={{ color: MUTED, flexShrink: 0 }} />
                 <input
                   value={search}
                   onChange={e => setSearch(e.target.value)}
                   placeholder="Search workflows…"
-                  style={{ flex: 1, border: 'none', background: 'transparent', fontSize: 12, outline: 'none', color: 'var(--color-on-surface)', fontFamily: 'inherit' }}
+                  style={{ flex: 1, border: 'none', background: 'transparent', fontSize: 12, outline: 'none', color: TEXT, fontFamily: 'inherit' }}
                 />
               </div>
 
@@ -328,9 +364,9 @@ export function DashboardPage() {
                   onClick={() => setShowFilterMenu(v => !v)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 5, padding: '6px 10px',
-                    borderRadius: 8, border: '1px solid var(--color-outline-variant)',
+                    borderRadius: CARD_RADIUS, border: `1px solid ${BORDER}`,
                     background: 'transparent', cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                    color: 'var(--color-outline)',
+                    color: MUTED,
                   }}
                 >
                   <Filter size={11} />
@@ -341,23 +377,22 @@ export function DashboardPage() {
                   <div
                     style={{
                       position: 'absolute', top: '110%', right: 0, zIndex: 50,
-                      background: '#fff', border: '1px solid var(--color-outline-variant)',
-                      borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                      ...panelStyle,
                       padding: 12, minWidth: 200,
                     }}
                   >
-                    <p style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-outline)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 6 }}>Type</p>
+                    <p style={{ fontSize: 10, fontWeight: 800, color: MUTED, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Type</p>
                     {['ALL', 'SDLC', 'BUSINESS', 'DATA_PIPELINE', 'INFRASTRUCTURE', 'COMPLIANCE', 'OTHER'].map(t => (
                       <button key={t} onClick={() => { setFilterType(t); setShowFilterMenu(false) }}
-                        style={{ display: 'block', width: '100%', textAlign: 'left', padding: '5px 8px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: filterType === t ? 700 : 400, background: filterType === t ? 'rgba(0,132,61,0.08)' : 'transparent', color: filterType === t ? 'var(--color-primary)' : 'var(--color-on-surface)' }}>
+                        style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: filterType === t ? 700 : 500, background: filterType === t ? 'rgba(0,132,61,0.08)' : 'transparent', color: filterType === t ? PRIMARY : TEXT }}>
                         {t === 'ALL' ? 'All types' : TYPE_LABEL[t] ?? t}
                       </button>
                     ))}
-                    <div style={{ height: 1, background: 'var(--color-outline-variant)', margin: '8px 0' }} />
-                    <p style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-outline)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 6 }}>Status</p>
+                    <div style={{ height: 1, background: BORDER, margin: '8px 0' }} />
+                    <p style={{ fontSize: 10, fontWeight: 800, color: MUTED, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Status</p>
                     {['ALL', 'DRAFT', 'PUBLISHED', 'FINAL', 'ARCHIVED'].map(s => (
                       <button key={s} onClick={() => { setFilterStatus(s); setShowFilterMenu(false) }}
-                        style={{ display: 'block', width: '100%', textAlign: 'left', padding: '5px 8px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: filterStatus === s ? 700 : 400, background: filterStatus === s ? 'rgba(0,132,61,0.08)' : 'transparent', color: filterStatus === s ? 'var(--color-primary)' : 'var(--color-on-surface)' }}>
+                        style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: filterStatus === s ? 700 : 500, background: filterStatus === s ? 'rgba(0,132,61,0.08)' : 'transparent', color: filterStatus === s ? PRIMARY : TEXT }}>
                         {s === 'ALL' ? 'All statuses' : s}
                       </button>
                     ))}
@@ -370,27 +405,27 @@ export function DashboardPage() {
             <div style={{
               display: 'grid', gridTemplateColumns: '1fr 100px 82px 74px 130px 68px 32px',
               alignItems: 'center', gap: 12, padding: '7px 16px',
-              background: 'var(--color-surface)',
+              background: SURFACE_LOW,
             }}>
               {['Name', 'Type', 'Status', 'Priority', 'Owner / Team', 'Updated', ''].map(h => (
-                <span key={h} style={{ fontSize: 9, fontWeight: 700, color: 'var(--color-outline)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{h}</span>
+                <span key={h} style={{ fontSize: 9, fontWeight: 800, color: MUTED, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{h}</span>
               ))}
             </div>
 
             {/* Rows */}
             {isLoading ? (
               <div style={{ padding: '32px 20px', textAlign: 'center' }}>
-                <Clock size={22} style={{ color: 'var(--color-outline-variant)', margin: '0 auto 8px' }} />
-                <p style={{ fontSize: 12, color: 'var(--color-outline)' }}>Loading…</p>
+                <Clock size={22} style={{ color: BORDER, margin: '0 auto 8px' }} />
+                <p style={{ fontSize: 12, color: MUTED }}>Loading…</p>
               </div>
             ) : filtered.length === 0 ? (
               <div style={{ padding: '36px 20px', textAlign: 'center' }}>
-                <GitBranch size={26} style={{ color: 'var(--color-outline-variant)', margin: '0 auto 10px' }} />
-                <p style={{ fontSize: 13, color: 'var(--color-outline)' }}>
+                <GitBranch size={26} style={{ color: BORDER, margin: '0 auto 10px' }} />
+                <p style={{ fontSize: 13, color: MUTED }}>
                   {search || filterType !== 'ALL' || filterStatus !== 'ALL' ? 'No workflows match your filters' : 'No workflow designs yet'}
                 </p>
                 {!search && filterType === 'ALL' && filterStatus === 'ALL' && (
-                  <button onClick={() => navigate('/workflows')} style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: 'var(--color-primary)', background: 'none', border: 'none', cursor: 'pointer' }}>
+                  <button onClick={() => navigate('/workflows')} style={{ marginTop: 10, fontSize: 12, fontWeight: 700, color: PRIMARY, background: 'none', border: 'none', cursor: 'pointer' }}>
                     Create your first workflow →
                   </button>
                 )}
@@ -408,13 +443,13 @@ export function DashboardPage() {
             )}
 
             {filtered.length > 0 && (
-              <div style={{ padding: '8px 16px', borderTop: '1px solid var(--color-outline-variant)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: 10, color: 'var(--color-outline)' }}>
+              <div style={{ padding: '9px 16px', borderTop: `1px solid ${BORDER}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 10, color: MUTED }}>
                   {filtered.length} of {templates.length} workflow{templates.length !== 1 ? 's' : ''}
                 </span>
                 {(filterType !== 'ALL' || filterStatus !== 'ALL' || search) && (
                   <button onClick={() => { setSearch(''); setFilterType('ALL'); setFilterStatus('ALL') }}
-                    style={{ fontSize: 10, color: 'var(--color-primary)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>
+                    style={{ fontSize: 10, color: PRIMARY, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }}>
                     Clear filters
                   </button>
                 )}
@@ -429,9 +464,9 @@ export function DashboardPage() {
           {/* Type breakdown */}
           <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.26, delay: 0.28 }}>
             <SectionHeader>By Type</SectionHeader>
-            <div style={{ background: '#fff', border: '1px solid var(--color-outline-variant)', borderRadius: 14, padding: '16px', boxShadow: '0 2px 8px rgba(12,23,39,0.04)' }}>
+            <div style={{ ...panelStyle, padding: '16px' }}>
               {typeEntries.length === 0 ? (
-                <p style={{ fontSize: 12, color: 'var(--color-outline)', textAlign: 'center', padding: '12px 0' }}>No data yet</p>
+                <p style={{ fontSize: 12, color: MUTED, textAlign: 'center', padding: '12px 0' }}>No data yet</p>
               ) : (
                 typeEntries.map(([type, count]) => (
                   <TypeBar
@@ -449,7 +484,7 @@ export function DashboardPage() {
           {/* Status breakdown */}
           <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.26, delay: 0.32 }}>
             <SectionHeader>By Status</SectionHeader>
-            <div style={{ background: '#fff', border: '1px solid var(--color-outline-variant)', borderRadius: 14, padding: '16px', boxShadow: '0 2px 8px rgba(12,23,39,0.04)' }}>
+            <div style={{ ...panelStyle, padding: '16px' }}>
               {(['PUBLISHED', 'DRAFT', 'FINAL', 'ARCHIVED'] as const).map(status => {
                 const count = templates.filter(t => t.status === status).length
                 if (count === 0 && status === 'ARCHIVED') return null
@@ -457,9 +492,9 @@ export function DashboardPage() {
                   <div key={status} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                       <span style={{ width: 8, height: 8, borderRadius: '50%', background: STATUS_COLOR[status] ?? '#94a3b8', display: 'inline-block', flexShrink: 0 }} />
-                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-on-surface)' }}>{status.charAt(0) + status.slice(1).toLowerCase()}</span>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: TEXT }}>{status.charAt(0) + status.slice(1).toLowerCase()}</span>
                     </div>
-                    <span style={{ fontSize: 13, fontWeight: 700, fontFamily: 'monospace', color: STATUS_COLOR[status] ?? '#94a3b8' }}>{count}</span>
+                    <span style={{ fontSize: 13, fontWeight: 800, fontFamily: 'var(--font-mono)', color: STATUS_COLOR[status] ?? '#94a3b8' }}>{count}</span>
                   </div>
                 )
               })}
@@ -470,16 +505,16 @@ export function DashboardPage() {
           {teams.length > 0 && (
             <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.26, delay: 0.36 }}>
               <SectionHeader>Teams</SectionHeader>
-              <div style={{ background: '#fff', border: '1px solid var(--color-outline-variant)', borderRadius: 14, padding: '16px', boxShadow: '0 2px 8px rgba(12,23,39,0.04)' }}>
+              <div style={{ ...panelStyle, padding: '16px' }}>
                 {teams.map(team => {
                   const teamCount = templates.filter(t => t.metadata?.teamName === team).length
                   return (
                     <div key={team} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                        <Users size={11} style={{ color: 'var(--color-outline)' }} />
-                        <span style={{ fontSize: 12, color: 'var(--color-on-surface)', fontWeight: 600 }}>{team}</span>
+                        <Users size={11} style={{ color: MUTED }} />
+                        <span style={{ fontSize: 12, color: TEXT, fontWeight: 700 }}>{team}</span>
                       </div>
-                      <span style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--color-outline)', fontWeight: 700 }}>{teamCount}</span>
+                      <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: MUTED, fontWeight: 800 }}>{teamCount}</span>
                     </div>
                   )
                 })}
@@ -491,7 +526,7 @@ export function DashboardPage() {
           {templates.some(t => (t.metadata?.tags ?? []).length > 0) && (
             <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.26, delay: 0.40 }}>
               <SectionHeader>Tags</SectionHeader>
-              <div style={{ background: '#fff', border: '1px solid var(--color-outline-variant)', borderRadius: 14, padding: '14px 16px', boxShadow: '0 2px 8px rgba(12,23,39,0.04)' }}>
+              <div style={{ ...panelStyle, padding: '14px 16px' }}>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {(() => {
                     const tagCounts: Record<string, number> = {}
@@ -520,23 +555,23 @@ export function DashboardPage() {
           {/* Execution note */}
           <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.26, delay: 0.44 }}>
             <div style={{
-              padding: '14px 16px', borderRadius: 14,
-              background: 'rgba(99,102,241,0.05)', border: '1px solid rgba(99,102,241,0.18)',
+              ...panelStyle,
+              padding: '14px 16px',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8 }}>
-                <Layers size={13} style={{ color: '#6366f1' }} />
-                <span style={{ fontSize: 11, fontWeight: 700, color: '#6366f1' }}>Execution Summary</span>
+                <Layers size={13} style={{ color: PRIMARY }} />
+                <span style={{ fontSize: 11, fontWeight: 800, color: PRIMARY }}>Execution Summary</span>
               </div>
-              <p style={{ fontSize: 11, color: '#64748b', lineHeight: 1.6, marginBottom: 8 }}>
-                This is a workflow <strong>designer</strong>. Execution data comes from your connected engine.
+              <p style={{ fontSize: 11, color: MUTED, lineHeight: 1.6, marginBottom: 8 }}>
+                Recent run data is shown alongside designs so authors can move from design to execution evidence quickly.
               </p>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ fontSize: 11, color: '#64748b' }}>Instances recorded</span>
-                <span style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace', color: '#6366f1' }}>{instances.length}</span>
+                <span style={{ fontSize: 11, color: MUTED }}>Instances recorded</span>
+                <span style={{ fontSize: 11, fontWeight: 800, fontFamily: 'var(--font-mono)', color: PRIMARY }}>{instances.length}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 11, color: '#64748b' }}>Workflows with runs</span>
-                <span style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace', color: '#6366f1' }}>{runsByTemplate.size}</span>
+                <span style={{ fontSize: 11, color: MUTED }}>Workflows with runs</span>
+                <span style={{ fontSize: 11, fontWeight: 800, fontFamily: 'var(--font-mono)', color: PRIMARY }}>{runsByTemplate.size}</span>
               </div>
             </div>
           </motion.div>

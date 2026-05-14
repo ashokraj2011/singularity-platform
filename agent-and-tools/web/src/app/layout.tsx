@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Sidebar } from "@/components/ui/Sidebar";
+import { EventHorizonChat } from "@/components/EventHorizonChat";
 import { Bell, Settings } from "lucide-react";
 
 export const metadata: Metadata = {
@@ -104,6 +105,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               {children}
             </main>
           </div>
+          <EventHorizonChat />
         </div>
       </body>
     </html>

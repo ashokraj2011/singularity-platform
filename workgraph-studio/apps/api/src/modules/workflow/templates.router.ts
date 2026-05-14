@@ -68,12 +68,16 @@ workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, re
     const { name, description, teamId, capabilityId, metadata, variables, budgetPolicy, starter } =
       req.body as z.infer<typeof createTemplateSchema>
     if (starter === 'CAPABILITY_WORKBENCH_BRIDGE' && !capabilityId) {
-      throw new ValidationError('Capability is required for the Agent → Workbench → Human approval starter')
+      throw new ValidationError('Capability is required for the Workbench agent-team approval starter')
     }
     const callerToken = tokenFromAuthorizationHeader(req.headers.authorization)
     const ownerTeamId = teamId
       ? await resolveTeamIdForWorkflow(teamId, callerToken)
       : await resolveDefaultTeamId(req.user!.userId)
+
+    const normalizedVariables = starter === 'CAPABILITY_WORKBENCH_BRIDGE'
+      ? withCapabilityWorkbenchInputs(variables)
+      : (variables ?? [])
 
     const template = await prisma.workflow.create({
       data: {
@@ -82,7 +86,7 @@ workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, re
         capabilityId: capabilityId ?? null,
         createdById:  req.user!.userId,
         metadata:     metadata as any ?? {},
-        variables:    (variables ?? []) as unknown as Prisma.InputJsonValue,
+        variables:    normalizedVariables as unknown as Prisma.InputJsonValue,
         budgetPolicy: normalizeBudgetPolicy(budgetPolicy) as unknown as Prisma.InputJsonValue,
       },
     })
@@ -110,9 +114,12 @@ workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, re
 })
 
 type StarterAgentBindings = {
+  productOwnerAgentTemplateId: string
   architectAgentTemplateId: string
   developerAgentTemplateId: string
+  securityAgentTemplateId: string
   qaAgentTemplateId: string
+  devopsAgentTemplateId: string
 }
 
 async function createCapabilityWorkbenchBridgeGraph({
@@ -132,7 +139,7 @@ async function createCapabilityWorkbenchBridgeGraph({
   const workbenchGoal = goal || 'Produce an approved implementation contract pack.'
   const workbenchConfig = buildWorkbenchConfig(capabilityId, bindings, workbenchGoal)
 
-  const [startNode, agentNode, workbenchNode, approvalNode, endNode] = await prisma.$transaction(async tx => {
+  const [startNode, workbenchNode, approvalNode, endNode] = await prisma.$transaction(async tx => {
     const start = await tx.workflowDesignNode.create({
       data: {
         workflowId,
@@ -141,29 +148,6 @@ async function createCapabilityWorkbenchBridgeGraph({
         config: {},
         executionLocation: 'SERVER' as any,
         positionX: 80,
-        positionY: 220,
-      },
-    })
-    const agent = await tx.workflowDesignNode.create({
-      data: {
-        workflowId,
-        nodeType: 'AGENT_TASK' as any,
-        label: 'Agent context brief',
-        config: {
-          capabilityId,
-          agentTemplateId: bindings.architectAgentTemplateId,
-          task: [
-            'Prepare a concise implementation context brief for the Blueprint Workbench.',
-            'Summarize capability assumptions, risk areas, source hints, and any questions the Workbench loop must resolve.',
-            `Goal: ${workbenchGoal}`,
-          ].join('\n'),
-          outputBindings: {
-            agentContextBrief: 'agentContextBrief',
-          },
-          starterWarnings: warnings,
-        } as Prisma.InputJsonValue,
-        executionLocation: 'SERVER' as any,
-        positionX: 280,
         positionY: 220,
       },
     })
@@ -179,7 +163,7 @@ async function createCapabilityWorkbenchBridgeGraph({
           starterWarnings: warnings,
         } as Prisma.InputJsonValue,
         executionLocation: 'SERVER' as any,
-        positionX: 520,
+        positionX: 330,
         positionY: 220,
       },
     })
@@ -203,7 +187,7 @@ async function createCapabilityWorkbenchBridgeGraph({
           ],
         } as Prisma.InputJsonValue,
         executionLocation: 'SERVER' as any,
-        positionX: 780,
+        positionX: 610,
         positionY: 220,
       },
     })
@@ -214,19 +198,18 @@ async function createCapabilityWorkbenchBridgeGraph({
         label: 'Done',
         config: {},
         executionLocation: 'SERVER' as any,
-        positionX: 1010,
+        positionX: 870,
         positionY: 220,
       },
     })
     await tx.workflowDesignEdge.createMany({
       data: [
-        { workflowId, sourceNodeId: start.id, targetNodeId: agent.id, edgeType: 'SEQUENTIAL' as any },
-        { workflowId, sourceNodeId: agent.id, targetNodeId: workbench.id, edgeType: 'SEQUENTIAL' as any },
+        { workflowId, sourceNodeId: start.id, targetNodeId: workbench.id, edgeType: 'SEQUENTIAL' as any },
         { workflowId, sourceNodeId: workbench.id, targetNodeId: approval.id, edgeType: 'SEQUENTIAL' as any },
         { workflowId, sourceNodeId: approval.id, targetNodeId: end.id, edgeType: 'SEQUENTIAL' as any },
       ],
     })
-    return [start, agent, workbench, approval, end] as const
+    return [start, workbench, approval, end] as const
   })
 
   await logEvent('WorkflowStarterApplied', 'Workflow', workflowId, actorId, {
@@ -234,7 +217,6 @@ async function createCapabilityWorkbenchBridgeGraph({
     capabilityId,
     nodeIds: {
       start: startNode.id,
-      agent: agentNode.id,
       workbench: workbenchNode.id,
       approval: approvalNode.id,
       end: endNode.id,
@@ -260,7 +242,7 @@ async function resolveStarterAgentBindings(
     warnings.push(`Could not prefetch capability agent templates: ${(err as Error).message}`)
   }
 
-  const pick = (role: 'ARCHITECT' | 'DEVELOPER' | 'QA') => {
+  const pick = (role: 'ARCHITECT' | 'DEVELOPER' | 'QA' | 'SECURITY' | 'DEVOPS' | 'PRODUCT_OWNER') => {
     const normalized = templates
       .map(t => ({ template: t, role: roleOfTemplate(t), name: String(t.name ?? '').toLowerCase() }))
       .filter(x => isUsableTemplate(x.template))
@@ -274,23 +256,32 @@ async function resolveStarterAgentBindings(
   }
 
   const bindings = {
+    productOwnerAgentTemplateId: pick('PRODUCT_OWNER'),
     architectAgentTemplateId: pick('ARCHITECT'),
     developerAgentTemplateId: pick('DEVELOPER'),
+    securityAgentTemplateId: pick('SECURITY'),
     qaAgentTemplateId: pick('QA'),
+    devopsAgentTemplateId: pick('DEVOPS'),
   }
 
+  if (!bindings.productOwnerAgentTemplateId) warnings.push('Product Owner agent template was not found; the Workbench will start at architecture planning.')
   if (!bindings.architectAgentTemplateId) warnings.push('Architect agent template was not found; bind one in the Workbench node inspector.')
   if (!bindings.developerAgentTemplateId) warnings.push('Developer agent template was not found; bind one in the Workbench node inspector.')
+  if (!bindings.securityAgentTemplateId) warnings.push('Security agent template was not found; security review will fall back to QA if needed.')
   if (!bindings.qaAgentTemplateId) warnings.push('QA agent template was not found; bind one in the Workbench node inspector.')
+  if (!bindings.devopsAgentTemplateId) warnings.push('DevOps agent template was not found; release readiness will fall back to QA if needed.')
 
   return { bindings, warnings }
 }
 
 function emptyBindings(): StarterAgentBindings {
   return {
+    productOwnerAgentTemplateId: '',
     architectAgentTemplateId: '',
     developerAgentTemplateId: '',
+    securityAgentTemplateId: '',
     qaAgentTemplateId: '',
+    devopsAgentTemplateId: '',
   }
 }
 
@@ -312,10 +303,11 @@ function buildWorkbenchConfig(
   return {
     profile: 'blueprint',
     gateMode: 'manual',
-    sourceType: 'localdir',
-    sourceUri: '',
+    sourceType: 'github',
+    sourceUri: '{{instance.vars.repoUrl}}',
     sourceRef: '',
-    goal,
+    goal: '{{instance.vars.story}}',
+    fallbackGoal: goal,
     capabilityId,
     agentBindings: bindings,
     loopDefinition: {
@@ -325,6 +317,20 @@ function buildWorkbenchConfig(
       maxTotalSendBacks: 8,
       stages: [
         {
+          key: 'STORY_INTAKE',
+          label: 'Story Intake',
+          agentRole: 'PRODUCT_OWNER',
+          agentTemplateId: bindings.productOwnerAgentTemplateId || bindings.architectAgentTemplateId,
+          next: 'PLAN',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: [],
+          expectedArtifacts: [
+            { kind: 'story_brief', title: 'Story brief', required: true, format: 'MARKDOWN' },
+            { kind: 'acceptance_contract', title: 'Acceptance contract', required: true, format: 'MARKDOWN' },
+          ],
+        },
+        {
           key: 'PLAN',
           label: 'Plan',
           agentRole: 'ARCHITECT',
@@ -332,7 +338,7 @@ function buildWorkbenchConfig(
           next: 'DESIGN',
           required: true,
           approvalRequired: true,
-          allowedSendBackTo: [],
+          allowedSendBackTo: ['STORY_INTAKE'],
           expectedArtifacts: [
             { kind: 'mental_model', title: 'Mental model', required: true, format: 'MARKDOWN' },
             { kind: 'gaps', title: 'Gaps and risks', required: true, format: 'MARKDOWN' },
@@ -346,7 +352,7 @@ function buildWorkbenchConfig(
           next: 'DEVELOP',
           required: true,
           approvalRequired: true,
-          allowedSendBackTo: ['PLAN'],
+          allowedSendBackTo: ['STORY_INTAKE', 'PLAN'],
           expectedArtifacts: [
             { kind: 'solution_architecture', title: 'Solution architecture', required: true, format: 'MARKDOWN' },
             { kind: 'approved_spec_draft', title: 'Approved spec draft', required: true, format: 'MARKDOWN' },
@@ -357,13 +363,27 @@ function buildWorkbenchConfig(
           label: 'Develop',
           agentRole: 'DEVELOPER',
           agentTemplateId: bindings.developerAgentTemplateId,
-          next: 'QA_REVIEW',
+          next: 'SECURITY_REVIEW',
           required: true,
           approvalRequired: true,
-          allowedSendBackTo: ['PLAN', 'DESIGN'],
+          allowedSendBackTo: ['STORY_INTAKE', 'PLAN', 'DESIGN'],
           expectedArtifacts: [
             { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
             { kind: 'simulated_code_change', title: 'Simulated code-change evidence', required: true, format: 'MARKDOWN' },
+          ],
+        },
+        {
+          key: 'SECURITY_REVIEW',
+          label: 'Security Review',
+          agentRole: 'SECURITY',
+          agentTemplateId: bindings.securityAgentTemplateId || bindings.qaAgentTemplateId,
+          next: 'QA_REVIEW',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['PLAN', 'DESIGN', 'DEVELOP'],
+          expectedArtifacts: [
+            { kind: 'security_review', title: 'Security review', required: true, format: 'MARKDOWN' },
+            { kind: 'risk_acceptance_notes', title: 'Risk acceptance notes', required: false, format: 'MARKDOWN' },
           ],
         },
         {
@@ -371,12 +391,26 @@ function buildWorkbenchConfig(
           label: 'QA Review',
           agentRole: 'QA',
           agentTemplateId: bindings.qaAgentTemplateId,
+          next: 'RELEASE_READINESS',
+          required: true,
+          approvalRequired: true,
+          allowedSendBackTo: ['DESIGN', 'DEVELOP', 'SECURITY_REVIEW'],
+          expectedArtifacts: [
+            { kind: 'qa_task_pack', title: 'QA review pack', required: true, format: 'MARKDOWN' },
+          ],
+        },
+        {
+          key: 'RELEASE_READINESS',
+          label: 'Release Readiness',
+          agentRole: 'DEVOPS',
+          agentTemplateId: bindings.devopsAgentTemplateId || bindings.qaAgentTemplateId,
           next: 'TEST_CERTIFICATION',
           required: true,
           approvalRequired: true,
-          allowedSendBackTo: ['DESIGN', 'DEVELOP'],
+          allowedSendBackTo: ['DEVELOP', 'SECURITY_REVIEW', 'QA_REVIEW'],
           expectedArtifacts: [
-            { kind: 'qa_task_pack', title: 'QA review pack', required: true, format: 'MARKDOWN' },
+            { kind: 'release_plan', title: 'Release plan', required: true, format: 'MARKDOWN' },
+            { kind: 'rollback_plan', title: 'Rollback plan', required: true, format: 'MARKDOWN' },
           ],
         },
         {
@@ -387,7 +421,7 @@ function buildWorkbenchConfig(
           terminal: true,
           required: true,
           approvalRequired: true,
-          allowedSendBackTo: ['DESIGN', 'DEVELOP', 'QA_REVIEW'],
+          allowedSendBackTo: ['DESIGN', 'DEVELOP', 'SECURITY_REVIEW', 'QA_REVIEW', 'RELEASE_READINESS'],
           expectedArtifacts: [
             { kind: 'verification_rules', title: 'Verification rules', required: true, format: 'MARKDOWN' },
             { kind: 'traceability_matrix', title: 'Traceability matrix', required: true, format: 'MARKDOWN' },
@@ -400,6 +434,40 @@ function buildWorkbenchConfig(
       finalPackKey: 'finalImplementationPack',
     },
   }
+}
+
+function withCapabilityWorkbenchInputs(
+  variables: z.infer<typeof variableDefSchema>[] | undefined,
+): z.infer<typeof variableDefSchema>[] {
+  const existing = variables ?? []
+  const seen = new Set(existing.map(v => v.key))
+  const defaults: z.infer<typeof variableDefSchema>[] = [
+    {
+      key: 'story',
+      label: 'Input story',
+      type: 'STRING',
+      scope: 'INPUT',
+      description: 'The user story or change request the agent team should refine and deliver.',
+    },
+    {
+      key: 'acceptanceCriteria',
+      label: 'Acceptance criteria',
+      type: 'STRING',
+      scope: 'INPUT',
+      description: 'Optional acceptance criteria, constraints, or definition of done.',
+    },
+    {
+      key: 'repoUrl',
+      label: 'Repository URL',
+      type: 'STRING',
+      scope: 'INPUT',
+      description: 'GitHub repository or source location for the Workbench to inspect.',
+    },
+  ]
+  return [
+    ...existing,
+    ...defaults.filter(v => !seen.has(v.key)),
+  ]
 }
 
 // ─── Runs (instances cloned from the design) ─────────────────────────────────

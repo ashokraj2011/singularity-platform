@@ -120,9 +120,25 @@ model AgentTemplate {
   skills     AgentTemplateSkill[]
   bindings   AgentCapabilityBinding[]
   executions AgentExecution[]
+  versions   AgentTemplateVersion[]
 
   @@index([capabilityId])
   @@index([baseTemplateId])
+}
+
+model AgentTemplateVersion {
+  id              String   @id @default(uuid())
+  agentTemplateId String
+  version         Int
+  changeSummary   String?
+  snapshot        Json
+  createdBy       String?
+  createdAt       DateTime @default(now())
+
+  agentTemplate AgentTemplate @relation(fields: [agentTemplateId], references: [id])
+
+  @@unique([agentTemplateId, version])
+  @@index([agentTemplateId, createdAt])
 }
 
 model AgentSkill {
@@ -257,7 +273,37 @@ model PromptAssembly {
   estimatedInputTokens Int?
   createdAt            DateTime @default(now())
 
+  // M25 — owned by prompt-composer schema; declared here too so this
+  // schema's `db push` doesn't drop the column when both services share a DB.
+  evidenceRefs         Json?
+  // M25.5 — same rationale: composer writes this; we just preserve the column.
+  compiledContextId    String?
+
   layers PromptAssemblyLayer[]
+}
+
+// M25.5 — owned by prompt-composer; mirrored here so agent-runtime's
+// `prisma db push` doesn't drop the column-set when both services share a DB.
+// Composer is the only writer/reader.
+model CapabilityCompiledContext {
+  id                String   @id @default(uuid())
+  capabilityId      String
+  agentTemplateId   String
+  taskSignature     String   @unique
+  intent            String
+  compiledContent   String
+  compileMode       String   @default("RAW")
+  citations         Json
+  estimatedTokens   Int      @default(0)
+  hitCount          Int      @default(0)
+  status            String   @default("READY")
+  expiresAt         DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([capabilityId, agentTemplateId])
+  @@index([taskSignature])
+  @@index([expiresAt])
 }
 
 model PromptAssemblyLayer {

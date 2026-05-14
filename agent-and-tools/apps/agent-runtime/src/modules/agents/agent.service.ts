@@ -1,9 +1,24 @@
 import { prisma } from "../../config/prisma";
+import type { AgentRoleType, EntityStatus, Prisma } from "@prisma/client";
 import { ForbiddenError, NotFoundError } from "../../shared/errors";
 import type { AuthUser } from "../../middleware/auth.middleware";
 import {
-  CreateAgentTemplateInput, DeriveAgentTemplateInput, UpdateAgentTemplateInput,
+  CreateAgentTemplateInput, DeriveAgentTemplateInput, RestoreAgentTemplateVersionInput, UpdateAgentTemplateInput,
 } from "./agent.schemas";
+
+type TemplateSnapshotSource = {
+  id: string;
+  name: string;
+  roleType: string;
+  description?: string | null;
+  basePromptProfileId?: string | null;
+  defaultToolPolicyId?: string | null;
+  status: string;
+  capabilityId?: string | null;
+  baseTemplateId?: string | null;
+  lockedReason?: string | null;
+  version: number;
+};
 
 function rolesOf(actor: AuthUser | undefined): string[] {
   return (actor?.roles ?? []).map((r) => r.toLowerCase());
@@ -38,6 +53,45 @@ function requireCapabilityOwner(actor: AuthUser | undefined, capabilityId: strin
   }
 }
 
+function snapshotTemplate(template: TemplateSnapshotSource) {
+  return {
+    name: template.name,
+    roleType: template.roleType,
+    description: template.description ?? null,
+    basePromptProfileId: template.basePromptProfileId ?? null,
+    defaultToolPolicyId: template.defaultToolPolicyId ?? null,
+    status: template.status,
+    capabilityId: template.capabilityId ?? null,
+    baseTemplateId: template.baseTemplateId ?? null,
+    lockedReason: template.lockedReason ?? null,
+    version: template.version,
+  };
+}
+
+async function ensureVersionSnapshot(
+  tx: Prisma.TransactionClient,
+  template: TemplateSnapshotSource,
+  changeSummary: string,
+  actor?: AuthUser,
+) {
+  return tx.agentTemplateVersion.upsert({
+    where: {
+      agentTemplateId_version: {
+        agentTemplateId: template.id,
+        version: template.version,
+      },
+    },
+    create: {
+      agentTemplateId: template.id,
+      version: template.version,
+      changeSummary,
+      snapshot: snapshotTemplate(template),
+      createdBy: actor?.user_id,
+    },
+    update: {},
+  });
+}
+
 export const agentService = {
   async createTemplate(input: CreateAgentTemplateInput, actor?: AuthUser) {
     if (input.capabilityId) {
@@ -47,8 +101,12 @@ export const agentService = {
     } else {
       requirePlatformAdmin(actor, "Creating a common agent template");
     }
-    return prisma.agentTemplate.create({
-      data: { ...input, createdBy: actor?.user_id, status: "DRAFT" },
+    return prisma.$transaction(async (tx) => {
+      const created = await tx.agentTemplate.create({
+        data: { ...input, createdBy: actor?.user_id, status: "DRAFT" },
+      });
+      await ensureVersionSnapshot(tx, created, "Initial draft", actor);
+      return created;
     });
   },
 
@@ -107,21 +165,25 @@ export const agentService = {
       throw new ForbiddenError("Cannot derive from another capability's agent template");
     }
 
-    const derived = await prisma.agentTemplate.create({
-      data: {
-        name: input.name ?? `${base.name} (${input.capabilityId.slice(0, 8)})`,
-        description: input.description ?? base.description ?? undefined,
-        roleType: base.roleType,
-        basePromptProfileId: input.basePromptProfileId ?? base.basePromptProfileId ?? undefined,
-        defaultToolPolicyId: base.defaultToolPolicyId ?? undefined,
-        capabilityId: input.capabilityId,
-        baseTemplateId: base.id,
-        // Derived templates are editable by capability owners — no lock.
-        lockedReason: null,
-        status: "DRAFT",
-        createdBy: actor?.user_id,
-      },
-      include: { skills: { include: { skill: true } } },
+    const derived = await prisma.$transaction(async (tx) => {
+      const created = await tx.agentTemplate.create({
+        data: {
+          name: input.name ?? `${base.name} (${input.capabilityId.slice(0, 8)})`,
+          description: input.description ?? base.description ?? undefined,
+          roleType: base.roleType,
+          basePromptProfileId: input.basePromptProfileId ?? base.basePromptProfileId ?? undefined,
+          defaultToolPolicyId: base.defaultToolPolicyId ?? undefined,
+          capabilityId: input.capabilityId,
+          baseTemplateId: base.id,
+          // Derived templates are editable by capability owners — no lock.
+          lockedReason: null,
+          status: "DRAFT",
+          createdBy: actor?.user_id,
+        },
+        include: { skills: { include: { skill: true } } },
+      });
+      await ensureVersionSnapshot(tx, created, `Derived from ${base.id}`, actor);
+      return created;
     });
     return derived;
   },
@@ -136,10 +198,67 @@ export const agentService = {
     } else {
       requireCapabilityOwner(actor, existing.capabilityId, "Editing a capability agent template");
     }
-    return prisma.agentTemplate.update({
-      where: { id },
-      data: patch,
-      include: { skills: { include: { skill: true } } },
+    const { changeSummary, ...data } = patch;
+    return prisma.$transaction(async (tx) => {
+      await ensureVersionSnapshot(tx, existing, "Baseline before versioned edit", actor);
+      const updated = await tx.agentTemplate.update({
+        where: { id },
+        data: { ...data, version: { increment: 1 } },
+        include: { skills: { include: { skill: true } } },
+      });
+      await ensureVersionSnapshot(tx, updated, changeSummary ?? `Updated ${Object.keys(data).join(", ") || "metadata"}`, actor);
+      return updated;
+    });
+  },
+
+  async listTemplateVersions(id: string) {
+    const template = await prisma.agentTemplate.findUnique({ where: { id }, select: { id: true } });
+    if (!template) throw new NotFoundError("Agent template not found");
+    return prisma.agentTemplateVersion.findMany({
+      where: { agentTemplateId: id },
+      orderBy: { version: "desc" },
+    });
+  },
+
+  async restoreTemplateVersion(
+    id: string,
+    version: number,
+    input: RestoreAgentTemplateVersionInput,
+    actor?: AuthUser,
+  ) {
+    const existing = await prisma.agentTemplate.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundError("Agent template not found");
+    if (!existing.capabilityId) {
+      requirePlatformAdmin(actor, existing.lockedReason ? `Restoring locked common template (${existing.lockedReason})` : "Restoring common template");
+    } else {
+      requireCapabilityOwner(actor, existing.capabilityId, "Restoring a capability agent template");
+    }
+    const target = await prisma.agentTemplateVersion.findUnique({
+      where: { agentTemplateId_version: { agentTemplateId: id, version } },
+    });
+    if (!target) throw new NotFoundError("Agent template version not found");
+
+    const snapshot = target.snapshot as Partial<TemplateSnapshotSource>;
+    return prisma.$transaction(async (tx) => {
+      await ensureVersionSnapshot(tx, existing, "Baseline before restore", actor);
+      const restored = await tx.agentTemplate.update({
+        where: { id },
+        data: {
+          name: snapshot.name,
+          roleType: snapshot.roleType as AgentRoleType,
+          description: snapshot.description ?? null,
+          basePromptProfileId: snapshot.basePromptProfileId ?? null,
+          defaultToolPolicyId: snapshot.defaultToolPolicyId ?? null,
+          status: snapshot.status as EntityStatus,
+          capabilityId: snapshot.capabilityId ?? null,
+          baseTemplateId: snapshot.baseTemplateId ?? null,
+          lockedReason: snapshot.lockedReason ?? null,
+          version: { increment: 1 },
+        },
+        include: { skills: { include: { skill: true } } },
+      });
+      await ensureVersionSnapshot(tx, restored, input.changeSummary ?? `Restored from version ${version}`, actor);
+      return restored;
     });
   },
 

@@ -30,6 +30,7 @@ export interface ExecuteRequest {
   trace_id?: string
   idempotency_key?: string
   run_context: ExecuteRunContext
+  system_prompt?: string
   task: string
   vars?: Record<string, unknown>
   globals?: Record<string, unknown>
@@ -37,6 +38,7 @@ export interface ExecuteRequest {
   artifacts?: unknown[]
   overrides?: Record<string, unknown>
   model_overrides?: {
+    modelAlias?: string
     provider?: string
     model?: string
     temperature?: number
@@ -82,6 +84,7 @@ export interface ExecuteResponse {
     promptAssemblyId?: string
     mcpServerId?: string
     mcpInvocationId?: string
+    modelAlias?: string
     llmCallIds: string[]
     toolInvocationIds: string[]
     artifactIds: string[]
@@ -107,6 +110,7 @@ export interface ExecuteResponse {
     outputTokens?: number | null
     totalTokens?: number | null
     estimatedCost?: number | null
+    modelAlias?: string | null
     provider?: string | null
     model?: string | null
     tokensSaved?: number | null
@@ -114,12 +118,18 @@ export interface ExecuteResponse {
     cfCallId?: string | null
   }
   modelUsage?: {
+    modelAlias?: string | null
     provider?: string | null
     model?: string | null
     inputTokens?: number | null
     outputTokens?: number | null
     totalTokens?: number | null
     estimatedCost?: number | null
+  }
+  prompt?: {
+    estimatedInputTokens?: number | null
+    budgetWarnings?: string[]
+    retrievalStats?: Record<string, unknown>
   }
   finishReason?: string
   stepsTaken?: number

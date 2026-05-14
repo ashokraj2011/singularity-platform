@@ -12,6 +12,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   ArrowLeft, Clock, Activity, Coins, AlertTriangle, FileText, Box, ShieldCheck, GitBranch,
+  Bot, Wrench, UserCheck, Radio, Database, Cpu, Network, Route, ClipboardCheck, Zap,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { LiveEventsPanel } from './LiveEventsPanel'
@@ -21,6 +22,8 @@ interface InsightNode {
   label: string
   nodeType: string
   status: string
+  positionX: number
+  positionY: number
   createdAt: string
   updatedAt: string
   startedAt: string | null
@@ -43,6 +46,28 @@ interface InsightNode {
     sourceId: string
     confidence: number | null
     excerpt: string
+  }>
+  receipts: Array<{
+    agentRunId: string
+    status: string
+    cfCallId?: string
+    promptAssemblyId?: string
+    mcpInvocationId?: string
+    modelAlias?: string
+    modelSelectionReason?: string
+    provider?: string
+    model?: string
+    inputTokens?: number
+    outputTokens?: number
+    totalTokens?: number
+    estimatedCost?: number
+    tokensSaved?: number
+    promptEstimatedInputTokens?: number
+    budgetWarnings: string[]
+    retrievalStats?: Record<string, unknown>
+    finishReason?: string
+    artifactIds: string[]
+    toolInvocationIds: string[]
   }>
   laptopDevice?: {
     user_id: string
@@ -72,6 +97,20 @@ interface InsightsResponse {
   consumables: Array<{ id: string; name: string; status: string; currentVersion: number; nodeId: string | null; updatedAt: string }>
   costByModel: Array<{ provider: string; model: string; calls: number; total_tokens: number; cost_usd: number }>
   events: InsightEvent[]
+  missionControl: {
+    liveEventCount: number
+    llmStreamEvents: number
+    toolEvents: number
+    approvalWaits: number
+    artifactEvents: number
+    codeChangeEvents: number
+    astEvents: number
+    branchEvents: number
+    commitEvents: number
+    receiptsCount: number
+    workspaceSteps: number
+    citationCount: number
+  }
 }
 interface BudgetEvent {
   id: string
@@ -136,6 +175,29 @@ function fmtBytes(n: number | null): string {
   return `${(n / (1024 * 1024)).toFixed(2)} MB`
 }
 
+function formatRetrievalStats(stats: Record<string, unknown>): string {
+  const parts: string[] = []
+  for (const key of ['knowledge', 'memory', 'code', 'tools', 'artifacts']) {
+    const raw = stats[key]
+    if (raw && typeof raw === 'object') {
+      const row = raw as Record<string, unknown>
+      const selected = row.selected ?? row.count ?? row.used
+      const candidates = row.candidates ?? row.total
+      const tokens = row.tokens ?? row.estimatedTokens
+      const label = [
+        selected != null ? `${selected}` : undefined,
+        candidates != null ? `/${candidates}` : undefined,
+        tokens != null ? ` · ${Number(tokens).toLocaleString()} tok` : undefined,
+      ].filter(Boolean).join('')
+      if (label) parts.push(`${key} ${label}`)
+    } else if (typeof raw === 'number') {
+      parts.push(`${key} ${raw}`)
+    }
+  }
+  if (parts.length > 0) return parts.join(' · ')
+  return Object.entries(stats).slice(0, 5).map(([k, v]) => `${k}: ${typeof v === 'object' ? 'set' : String(v)}`).join(' · ')
+}
+
 const STATUS_COLOR: Record<string, string> = {
   PENDING:   '#94a3b8',
   ACTIVE:    '#0ea5e9',
@@ -168,6 +230,9 @@ export function RunInsightsPage() {
     const durations = (data?.nodes ?? []).map(n => n.durationMs ?? 0)
     return Math.max(1, ...durations)
   }, [data])
+  const nodeLabelById = useMemo(() => {
+    return new Map((data?.nodes ?? []).map(n => [n.id, n.label]))
+  }, [data])
 
   if (isLoading) return <div style={{ padding: 24, fontSize: 12, color: '#64748b' }}>Loading run insights…</div>
   if (isError)   return <div style={{ padding: 24, fontSize: 12, color: '#dc2626' }}>Failed to load: {(error as Error).message}</div>
@@ -192,10 +257,10 @@ export function RunInsightsPage() {
       }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <h1 style={{ fontSize: 16, fontWeight: 800, color: 'var(--color-on-surface)', margin: 0 }}>
-            {data.run.name}
+            Mission Control · {data.run.name}
           </h1>
           <p style={{ fontSize: 11, color: 'var(--color-outline)', marginTop: 4 }}>
-            {data.run.status} ·{' '}
+            Governed live run view · {data.run.status} ·{' '}
             Started {data.run.startedAt ? new Date(data.run.startedAt).toLocaleString() : '—'} ·{' '}
             {data.run.completedAt
               ? `Completed ${new Date(data.run.completedAt).toLocaleString()}`
@@ -211,6 +276,29 @@ export function RunInsightsPage() {
           }}
         >Timeline view</button>
       </div>
+
+      <Section title="Agent Mission Control">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))', gap: 10 }}>
+          <Tile icon={Radio} label="Live events" value={`${data.missionControl.liveEventCount}`} sub={`${data.missionControl.llmStreamEvents} stream chunks`} />
+          <Tile icon={Bot} label="Receipts" value={`${data.missionControl.receiptsCount}`} sub={`${data.missionControl.citationCount} citations`} />
+          <Tile icon={Wrench} label="Tool calls" value={`${data.missionControl.toolEvents}`} sub={`${data.missionControl.artifactEvents} artifact events`} />
+          <Tile icon={UserCheck} label="Approval waits" value={`${data.missionControl.approvalWaits}`} highlight={data.missionControl.approvalWaits > 0 ? 'amber' : undefined} />
+          <Tile icon={Cpu} label="Local code intel" value={`${data.missionControl.astEvents}`} sub={`${data.missionControl.workspaceSteps} workspace receipts`} />
+          <Tile icon={GitBranch} label="Branches / commits" value={`${data.missionControl.branchEvents}/${data.missionControl.commitEvents}`} sub={`${data.missionControl.codeChangeEvents} code changes`} />
+        </div>
+        <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 8 }}>
+          <MissionHint icon={Network} title="Execution chain" text="Workflow → Prompt Composer → Context Fabric → MCP → receipts." />
+          <MissionHint icon={Database} title="Private code posture" text="MCP AST tools provide symbols and slices; full files stay local unless explicitly read." />
+          <MissionHint icon={ShieldCheck} title="Promotion gates" text="Artifacts, budget overruns, and governed tools pause for human approval before downstream use." />
+        </div>
+      </Section>
+
+      <Section title="Live operating map">
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(260px, 0.6fr)', gap: 12 }}>
+          <NodeMap nodes={data.nodes} />
+          <OperatorPlaybook data={data} budget={budget} />
+        </div>
+      </Section>
 
       {/* Summary tiles */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 20 }}>
@@ -353,6 +441,50 @@ export function RunInsightsPage() {
                       </div>
                     </details>
                   )}
+                  {n.receipts.length > 0 && (
+                    <details style={{ marginLeft: 230, border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 8px', background: '#fff' }}>
+                      <summary style={{ cursor: 'pointer', color: '#334155', fontWeight: 700, fontSize: 10 }}>Receipts, model, tokens, tools</summary>
+                      <div style={{ display: 'grid', gap: 8, marginTop: 6 }}>
+                        {n.receipts.map((r) => (
+                          <div key={`${n.id}-${r.agentRunId}`} style={{ fontSize: 10, color: '#475569', borderTop: '1px solid #f1f5f9', paddingTop: 6 }}>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                              <code style={{ color: '#0f172a' }}>{r.agentRunId.slice(0, 8)}</code>
+                              <span>{r.status}</span>
+                              {r.modelAlias && <strong style={{ color: '#047857' }}>{r.modelAlias}</strong>}
+                              {r.modelSelectionReason && <span>{r.modelSelectionReason}</span>}
+                              {(r.provider || r.model) && <span>{r.provider ?? 'provider'} / {r.model ?? 'model'}</span>}
+                              {r.totalTokens != null && <span>{r.totalTokens.toLocaleString()} tokens</span>}
+                              {r.estimatedCost != null && <span>${r.estimatedCost.toFixed(4)}</span>}
+                              {r.tokensSaved != null && <span>{r.tokensSaved.toLocaleString()} saved</span>}
+                              {r.promptEstimatedInputTokens != null && <span>prompt {r.promptEstimatedInputTokens.toLocaleString()} est.</span>}
+                            </div>
+                            {r.budgetWarnings.length > 0 && (
+                              <div style={{ marginTop: 6, display: 'grid', gap: 4 }}>
+                                {r.budgetWarnings.map(w => (
+                                  <div key={w} style={{ color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 5, padding: '4px 6px' }}>
+                                    {w}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {r.retrievalStats && Object.keys(r.retrievalStats).length > 0 && (
+                              <div style={{ marginTop: 5, color: '#64748b' }}>
+                                Retrieval: {formatRetrievalStats(r.retrievalStats)}
+                              </div>
+                            )}
+                            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
+                              {r.cfCallId && <span>CF <code>{r.cfCallId.slice(0, 10)}</code></span>}
+                              {r.promptAssemblyId && <span>Prompt <code>{r.promptAssemblyId.slice(0, 10)}</code></span>}
+                              {r.mcpInvocationId && <span>MCP <code>{r.mcpInvocationId.slice(0, 10)}</code></span>}
+                              {r.toolInvocationIds.length > 0 && <span>tools {r.toolInvocationIds.length}</span>}
+                              {r.artifactIds.length > 0 && <span>artifacts {r.artifactIds.length}</span>}
+                              {r.finishReason && <span>finish {r.finishReason}</span>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
                 </div>
               )
             })}
@@ -394,13 +526,14 @@ export function RunInsightsPage() {
 
       {/* Artifacts panel */}
       {(data.documents.length > 0 || data.consumables.length > 0) && (
-        <Section title="Artifacts produced">
+        <Section title="Artifact-first lineage">
           {data.documents.length > 0 && (
             <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse', marginBottom: 12 }}>
               <thead>
                 <tr style={{ textAlign: 'left', color: '#64748b' }}>
                   <th style={th()}>Document</th>
                   <th style={th()}>Kind</th>
+                  <th style={th()}>Produced by</th>
                   <th style={th()}>Mime</th>
                   <th style={th()}>Size</th>
                   <th style={th()}>When</th>
@@ -411,6 +544,7 @@ export function RunInsightsPage() {
                   <tr key={d.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                     <td style={td()}>{d.name}</td>
                     <td style={td()}>{d.kind}</td>
+                    <td style={td()}>{d.nodeId ? nodeLabelById.get(d.nodeId) ?? d.nodeId : '—'}</td>
                     <td style={td()}>{d.mimeType ?? '—'}</td>
                     <td style={td()}>{fmtBytes(d.sizeBytes)}</td>
                     <td style={td()}>{new Date(d.uploadedAt).toLocaleString()}</td>
@@ -425,6 +559,7 @@ export function RunInsightsPage() {
                 <tr style={{ textAlign: 'left', color: '#64748b' }}>
                   <th style={th()}>Consumable</th>
                   <th style={th()}>Status</th>
+                  <th style={th()}>Produced by</th>
                   <th style={th()}>Version</th>
                   <th style={th()}>Updated</th>
                 </tr>
@@ -434,6 +569,7 @@ export function RunInsightsPage() {
                   <tr key={c.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                     <td style={td()}>{c.name}</td>
                     <td style={td()}>{c.status}</td>
+                    <td style={td()}>{c.nodeId ? nodeLabelById.get(c.nodeId) ?? c.nodeId : '—'}</td>
                     <td style={td()}>v{c.currentVersion}</td>
                     <td style={td()}>{new Date(c.updatedAt).toLocaleString()}</td>
                   </tr>
@@ -544,6 +680,184 @@ function Tile({
       </div>
       <div style={{ fontSize: 18, fontWeight: 800, color: colours.fg }}>{value}</div>
       {sub && <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>{sub}</div>}
+    </div>
+  )
+}
+
+function MissionHint({
+  icon: Icon, title, text,
+}: { icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>; title: string; text: string }) {
+  return (
+    <div style={{
+      display: 'flex', gap: 8, alignItems: 'flex-start',
+      border: '1px solid #e2e8f0', borderRadius: 8,
+      background: '#f8fafc', padding: '9px 10px',
+    }}>
+      <Icon size={14} style={{ color: '#047857', marginTop: 1, flexShrink: 0 }} />
+      <div>
+        <div style={{ fontSize: 10, fontWeight: 800, color: '#0f172a', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{title}</div>
+        <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{text}</div>
+      </div>
+    </div>
+  )
+}
+
+function NodeMap({ nodes }: { nodes: InsightNode[] }) {
+  if (nodes.length === 0) {
+    return (
+      <div style={{
+        minHeight: 180, border: '1px dashed #cbd5e1', borderRadius: 10,
+        background: '#f8fafc', display: 'grid', placeItems: 'center',
+        color: '#94a3b8', fontSize: 12,
+      }}>
+        No runtime nodes have been materialized yet.
+      </div>
+    )
+  }
+  const xs = nodes.map(n => Number.isFinite(n.positionX) ? n.positionX : 0)
+  const ys = nodes.map(n => Number.isFinite(n.positionY) ? n.positionY : 0)
+  const minX = Math.min(...xs)
+  const minY = Math.min(...ys)
+  const maxX = Math.max(...xs)
+  const maxY = Math.max(...ys)
+  const spanX = Math.max(1, maxX - minX)
+  const spanY = Math.max(1, maxY - minY)
+
+  return (
+    <div style={{
+      position: 'relative',
+      minHeight: 260,
+      border: '1px solid #dbe5ea',
+      borderRadius: 10,
+      overflow: 'hidden',
+      background: 'linear-gradient(180deg, #f8fbfb 0%, #eef3f4 100%)',
+    }}>
+      <div style={{
+        position: 'absolute', inset: 0,
+        backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(100,116,139,0.22) 1px, transparent 0)',
+        backgroundSize: '22px 22px',
+        opacity: 0.5,
+      }} />
+      {nodes.map((node, idx) => {
+        const left = 7 + ((node.positionX - minX) / spanX) * 78
+        const top = 12 + ((node.positionY - minY) / spanY) * 68
+        const color = STATUS_COLOR[node.status] ?? '#64748b'
+        const evidence = node.receipts.length + node.citations.length + node.workspace.length + node.consumables.length + node.documents.length
+        return (
+          <div
+            key={node.id}
+            title={`${node.label} · ${node.status}`}
+            style={{
+              position: 'absolute',
+              left: `${left}%`,
+              top: `${top}%`,
+              width: 170,
+              maxWidth: '38%',
+              transform: 'translate(-8%, -8%)',
+              border: `1px solid ${color}55`,
+              borderLeft: `4px solid ${color}`,
+              borderRadius: 9,
+              background: 'rgba(255,255,255,0.94)',
+              boxShadow: '0 10px 26px rgba(15,23,42,0.08)',
+              padding: '9px 10px',
+              zIndex: idx + 1,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+              <span style={{ width: 7, height: 7, borderRadius: 999, background: color, flexShrink: 0 }} />
+              <strong style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, color: '#0f172a' }}>
+                {node.label}
+              </strong>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <code style={{ fontSize: 9, color: '#64748b' }}>{node.nodeType}</code>
+              <span style={{ fontSize: 9, fontWeight: 800, color }}>{node.status}</span>
+            </div>
+            {evidence > 0 && (
+              <div style={{ marginTop: 5, fontSize: 9, color: '#64748b' }}>
+                {evidence} evidence item{evidence === 1 ? '' : 's'}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function OperatorPlaybook({ data, budget }: { data: InsightsResponse; budget?: BudgetResponse }) {
+  const failed = data.nodes.filter(n => ['FAILED', 'BLOCKED'].includes(n.status)).length
+  const waiting = data.missionControl.approvalWaits
+  const budgetPct = budget?.percentUsed.totalTokens
+  const workspaceCount = data.missionControl.workspaceSteps
+  const actions = [
+    {
+      icon: waiting > 0 ? UserCheck : ClipboardCheck,
+      title: waiting > 0 ? 'Resolve approvals' : 'Approval posture clear',
+      text: waiting > 0
+        ? `${waiting} approval wait event${waiting === 1 ? '' : 's'} detected. Review approval notes before downstream promotion.`
+        : 'No approval wait events are currently recorded for this run.',
+      tone: waiting > 0 ? 'amber' : 'green',
+    },
+    {
+      icon: failed > 0 ? AlertTriangle : Route,
+      title: failed > 0 ? 'Inspect blocked nodes' : 'Execution path healthy',
+      text: failed > 0
+        ? `${failed} failed or blocked node${failed === 1 ? '' : 's'} need evidence review.`
+        : 'No failed or blocked runtime nodes are visible in this snapshot.',
+      tone: failed > 0 ? 'red' : 'green',
+    },
+    {
+      icon: Coins,
+      title: 'Budget risk',
+      text: budget
+        ? `${budget.consumedTotalTokens.toLocaleString()} tokens used${budget.maxTotalTokens ? ` of ${budget.maxTotalTokens.toLocaleString()}` : ''}. ${budgetPct == null ? 'No total token ceiling.' : `${budgetPct.toFixed(1)}% of run token budget.`}`
+        : 'No workflow budget snapshot is available yet.',
+      tone: budgetPct != null && budgetPct >= 80 ? 'amber' : 'blue',
+    },
+    {
+      icon: Cpu,
+      title: 'Local code intelligence',
+      text: workspaceCount > 0
+        ? `${workspaceCount} workspace receipt${workspaceCount === 1 ? '' : 's'} with branch, commit, or AST evidence.`
+        : 'No MCP local workspace evidence has been reported yet.',
+      tone: workspaceCount > 0 ? 'green' : 'blue',
+    },
+    {
+      icon: Zap,
+      title: 'Next best action',
+      text: data.run.status === 'COMPLETED'
+        ? 'Review artifact lineage, cost, model receipts, and citations before handoff.'
+        : 'Keep Mission Control open and ask Event Horizon to explain stuck nodes or summarize the run.',
+      tone: 'blue',
+    },
+  ] as const
+
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {actions.map(action => {
+        const palette = action.tone === 'red'
+          ? { bg: '#fef2f2', border: '#fecaca', fg: '#b91c1c' }
+          : action.tone === 'amber'
+            ? { bg: '#fffbeb', border: '#fde68a', fg: '#b45309' }
+            : action.tone === 'green'
+              ? { bg: '#ecfdf5', border: '#bbf7d0', fg: '#047857' }
+              : { bg: '#f8fafc', border: '#dbe5ea', fg: '#0369a1' }
+        const Icon = action.icon
+        return (
+          <div key={action.title} style={{
+            display: 'flex', alignItems: 'flex-start', gap: 9,
+            border: `1px solid ${palette.border}`, borderRadius: 9,
+            background: palette.bg, padding: '9px 10px',
+          }}>
+            <Icon size={14} style={{ color: palette.fg, marginTop: 1, flexShrink: 0 }} />
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 800, color: palette.fg, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{action.title}</div>
+              <div style={{ fontSize: 11, color: '#475569', marginTop: 2, lineHeight: 1.45 }}>{action.text}</div>
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }

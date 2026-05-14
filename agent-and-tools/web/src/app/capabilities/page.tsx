@@ -30,6 +30,7 @@ type BootstrapForm = {
   githubUrl: string;
   githubBranch: string;
   documentLinks: string;
+  targetWorkflowPattern: string;
 };
 
 const DEFAULT_FORM: BootstrapForm = {
@@ -42,6 +43,7 @@ const DEFAULT_FORM: BootstrapForm = {
   githubUrl: "",
   githubBranch: "main",
   documentLinks: "",
+  targetWorkflowPattern: "governed_delivery",
 };
 
 const AGENT_PREVIEW = CAPABILITY_ROLE_OPTIONS.filter((role) =>
@@ -120,6 +122,7 @@ export default function CapabilitiesPage() {
         description: form.description.trim() || undefined,
         businessUnitId: form.businessUnitId.trim() || undefined,
         ownerTeamId: form.ownerTeamId.trim() || undefined,
+        targetWorkflowPattern: form.targetWorkflowPattern.trim() || undefined,
         repositories: form.githubUrl.trim()
           ? [{
               repoUrl: form.githubUrl.trim(),
@@ -166,9 +169,9 @@ export default function CapabilitiesPage() {
         <form onSubmit={handleBootstrap} className="card p-6 mb-6">
           <div className="flex items-start justify-between gap-4 mb-5">
             <div>
-              <h2 className="text-lg font-semibold text-slate-900">Capability Bootstrap Wizard</h2>
+              <h2 className="text-lg font-semibold text-slate-900">Capability-to-Agent-Team Factory</h2>
               <p className="text-sm text-slate-500 mt-1">
-                Create the capability, draft its default agents, stage repo/doc learning, then approve what enters runtime prompts.
+                Create the capability, draft its operating agent team, stage repo/doc learning, generate a starter workflow contract, then approve what enters runtime prompts.
               </p>
             </div>
             <button type="button" className="btn-secondary" onClick={() => setShowCreate(false)}>Cancel</button>
@@ -187,7 +190,7 @@ export default function CapabilitiesPage() {
                 }`}
               >
                 <div className="text-[10px] uppercase tracking-wide">Step {index + 1}</div>
-                <div className="text-sm font-medium">{label}</div>
+                <div className="text-sm font-medium">{label === "Review" ? "Review packet" : label}</div>
               </button>
             ))}
           </div>
@@ -240,6 +243,16 @@ export default function CapabilitiesPage() {
                   )}
                 </Field>
               </div>
+              <Field label="Target workflow pattern">
+                <select className={FIELD_CLASS} value={form.targetWorkflowPattern}
+                  onChange={e => setForm(f => ({ ...f, targetWorkflowPattern: e.target.value }))}>
+                  <option value="governed_delivery">Governed delivery</option>
+                  <option value="code_change">Code change with branch + QA</option>
+                  <option value="security_review">Security review and remediation</option>
+                  <option value="support_triage">Support triage and handoff</option>
+                  <option value="release_readiness">Release readiness</option>
+                </select>
+              </Field>
               <Field label="Description">
                 <textarea rows={3} className={FIELD_CLASS} value={form.description}
                   onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
@@ -320,6 +333,9 @@ export default function CapabilitiesPage() {
               <SummaryCard icon={<FileText size={18} />} label="Discovery signals"
                 value={`${localFiles.length} local files`}
                 note="README, AGENTS, CLAUDE, SKILL, docs, and editor rule files are prioritized." />
+              <SummaryCard icon={<GitBranch size={18} />} label="Starter workflow"
+                value={form.targetWorkflowPattern.replace(/_/g, " ")}
+                note="The operating model packet includes a suggested governed workflow, artifact gates, and activation review." />
             </div>
           )}
 
@@ -336,7 +352,7 @@ export default function CapabilitiesPage() {
               </button>
             ) : (
               <button className="btn-primary" disabled={creating || !form.name.trim()}>
-                {creating ? "Bootstrapping..." : "Create + Stage Review"}
+                {creating ? "Staging operating model..." : "Create + Stage Review"}
               </button>
             )}
           </div>

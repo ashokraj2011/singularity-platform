@@ -159,6 +159,88 @@ CREATE INDEX IF NOT EXISTS idx_authz_actor_time     ON authz_decisions(actor_id,
 CREATE INDEX IF NOT EXISTS idx_authz_resource       ON authz_decisions(resource_type, resource_id);
 CREATE INDEX IF NOT EXISTS idx_authz_decision_time  ON authz_decisions(decision, created_at DESC);
 
+-- ─── Singularity Engine: automated failure triage & improvement loop ──────
+
+-- Engine issues — clustered failure groups discovered by the sweep worker.
+CREATE TABLE IF NOT EXISTS engine_issues (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  title                 TEXT NOT NULL,
+  description           TEXT,
+  severity              TEXT NOT NULL DEFAULT 'medium',      -- low | medium | high | critical
+  status                TEXT NOT NULL DEFAULT 'open',        -- open | investigating | fix_proposed | resolved | dismissed
+  category              TEXT,                                -- tool_failure | llm_error | timeout | latency_spike | token_blowout | max_steps | eval_failure
+  capability_id         TEXT,
+  tenant_id             TEXT,
+  first_seen_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  trace_count           INTEGER NOT NULL DEFAULT 0,
+  affected_pct          NUMERIC(5,2),                        -- % of total traces in the window
+  sample_trace_ids      TEXT[] DEFAULT '{}',                  -- up to 20 representative trace_ids
+  cluster_fingerprint   TEXT NOT NULL,                        -- dedup key (hash of error pattern)
+  error_pattern         TEXT,                                 -- representative error message / pattern
+  root_cause            JSONB,                                -- LLM diagnosis output
+  proposed_fix          JSONB,                                -- { type, diff, description }
+  resolved_at           TIMESTAMPTZ,
+  resolved_by           TEXT,
+  resolution_notes      TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(cluster_fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_engine_issues_status      ON engine_issues(status, severity);
+CREATE INDEX IF NOT EXISTS idx_engine_issues_capability  ON engine_issues(capability_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_engine_issues_category    ON engine_issues(category, created_at DESC);
+
+-- Engine evaluators — custom online/offline evaluators created from resolved issues.
+CREATE TABLE IF NOT EXISTS engine_evaluators (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  issue_id          UUID REFERENCES engine_issues(id) ON DELETE SET NULL,
+  name              TEXT NOT NULL,
+  description       TEXT,
+  evaluator_type    TEXT NOT NULL DEFAULT 'llm_judge',        -- llm_judge | rule_based | regex | latency | token_count
+  criteria          JSONB NOT NULL DEFAULT '{}',              -- what to check
+  evaluator_config  JSONB NOT NULL DEFAULT '{}',              -- thresholds, prompts, patterns
+  capability_id     TEXT,
+  enabled           BOOLEAN NOT NULL DEFAULT true,
+  fire_count        INTEGER NOT NULL DEFAULT 0,
+  pass_count        INTEGER NOT NULL DEFAULT 0,
+  fail_count        INTEGER NOT NULL DEFAULT 0,
+  last_fired_at     TIMESTAMPTZ,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_engine_evaluators_enabled ON engine_evaluators(enabled, capability_id);
+
+-- Engine datasets — collections of ground-truth eval examples from production traces.
+CREATE TABLE IF NOT EXISTS engine_datasets (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name            TEXT NOT NULL,
+  description     TEXT,
+  issue_id        UUID REFERENCES engine_issues(id) ON DELETE SET NULL,
+  capability_id   TEXT,
+  example_count   INTEGER NOT NULL DEFAULT 0,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Engine dataset examples — individual input/expected-output pairs for offline eval.
+CREATE TABLE IF NOT EXISTS engine_dataset_examples (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  dataset_id      UUID NOT NULL REFERENCES engine_datasets(id) ON DELETE CASCADE,
+  trace_id        TEXT NOT NULL,
+  input           JSONB NOT NULL,
+  expected_output JSONB,
+  actual_output   JSONB,
+  criteria        JSONB,
+  verdict         TEXT,                                       -- pass | fail | pending
+  metadata        JSONB DEFAULT '{}',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_engine_examples_dataset ON engine_dataset_examples(dataset_id);
+CREATE INDEX IF NOT EXISTS idx_engine_examples_trace   ON engine_dataset_examples(trace_id);
+
 -- ─── Seed: a tiny default rate card so the cost calc has data on day 1 ────
 INSERT INTO rate_card (provider, model, input_per_1k_usd, output_per_1k_usd, source) VALUES
   ('openai',    'gpt-4o-mini',       0.000150, 0.000600, 'seed'),

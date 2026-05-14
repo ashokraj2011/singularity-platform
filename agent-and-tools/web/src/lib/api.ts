@@ -246,6 +246,12 @@ export const runtimeApi = {
     reqEnv<Row>(`${RUNTIME_BASE}/agents/templates/${baseId}/derive`, { method: "POST", body: JSON.stringify(body) }),
   patchTemplate: (id: string, body: Row) =>
     reqEnv<Row>(`${RUNTIME_BASE}/agents/templates/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  listTemplateVersions: (id: string) =>
+    reqEnv<Row[]>(`${RUNTIME_BASE}/agents/templates/${id}/versions`),
+  restoreTemplateVersion: (id: string, version: number, body: { changeSummary?: string } = {}) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/agents/templates/${id}/versions/${version}/restore`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
 
   // Skills
   listSkills: () => reqEnv<Row[]>(`${RUNTIME_BASE}/agents/skills`),

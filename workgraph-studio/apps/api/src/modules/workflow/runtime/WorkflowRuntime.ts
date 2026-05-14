@@ -5,6 +5,7 @@ import { logEvent, createReceipt, publishOutbox } from '../../../lib/audit'
 import { ValidationError } from '../../../lib/errors'
 import { resolveNextNodes, isComplete } from './GraphTraverser'
 import { activateHumanTask } from './executors/HumanTaskExecutor'
+import { activateWorkbenchTask } from './executors/WorkbenchTaskExecutor'
 import { activateAgentTask } from './executors/AgentTaskExecutor'
 import { activateApproval } from './executors/ApprovalExecutor'
 import { activateDecisionGate } from './executors/DecisionGateExecutor'
@@ -269,7 +270,7 @@ async function activateDownstream(
         await activateHumanTask(nextNode, instance)
         break
       case 'WORKBENCH_TASK':
-        await activateHumanTask(nextNode, instance)
+        await activateWorkbenchTask(nextNode, instance)
         break
       case 'AGENT_TASK':
         await activateAgentTask(nextNode, instance)
@@ -540,7 +541,7 @@ export async function failNode(
           await activateHumanTask(target, instance)
           break
         case 'WORKBENCH_TASK':
-          await activateHumanTask(target, instance)
+          await activateWorkbenchTask(target, instance)
           break
         case 'AGENT_TASK':
           await activateAgentTask(target, instance)

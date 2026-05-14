@@ -238,8 +238,16 @@ model AgentTemplate {
   createdBy           String?
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @updatedAt
+  // M23 — declared in agent-runtime's schema; mirrored here so composer's
+  // `db push` doesn't drop these columns when both services share a DB.
+  capabilityId        String?
+  baseTemplateId      String?
+  lockedReason        String?
 
   bindings AgentCapabilityBinding[]
+
+  @@index([capabilityId])
+  @@index([baseTemplateId])
 }
 
 model Capability {

@@ -1,6 +1,6 @@
 import { config } from "../config";
 import { mockLlmRespond } from "./mock";
-import { openaiRespond } from "./providers/openai";
+import { openaiRespond, openrouterRespond } from "./providers/openai";
 import { anthropicRespond } from "./providers/anthropic";
 import { copilotRespond } from "./providers/copilot";
 import { LlmRequest, LlmResponse, LlmStreamHooks } from "./types";
@@ -21,10 +21,11 @@ export async function llmRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promi
   switch (provider) {
     case "mock":      return mockLlmRespond(req, hooks);
     case "openai":    return openaiRespond(req, hooks);
+    case "openrouter": return openrouterRespond(req, hooks);
     case "anthropic": return anthropicRespond(req, hooks);
     case "copilot":   return copilotRespond(req, hooks);
     default:
-      throw new Error(`unknown LLM provider: ${provider}. Supported: mock, openai, anthropic, copilot.`);
+      throw new Error(`unknown LLM provider: ${provider}. Supported: mock, openai, openrouter, anthropic, copilot.`);
   }
 }
 
@@ -34,6 +35,7 @@ export function listConfiguredProviders(): Array<{ name: string; ready: boolean;
   return [
     { name: "mock",      ready: true,                              default_model: config.LLM_MODEL },
     { name: "openai",    ready: Boolean(config.OPENAI_API_KEY),    default_model: config.OPENAI_DEFAULT_MODEL },
+    { name: "openrouter", ready: Boolean(config.OPENROUTER_API_KEY), default_model: "openai/gpt-4o-mini" },
     { name: "anthropic", ready: Boolean(config.ANTHROPIC_API_KEY), default_model: config.ANTHROPIC_DEFAULT_MODEL },
     { name: "copilot",   ready: Boolean(config.COPILOT_TOKEN),     default_model: config.COPILOT_DEFAULT_MODEL },
   ];

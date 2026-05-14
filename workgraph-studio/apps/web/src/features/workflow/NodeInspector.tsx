@@ -81,6 +81,26 @@ export type SinkConfig = {
   namePath?: string  // context path for artifact name
 }
 
+type LlmModelChoice = {
+  id: string
+  label?: string
+  provider?: string
+  model?: string
+  ready?: boolean
+  default?: boolean
+  supportsTools?: boolean
+  costTier?: string
+  warnings?: string[]
+}
+
+function unwrapModelCatalog(payload: any): { defaultModelAlias?: string; models: LlmModelChoice[] } {
+  const data = payload?.data ?? payload
+  return {
+    defaultModelAlias: typeof data?.defaultModelAlias === 'string' ? data.defaultModelAlias : undefined,
+    models: Array.isArray(data?.models) ? data.models : [],
+  }
+}
+
 type WorkbenchQuestionOption = {
   label: string
   impact?: string
@@ -306,7 +326,7 @@ const NODE_META: Record<string, {
       // M10 — agentTemplateId is the agent-and-tools template uuid. The
       // executor snapshots it into a local Agent row at run start.
       { key: 'agentTemplateId', label: 'Agent template',    placeholder: 'agent-template-uuid' },
-      { key: 'model',           label: 'Model override',    placeholder: 'claude-opus-4-7' },
+      { key: 'modelAlias',      label: 'Model',             placeholder: 'Use workflow default' },
       { key: 'task',            label: 'Task',              placeholder: 'Audit {{instance.vars.module}} for OWASP issues', multiline: true },
       { key: 'maxTokens',       label: 'Max tokens',        placeholder: '4096' },
     ],
@@ -314,7 +334,9 @@ const NODE_META: Record<string, {
   WORKBENCH_TASK: {
     label: 'Workbench Task', color: '#ffb786', Icon: Braces,
     description: 'Opens a modal-ready workbench loop. The workflow waits here until the final implementation pack is approved.',
-    standardFields: [],
+    standardFields: [
+      { key: 'modelAlias', label: 'Model', placeholder: 'Use workflow default' },
+    ],
   },
   APPROVAL: {
     label: 'Approval', color: '#a3e635', Icon: CheckCircle,
@@ -795,6 +817,56 @@ function NeoInput({ value, onChange, placeholder, multiline = false }: {
       onFocus={e => (e.target.style.borderColor = 'rgba(34,197,94,0.4)')}
       onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.10)')}
     />
+  )
+}
+
+function ModelAliasPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { data } = useQuery({
+    queryKey: ['llm-model-catalog'],
+    queryFn: () => api.get('/llm/models').then(r => unwrapModelCatalog(r.data)),
+    staleTime: 30_000,
+  })
+  return (
+    <div style={{ display: 'grid', gap: 6 }}>
+      <select
+        value={value || '__workflow_default__'}
+        onChange={e => onChange(e.target.value === '__workflow_default__' ? '' : e.target.value)}
+        style={{
+          width: '100%', boxSizing: 'border-box',
+          background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)',
+          borderRadius: 8, padding: '6px 10px', fontSize: 11, color: '#e2e8f0',
+          outline: 'none', cursor: 'pointer',
+        }}
+      >
+        <option value="__workflow_default__" style={{ background: '#0f172a' }}>Use workflow default</option>
+        {(data?.models ?? []).map(model => (
+          <option key={model.id} value={model.id} disabled={model.ready === false} style={{ background: '#0f172a' }}>
+            {(model.label ?? model.id)}{model.ready === false ? ' - Missing key' : ''}{model.costTier ? ` - ${model.costTier}` : ''}
+          </option>
+        ))}
+      </select>
+      {value && data?.models?.find(m => m.id === value) && (
+        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+          {(() => {
+            const selected = data.models.find(m => m.id === value)!
+            const badges = [
+              selected.ready === false ? 'Missing key' : 'Ready',
+              selected.supportsTools ? 'Tool capable' : undefined,
+              selected.costTier ? `${selected.costTier} cost` : undefined,
+              selected.provider && selected.model ? `${selected.provider}/${selected.model}` : undefined,
+            ].filter(Boolean)
+            return badges.map(badge => (
+              <span key={badge} style={{
+                fontSize: 8, color: '#94a3b8', border: '1px solid rgba(148,163,184,0.22)',
+                borderRadius: 999, padding: '2px 6px',
+              }}>
+                {badge}
+              </span>
+            ))
+          })()}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -3524,6 +3596,7 @@ export function NodeInspector({
                         const isTemplatePicker   = node.data.nodeType === 'CALL_WORKFLOW' && f.key === 'templateId'
                         const isCapabilityPicker = f.key === 'capabilityId'
                         const isPriority         = f.key === 'priority'
+                        const isModelAlias       = f.key === 'modelAlias'
                         const isVariableAwareNumber = f.key === 'maxConcurrency' || f.key === 'expectedBranches'
                         const cfgCapabilityId    = (config.standard.capabilityId as string | undefined) ?? null
                         return (
@@ -3560,6 +3633,11 @@ export function NodeInspector({
                             ) : isToolPicker ? (
                               <ToolPicker
                                 capabilityId={cfgCapabilityId}
+                                value={config.standard[f.key] ?? ''}
+                                onChange={v => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: v } }))}
+                              />
+                            ) : isModelAlias ? (
+                              <ModelAliasPicker
                                 value={config.standard[f.key] ?? ''}
                                 onChange={v => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: v } }))}
                               />

@@ -54,8 +54,8 @@ function isHostAllowed(url: string): boolean {
 export const readFileTool: ToolHandler = {
   descriptor: {
     name: "read_file",
-    description: "Read a sandboxed file and return its text contents.",
-    natural_language: "Use this when the user asks to read a file or you need to inspect file contents.",
+    description: "Read a sandboxed file and return its text contents. For code work, prefer find_symbol/get_symbol/get_ast_slice first and use read_file only when a full file is explicitly needed.",
+    natural_language: "Use this as the fallback for full-file inspection. For code tasks, first use the AST tools to retrieve symbol summaries, signatures, dependencies, and exact slices.",
     input_schema: {
       type: "object",
       properties: {

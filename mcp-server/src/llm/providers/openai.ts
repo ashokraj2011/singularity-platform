@@ -120,7 +120,17 @@ export async function callOpenAiCompatible(opts: {
   const tools = toOpenAiTools(opts.request);
   if (tools) {
     body.tools       = tools;
-    body.tool_choice = "auto";
+    // Demo stability: gpt-4o tends to fan-out 8+ parallel reads instead of
+    // making progress. Disable parallel calls so the loop is forced to step
+    // sequentially. Env-flag-gated so production callers can opt back in.
+    if (String(process.env.OPENAI_PARALLEL_TOOLS ?? "false").toLowerCase() === "false") {
+      body.parallel_tool_calls = false;
+    }
+    // OPENAI_TOOL_CHOICE=required forces the LLM to emit a tool call every
+    // turn — useful when the model is "answering" instead of acting. Default
+    // remains "auto" for general agents that need to converse.
+    const tc = (process.env.OPENAI_TOOL_CHOICE ?? "auto").toLowerCase();
+    body.tool_choice = (tc === "required" || tc === "none") ? tc : "auto";
   }
 
   const url = `${opts.baseUrl.replace(/\/$/, "")}${opts.path ?? "/chat/completions"}`;
@@ -285,6 +295,17 @@ export async function openaiRespond(req: LlmRequest, hooks?: LlmStreamHooks): Pr
     baseUrl: config.OPENAI_BASE_URL,
     apiKey:  config.OPENAI_API_KEY,
     model:   req.model || config.OPENAI_DEFAULT_MODEL,
+    request: req,
+    hooks,
+  });
+}
+
+export async function openrouterRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promise<LlmResponse> {
+  if (!config.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not configured");
+  return callOpenAiCompatible({
+    baseUrl: config.OPENROUTER_BASE_URL,
+    apiKey:  config.OPENROUTER_API_KEY,
+    model:   req.model || "openai/gpt-4o-mini",
     request: req,
     hooks,
   });

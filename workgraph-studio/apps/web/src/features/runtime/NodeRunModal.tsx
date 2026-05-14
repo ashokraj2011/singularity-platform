@@ -270,6 +270,7 @@ function BlueprintWorkbenchBody({
   const [sessionId, setSessionId] = useState('')
   const [finalizedPack, setFinalizedPack] = useState<Record<string, unknown> | null>(null)
   const completedRef = useRef(false)
+  const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const runState = runtime.getState()
   const nodeConfig = (node.config ?? {}) as Record<string, unknown>
   const workbenchConfig = isPlainRecord(config)
@@ -280,11 +281,23 @@ function BlueprintWorkbenchBody({
   const finalPackKey = typeof outputs.finalPackKey === 'string' && outputs.finalPackKey.trim()
     ? outputs.finalPackKey.trim()
     : 'finalImplementationPack'
+  const postWorkbenchAuth = () => {
+    const token = readWorkgraphToken()
+    if (!token || !iframeRef.current?.contentWindow) return
+    iframeRef.current.contentWindow.postMessage({
+      type: 'blueprintWorkbench.auth',
+      token,
+    }, 'http://localhost:5176')
+  }
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       if (event.origin !== 'http://localhost:5176') return
       const data = event.data
+      if (data && typeof data === 'object' && data.type === 'blueprintWorkbench.auth.request') {
+        postWorkbenchAuth()
+        return
+      }
       if (!data || typeof data !== 'object' || data.type !== 'blueprintWorkbench.finalized') return
       if (data.workflowInstanceId && data.workflowInstanceId !== runState.runId) return
       if (data.workflowNodeId && data.workflowNodeId !== node.id) return
@@ -311,7 +324,11 @@ function BlueprintWorkbenchBody({
       }
     }
     window.addEventListener('message', handler)
-    return () => window.removeEventListener('message', handler)
+    const timer = window.setTimeout(postWorkbenchAuth, 250)
+    return () => {
+      window.removeEventListener('message', handler)
+      window.clearTimeout(timer)
+    }
   }, [actorEmail, finalPackKey, node.id, onComplete, runState.runId, workbenchConfig.profile, workbenchUrl])
 
   return (
@@ -332,8 +349,10 @@ function BlueprintWorkbenchBody({
       </div>
 
       <iframe
+        ref={iframeRef}
         title="Blueprint Workbench"
         src={workbenchUrl}
+        onLoad={postWorkbenchAuth}
         style={{
           width: '100%',
           height: 680,
@@ -386,6 +405,17 @@ function BlueprintWorkbenchBody({
       )}
     </div>
   )
+}
+
+function readWorkgraphToken(): string {
+  try {
+    const raw = window.localStorage.getItem('workgraph-auth')
+    if (!raw) return ''
+    const parsed = JSON.parse(raw) as { state?: { token?: string | null } }
+    return parsed.state?.token ?? ''
+  } catch {
+    return ''
+  }
 }
 
 function buildWorkbenchUrl(workflowInstanceId: string, workflowNodeId: string, config?: Record<string, unknown>) {

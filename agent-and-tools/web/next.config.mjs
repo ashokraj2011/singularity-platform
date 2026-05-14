@@ -34,6 +34,10 @@ const nextConfig = {
         source: "/api/audit-gov/:path*",
         destination: `${process.env.AUDIT_GOV_URL ?? "http://host.docker.internal:8500"}/api/v1/:path*`,
       },
+      {
+        source: "/api/cf/:path*",
+        destination: `${process.env.CONTEXT_FABRIC_URL ?? "http://host.docker.internal:8000"}/:path*`,
+      },
     ];
   },
 };

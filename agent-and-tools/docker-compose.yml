@@ -102,6 +102,8 @@ services:
     volumes:
       - ./apps/agent-runtime/src:/app/apps/agent-runtime/src
       - ./apps/agent-runtime/prisma:/app/apps/agent-runtime/prisma
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   prompt-composer:
     build:
@@ -158,10 +160,16 @@ services:
       NEXT_PUBLIC_TOOL_SERVICE_URL: http://localhost:3002
       NEXT_PUBLIC_AGENT_RUNTIME_URL: http://localhost:3003
       NEXT_PUBLIC_PROMPT_COMPOSER_URL: http://localhost:3004
+      NEXT_PUBLIC_EVENT_HORIZON_PROVIDER: ${NEXT_PUBLIC_EVENT_HORIZON_PROVIDER:-}
+      NEXT_PUBLIC_EVENT_HORIZON_MODEL: ${NEXT_PUBLIC_EVENT_HORIZON_MODEL:-}
+      NEXT_PUBLIC_EVENT_HORIZON_CAPABILITY_ID: ${NEXT_PUBLIC_EVENT_HORIZON_CAPABILITY_ID:-}
       AGENT_SERVICE_URL: http://agent-service:3001
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
+      CONTEXT_FABRIC_URL: ${CONTEXT_FABRIC_URL:-http://host.docker.internal:8000}
+      EVENT_HORIZON_PROVIDER: ${EVENT_HORIZON_PROVIDER:-}
+      EVENT_HORIZON_MODEL: ${EVENT_HORIZON_MODEL:-}
       IAM_BASE_URL: ${IAM_BASE_URL:-http://host.docker.internal:8100/api/v1}
       # M21 — central audit & governance ledger lives outside this compose stack
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}

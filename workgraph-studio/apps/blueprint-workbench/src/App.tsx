@@ -33,6 +33,7 @@ import {
   clearToken,
   getToken,
   pseudoLogin,
+  saveToken,
   type BlueprintArtifact,
   type BlueprintSession,
   type CreateSessionRequest,
@@ -81,6 +82,23 @@ export default function App() {
     enabled: hasToken,
   })
   const sessions = sessionsQuery.data?.items ?? []
+
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (event.origin !== 'http://localhost:5174') return
+      const data = event.data
+      if (!data || typeof data !== 'object' || data.type !== 'blueprintWorkbench.auth') return
+      const token = typeof data.token === 'string' ? data.token : ''
+      if (!token) return
+      saveToken(token)
+      setAuthTick(v => v + 1)
+    }
+    window.addEventListener('message', handler)
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: 'blueprintWorkbench.auth.request' }, 'http://localhost:5174')
+    }
+    return () => window.removeEventListener('message', handler)
+  }, [])
 
   useEffect(() => {
     const scopedSessions = workflowDefaults.workflowInstanceId && workflowDefaults.workflowNodeId

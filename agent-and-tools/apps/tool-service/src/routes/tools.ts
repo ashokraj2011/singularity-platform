@@ -13,10 +13,14 @@ toolRoutes.post("/", async (req: Request, res: Response) => {
     tool_name, version, display_name, description, risk_level,
     requires_approval, input_schema, output_schema, runtime,
     capabilities_required, allowed_capabilities, allowed_agents, tags, metadata,
+    execution_target, mcp_server_ref,
   } = req.body;
 
   if (!tool_name || !display_name || !description || !input_schema || !runtime) {
     throw new AppError("tool_name, display_name, description, input_schema, and runtime are required");
+  }
+  if (execution_target && !["LOCAL", "SERVER"].includes(String(execution_target))) {
+    throw new AppError("execution_target must be LOCAL or SERVER", 400);
   }
 
   const v = version ?? "1.0.0";
@@ -27,8 +31,8 @@ toolRoutes.post("/", async (req: Request, res: Response) => {
     `INSERT INTO tool.tools
        (tool_name, version, display_name, description, risk_level, requires_approval,
         input_schema, output_schema, runtime, capabilities_required,
-        allowed_capabilities, allowed_agents, tags, metadata, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        allowed_capabilities, allowed_agents, tags, metadata, execution_target, mcp_server_ref, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
      RETURNING *`,
     [
       tool_name, v, display_name, description,
@@ -40,6 +44,8 @@ toolRoutes.post("/", async (req: Request, res: Response) => {
       JSON.stringify(allowed_agents ?? []),
       JSON.stringify(tags ?? []),
       JSON.stringify(metadata ?? {}),
+      execution_target ?? "LOCAL",
+      mcp_server_ref ?? null,
       req.user?.user_id ?? null,
     ]
   );

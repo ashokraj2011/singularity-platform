@@ -7,6 +7,7 @@ import { ValidationError } from '../../../lib/errors'
 export type BudgetEnforcementMode = 'PAUSE_FOR_APPROVAL' | 'FAIL_HARD' | 'WARN_ONLY'
 
 export type WorkflowBudgetPolicy = {
+  defaultModelAlias?: string | null
   maxInputTokens?: number | null
   maxOutputTokens?: number | null
   maxTotalTokens?: number | null
@@ -76,6 +77,7 @@ export function normalizeBudgetPolicy(input: unknown): WorkflowBudgetPolicy {
   const raw = isRecord(input) ? input : {}
   const defaults = DEFAULT_WORKFLOW_BUDGET_POLICY
   return {
+    defaultModelAlias: typeof raw.defaultModelAlias === 'string' && raw.defaultModelAlias.trim() ? raw.defaultModelAlias.trim() : null,
     maxInputTokens: positiveIntOrNull(raw.maxInputTokens, defaults.maxInputTokens),
     maxOutputTokens: positiveIntOrNull(raw.maxOutputTokens, defaults.maxOutputTokens),
     maxTotalTokens: positiveIntOrNull(raw.maxTotalTokens, defaults.maxTotalTokens),

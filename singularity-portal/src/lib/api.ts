@@ -40,3 +40,5 @@ export const workgraphApi = makeClient(env.workgraphBase)
 export const composerApi = makeClient(env.composerBase)
 // context-fabric has no auth today; same axios for consistency.
 export const contextFabricApi = makeClient(env.contextFabricBase)
+export const mcpApi = makeClient(env.mcpBase)
+export const auditGovApi = makeClient(env.auditGovBase)

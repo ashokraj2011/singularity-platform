@@ -24,3 +24,22 @@ CREATE INDEX IF NOT EXISTS idx_knowledgeartifact_embedding
 
 CREATE INDEX IF NOT EXISTS idx_distilledmemory_embedding
   ON "DistilledMemory" USING hnsw (embedding vector_cosine_ops);
+
+-- Agent template version history. Prisma db push owns this in fresh
+-- databases, but this idempotent block keeps older local/docker databases in
+-- step without forcing unrelated unique-index warnings.
+CREATE TABLE IF NOT EXISTS "AgentTemplateVersion" (
+  "id" TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  "agentTemplateId" TEXT NOT NULL REFERENCES "AgentTemplate"("id"),
+  "version" INTEGER NOT NULL,
+  "changeSummary" TEXT,
+  "snapshot" JSONB NOT NULL,
+  "createdBy" TEXT,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS "AgentTemplateVersion_agentTemplateId_version_key"
+  ON "AgentTemplateVersion"("agentTemplateId", "version");
+
+CREATE INDEX IF NOT EXISTS "AgentTemplateVersion_agentTemplateId_createdAt_idx"
+  ON "AgentTemplateVersion"("agentTemplateId", "createdAt");

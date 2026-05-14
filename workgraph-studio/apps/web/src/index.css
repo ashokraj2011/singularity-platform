@@ -203,14 +203,18 @@
     transition: background 0.15s, color 0.15s;
     position: relative;
   }
+  .shell-sidebar .nav-item {
+    color: rgba(245,242,234,0.84);
+    font-weight: 600;
+  }
   .nav-item:hover {
-    background: rgba(245,242,234,0.06);
+    background: rgba(245,242,234,0.10);
     color: var(--brand-warm-white);
   }
   .nav-item.active {
-    background: rgba(245,242,234,0.08);
+    background: rgba(245,242,234,0.13);
     color: var(--brand-warm-white);
-    font-weight: 600;
+    font-weight: 700;
   }
 
   /* Badge / status */
@@ -269,7 +273,7 @@
   }
 
   .shell-sidebar .label-xs {
-    color: rgba(245,242,234,0.35);
+    color: rgba(245,242,234,0.68);
   }
 
   /* Table row hover */

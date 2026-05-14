@@ -141,6 +141,28 @@ interface NodeInsight {
     confidence: number | null
     excerpt: string
   }>
+  receipts: Array<{
+    agentRunId: string
+    status: string
+    cfCallId?: string
+    promptAssemblyId?: string
+    mcpInvocationId?: string
+    modelAlias?: string
+    modelSelectionReason?: string
+    provider?: string
+    model?: string
+    inputTokens?: number
+    outputTokens?: number
+    totalTokens?: number
+    estimatedCost?: number
+    tokensSaved?: number
+    promptEstimatedInputTokens?: number
+    budgetWarnings: string[]
+    retrievalStats?: Record<string, unknown>
+    finishReason?: string
+    artifactIds: string[]
+    toolInvocationIds: string[]
+  }>
   // M26 — present when the AGENT_TASK ran on a connected user laptop. The
   // SPA renders "🖥 served by your laptop ({device_name})" on the Gantt step.
   // Populated from cf.invoke.via_laptop events emitted by context-fabric.
@@ -193,6 +215,20 @@ interface InsightsResponse {
     subject_type: string | null; subject_id: string | null;
     created_at: string; payload: Record<string, unknown> | null
   }>
+  missionControl: {
+    liveEventCount: number
+    llmStreamEvents: number
+    toolEvents: number
+    approvalWaits: number
+    artifactEvents: number
+    codeChangeEvents: number
+    astEvents: number
+    branchEvents: number
+    commitEvents: number
+    receiptsCount: number
+    workspaceSteps: number
+    citationCount: number
+  }
 }
 
 function durationOf(node: {
@@ -283,7 +319,9 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
       prisma.agentRun.findMany({
         where: { instanceId: id },
         select: {
+          id: true,
           nodeId: true,
+          status: true,
           outputs: {
             where: { outputType: 'LLM_RESPONSE' },
             orderBy: { createdAt: 'desc' },
@@ -335,6 +373,7 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
     }
 
     const workspaceByNode = new Map<string, NodeInsight['workspace']>()
+    const receiptsByNode = new Map<string, NodeInsight['receipts']>()
     const assemblyIdsByNode = new Map<string, string>()
     for (const r of agentRuns) {
       if (!r.nodeId) continue
@@ -343,6 +382,46 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
       const promptAssemblyId = (payload.promptAssemblyId
         ?? (payload.correlation as Record<string, unknown> | undefined)?.promptAssemblyId) as string | undefined
       if (promptAssemblyId) assemblyIdsByNode.set(r.nodeId, promptAssemblyId)
+      const modelUsage = payload.modelUsage as Record<string, unknown> | undefined
+      const tokensUsed = payload.tokensUsed as Record<string, unknown> | undefined
+      const metrics = payload.metrics as Record<string, unknown> | undefined
+      const prompt = payload.prompt as Record<string, unknown> | undefined
+      const promptEstimatedInputTokens =
+        typeof payload.promptEstimatedInputTokens === 'number' ? payload.promptEstimatedInputTokens
+        : typeof prompt?.estimatedInputTokens === 'number' ? prompt.estimatedInputTokens
+        : undefined
+      const budgetWarnings = Array.isArray(payload.budgetWarnings) ? payload.budgetWarnings.map(String)
+        : Array.isArray(prompt?.budgetWarnings) ? prompt.budgetWarnings.map(String)
+        : []
+      const retrievalStats = (payload.retrievalStats && typeof payload.retrievalStats === 'object'
+        ? payload.retrievalStats
+        : prompt?.retrievalStats && typeof prompt.retrievalStats === 'object'
+          ? prompt.retrievalStats
+          : undefined) as Record<string, unknown> | undefined
+      const receiptArr = receiptsByNode.get(r.nodeId) ?? []
+      receiptArr.push({
+        agentRunId: r.id,
+        status: String(r.status),
+        cfCallId: (payload.cfCallId ?? (payload.correlation as Record<string, unknown> | undefined)?.cfCallId) as string | undefined,
+        promptAssemblyId,
+        mcpInvocationId: (payload.mcpInvocationId ?? (payload.correlation as Record<string, unknown> | undefined)?.mcpInvocationId) as string | undefined,
+        modelAlias: (payload.modelAlias ?? modelUsage?.modelAlias) as string | undefined,
+        modelSelectionReason: payload.modelSelectionReason as string | undefined,
+        provider: modelUsage?.provider as string | undefined,
+        model: modelUsage?.model as string | undefined,
+        inputTokens: typeof tokensUsed?.input === 'number' ? tokensUsed.input : undefined,
+        outputTokens: typeof tokensUsed?.output === 'number' ? tokensUsed.output : undefined,
+        totalTokens: typeof tokensUsed?.total === 'number' ? tokensUsed.total : undefined,
+        estimatedCost: typeof modelUsage?.estimatedCost === 'number' ? modelUsage.estimatedCost : undefined,
+        tokensSaved: typeof metrics?.tokensSaved === 'number' ? metrics.tokensSaved : undefined,
+        promptEstimatedInputTokens,
+        budgetWarnings,
+        retrievalStats,
+        finishReason: payload.finishReason as string | undefined,
+        artifactIds: Array.isArray(payload.artifactIds) ? payload.artifactIds.map(String) : [],
+        toolInvocationIds: Array.isArray(payload.toolInvocationIds) ? payload.toolInvocationIds.map(String) : [],
+      })
+      receiptsByNode.set(r.nodeId, receiptArr)
       const branch = (payload.workspaceBranch ?? (payload.workspace as Record<string, unknown> | undefined)?.workspaceBranch) as string | undefined
       const commitSha = (payload.workspaceCommitSha ?? (payload.workspace as Record<string, unknown> | undefined)?.workspaceCommitSha) as string | undefined
       const changedPaths = (payload.changedPaths ?? (payload.workspace as Record<string, unknown> | undefined)?.changedPaths) as unknown
@@ -397,10 +476,15 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
       })),
       workspace: workspaceByNode.get(n.id) ?? [],
       citations: citationsByNode.get(n.id) ?? [],
+      receipts: receiptsByNode.get(n.id) ?? [],
       laptopDevice: laptopByNodeId.get(n.id),
       eventCount: eventsByNodeId.get(n.id) ?? 0,
       })
     })
+
+    const eventKinds = events.map(e => e.kind)
+    const countKind = (predicate: (kind: string) => boolean) =>
+      eventKinds.reduce((count, kind) => count + (predicate(kind) ? 1 : 0), 0)
 
     const response: InsightsResponse = {
       run: {
@@ -444,6 +528,20 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
         subject_type: e.subject_type, subject_id: e.subject_id,
         created_at: e.created_at, payload: e.payload,
       })),
+      missionControl: {
+        liveEventCount: events.length,
+        llmStreamEvents: countKind(kind => kind === 'llm.stream.delta'),
+        toolEvents: countKind(kind => kind.startsWith('tool.invocation')),
+        approvalWaits: countKind(kind => kind === 'approval.wait.created'),
+        artifactEvents: countKind(kind => kind.startsWith('artifact.')),
+        codeChangeEvents: countKind(kind => kind === 'code_change.detected'),
+        astEvents: countKind(kind => kind.startsWith('workspace.ast')),
+        branchEvents: countKind(kind => kind.startsWith('workspace.branch')),
+        commitEvents: countKind(kind => kind === 'git.commit.created'),
+        receiptsCount: Array.from(receiptsByNode.values()).reduce((sum, arr) => sum + arr.length, 0),
+        workspaceSteps: Array.from(workspaceByNode.values()).reduce((sum, arr) => sum + arr.length, 0),
+        citationCount: Array.from(citationsByNode.values()).reduce((sum, arr) => sum + arr.length, 0),
+      },
     }
 
     res.json(response)

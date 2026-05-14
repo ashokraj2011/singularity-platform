@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { ApiError, hasAgentToolsToken, identityApi, runtimeApi, saveAgentToolsToken } from "@/lib/api";
-import { AlertCircle, Bot, GitBranch, Layers, Lock, ShieldCheck, Sparkles, X } from "lucide-react";
+import { AlertCircle, Bot, GitBranch, History, Layers, Lock, RotateCcw, Save, ShieldCheck, Sparkles, X } from "lucide-react";
 
 /**
  * M23 — /agent-studio
@@ -27,8 +27,18 @@ type Agent = {
   basePromptProfileId?: string | null;
   editable?: boolean;
   status?: string;
+  version?: number;
   createdAt?: string;
   updatedAt?: string;
+};
+
+type AgentVersion = {
+  id: string;
+  version: number;
+  changeSummary?: string | null;
+  snapshot?: Record<string, unknown>;
+  createdBy?: string | null;
+  createdAt?: string;
 };
 
 type Capability = {
@@ -207,7 +217,13 @@ export default function AgentStudioPage() {
 
         {/* Right: detail */}
         <div>
-          <DetailPanel agent={selected} />
+          <DetailPanel
+            agent={selected}
+            onChanged={(agent) => {
+              setSelected(agent);
+              mutate();
+            }}
+          />
         </div>
       </div>
 
@@ -344,6 +360,7 @@ function AgentRow({
                 {agent.roleType}
               </span>
             )}
+            <Badge color="slate" label={`v${agent.version ?? 1}`} />
             {isCommon ? (
               <Badge color="amber" icon={<Lock size={10} />} label="Locked" title={agent.lockedReason ?? "common platform baseline"} />
             ) : agent.baseTemplateId ? (
@@ -392,10 +409,21 @@ function Badge({
   );
 }
 
-function DetailPanel({ agent }: { agent: Agent | null }) {
+function DetailPanel({ agent, onChanged }: { agent: Agent | null; onChanged: (agent: Agent) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [restoreBusy, setRestoreBusy] = useState<number | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
   const { data: profile, error: profileError, isLoading: profileLoading } = useSWR(
     agent?.basePromptProfileId ? `prompt-profile-${agent.basePromptProfileId}` : null,
     () => runtimeApi.getProfile(agent!.basePromptProfileId!) as Promise<PromptProfile>,
+  );
+  const {
+    data: versions = [],
+    error: versionsError,
+    mutate: mutateVersions,
+  } = useSWR(
+    agent?.id ? `agent-template-versions-${agent.id}` : null,
+    () => runtimeApi.listTemplateVersions(agent!.id) as Promise<AgentVersion[]>,
   );
 
   if (!agent) {
@@ -408,14 +436,42 @@ function DetailPanel({ agent }: { agent: Agent | null }) {
   const isCommon = !agent.capabilityId;
   const isLocked = isCommon || Boolean(agent.lockedReason);
   const editable = agent.editable ?? !isCommon;
+
+  async function restore(version: number) {
+    setRestoreBusy(version);
+    setRestoreError(null);
+    try {
+      const restored = await runtimeApi.restoreTemplateVersion(agent!.id, version, {
+        changeSummary: `Restored from version ${version}`,
+      }) as Agent;
+      onChanged(restored);
+      await mutateVersions();
+    } catch (e) {
+      const formatted = apiErrorSummary(e);
+      setRestoreError(`${formatted.title}: ${formatted.message}`);
+    } finally {
+      setRestoreBusy(null);
+    }
+  }
+
   return (
     <div className="card p-4 space-y-4 sticky top-4">
       <div>
-        <h3 className="text-base font-semibold text-slate-900">{agent.name}</h3>
-        <p className="text-xs text-slate-500 mt-1 break-all font-mono">{agent.id}</p>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-slate-900">{agent.name}</h3>
+            <p className="text-xs text-slate-500 mt-1 break-all font-mono">{agent.id}</p>
+          </div>
+          {editable && (
+            <button onClick={() => setEditing(true)} className="btn-secondary text-xs shrink-0">
+              <Save size={13} /> Edit
+            </button>
+          )}
+        </div>
       </div>
 
       <Field label="Role">{agent.roleType ?? "—"}</Field>
+      <Field label="Version">v{agent.version ?? 1}</Field>
       <Field label="Status">{agent.status ?? "—"}</Field>
       <Field label="Capability">
         {agent.capabilityId ? (
@@ -484,6 +540,48 @@ function DetailPanel({ agent }: { agent: Agent | null }) {
         <span className="text-slate-500">No recent execution evidence is attached to this template yet.</span>
       </Field>
 
+      <div>
+        <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 flex items-center gap-1">
+          <History size={11} /> Version history
+        </div>
+        {versionsError ? (
+          <p className="text-xs text-red-700">{apiErrorSummary(versionsError).message}</p>
+        ) : versions.length === 0 ? (
+          <p className="text-xs text-slate-400">No versions captured yet. Editing this agent will create the first immutable snapshot.</p>
+        ) : (
+          <div className="space-y-1">
+            {versions.slice(0, 6).map((v) => {
+              const current = v.version === (agent.version ?? 1);
+              return (
+                <div key={v.id} className="rounded border border-slate-100 bg-slate-50 px-2 py-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-semibold text-slate-700">
+                        v{v.version}{current ? " · current" : ""}
+                      </div>
+                      <div className="text-[10px] text-slate-500 truncate">
+                        {v.changeSummary ?? "Snapshot"} · {v.createdAt ? new Date(v.createdAt).toLocaleString() : "—"}
+                      </div>
+                    </div>
+                    {editable && !current && (
+                      <button
+                        onClick={() => void restore(v.version)}
+                        disabled={restoreBusy === v.version}
+                        className="btn-secondary text-[11px] px-2 py-1"
+                        title={`Restore version ${v.version}`}
+                      >
+                        <RotateCcw size={11} /> {restoreBusy === v.version ? "..." : "Restore"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {restoreError && <p className="mt-2 text-xs text-red-700">{restoreError}</p>}
+      </div>
+
       {agent.description && (
         <div>
           <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Description</div>
@@ -494,6 +592,18 @@ function DetailPanel({ agent }: { agent: Agent | null }) {
       <div className="text-[11px] text-slate-400 pt-2 border-t border-slate-100">
         created {agent.createdAt ? new Date(agent.createdAt).toLocaleString() : "—"} · updated {agent.updatedAt ? new Date(agent.updatedAt).toLocaleString() : "—"}
       </div>
+
+      {editing && (
+        <EditAgentDialog
+          agent={agent}
+          onClose={() => setEditing(false)}
+          onDone={(updated) => {
+            setEditing(false);
+            onChanged(updated);
+            mutateVersions();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -503,6 +613,113 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div>
       <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">{label}</div>
       <div className="text-sm text-slate-800">{children}</div>
+    </div>
+  );
+}
+
+function EditAgentDialog({
+  agent, onClose, onDone,
+}: { agent: Agent; onClose: () => void; onDone: (agent: Agent) => void }) {
+  const [form, setForm] = useState({
+    name: agent.name,
+    description: agent.description ?? "",
+    basePromptProfileId: agent.basePromptProfileId ?? "",
+    status: agent.status ?? "DRAFT",
+    changeSummary: "",
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit() {
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const updated = await runtimeApi.patchTemplate(agent.id, {
+        name: form.name,
+        description: form.description || undefined,
+        basePromptProfileId: form.basePromptProfileId || undefined,
+        status: form.status,
+        changeSummary: form.changeSummary || `Updated ${agent.name}`,
+      }) as Agent;
+      onDone(updated);
+    } catch (e) {
+      const formatted = apiErrorSummary(e);
+      setErr(`${formatted.title}: ${formatted.message}${formatted.detail ? ` (${formatted.detail})` : ""}`);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg shadow-xl max-w-xl w-full p-5">
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <h3 className="text-base font-semibold text-slate-900">Edit Agent Template</h3>
+            <p className="text-xs text-slate-500 mt-1">Saving creates version v{(agent.version ?? 1) + 1} and keeps the previous snapshot restorable.</p>
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded"><X size={14} /></button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Name</label>
+            <input
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md"
+              value={form.name}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Description</label>
+            <textarea
+              rows={3}
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md"
+              value={form.description}
+              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+            />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Prompt profile id</label>
+              <input
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md font-mono"
+                value={form.basePromptProfileId}
+                onChange={(e) => setForm((f) => ({ ...f, basePromptProfileId: e.target.value }))}
+                placeholder="uuid"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Status</label>
+              <select
+                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md bg-white"
+                value={form.status}
+                onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
+              >
+                {["DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"].map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Change summary</label>
+            <input
+              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-md"
+              value={form.changeSummary}
+              onChange={(e) => setForm((f) => ({ ...f, changeSummary: e.target.value }))}
+              placeholder="What changed in this version"
+            />
+          </div>
+        </div>
+
+        {err && <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">{err}</div>}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button onClick={onClose} className="btn-secondary text-xs">Cancel</button>
+          <button onClick={submit} disabled={submitting || !form.name.trim()} className="btn-primary text-xs">
+            {submitting ? "Saving..." : "Save new version"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

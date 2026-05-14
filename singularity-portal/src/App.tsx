@@ -3,8 +3,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AppLayout } from '@/components/AppLayout'
 import { LoginPage } from '@/pages/LoginPage'
 import { HomePage } from '@/pages/HomePage'
+import { OperationsPage } from '@/pages/OperationsPage'
+import { EnginePage } from '@/pages/EnginePage'
 import { useAuthStore } from '@/store/auth.store'
 import { ReactNode } from 'react'
+import { EventHorizonChat } from '@/components/EventHorizonChat'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -29,6 +32,8 @@ export default function App() {
                 <AppLayout>
                   <Routes>
                     <Route index element={<HomePage />} />
+                    <Route path="operations" element={<OperationsPage />} />
+                    <Route path="engine" element={<EnginePage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </AppLayout>
@@ -36,6 +41,7 @@ export default function App() {
             }
           />
         </Routes>
+        <EventHorizonChat />
       </BrowserRouter>
     </QueryClientProvider>
   )

@@ -17,8 +17,27 @@ from app.capabilities.schemas import (
 )
 from app.audit.service import record_event
 from datetime import datetime, timezone
+from uuid import UUID
 
 router = APIRouter(tags=["capabilities"])
+
+
+def _audit_actor_user_id(current_user: User) -> str | None:
+    raw = str(getattr(current_user, "id", "") or "")
+    try:
+        UUID(raw)
+        return raw
+    except ValueError:
+        return None
+
+
+def _audit_actor_metadata(current_user: User) -> dict:
+    if hasattr(current_user, "service_name"):
+        return {
+            "service_name": getattr(current_user, "service_name", None),
+            "service_principal_id": getattr(current_user, "id", None),
+        }
+    return {}
 
 
 def _cap_out(c: Capability) -> CapabilityOut:
@@ -164,7 +183,7 @@ async def upsert_capability_reference(
 
     await record_event(
         db,
-        actor_user_id=current_user.id,
+        actor_user_id=_audit_actor_user_id(current_user),
         event_type=f"capability_reference_{action}",
         capability_id=cap.capability_id,
         target_type="capability",
@@ -173,6 +192,7 @@ async def upsert_capability_reference(
             "name": cap.name,
             "capability_type": cap.capability_type,
             "source_service": (body.metadata or {}).get("sourceService"),
+            **_audit_actor_metadata(current_user),
         },
     )
     from app.eventbus import publish_event

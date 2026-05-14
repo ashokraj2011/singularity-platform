@@ -125,6 +125,38 @@ export const agentController = {
     return ok(res, shapeTemplate(t, req.user));
   },
 
+  async listTemplateVersions(req: Request, res: Response) {
+    const versions = await agentService.listTemplateVersions(req.params.id);
+    return ok(res, versions);
+  },
+
+  async restoreTemplateVersion(req: Request, res: Response) {
+    const version = Number.parseInt(req.params.version, 10);
+    const t = await agentService.restoreTemplateVersion(req.params.id, version, req.body, req.user);
+    void publishEvent(prisma, {
+      eventName: "agent.template.version.restored",
+      envelope: {
+        source_service: "agent-runtime",
+        subject: { kind: "agent_template", id: (t as { id: string }).id },
+        actor:   req.user?.user_id ? { kind: "user", id: req.user.user_id } : null,
+        status:  "emitted",
+        started_at: new Date().toISOString(),
+        payload: { restored_from_version: version, current_version: (t as { version?: number }).version },
+      },
+    }).catch((err) => console.warn("[eventbus] publishEvent failed:", (err as Error).message));
+    emitAuditEvent({
+      source_service: "agent-runtime",
+      kind:           "agent.template.version.restored",
+      subject_type:   "AgentTemplate",
+      subject_id:     (t as { id: string }).id,
+      capability_id:  (t as { capabilityId?: string }).capabilityId,
+      actor_id:       req.user?.user_id,
+      severity:       "info",
+      payload: { restored_from_version: version, current_version: (t as { version?: number }).version },
+    });
+    return ok(res, shapeTemplate(t, req.user));
+  },
+
   async createSkill(req: Request, res: Response) {
     const s = await agentService.createSkill(req.body, req.user);
     return ok(res, s, 201);

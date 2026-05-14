@@ -19,7 +19,8 @@ import { log } from "../shared/log";
 import { AppError, NotFoundError } from "../shared/errors";
 import { llmRespond } from "../llm/client";
 import { ChatMessage, ToolCall, ToolDescriptorForLlm } from "../llm/types";
-import { getLocalTool } from "../tools/registry";
+import { resolveModelConfig } from "../llm/model-catalog";
+import { getLocalTool, listLocalTools } from "../tools/registry";
 import {
   CorrelationIds, recordLlmCall, recordToolInvocation, recordArtifact,
   recordCodeChange, ToolInvocationRecord, CodeChangeRecord,
@@ -59,6 +60,7 @@ const InvokeSchema = z.object({
   message: z.string(),
   tools: z.array(ToolDescSchema).default([]),
   modelConfig: z.object({
+    modelAlias: z.string().optional(),
     provider: z.string().optional(),
     model: z.string().optional(),
     temperature: z.number().optional(),
@@ -101,10 +103,12 @@ interface LoopState {
   availableTools: ToolDescriptorForLlm[];           // what the LLM sees
   fullToolDescriptors: PendingToolDescriptor[];     // execution_target + approval flag
   modelConfig: {
+    modelAlias?: string;
     provider: string;
     model: string;
     temperature?: number;
     maxTokens?: number;
+    warnings?: string[];
   };
   correlation: CorrelationIds;
   stepIndex: number;
@@ -191,6 +195,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
       kind: "llm.request",
       correlation: { ...state.correlation },
       payload: {
+        modelAlias: state.modelConfig.modelAlias,
         provider: state.modelConfig.provider,
         model: state.modelConfig.model,
         prompt_messages_count: state.messages.length,
@@ -212,6 +217,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
           kind: "llm.stream.delta",
           correlation: { ...state.correlation },
           payload: {
+            modelAlias: state.modelConfig.modelAlias,
             provider: state.modelConfig.provider,
             model: state.modelConfig.model,
             stepIndex: state.stepIndex,
@@ -226,6 +232,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
 
     const llmRec = recordLlmCall({
       correlation: state.correlation,
+      model_alias: state.modelConfig.modelAlias,
       provider: state.modelConfig.provider,
       model: state.modelConfig.model,
       input_tokens: llmResp.input_tokens,
@@ -247,6 +254,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
       capability_id: state.correlation.capabilityId,
       severity:      "info",
       payload: {
+        model_alias:   state.modelConfig.modelAlias,
         provider:      state.modelConfig.provider,
         model:         state.modelConfig.model,
         input_tokens:  llmResp.input_tokens,
@@ -261,6 +269,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
       kind: "llm.response",
       correlation: { ...state.correlation, llmCallId: llmRec.id },
       payload: {
+        modelAlias: state.modelConfig.modelAlias,
         finish_reason: llmResp.finish_reason,
         input_tokens: llmResp.input_tokens,
         output_tokens: llmResp.output_tokens,
@@ -501,6 +510,7 @@ async function buildResponseBody(
   const correlationOut: Record<string, unknown> = {
     mcpInvocationId: state.correlation.mcpInvocationId,
     traceId: state.correlation.traceId,
+    modelAlias: state.modelConfig.modelAlias,
     llmCallIds: state.llmCallIds,
     toolInvocationIds: state.toolInvocationIds,
     artifactIds: state.artifactIds,
@@ -518,6 +528,15 @@ async function buildResponseBody(
       input: state.totalInputTokens,
       output: state.totalOutputTokens,
       total: state.totalInputTokens + state.totalOutputTokens,
+    },
+    modelUsage: {
+      modelAlias: state.modelConfig.modelAlias,
+      provider: state.modelConfig.provider,
+      model: state.modelConfig.model,
+      warnings: state.modelConfig.warnings ?? [],
+      inputTokens: state.totalInputTokens,
+      outputTokens: state.totalOutputTokens,
+      totalTokens: state.totalInputTokens + state.totalOutputTokens,
     },
     workspace: {
       workspaceBranch: state.workspace?.branch?.branch,
@@ -583,17 +602,45 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     : null;
   const astStats = branch ? await indexWorkspace("branch_start") : await indexWorkspace("invoke_start");
 
+  const mergedTools = new Map<string, typeof body.tools[number]>();
+  for (const tool of body.tools) mergedTools.set(tool.name, tool);
+  for (const tool of listLocalTools()) {
+    if (mergedTools.has(tool.name)) continue;
+    mergedTools.set(tool.name, {
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.input_schema,
+      execution_target: "LOCAL",
+      natural_language: tool.natural_language,
+      risk_level: tool.risk_level,
+      requires_approval: tool.requires_approval,
+    });
+  }
+  const toolList = Array.from(mergedTools.values());
+
   const messages: ChatMessage[] = [];
   if (body.systemPrompt) messages.push({ role: "system", content: body.systemPrompt });
+  if (toolList.some((tool) => ["find_symbol", "get_symbol", "get_ast_slice", "get_dependencies"].includes(tool.name))) {
+    messages.push({
+      role: "system",
+      content: [
+        "Local code intelligence policy:",
+        "- For code inspection or edits, use AST tools before full-file reads.",
+        "- Start with find_symbol or get_dependencies, then get_symbol for signatures and summaries.",
+        "- Use get_ast_slice for exact source ranges. Use read_file only when a full file is explicitly needed.",
+        "- Keep private workspace code local; report summaries, slices, changed paths, branch, commit SHA, and receipts.",
+      ].join("\n"),
+    });
+  }
   for (const h of body.history) messages.push({ ...h });
   messages.push({ role: "user", content: body.message });
 
-  const availableTools: ToolDescriptorForLlm[] = body.tools.map((t) => ({
+  const availableTools: ToolDescriptorForLlm[] = toolList.map((t) => ({
     name: t.name,
     description: t.description,
     input_schema: t.input_schema,
   }));
-  const fullToolDescriptors: PendingToolDescriptor[] = body.tools.map((t) => ({
+  const fullToolDescriptors: PendingToolDescriptor[] = toolList.map((t) => ({
     name: t.name,
     description: t.description,
     input_schema: t.input_schema,
@@ -603,16 +650,19 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     requires_approval: t.requires_approval,
   }));
 
+  const resolvedModel = resolveModelConfig({
+    modelAlias: body.modelConfig.modelAlias,
+    provider: body.modelConfig.provider,
+    model: body.modelConfig.model,
+    temperature: body.modelConfig.temperature,
+    maxTokens: body.modelConfig.maxTokens,
+  });
+
   const state: LoopState = {
     messages,
     availableTools,
     fullToolDescriptors,
-    modelConfig: {
-      provider: body.modelConfig.provider ?? config.LLM_PROVIDER,
-      model: body.modelConfig.model ?? config.LLM_MODEL,
-      temperature: body.modelConfig.temperature,
-      maxTokens: body.modelConfig.maxTokens,
-    },
+    modelConfig: resolvedModel,
     correlation,
     stepIndex: 0,
     maxSteps: body.limits.maxSteps ?? config.MAX_AGENT_STEPS,

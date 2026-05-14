@@ -37,6 +37,7 @@ export const attachRepositorySchema = z.object({
 });
 
 export const bootstrapCapabilitySchema = createCapabilitySchema.extend({
+  targetWorkflowPattern: z.string().max(80).optional(),
   repositories: z.array(attachRepositorySchema.partial({ repoName: true }).extend({
     repoUrl: z.string().url(),
   })).max(5).default([]),

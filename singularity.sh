@@ -13,11 +13,14 @@
 #   ./singularity.sh urls                  print all service URLs
 #   ./singularity.sh ls                    list known service names
 #   ./singularity.sh login                 quick smoke: IAM /auth/local/login
+#   ./singularity.sh config <command>      configure DBs, keys, endpoints, LLMs, MCP
+#     common: show | doctor | write | interactive | mcp-catalog | mcp-register
 #
 # Service names match the docker-compose `services:` keys. Quick reference:
 #   portal                 the wrapper SPA on :5180
 #   user-and-capability    IAM admin SPA on :5175
 #   workgraph-web          workflow designer + runtime SPA on :5174
+#   blueprint-workbench    embedded artifact approval workbench on :5176
 #   agent-web              agents/tools/prompts admin Next.js on :3000
 #   workgraph-api          DAG runtime on :8080
 #   prompt-composer        prompt assembly on :3004
@@ -155,6 +158,7 @@ ${C_BLUE}Singularity Platform URLs${C_END}
     portal              http://localhost:5180
     user-and-capability http://localhost:5175   (IAM admin SPA)
     workgraph-web       http://localhost:5174   (workflow designer + runtime)
+    blueprint-workbench http://localhost:5176   (artifact workbench + human gates)
     agent-web           http://localhost:3000   (Next.js admin for agents/tools/prompts)
 
   ${C_GREEN}APIs${C_END}
@@ -197,6 +201,10 @@ EOF
       err "login failed (http $code)"
       cat /tmp/sp-login.json
     fi
+    ;;
+
+  config)
+    python3 "$SCRIPT_DIR/bin/configure-platform.py" "$@"
     ;;
 
   help|--help|-h|"")

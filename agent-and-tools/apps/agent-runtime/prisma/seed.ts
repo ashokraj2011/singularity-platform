@@ -15,6 +15,9 @@ const IDS = {
       DEVELOPER:  "00000000-0000-0000-0000-0000000000a2",
       QA:         "00000000-0000-0000-0000-0000000000a3",
       GOVERNANCE: "00000000-0000-0000-0000-0000000000a4",
+      SECURITY:   "00000000-0000-0000-0000-0000000000a5",
+      DEVOPS:     "00000000-0000-0000-0000-0000000000a6",
+      PRODUCT_OWNER: "00000000-0000-0000-0000-0000000000a7",
     },
   },
   profiles: {
@@ -22,12 +25,18 @@ const IDS = {
     DEVELOPER:  "00000000-0000-0000-0000-0000000000b2",
     QA:         "00000000-0000-0000-0000-0000000000b3",
     GOVERNANCE: "00000000-0000-0000-0000-0000000000b4",
+    SECURITY:   "00000000-0000-0000-0000-0000000000b5",
+    DEVOPS:     "00000000-0000-0000-0000-0000000000b6",
+    PRODUCT_OWNER: "00000000-0000-0000-0000-0000000000b7",
   },
   templates: {
     ARCHITECT:  "00000000-0000-0000-0000-0000000000d1",
     DEVELOPER:  "00000000-0000-0000-0000-0000000000d2",
     QA:         "00000000-0000-0000-0000-0000000000d3",
     GOVERNANCE: "00000000-0000-0000-0000-0000000000d4",
+    SECURITY:   "00000000-0000-0000-0000-0000000000d5",
+    DEVOPS:     "00000000-0000-0000-0000-0000000000d6",
+    PRODUCT_OWNER: "00000000-0000-0000-0000-0000000000d7",
   },
   tools: {
     repoSearch:        "00000000-0000-0000-0000-0000000000e1",
@@ -69,11 +78,14 @@ async function main() {
     },
   });
 
-  const roleContracts: Array<{ role: "ARCHITECT" | "DEVELOPER" | "QA" | "GOVERNANCE"; name: string; content: string }> = [
+  const roleContracts: Array<{ role: keyof typeof IDS.templates; name: string; content: string }> = [
     { role: "ARCHITECT", name: "Architect Role Contract", content: "You are an Architect Agent. Analyze design, dependencies, risks, and tradeoffs. Never approve or deploy your own recommendations." },
     { role: "DEVELOPER", name: "Developer Role Contract", content: "You are a Developer Agent. Implement changes safely, write code with tests, prefer small reversible steps." },
     { role: "QA",        name: "QA Role Contract",         content: "You are a QA Agent. Identify regressions, edge cases, performance risks, and missing test coverage." },
     { role: "GOVERNANCE", name: "Governance Role Contract", content: "You are a Governance Agent. Verify approvals, audits, security, and compliance. You can block release." },
+    { role: "SECURITY", name: "Security Role Contract", content: "You are a Security Agent. Threat-model the change, check authorization, data exposure, dependency risk, and evidence before approval." },
+    { role: "DEVOPS", name: "DevOps Role Contract", content: "You are a DevOps Agent. Validate deployability, observability, rollback, environment readiness, and operational risk." },
+    { role: "PRODUCT_OWNER", name: "Product Owner Role Contract", content: "You are a Product Owner Agent. Clarify outcomes, acceptance criteria, user impact, release scope, and approval readiness." },
   ];
 
   for (const rc of roleContracts) {

@@ -5,7 +5,7 @@
 #   - agent-and-tools (Postgres :5432 + agent-service :3001 + tool-service :3002
 #                      + agent-runtime :3003 + prompt-composer :3004 + web :3000)
 #   - context-fabric (api :8000 + llm-gateway :8001 + memory :8002 + metrics-ledger :8003)
-#   - workgraph-studio (Postgres :5434 + MinIO :9000/:9001 + api :8080 + web :5174)
+#   - workgraph-studio (Postgres :5434 + MinIO :9000/:9001 + api :8080 + web :5174 + workbench :5176)
 #   - UserAndCapabillity (:5175)
 #   - singularity-portal (:5180)
 #
@@ -26,7 +26,8 @@
 #   3000 agent-and-tools/web (Next.js admin)
 #   3001 agent-service             3002 tool-service           3003 agent-runtime
 #   3004 prompt-composer
-#   5174 workgraph-web             5175 UserAndCapabillity     5180 singularity-portal
+#   5174 workgraph-web             5175 UserAndCapabillity     5176 Blueprint Workbench
+#   5180 singularity-portal
 #   5432 agent-and-tools postgres  5433 IAM postgres           5434 workgraph postgres
 #   8000-8003 context-fabric       8080 workgraph-api
 #   8100 IAM API                   9000-9001 MinIO
@@ -65,7 +66,7 @@ services:
       JWT_EXPIRE_MINUTES: 60
       LOCAL_SUPER_ADMIN_EMAIL: ${LOCAL_SUPER_ADMIN_EMAIL:-admin@singularity.local}
       LOCAL_SUPER_ADMIN_PASSWORD: ${LOCAL_SUPER_ADMIN_PASSWORD:-Admin1234!}
-      CORS_ORIGINS: '["http://localhost:5175","http://localhost:5180","http://localhost:3000","http://localhost:5174"]'
+      CORS_ORIGINS: '["http://localhost:5175","http://localhost:5180","http://localhost:3000","http://localhost:5174","http://localhost:5176"]'
     ports:
       - "8100:8100"
     depends_on:
@@ -95,8 +96,8 @@ services:
 
   agent-service:
     build:
-      context: ./agent-and-tools/apps/agent-service
-      dockerfile: Dockerfile
+      context: ./agent-and-tools
+      dockerfile: apps/agent-service/Dockerfile
     container_name: singularity-agent-service
     environment:
       NODE_ENV: development
@@ -111,12 +112,12 @@ services:
       at-postgres:
         condition: service_healthy
     volumes:
-      - ./agent-and-tools/apps/agent-service/src:/app/src
+      - ./agent-and-tools/apps/agent-service/src:/app/apps/agent-service/src
 
   tool-service:
     build:
-      context: ./agent-and-tools/apps/tool-service
-      dockerfile: Dockerfile
+      context: ./agent-and-tools
+      dockerfile: apps/tool-service/Dockerfile
     container_name: singularity-tool-service
     environment:
       NODE_ENV: development
@@ -130,12 +131,12 @@ services:
       at-postgres:
         condition: service_healthy
     volumes:
-      - ./agent-and-tools/apps/tool-service/src:/app/src
+      - ./agent-and-tools/apps/tool-service/src:/app/apps/tool-service/src
 
   agent-runtime:
     build:
-      context: ./agent-and-tools/apps/agent-runtime
-      dockerfile: Dockerfile
+      context: ./agent-and-tools
+      dockerfile: apps/agent-runtime/Dockerfile
       target: dev
     container_name: singularity-agent-runtime
     environment:
@@ -147,6 +148,7 @@ services:
       DEFAULT_MODEL_PROVIDER: stub
       DEFAULT_MODEL_NAME: stub-model
       IAM_SERVICE_URL: http://iam-service:8100
+      AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     ports:
       - "3003:3003"
@@ -154,13 +156,15 @@ services:
       at-postgres:
         condition: service_healthy
     volumes:
-      - ./agent-and-tools/apps/agent-runtime/src:/app/src
-      - ./agent-and-tools/apps/agent-runtime/prisma:/app/prisma
+      - ./agent-and-tools/apps/agent-runtime/src:/app/apps/agent-runtime/src
+      - ./agent-and-tools/apps/agent-runtime/prisma:/app/apps/agent-runtime/prisma
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   prompt-composer:
     build:
-      context: ./agent-and-tools/apps/prompt-composer
-      dockerfile: Dockerfile
+      context: ./agent-and-tools
+      dockerfile: apps/prompt-composer/Dockerfile
       target: dev
     container_name: singularity-prompt-composer
     environment:
@@ -179,8 +183,8 @@ services:
       at-postgres:
         condition: service_healthy
     volumes:
-      - ./agent-and-tools/apps/prompt-composer/src:/app/src
-      - ./agent-and-tools/apps/prompt-composer/prisma:/app/prisma
+      - ./agent-and-tools/apps/prompt-composer/src:/app/apps/prompt-composer/src
+      - ./agent-and-tools/apps/prompt-composer/prisma:/app/apps/prompt-composer/prisma
 
   agent-web:
     build:
@@ -326,7 +330,7 @@ services:
       MINIO_SECRET_KEY: workgraph_secret
       MINIO_BUCKET: workgraph-documents
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      CORS_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5180
+      CORS_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5176,http://localhost:5180
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
       AUTH_PROVIDER: iam
       IAM_BASE_URL: http://iam-service:8100/api/v1
@@ -352,6 +356,16 @@ services:
     container_name: singularity-workgraph-web
     ports:
       - "5174:80"
+    depends_on:
+      - workgraph-api
+
+  blueprint-workbench:
+    build:
+      context: ./workgraph-studio
+      dockerfile: apps/blueprint-workbench/Dockerfile
+    container_name: singularity-blueprint-workbench
+    ports:
+      - "5176:80"
     depends_on:
       - workgraph-api
 
@@ -383,6 +397,10 @@ services:
       dockerfile: Dockerfile
       target: dev
     container_name: singularity-mcp-server-demo
+    env_file:
+      # Share local OpenAI-compatible provider settings with Context Fabric.
+      # MCP also accepts OPENAI_API_KEY directly when this file is absent.
+      - ./context-fabric/.env
     environment:
       NODE_ENV: development
       PORT: 7100
@@ -391,11 +409,15 @@ services:
       # ── M11 follow-up: embedded LLM gateway ──────────────────────────────
       # Default provider when an LlmRequest doesn't pick one. Per-request
       # overrides via the `provider` field in the /mcp/invoke payload.
-      LLM_PROVIDER: ${MCP_LLM_PROVIDER:-mock}
-      LLM_MODEL:    ${MCP_LLM_MODEL:-mock-fast}
+      LLM_PROVIDER: ${MCP_LLM_PROVIDER:-openai}
+      LLM_MODEL:    ${MCP_LLM_MODEL:-gpt-4o-mini}
+      MCP_LLM_MODEL_CATALOG_JSON: ${MCP_LLM_MODEL_CATALOG_JSON:-}
+      MCP_LLM_MODEL_CATALOG_PATH: ${MCP_LLM_MODEL_CATALOG_PATH:-}
       # Provider keys live HERE on the operator's local machine — they
       # never leave the local boundary by design. Empty = provider disabled.
       OPENAI_API_KEY:    ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       COPILOT_TOKEN:     ${COPILOT_TOKEN:-}
       OPENAI_DEFAULT_MODEL:    ${OPENAI_DEFAULT_MODEL:-gpt-4o-mini}

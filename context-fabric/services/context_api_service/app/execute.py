@@ -205,12 +205,15 @@ def _usage_metadata(
     prompt_assembly_id: Optional[str],
     cf_call_id: str,
     optimization_metrics: Optional[dict[str, Any]] = None,
+    actual_model_usage: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     input_tokens = tokens_used.get("input")
     output_tokens = tokens_used.get("output")
     total_tokens = tokens_used.get("total")
-    provider = _str_value(model_overrides, "provider", default="mock")
-    model = _str_value(model_overrides, "model", default="mock-fast")
+    actual_model_usage = actual_model_usage or {}
+    model_alias = _str_value(model_overrides, "modelAlias", "model_alias") or _str_value(actual_model_usage, "modelAlias", "model_alias")
+    provider = _str_value(model_overrides, "provider") or _str_value(actual_model_usage, "provider", default="mcp-default")
+    model = _str_value(model_overrides, "model") or _str_value(actual_model_usage, "model", default="mcp-default")
     estimated_cost = tokens_used.get("estimatedCost") or tokens_used.get("estimated_cost")
     tokens_saved = None
     if isinstance(optimization_metrics, dict):
@@ -220,6 +223,7 @@ def _usage_metadata(
         "outputTokens": output_tokens,
         "totalTokens": total_tokens,
         "estimatedCost": estimated_cost,
+        "modelAlias": model_alias,
         "provider": provider,
         "model": model,
         "tokensSaved": tokens_saved,
@@ -326,6 +330,9 @@ async def execute(req: ExecuteRequest):
     system_prompt: Optional[str] = req.system_prompt
     user_message = req.task
     composer_warnings: list[str] = []
+    composer_budget_warnings: list[str] = []
+    composer_retrieval_stats: dict[str, Any] = {}
+    composer_estimated_input_tokens: Optional[int] = None
 
     if req.run_context.agent_template_id:
         try:
@@ -357,6 +364,11 @@ async def execute(req: ExecuteRequest):
             system_prompt = assembled.get("systemPrompt")
             user_message = assembled.get("message") or req.task
             composer_warnings = data.get("warnings") or []
+            composer_budget_warnings = data.get("budgetWarnings") or []
+            composer_retrieval_stats = data.get("retrievalStats") or {}
+            raw_estimated_tokens = data.get("estimatedInputTokens")
+            if isinstance(raw_estimated_tokens, int):
+                composer_estimated_input_tokens = raw_estimated_tokens
         except Exception as exc:
             composer_warnings.append(f"composer unreachable: {exc!s}")
 
@@ -469,6 +481,7 @@ async def execute(req: ExecuteRequest):
         "message": mcp_message,
         "tools": tools_for_mcp,
         "modelConfig": _strip_nones({
+            "modelAlias": req.model_overrides.get("modelAlias") or req.model_overrides.get("model_alias"),
             "provider": req.model_overrides.get("provider"),
             "model": req.model_overrides.get("model"),
             "temperature": req.model_overrides.get("temperature"),
@@ -598,6 +611,23 @@ async def execute(req: ExecuteRequest):
         except Exception:
             pass
         raise
+    except httpx.HTTPStatusError as exc:
+        stop_subscriber.set()
+        try:
+            await asyncio.wait_for(subscriber_task, timeout=1.0)
+        except Exception:
+            pass
+        try:
+            detail = exc.response.json()
+        except Exception:
+            detail = {"message": exc.response.text[:500]}
+        _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
+                         f"MCP invoke failed: {detail}", session_id, mcp_server_id=mcp_server_id)
+        raise HTTPException(status_code=exc.response.status_code, detail={
+            "code": "MCP_INVOKE_FAILED",
+            "message": "MCP invoke failed",
+            "details": detail,
+        })
     except Exception as exc:
         # Stop the subscriber and discard its result; failure path goes to drain.
         stop_subscriber.set()
@@ -625,6 +655,7 @@ async def execute(req: ExecuteRequest):
     correlation = mcp_data.get("correlation") or {}
     workspace = mcp_data.get("workspace") or {}
     tokens_used = mcp_data.get("tokensUsed") or {}
+    actual_model_usage = mcp_data.get("modelUsage") or {}
     finish_reason = mcp_data.get("finishReason")
     steps_taken = mcp_data.get("stepsTaken")
     status = mcp_data.get("status", "UNKNOWN")
@@ -714,9 +745,13 @@ async def execute(req: ExecuteRequest):
             "output_tokens": tokens_used.get("output"),
             "total_tokens": tokens_used.get("total"),
             "estimated_cost": tokens_used.get("estimatedCost") or tokens_used.get("estimated_cost"),
-            "provider": _str_value(req.model_overrides, "provider", default="mock"),
-            "model": _str_value(req.model_overrides, "model", default="mock-fast"),
+            "model_alias": _str_value(req.model_overrides, "modelAlias", "model_alias") or _str_value(actual_model_usage, "modelAlias", "model_alias"),
+            "provider": _str_value(req.model_overrides, "provider") or _str_value(actual_model_usage, "provider", default="mcp-default"),
+            "model": _str_value(req.model_overrides, "model") or _str_value(actual_model_usage, "model", default="mcp-default"),
             "tokens_saved": optimization_metrics.get("tokens_saved") or optimization_metrics.get("tokensSaved"),
+            "prompt_budget_warnings": composer_budget_warnings,
+            "prompt_retrieval_stats": composer_retrieval_stats,
+            "prompt_estimated_input_tokens": composer_estimated_input_tokens,
             "mcp_latency_ms": mcp_latency_ms,
             "agent_run_id": req.run_context.agent_run_id,
             "workflow_instance_id": req.run_context.workflow_instance_id,
@@ -725,6 +760,7 @@ async def execute(req: ExecuteRequest):
     usage = _usage_metadata(
         tokens_used=tokens_used,
         model_overrides=req.model_overrides,
+        actual_model_usage=actual_model_usage,
         prompt_assembly_id=prompt_assembly_id,
         cf_call_id=cf_call_id,
         optimization_metrics=optimization_metrics,
@@ -740,6 +776,7 @@ async def execute(req: ExecuteRequest):
             "promptAssemblyId": prompt_assembly_id,
             "mcpServerId": mcp_server_id,
             "mcpInvocationId": correlation.get("mcpInvocationId"),
+            "modelAlias": usage["modelAlias"],
             "llmCallIds": correlation.get("llmCallIds") or [],
             "toolInvocationIds": correlation.get("toolInvocationIds") or [],
             "artifactIds": correlation.get("artifactIds") or [],
@@ -755,12 +792,18 @@ async def execute(req: ExecuteRequest):
         "tokensUsed": tokens_used,
         "usage": usage,
         "modelUsage": {
+            "modelAlias": usage["modelAlias"],
             "provider": usage["provider"],
             "model": usage["model"],
             "inputTokens": usage["inputTokens"],
             "outputTokens": usage["outputTokens"],
             "totalTokens": usage["totalTokens"],
             "estimatedCost": usage["estimatedCost"],
+        },
+        "prompt": {
+            "estimatedInputTokens": composer_estimated_input_tokens,
+            "budgetWarnings": composer_budget_warnings,
+            "retrievalStats": composer_retrieval_stats,
         },
         "finishReason": finish_reason,
         "stepsTaken": steps_taken,

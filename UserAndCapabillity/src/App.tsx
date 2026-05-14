@@ -17,6 +17,7 @@ import { PermissionsPage } from '@/pages/permissions/PermissionsPage'
 import { SharingGrantsPage } from '@/pages/sharing-grants/SharingGrantsPage'
 import { AuthzCheckPage } from '@/pages/authz/AuthzCheckPage'
 import { AuditEventsPage } from '@/pages/audit/AuditEventsPage'
+import { EventHorizonChat } from '@/components/EventHorizonChat'
 
 export default function App() {
   return (
@@ -50,6 +51,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>
       </Routes>
+      <EventHorizonChat />
     </BrowserRouter>
   )
 }

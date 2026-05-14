@@ -1,4 +1,4 @@
-import type { WorkflowNode, WorkflowInstance } from '@prisma/client'
+import { Prisma, type WorkflowNode, type WorkflowInstance } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import {
@@ -49,8 +49,24 @@ export async function activateAgentTask(
   instance: WorkflowInstance,
 ): Promise<void> {
   const cfg = (node.config ?? {}) as Record<string, unknown>
-  const cfgAgentId       = cfg.agentId as string | undefined
-  const cfgAgentTemplate = cfg.agentTemplateId as string | undefined
+  const standard = isRecord(cfg.standard) ? cfg.standard : {}
+  const configString = (...keys: string[]) => {
+    for (const key of keys) {
+      const direct = cfg[key]
+      if (typeof direct === 'string' && direct.trim()) return direct.trim()
+      const std = standard[key]
+      if (typeof std === 'string' && std.trim()) return std.trim()
+    }
+    return undefined
+  }
+  const configNumber = (...keys: string[]) => {
+    const value = configString(...keys)
+    if (!value) return undefined
+    const n = Number(value)
+    return Number.isFinite(n) && n > 0 ? n : undefined
+  }
+  const cfgAgentId       = configString('agentId')
+  const cfgAgentTemplate = configString('agentTemplateId')
 
   // M10/M11.c — config can carry either the local snapshot id (legacy) OR
   // the upstream agent-and-tools template id. If only the template id is
@@ -64,7 +80,7 @@ export async function activateAgentTask(
 
   // M11.c — also snapshot the capability for audit-replay parity.
   // Best-effort: failures don't block the run.
-  const cfgCapabilityId = cfg.capabilityId as string | undefined
+  const cfgCapabilityId = configString('capabilityId')
   if (cfgCapabilityId) {
     void snapshotCapability(cfgCapabilityId, instance.createdById ?? undefined).catch(() => null)
   }
@@ -88,8 +104,8 @@ export async function activateAgentTask(
 
   // 2. Validate the M8 wire prerequisites.
   const agentTemplateId = cfgAgentTemplate
-  const capabilityId = cfg.capabilityId as string | undefined
-  const task = cfg.task as string | undefined
+  const capabilityId = configString('capabilityId')
+  const task = configString('task')
 
   if (!agentTemplateId || !task || !capabilityId) {
     await failRun(
@@ -124,10 +140,25 @@ export async function activateAgentTask(
       },
     },
   })
+  const workflowDefaultModelAlias = await resolveWorkflowDefaultModelAlias(instance.templateId)
+  const nodeModelAlias = configString('modelAlias')
+  const legacyModel = configString('model')
+  const modelSelectionReason = nodeModelAlias && nodeModelAlias !== '__workflow_default__'
+    ? 'node override'
+    : workflowDefaultModelAlias
+      ? 'workflow default'
+      : legacyModel
+        ? 'advanced provider/model override'
+        : 'mcp fallback default'
   const modelOverrides = {
     maxOutputTokens: 1200,
     ...((cfg.modelOverrides as Record<string, unknown> | undefined) ?? {}),
+    ...(workflowDefaultModelAlias ? { modelAlias: workflowDefaultModelAlias } : {}),
+    ...(nodeModelAlias && nodeModelAlias !== '__workflow_default__' ? { modelAlias: nodeModelAlias } : {}),
+    ...(legacyModel && !nodeModelAlias ? { model: legacyModel } : {}),
   }
+  const standardMaxTokens = configNumber('maxTokens')
+  if (standardMaxTokens) modelOverrides.maxOutputTokens = standardMaxTokens
   const contextPolicy = {
     optimizationMode: 'medium',
     maxContextTokens: 6000,
@@ -195,14 +226,14 @@ export async function activateAgentTask(
       workflow_node_id: node.id,
       agent_run_id: run.id,
       capability_id: capabilityId,
-      tenant_id: typeof cfg.tenantId === 'string' ? cfg.tenantId : undefined,
+      tenant_id: configString('tenantId'),
       agent_template_id: agentTemplateId,
       // M26 — the calling user's IAM sub. context-fabric uses this to route
       // /mcp/invoke to the user's laptop mcp-server via the WS bridge.
       user_id: run.initiatedById ?? undefined,
       trace_id: traceId,
-      branch_base: typeof cfg.branchBase === 'string' ? cfg.branchBase : undefined,
-      branch_name: typeof cfg.branchName === 'string' ? cfg.branchName : undefined,
+      branch_base: configString('branchBase'),
+      branch_name: configString('branchName'),
     },
     task,
     vars,
@@ -250,13 +281,15 @@ export async function activateAgentTask(
   }
 
   // 5. Persist the response.
-  const correlation = {
+  const correlation: Record<string, unknown> = {
     cfCallId: result.correlation.cfCallId,
     traceId: result.correlation.traceId,
     sessionId: result.correlation.sessionId,
     promptAssemblyId: result.correlation.promptAssemblyId,
     mcpServerId: result.correlation.mcpServerId,
     mcpInvocationId: result.correlation.mcpInvocationId,
+    modelAlias: result.correlation.modelAlias ?? result.modelUsage?.modelAlias,
+    modelSelectionReason,
     llmCallIds: result.correlation.llmCallIds,
     toolInvocationIds: result.correlation.toolInvocationIds,
     artifactIds: result.correlation.artifactIds,
@@ -273,6 +306,10 @@ export async function activateAgentTask(
     astIndexedFiles: result.correlation.astIndexedFiles ?? result.workspace?.astIndexedFiles,
     astIndexedSymbols: result.correlation.astIndexedSymbols ?? result.workspace?.astIndexedSymbols,
     warnings: [...(result.warnings ?? []), ...budgetDecision.warnings],
+    prompt: result.prompt,
+    promptEstimatedInputTokens: result.prompt?.estimatedInputTokens,
+    budgetWarnings: result.prompt?.budgetWarnings ?? [],
+    retrievalStats: result.prompt?.retrievalStats ?? {},
     contextFabricUrl: config.CONTEXT_FABRIC_URL,
   }
 
@@ -281,10 +318,28 @@ export async function activateAgentTask(
       runId: run.id,
       outputType: 'LLM_RESPONSE',
       rawContent: result.finalResponse ?? '',
-      structuredPayload: correlation,
+      structuredPayload: correlation as Prisma.InputJsonValue,
       tokenCount: result.tokensUsed?.total ?? result.tokensUsed?.input ?? null,
     },
   })
+  const finalArtifactId = await createAgentOutputArtifact({
+    instance,
+    node,
+    runId: run.id,
+    content: result.finalResponse ?? '',
+    payload: correlation,
+  })
+  if (finalArtifactId) {
+    correlation.finalArtifactId = finalArtifactId
+    const existingArtifactIds = Array.isArray(correlation.artifactIds)
+      ? correlation.artifactIds.map(String)
+      : []
+    correlation.artifactIds = Array.from(new Set([...existingArtifactIds, finalArtifactId]))
+    await prisma.agentRunOutput.updateMany({
+      where: { runId: run.id, outputType: 'LLM_RESPONSE' },
+      data: { structuredPayload: correlation as Prisma.InputJsonValue },
+    })
+  }
 
   try {
     await recordWorkflowLlmUsage(instance.id, {
@@ -299,6 +354,7 @@ export async function activateAgentTask(
       provider: result.modelUsage?.provider,
       model: result.modelUsage?.model,
       metadata: {
+        modelAlias: result.modelUsage?.modelAlias ?? result.correlation.modelAlias,
         finishReason: result.finishReason,
         status: result.status,
         tokensSaved: result.usage?.tokensSaved,
@@ -413,7 +469,7 @@ async function collectPriorOutputs(
     where: {
       instanceId,
       nodeId: { not: currentNodeId },
-      status: { in: ['AWAITING_REVIEW', 'APPROVED'] },
+      status: 'APPROVED',
     },
     include: {
       outputs: {
@@ -448,6 +504,120 @@ async function collectPriorOutputs(
   return out
 }
 
+async function createAgentOutputArtifact(args: {
+  instance: WorkflowInstance
+  node: WorkflowNode
+  runId: string
+  content: string
+  payload: Record<string, unknown>
+}): Promise<string | undefined> {
+  const content = args.content.trim()
+  if (!content) return undefined
+
+  const type = await prisma.consumableType.upsert({
+    where: { name: 'AGENT_OUTPUT' },
+    update: {},
+    create: {
+      name: 'AGENT_OUTPUT',
+      description: 'Reviewable AGENT_TASK output with prompt, model, budget, and receipt lineage.',
+      requiresApproval: true,
+      allowVersioning: true,
+      schemaDef: {},
+    },
+  })
+  const name = `${args.node.label || args.node.id} output`
+  const existing = await prisma.consumable.findFirst({
+    where: {
+      typeId: type.id,
+      instanceId: args.instance.id,
+      nodeId: args.node.id,
+      name,
+    },
+    select: { id: true, currentVersion: true },
+  })
+  const payload = {
+    artifactType: 'agent_output',
+    approvalRequired: true,
+    agentRunId: args.runId,
+    nodeId: args.node.id,
+    nodeLabel: args.node.label,
+    content,
+    receipt: {
+      cfCallId: args.payload.cfCallId,
+      traceId: args.payload.traceId,
+      promptAssemblyId: args.payload.promptAssemblyId,
+      mcpInvocationId: args.payload.mcpInvocationId,
+      modelAlias: args.payload.modelAlias,
+      modelSelectionReason: args.payload.modelSelectionReason,
+      tokensUsed: args.payload.tokensUsed,
+      modelUsage: args.payload.modelUsage,
+      citationsAvailable: Boolean(args.payload.promptAssemblyId),
+      budgetWarnings: args.payload.budgetWarnings,
+      retrievalStats: args.payload.retrievalStats,
+    },
+  }
+  if (existing) {
+    const nextVersion = existing.currentVersion + 1
+    await prisma.consumableVersion.create({
+      data: {
+        consumableId: existing.id,
+        version: nextVersion,
+        payload: payload as Prisma.InputJsonValue,
+        createdById: args.instance.createdById ?? undefined,
+      },
+    })
+    await prisma.consumable.update({
+      where: { id: existing.id },
+      data: {
+        status: 'UNDER_REVIEW',
+        currentVersion: nextVersion,
+        formData: payload as Prisma.InputJsonValue,
+      },
+    })
+    await logEvent('AgentOutputArtifactVersioned', 'Consumable', existing.id, args.instance.createdById ?? undefined, {
+      runId: args.runId,
+      nodeId: args.node.id,
+      version: nextVersion,
+    })
+    await publishOutbox('Consumable', existing.id, 'AgentOutputArtifactVersioned', {
+      consumableId: existing.id,
+      runId: args.runId,
+      nodeId: args.node.id,
+    })
+    return existing.id
+  }
+
+  const created = await prisma.consumable.create({
+    data: {
+      typeId: type.id,
+      instanceId: args.instance.id,
+      nodeId: args.node.id,
+      name,
+      status: 'UNDER_REVIEW',
+      currentVersion: 1,
+      formData: payload as Prisma.InputJsonValue,
+      createdById: args.instance.createdById ?? undefined,
+      versions: {
+        create: {
+          version: 1,
+          payload: payload as Prisma.InputJsonValue,
+          createdById: args.instance.createdById ?? undefined,
+        },
+      },
+    },
+  })
+  await logEvent('AgentOutputArtifactCreated', 'Consumable', created.id, args.instance.createdById ?? undefined, {
+    runId: args.runId,
+    nodeId: args.node.id,
+  })
+  await publishOutbox('Consumable', created.id, 'AgentOutputArtifactCreated', {
+    consumableId: created.id,
+    runId: args.runId,
+    nodeId: args.node.id,
+  })
+  return created.id
+}
+
 function summarizePriorOutput(raw: string): string {
   const compact = raw
     .replace(/\r/g, '')
@@ -458,4 +628,20 @@ function summarizePriorOutput(raw: string): string {
     .trim()
   if (compact.length <= 1200) return compact
   return `${compact.slice(0, 1100).trimEnd()}\n...[prior output summarized; use artifact/correlation ids for full audit]`
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+async function resolveWorkflowDefaultModelAlias(templateId?: string | null): Promise<string | undefined> {
+  if (!templateId) return undefined
+  const workflow = await prisma.workflow.findUnique({
+    where: { id: templateId },
+    select: { budgetPolicy: true },
+  })
+  const policy = workflow?.budgetPolicy
+  if (!isRecord(policy)) return undefined
+  const value = policy.defaultModelAlias
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }

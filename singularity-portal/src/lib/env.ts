@@ -19,11 +19,14 @@ export const env = {
   workgraphBase:     pick('/api/wg',       import.meta.env.VITE_WORKGRAPH_BASE_URL),
   composerBase:      pick('/api/composer', import.meta.env.VITE_COMPOSER_BASE_URL),
   contextFabricBase: pick('/api/cf',       import.meta.env.VITE_CONTEXT_FABRIC_BASE_URL),
+  mcpBase:           pick('/api/mcp',      import.meta.env.VITE_MCP_BASE_URL),
+  auditGovBase:      pick('/api/gov',      import.meta.env.VITE_AUDIT_GOV_BASE_URL),
 
   // Deep-link targets (always absolute — they open external apps)
   links: {
     agentAdmin:        import.meta.env.VITE_LINK_AGENT_ADMIN        ?? 'http://localhost:3000',
     iamAdmin:          import.meta.env.VITE_LINK_IAM_ADMIN          ?? 'http://localhost:5175',
     workgraphDesigner: import.meta.env.VITE_LINK_WORKGRAPH_DESIGNER ?? 'http://localhost:5174',
+    blueprintWorkbench: import.meta.env.VITE_LINK_BLUEPRINT_WORKBENCH ?? 'http://localhost:5176',
   },
 }

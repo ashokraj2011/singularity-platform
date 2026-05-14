@@ -59,6 +59,11 @@ services:
       PROMPT_COMPOSER_URL: ${PROMPT_COMPOSER_URL:-http://host.docker.internal:3004}
       # M8 — AGENT_TASK executor calls context-fabric /execute
       CONTEXT_FABRIC_URL: ${CONTEXT_FABRIC_URL:-http://host.docker.internal:8000}
+      # Event Horizon normally inherits MCP's provider/model. Set these only
+      # when the chat assistant should override MCP defaults.
+      EVENT_HORIZON_PROVIDER: ${EVENT_HORIZON_PROVIDER:-}
+      EVENT_HORIZON_MODEL:    ${EVENT_HORIZON_MODEL:-}
+      EVENT_HORIZON_CAPABILITY_ID: ${EVENT_HORIZON_CAPABILITY_ID:-}
       # M10 — federated /api/lookup/* sources
       # 'iam' so the middleware verifies the bearer against IAM and lazily mirrors the user into the local
       # workgraph User table. 'local' only verifies the HS256 signature and

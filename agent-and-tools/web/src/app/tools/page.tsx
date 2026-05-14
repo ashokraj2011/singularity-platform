@@ -26,6 +26,7 @@ export default function ToolsPage() {
   const { data, isLoading, mutate } = useSWR("tools", fetcher);
   const [showCreate, setShowCreate] = useState(false);
   const [filter, setFilter] = useState("all");
+  const [wizardStep, setWizardStep] = useState(0);
   // M20 — additional facets and detail-modal state
   const [tagFilter, setTagFilter]       = useState<string>("");          // "" = any
   const [riskFilter, setRiskFilter]     = useState<string>("");          // "" | low | medium | high | critical
@@ -34,7 +35,8 @@ export default function ToolsPage() {
   const [busyKey, setBusyKey]           = useState<string | null>(null); // tool_name@version while toggling approval
   const [form, setForm] = useState({
     tool_name: "", display_name: "", description: "", version: "1.0.0",
-    risk_level: "low", input_schema: SCHEMA_TEMPLATE, runtime: RUNTIME_TEMPLATE,
+    risk_level: "low", requires_approval: false, execution_target: "LOCAL",
+    input_schema: SCHEMA_TEMPLATE, output_schema: "", runtime: RUNTIME_TEMPLATE,
     allowed_capabilities: "", allowed_agents: "", tags: "",
   });
   const [creating, setCreating] = useState(false);
@@ -53,6 +55,9 @@ export default function ToolsPage() {
         risk_level: form.risk_level,
         input_schema: JSON.parse(form.input_schema) as Record<string, unknown>,
         runtime: JSON.parse(form.runtime) as Record<string, unknown>,
+        output_schema: form.output_schema ? JSON.parse(form.output_schema) as Record<string, unknown> : undefined,
+        requires_approval: form.requires_approval,
+        execution_target: form.execution_target,
         allowed_capabilities: form.allowed_capabilities ? form.allowed_capabilities.split(",").map(s => s.trim()) : [],
         allowed_agents: form.allowed_agents ? form.allowed_agents.split(",").map(s => s.trim()) : [],
         tags: form.tags ? form.tags.split(",").map(s => s.trim()) : [],
@@ -110,7 +115,7 @@ export default function ToolsPage() {
           <h1 className="text-2xl font-bold text-slate-900">Tools</h1>
           <p className="text-slate-500 mt-1">Tool registry — register, version, and activate tools</p>
         </div>
-        <button className="btn-primary" onClick={() => setShowCreate(true)}>
+        <button className="btn-primary" onClick={() => { setWizardStep(0); setShowCreate(true); }}>
           <Plus size={16} /> Register Tool
         </button>
       </div>
@@ -162,70 +167,143 @@ export default function ToolsPage() {
 
       {showCreate && (
         <div className="card p-6 mb-6">
-          <h2 className="font-semibold text-slate-900 mb-4">Register Tool</h2>
-          <form onSubmit={handleCreate} className="space-y-4">
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Tool Name *</label>
-                <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" required
-                  placeholder="code.search"
-                  value={form.tool_name} onChange={e => setForm(f => ({ ...f, tool_name: e.target.value }))} />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Display Name *</label>
-                <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" required
-                  placeholder="Code Search"
-                  value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))} />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Version</label>
-                <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                  placeholder="1.0.0"
-                  value={form.version} onChange={e => setForm(f => ({ ...f, version: e.target.value }))} />
-              </div>
-            </div>
+          <div className="flex items-start justify-between gap-4 mb-5">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Description *</label>
-              <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" required
-                placeholder="What this tool does"
-                value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
+              <h2 className="font-semibold text-slate-900">Tool Creation Wizard</h2>
+              <p className="text-sm text-slate-500 mt-1">Create a governed tool in four steps: identity, contract, execution, and activation rules.</p>
             </div>
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Risk Level</label>
-                <select className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                  value={form.risk_level} onChange={e => setForm(f => ({ ...f, risk_level: e.target.value }))}>
-                  {["low", "medium", "high", "critical"].map(r => <option key={r} value={r}>{r}</option>)}
-                </select>
+            <button type="button" className="btn-secondary text-xs" onClick={() => setShowCreate(false)}>Close</button>
+          </div>
+          <div className="grid grid-cols-4 gap-2 mb-5">
+            {["Identity", "Contract", "Runtime", "Governance"].map((label, index) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => setWizardStep(index)}
+                className={`rounded-lg border px-3 py-2 text-xs font-semibold ${wizardStep === index ? "border-singularity-600 bg-singularity-50 text-singularity-700" : "border-slate-200 bg-white text-slate-500"}`}
+              >
+                {index + 1}. {label}
+              </button>
+            ))}
+          </div>
+          <form onSubmit={handleCreate} className="space-y-4">
+            {wizardStep === 0 && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Tool Name *</label>
+                    <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" required
+                      placeholder="code.search"
+                      value={form.tool_name} onChange={e => setForm(f => ({ ...f, tool_name: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Display Name *</label>
+                    <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" required
+                      placeholder="Code Search"
+                      value={form.display_name} onChange={e => setForm(f => ({ ...f, display_name: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Version</label>
+                    <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                      placeholder="1.0.0"
+                      value={form.version} onChange={e => setForm(f => ({ ...f, version: e.target.value }))} />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Description *</label>
+                  <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" required
+                    placeholder="When should an agent use this tool?"
+                    value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Tags</label>
+                  <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                    placeholder="code, search, github"
+                    value={form.tags} onChange={e => setForm(f => ({ ...f, tags: e.target.value }))} />
+                </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Allowed Capabilities</label>
-                <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                  placeholder="cap-a, cap-b (comma sep)"
-                  value={form.allowed_capabilities} onChange={e => setForm(f => ({ ...f, allowed_capabilities: e.target.value }))} />
+            )}
+
+            {wizardStep === 1 && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Input Schema (JSON)</label>
+                  <textarea rows={10} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono"
+                    value={form.input_schema} onChange={e => setForm(f => ({ ...f, input_schema: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Output Schema (optional JSON)</label>
+                  <textarea rows={10} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono"
+                    placeholder='{"type":"object","properties":{"result":{"type":"string"}}}'
+                    value={form.output_schema} onChange={e => setForm(f => ({ ...f, output_schema: e.target.value }))} />
+                </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Tags</label>
-                <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                  placeholder="code, search (comma sep)"
-                  value={form.tags} onChange={e => setForm(f => ({ ...f, tags: e.target.value }))} />
+            )}
+
+            {wizardStep === 2 && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  {["LOCAL", "SERVER"].map((target) => (
+                    <button
+                      key={target}
+                      type="button"
+                      onClick={() => setForm(f => ({ ...f, execution_target: target }))}
+                      className={`rounded-lg border p-4 text-left ${form.execution_target === target ? "border-singularity-600 bg-singularity-50" : "border-slate-200 bg-white"}`}
+                    >
+                      <div className="font-semibold text-slate-900">{target === "LOCAL" ? "Local MCP tool" : "Server-governed tool"}</div>
+                      <div className="text-xs text-slate-500 mt-1">{target === "LOCAL" ? "Runs in the MCP server near the working directory." : "Runs through the central tool-service execution path."}</div>
+                    </button>
+                  ))}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Runtime (JSON)</label>
+                  <textarea rows={8} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono"
+                    value={form.runtime} onChange={e => setForm(f => ({ ...f, runtime: e.target.value }))} />
+                </div>
               </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Input Schema (JSON)</label>
-                <textarea rows={6} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono"
-                  value={form.input_schema} onChange={e => setForm(f => ({ ...f, input_schema: e.target.value }))} />
+            )}
+
+            {wizardStep === 3 && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Risk Level</label>
+                    <select className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                      value={form.risk_level} onChange={e => setForm(f => ({ ...f, risk_level: e.target.value }))}>
+                      {["low", "medium", "high", "critical"].map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex items-end">
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 w-full">
+                      <input
+                        type="checkbox"
+                        checked={form.requires_approval}
+                        onChange={e => setForm(f => ({ ...f, requires_approval: e.target.checked }))}
+                      />
+                      Requires human approval
+                    </label>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Allowed Capabilities</label>
+                    <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                      placeholder="cap-a, cap-b"
+                      value={form.allowed_capabilities} onChange={e => setForm(f => ({ ...f, allowed_capabilities: e.target.value }))} />
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                  <div className="font-semibold text-slate-800 mb-1">Review</div>
+                  <div><span className="font-medium">Tool:</span> {form.tool_name || "unnamed"}@{form.version || "1.0.0"}</div>
+                  <div><span className="font-medium">Target:</span> {form.execution_target} · <span className="font-medium">Risk:</span> {form.risk_level} · <span className="font-medium">Approval:</span> {form.requires_approval ? "required" : "not required"}</div>
+                </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Runtime (JSON)</label>
-                <textarea rows={6} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono"
-                  value={form.runtime} onChange={e => setForm(f => ({ ...f, runtime: e.target.value }))} />
-              </div>
-            </div>
+            )}
             {error && <div className="text-red-600 text-sm">{error}</div>}
-            <div className="flex gap-3">
-              <button type="submit" className="btn-primary" disabled={creating}>
+            <div className="flex justify-between gap-3">
+              <div className="flex gap-2">
+                <button type="button" className="btn-secondary" disabled={wizardStep === 0} onClick={() => setWizardStep(s => Math.max(0, s - 1))}>Back</button>
+                <button type="button" className="btn-secondary" disabled={wizardStep === 3} onClick={() => setWizardStep(s => Math.min(3, s + 1))}>Next</button>
+              </div>
+              <button type="submit" className="btn-primary" disabled={creating || wizardStep !== 3}>
                 {creating ? "Registering…" : "Register Tool"}
               </button>
               <button type="button" className="btn-secondary" onClick={() => setShowCreate(false)}>Cancel</button>
