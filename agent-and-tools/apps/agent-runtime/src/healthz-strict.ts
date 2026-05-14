@@ -65,24 +65,30 @@ const checks: InvariantCheck[] = [
     }
   },
 
-  // M29 — assert PromptAssembly is NOT in agent-runtime's DB. The model
-  // moved to prompt-composer; if it's still here, an older schema is loaded
-  // and writes will pile up in the wrong place.
+  // M29 — agent-runtime no longer declares composer-owned models in its
+  // own schema, but composer still pushes them into the SHARED Postgres
+  // (logical split, physical split deferred to M30). So the prompt tables
+  // may legitimately exist in this DB — composer owns them.
+  //
+  // The strict assertion here is the OPPOSITE: agent-runtime's own
+  // Prisma client must NOT KNOW about composer's models (proves the
+  // M29 schema separation in code, even with shared physical storage).
+  // We verify by attempting an unsafe-cast access of `prisma.promptAssembly`
+  // — if the M29 generated client is in use, that property is undefined.
   async () => {
     try {
-      const rows = await prisma.$queryRaw<Array<{ count: bigint }>>`
-        SELECT count(*) AS count FROM information_schema.tables
-         WHERE table_name = 'PromptAssembly'`;
-      if (Number(rows[0]?.count ?? 0) > 0) {
+      const composerModelsInClient =
+        (prisma as unknown as { promptAssembly?: unknown }).promptAssembly !== undefined;
+      if (composerModelsInClient) {
         return {
-          name: "no_composer_tables_present",
+          name: "client_excludes_composer_models",
           ok: false,
-          reason: "PromptAssembly exists in this DB — agent-runtime should not own composer tables after M29. Did you run prisma db push against the wrong DATABASE_URL?",
+          reason: "agent-runtime's Prisma client still exposes composer-owned models (PromptAssembly). Did `prisma generate` run against the M29 schema?",
         };
       }
-      return { name: "no_composer_tables_present", ok: true };
+      return { name: "client_excludes_composer_models", ok: true };
     } catch (err) {
-      return { name: "no_composer_tables_present", ok: false, reason: (err as Error).message };
+      return { name: "client_excludes_composer_models", ok: false, reason: (err as Error).message };
     }
   },
 ];
