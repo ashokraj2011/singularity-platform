@@ -67,6 +67,7 @@ const commandGroups = [
     icon: KeyRound,
     commands: [
       { label: 'Create MCP model aliases', command: './singularity.sh config mcp-catalog --default-alias fast' },
+      { label: 'Office mode: Copilot only', command: './singularity.sh config office-copilot-only' },
       { label: 'Store OpenAI key locally', command: './singularity.sh config set llm.openai.apiKey sk-...' },
       { label: 'Store OpenRouter key locally', command: './singularity.sh config set llm.openrouter.apiKey sk-or-...' },
       { label: 'Show model alias readiness', command: './singularity.sh config models' },

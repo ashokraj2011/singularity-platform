@@ -13,6 +13,7 @@
 import { v4 as uuidv4 } from "uuid";
 import type { LlmRequest, LlmResponse, LlmStreamHooks, ToolCall, ChatMessage } from "../types";
 import { config } from "../../config";
+import { providerBaseUrl, providerDefaultModel } from "../provider-config";
 
 interface AntToolSpec {
   name:        string;
@@ -103,7 +104,7 @@ export async function anthropicRespond(req: LlmRequest, hooks?: LlmStreamHooks):
 
   const { system, messages } = toAnthropicMessages(req.messages);
   const body: Record<string, unknown> = {
-    model:      req.model || config.ANTHROPIC_DEFAULT_MODEL,
+    model:      req.model || providerDefaultModel("anthropic"),
     messages,
     max_tokens: req.max_output_tokens ?? 4096,
   };
@@ -112,7 +113,7 @@ export async function anthropicRespond(req: LlmRequest, hooks?: LlmStreamHooks):
   const tools = toAnthropicTools(req);
   if (tools) body.tools = tools;
 
-  const url = `${config.ANTHROPIC_BASE_URL.replace(/\/$/, "")}/v1/messages`;
+  const url = `${providerBaseUrl("anthropic").replace(/\/$/, "")}/v1/messages`;
   const res = await fetch(url, {
     method:  "POST",
     headers: {

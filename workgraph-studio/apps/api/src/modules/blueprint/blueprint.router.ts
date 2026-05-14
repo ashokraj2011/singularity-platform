@@ -349,6 +349,41 @@ blueprintRouter.get('/sessions/:id', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+blueprintRouter.get('/sessions/:id/code-changes', async (req, res, next) => {
+  try {
+    const session = await prisma.blueprintSession.findUnique({
+      where: { id: req.params.id },
+      include: { artifacts: { orderBy: { createdAt: 'desc' } } },
+    })
+    if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    assertBlueprintAccess(session, req.user!.userId)
+
+    const stageKey = typeof req.query.stageKey === 'string' && req.query.stageKey.trim()
+      ? req.query.stageKey.trim()
+      : undefined
+    const state = readLoopState(session)
+    const cfCallIds = new Set<string>()
+    for (const attempt of state.stageAttempts ?? []) {
+      if (stageKey && attempt.stageKey !== stageKey) continue
+      const correlation = isRecord(attempt.correlation) ? attempt.correlation : {}
+      const cfCallId = correlation.cfCallId
+      if (typeof cfCallId === 'string' && cfCallId) cfCallIds.add(cfCallId)
+    }
+    for (const artifact of session.artifacts ?? []) {
+      const payload = isRecord(artifact.payload) ? artifact.payload : {}
+      if (stageKey && payload.stageKey !== stageKey) continue
+      const cfCallId = payload.cfCallId
+      if (typeof cfCallId === 'string' && cfCallId) cfCallIds.add(cfCallId)
+    }
+
+    const settled = await Promise.allSettled([...cfCallIds].map(id => contextFabricClient.listCodeChanges(id)))
+    const items = settled.flatMap(result => result.status === 'fulfilled' ? result.value.items : [])
+    const stale = settled.some(result => result.status === 'fulfilled' && result.value.stale)
+    const errors = settled.flatMap(result => result.status === 'rejected' ? [(result.reason as Error).message] : [])
+    res.json({ sessionId: session.id, cfCallIds: [...cfCallIds], items, stale, errors })
+  } catch (err) { next(err) }
+})
+
 blueprintRouter.post('/sessions/:id/snapshot', async (req, res, next) => {
   try {
     const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })

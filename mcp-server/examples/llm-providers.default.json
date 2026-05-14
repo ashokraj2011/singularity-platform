@@ -1,0 +1,45 @@
+{
+  "defaultProvider": "openai",
+  "defaultModel": "gpt-4o-mini",
+  "allowedProviders": [],
+  "providers": {
+    "mock": {
+      "enabled": true,
+      "defaultModel": "mock-fast",
+      "supportsTools": false,
+      "costTier": "mock"
+    },
+    "openai": {
+      "enabled": true,
+      "baseUrl": "https://api.openai.com/v1",
+      "defaultModel": "gpt-4o-mini",
+      "credentialEnv": "OPENAI_API_KEY",
+      "supportsTools": true,
+      "costTier": "medium"
+    },
+    "openrouter": {
+      "enabled": true,
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "defaultModel": "openai/gpt-4o-mini",
+      "credentialEnv": "OPENROUTER_API_KEY",
+      "supportsTools": true,
+      "costTier": "medium"
+    },
+    "anthropic": {
+      "enabled": true,
+      "baseUrl": "https://api.anthropic.com",
+      "defaultModel": "claude-sonnet-4-6",
+      "credentialEnv": "ANTHROPIC_API_KEY",
+      "supportsTools": true,
+      "costTier": "high"
+    },
+    "copilot": {
+      "enabled": true,
+      "baseUrl": "https://api.githubcopilot.com",
+      "defaultModel": "gpt-4o",
+      "credentialEnv": "COPILOT_TOKEN",
+      "supportsTools": true,
+      "costTier": "medium"
+    }
+  }
+}

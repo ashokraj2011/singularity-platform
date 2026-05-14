@@ -2,7 +2,6 @@ import "express-async-errors";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
-import { config } from "./config";
 import { requestIdMiddleware } from "./middleware/request-id";
 import { bearerAuth } from "./middleware/auth";
 import { errorMiddleware } from "./middleware/error";
@@ -12,6 +11,7 @@ import { resourcesRouter } from "./mcp/resources";
 import { eventsRouter } from "./mcp/events";
 import { listConfiguredProviders } from "./llm/client";
 import { modelCatalogResponse } from "./llm/model-catalog";
+import { configuredDefaultModel, configuredDefaultProvider, providerConfigSummary } from "./llm/provider-config";
 import { runInvariantChecks } from "./healthz-strict";
 
 export const app = express();
@@ -30,8 +30,8 @@ app.get("/health", (_req, res) => {
       status: "ok",
       service: "singularity-mcp-server",
       version: "0.1.0",
-      provider: config.LLM_PROVIDER,
-      model: config.LLM_MODEL,
+      provider: configuredDefaultProvider(),
+      model: configuredDefaultModel(),
       timestamp: new Date().toISOString(),
     },
     requestId: res.locals.requestId,
@@ -60,8 +60,9 @@ app.get("/llm/providers", (_req, res) => {
   res.json({
     success: true,
     data: {
-      default_provider: config.LLM_PROVIDER,
-      default_model:    config.LLM_MODEL,
+      default_provider: configuredDefaultProvider(),
+      default_model:    configuredDefaultModel(),
+      provider_config:  providerConfigSummary(),
       providers:        listConfiguredProviders(),
     },
     requestId: res.locals.requestId,

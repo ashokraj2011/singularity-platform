@@ -19,13 +19,14 @@
 import type { LlmRequest, LlmResponse, LlmStreamHooks } from "../types";
 import { config } from "../../config";
 import { callOpenAiCompatible } from "./openai";
+import { providerBaseUrl, providerDefaultModel } from "../provider-config";
 
 export async function copilotRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promise<LlmResponse> {
   if (!config.COPILOT_TOKEN) throw new Error("COPILOT_TOKEN is not configured");
   return callOpenAiCompatible({
-    baseUrl: config.COPILOT_BASE_URL,
+    baseUrl: providerBaseUrl("copilot"),
     apiKey:  config.COPILOT_TOKEN,
-    model:   req.model || config.COPILOT_DEFAULT_MODEL,
+    model:   req.model || providerDefaultModel("copilot"),
     request: req,
     hooks,
     extraHeaders: {

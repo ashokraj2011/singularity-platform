@@ -7,6 +7,7 @@ import { attachWsBridge } from "./mcp/ws";
 import { startSelfRegistration } from "./lib/platform-registry/register";
 import { LaptopRelayClient, ensureDeviceId } from "./laptop/relay-client";
 import { indexWorkspace } from "./workspace/ast-index";
+import { configuredDefaultModel, configuredDefaultProvider } from "./llm/provider-config";
 
 // M26 — laptop mode. When LAPTOP_MODE=true, skip the inbound HTTP server
 // (laptops can't open ports behind NAT) and open an outbound WSS to the
@@ -67,7 +68,7 @@ function bootServerMode(): void {
     health_path:  "/healthz",
     auth_mode:    "bearer-static",
     owner_team:   "platform",
-    metadata:     { layer: "execution", provider: config.LLM_PROVIDER, ws_path: "/mcp/ws" },
+    metadata:     { layer: "execution", provider: configuredDefaultProvider(), ws_path: "/mcp/ws" },
     capabilities: [
       { capability_key: "mcp.tools.list",    description: "MCP tools/list" },
       { capability_key: "mcp.tools.call",    description: "MCP tools/call (server-side or local)" },
@@ -81,8 +82,8 @@ function bootServerMode(): void {
     log.info(
       {
         port: config.PORT,
-        provider: config.LLM_PROVIDER,
-        model: config.LLM_MODEL,
+        provider: configuredDefaultProvider(),
+        model: configuredDefaultModel(),
         maxSteps: config.MAX_AGENT_STEPS,
         ws_path: "/mcp/ws",
       },

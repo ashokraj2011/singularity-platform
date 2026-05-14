@@ -11,6 +11,7 @@
 import { v4 as uuidv4 } from "uuid";
 import type { LlmRequest, LlmResponse, LlmStreamHooks, ToolCall, ChatMessage } from "../types";
 import { config } from "../../config";
+import { providerBaseUrl, providerDefaultModel } from "../provider-config";
 
 interface OAToolSpec {
   type: "function";
@@ -292,9 +293,9 @@ async function callOpenAiCompatibleStreaming(opts: {
 export async function openaiRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promise<LlmResponse> {
   if (!config.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
   return callOpenAiCompatible({
-    baseUrl: config.OPENAI_BASE_URL,
+    baseUrl: providerBaseUrl("openai"),
     apiKey:  config.OPENAI_API_KEY,
-    model:   req.model || config.OPENAI_DEFAULT_MODEL,
+    model:   req.model || providerDefaultModel("openai"),
     request: req,
     hooks,
   });
@@ -303,9 +304,9 @@ export async function openaiRespond(req: LlmRequest, hooks?: LlmStreamHooks): Pr
 export async function openrouterRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promise<LlmResponse> {
   if (!config.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not configured");
   return callOpenAiCompatible({
-    baseUrl: config.OPENROUTER_BASE_URL,
+    baseUrl: providerBaseUrl("openrouter"),
     apiKey:  config.OPENROUTER_API_KEY,
-    model:   req.model || "openai/gpt-4o-mini",
+    model:   req.model || providerDefaultModel("openrouter"),
     request: req,
     hooks,
   });

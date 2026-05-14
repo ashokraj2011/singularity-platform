@@ -4,6 +4,7 @@
 .env.*.local
 .singularity/config.local.json
 .singularity/ops-doctor.json
+.singularity/llm-providers.json
 singularity-portal/public/ops-doctor.json
 *.pem
 *.key

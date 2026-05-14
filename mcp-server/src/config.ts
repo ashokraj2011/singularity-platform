@@ -14,6 +14,9 @@ const schema = z.object({
   // overrides via LlmRequest.provider.
   LLM_PROVIDER: z.enum(["mock", "openai", "openrouter", "anthropic", "copilot"]).default("mock"),
   LLM_MODEL: z.string().default("mock-fast"),
+  MCP_ALLOWED_LLM_PROVIDERS: z.string().optional(),
+  MCP_LLM_PROVIDER_CONFIG_JSON: z.string().optional(),
+  MCP_LLM_PROVIDER_CONFIG_PATH: z.string().optional(),
   MCP_LLM_MODEL_CATALOG_JSON: z.string().optional(),
   MCP_LLM_MODEL_CATALOG_PATH: z.string().optional(),
 

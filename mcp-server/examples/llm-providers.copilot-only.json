@@ -1,0 +1,28 @@
+{
+  "defaultProvider": "copilot",
+  "defaultModel": "gpt-4o",
+  "allowedProviders": ["copilot"],
+  "providers": {
+    "mock": {
+      "enabled": false
+    },
+    "openai": {
+      "enabled": false
+    },
+    "openrouter": {
+      "enabled": false
+    },
+    "anthropic": {
+      "enabled": false
+    },
+    "copilot": {
+      "enabled": true,
+      "baseUrl": "https://api.githubcopilot.com",
+      "defaultModel": "gpt-4o",
+      "credentialEnv": "COPILOT_TOKEN",
+      "supportsTools": true,
+      "costTier": "medium",
+      "description": "Office-safe MCP provider policy. Secrets stay in env."
+    }
+  }
+}

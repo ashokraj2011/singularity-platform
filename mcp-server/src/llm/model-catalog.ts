@@ -4,6 +4,7 @@ import { z } from "zod";
 import { config } from "../config";
 import { listConfiguredProviders } from "./client";
 import { AppError } from "../shared/errors";
+import { configuredDefaultModel, configuredDefaultProvider } from "./provider-config";
 
 const CatalogEntrySchema = z.object({
   id: z.string().min(1),
@@ -55,12 +56,12 @@ function readCatalogSource(): unknown {
 }
 
 function fallbackCatalog(): LlmModelCatalogEntry[] {
-  const provider = config.LLM_PROVIDER;
+  const provider = configuredDefaultProvider();
   return [{
     id: "default",
-    label: `${provider} / ${config.LLM_MODEL || defaultModelForProvider(provider)}`,
+    label: `${provider} / ${configuredDefaultModel() || defaultModelForProvider(provider)}`,
     provider,
-    model: config.LLM_MODEL || defaultModelForProvider(provider),
+    model: configuredDefaultModel() || defaultModelForProvider(provider),
     ready: providerReady(provider),
     default: true,
     maxOutputTokens: undefined,

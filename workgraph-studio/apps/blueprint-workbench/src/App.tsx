@@ -13,6 +13,7 @@ import {
   ClipboardCheck,
   Code2,
   Download,
+  FileCode2,
   GitBranch,
   HardDrive,
   Loader2,
@@ -35,6 +36,7 @@ import {
   pseudoLogin,
   saveToken,
   type BlueprintArtifact,
+  type CodeChangeRecord,
   type BlueprintSession,
   type CreateSessionRequest,
   type DecisionAnswer,
@@ -822,6 +824,10 @@ function StageDetailsPanel({
         </div>
       )}
 
+      {isDeveloperStage(stage) && latest && (
+        <DeveloperCodeReview session={session} stage={stage} latest={latest} />
+      )}
+
       <div className="question-stack">
         {(stage.questions ?? []).map(question => (
           <section className="question-card" key={question.id}>
@@ -929,6 +935,240 @@ function StageDetailsPanel({
       )}
     </aside>
   )
+}
+
+type DiffLineKind = 'add' | 'remove' | 'meta' | 'context'
+
+type ReviewDiffLine = {
+  kind: DiffLineKind
+  text: string
+  lineNo?: number
+}
+
+type ReviewFile = {
+  id: string
+  path: string
+  source: 'mcp' | 'artifact'
+  status: string
+  additions?: number
+  deletions?: number
+  commitSha?: string
+  diffLines: ReviewDiffLine[]
+}
+
+function DeveloperCodeReview({
+  session,
+  stage,
+  latest,
+}: {
+  session: BlueprintSession
+  stage: LoopStage
+  latest: StageAttempt
+}) {
+  const [activeFileId, setActiveFileId] = useState<string | null>(null)
+  const codeChangesQuery = useQuery({
+    queryKey: ['blueprintCodeChanges', session.id, stage.key, latest.id],
+    queryFn: () => api.codeChanges(session.id, stage.key),
+    enabled: Boolean(latest),
+    refetchInterval: latest.status === 'RUNNING' ? 3000 : false,
+    retry: 1,
+  })
+  const files = useMemo(
+    () => buildReviewFiles(session, stage.key, codeChangesQuery.data?.items ?? []),
+    [session, stage.key, codeChangesQuery.data?.items],
+  )
+  const activeFile = files.find(file => file.id === activeFileId) ?? files[0]
+
+  useEffect(() => {
+    setActiveFileId(current => current && files.some(file => file.id === current) ? current : files[0]?.id ?? null)
+  }, [files])
+
+  const hasMcpDiff = files.some(file => file.source === 'mcp')
+  const status = latest.verdict ? verdictLabels[latest.verdict] : latest.status
+
+  return (
+    <section className="code-review-panel">
+      <div className="code-review-header">
+        <div>
+          <span className="stage-key">Developer approval</span>
+          <h3><FileCode2 size={16} /> Code review</h3>
+          <p>Review changed files and highlighted diffs before approving or sending work back.</p>
+        </div>
+        <span className={`status ${latestStatus(latest)}`}>{status}</span>
+      </div>
+
+      {codeChangesQuery.isError && (
+        <p className="code-review-warning">
+          <AlertTriangle size={14} />
+          MCP code-change lookup failed; showing generated developer evidence when available.
+        </p>
+      )}
+
+      {!hasMcpDiff && files.length > 0 && (
+        <p className="code-review-warning">
+          <AlertTriangle size={14} />
+          No live MCP diff body was captured for this attempt. This preview is built from the developer code-change artifact.
+        </p>
+      )}
+
+      {codeChangesQuery.isLoading && files.length === 0 ? (
+        <div className="code-review-empty"><Loader2 className="spin" size={15} /> Loading code-change evidence...</div>
+      ) : files.length === 0 ? (
+        <div className="code-review-empty">
+          <FileCode2 size={18} />
+          <span>No code-change evidence captured yet. Run the developer stage to generate a review packet.</span>
+        </div>
+      ) : (
+        <div className="code-review-shell">
+          <nav className="code-review-files" aria-label="Changed files">
+            {files.map(file => (
+              <button
+                type="button"
+                key={file.id}
+                className={file.id === activeFile?.id ? 'active' : ''}
+                onClick={() => setActiveFileId(file.id)}
+              >
+                <FileCode2 size={13} />
+                <span>{file.path}</span>
+                <small>{file.additions ?? 0}+ / {file.deletions ?? 0}-</small>
+              </button>
+            ))}
+          </nav>
+
+          <article className="code-review-editor">
+            <div className="editor-toolbar">
+              <span>{activeFile?.path}</span>
+              <em>{activeFile?.source === 'mcp' ? 'MCP diff' : 'artifact evidence'}</em>
+            </div>
+            {activeFile?.commitSha && (
+              <div className="editor-commit">
+                <GitBranch size={13} />
+                <code>{activeFile.commitSha}</code>
+              </div>
+            )}
+            <div className="diff-code" role="region" aria-label="Code diff">
+              {(activeFile?.diffLines ?? []).map((line, index) => (
+                <div className={`diff-line diff-${line.kind}`} key={`${activeFile?.id}-${index}`}>
+                  <span className="diff-gutter">{line.lineNo ?? ''}</span>
+                  <code className="diff-text">{line.text || ' '}</code>
+                </div>
+              ))}
+            </div>
+          </article>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function buildReviewFiles(session: BlueprintSession, stageKey: string, changes: CodeChangeRecord[]): ReviewFile[] {
+  const fromMcp = changes.flatMap(change => reviewFilesFromCodeChange(change))
+  if (fromMcp.length > 0) return fromMcp
+
+  return session.artifacts
+    .filter(artifact => artifact.stageKey === stageKey && isCodeReviewArtifact(artifact))
+    .flatMap(artifact => reviewFilesFromArtifact(artifact))
+}
+
+function reviewFilesFromCodeChange(change: CodeChangeRecord): ReviewFile[] {
+  const body = change.diff || change.patch || ''
+  const paths = change.paths_touched?.length ? change.paths_touched : [pathFromDiff(body) ?? change.id]
+  const pathLabel = paths.length === 1 ? paths[0] : `${paths[0]} +${paths.length - 1}`
+  return [{
+    id: `mcp-${change.id}`,
+    path: pathLabel,
+    source: 'mcp',
+    status: change.stale ? 'stale' : 'captured',
+    additions: change.lines_added,
+    deletions: change.lines_removed,
+    commitSha: change.commit_sha,
+    diffLines: parseDiffLines(body || fallbackDiffBody(paths, change)),
+  }]
+}
+
+function reviewFilesFromArtifact(artifact: BlueprintArtifact): ReviewFile[] {
+  const paths = extractArtifactPaths(artifact)
+  const content = artifact.content || JSON.stringify(artifact.payload ?? {}, null, 2)
+  return paths.map((path, index) => ({
+    id: `artifact-${artifact.id}-${index}`,
+    path,
+    source: 'artifact' as const,
+    status: artifact.consumableStatus ?? 'under_review',
+    additions: countLinesByPrefix(content, '+'),
+    deletions: countLinesByPrefix(content, '-'),
+    diffLines: parseArtifactEvidence(content, path, artifact),
+  }))
+}
+
+function isCodeReviewArtifact(artifact: BlueprintArtifact) {
+  const kind = artifact.kind.toLowerCase()
+  const title = artifact.title.toLowerCase()
+  return kind.includes('code') || kind.includes('developer') || title.includes('code') || title.includes('change')
+}
+
+function extractArtifactPaths(artifact: BlueprintArtifact) {
+  const content = artifact.content ?? ''
+  const payloadPath = typeof artifact.payload?.path === 'string' ? artifact.payload.path : undefined
+  const payloadPaths = Array.isArray(artifact.payload?.paths)
+    ? artifact.payload.paths.filter((item): item is string => typeof item === 'string')
+    : []
+  const fromContent = content
+    .split('\n')
+    .map(line => line.trim())
+    .map(line => {
+      const clean = line.replace(/^[-*]\s+/, '').replace(/^path:\s*/i, '').replace(/^expected_paths:\s*/i, '').trim()
+      return /\.(tsx?|jsx?|py|java|go|rs|css|scss|html|json|ya?ml|md)$/i.test(clean) ? clean : undefined
+    })
+    .filter((item): item is string => Boolean(item))
+  const paths = uniqueStrings([payloadPath, ...payloadPaths, ...fromContent])
+  return paths.length > 0 ? paths : [artifact.title]
+}
+
+function parseDiffLines(body: string): ReviewDiffLine[] {
+  const lines = body.split('\n')
+  if (lines.length === 0) return [{ kind: 'context', text: 'No diff body captured.' }]
+  let displayLine = 0
+  return lines.slice(0, 500).map(line => {
+    const kind = diffLineKind(line)
+    if (kind === 'add' || kind === 'context') displayLine += 1
+    return { kind, text: line, lineNo: kind === 'meta' ? undefined : displayLine }
+  })
+}
+
+function parseArtifactEvidence(content: string, path: string, artifact: BlueprintArtifact): ReviewDiffLine[] {
+  const header = [
+    '@@ Workbench developer evidence @@',
+    `+ Artifact: ${artifact.title}`,
+    `+ Review path: ${path}`,
+    artifact.consumableStatus ? `+ Consumable status: ${artifact.consumableStatus}` : '',
+    '',
+  ].filter(Boolean)
+  return parseDiffLines([...header, ...content.split('\n').slice(0, 180)].join('\n'))
+}
+
+function diffLineKind(line: string): DiffLineKind {
+  if (line.startsWith('diff --git') || line.startsWith('@@') || line.startsWith('+++') || line.startsWith('---')) return 'meta'
+  if (line.startsWith('+')) return 'add'
+  if (line.startsWith('-')) return 'remove'
+  return 'context'
+}
+
+function pathFromDiff(body: string) {
+  const match = body.match(/\+\+\+\s+b\/([^\n]+)/) ?? body.match(/diff --git\s+a\/\S+\s+b\/([^\n]+)/)
+  return match?.[1]?.trim()
+}
+
+function fallbackDiffBody(paths: string[], change: CodeChangeRecord) {
+  return [
+    '@@ MCP code-change metadata @@',
+    ...paths.map(path => `+ ${path}`),
+    change.tool_name ? `+ Tool: ${change.tool_name}` : '',
+    change.commit_sha ? `+ Commit: ${change.commit_sha}` : '',
+  ].filter(Boolean).join('\n')
+}
+
+function countLinesByPrefix(content: string, prefix: '+' | '-') {
+  return content.split('\n').filter(line => line.startsWith(prefix) && !line.startsWith(`${prefix}${prefix}${prefix}`)).length
 }
 
 function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintSession; activeStageKey?: string; onSession: (session: BlueprintSession) => void }) {
@@ -1094,6 +1334,11 @@ function attemptsFor(session: BlueprintSession, stageKey: string) {
   return (session.stageAttempts ?? []).filter(attempt => attempt.stageKey === stageKey)
 }
 
+function isDeveloperStage(stage: LoopStage) {
+  const signature = `${stage.key} ${stage.label} ${stage.agentRole}`.toLowerCase()
+  return signature.includes('develop') || signature.includes('developer') || signature.includes('engineer') || signature.includes('code')
+}
+
 function latestStatus(attempt?: StageAttempt) {
   if (!attempt) return 'pending'
   if (attempt.verdict === 'PASS' || attempt.verdict === 'ACCEPTED_WITH_RISK') return 'passed'
@@ -1148,6 +1393,10 @@ function capLabel(cap: LookupCapability) {
 
 function csv(value: string) {
   return value.split(',').map(item => item.trim()).filter(Boolean)
+}
+
+function uniqueStrings(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.map(value => value?.trim()).filter((value): value is string => Boolean(value))))
 }
 
 function hasLoopAgentTemplates(loopDefinition: unknown) {

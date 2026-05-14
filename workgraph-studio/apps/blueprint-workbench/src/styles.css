@@ -714,6 +714,220 @@ code, pre, .console-top code, .terminal-log {
   background: rgba(255, 180, 171, 0.08);
 }
 
+.code-review-panel {
+  border: 1px solid rgba(173, 198, 255, 0.22);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(6, 14, 32, 0.96), rgba(19, 27, 46, 0.92));
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.code-review-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+  border-bottom: 1px solid var(--outline-variant);
+  padding: 12px;
+}
+
+.code-review-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 7px 0 3px;
+  color: var(--primary);
+  font-size: 16px;
+}
+
+.code-review-header p {
+  margin: 0;
+  color: var(--muted-low);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.code-review-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 10px 12px 0;
+  border: 1px solid rgba(255, 183, 134, 0.22);
+  border-radius: 9px;
+  background: rgba(255, 183, 134, 0.07);
+  color: var(--tertiary);
+  padding: 8px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.code-review-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-low);
+  padding: 14px;
+  font-size: 12px;
+}
+
+.code-review-shell {
+  display: grid;
+  grid-template-columns: 124px minmax(0, 1fr);
+  min-height: 280px;
+  max-height: 420px;
+}
+
+.code-review-files {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-right: 1px solid var(--outline-variant);
+  background: rgba(11, 19, 38, 0.76);
+  padding: 8px;
+  overflow: auto;
+}
+
+.code-review-files button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 6px;
+  align-items: center;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  padding: 7px;
+}
+
+.code-review-files button.active {
+  border-color: rgba(173, 198, 255, 0.35);
+  background: rgba(173, 198, 255, 0.11);
+  color: var(--primary);
+}
+
+.code-review-files button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.code-review-files button small {
+  grid-column: 2;
+  color: var(--muted-low);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+}
+
+.code-review-editor {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-lowest);
+}
+
+.editor-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  border-bottom: 1px solid var(--outline-variant);
+  background: rgba(34, 42, 61, 0.72);
+  color: var(--text);
+  padding: 8px 10px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+}
+
+.editor-toolbar span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-toolbar em {
+  color: var(--muted-low);
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.editor-commit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid rgba(66, 71, 84, 0.72);
+  color: var(--muted-low);
+  padding: 6px 10px;
+}
+
+.editor-commit code {
+  color: var(--secondary);
+  font-size: 10px;
+}
+
+.diff-code {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 0;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.diff-line {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.diff-gutter {
+  user-select: none;
+  border-right: 1px solid rgba(66, 71, 84, 0.55);
+  color: var(--outline);
+  padding: 0 8px;
+  text-align: right;
+}
+
+.diff-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  padding: 0 8px;
+}
+
+.diff-add {
+  background: rgba(114, 228, 162, 0.09);
+}
+
+.diff-add .diff-text {
+  color: #a8f0c3;
+}
+
+.diff-remove {
+  background: rgba(255, 180, 171, 0.08);
+}
+
+.diff-remove .diff-text {
+  color: var(--danger);
+}
+
+.diff-meta {
+  background: rgba(173, 198, 255, 0.08);
+}
+
+.diff-meta .diff-text {
+  color: var(--primary);
+  font-weight: 800;
+}
+
+.diff-context .diff-text {
+  color: var(--muted);
+}
+
 .question-stack {
   display: grid;
   gap: 10px;

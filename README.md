@@ -452,6 +452,7 @@ Wraps the master compose with friendlier subcommands. Useful for starting/stoppi
 ./singularity.sh login                     # smoke-test IAM /auth/local/login
 ./singularity.sh doctor                    # validate DBs, endpoints, LLM keys, MCP
 ./singularity.sh config init --profile office-laptop
+./singularity.sh config office-copilot-only
 ./singularity.sh config interactive        # guided local configuration wizard
 ./singularity.sh ls                        # list known service names
 ./singularity.sh build [service]           # rebuild image(s)
@@ -467,7 +468,8 @@ It configures:
 - Database URLs for IAM, agent-and-tools, and Workgraph.
 - IAM vs pseudo-IAM endpoints.
 - Service endpoints for Workgraph, prompt-composer, context-fabric, agent-runtime, tool-service, agent-service, and MCP.
-- LLM provider, model, and keys for OpenAI, OpenRouter, Ollama, or mock mode.
+- LLM provider policy, model aliases, and keys for OpenAI, OpenRouter, Anthropic, Copilot, Ollama, or mock mode. Provider policy lives in `.singularity/llm-providers.json`; secrets stay in generated env files.
+- Office-safe Copilot-only mode. `./singularity.sh config office-copilot-only` blanks OpenAI/OpenRouter/Anthropic/Ollama access in generated env files, writes Copilot-only MCP provider and model catalog files, and fences MCP to the Copilot provider.
 - Default/local MCP runtime URL, bearer token, public URL, sandbox root, AST index path, and local work-branch defaults. MCP does **not** need to belong to a capability; capability-specific MCP registration is advanced-only.
 - MCP-owned model aliases. Workflows choose aliases; MCP resolves aliases to real provider/model credentials.
 - Balanced token budget defaults. Workgraph owns run budgets, Prompt Composer owns layer/retrieval budgeting, Context Fabric enforces execution limits, and MCP owns provider/model routing.
@@ -480,8 +482,10 @@ Common commands:
 ./singularity.sh config interactive
 ./singularity.sh config set llm.openai.apiKey "$OPENAI_API_KEY"
 ./singularity.sh config set llm.provider openai
+./singularity.sh config office-copilot-only
 ./singularity.sh config mcp --base-url http://localhost:7100 --sandbox-root /path/to/repo
 ./singularity.sh config mcp-catalog --default-alias balanced
+./singularity.sh config providers
 ./singularity.sh config models
 ./singularity.sh config show
 ./singularity.sh doctor
@@ -489,6 +493,104 @@ Common commands:
 ```
 
 `show` masks secrets. `doctor` checks the canonical config, env drift, common ports, reachable service URLs, provider key presence, MCP token length, and model-catalog readiness. It also writes `singularity-portal/public/ops-doctor.json` so the Portal Setup Center can show the same status. For bare-metal runs, use `config export` to print shell exports without editing files.
+
+Office laptop / Copilot-only setup:
+
+```bash
+./singularity.sh config init --profile office-copilot-only --force
+# optional if you have a Copilot API token; gh copilot CLI tools work separately
+./singularity.sh config set llm.copilot.token "$COPILOT_TOKEN"
+./singularity.sh config office-copilot-only
+./singularity.sh doctor
+cd mcp-server && npm run build && npx singularity-mcp doctor
+```
+
+This mode is intentionally strict: generated env files leave `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`, and `OLLAMA_BASE_URL` blank. Workflows still choose model aliases, but MCP exposes only the `copilot` alias.
+
+### MCP LLM provider configuration
+
+MCP owns provider/model routing for workflow execution. Workgraph and Context Fabric pass a model alias; MCP validates that alias against local config, resolves the provider/model, and makes the provider call. This avoids scattering OpenAI/Anthropic/OpenRouter/Copilot decisions across services.
+
+MCP reads two local JSON files:
+
+- `.singularity/llm-providers.json` — provider policy: allowlist, default provider/model, base URLs, credential env names, and enabled/disabled flags.
+- `.singularity/mcp-models.json` — approved workflow-facing model aliases. Workflows choose aliases; MCP resolves aliases to real providers/models.
+
+These generated files are intentionally ignored by git because they are local setup state. Checked-in examples live under:
+
+- `mcp-server/examples/llm-providers.default.json`
+- `mcp-server/examples/llm-providers.copilot-only.json`
+
+The provider config is selected with:
+
+```bash
+MCP_LLM_PROVIDER_CONFIG_PATH=.singularity/llm-providers.json
+# or, for automation:
+MCP_LLM_PROVIDER_CONFIG_JSON='{"defaultProvider":"copilot",...}'
+```
+
+Secrets still stay in generated env files, not JSON:
+
+```bash
+OPENAI_API_KEY=...
+OPENROUTER_API_KEY=...
+ANTHROPIC_API_KEY=...
+COPILOT_TOKEN=...
+```
+
+Example Copilot-only provider config:
+
+```json
+{
+  "defaultProvider": "copilot",
+  "defaultModel": "gpt-4o",
+  "allowedProviders": ["copilot"],
+  "providers": {
+    "copilot": {
+      "enabled": true,
+      "baseUrl": "https://api.githubcopilot.com",
+      "defaultModel": "gpt-4o",
+      "credentialEnv": "COPILOT_TOKEN",
+      "supportsTools": true
+    },
+    "openai": { "enabled": false },
+    "openrouter": { "enabled": false },
+    "anthropic": { "enabled": false },
+    "mock": { "enabled": false }
+  }
+}
+```
+
+Useful commands:
+
+```bash
+# Generate normal provider/model config.
+./singularity.sh config mcp-catalog --default-alias balanced
+
+# Generate strict office mode: only Copilot is exposed.
+./singularity.sh config office-copilot-only
+
+# Inspect provider policy readiness.
+./singularity.sh config providers
+
+# Inspect workflow-facing model aliases.
+./singularity.sh config models
+
+# Write generated env files from .singularity/config.local.json.
+./singularity.sh config write
+
+# Restart MCP so it reloads provider/model config.
+./singularity.sh restart mcp-server-demo
+```
+
+Runtime verification:
+
+```bash
+curl http://localhost:7100/llm/providers
+curl http://localhost:7100/llm/models
+```
+
+In office Copilot-only mode, `/llm/providers` should report `copilot` as allowed/enabled and `openai`, `openrouter`, `anthropic`, and `mock` as disabled or not allowed. If a workflow tries to force a disabled provider, MCP rejects it before making any provider call.
 
 ### Option C — per-app compose files
 

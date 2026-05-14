@@ -82,6 +82,28 @@ export type BlueprintArtifact = {
   createdAt: string
 }
 
+export type CodeChangeRecord = {
+  id: string
+  tool_name?: string
+  paths_touched?: string[]
+  diff?: string
+  patch?: string
+  commit_sha?: string
+  language?: string
+  lines_added?: number
+  lines_removed?: number
+  timestamp?: string
+  stale?: boolean
+}
+
+export type BlueprintCodeChangesResponse = {
+  sessionId: string
+  cfCallIds: string[]
+  items: CodeChangeRecord[]
+  stale?: boolean
+  errors?: string[]
+}
+
 export type LoopQuestion = {
   id: string
   question: string
@@ -347,6 +369,9 @@ export const api = {
   finalize: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/finalize`, { method: 'POST' }),
   approve: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/approve`, { method: 'POST' }),
   saveDecisionAnswers: (id: string, answers: DecisionAnswer[]) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/decision-answers`, { method: 'POST', body: JSON.stringify({ answers }) }),
+  codeChanges: (id: string, stageKey?: string) => request<BlueprintCodeChangesResponse>(
+    `/blueprint/sessions/${encodeURIComponent(id)}/code-changes${stageKey ? `?stageKey=${encodeURIComponent(stageKey)}` : ''}`,
+  ),
   capabilities: async () => unwrap<LookupCapability>(await request('/lookup/capabilities?size=200')),
   agents: async (capabilityId: string) => unwrap<LookupAgent>(await request(`/lookup/agent-templates?size=200&capability_id=${encodeURIComponent(capabilityId)}`)),
   workflowInstances: async () => unwrap<WorkflowInstanceListItem>(await request('/workflow-instances?size=20')),

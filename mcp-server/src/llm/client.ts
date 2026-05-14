@@ -1,9 +1,22 @@
-import { config } from "../config";
 import { mockLlmRespond } from "./mock";
 import { openaiRespond, openrouterRespond } from "./providers/openai";
 import { anthropicRespond } from "./providers/anthropic";
 import { copilotRespond } from "./providers/copilot";
 import { LlmRequest, LlmResponse, LlmStreamHooks } from "./types";
+import {
+  SUPPORTED_PROVIDERS,
+  configuredDefaultProvider,
+  isProviderAllowedByConfig,
+  loadProviderConfig,
+  providerCredentialConfigured,
+  providerCredentialEnvName,
+  providerDefaultModel,
+  providerSettings,
+} from "./provider-config";
+
+export function isProviderAllowed(provider: string): boolean {
+  return isProviderAllowedByConfig(provider);
+}
 
 /**
  * M11 follow-up — embedded LLM gateway.
@@ -17,7 +30,10 @@ import { LlmRequest, LlmResponse, LlmStreamHooks } from "./types";
  * and switch on the name here.
  */
 export async function llmRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promise<LlmResponse> {
-  const provider = (req.provider || config.LLM_PROVIDER).toLowerCase();
+  const provider = (req.provider || configuredDefaultProvider()).toLowerCase();
+  if (!isProviderAllowed(provider)) {
+    throw new Error(`LLM provider is disabled by MCP provider config: ${provider}`);
+  }
   switch (provider) {
     case "mock":      return mockLlmRespond(req, hooks);
     case "openai":    return openaiRespond(req, hooks);
@@ -31,12 +47,37 @@ export async function llmRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promi
 
 /** Used by /healthz and the new GET /llm/providers route to surface
  *  which providers are configured (without leaking key material). */
-export function listConfiguredProviders(): Array<{ name: string; ready: boolean; default_model: string }> {
-  return [
-    { name: "mock",      ready: true,                              default_model: config.LLM_MODEL },
-    { name: "openai",    ready: Boolean(config.OPENAI_API_KEY),    default_model: config.OPENAI_DEFAULT_MODEL },
-    { name: "openrouter", ready: Boolean(config.OPENROUTER_API_KEY), default_model: "openai/gpt-4o-mini" },
-    { name: "anthropic", ready: Boolean(config.ANTHROPIC_API_KEY), default_model: config.ANTHROPIC_DEFAULT_MODEL },
-    { name: "copilot",   ready: Boolean(config.COPILOT_TOKEN),     default_model: config.COPILOT_DEFAULT_MODEL },
-  ];
+export type ConfiguredProviderInfo = {
+  name: string;
+  ready: boolean;
+  default_model: string;
+  allowed: boolean;
+  enabled: boolean;
+  source: string;
+  warnings: string[];
+};
+
+export function listConfiguredProviders(): ConfiguredProviderInfo[] {
+  const loaded = loadProviderConfig();
+  return SUPPORTED_PROVIDERS.map(provider => {
+    const settings = providerSettings(provider);
+    const allowed = isProviderAllowed(provider);
+    const hasCredential = providerCredentialConfigured(provider);
+    const enabled = settings.enabled !== false;
+    const warnings: string[] = [];
+    if (!enabled) warnings.push("Disabled by MCP LLM provider config.");
+    if (!allowed) warnings.push("Blocked by MCP provider allowlist.");
+    if (!hasCredential && provider !== "mock") {
+      warnings.push(`Missing credential env ${providerCredentialEnvName(provider)}.`);
+    }
+    return {
+      name: provider,
+      ready: enabled && allowed && hasCredential,
+      default_model: providerDefaultModel(provider),
+      allowed,
+      enabled,
+      source: loaded.source,
+      warnings,
+    };
+  });
 }
