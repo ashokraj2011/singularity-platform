@@ -221,6 +221,11 @@ def _hydrate(row: Optional[dict]) -> Optional[dict]:
         except Exception:
             row[out_key] = []
         del row[k]
+    try:
+        row["pending_tool_args"] = json.loads(row.get("pending_tool_args_json") or "null")
+    except Exception:
+        row["pending_tool_args"] = None
+    row.pop("pending_tool_args_json", None)
     return row
 
 

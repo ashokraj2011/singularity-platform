@@ -51,6 +51,7 @@ const createSessionSchema = z.object({
   snapshotMode: z.enum(['summary', 'relevant_excerpts', 'full_debug']).default('relevant_excerpts'),
   excerptBudgetChars: z.number().int().min(2_000).max(120_000).optional(),
   reuseUnchangedAttempt: z.boolean().default(true),
+  governanceMode: z.enum(['fail_open', 'fail_closed', 'degraded', 'human_approval_required']).default('fail_open'),
 })
 
 const decisionAnswerSchema = z.object({
@@ -219,6 +220,7 @@ type LoopState = {
     excerptBudgetChars?: number
     reuseUnchangedAttempt?: boolean
     modelAlias?: string
+    governanceMode?: 'fail_open' | 'fail_closed' | 'degraded' | 'human_approval_required'
   }
 }
 
@@ -282,6 +284,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         snapshotMode: body.snapshotMode,
         excerptBudgetChars: body.excerptBudgetChars ?? EXECUTE_EXCERPT_BUDGET_CHARS,
         reuseUnchangedAttempt: body.reuseUnchangedAttempt,
+        governanceMode: body.governanceMode,
       },
     }
     const session = await prisma.blueprintSession.create({
@@ -747,6 +750,9 @@ function readExecutionConfig(value: unknown): LoopState['executionConfig'] {
     excerptBudgetChars: typeof value.excerptBudgetChars === 'number' ? value.excerptBudgetChars : undefined,
     reuseUnchangedAttempt: value.reuseUnchangedAttempt !== false,
     modelAlias: typeof value.modelAlias === 'string' && value.modelAlias.trim() ? value.modelAlias.trim() : undefined,
+    governanceMode: ['fail_open', 'fail_closed', 'degraded', 'human_approval_required'].includes(String(value.governanceMode))
+      ? value.governanceMode as NonNullable<LoopState['executionConfig']>['governanceMode']
+      : 'fail_open',
   }
 }
 
@@ -1543,6 +1549,7 @@ async function runLoopStageExecute(
       maxToolResultChars: 8000,
       maxPromptChars: 24_000,
     },
+    governance_mode: executionConfig?.governanceMode ?? 'fail_open',
   })
 }
 
@@ -2227,6 +2234,7 @@ async function runStage(
       maxToolResultChars: 8000,
       maxPromptChars: 24_000,
     },
+    governance_mode: executionConfig?.governanceMode ?? 'fail_open',
   })
 }
 

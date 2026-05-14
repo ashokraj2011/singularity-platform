@@ -159,6 +159,12 @@ interface NodeInsight {
     promptEstimatedInputTokens?: number
     budgetWarnings: string[]
     retrievalStats?: Record<string, unknown>
+    contextPlan?: Record<string, unknown>
+    contextPlanHash?: string
+    requiredContextStatus?: Record<string, unknown>
+    governanceMode?: string
+    executionPosture?: string
+    blockedReason?: string
     finishReason?: string
     artifactIds: string[]
     toolInvocationIds: string[]
@@ -398,6 +404,11 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
         : prompt?.retrievalStats && typeof prompt.retrievalStats === 'object'
           ? prompt.retrievalStats
           : undefined) as Record<string, unknown> | undefined
+      const contextPlan = (payload.contextPlan && typeof payload.contextPlan === 'object'
+        ? payload.contextPlan
+        : prompt?.contextPlan && typeof prompt.contextPlan === 'object'
+          ? prompt.contextPlan
+          : undefined) as Record<string, unknown> | undefined
       const receiptArr = receiptsByNode.get(r.nodeId) ?? []
       receiptArr.push({
         agentRunId: r.id,
@@ -417,6 +428,12 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
         promptEstimatedInputTokens,
         budgetWarnings,
         retrievalStats,
+        contextPlan,
+        contextPlanHash: (payload.contextPlanHash ?? (payload.correlation as Record<string, unknown> | undefined)?.contextPlanHash) as string | undefined,
+        requiredContextStatus: payload.requiredContextStatus as Record<string, unknown> | undefined,
+        governanceMode: payload.governanceMode as string | undefined,
+        executionPosture: payload.executionPosture as string | undefined,
+        blockedReason: payload.blockedReason as string | undefined,
         finishReason: payload.finishReason as string | undefined,
         artifactIds: Array.isArray(payload.artifactIds) ? payload.artifactIds.map(String) : [],
         toolInvocationIds: Array.isArray(payload.toolInvocationIds) ? payload.toolInvocationIds.map(String) : [],

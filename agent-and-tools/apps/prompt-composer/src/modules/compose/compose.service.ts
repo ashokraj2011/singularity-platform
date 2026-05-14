@@ -96,12 +96,53 @@ function fuseAndRerank<R extends { id: string }, S extends { cosineSimilarity: n
 
 interface AssembledLayer {
   promptLayerId?: string;
+  promptLayerName?: string;
   layerType: string;
   priority: number;
   inclusionReason: string;
   contentSnapshot: string;
   layerHash: string;
+  isRequired?: boolean;
 }
+
+type MissingRequiredContext = {
+  layerType: string;
+  promptLayerId?: string;
+  promptLayerName?: string;
+  reason: string;
+  suggestedFix: string;
+};
+
+type ContextPlan = {
+  task: string;
+  requiredLayers: Array<{
+    layerType: string;
+    promptLayerId?: string;
+    promptLayerName?: string;
+    present: boolean;
+    mandatoryRuntime: boolean;
+  }>;
+  selectedLayers: Array<{
+    layerType: string;
+    promptLayerId?: string;
+    promptLayerName?: string;
+    priority: number;
+    layerHash: string;
+    tokenEstimate: number;
+    required: boolean;
+    inclusionReason: string;
+  }>;
+  retrievedKnowledge: Array<Record<string, unknown>>;
+  retrievedMemory: Array<Record<string, unknown>>;
+  retrievedCode: Array<Record<string, unknown>>;
+  toolContracts: Array<Record<string, unknown>>;
+  excludedContext: Array<Record<string, unknown>>;
+  budgetDecision: Record<string, unknown>;
+  riskDecision: Record<string, unknown>;
+  valid: boolean;
+  missingRequired: MissingRequiredContext[];
+  contextPlanHash: string;
+};
 
 const PRIORITY = {
   PLATFORM: 10,
@@ -125,6 +166,8 @@ const DEFAULT_CONTEXT_BUDGET = {
   maxPromptChars: 48_000,
 };
 
+const MANDATORY_RUNTIME_LAYERS = ["PLATFORM_CONSTITUTION", "AGENT_ROLE", "TASK_CONTEXT"];
+
 function clampInt(value: unknown, fallback: number, min = 0, max = 100_000): number {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(min, Math.min(max, Math.floor(value)))
@@ -144,6 +187,146 @@ function contextBudget(input: ComposeInput) {
     codeTopK: clampInt(policy.codeTopK, DEFAULT_CONTEXT_BUDGET.codeTopK, 0, 50),
     maxLayerChars: clampInt(policy.maxLayerChars, DEFAULT_CONTEXT_BUDGET.maxLayerChars, 500, 100_000),
     maxPromptChars: clampInt(policy.maxPromptChars, DEFAULT_CONTEXT_BUDGET.maxPromptChars, 2_000, 500_000),
+  };
+}
+
+function compactRetrievedChunk(c: RetrievedChunk): Record<string, unknown> {
+  return {
+    source_kind: c.source_kind,
+    source_id: c.source_id,
+    citation_key: c.citation_key,
+    confidence: c.confidence,
+    rrf_rank: c.rrf_rank ?? null,
+    excerpt_chars: c.excerpt.length,
+    metadata: c.metadata ?? {},
+  };
+}
+
+function buildContextPlan(args: {
+  task: string;
+  layers: AssembledLayer[];
+  evidenceChunks: RetrievedChunk[];
+  budget: ReturnType<typeof contextBudget>;
+  budgetWarnings: string[];
+  retrievalStats: Record<string, unknown>;
+  estimatedInputTokens: number;
+  finalPromptHash: string;
+}): ContextPlan {
+  const selectedLayers = args.layers.map((l) => ({
+    layerType: l.layerType,
+    promptLayerId: l.promptLayerId,
+    promptLayerName: l.promptLayerName,
+    priority: l.priority,
+    layerHash: l.layerHash,
+    tokenEstimate: estimateTokens(l.contentSnapshot),
+    required: Boolean(l.isRequired) || MANDATORY_RUNTIME_LAYERS.includes(l.layerType),
+    inclusionReason: l.inclusionReason,
+  }));
+
+  const requiredLayers: ContextPlan["requiredLayers"] = [];
+  const missingRequired: MissingRequiredContext[] = [];
+  for (const layerType of MANDATORY_RUNTIME_LAYERS) {
+    const present = selectedLayers.some(l => l.layerType === layerType);
+    requiredLayers.push({ layerType, present, mandatoryRuntime: true });
+    if (!present) {
+      missingRequired.push({
+        layerType,
+        reason: "Mandatory runtime layer was not selected for this prompt assembly.",
+        suggestedFix: `Attach or enable a ${layerType} PromptLayer in the agent's prompt profile, or ensure the runtime can render it.`,
+      });
+    }
+  }
+
+  for (const l of args.layers.filter(layer => layer.isRequired)) {
+    requiredLayers.push({
+      layerType: l.layerType,
+      promptLayerId: l.promptLayerId,
+      promptLayerName: l.promptLayerName,
+      present: Boolean(l.contentSnapshot.trim()),
+      mandatoryRuntime: false,
+    });
+    if (!l.contentSnapshot.trim()) {
+      missingRequired.push({
+        layerType: l.layerType,
+        promptLayerId: l.promptLayerId,
+        promptLayerName: l.promptLayerName,
+        reason: "Required prompt layer rendered empty content.",
+        suggestedFix: "Check the layer template variables and the caller's workflow context.",
+      });
+    }
+  }
+
+  const retrievedKnowledge = args.evidenceChunks.filter(c => c.source_kind === "knowledge").map(compactRetrievedChunk);
+  const retrievedMemory = args.evidenceChunks.filter(c => c.source_kind === "memory").map(compactRetrievedChunk);
+  const retrievedCode = args.evidenceChunks.filter(c => c.source_kind === "symbol").map(compactRetrievedChunk);
+  const toolLayers = args.layers.filter(l => l.layerType === "TOOL_CONTRACT");
+
+  const excludedContext: Array<Record<string, unknown>> = args.budgetWarnings.map((warning) => ({
+    reason: "budget_warning",
+    warning,
+  }));
+  if (args.retrievalStats.codeContextSkipped) {
+    excludedContext.push({ reason: "code_context_disabled", layerType: "CODE_CONTEXT" });
+  }
+  if (Number(args.retrievalStats.trimmedLayers ?? 0) > 0) {
+    excludedContext.push({ reason: "layer_trimmed", count: args.retrievalStats.trimmedLayers });
+  }
+
+  const planWithoutHash = {
+    task: args.task,
+    requiredLayers,
+    selectedLayers,
+    retrievedKnowledge,
+    retrievedMemory,
+    retrievedCode,
+    toolContracts: toolLayers.map(l => ({
+      layerHash: l.layerHash,
+      tokenEstimate: estimateTokens(l.contentSnapshot),
+      compacted: true,
+      inclusionReason: l.inclusionReason,
+    })),
+    excludedContext,
+    budgetDecision: {
+      estimatedInputTokens: args.estimatedInputTokens,
+      maxLayerChars: args.budget.maxLayerChars,
+      maxPromptChars: args.budget.maxPromptChars,
+      budgetWarnings: args.budgetWarnings,
+      retrievalStats: args.retrievalStats,
+    },
+    riskDecision: {
+      status: "pending_runtime_governance",
+      requiredContextValid: missingRequired.length === 0,
+      toolContractsIncluded: toolLayers.length,
+    },
+    valid: missingRequired.length === 0,
+    missingRequired,
+  };
+  const contextPlanHash = sha256(JSON.stringify({
+    ...planWithoutHash,
+    finalPromptHash: args.finalPromptHash,
+  }));
+  return { ...planWithoutHash, contextPlanHash };
+}
+
+function contextPlanEvidence(plan: ContextPlan): RetrievedChunk {
+  return {
+    source_kind: "artifact",
+    source_id: plan.contextPlanHash,
+    citation_key: `CTX:${plan.contextPlanHash.slice(0, 10)}`,
+    excerpt: `ContextPlan ${plan.valid ? "valid" : "invalid"}; required=${plan.requiredLayers.length}; missing=${plan.missingRequired.map(m => m.layerType).join(",") || "none"}`,
+    confidence: plan.valid ? 1 : 0,
+    cosine_similarity: 1,
+    age_days: 0,
+    metadata: {
+      kind: "context_plan",
+      contextPlanHash: plan.contextPlanHash,
+      valid: plan.valid,
+      missingRequired: plan.missingRequired,
+      requiredLayers: plan.requiredLayers,
+      selectedLayerCount: plan.selectedLayers.length,
+      budgetDecision: plan.budgetDecision,
+      riskDecision: plan.riskDecision,
+    },
   };
 }
 
@@ -446,7 +629,16 @@ export const composeService = {
       const phaseLayers = await prisma.promptLayer.findMany({ where: { scopeType: "WORKFLOW_PHASE", scopeId: input.workflowContext.phaseId, status: "ACTIVE" } });
       for (const l of phaseLayers) {
         const r = renderMustache(l.content, ctx); warnings.push(...r.warnings);
-        layers.push({ promptLayerId: l.id, layerType: l.layerType, priority: PRIORITY.WORKFLOW_PHASE_BASE + l.priority, inclusionReason: `workflow phase ${input.workflowContext.phaseId}`, contentSnapshot: r.rendered, layerHash: l.contentHash ?? sha256(r.rendered) });
+        layers.push({
+          promptLayerId: l.id,
+          promptLayerName: l.name,
+          layerType: l.layerType,
+          priority: PRIORITY.WORKFLOW_PHASE_BASE + l.priority,
+          inclusionReason: `workflow phase ${input.workflowContext.phaseId}`,
+          contentSnapshot: r.rendered,
+          layerHash: l.contentHash ?? sha256(r.rendered),
+          isRequired: l.isRequired,
+        });
       }
     }
 
@@ -471,7 +663,7 @@ export const composeService = {
     // 7. Task context
     const taskRendered = renderMustache(input.task, ctx); warnings.push(...taskRendered.warnings);
     const taskContent = `# Current Task\n${taskRendered.rendered}`;
-    layers.push({ layerType: "TASK_CONTEXT", priority: PRIORITY.TASK_CONTEXT, inclusionReason: "user task", contentSnapshot: taskContent, layerHash: sha256(taskContent) });
+    layers.push({ layerType: "TASK_CONTEXT", priority: PRIORITY.TASK_CONTEXT, inclusionReason: "user task", contentSnapshot: taskContent, layerHash: sha256(taskContent), isRequired: true });
 
     // 8. EXECUTION_OVERRIDE layers from request
     for (const ov of input.overrides.additionalLayers) {
@@ -500,6 +692,17 @@ export const composeService = {
     if (input.contextPolicy.maxContextTokens && estimatedInputTokens > input.contextPolicy.maxContextTokens) {
       budgetWarnings.push(`Estimated input tokens ${estimatedInputTokens} exceeds maxContextTokens ${input.contextPolicy.maxContextTokens}.`);
     }
+    const contextPlan = buildContextPlan({
+      task: taskRendered.rendered,
+      layers,
+      evidenceChunks,
+      budget,
+      budgetWarnings,
+      retrievalStats,
+      estimatedInputTokens,
+      finalPromptHash,
+    });
+    const evidenceRefs = [contextPlanEvidence(contextPlan), ...evidenceChunks];
 
     // 10. Persist PromptAssembly, reusing an unchanged stack when possible.
     // The final prompt hash already includes task text, rendered artifacts,
@@ -537,8 +740,8 @@ export const composeService = {
         estimatedInputTokens,
         traceId: resolvedTraceId,
         // M25 — per-step citations for Run Insights + audit-replay.
-        evidenceRefs: (evidenceChunks.length > 0
-          ? evidenceChunks
+        evidenceRefs: (evidenceRefs.length > 0
+          ? evidenceRefs
           : null) as never,
         layers: {
           create: layers.map(l => ({
@@ -549,7 +752,16 @@ export const composeService = {
         },
       },
     });
-    if (cachedAssembly) budgetWarnings.push(`Prompt assembly reused from cache: ${cachedAssembly.id}.`);
+    if (cachedAssembly) {
+      budgetWarnings.push(`Prompt assembly reused from cache: ${cachedAssembly.id}.`);
+      // Older cached assemblies may predate ContextPlan. Refresh the small
+      // evidenceRefs payload so Run Insights can still show the governance
+      // contract used for this invocation without creating duplicate rows.
+      await prisma.promptAssembly.update({
+        where: { id: cachedAssembly.id },
+        data: { evidenceRefs: evidenceRefs as never },
+      }).catch((err) => logger.warn({ err, promptAssemblyId: cachedAssembly.id }, "failed to refresh cached context plan evidence"));
+    }
 
     const layersUsed = layers.map(l => ({ layerType: l.layerType, priority: l.priority, layerHash: l.layerHash, inclusionReason: l.inclusionReason }));
     const dedupedWarnings = Array.from(new Set([...warnings, ...budgetWarnings]));
@@ -573,6 +785,9 @@ export const composeService = {
         estimatedTokens:   assembly.estimatedInputTokens,
         layersUsedCount:   layersUsed.length,
         evidenceCount:     evidenceChunks.length,
+        contextPlanHash:   contextPlan.contextPlanHash,
+        contextPlanValid:  contextPlan.valid,
+        missingRequiredContext: contextPlan.missingRequired,
         retrievalStats,
         previewOnly:       input.previewOnly === true,
         capsuleHit:        retrievalStats.capsuleHit,
@@ -596,6 +811,7 @@ export const composeService = {
           systemPrompt: finalPrompt,
           message: taskRendered.rendered,
         },
+        contextPlan,
       };
     }
 
@@ -643,6 +859,7 @@ export const composeService = {
       warnings: dedupedWarnings,
       budgetWarnings,
       retrievalStats,
+      contextPlan,
       modelCallId: cfResp.correlation?.llmCallIds?.[0] ?? cfResp.correlation?.cfCallId,
       contextPackageId: cfResp.correlation?.cfCallId ?? "",
       response: cfResp.finalResponse,
@@ -711,11 +928,13 @@ export const composeService = {
         warnings.push(...r.warnings);
         return {
           promptLayerId: l.promptLayer.id,
+          promptLayerName: l.promptLayer.name,
           layerType: l.promptLayer.layerType,
           priority: l.priority,
           inclusionReason: reason,
           contentSnapshot: r.rendered,
           layerHash: sha256(r.rendered),
+          isRequired: l.promptLayer.isRequired,
         };
       });
   },

@@ -110,6 +110,26 @@ jobs:
           done < <(find . -name "*.py" -not -path "*/.venv/*")
           exit $fail
 
+  context-governance-contract:
+    name: context plan + governance contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: install context-fabric test deps
+        run: python3 -m pip install -r context-fabric/requirements-dev.txt
+      - name: static cross-service contract checks
+        run: node scripts/contract-tests/context-governance-contract.mjs
+      - name: context-fabric governance unit tests
+        env:
+          PYTHONPATH: context-fabric/services:context-fabric/shared
+        run: python3 -m pytest context-fabric/tests/test_context_plan_governance.py
+
   # ─── Shell scripts — bin/ + singularity.sh + seed/apply.sh ──────────────────
   shellcheck:
     name: shell scripts
@@ -270,7 +290,7 @@ jobs:
   container-images:
     name: image ${{ matrix.image }}
     runs-on: ubuntu-latest
-    needs: [typecheck-ts, python-syntax, shellcheck, sql-syntax, compose-syntax]
+    needs: [typecheck-ts, python-syntax, context-governance-contract, shellcheck, sql-syntax, compose-syntax]
     strategy:
       fail-fast: false
       matrix:

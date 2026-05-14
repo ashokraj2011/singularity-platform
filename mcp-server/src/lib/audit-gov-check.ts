@@ -2,9 +2,7 @@
  * M22 — pre-flight governance checks against the audit-governance-service.
  *
  * Unlike the fire-and-forget emitter, these calls are AWAITED and gate the
- * agent loop. A failure to reach audit-gov defaults to ALLOW (fail-open) so
- * a brownout in audit-gov doesn't stall every tenant — but the failure is
- * logged at warn level.
+ * agent loop. The caller's governanceMode decides outage behavior.
  */
 import { log } from "../shared/log";
 
@@ -14,10 +12,23 @@ const TIMEOUT_MS    = 3_000;
 export interface CheckResult {
   allowed: boolean;
   reason?: string;
+  unavailable?: boolean;
   // Per-period remaining for budgets, or null when no budget exists for the key.
   budgets?: Array<{ period: string; remaining_tokens: number; remaining_cost: number }>;
   // Number of calls remaining in the current rate-limit window, or null when no rate-limit configured.
   rate_limits?: Array<{ name: string; remaining: number; window_seconds: number }>;
+}
+
+export type GovernanceMode = "fail_open" | "fail_closed" | "degraded" | "human_approval_required";
+
+function outageResult(mode: GovernanceMode, check: "budget" | "rate_limit"): CheckResult {
+  if (mode === "fail_closed") {
+    return { allowed: false, unavailable: true, reason: `audit-governance unavailable during ${check} check` };
+  }
+  if (mode === "degraded" || mode === "human_approval_required") {
+    return { allowed: true, unavailable: true, reason: `audit-governance unavailable during ${check} check; ${mode} posture will restrict risky actions` };
+  }
+  return { allowed: true, unavailable: true, reason: `audit-governance unavailable during ${check} check; fail_open allowed execution` };
 }
 
 async function getJson<T>(path: string, qs: Record<string, string | undefined>): Promise<T | null> {
@@ -49,6 +60,7 @@ export async function checkBudget(
   capabilityId?: string,
   tenantId?: string,
   tokensEstimated?: number,
+  governanceMode: GovernanceMode = "fail_open",
 ): Promise<CheckResult> {
   const scope = pickScope(capabilityId, tenantId);
   if (!scope) return { allowed: true };
@@ -60,14 +72,14 @@ export async function checkBudget(
       tokens_estimated: tokensEstimated ? String(Math.max(0, Math.floor(tokensEstimated))) : undefined,
     },
   );
-  // Fail-open if audit-gov is unreachable.
-  if (data == null) return { allowed: true };
+  if (data == null) return outageResult(governanceMode, "budget");
   return { allowed: data.allowed, reason: data.reason, budgets: data.budgets ?? [] };
 }
 
 export async function checkRateLimit(
   capabilityId?: string,
   tenantId?: string,
+  governanceMode: GovernanceMode = "fail_open",
 ): Promise<CheckResult> {
   const scope = pickScope(capabilityId, tenantId);
   if (!scope) return { allowed: true };
@@ -75,6 +87,6 @@ export async function checkRateLimit(
     "/api/v1/governance/rate-limits/check",
     { scope_type: scope.scope_type, scope_id: scope.scope_id },
   );
-  if (data == null) return { allowed: true };
+  if (data == null) return outageResult(governanceMode, "rate_limit");
   return { allowed: data.allowed, reason: data.reason, rate_limits: data.rate_limits ?? [] };
 }

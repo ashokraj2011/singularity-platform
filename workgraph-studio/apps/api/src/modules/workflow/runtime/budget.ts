@@ -5,6 +5,7 @@ import { logEvent, publishOutbox } from '../../../lib/audit'
 import { ValidationError } from '../../../lib/errors'
 
 export type BudgetEnforcementMode = 'PAUSE_FOR_APPROVAL' | 'FAIL_HARD' | 'WARN_ONLY'
+export type GovernanceMode = 'fail_open' | 'fail_closed' | 'degraded' | 'human_approval_required'
 
 export type WorkflowBudgetPolicy = {
   defaultModelAlias?: string | null
@@ -14,6 +15,8 @@ export type WorkflowBudgetPolicy = {
   maxEstimatedCost?: number | null
   warnAtPercent: number
   enforcementMode: BudgetEnforcementMode
+  governanceMode?: GovernanceMode
+  nodeTypeGovernanceModes?: Record<string, GovernanceMode>
   nodeTypeDefaults?: Record<string, {
     inputTokenBudget?: number
     outputTokenBudget?: number
@@ -57,6 +60,11 @@ export const DEFAULT_WORKFLOW_BUDGET_POLICY: WorkflowBudgetPolicy = {
   maxEstimatedCost: null,
   warnAtPercent: 80,
   enforcementMode: 'PAUSE_FOR_APPROVAL',
+  governanceMode: 'fail_open',
+  nodeTypeGovernanceModes: {
+    SECURITY_REVIEW: 'fail_closed',
+    POLICY_CHECK: 'fail_closed',
+  },
   nodeTypeDefaults: {
     AGENT_TASK: {
       inputTokenBudget: 6_000,
@@ -84,6 +92,8 @@ export function normalizeBudgetPolicy(input: unknown): WorkflowBudgetPolicy {
     maxEstimatedCost: positiveNumberOrNull(raw.maxEstimatedCost, defaults.maxEstimatedCost),
     warnAtPercent: clampInt(raw.warnAtPercent, 1, 100, defaults.warnAtPercent),
     enforcementMode: isEnforcementMode(raw.enforcementMode) ? raw.enforcementMode : defaults.enforcementMode,
+    governanceMode: isGovernanceMode(raw.governanceMode) ? raw.governanceMode : defaults.governanceMode,
+    nodeTypeGovernanceModes: mergeGovernanceModes(defaults.nodeTypeGovernanceModes, raw.nodeTypeGovernanceModes),
     nodeTypeDefaults: mergeNodeDefaults(defaults.nodeTypeDefaults, raw.nodeTypeDefaults),
   }
 }
@@ -703,6 +713,22 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
 
 function isEnforcementMode(value: unknown): value is BudgetEnforcementMode {
   return value === 'PAUSE_FOR_APPROVAL' || value === 'FAIL_HARD' || value === 'WARN_ONLY'
+}
+
+function isGovernanceMode(value: unknown): value is GovernanceMode {
+  return value === 'fail_open' || value === 'fail_closed' || value === 'degraded' || value === 'human_approval_required'
+}
+
+function mergeGovernanceModes(
+  defaults: WorkflowBudgetPolicy['nodeTypeGovernanceModes'],
+  raw: unknown,
+): Record<string, GovernanceMode> {
+  const out: Record<string, GovernanceMode> = { ...(defaults ?? {}) }
+  if (!isRecord(raw)) return out
+  for (const [key, value] of Object.entries(raw)) {
+    if (isGovernanceMode(value)) out[key] = value
+  }
+  return out
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

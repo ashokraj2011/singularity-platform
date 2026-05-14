@@ -14,9 +14,9 @@ export const queryRouter = Router();
 // ── Audit timeline ─────────────────────────────────────────────────────────
 
 queryRouter.get("/audit/timeline", async (req: Request, res: Response) => {
-  const trace = typeof req.query.trace_id      === "string" ? req.query.trace_id      : null;
-  const cap   = typeof req.query.capability_id === "string" ? req.query.capability_id : null;
-  const actor = typeof req.query.actor_id      === "string" ? req.query.actor_id      : null;
+  const trace = typeof req.query.trace_id === "string" ? req.query.trace_id : null;
+  const cap = typeof req.query.capability_id === "string" ? req.query.capability_id : null;
+  const actor = typeof req.query.actor_id === "string" ? req.query.actor_id : null;
   const limit = Math.min(500, Math.max(1, Number(req.query.limit ?? 100)));
 
   if (!trace && !cap && !actor) {
@@ -45,11 +45,11 @@ queryRouter.get("/audit/events/:id", async (req: Request, res: Response) => {
 // ── Cost rollup ─────────────────────────────────────────────────────────
 
 queryRouter.get("/cost/rollup", async (req: Request, res: Response) => {
-  const cap    = typeof req.query.capability_id === "string" ? req.query.capability_id : null;
-  const tenant = typeof req.query.tenant_id     === "string" ? req.query.tenant_id     : null;
+  const cap = typeof req.query.capability_id === "string" ? req.query.capability_id : null;
+  const tenant = typeof req.query.tenant_id === "string" ? req.query.tenant_id : null;
   const period = (typeof req.query.period === "string" ? req.query.period : "day") as "hour" | "day" | "week";
-  const trunc  = period === "hour" ? "hour" : period === "week" ? "week" : "day";
-  const limit  = Math.min(120, Math.max(1, Number(req.query.limit ?? 30)));
+  const trunc = period === "hour" ? "hour" : period === "week" ? "week" : "day";
+  const limit = Math.min(120, Math.max(1, Number(req.query.limit ?? 30)));
 
   const rows = await query(
     `SELECT date_trunc('${trunc}', created_at) AS bucket,
@@ -70,8 +70,8 @@ queryRouter.get("/cost/rollup", async (req: Request, res: Response) => {
 });
 
 queryRouter.get("/cost/by-model", async (req: Request, res: Response) => {
-  const cap   = typeof req.query.capability_id === "string" ? req.query.capability_id : null;
-  const days  = Math.min(90, Math.max(1, Number(req.query.days ?? 7)));
+  const cap = typeof req.query.capability_id === "string" ? req.query.capability_id : null;
+  const days = Math.min(90, Math.max(1, Number(req.query.days ?? 7)));
   const rows = await query(
     `SELECT provider, model,
             COUNT(*)::int                         AS calls,

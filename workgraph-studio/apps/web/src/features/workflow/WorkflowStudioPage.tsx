@@ -1544,6 +1544,7 @@ type BudgetForm = {
   maxEstimatedCost: string
   warnAtPercent: string
   enforcementMode: string
+  governanceMode: string
 }
 
 type LlmModelChoice = {
@@ -1694,6 +1695,22 @@ function WorkflowBudgetPanel({
           </select>
           <span style={{ fontSize: 9, color: panelMuted, lineHeight: 1.4 }}>Default is governed pause before overspend.</span>
         </label>
+        <label style={{ display: 'grid', gap: 4 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: panelText }}>Default governance mode</span>
+          <select
+            value={form.governanceMode}
+            onChange={e => setForm(f => ({ ...f, governanceMode: e.target.value }))}
+            style={inputSt}
+          >
+            <option value="fail_open">Fail open (draft/local)</option>
+            <option value="fail_closed">Fail closed</option>
+            <option value="degraded">Degraded read-only</option>
+            <option value="human_approval_required">Human approval required</option>
+          </select>
+          <span style={{ fontSize: 9, color: panelMuted, lineHeight: 1.4 }}>
+            Nodes can override this. Security/compliance nodes default to fail closed.
+          </span>
+        </label>
       </div>
 
       <div style={{ padding: '10px 14px', borderTop: `1px solid ${panelBdr}`, flexShrink: 0, display: 'flex', gap: 7 }}>
@@ -1732,6 +1749,7 @@ function budgetFormFrom(policy: Record<string, unknown> | null): BudgetForm {
     maxEstimatedCost: valueText(p.maxEstimatedCost, ''),
     warnAtPercent: valueText(p.warnAtPercent, '80'),
     enforcementMode: typeof p.enforcementMode === 'string' ? p.enforcementMode : 'PAUSE_FOR_APPROVAL',
+    governanceMode: typeof p.governanceMode === 'string' ? p.governanceMode : 'fail_open',
   }
 }
 
@@ -1744,6 +1762,7 @@ function policyFromBudgetForm(form: BudgetForm): Record<string, unknown> {
     maxEstimatedCost: numberOrNull(form.maxEstimatedCost),
     warnAtPercent: numberOrNull(form.warnAtPercent) ?? 80,
     enforcementMode: form.enforcementMode,
+    governanceMode: form.governanceMode,
   }
 }
 

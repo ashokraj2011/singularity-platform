@@ -29,9 +29,9 @@ governanceRouter.post("/approvals", async (req: Request, res: Response) => {
      ON CONFLICT (id) DO NOTHING
      RETURNING *`,
     [p.id, p.trace_id ?? null, p.capability_id ?? null, p.tenant_id ?? null,
-     p.source_service, p.tool_name, JSON.stringify(p.tool_args), p.risk_level ?? null,
-     p.requested_by ?? null, p.expires_at ?? null,
-     p.continuation_payload ? JSON.stringify(p.continuation_payload) : null],
+    p.source_service, p.tool_name, JSON.stringify(p.tool_args), p.risk_level ?? null,
+    p.requested_by ?? null, p.expires_at ?? null,
+    p.continuation_payload ? JSON.stringify(p.continuation_payload) : null],
   );
   res.status(201).json(row ?? { id: p.id, status: "exists" });
 });
@@ -99,7 +99,7 @@ governanceRouter.get("/approvals/:id", async (req: Request, res: Response) => {
 
 governanceRouter.get("/approvals", async (req: Request, res: Response) => {
   const status = typeof req.query.status === "string" ? req.query.status : null;
-  const cap    = typeof req.query.capability_id === "string" ? req.query.capability_id : null;
+  const cap = typeof req.query.capability_id === "string" ? req.query.capability_id : null;
   const rows = await query(
     `SELECT * FROM audit_governance.approvals
      WHERE ($1::text IS NULL OR status = $1)
@@ -136,8 +136,8 @@ function periodWindow(period: "day" | "week" | "month"): { start: Date; end: Dat
     start.setUTCDate(1);
   }
   const end = new Date(start);
-  if (period === "day")   end.setUTCDate(end.getUTCDate() + 1);
-  if (period === "week")  end.setUTCDate(end.getUTCDate() + 7);
+  if (period === "day") end.setUTCDate(end.getUTCDate() + 1);
+  if (period === "week") end.setUTCDate(end.getUTCDate() + 7);
   if (period === "month") end.setUTCMonth(end.getUTCMonth() + 1);
   return { start, end };
 }
@@ -161,7 +161,7 @@ governanceRouter.post("/budgets", async (req: Request, res: Response) => {
 
 governanceRouter.get("/budgets", async (req: Request, res: Response) => {
   const sType = typeof req.query.scope_type === "string" ? req.query.scope_type : null;
-  const sId   = typeof req.query.scope_id   === "string" ? req.query.scope_id   : null;
+  const sId = typeof req.query.scope_id === "string" ? req.query.scope_id : null;
   const rows = await query(
     `SELECT * FROM audit_governance.budgets
      WHERE ($1::text IS NULL OR scope_type = $1)
@@ -176,8 +176,8 @@ governanceRouter.get("/budgets", async (req: Request, res: Response) => {
 // Pre-call check — returns {allowed:bool, remaining_tokens, remaining_cost}.
 // Producers should call before billing; rejection means "skip the LLM call".
 governanceRouter.get("/budgets/check", async (req: Request, res: Response) => {
-  const sType  = String(req.query.scope_type ?? "");
-  const sId    = String(req.query.scope_id ?? "");
+  const sType = String(req.query.scope_type ?? "");
+  const sId = String(req.query.scope_id ?? "");
   const tokens = Number(req.query.tokens_estimated ?? 0);
   if (!sType || !sId) return res.status(400).json({ error: "scope_type + scope_id required" });
 
@@ -195,14 +195,14 @@ governanceRouter.get("/budgets/check", async (req: Request, res: Response) => {
   let allowed = true;
   const out: Array<Record<string, unknown>> = [];
   for (const r of rows) {
-    const tokensMax    = r.tokens_max   == null ? null : Number(r.tokens_max);
-    const costMax      = r.cost_max_usd == null ? null : Number(r.cost_max_usd);
+    const tokensMax = r.tokens_max == null ? null : Number(r.tokens_max);
+    const costMax = r.cost_max_usd == null ? null : Number(r.cost_max_usd);
     const currentTokens = Number(r.current_tokens);
-    const currentCost   = Number(r.current_cost);
+    const currentCost = Number(r.current_cost);
     const remTokens = tokensMax == null ? null : tokensMax - currentTokens;
-    const remCost   = costMax   == null ? null : costMax   - currentCost;
+    const remCost = costMax == null ? null : costMax - currentCost;
     const fits = (tokensMax == null || currentTokens + tokens <= tokensMax)
-              && (costMax   == null || currentCost <= costMax);
+      && (costMax == null || currentCost <= costMax);
     if (!fits) allowed = false;
     out.push({
       period: r.period, tokens_max: tokensMax, cost_max_usd: costMax,
@@ -237,7 +237,7 @@ governanceRouter.get("/rate-limits", async (_req: Request, res: Response) => {
 // Sliding-window-ish check + bump. Rolls window on each call.
 governanceRouter.get("/rate-limits/check", async (req: Request, res: Response) => {
   const sType = String(req.query.scope_type ?? "");
-  const sId   = String(req.query.scope_id ?? "");
+  const sId = String(req.query.scope_id ?? "");
   if (!sType || !sId) return res.status(400).json({ error: "scope_type + scope_id required" });
   const rows = await query<Record<string, unknown>>(
     `SELECT * FROM audit_governance.rate_limits WHERE scope_type=$1 AND scope_id=$2`,
@@ -250,7 +250,7 @@ governanceRouter.get("/rate-limits/check", async (req: Request, res: Response) =
   for (const r of rows) {
     const id = String(r.id);
     const periodSec = Number(r.period_seconds);
-    const maxCalls  = Number(r.max_calls);
+    const maxCalls = Number(r.max_calls);
     const updated = await queryOne<Record<string, unknown>>(
       `UPDATE audit_governance.rate_limits
        SET window_start = CASE
@@ -281,22 +281,22 @@ governanceRouter.post("/authz/decisions", async (req: Request, res: Response) =>
      VALUES ($1,$2,'authz.decision',$3,$4,$5,$6,$7::jsonb)
      RETURNING id`,
     [p.trace_id ?? null, p.decided_by ?? "iam", p.resource_type, p.resource_id ?? null,
-     p.actor_id, p.decision === "deny" ? "warn" : "audit", JSON.stringify(p)],
+    p.actor_id, p.decision === "deny" ? "warn" : "audit", JSON.stringify(p)],
   );
   await query(
     `INSERT INTO audit_governance.authz_decisions
        (audit_event_id, trace_id, actor_id, resource_type, resource_id, action, decision, reason, decided_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
     [evt!.id, p.trace_id ?? null, p.actor_id, p.resource_type, p.resource_id ?? null,
-     p.action, p.decision, p.reason ?? null, p.decided_by ?? null],
+    p.action, p.decision, p.reason ?? null, p.decided_by ?? null],
   );
   res.status(201).json({ id: evt!.id });
 });
 
 governanceRouter.get("/authz/decisions", async (req: Request, res: Response) => {
-  const actor    = typeof req.query.actor_id    === "string" ? req.query.actor_id    : null;
+  const actor = typeof req.query.actor_id === "string" ? req.query.actor_id : null;
   const resource = typeof req.query.resource_id === "string" ? req.query.resource_id : null;
-  const decision = typeof req.query.decision    === "string" ? req.query.decision    : null;
+  const decision = typeof req.query.decision === "string" ? req.query.decision : null;
   const rows = await query(
     `SELECT * FROM audit_governance.authz_decisions
      WHERE ($1::text IS NULL OR actor_id    = $1)

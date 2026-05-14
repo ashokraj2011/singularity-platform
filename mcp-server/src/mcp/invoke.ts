@@ -28,7 +28,7 @@ import {
 import { extractCodeChange } from "../audit/provenanceExtractor";
 import { events } from "../events/bus";
 import { emitAuditEvent } from "../lib/audit-gov-emit";
-import { checkBudget, checkRateLimit } from "../lib/audit-gov-check";
+import { checkBudget, checkRateLimit, GovernanceMode } from "../lib/audit-gov-check";
 import { persistApproval, consumeApproval } from "../lib/audit-gov-approvals";
 import {
   savePending, takePending, peekPending, PendingToolDescriptor,
@@ -85,6 +85,10 @@ const InvokeSchema = z.object({
     timeoutSec: z.number().int().positive().optional(),
     maxToolResultChars: z.number().int().positive().optional(),
   }).default({}),
+  governanceMode: z.enum(["fail_open", "fail_closed", "degraded", "human_approval_required"]).default("fail_open"),
+  contextPlanHash: z.string().optional(),
+  degradedActionsAllowed: z.array(z.string()).default([]),
+  allowAutonomousMutation: z.boolean().optional(),
 });
 
 const ResumeSchema = z.object({
@@ -132,6 +136,10 @@ interface LoopState {
     astIndexedFiles?: number;
     astIndexedSymbols?: number;
   };
+  governanceMode: GovernanceMode;
+  contextPlanHash?: string;
+  degradedActionsAllowed: string[];
+  allowAutonomousMutation: boolean;
 }
 
 type LoopOutcome =
@@ -149,7 +157,7 @@ type LoopOutcome =
       // M28 — agent_loop.repetition_detected uses kind:"denied" too
       finishReason: "governance_denied" | "agent_loop_repetition";
       reason: string;
-      check: "budget" | "rate_limit" | "loop_repetition";
+      check: "budget" | "rate_limit" | "loop_repetition" | "tool_policy";
       details?: Record<string, unknown>;
     };
 
@@ -181,6 +189,36 @@ function detectRepetition(history: LoopState["toolCallHistory"]): { name: string
   return count >= LOOP_REPETITION_THRESHOLD ? { name: tail.name, count } : null;
 }
 
+const MUTATION_TOOL_NAMES = new Set([
+  "write_file",
+  "write_file_demo",
+  "apply_patch",
+  "apply_patch_demo",
+  "edit_file",
+  "create_file",
+  "git_commit",
+  "finish_work_branch",
+]);
+
+function toolRisk(desc?: PendingToolDescriptor): "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" {
+  return desc?.risk_level ?? "LOW";
+}
+
+function isMutationTool(name: string): boolean {
+  return MUTATION_TOOL_NAMES.has(name);
+}
+
+function isRiskyTool(name: string, desc?: PendingToolDescriptor): boolean {
+  return isMutationTool(name) || desc?.execution_target === "SERVER" || desc?.requires_approval === true || ["HIGH", "CRITICAL"].includes(toolRisk(desc));
+}
+
+function isDegradedToolAllowed(state: LoopState, name: string, desc?: PendingToolDescriptor): boolean {
+  if (state.degradedActionsAllowed.length > 0 && !state.degradedActionsAllowed.includes(name)) return false;
+  if (desc?.execution_target === "SERVER") return false;
+  if (isMutationTool(name)) return false;
+  return toolRisk(desc) === "LOW";
+}
+
 type DispatchToolResult = {
   record: ToolInvocationRecord;
   codeChange?: CodeChangeRecord;
@@ -192,13 +230,26 @@ type DispatchToolResult = {
 
 async function runLoop(state: LoopState): Promise<LoopOutcome> {
   while (state.stepIndex < state.maxSteps) {
-    // M22 — pre-flight governance checks. Audit-gov is fail-open; only an
-    // explicit `allowed:false` blocks. Both checks run in parallel.
+    // Governance checks run before each model turn. The requested governance
+    // mode decides whether audit-gov outages fail open, fail closed, or force
+    // a restricted/degraded posture.
     const estimatedTokens = estimateLoopInputTokens(state);
     const [budgetRes, rateRes] = await Promise.all([
-      checkBudget(state.correlation.capabilityId, undefined, estimatedTokens),
-      checkRateLimit(state.correlation.capabilityId, undefined),
+      checkBudget(state.correlation.capabilityId, undefined, estimatedTokens, state.governanceMode),
+      checkRateLimit(state.correlation.capabilityId, undefined, state.governanceMode),
     ]);
+    for (const [check, res] of [["budget", budgetRes], ["rate_limit", rateRes]] as const) {
+      if (res.unavailable) {
+        emitAuditEvent({
+          trace_id: state.correlation.traceId,
+          source_service: "mcp-server",
+          kind: "governance.check.unavailable",
+          capability_id: state.correlation.capabilityId,
+          severity: state.governanceMode === "fail_open" ? "warn" : "error",
+          payload: { check, reason: res.reason, governanceMode: state.governanceMode, contextPlanHash: state.contextPlanHash },
+        });
+      }
+    }
     if (!budgetRes.allowed) {
       const reason = budgetRes.reason ?? "budget exhausted";
       emitAuditEvent({
@@ -207,7 +258,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         kind: "governance.denied",
         capability_id: state.correlation.capabilityId,
         severity: "warn",
-        payload: { check: "budget", reason, budgets: budgetRes.budgets ?? [] },
+        payload: { check: "budget", reason, budgets: budgetRes.budgets ?? [], governanceMode: state.governanceMode, contextPlanHash: state.contextPlanHash },
       });
       return { kind: "denied", finishReason: "governance_denied", reason, check: "budget", details: { budgets: budgetRes.budgets } };
     }
@@ -219,7 +270,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         kind: "governance.denied",
         capability_id: state.correlation.capabilityId,
         severity: "warn",
-        payload: { check: "rate_limit", reason, rate_limits: rateRes.rate_limits ?? [] },
+        payload: { check: "rate_limit", reason, rate_limits: rateRes.rate_limits ?? [], governanceMode: state.governanceMode, contextPlanHash: state.contextPlanHash },
       });
       return { kind: "denied", finishReason: "governance_denied", reason, check: "rate_limit", details: { rate_limits: rateRes.rate_limits } };
     }
@@ -321,10 +372,41 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
       for (const tc of llmResp.tool_calls) {
         const desc = state.fullToolDescriptors.find((d) => d.name === tc.name);
         const handler = desc?.execution_target === "LOCAL" ? getLocalTool(tc.name) : undefined;
-        const requiresApproval = desc?.requires_approval || handler?.descriptor.requires_approval;
+        if (state.governanceMode === "degraded" && !isDegradedToolAllowed(state, tc.name, desc)) {
+          const reason = `degraded governance mode blocks tool ${tc.name}; only low-risk read-only local tools are allowed.`;
+          emitAuditEvent({
+            trace_id: state.correlation.traceId,
+            source_service: "mcp-server",
+            kind: "governance.denied",
+            capability_id: state.correlation.capabilityId,
+            severity: "warn",
+            payload: {
+              check: "tool_policy",
+              reason,
+              tool_name: tc.name,
+              execution_target: desc?.execution_target,
+              risk_level: desc?.risk_level,
+              governanceMode: state.governanceMode,
+              contextPlanHash: state.contextPlanHash,
+            },
+          });
+          return { kind: "denied", finishReason: "governance_denied", reason, check: "tool_policy", details: { tool_name: tc.name, governanceMode: state.governanceMode } };
+        }
+
+        const risky = isRiskyTool(tc.name, desc);
+        const requiresApproval =
+          desc?.requires_approval ||
+          handler?.descriptor.requires_approval ||
+          (risky && !state.allowAutonomousMutation) ||
+          (state.governanceMode === "human_approval_required" && risky);
 
         if (requiresApproval) {
-          return await pauseForApproval(state, tc, desc);
+          return await pauseForApproval(
+            state,
+            tc,
+            desc,
+            risky ? "Governance requires approval before risky or mutating tool execution." : undefined,
+          );
         }
 
         // Normal dispatch path.
@@ -414,6 +496,10 @@ async function pauseForApproval(
     workspace: state.workspace,
     total_input_tokens: state.totalInputTokens,
     total_output_tokens: state.totalOutputTokens,
+    governance_mode: state.governanceMode,
+    context_plan_hash: state.contextPlanHash,
+    degraded_actions_allowed: state.degradedActionsAllowed,
+    allow_autonomous_mutation: state.allowAutonomousMutation,
   });
   const payload = {
     continuation_token: env.continuation_token,
@@ -422,6 +508,8 @@ async function pauseForApproval(
     risk_level: desc?.risk_level,
     reason,
     blocked_tool_invocation_id: blockedToolInvocationId,
+    governanceMode: state.governanceMode,
+    contextPlanHash: state.contextPlanHash,
     expires_at: env.expires_at,
   };
   events.publish({
@@ -567,6 +655,8 @@ async function buildResponseBody(
     mcpInvocationId: state.correlation.mcpInvocationId,
     traceId: state.correlation.traceId,
     modelAlias: state.modelConfig.modelAlias,
+    governanceMode: state.governanceMode,
+    contextPlanHash: state.contextPlanHash,
     llmCallIds: state.llmCallIds,
     toolInvocationIds: state.toolInvocationIds,
     artifactIds: state.artifactIds,
@@ -594,6 +684,12 @@ async function buildResponseBody(
       outputTokens: state.totalOutputTokens,
       totalTokens: state.totalInputTokens + state.totalOutputTokens,
     },
+    governance: {
+      mode: state.governanceMode,
+      contextPlanHash: state.contextPlanHash,
+      executionPosture: outcome.kind === "denied" ? "blocked" : state.governanceMode === "degraded" ? "degraded" : "full",
+      degradedActionsAllowed: state.degradedActionsAllowed,
+    },
     workspace: {
       workspaceBranch: state.workspace?.branch?.branch,
       workspaceCommitSha: state.workspace?.commitSha,
@@ -616,6 +712,7 @@ async function buildResponseBody(
 
   if (outcome.kind === "denied") {
     out.governance = {
+      ...(out.governance as Record<string, unknown>),
       check: outcome.check,
       reason: outcome.reason,
       details: outcome.details,
@@ -736,6 +833,10 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
       astIndexedFiles: astStats.indexedFiles,
       astIndexedSymbols: astStats.indexedSymbols,
     },
+    governanceMode: body.governanceMode,
+    contextPlanHash: body.contextPlanHash,
+    degradedActionsAllowed: body.degradedActionsAllowed ?? [],
+    allowAutonomousMutation: body.allowAutonomousMutation === true,
   };
 
   const outcome = await runLoop(state);
@@ -802,6 +903,10 @@ invokeRouter.post("/resume", async (req, res) => {
     workspace: env.workspace,
     totalInputTokens: env.total_input_tokens,
     totalOutputTokens: env.total_output_tokens,
+    governanceMode: env.governance_mode ?? "fail_open",
+    contextPlanHash: env.context_plan_hash,
+    degradedActionsAllowed: env.degraded_actions_allowed ?? [],
+    allowAutonomousMutation: env.allow_autonomous_mutation === true,
   };
 
   // M27.5 — re-establish the persisted work-branch on disk before resuming

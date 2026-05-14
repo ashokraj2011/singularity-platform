@@ -8,6 +8,8 @@ import { config } from '../../../../config'
 import { snapshotAgentTemplate, snapshotCapability } from '../../../../lib/snapshot'
 import { prepareLlmBudget, recordWorkflowLlmUsage } from '../budget'
 
+type GovernanceMode = NonNullable<ExecuteRequest['governance_mode']>
+
 /**
  * AGENT_TASK node activation (M8).
  *
@@ -141,6 +143,11 @@ export async function activateAgentTask(
     },
   })
   const workflowDefaultModelAlias = await resolveWorkflowDefaultModelAlias(instance.templateId)
+  const workflowDefaultGovernanceMode = await resolveWorkflowGovernanceMode(instance.templateId, node)
+  const explicitGovernanceMode = configString('governanceMode')
+  const governanceMode = isGovernanceMode(explicitGovernanceMode)
+    ? explicitGovernanceMode
+    : workflowDefaultGovernanceMode
   const nodeModelAlias = configString('modelAlias')
   const legacyModel = configString('model')
   const modelSelectionReason = nodeModelAlias && nodeModelAlias !== '__workflow_default__'
@@ -251,17 +258,7 @@ export async function activateAgentTask(
     prefer_laptop: cfg.preferLaptop === true ? true
       : cfg.preferLaptop === false ? false
       : undefined,
-    // M28 governance-1 — node-level governance posture. Two values for now:
-    //   "fail_open"   (default if unset): preserve today's behavior.
-    //   "fail_closed": refuse to run when audit-gov is unreachable. cf
-    //                  returns 503 GOVERNANCE_UNAVAILABLE which surfaces
-    //                  here as a ContextFabricError with detail.code set.
-    // Operators enable fail_closed per-workflow once their audit-gov uptime
-    // is well-understood. Future modes (degraded, human_approval_required)
-    // deferred until there's failure-rate data.
-    governance_mode: cfg.governanceMode === 'fail_closed' ? 'fail_closed'
-      : cfg.governanceMode === 'fail_open' ? 'fail_open'
-      : undefined,
+    governance_mode: governanceMode,
   }
 
   // 4. Call context-fabric /execute.
@@ -291,6 +288,13 @@ export async function activateAgentTask(
           `${detail.message ?? 'audit-governance is unreachable.'} This node has governanceMode=fail_closed; relax it or restore audit-gov and re-run.`)
         return
       }
+      if (detail?.code === 'CONTEXT_PLAN_INVALID') {
+        const missing = (detail as { requiredContextStatus?: { missingRequired?: Array<{ layerType?: string }> } })
+          .requiredContextStatus?.missingRequired?.map(m => m.layerType).filter(Boolean).join(', ')
+        await failRun(run.id, 'context-plan-invalid',
+          `${detail.message ?? 'Required prompt context is missing.'}${missing ? ` Missing: ${missing}.` : ''} Fix the prompt profile/layers or change governance mode and re-run.`)
+        return
+      }
       await failRun(run.id, 'context-fabric-error',
         `context-fabric error (${err.status}): ${err.message}`)
       return
@@ -309,6 +313,11 @@ export async function activateAgentTask(
     mcpInvocationId: result.correlation.mcpInvocationId,
     modelAlias: result.correlation.modelAlias ?? result.modelUsage?.modelAlias,
     modelSelectionReason,
+    contextPlanHash: result.contextPlanHash ?? result.correlation.contextPlanHash,
+    requiredContextStatus: result.requiredContextStatus,
+    governanceMode: result.governanceMode ?? result.correlation.governanceMode,
+    executionPosture: result.executionPosture ?? result.correlation.executionPosture,
+    blockedReason: result.blockedReason,
     llmCallIds: result.correlation.llmCallIds,
     toolInvocationIds: result.correlation.toolInvocationIds,
     artifactIds: result.correlation.artifactIds,
@@ -329,6 +338,7 @@ export async function activateAgentTask(
     promptEstimatedInputTokens: result.prompt?.estimatedInputTokens,
     budgetWarnings: result.prompt?.budgetWarnings ?? [],
     retrievalStats: result.prompt?.retrievalStats ?? {},
+    contextPlan: result.prompt?.contextPlan,
     contextFabricUrl: config.CONTEXT_FABRIC_URL,
   }
 
@@ -663,4 +673,35 @@ async function resolveWorkflowDefaultModelAlias(templateId?: string | null): Pro
   if (!isRecord(policy)) return undefined
   const value = policy.defaultModelAlias
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+async function resolveWorkflowGovernanceMode(templateId: string | null | undefined, node: WorkflowNode): Promise<GovernanceMode> {
+  const securityHint = `${node.nodeType} ${node.label}`.toLowerCase()
+  if (securityHint.includes('security') || securityHint.includes('compliance') || securityHint.includes('policy')) {
+    return 'fail_closed'
+  }
+  if (!templateId) return 'fail_open'
+  const workflow = await prisma.workflow.findUnique({
+    where: { id: templateId },
+    select: { status: true, budgetPolicy: true, metadata: true },
+  })
+  const rawPolicy = isRecord(workflow?.budgetPolicy) ? workflow?.budgetPolicy : {}
+  const nodeModes = isRecord(rawPolicy.nodeTypeGovernanceModes) ? rawPolicy.nodeTypeGovernanceModes : {}
+  const nodeMode = nodeModes[String(node.nodeType)]
+  if (isGovernanceMode(nodeMode)) return nodeMode
+  if (isGovernanceMode(rawPolicy.governanceMode)) return rawPolicy.governanceMode
+  const metadata = isRecord(workflow?.metadata) ? workflow?.metadata : {}
+  const criticality = String(metadata.criticality ?? metadata.risk ?? '').toUpperCase()
+  if (criticality === 'HIGH' || criticality === 'CRITICAL' || criticality === 'SOX' || criticality === 'PCI') {
+    return 'human_approval_required'
+  }
+  if (workflow?.status && workflow.status !== 'DRAFT') return 'human_approval_required'
+  return 'fail_open'
+}
+
+function isGovernanceMode(value: unknown): value is GovernanceMode {
+  return value === 'fail_open'
+    || value === 'fail_closed'
+    || value === 'degraded'
+    || value === 'human_approval_required'
 }

@@ -65,6 +65,12 @@ interface InsightNode {
     promptEstimatedInputTokens?: number
     budgetWarnings: string[]
     retrievalStats?: Record<string, unknown>
+    contextPlan?: Record<string, unknown>
+    contextPlanHash?: string
+    requiredContextStatus?: Record<string, unknown>
+    governanceMode?: string
+    executionPosture?: string
+    blockedReason?: string
     finishReason?: string
     artifactIds: string[]
     toolInvocationIds: string[]
@@ -457,7 +463,32 @@ export function RunInsightsPage() {
                               {r.estimatedCost != null && <span>${r.estimatedCost.toFixed(4)}</span>}
                               {r.tokensSaved != null && <span>{r.tokensSaved.toLocaleString()} saved</span>}
                               {r.promptEstimatedInputTokens != null && <span>prompt {r.promptEstimatedInputTokens.toLocaleString()} est.</span>}
+                              {r.governanceMode && <span>governance {r.governanceMode}</span>}
+                              {r.executionPosture && <span>posture {r.executionPosture}</span>}
                             </div>
+                            {(r.contextPlan || r.requiredContextStatus || r.blockedReason) && (
+                              <div style={{ marginTop: 6, color: '#334155', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 5, padding: '5px 6px' }}>
+                                <strong style={{ color: '#0f172a' }}>Context Plan:</strong>{' '}
+                                {String((r.contextPlan?.valid ?? r.requiredContextStatus?.valid) === false ? 'invalid' : 'valid')}
+                                {r.contextPlanHash && <span> · <code>{r.contextPlanHash.slice(0, 10)}</code></span>}
+                                {Array.isArray(r.requiredContextStatus?.missingRequired) && r.requiredContextStatus.missingRequired.length > 0 && (
+                                  <span> · missing {r.requiredContextStatus.missingRequired.map((m: any) => m.layerType ?? 'unknown').join(', ')}</span>
+                                )}
+                                {Array.isArray(r.requiredContextStatus?.missingRequired) && r.requiredContextStatus.missingRequired.length > 0 && (
+                                  <div style={{ marginTop: 5, display: 'grid', gap: 3 }}>
+                                    {r.requiredContextStatus.missingRequired.slice(0, 3).map((m: any, idx: number) => (
+                                      <div key={`${r.agentRunId}-missing-${idx}`} style={{ color: '#475569' }}>
+                                        <code>{m.layerType ?? 'unknown'}</code>
+                                        {m.promptLayerName && <span> · {m.promptLayerName}</span>}
+                                        {m.promptLayerId && <span> · layer <code>{String(m.promptLayerId).slice(0, 8)}</code></span>}
+                                        {m.suggestedFix && <span> · {m.suggestedFix}</span>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {r.blockedReason && <div style={{ marginTop: 4, color: '#92400e' }}>{r.blockedReason}</div>}
+                              </div>
+                            )}
                             {r.budgetWarnings.length > 0 && (
                               <div style={{ marginTop: 6, display: 'grid', gap: 4 }}>
                                 {r.budgetWarnings.map(w => (

@@ -20,6 +20,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { ChatMessage, ToolCall, ToolDescriptorForLlm } from "../llm/types";
 import { CorrelationIds } from "./store";
+import type { GovernanceMode } from "../lib/audit-gov-check";
 
 export interface PendingApproval {
   continuation_token: string;
@@ -67,6 +68,10 @@ export interface PendingApproval {
   };
   total_input_tokens: number;
   total_output_tokens: number;
+  governance_mode?: GovernanceMode;
+  context_plan_hash?: string;
+  degraded_actions_allowed?: string[];
+  allow_autonomous_mutation?: boolean;
 }
 
 export interface PendingToolDescriptor {

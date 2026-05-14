@@ -155,17 +155,52 @@ class ExecuteRequest(BaseModel):
     # laptop. When None, the bridge is used opportunistically (auto-prefer
     # if a connection exists for the user).
     prefer_laptop: Optional[bool] = None
-    # M28 governance-1 — governance posture for this execution.
-    #   fail_open   (DEFAULT): preserve today's behavior. Audit-gov outages
-    #               are logged and execution continues.
-    #   fail_closed: if audit-gov is unreachable OR a required prompt-context
-    #               layer is missing, return 503 / 422 instead of running.
-    # Per the exec-brief recommendation: stay fail_open until boot invariants
-    # + audit-gov uptime metric have a month of data, then flip per-workflow.
-    # Adding the primitive NOW (not the policy) keeps the migration path
-    # cheap. Two more modes (degraded, human_approval_required) deliberately
-    # deferred until there's failure-rate data to tune their thresholds.
+    # Governance posture for this execution:
+    # fail_open, fail_closed, degraded, human_approval_required.
     governance_mode: str = "fail_open"
+
+
+GOVERNANCE_MODES = {"fail_open", "fail_closed", "degraded", "human_approval_required"}
+
+
+def _governance_mode(value: Optional[str]) -> str:
+    mode = (value or "fail_open").strip().lower()
+    return mode if mode in GOVERNANCE_MODES else "fail_open"
+
+
+def _context_plan_status(context_plan: Optional[dict[str, Any]], composer_available: bool) -> dict[str, Any]:
+    if not composer_available:
+        return {
+            "valid": False,
+            "reason": "composer_unavailable",
+            "missingRequired": [{"layerType": "CONTEXT_PLAN", "reason": "Prompt Composer did not return a ContextPlan."}],
+            "contextPlanHash": None,
+        }
+    if not context_plan:
+        return {
+            "valid": False,
+            "reason": "context_plan_missing",
+            "missingRequired": [{"layerType": "CONTEXT_PLAN", "reason": "Prompt Composer preview did not include contextPlan."}],
+            "contextPlanHash": None,
+        }
+    missing = context_plan.get("missingRequired") or []
+    valid = bool(context_plan.get("valid")) and not missing
+    return {
+        "valid": valid,
+        "reason": None if valid else "missing_required_context",
+        "missingRequired": missing,
+        "contextPlanHash": context_plan.get("contextPlanHash"),
+        "requiredLayers": context_plan.get("requiredLayers") or [],
+        "selectedLayerCount": len(context_plan.get("selectedLayers") or []),
+    }
+
+
+def _context_plan_message(status: dict[str, Any]) -> str:
+    missing = status.get("missingRequired") or []
+    if not missing:
+        return str(status.get("reason") or "ContextPlan is invalid.")
+    names = ", ".join(str(m.get("layerType") or "unknown") for m in missing if isinstance(m, dict))
+    return f"Required prompt context is missing: {names or 'unknown'}."
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────
@@ -402,6 +437,7 @@ async def execute(req: ExecuteRequest):
     cf_call_id = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc).isoformat()
     trace_id = req.trace_id or req.run_context.trace_id or str(uuid.uuid4())
+    governance_mode = _governance_mode(req.governance_mode)
     session_id = (
         f"wf:{req.run_context.workflow_instance_id}:{req.run_context.workflow_node_id}"
         if req.run_context.workflow_instance_id and req.run_context.workflow_node_id
@@ -413,7 +449,7 @@ async def execute(req: ExecuteRequest):
     # receive events before we let the run proceed. Otherwise audit gaps go
     # silent and the run produces un-governed work. Uses emit_audit_event_strict
     # which awaits + raises (the regular emit is fire-and-forget).
-    if req.governance_mode == "fail_closed":
+    if governance_mode == "fail_closed":
         from .audit_gov_emit import emit_audit_event_strict, AuditGovUnavailable
         try:
             await emit_audit_event_strict(
@@ -424,7 +460,7 @@ async def execute(req: ExecuteRequest):
                 severity="info",
                 payload={
                     "cf_call_id": cf_call_id,
-                    "governance_mode": "fail_closed",
+                    "governance_mode": governance_mode,
                     "check": "audit_gov_reachable",
                     "workflow_instance_id": req.run_context.workflow_instance_id,
                     "workflow_node_id": req.run_context.workflow_node_id,
@@ -442,7 +478,7 @@ async def execute(req: ExecuteRequest):
                 severity="warn",
                 payload={
                     "cf_call_id": cf_call_id,
-                    "governance_mode": "fail_closed",
+                    "governance_mode": governance_mode,
                     "check": "audit_gov_reachable",
                     "reason": str(err),
                 },
@@ -466,6 +502,16 @@ async def execute(req: ExecuteRequest):
     composer_budget_warnings: list[str] = []
     composer_retrieval_stats: dict[str, Any] = {}
     composer_estimated_input_tokens: Optional[int] = None
+    composer_available = False
+    context_plan: Optional[dict[str, Any]] = None
+    context_plan_hash: Optional[str] = None
+    required_context_status: dict[str, Any] = {
+        "valid": False,
+        "reason": "not_checked",
+        "missingRequired": [],
+        "contextPlanHash": None,
+    }
+    execution_posture = "full"
 
     if req.run_context.agent_template_id:
         try:
@@ -496,6 +542,7 @@ async def execute(req: ExecuteRequest):
                 timeout=60.0,
             )
             data = composed.get("data") or composed
+            composer_available = True
             prompt_assembly_id = data.get("promptAssemblyId")
             assembled = data.get("assembled") or {}
             system_prompt = assembled.get("systemPrompt")
@@ -503,11 +550,176 @@ async def execute(req: ExecuteRequest):
             composer_warnings = data.get("warnings") or []
             composer_budget_warnings = data.get("budgetWarnings") or []
             composer_retrieval_stats = data.get("retrievalStats") or {}
+            raw_context_plan = data.get("contextPlan")
+            if isinstance(raw_context_plan, dict):
+                context_plan = raw_context_plan
+                context_plan_hash = str(raw_context_plan.get("contextPlanHash") or "") or None
             raw_estimated_tokens = data.get("estimatedInputTokens")
             if isinstance(raw_estimated_tokens, int):
                 composer_estimated_input_tokens = raw_estimated_tokens
         except Exception as exc:
             composer_warnings.append(f"composer unreachable: {exc!s}")
+
+    required_context_status = _context_plan_status(context_plan, composer_available if req.run_context.agent_template_id else bool(system_prompt))
+    context_plan_hash = context_plan_hash or required_context_status.get("contextPlanHash")
+    if required_context_status.get("valid"):
+        emit_audit_event(
+            kind="context_plan.validated",
+            trace_id=trace_id,
+            subject_type="PromptAssembly",
+            subject_id=prompt_assembly_id,
+            capability_id=req.run_context.capability_id,
+            severity="info",
+            payload={
+                "cf_call_id": cf_call_id,
+                "governance_mode": governance_mode,
+                "context_plan_hash": context_plan_hash,
+                "workflow_instance_id": req.run_context.workflow_instance_id,
+                "workflow_node_id": req.run_context.workflow_node_id,
+                "required_context_status": required_context_status,
+            },
+        )
+    else:
+        message = _context_plan_message(required_context_status)
+        composer_warnings.append(message)
+        emit_audit_event(
+            kind="context_plan.invalid",
+            trace_id=trace_id,
+            subject_type="PromptAssembly",
+            subject_id=prompt_assembly_id,
+            capability_id=req.run_context.capability_id,
+            severity="warn",
+            payload={
+                "cf_call_id": cf_call_id,
+                "governance_mode": governance_mode,
+                "context_plan_hash": context_plan_hash,
+                "required_context_status": required_context_status,
+            },
+        )
+        if governance_mode == "fail_closed":
+            _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
+                             message, session_id)
+            raise HTTPException(status_code=422, detail={
+                "code": "CONTEXT_PLAN_INVALID",
+                "message": message,
+                "requiredContextStatus": required_context_status,
+                "contextPlanHash": context_plan_hash,
+                "governanceMode": governance_mode,
+                "executionPosture": "blocked",
+                "trace_id": trace_id,
+            })
+        if governance_mode == "degraded":
+            execution_posture = "degraded"
+            emit_audit_event(
+                kind="governance.degraded_execution.allowed",
+                trace_id=trace_id,
+                subject_type="CfCallLog",
+                subject_id=cf_call_id,
+                capability_id=req.run_context.capability_id,
+                severity="warn",
+                payload={
+                    "reason": message,
+                    "context_plan_hash": context_plan_hash,
+                    "required_context_status": required_context_status,
+                    "degraded_actions_allowed": ["read_file", "search_code", "index_workspace", "find_symbol", "get_symbol", "get_ast_slice", "get_dependencies"],
+                },
+            )
+        elif governance_mode == "human_approval_required":
+            continuation_token = f"ctx-{uuid.uuid4()}"
+            call_log.insert({
+                "id": cf_call_id,
+                "trace_id": trace_id,
+                "workflow_run_id": req.run_context.workflow_instance_id,
+                "workflow_node_id": req.run_context.workflow_node_id,
+                "agent_run_id": req.run_context.agent_run_id,
+                "capability_id": req.run_context.capability_id,
+                "tenant_id": req.run_context.tenant_id,
+                "agent_template_id": req.run_context.agent_template_id,
+                "session_id": session_id,
+                "prompt_assembly_id": prompt_assembly_id,
+                "status": "WAITING_APPROVAL",
+                "finish_reason": "context_plan_approval_required",
+                "final_response": "",
+                "started_at": started_at,
+                "completed_at": None,
+                "continuation_token": continuation_token,
+                "pending_tool_name": "context_plan_approval",
+                "pending_tool_args": {
+                    "reason": message,
+                    "requiredContextStatus": required_context_status,
+                    "contextPlanHash": context_plan_hash,
+                    "executeRequest": req.model_dump(mode="json"),
+                },
+            })
+            emit_audit_event(
+                kind="governance.context_approval.requested",
+                trace_id=trace_id,
+                subject_type="CfCallLog",
+                subject_id=cf_call_id,
+                capability_id=req.run_context.capability_id,
+                severity="warn",
+                payload={
+                    "continuation_token": continuation_token,
+                    "reason": message,
+                    "context_plan_hash": context_plan_hash,
+                    "required_context_status": required_context_status,
+                },
+            )
+            return {
+                "status": "WAITING_APPROVAL",
+                "finalResponse": "",
+                "correlation": {
+                    "cfCallId": cf_call_id,
+                    "traceId": trace_id,
+                    "sessionId": session_id,
+                    "promptAssemblyId": prompt_assembly_id,
+                    "llmCallIds": [],
+                    "toolInvocationIds": [],
+                    "artifactIds": [],
+                    "codeChangeIds": [],
+                },
+                "tokensUsed": {"input": 0, "output": 0, "total": 0},
+                "usage": _usage_metadata(
+                    tokens_used={},
+                    model_overrides=req.model_overrides,
+                    actual_model_usage={},
+                    prompt_assembly_id=prompt_assembly_id,
+                    cf_call_id=cf_call_id,
+                    optimization_metrics={},
+                ),
+                "modelUsage": {},
+                "prompt": {
+                    "estimatedInputTokens": composer_estimated_input_tokens,
+                    "budgetWarnings": composer_budget_warnings,
+                    "retrievalStats": composer_retrieval_stats,
+                    "contextPlan": context_plan,
+                },
+                "contextPlanHash": context_plan_hash,
+                "requiredContextStatus": required_context_status,
+                "governanceMode": governance_mode,
+                "executionPosture": "approval_paused",
+                "blockedReason": message,
+                "finishReason": "context_plan_approval_required",
+                "stepsTaken": 0,
+                "metrics": {},
+                "warnings": composer_warnings,
+                "pendingApproval": {
+                    "continuation_token": continuation_token,
+                    "tool_name": "context_plan_approval",
+                    "tool_args": {
+                        "reason": message,
+                        "missingRequired": required_context_status.get("missingRequired") or [],
+                    },
+                    "tool_descriptor": {
+                        "name": "context_plan_approval",
+                        "description": "Approve execution with missing required prompt context.",
+                        "execution_target": "CONTEXT_FABRIC",
+                        "risk_level": "HIGH",
+                    },
+                },
+            }
+        else:
+            execution_posture = "unverified"
 
     # ── 2. Enrich: conversation history + rolling summary ───────────────
     history: list[dict] = []
@@ -597,6 +809,12 @@ async def execute(req: ExecuteRequest):
         "history": history,
         "message": mcp_message,
         "tools": tools_for_mcp,
+        "governanceMode": governance_mode,
+        "contextPlanHash": context_plan_hash,
+        "degradedActionsAllowed": (
+            ["read_file", "search_code", "index_workspace", "find_symbol", "get_symbol", "get_ast_slice", "get_dependencies"]
+            if execution_posture == "degraded" else []
+        ),
         "modelConfig": _strip_nones({
             "modelAlias": req.model_overrides.get("modelAlias") or req.model_overrides.get("model_alias"),
             "provider": req.model_overrides.get("provider"),
@@ -629,6 +847,8 @@ async def execute(req: ExecuteRequest):
             "maxToolResultChars": req.limits.get("maxToolResultChars") or req.limits.get("max_tool_result_chars"),
         }),
     }
+    if context_plan_hash is None:
+        invoke_payload.pop("contextPlanHash", None)
     if compiled_system_prompt is not None:
         invoke_payload["systemPrompt"] = compiled_system_prompt
     # Start the live subscriber BEFORE invoking, so events are persisted
@@ -869,6 +1089,10 @@ async def execute(req: ExecuteRequest):
             "prompt_budget_warnings": composer_budget_warnings,
             "prompt_retrieval_stats": composer_retrieval_stats,
             "prompt_estimated_input_tokens": composer_estimated_input_tokens,
+            "context_plan_hash": context_plan_hash,
+            "required_context_status": required_context_status,
+            "governance_mode": governance_mode,
+            "execution_posture": execution_posture,
             "mcp_latency_ms": mcp_latency_ms,
             "agent_run_id": req.run_context.agent_run_id,
             "workflow_instance_id": req.run_context.workflow_instance_id,
@@ -894,6 +1118,9 @@ async def execute(req: ExecuteRequest):
             "mcpServerId": mcp_server_id,
             "mcpInvocationId": correlation.get("mcpInvocationId"),
             "modelAlias": usage["modelAlias"],
+            "contextPlanHash": context_plan_hash,
+            "governanceMode": governance_mode,
+            "executionPosture": execution_posture,
             "llmCallIds": correlation.get("llmCallIds") or [],
             "toolInvocationIds": correlation.get("toolInvocationIds") or [],
             "artifactIds": correlation.get("artifactIds") or [],
@@ -921,7 +1148,13 @@ async def execute(req: ExecuteRequest):
             "estimatedInputTokens": composer_estimated_input_tokens,
             "budgetWarnings": composer_budget_warnings,
             "retrievalStats": composer_retrieval_stats,
+            "contextPlan": context_plan,
         },
+        "contextPlanHash": context_plan_hash,
+        "requiredContextStatus": required_context_status,
+        "governanceMode": governance_mode,
+        "executionPosture": execution_posture,
+        "blockedReason": None if required_context_status.get("valid") else _context_plan_message(required_context_status),
         "finishReason": finish_reason,
         "stepsTaken": steps_taken,
         "metrics": {
@@ -1152,6 +1385,106 @@ async def execute_resume(req: ResumeRequest):
     cont = rec.get("continuation_token") or req.continuation_token
     if not cont:
         raise HTTPException(status_code=409, detail="call has no continuation_token")
+
+    if rec.get("pending_tool_name") == "context_plan_approval":
+        pending_args = rec.get("pending_tool_args") or {}
+        reason = str((pending_args or {}).get("reason") or "context plan approval required")
+        if req.decision == "rejected":
+            call_log.update_after_resume(rec["id"], {
+                "status": "REJECTED",
+                "finish_reason": "context_plan_approval_rejected",
+                "final_response": req.reason or reason,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "error": req.reason or reason,
+                "continuation_token": None,
+                "pending_tool_name": None,
+                "pending_tool_args": None,
+            })
+            emit_audit_event(
+                kind="governance.context_approval.rejected",
+                trace_id=rec.get("trace_id"),
+                subject_type="CfCallLog",
+                subject_id=rec["id"],
+                capability_id=rec.get("capability_id"),
+                severity="warn",
+                payload={
+                    "reason": req.reason or reason,
+                    "context_plan_hash": pending_args.get("contextPlanHash"),
+                    "required_context_status": pending_args.get("requiredContextStatus"),
+                },
+            )
+            return {
+                "status": "REJECTED",
+                "finalResponse": req.reason or reason,
+                "decision": req.decision,
+                "correlation": {
+                    "cfCallId": rec["id"],
+                    "traceId": rec.get("trace_id"),
+                    "sessionId": rec.get("session_id"),
+                    "promptAssemblyId": rec.get("prompt_assembly_id"),
+                    "llmCallIds": [],
+                    "toolInvocationIds": [],
+                    "artifactIds": [],
+                    "codeChangeIds": [],
+                },
+                "tokensUsed": {"input": 0, "output": 0, "total": 0},
+                "usage": _usage_metadata(
+                    tokens_used={},
+                    model_overrides={},
+                    prompt_assembly_id=rec.get("prompt_assembly_id"),
+                    cf_call_id=rec["id"],
+                    optimization_metrics={},
+                ),
+                "modelUsage": {},
+                "contextPlanHash": pending_args.get("contextPlanHash"),
+                "requiredContextStatus": pending_args.get("requiredContextStatus"),
+                "governanceMode": "human_approval_required",
+                "executionPosture": "blocked",
+                "blockedReason": req.reason or reason,
+                "finishReason": "context_plan_approval_rejected",
+                "stepsTaken": 0,
+                "metrics": {},
+                "pendingApproval": None,
+            }
+
+        original = pending_args.get("executeRequest")
+        if not isinstance(original, dict):
+            raise HTTPException(status_code=409, detail="context_plan_approval row has no saved executeRequest")
+        approved_request = dict(original)
+        approved_request["governance_mode"] = "fail_open"
+        context_policy = dict(approved_request.get("context_policy") or {})
+        context_policy["approvedContextPlanBypass"] = rec["id"]
+        approved_request["context_policy"] = context_policy
+        emit_audit_event(
+            kind="governance.context_approval.approved",
+            trace_id=rec.get("trace_id"),
+            subject_type="CfCallLog",
+            subject_id=rec["id"],
+            capability_id=rec.get("capability_id"),
+            severity="info",
+            payload={
+                "reason": req.reason,
+                "context_plan_hash": pending_args.get("contextPlanHash"),
+                "required_context_status": pending_args.get("requiredContextStatus"),
+            },
+        )
+        call_log.update_after_resume(rec["id"], {
+            "status": "APPROVED_RESUBMITTED",
+            "finish_reason": "context_plan_approval_approved",
+            "final_response": "Context plan approval granted; execution resubmitted.",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "continuation_token": None,
+            "pending_tool_name": None,
+            "pending_tool_args": None,
+        })
+        resumed = await execute(ExecuteRequest.model_validate(approved_request))
+        if isinstance(resumed, dict):
+            resumed["decision"] = req.decision
+            resumed["approvedContextPlanCfCallId"] = rec["id"]
+            resumed.setdefault("warnings", [])
+            if isinstance(resumed["warnings"], list):
+                resumed["warnings"].append(f"context plan approval {rec['id']} allowed one fail_open retry")
+        return resumed
 
     mcp_server_id = rec.get("mcp_server_id")
     if not mcp_server_id:

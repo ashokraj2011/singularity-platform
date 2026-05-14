@@ -327,6 +327,7 @@ const NODE_META: Record<string, {
       // executor snapshots it into a local Agent row at run start.
       { key: 'agentTemplateId', label: 'Agent template',    placeholder: 'agent-template-uuid' },
       { key: 'modelAlias',      label: 'Model',             placeholder: 'Use workflow default' },
+      { key: 'governanceMode',  label: 'Governance mode',   placeholder: 'fail_open' },
       { key: 'task',            label: 'Task',              placeholder: 'Audit {{instance.vars.module}} for OWASP issues', multiline: true },
       { key: 'maxTokens',       label: 'Max tokens',        placeholder: '4096' },
     ],
@@ -336,6 +337,7 @@ const NODE_META: Record<string, {
     description: 'Opens a modal-ready workbench loop. The workflow waits here until the final implementation pack is approved.',
     standardFields: [
       { key: 'modelAlias', label: 'Model', placeholder: 'Use workflow default' },
+      { key: 'governanceMode', label: 'Governance mode', placeholder: 'fail_open' },
     ],
   },
   APPROVAL: {
@@ -3597,6 +3599,7 @@ export function NodeInspector({
                         const isCapabilityPicker = f.key === 'capabilityId'
                         const isPriority         = f.key === 'priority'
                         const isModelAlias       = f.key === 'modelAlias'
+                        const isGovernanceMode   = f.key === 'governanceMode'
                         const isVariableAwareNumber = f.key === 'maxConcurrency' || f.key === 'expectedBranches'
                         const cfgCapabilityId    = (config.standard.capabilityId as string | undefined) ?? null
                         return (
@@ -3641,6 +3644,28 @@ export function NodeInspector({
                                 value={config.standard[f.key] ?? ''}
                                 onChange={v => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: v } }))}
                               />
+                            ) : isGovernanceMode ? (
+                              <select
+                                value={config.standard[f.key] ?? 'fail_open'}
+                                onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
+                                style={{
+                                  width: '100%', boxSizing: 'border-box',
+                                  background: 'rgba(255,255,255,0.05)',
+                                  border: '1px solid rgba(255,255,255,0.10)',
+                                  borderRadius: 8, padding: '7px 10px',
+                                  fontSize: 11, color: '#e2e8f0',
+                                  outline: 'none', cursor: 'pointer',
+                                }}
+                              >
+                                {[
+                                  ['fail_open', 'Fail open (local/dev)'],
+                                  ['fail_closed', 'Fail closed'],
+                                  ['degraded', 'Degraded read-only'],
+                                  ['human_approval_required', 'Human approval required'],
+                                ].map(([value, label]) => (
+                                  <option key={value} value={value} style={{ background: '#0f172a' }}>{label}</option>
+                                ))}
+                              </select>
                             ) : isTemplatePicker ? (
                               <TemplatePicker
                                 value={config.standard[f.key] ?? ''}
