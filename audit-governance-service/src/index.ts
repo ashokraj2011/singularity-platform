@@ -39,6 +39,21 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "audit-governance-service", timestamp: new Date().toISOString() });
 });
 
+// M28 boot-1 — strict invariants. 200 only when DB reachable + audit_governance
+// schema + audit_events table present + gen_random_uuid() works. 503 + failing
+// check names otherwise. The single highest-value boot check in the stack:
+// without these, every fire-and-forget audit emit from cf/mcp/composer drops
+// silently and no one notices for hours.
+app.get("/healthz/strict", async (_req, res) => {
+  const { runInvariantChecks } = await import("./healthz-strict");
+  const result = await runInvariantChecks();
+  res.status(result.ok ? 200 : 503).json({
+    ok: result.ok,
+    service: "audit-governance-service",
+    checks: result.checks,
+  });
+});
+
 app.use("/api/v1/events",     eventsRouter);
 app.use("/api/v1/governance", governanceRouter);
 app.use("/api/v1",            queryRouter);

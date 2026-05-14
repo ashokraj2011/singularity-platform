@@ -70,6 +70,11 @@ jobs:
 
       # Prisma client generation reads schema.prisma; doesn't need a live DB
       # for `generate`, only for `db push`.
+      - name: prisma validate (M28 — schema must parse)
+        if: matrix.service.prisma == true
+        working-directory: ${{ matrix.service.dir }}
+        run: npx prisma validate
+
       - name: prisma generate
         if: matrix.service.prisma == true
         working-directory: ${{ matrix.service.dir }}
@@ -165,6 +170,85 @@ jobs:
           # were installed. For now we accept that 01/02 will fail without
           # their parent schemas and check only that 03 applies clean.
           psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d ci_sql_check -f seed/03-audit-governance.sql
+
+  # ─── M28 schema-drift guard: prevent agent-runtime ↔ prompt-composer fights ─
+  # Catches the specific failure mode that bit us in demo prep: both services
+  # share a Postgres and each `prisma db push` was destroying the other's
+  # columns. Apply both schemas in sequence, then assert the final state has
+  # ALL declared columns (M23 governance + M25 evidenceRefs + M25.5 capsule
+  # ID + M28 spine-2 traceId).
+  schema-drift-guard:
+    name: M28 schema-drift guard (agent-runtime ↔ prompt-composer)
+    runs-on: ubuntu-latest
+    needs: [typecheck-ts]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: singularity
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: load extensions
+        env: { PGPASSWORD: postgres }
+        run: |
+          psql -h 127.0.0.1 -U postgres -d singularity \
+            -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+      - name: install agent-and-tools workspace
+        working-directory: agent-and-tools
+        run: npm ci --ignore-scripts
+      - name: push agent-runtime schema
+        working-directory: agent-and-tools/apps/agent-runtime
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/singularity
+        run: npx prisma db push --accept-data-loss --skip-generate
+      - name: push prompt-composer schema (must not drop agent-runtime columns)
+        working-directory: agent-and-tools/apps/prompt-composer
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/singularity
+        run: npx prisma db push --accept-data-loss --skip-generate
+      - name: assert M23 + M25 + M25.5 + M28 columns survive both pushes
+        env: { PGPASSWORD: postgres }
+        run: |
+          set -e
+          MUST_HAVE=$(cat <<SQL
+            SELECT 'AgentTemplate.capabilityId' WHERE NOT EXISTS (
+              SELECT 1 FROM information_schema.columns
+               WHERE table_name='AgentTemplate' AND column_name='capabilityId');
+            SELECT 'AgentTemplate.lockedReason' WHERE NOT EXISTS (
+              SELECT 1 FROM information_schema.columns
+               WHERE table_name='AgentTemplate' AND column_name='lockedReason');
+            SELECT 'PromptAssembly.evidenceRefs' WHERE NOT EXISTS (
+              SELECT 1 FROM information_schema.columns
+               WHERE table_name='PromptAssembly' AND column_name='evidenceRefs');
+            SELECT 'PromptAssembly.compiledContextId' WHERE NOT EXISTS (
+              SELECT 1 FROM information_schema.columns
+               WHERE table_name='PromptAssembly' AND column_name='compiledContextId');
+            SELECT 'PromptAssembly.traceId (M28 spine-2)' WHERE NOT EXISTS (
+              SELECT 1 FROM information_schema.columns
+               WHERE table_name='PromptAssembly' AND column_name='traceId');
+            SELECT 'CapabilityCompiledContext table' WHERE NOT EXISTS (
+              SELECT 1 FROM information_schema.tables
+               WHERE table_name='CapabilityCompiledContext');
+          SQL
+          )
+          MISSING=$(psql -h 127.0.0.1 -U postgres -d singularity -tA -c "$MUST_HAVE")
+          if [ -n "$MISSING" ]; then
+            echo "::error::schema drift detected — these columns were destroyed by cross-service prisma db push:"
+            echo "$MISSING"
+            exit 1
+          fi
+          echo "✓ All declared columns survive both prisma db pushes"
 
   # ─── Docker compose files parse cleanly ─────────────────────────────────────
   compose-syntax:

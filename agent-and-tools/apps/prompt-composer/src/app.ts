@@ -8,6 +8,7 @@ import { optionalAuth } from "./middleware/auth.middleware";
 import { promptProfileRoutes, promptLayerRoutes, promptAssemblyRoutes } from "./modules/prompts/prompt.routes";
 import { composeRoutes, composeDebugRoutes } from "./modules/compose/compose.routes";
 import { compiledContextRoutes } from "./modules/compose/compiled-context.routes";
+import { runInvariantChecks } from "./healthz-strict";
 
 export const app = express();
 
@@ -21,6 +22,19 @@ app.get("/health", (_req, res) => {
   res.json({
     success: true,
     data: { status: "ok", service: "singularity-prompt-composer", timestamp: new Date().toISOString() },
+    error: null,
+    requestId: res.locals.requestId,
+  });
+});
+
+// M28 boot-1 — strict invariants. 200 only when DB reachable, pgvector loaded,
+// CapabilityCompiledContext table present, and PromptAssembly.traceId column
+// exists. 503 + failing check names otherwise.
+app.get("/healthz/strict", async (_req, res) => {
+  const result = await runInvariantChecks();
+  res.status(result.ok ? 200 : 503).json({
+    success: result.ok,
+    data: { ok: result.ok, service: "singularity-prompt-composer", checks: result.checks },
     error: null,
     requestId: res.locals.requestId,
   });

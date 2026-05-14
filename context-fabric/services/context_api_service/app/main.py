@@ -35,6 +35,24 @@ def health():
     return {"status": "ok", "service": "context-api-service"}
 
 
+@app.get("/healthz/strict")
+async def healthz_strict():
+    """M28 boot-1 — strict invariants. 200 only when:
+       - SQLite paths writable
+       - IAM reachable + bootstrap creds set + login mints a JWT
+       - audit-gov reachable
+    503 + failing-check names otherwise.
+
+    Specifically catches the `Bearer ` empty-token 502 failure mode we hit
+    in demo prep when context-api started without IAM_BOOTSTRAP_* env vars.
+    """
+    from fastapi.responses import JSONResponse
+    from .healthz_strict import run_invariant_checks
+    result = await run_invariant_checks()
+    body = {"ok": result["ok"], "service": "context-api-service", "checks": result["checks"]}
+    return JSONResponse(status_code=200 if result["ok"] else 503, content=body)
+
+
 # M11.a — self-register with platform-registry on startup
 @app.on_event("startup")
 async def _register_with_platform() -> None:

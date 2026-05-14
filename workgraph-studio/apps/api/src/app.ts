@@ -61,6 +61,19 @@ export function createApp(): Express {
     res.json({ status: 'UP', timestamp: new Date().toISOString() })
   })
 
+  // M28 boot-1 — strict invariants. 200 only when DB reachable + M24.5
+  // workflow_nodes timing columns present + IAM reachable (if AUTH_PROVIDER=iam).
+  // 503 + failing-check names otherwise.
+  app.get('/healthz/strict', async (_req, res) => {
+    const { runInvariantChecks } = await import('./healthz-strict')
+    const result = await runInvariantChecks()
+    res.status(result.ok ? 200 : 503).json({
+      ok: result.ok,
+      service: 'workgraph-api',
+      checks: result.checks,
+    })
+  })
+
   // Auth (no auth middleware)
   app.use('/api/auth', authRouter)
 

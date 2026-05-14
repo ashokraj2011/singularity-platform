@@ -31,6 +31,18 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "singularity-tool-service", timestamp: new Date().toISOString() });
 });
 
+// M28 boot-1 — strict invariants. 200 only when DB reachable + tool.tools
+// exists + >= 10 core tools seeded. 503 + failing-check names otherwise.
+app.get("/healthz/strict", async (_req, res) => {
+  const { runInvariantChecks } = await import("./healthz-strict");
+  const result = await runInvariantChecks();
+  res.status(result.ok ? 200 : 503).json({
+    ok: result.ok,
+    service: "singularity-tool-service",
+    checks: result.checks,
+  });
+});
+
 app.use("/api/v1/tools", toolRoutes);
 app.use("/api/v1/tools", discoveryRoutes);
 app.use("/api/v1/tools", executionRoutes);

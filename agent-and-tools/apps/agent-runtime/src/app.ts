@@ -35,6 +35,20 @@ app.get("/health", (_req, res) => {
   });
 });
 
+// M28 boot-1 — strict invariants. 200 only when DB reachable + AgentTemplate
+// M23 columns present + tool.tools table present + PromptAssembly.traceId
+// column present. 503 + failing-check names otherwise.
+app.get("/healthz/strict", async (_req, res) => {
+  const { runInvariantChecks } = await import("./healthz-strict");
+  const result = await runInvariantChecks();
+  res.status(result.ok ? 200 : 503).json({
+    success: result.ok,
+    data: { ok: result.ok, service: "singularity-agent-runtime", checks: result.checks },
+    error: null,
+    requestId: res.locals.requestId,
+  });
+});
+
 app.use("/api/v1/agents", agentRoutes);
 app.use("/api/v1/tools", toolRoutes);
 app.use("/api/v1/capabilities", capabilityRoutes);
