@@ -171,119 +171,64 @@ jobs:
           # their parent schemas and check only that 03 applies clean.
           psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d ci_sql_check -f seed/03-audit-governance.sql
 
-  # ─── M28 schema-drift guard: prevent agent-runtime ↔ prompt-composer fights ─
-  # Catches the specific failure mode that bit us in demo prep: both services
-  # share a Postgres and each `prisma db push` was destroying the other's
-  # columns. Apply both schemas in sequence, then assert the final state has
-  # ALL declared columns (M23 governance + M25 evidenceRefs + M25.5 capsule
-  # ID + M28 spine-2 traceId).
-  schema-drift-guard:
-    name: M28 schema-drift guard (agent-runtime ↔ prompt-composer)
-    runs-on: ubuntu-latest
-    needs: [typecheck-ts]
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: singularity
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20' }
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
-      - name: load extensions
-        env: { PGPASSWORD: postgres }
-        run: |
-          psql -h 127.0.0.1 -U postgres -d singularity \
-            -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto;"
-      - name: install agent-and-tools workspace
-        working-directory: agent-and-tools
-        run: npm ci --ignore-scripts
-      - name: push agent-runtime schema
-        working-directory: agent-and-tools/apps/agent-runtime
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/singularity
-        run: npx prisma db push --accept-data-loss --skip-generate
-      - name: push prompt-composer schema (must not drop agent-runtime columns)
-        working-directory: agent-and-tools/apps/prompt-composer
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/singularity
-        run: npx prisma db push --accept-data-loss --skip-generate
-      - name: assert M23 + M25 + M25.5 + M28 columns survive both pushes
-        env: { PGPASSWORD: postgres }
-        run: |
-          set -e
-          MUST_HAVE=$(cat <<SQL
-            SELECT 'AgentTemplate.capabilityId' WHERE NOT EXISTS (
-              SELECT 1 FROM information_schema.columns
-               WHERE table_name='AgentTemplate' AND column_name='capabilityId');
-            SELECT 'AgentTemplate.lockedReason' WHERE NOT EXISTS (
-              SELECT 1 FROM information_schema.columns
-               WHERE table_name='AgentTemplate' AND column_name='lockedReason');
-            SELECT 'PromptAssembly.evidenceRefs' WHERE NOT EXISTS (
-              SELECT 1 FROM information_schema.columns
-               WHERE table_name='PromptAssembly' AND column_name='evidenceRefs');
-            SELECT 'PromptAssembly.compiledContextId' WHERE NOT EXISTS (
-              SELECT 1 FROM information_schema.columns
-               WHERE table_name='PromptAssembly' AND column_name='compiledContextId');
-            SELECT 'PromptAssembly.traceId (M28 spine-2)' WHERE NOT EXISTS (
-              SELECT 1 FROM information_schema.columns
-               WHERE table_name='PromptAssembly' AND column_name='traceId');
-            SELECT 'CapabilityCompiledContext table' WHERE NOT EXISTS (
-              SELECT 1 FROM information_schema.tables
-               WHERE table_name='CapabilityCompiledContext');
-          SQL
-          )
-          MISSING=$(psql -h 127.0.0.1 -U postgres -d singularity -tA -c "$MUST_HAVE")
-          if [ -n "$MISSING" ]; then
-            echo "::error::schema drift detected — these columns were destroyed by cross-service prisma db push:"
-            echo "$MISSING"
-            exit 1
-          fi
-          echo "✓ All declared columns survive both prisma db pushes"
-
-  # ─── M28 inverse drift guard: model-list parity between schemas ────────────
-  # Catches the "composer adds a model, agent-runtime doesn't mirror" case.
-  # If composer ships a new model (e.g. PromptArchive) and agent-runtime's
-  # schema doesn't declare it, a future agent-runtime `prisma db push` will
-  # silently DROP it. The existing schema-drift-guard catches column drops
-  # after both pushes; this catches the omission BEFORE either push.
+  # ─── M29 schema ownership guard ─────────────────────────────────────────────
+  # After M29, prompt-composer is the AUTHORITATIVE writer of prompt-related
+  # tables (PromptAssembly, PromptProfile, PromptLayer, PromptAssemblyLayer,
+  # PromptProfileLayer, CapabilityCompiledContext). agent-runtime no longer
+  # declares them — composer's `prisma db push` lands them in the shared
+  # `singularity` DB. agent-runtime reads its own models; composer reads both
+  # its own AND agent-runtime's reference models (Capability, AgentTemplate,
+  # etc.) since they share a DB.
   #
-  # Rule: every model in prompt-composer/prisma/schema.prisma MUST also
-  # appear in agent-runtime/prisma/schema.prisma (as a mirror stub if not
-  # actively used). When that constraint is violated, this job fails red
-  # with the missing model names.
-  schema-model-parity:
-    name: M28 schema model parity (composer ⊆ agent-runtime)
+  # Asserts:
+  #   1. Composer-OWNED models are NOT declared in agent-runtime's schema.
+  #      (Catches a regression that re-mirrors them and reintroduces fights.)
+  #   2. Both schemas use per-service Prisma client output paths.
+  #      (Without this, the shared workspace node_modules causes the
+  #      last-generate-wins model-loss problem.)
+  #
+  # Full physical DB split (separate `singularity_composer` Postgres) is
+  # deferred — composer reads 15+ agent-runtime tables and a clean split
+  # needs either a second Prisma client or an HTTP refactor of every read.
+  # Tracked as M30.
+  m29-schema-ownership:
+    name: M29 schema ownership (composer-owned models removed from agent-runtime)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: assert every composer model is mirrored in agent-runtime
+      - name: assert composer-owned models are NOT in agent-runtime
         run: |
           set -e
-          COMPOSER_MODELS=$(grep -oE '^model [A-Za-z]+' \
+          OWNED="PromptProfile PromptLayer PromptProfileLayer PromptAssembly PromptAssemblyLayer CapabilityCompiledContext"
+          RUNTIME_SCHEMA=agent-and-tools/apps/agent-runtime/prisma/schema.prisma
+          fail=0
+          for m in $OWNED; do
+            if grep -qE "^model $m[[:space:]]" "$RUNTIME_SCHEMA"; then
+              echo "::error::Composer-owned model '$m' is declared in $RUNTIME_SCHEMA"
+              echo "::error::After M29, agent-runtime must NOT mirror composer tables."
+              fail=1
+            fi
+          done
+          [ $fail -eq 0 ] || exit 1
+          echo "✓ agent-runtime does not declare any composer-owned tables."
+      - name: assert each schema declares a non-default `output` path
+        run: |
+          set -e
+          for f in \
             agent-and-tools/apps/prompt-composer/prisma/schema.prisma \
-            | awk '{print $2}' | sort -u)
-          RUNTIME_MODELS=$(grep -oE '^model [A-Za-z]+' \
-            agent-and-tools/apps/agent-runtime/prisma/schema.prisma \
-            | awk '{print $2}' | sort -u)
-          MISSING=$(comm -23 <(echo "$COMPOSER_MODELS") <(echo "$RUNTIME_MODELS"))
-          if [ -n "$MISSING" ]; then
-            echo "::error::Composer declares models that agent-runtime does NOT mirror."
-            echo "::error::A future agent-runtime prisma db push will silently DROP these tables."
-            echo "::error::Add mirror stubs to agent-and-tools/apps/agent-runtime/prisma/schema.prisma:"
-            echo "$MISSING" | sed 's/^/  - /'
-            exit 1
-          fi
-          echo "✓ Every composer-declared model is mirrored in agent-runtime."
+            agent-and-tools/apps/agent-runtime/prisma/schema.prisma; do
+            if ! grep -qE '^[[:space:]]+output[[:space:]]*=' "$f"; then
+              echo "::error::$f is missing a per-service `output` path — Prisma"
+              echo "::error::generates to the shared workspace node_modules and"
+              echo "::error::clobbers the other service's client. Add:"
+              echo "::error::  generator client {"
+              echo "::error::    provider = \"prisma-client-js\""
+              echo "::error::    output   = \"../generated/prisma-client\""
+              echo "::error::  }"
+              exit 1
+            fi
+          done
+          echo "✓ Both schemas write to per-service output paths."
 
   # ─── Docker compose files parse cleanly ─────────────────────────────────────
   compose-syntax:

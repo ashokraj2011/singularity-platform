@@ -1,4 +1,4 @@
-import type { Capability } from "@prisma/client";
+import type { Capability } from "../../../generated/prisma-client";
 import jwt from "jsonwebtoken";
 
 const DEFAULT_IAM_BASE_URL = "http://localhost:8100";

@@ -1,11 +1,21 @@
-import { Prisma } from "@prisma/client";
+/**
+ * M29 wind-down — in-process agent loop is deprecated. The only remaining
+ * supported execution path is:
+ *
+ *   workgraph AGENT_TASK → context-fabric /execute → mcp-server agent loop
+ *
+ * `executionService.create`, `.list`, `.get`, and `.getReceipt` remain
+ * functional for historical-row queries the admin SPA still surfaces.
+ * `executionService.start` is now a deprecation stub — it preserves the
+ * HTTP contract (the SPA's runtime-executions page still POSTs to it) but
+ * marks the execution FAILED with a clear "moved to workgraph" message.
+ *
+ * Removing the in-process loop is what unblocks the prompt-composer DB
+ * split (Decision 2): the imports of promptAssemblyService and friends
+ * are now gone, so prompt-composer can own its tables on its own DB.
+ */
 import { prisma } from "../../config/prisma";
 import { NotFoundError } from "../../shared/errors";
-import { sha256 } from "../../shared/hash";
-import { promptAssemblyService } from "../prompts/prompt-assembly.service";
-import { modelRuntimeService } from "../model-runtime/model-runtime.service";
-import { toolValidationService } from "../tools/tool-validation.service";
-import { stubAdapter } from "../tools/tool-adapter.interface";
 import { env } from "../../config/env";
 
 export const executionService = {
@@ -56,148 +66,46 @@ export const executionService = {
   },
 
   /**
-   * Spec §14.2 — orchestrate prompt assembly → model → tool validation → receipts.
+   * @deprecated M29 — in-process execution is no longer supported.
+   *
+   * Historical behavior: prompt assembly → model call → tool validation →
+   * receipts, all run synchronously inside agent-runtime. The new path is:
+   *
+   *   workgraph AGENT_TASK → context-fabric /execute → mcp-server agent loop
+   *
+   * To preserve the API contract used by the admin SPA's runtime-executions
+   * page, this method still accepts the request and updates the execution
+   * row — but marks it FAILED with a clear message instead of running the
+   * (removed) in-process loop.
    */
-  async start(id: string, opts: { workflowPhase?: string; task?: string }) {
+  async start(id: string, _opts: { workflowPhase?: string; task?: string }) {
     const exec = await this.get(id);
 
-    await prisma.agentExecution.update({
-      where: { id },
-      data: { executionStatus: "RUNNING", startedAt: new Date() },
-    });
-
-    // 1. Assemble prompt
-    const assembly = await promptAssemblyService.assemble({
-      agentTemplateId: exec.agentTemplateId,
-      agentBindingId: exec.agentBindingId ?? undefined,
-      capabilityId: exec.capabilityId ?? undefined,
-      workflowExecutionId: exec.workflowExecutionId ?? undefined,
-      workflowPhase: opts.workflowPhase,
-      task: opts.task ?? exec.userRequest ?? "Analyze the request.",
-      modelProvider: exec.modelProvider ?? env.DEFAULT_MODEL_PROVIDER,
-      modelName: exec.modelName ?? env.DEFAULT_MODEL_NAME,
-    }, id);
+    const message =
+      "In-process agent execution is deprecated (M29). Use a workgraph " +
+      "workflow with an AGENT_TASK node bound to this template instead. " +
+      `Template: ${exec.agentTemplateId}`;
 
     await prisma.agentExecution.update({
       where: { id },
-      data: { executionStatus: "PROMPT_ASSEMBLED" },
-    });
-
-    // 2. Run model
-    const modelOutput = await modelRuntimeService.run({
-      modelProvider: exec.modelProvider ?? env.DEFAULT_MODEL_PROVIDER,
-      modelName: exec.modelName ?? env.DEFAULT_MODEL_NAME,
-      messages: [
-        { role: "system", content: assembly.finalPromptPreview ?? "" },
-        { role: "user", content: opts.task ?? exec.userRequest ?? "" },
-      ],
-    });
-
-    // 3. Tool calls → validate → execute → receipts
-    const toolReceiptIds: string[] = [];
-    if (modelOutput.toolCalls && modelOutput.toolCalls.length > 0) {
-      for (const call of modelOutput.toolCalls) {
-        const validation = await toolValidationService.validate({
-          agentExecutionId: id,
-          agentTemplateId: exec.agentTemplateId,
-          agentBindingId: exec.agentBindingId ?? undefined,
-          capabilityId: exec.capabilityId ?? undefined,
-          toolName: call.name,
-          workflowPhase: opts.workflowPhase,
-          input: call.input,
-        });
-
-        const dot = call.name.indexOf(".");
-        const ns = dot >= 0 ? call.name.slice(0, dot) : "";
-        const nm = dot >= 0 ? call.name.slice(dot + 1) : call.name;
-        const tool = await prisma.toolDefinition.findFirst({ where: { namespace: ns, name: nm } });
-
-        if (!validation.allowed || !tool) {
-          if (tool) {
-            const receipt = await prisma.toolExecutionReceipt.create({
-              data: {
-                agentExecutionId: id, toolId: tool.id, toolName: call.name,
-                inputHash: sha256(call.input as Record<string, unknown>),
-                status: "BLOCKED", errorMessage: validation.reason,
-                startedAt: new Date(), completedAt: new Date(),
-              },
-            });
-            toolReceiptIds.push(receipt.id);
-          }
-          continue;
-        }
-
-        if (validation.requiresApproval) {
-          const receipt = await prisma.toolExecutionReceipt.create({
-            data: {
-              agentExecutionId: id, toolId: tool.id, toolName: call.name,
-              inputHash: sha256(call.input as Record<string, unknown>),
-              status: "WAITING_APPROVAL", startedAt: new Date(),
-            },
-          });
-          toolReceiptIds.push(receipt.id);
-          continue;
-        }
-
-        const startedAt = new Date();
-        const result = await stubAdapter.execute({
-          toolName: call.name,
-          input: call.input,
-          context: {
-            agentExecutionId: id, agentTemplateId: exec.agentTemplateId,
-            agentBindingId: exec.agentBindingId ?? undefined,
-            capabilityId: exec.capabilityId ?? undefined,
-            workflowExecutionId: exec.workflowExecutionId ?? undefined,
-            workflowPhase: opts.workflowPhase,
-            userId: exec.createdBy ?? undefined,
-          },
-        });
-        const receipt = await prisma.toolExecutionReceipt.create({
-          data: {
-            agentExecutionId: id, toolId: tool.id, toolName: call.name,
-            inputHash: sha256(call.input as Record<string, unknown>),
-            outputHash: result.output ? sha256(result.output as Record<string, unknown>) : null,
-            status: result.success ? "SUCCESS" : "ERROR",
-            errorMessage: result.error,
-            startedAt, completedAt: new Date(),
-          },
-        });
-        toolReceiptIds.push(receipt.id);
-      }
-    }
-
-    // 4. Final execution receipt
-    const finalText = modelOutput.text ?? "";
-    const outputHash = sha256(finalText);
-    const finalStatus = "COMPLETED";
-
-    await prisma.agentExecutionReceipt.create({
       data: {
-        agentExecutionId: id,
-        promptAssemblyId: assembly.promptAssemblyId,
-        promptHash: assembly.finalPromptHash,
-        outputHash,
-        toolReceiptRefs: toolReceiptIds as Prisma.InputJsonValue,
-        evidenceRefs: [] as Prisma.InputJsonValue,
-        memoryRefs: [] as Prisma.InputJsonValue,
-        approvalRefs: [] as Prisma.InputJsonValue,
-        finalStatus,
+        executionStatus: "FAILED",
+        startedAt: new Date(),
+        completedAt: new Date(),
       },
-    });
-
-    await prisma.agentExecution.update({
-      where: { id },
-      data: { executionStatus: finalStatus, completedAt: new Date() },
     });
 
     return {
       executionId: id,
-      promptAssemblyId: assembly.promptAssemblyId,
-      promptHash: assembly.finalPromptHash,
-      outputHash,
-      finalStatus,
-      modelOutput,
-      toolReceiptIds,
+      deprecated: true,
+      finalStatus: "FAILED" as const,
+      message,
+      // Preserved fields so the SPA's response decoder doesn't blow up.
+      promptAssemblyId: null,
+      promptHash: null,
+      outputHash: null,
+      modelOutput: null,
+      toolReceiptIds: [] as string[],
     };
   },
 

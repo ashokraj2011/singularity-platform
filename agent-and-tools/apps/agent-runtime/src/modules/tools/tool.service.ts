@@ -1,4 +1,4 @@
-import { EntityStatus, Prisma, ToolGrantScopeType } from "@prisma/client";
+import { EntityStatus, Prisma, ToolGrantScopeType } from "../../../generated/prisma-client";
 import { prisma } from "../../config/prisma";
 import { ConflictError, NotFoundError } from "../../shared/errors";
 

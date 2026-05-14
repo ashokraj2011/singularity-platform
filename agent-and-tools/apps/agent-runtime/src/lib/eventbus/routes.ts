@@ -8,7 +8,7 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "../../../generated/prisma-client";
 
 const createSchema = z.object({
   subscriberId: z.string().min(1),

@@ -6,7 +6,7 @@
  * triggers pg_notify so the dispatcher picks it up immediately.
  */
 
-import type { PrismaClient, Prisma } from "@prisma/client";
+import type { PrismaClient, Prisma } from "../../../generated/prisma-client";
 
 export const EVENT_CHANNEL = "event_outbox_agent_runtime";
 

@@ -1,0 +1,202 @@
+name: Compose smoke
+
+# D2 (decision-D, default option): full-stack health smoke. Runs on:
+#   - every push to main (post-merge, never on PRs — too slow for per-PR)
+#   - nightly at 03:00 UTC (catches drift in upstream container images)
+#   - manual dispatch (`Actions → Compose smoke → Run workflow`) for diagnosis
+#
+# Brings up Postgres + applies all schemas + boots a minimal stack inline,
+# then probes /healthz/strict on every service. Fails red if ANY service's
+# invariant checks return 503 — exactly the silent-misconfig class of bugs
+# that bit us during demo prep.
+#
+# Heavy job (~5-7 min). Deliberately NOT a per-PR gate; the per-PR pipeline
+# (lint, typecheck, prisma validate, schema-ownership) is the fast gate.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 03:00 UTC = roughly off-hours in most timezones
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: compose-smoke-${{ github.ref }}
+  cancel-in-progress: false  # don't cancel nightly mid-flight
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: full-stack /healthz/strict smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: create DBs + extensions
+        env: { PGPASSWORD: postgres }
+        run: |
+          set -e
+          for db in singularity workgraph audit_governance singularity_iam; do
+            psql -h 127.0.0.1 -U postgres -d postgres -c "CREATE DATABASE $db" 2>&1 \
+              | grep -v "already exists" || true
+            psql -h 127.0.0.1 -U postgres -d $db \
+              -c "CREATE EXTENSION IF NOT EXISTS vector;" \
+              -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+          done
+
+      - name: apply audit-governance schema
+        env: { PGPASSWORD: postgres }
+        run: psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d audit_governance -f audit-governance-service/db/init.sql
+
+      - name: install agent-and-tools workspace
+        working-directory: agent-and-tools
+        run: npm ci --ignore-scripts
+
+      - name: install audit-gov
+        working-directory: audit-governance-service
+        run: npm ci --ignore-scripts
+
+      - name: install mcp-server
+        working-directory: mcp-server
+        run: npm ci --ignore-scripts
+
+      - name: install pnpm + workgraph
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: |
+            - cwd: workgraph-studio
+              args: [--frozen-lockfile, --ignore-scripts]
+
+      - name: install python deps for context-fabric
+        run: |
+          python3 -m pip install --quiet fastapi uvicorn httpx pydantic-settings \
+            "python-jose[cryptography]" sqlalchemy aiosqlite
+
+      - name: push prisma schemas + generate per-service clients
+        env:
+          AT_URL: postgresql://postgres:postgres@127.0.0.1:5432/singularity
+          WG_URL: postgresql://postgres:postgres@127.0.0.1:5432/workgraph
+        run: |
+          set -e
+          ( cd agent-and-tools/apps/agent-runtime \
+            && DATABASE_URL="$AT_URL" npx prisma db push --accept-data-loss --skip-generate \
+            && DATABASE_URL="$AT_URL" npx prisma generate )
+          ( cd agent-and-tools/apps/prompt-composer \
+            && DATABASE_URL="$AT_URL" npx prisma db push --accept-data-loss --skip-generate \
+            && DATABASE_URL="$AT_URL" npx prisma generate )
+          ( cd workgraph-studio/apps/api \
+            && DATABASE_URL="$WG_URL" npx prisma db push --accept-data-loss --skip-generate \
+            && DATABASE_URL="$WG_URL" npx prisma generate )
+
+      - name: prepare mcp sandbox
+        run: |
+          mkdir -p /tmp/mcp-sandbox
+          cd /tmp/mcp-sandbox
+          git init -q
+          git config user.email demo@singularity.local
+          git config user.name CI
+          echo '# smoke' > README.md
+          git add . && git commit -q -m 'init'
+
+      - name: boot services (minimal — what /healthz/strict needs)
+        env:
+          PGPASSWORD: postgres
+          AT_URL: postgresql://postgres:postgres@127.0.0.1:5432/singularity
+          WG_URL: postgresql://postgres:postgres@127.0.0.1:5432/workgraph
+          AG_URL: postgresql://postgres:postgres@127.0.0.1:5432/audit_governance
+        run: |
+          set -e
+          mkdir -p logs /tmp/cf-data
+
+          # audit-gov
+          ( cd audit-governance-service && DATABASE_URL="$AG_URL" PORT=8500 \
+            nohup npm run dev > "$PWD/../logs/audit-gov.log" 2>&1 &)
+
+          # tool-service (seeds the 10+ core tools)
+          ( cd agent-and-tools/apps/tool-service && DATABASE_URL="$AT_URL" PORT=3002 \
+            nohup npm run dev > "$PWD/../../../logs/tool-service.log" 2>&1 &)
+
+          # agent-runtime
+          ( cd agent-and-tools/apps/agent-runtime && DATABASE_URL="$AT_URL" PORT=3003 \
+            nohup npm run dev > "$PWD/../../../logs/agent-runtime.log" 2>&1 &)
+
+          # prompt-composer
+          ( cd agent-and-tools/apps/prompt-composer && DATABASE_URL="$AT_URL" PORT=3004 \
+            nohup npm run dev > "$PWD/../../../logs/prompt-composer.log" 2>&1 &)
+
+          # mcp-server (mock provider — no LLM key in CI)
+          ( cd mcp-server && PORT=7100 \
+            MCP_BEARER_TOKEN="demo-bearer-token-must-be-min-16-chars" \
+            MCP_SANDBOX_ROOT=/tmp/mcp-sandbox \
+            MCP_AST_DB_PATH=/tmp/mcp-sandbox/.mcp-ast.sqlite \
+            LLM_PROVIDER=mock LLM_MODEL=mock-fast \
+            AUDIT_GOV_URL=http://localhost:8500 \
+            nohup npm run dev > "$PWD/../logs/mcp-server.log" 2>&1 &)
+
+      - name: wait for services
+        run: |
+          set -e
+          for svc in "audit-gov 8500 /health" "tool-svc 3002 /health" "agent-runtime 3003 /health" "prompt-composer 3004 /health" "mcp-server 7100 /health"; do
+            name=$(echo $svc | cut -d' ' -f1)
+            port=$(echo $svc | cut -d' ' -f2)
+            path=$(echo $svc | cut -d' ' -f3)
+            for _ in $(seq 1 60); do
+              code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${port}${path}" --max-time 2 || true)
+              [ "$code" = "200" ] && { echo "✓ $name ready"; break; }
+              sleep 2
+            done
+            [ "$code" = "200" ] || { echo "✗ $name not ready"; tail -50 logs/${name}.log || true; exit 1; }
+          done
+
+      - name: probe /healthz/strict on every service
+        run: |
+          set -e
+          fail=0
+          for svc in "audit-gov 8500" "tool-svc 3002" "agent-runtime 3003" "prompt-composer 3004" "mcp-server 7100"; do
+            name=$(echo $svc | cut -d' ' -f1)
+            port=$(echo $svc | cut -d' ' -f2)
+            code=$(curl -s -o /tmp/strict.json -w "%{http_code}" "http://localhost:${port}/healthz/strict" --max-time 5 || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "✓ $name /healthz/strict 200"
+            else
+              echo "::error::$name /healthz/strict returned $code"
+              cat /tmp/strict.json | python3 -m json.tool 2>&1 | head -30 || cat /tmp/strict.json
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: dump logs on failure
+        if: failure()
+        run: |
+          for f in logs/*.log; do
+            echo "── $f ──"
+            tail -50 "$f" || true
+          done

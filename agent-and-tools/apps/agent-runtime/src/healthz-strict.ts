@@ -65,19 +65,24 @@ const checks: InvariantCheck[] = [
     }
   },
 
-  // M28 spine-2 — same column required here, since agent-runtime shares
-  // the DB with composer and is also a writer of PromptAssembly rows.
+  // M29 — assert PromptAssembly is NOT in agent-runtime's DB. The model
+  // moved to prompt-composer; if it's still here, an older schema is loaded
+  // and writes will pile up in the wrong place.
   async () => {
     try {
       const rows = await prisma.$queryRaw<Array<{ count: bigint }>>`
-        SELECT count(*) AS count FROM information_schema.columns
-         WHERE table_name = 'PromptAssembly' AND column_name = 'traceId'`;
-      if (Number(rows[0]?.count ?? 0) === 0) {
-        return { name: "prompt_assembly_trace_id", ok: false, reason: "PromptAssembly.traceId missing — run prisma db push for M28 spine-2" };
+        SELECT count(*) AS count FROM information_schema.tables
+         WHERE table_name = 'PromptAssembly'`;
+      if (Number(rows[0]?.count ?? 0) > 0) {
+        return {
+          name: "no_composer_tables_present",
+          ok: false,
+          reason: "PromptAssembly exists in this DB — agent-runtime should not own composer tables after M29. Did you run prisma db push against the wrong DATABASE_URL?",
+        };
       }
-      return { name: "prompt_assembly_trace_id", ok: true };
+      return { name: "no_composer_tables_present", ok: true };
     } catch (err) {
-      return { name: "prompt_assembly_trace_id", ok: false, reason: (err as Error).message };
+      return { name: "no_composer_tables_present", ok: false, reason: (err as Error).message };
     }
   },
 ];

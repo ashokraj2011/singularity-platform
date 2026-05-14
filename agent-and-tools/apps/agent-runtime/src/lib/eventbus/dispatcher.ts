@@ -13,7 +13,7 @@
 
 import pg from "pg";
 import crypto from "node:crypto";
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "../../../generated/prisma-client";
 import { EVENT_CHANNEL } from "./publisher";
 
 const SWEEP_INTERVAL_MS    = 30_000;

@@ -1,12 +1,16 @@
-// Prompt Composer — owns prompt assembly tables.
+// Prompt Composer — owns prompt assembly tables on its OWN Postgres DB.
 //
-// Models marked OWNED are written here (CRUD).
-// Models marked READ are also declared in agent-runtime/prisma/schema.prisma —
-// composer reads them directly during assembly. Same Postgres DB; both
-// services' `prisma db push` converge on identical shapes. M3 cuts over
-// agent-runtime by removing OWNED tables from its schema.
+// M29 split (Decision 2): composer's tables (PromptProfile, PromptLayer,
+// PromptAssembly, CapabilityCompiledContext, ...) live on the dedicated
+// `singularity_composer` DB. agent-runtime no longer mirrors or reads them.
+//
+// The Prisma client generates to a per-service output path so the workspace's
+// shared node_modules can't cause "last-generate-wins" model loss. Composer
+// code imports `PrismaClient` from "../generated/prisma-client" instead of
+// "@prisma/client".
 generator client {
   provider = "prisma-client-js"
+  output   = "../generated/prisma-client"
 }
 
 datasource db {

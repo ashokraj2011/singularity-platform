@@ -1,4 +1,4 @@
-import { MemoryPromotionStatus, Prisma } from "@prisma/client";
+import { MemoryPromotionStatus, Prisma } from "../../../generated/prisma-client";
 import { prisma } from "../../config/prisma";
 import { NotFoundError } from "../../shared/errors";
 

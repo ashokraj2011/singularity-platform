@@ -159,10 +159,17 @@ EOF
     && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate >/dev/null 2>&1 ) \
     || warn "agent-runtime schema push had warnings"
 
-  info "generating prompt-composer Prisma client…"
+  # M29 — composer's schema is now AUTHORITATIVE for prompt-related tables
+  # (PromptAssembly, PromptProfile, CapabilityCompiledContext, ...). Apply
+  # it AFTER agent-runtime so composer's models land in `singularity`.
+  # Each service generates its Prisma client to its own per-service output
+  # path (set in schema.prisma's `generator client`), so shared-workspace
+  # node_modules can't clobber either side's client.
+  info "applying prompt-composer schema…"
   ( cd agent-and-tools/apps/prompt-composer \
+    && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma db push --skip-generate >/dev/null 2>&1 \
     && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate >/dev/null 2>&1 ) \
-    || warn "prompt-composer prisma generate had warnings"
+    || warn "prompt-composer schema push had warnings"
 
   info "applying workgraph-api schema…"
   ( cd workgraph-studio/apps/api \

@@ -1,5 +1,5 @@
 import { prisma } from "../../config/prisma";
-import type { AgentRoleType, EntityStatus, Prisma } from "@prisma/client";
+import type { AgentRoleType, EntityStatus, Prisma } from "../../../generated/prisma-client";
 import { ForbiddenError, NotFoundError } from "../../shared/errors";
 import type { AuthUser } from "../../middleware/auth.middleware";
 import {

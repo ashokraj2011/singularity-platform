@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma } from "../../../generated/prisma-client";
 import { prisma } from "../../config/prisma";
 import { ForbiddenError, NotFoundError } from "../../shared/errors";
 import { sha256 } from "../../shared/hash";
