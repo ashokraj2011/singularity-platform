@@ -1,3 +1,15 @@
+/**
+ * @deprecated M29 gate — final blocker for the prompt-composer DB split.
+ *
+ * Prompt assembly was moved to prompt-composer in M2. This service remains
+ * because executions/execution.service.ts still imports `promptAssemblyService`
+ * for legacy AgentExecutionReceipt rows. Once that import is removed (or
+ * routed through HTTP to prompt-composer), this file can be deleted and the
+ * Postgres DB split becomes a safe one-PR change.
+ *
+ * **Do not add new callers.** New code should call prompt-composer's
+ * /api/v1/compose-and-respond endpoint instead.
+ */
 import { prisma } from "../../config/prisma";
 import { NotFoundError } from "../../shared/errors";
 import { sha256, estimateTokens } from "../../shared/hash";

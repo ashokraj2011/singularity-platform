@@ -251,6 +251,17 @@ export async function activateAgentTask(
     prefer_laptop: cfg.preferLaptop === true ? true
       : cfg.preferLaptop === false ? false
       : undefined,
+    // M28 governance-1 — node-level governance posture. Two values for now:
+    //   "fail_open"   (default if unset): preserve today's behavior.
+    //   "fail_closed": refuse to run when audit-gov is unreachable. cf
+    //                  returns 503 GOVERNANCE_UNAVAILABLE which surfaces
+    //                  here as a ContextFabricError with detail.code set.
+    // Operators enable fail_closed per-workflow once their audit-gov uptime
+    // is well-understood. Future modes (degraded, human_approval_required)
+    // deferred until there's failure-rate data.
+    governance_mode: cfg.governanceMode === 'fail_closed' ? 'fail_closed'
+      : cfg.governanceMode === 'fail_open' ? 'fail_open'
+      : undefined,
   }
 
   // 4. Call context-fabric /execute.
@@ -270,6 +281,14 @@ export async function activateAgentTask(
       if (detail?.code === 'MCP_LAPTOP_TIMEOUT') {
         await failRun(run.id, 'mcp-laptop-timeout',
           `${detail.message ?? 'The laptop mcp-server did not respond in time.'} Re-run the node, or check \`singularity-mcp status\`.`)
+        return
+      }
+      // M28 governance-1 — fail_closed denial: audit-gov was unreachable so
+      // cf refused to run un-governed work. Operator-actionable: either
+      // restore audit-gov, or relax this node's governanceMode to fail_open.
+      if (detail?.code === 'GOVERNANCE_UNAVAILABLE') {
+        await failRun(run.id, 'governance-unavailable',
+          `${detail.message ?? 'audit-governance is unreachable.'} This node has governanceMode=fail_closed; relax it or restore audit-gov and re-run.`)
         return
       }
       await failRun(run.id, 'context-fabric-error',

@@ -59,6 +59,15 @@ export interface ExecuteRequest {
   // context-fabric laptop-bridge). When false, force the shared HTTP mcp.
   // When unset, cf auto-prefers laptop if a connection exists for the user.
   prefer_laptop?: boolean
+  // M28 governance-1 — governance posture for this execution.
+  //   "fail_open"   (DEFAULT): preserve today's behavior. Audit-gov outages
+  //                 are logged and execution continues.
+  //   "fail_closed": refuse to run when audit-gov is unreachable; return 503
+  //                 GOVERNANCE_UNAVAILABLE. Enable per-workflow once audit-gov
+  //                 uptime is well-understood.
+  // Future modes (degraded, human_approval_required) deferred until there's
+  // failure-rate data to tune their thresholds.
+  governance_mode?: 'fail_open' | 'fail_closed'
 }
 
 export interface PendingApproval {

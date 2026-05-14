@@ -155,6 +155,17 @@ class ExecuteRequest(BaseModel):
     # laptop. When None, the bridge is used opportunistically (auto-prefer
     # if a connection exists for the user).
     prefer_laptop: Optional[bool] = None
+    # M28 governance-1 — governance posture for this execution.
+    #   fail_open   (DEFAULT): preserve today's behavior. Audit-gov outages
+    #               are logged and execution continues.
+    #   fail_closed: if audit-gov is unreachable OR a required prompt-context
+    #               layer is missing, return 503 / 422 instead of running.
+    # Per the exec-brief recommendation: stay fail_open until boot invariants
+    # + audit-gov uptime metric have a month of data, then flip per-workflow.
+    # Adding the primitive NOW (not the policy) keeps the migration path
+    # cheap. Two more modes (degraded, human_approval_required) deliberately
+    # deferred until there's failure-rate data to tune their thresholds.
+    governance_mode: str = "fail_open"
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────
@@ -396,6 +407,56 @@ async def execute(req: ExecuteRequest):
         if req.run_context.workflow_instance_id and req.run_context.workflow_node_id
         else f"cf:{cf_call_id}"
     )
+
+    # M28 governance-1 — fail-closed pre-flight. When the caller declares
+    # governance_mode=fail_closed, we MUST be able to confirm audit-gov can
+    # receive events before we let the run proceed. Otherwise audit gaps go
+    # silent and the run produces un-governed work. Uses emit_audit_event_strict
+    # which awaits + raises (the regular emit is fire-and-forget).
+    if req.governance_mode == "fail_closed":
+        from .audit_gov_emit import emit_audit_event_strict, AuditGovUnavailable
+        try:
+            await emit_audit_event_strict(
+                kind="governance.precheck.allowed",
+                trace_id=trace_id,
+                capability_id=req.run_context.capability_id,
+                actor_id=req.run_context.user_id,
+                severity="info",
+                payload={
+                    "cf_call_id": cf_call_id,
+                    "governance_mode": "fail_closed",
+                    "check": "audit_gov_reachable",
+                    "workflow_instance_id": req.run_context.workflow_instance_id,
+                    "workflow_node_id": req.run_context.workflow_node_id,
+                },
+            )
+        except AuditGovUnavailable as err:
+            # Don't try to emit the denial via the strict path (it's the same
+            # endpoint that just failed). Use the fire-and-forget path so the
+            # signal lands if/when audit-gov recovers.
+            emit_audit_event(
+                kind="governance.precheck.denied",
+                trace_id=trace_id,
+                capability_id=req.run_context.capability_id,
+                actor_id=req.run_context.user_id,
+                severity="warn",
+                payload={
+                    "cf_call_id": cf_call_id,
+                    "governance_mode": "fail_closed",
+                    "check": "audit_gov_reachable",
+                    "reason": str(err),
+                },
+            )
+            raise HTTPException(status_code=503, detail={
+                "code": "GOVERNANCE_UNAVAILABLE",
+                "message": (
+                    "governance_mode=fail_closed but audit-governance is unreachable. "
+                    "Refusing to run un-governed. Either retry once audit-gov is healthy, "
+                    "or set governance_mode=fail_open on this request."
+                ),
+                "reason": str(err),
+                "trace_id": trace_id,
+            })
 
     # ── 1. Compose the prompt (preview mode → just assembled prompt) ────
     prompt_assembly_id: Optional[str] = None

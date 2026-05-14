@@ -1,3 +1,21 @@
+/**
+ * @deprecated M29 gate — DO NOT EXTEND.
+ *
+ * Prompt-profile / prompt-layer CRUD was ported to prompt-composer in M2.
+ * agent-runtime's HTTP routes for /api/v1/prompts/* are NOT mounted in
+ * app.ts and have not been since the M2 cutover. This file remains only
+ * because executions/execution.service.ts still imports promptAssemblyService
+ * — once that import is removed (M29 deprecation), this entire directory
+ * can be deleted and the prompt-composer DB split (Decision 2) becomes safe.
+ *
+ * Until then: every model accessed here (PromptProfile, PromptLayer,
+ * PromptProfileLayer) must remain mirrored in agent-runtime's Prisma schema
+ * so prompt-composer's `prisma db push` doesn't drop them. The
+ * schema-drift-guard CI job enforces this.
+ *
+ * If you need new prompt-profile or prompt-layer functionality, add it to
+ * prompt-composer (apps/prompt-composer/src/modules/prompts/) instead.
+ */
 import { prisma } from "../../config/prisma";
 import { NotFoundError } from "../../shared/errors";
 import { sha256 } from "../../shared/hash";
