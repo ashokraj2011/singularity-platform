@@ -79,17 +79,26 @@ cmd_up() {
   # ── 1. Create databases + extensions ────────────────────────────────────
   info "creating databases (idempotent)…"
   PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d postgres <<SQL 2>&1 | grep -vE "already exists|NOTICE" || true
-SELECT 'CREATE DATABASE singularity'      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity')\gexec
-SELECT 'CREATE DATABASE workgraph'        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='workgraph')\gexec
-SELECT 'CREATE DATABASE audit_governance' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='audit_governance')\gexec
-SELECT 'CREATE DATABASE singularity_iam'  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_iam')\gexec
+SELECT 'CREATE DATABASE singularity'          WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity')\gexec
+SELECT 'CREATE DATABASE singularity_composer' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_composer')\gexec
+SELECT 'CREATE DATABASE workgraph'            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='workgraph')\gexec
+SELECT 'CREATE DATABASE audit_governance'     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='audit_governance')\gexec
+SELECT 'CREATE DATABASE singularity_iam'      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_iam')\gexec
 SQL
 
-  info "enabling pgvector + pgcrypto in 'singularity'…"
+  info "enabling pgvector + pgcrypto in 'singularity' (agent-runtime + tool-service)…"
   PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d singularity \
     -c "CREATE EXTENSION IF NOT EXISTS vector;" \
     -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>&1 | grep -vE "NOTICE" || \
     { err "Failed to install pgvector. Install it on your Postgres (e.g. 'brew install pgvector') and retry."; exit 1; }
+
+  # M30 — prompt-composer's own DB. Decoupled from agent-runtime so
+  # cross-service prisma db push fights are structurally impossible.
+  info "enabling pgvector + pgcrypto in 'singularity_composer' (prompt-composer)…"
+  PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d singularity_composer \
+    -c "CREATE EXTENSION IF NOT EXISTS vector;" \
+    -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>&1 | grep -vE "NOTICE" || \
+    { err "Failed to install pgvector on singularity_composer."; exit 1; }
 
   info "enabling pgcrypto in 'singularity_iam'…"
   PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d singularity_iam \
@@ -113,6 +122,9 @@ export PG_USER="$db_user"
 export PG_PASS="$db_pass"
 
 export DATABASE_URL_AGENT_TOOLS="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity"
+# M30 — composer owns this DB; agent-runtime data is read via DATABASE_URL_RUNTIME_READ (= AGENT_TOOLS)
+export DATABASE_URL_COMPOSER="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_composer"
+export DATABASE_URL_RUNTIME_READ="$DATABASE_URL_AGENT_TOOLS"
 export DATABASE_URL_WORKGRAPH="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/workgraph"
 export DATABASE_URL_AUDIT_GOV="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/audit_governance"
 
@@ -159,17 +171,19 @@ EOF
     && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate >/dev/null 2>&1 ) \
     || warn "agent-runtime schema push had warnings"
 
-  # M29 — composer's schema is now AUTHORITATIVE for prompt-related tables
-  # (PromptAssembly, PromptProfile, CapabilityCompiledContext, ...). Apply
-  # it AFTER agent-runtime so composer's models land in `singularity`.
-  # Each service generates its Prisma client to its own per-service output
-  # path (set in schema.prisma's `generator client`), so shared-workspace
-  # node_modules can't clobber either side's client.
-  info "applying prompt-composer schema…"
+  # M30 — composer's OWNED tables live on `singularity_composer`. Push
+  # composer's schema against that DB. The runtime-reader client only needs
+  # `prisma generate` (no DDL on agent-runtime's DB).
+  info "applying prompt-composer schema (DB: singularity_composer)…"
   ( cd agent-and-tools/apps/prompt-composer \
-    && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma db push --skip-generate >/dev/null 2>&1 \
-    && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate >/dev/null 2>&1 ) \
-    || warn "prompt-composer schema push had warnings"
+    && DATABASE_URL="$DATABASE_URL_COMPOSER" npx prisma db push --schema=prisma/schema.prisma --skip-generate >/dev/null 2>&1 \
+    && DATABASE_URL="$DATABASE_URL_COMPOSER" npx prisma generate --schema=prisma/schema.prisma >/dev/null 2>&1 ) \
+    || warn "prompt-composer owned schema push had warnings"
+
+  info "generating composer's runtime-reader client (read-only against singularity)…"
+  ( cd agent-and-tools/apps/prompt-composer \
+    && DATABASE_URL_RUNTIME_READ="$DATABASE_URL_RUNTIME_READ" npx prisma generate --schema=prisma/runtime-read.prisma >/dev/null 2>&1 ) \
+    || warn "prompt-composer runtime-reader generate had warnings"
 
   info "applying workgraph-api schema…"
   ( cd workgraph-studio/apps/api \
@@ -221,7 +235,7 @@ EOF
   boot agent-service    "cd agent-and-tools/apps/agent-service   && PORT=3001 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
   boot tool-service     "cd agent-and-tools/apps/tool-service    && PORT=3002 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
   boot agent-runtime    "cd agent-and-tools/apps/agent-runtime   && PORT=3003 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
-  boot prompt-composer  "cd agent-and-tools/apps/prompt-composer && PORT=3004 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+  boot prompt-composer  "cd agent-and-tools/apps/prompt-composer && PORT=3004 DATABASE_URL=\"$DATABASE_URL_COMPOSER\" DATABASE_URL_RUNTIME_READ=\"$DATABASE_URL_RUNTIME_READ\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
 
   boot mcp-server       "cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_PROVIDER=mock LLM_MODEL=mock-fast AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
   boot context-api      "cd context-fabric/services/context_api_service && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000"

@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# M29 — one-shot schema applier for the docker-compose stack.
+# M30 — schema applier for the docker-compose stack.
 #
-# Why this exists: Prisma's `db push` always drops tables not in the active
-# schema. With agent-runtime + prompt-composer sharing one Postgres, neither
-# container can safely push its own schema at startup — it'd silently drop
-# the other service's tables on every restart.
+# Two DBs, two pushes — they don't conflict because each pushes to its OWN
+# Postgres database. No more mirror dance, no startup race.
 #
-# This script applies BOTH schemas in the correct order against the shared
-# `singularity` DB. Run it once after `docker compose up -d` (and any time
-# either Prisma schema changes). Subsequent container restarts don't need it.
+#   agent-runtime  →  `singularity`            (its own owned tables)
+#   prompt-composer →  `singularity_composer`  (its OWNED tables only)
+#   composer also generates a READ-ONLY client for `singularity` so it can
+#   read AgentTemplate / Capability / ToolGrant / DistilledMemory / etc.
 #
-# For bare-metal dev, `bin/bare-metal.sh up` calls this same logic inline —
-# this script is the docker-stack equivalent.
+# Run once after `docker compose up -d` and any time either Prisma schema
+# changes. Subsequent container restarts don't need it.
+#
+# For bare-metal dev, `bin/bare-metal.sh up` calls the same logic inline.
 #
 # Usage:
 #   ./bin/apply-schemas.sh
@@ -24,48 +25,54 @@ C_BLUE=$'\033[1;34m'; C_GREEN=$'\033[1;32m'; C_END=$'\033[0m'
 info() { echo -e "${C_BLUE}▸${C_END} $*"; }
 ok()   { echo -e "${C_GREEN}✓${C_END} $*"; }
 
-# Wait for at-postgres to be reachable
 info "waiting for at-postgres…"
 for _ in $(seq 1 30); do
   docker exec singularity-at-postgres pg_isready -U postgres >/dev/null 2>&1 && break
   sleep 1
 done
 
-# Stage 1: composer pushes first (it has fewer models — the prompt set).
-# Anything in the DB not in composer's schema gets dropped here.
-info "applying prompt-composer schema (stage 1)…"
-docker exec singularity-prompt-composer sh -c \
-  "cd /app/apps/prompt-composer && npx prisma db push --skip-generate --accept-data-loss" \
-  2>&1 | tail -3
+# Ensure singularity_composer DB exists (init.sql creates it on virgin
+# volumes, but existing volumes from pre-M30 won't have it).
+info "ensuring singularity_composer DB exists…"
+docker exec singularity-at-postgres psql -U postgres -d postgres -c \
+  "SELECT 'CREATE DATABASE singularity_composer' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_composer')\gexec" \
+  2>&1 | grep -v "NOTICE" | tail -3 || true
+docker exec singularity-at-postgres psql -U postgres -d singularity_composer -c \
+  "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto;" \
+  2>&1 | grep -v "NOTICE" | tail -3 || true
 
-# Stage 2: agent-runtime pushes second. Re-adds its 13 tables that composer
-# dropped (event_outbox, AgentExecution, etc.). Composer's 6 owned tables
-# are also declared as mirrors in agent-runtime's schema, so they survive
-# this push.
-info "applying agent-runtime schema (stage 2)…"
+# Stage 1: agent-runtime pushes against `singularity`.
+info "applying agent-runtime schema (DB: singularity)…"
 docker exec singularity-agent-runtime sh -c \
   "cd /app/apps/agent-runtime && npx prisma db push --skip-generate --accept-data-loss" \
   2>&1 | tail -3
 
-# Verify both sets of tables are present
-info "verifying both sets of tables exist…"
-COMPOSER_TBLS=$(docker exec singularity-at-postgres psql -U postgres -d singularity -tA -c \
+# Stage 2: prompt-composer pushes its OWNED schema against `singularity_composer`.
+# Its runtime-reader schema generates client only — no DDL on `singularity`.
+info "applying prompt-composer OWNED schema (DB: singularity_composer)…"
+docker exec singularity-prompt-composer sh -c \
+  "cd /app/apps/prompt-composer && DATABASE_URL=postgresql://postgres:singularity@at-postgres:5432/singularity_composer npx prisma db push --schema=prisma/schema.prisma --skip-generate --accept-data-loss" \
+  2>&1 | tail -3
+
+# Verify
+info "verifying both DBs have their respective tables…"
+SINGULARITY_TABLES=$(docker exec singularity-at-postgres psql -U postgres -d singularity -tA -c \
+  "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='AgentTemplate';")
+COMPOSER_TABLES=$(docker exec singularity-at-postgres psql -U postgres -d singularity_composer -tA -c \
   "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='PromptAssembly';")
-RUNTIME_TBLS=$(docker exec singularity-at-postgres psql -U postgres -d singularity -tA -c \
-  "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='event_outbox';")
-if [ "$COMPOSER_TBLS" = "1" ] && [ "$RUNTIME_TBLS" = "1" ]; then
-  ok "schemas applied — composer's PromptAssembly + agent-runtime's event_outbox both present"
+if [ "$SINGULARITY_TABLES" = "1" ] && [ "$COMPOSER_TABLES" = "1" ]; then
+  ok "M30 split healthy — agent-runtime tables on singularity, composer tables on singularity_composer"
 else
-  echo "✗ schema apply incomplete: composer.PromptAssembly=$COMPOSER_TBLS, runtime.event_outbox=$RUNTIME_TBLS"
+  echo "✗ schema apply incomplete: singularity.AgentTemplate=$SINGULARITY_TABLES, singularity_composer.PromptAssembly=$COMPOSER_TABLES"
   exit 1
 fi
 
-# Restart both services so their Prisma clients clear any cached "table missing" errors
-info "restarting both services to clear any cached errors…"
+# Restart both so any cached "table missing" errors clear.
+info "restarting agent-runtime + prompt-composer to clear cached errors…"
 docker compose restart agent-runtime prompt-composer 2>&1 | tail -3
 
 ok "done."
 echo
-echo "  Next: probe /healthz/strict on each service to confirm invariants pass."
+echo "  Next: probe /healthz/strict on both services to confirm invariants pass."
 echo "    curl localhost:3003/healthz/strict | jq .data.checks"
 echo "    curl localhost:3004/healthz/strict | jq .data.checks"

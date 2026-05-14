@@ -170,7 +170,10 @@ services:
     environment:
       NODE_ENV: development
       PORT: 3004
-      DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
+      # M30 — composer owns `singularity_composer` (PromptAssembly etc.) and
+      # reads agent-runtime models from `singularity` via runtime-reader.
+      DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity_composer
+      DATABASE_URL_RUNTIME_READ: postgresql://postgres:singularity@at-postgres:5432/singularity
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
       LOG_LEVEL: info
       TOOL_SERVICE_URL: http://tool-service:3002
@@ -336,7 +339,10 @@ services:
       MINIO_ACCESS_KEY: workgraph
       MINIO_SECRET_KEY: workgraph_secret
       MINIO_BUCKET: workgraph-documents
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Avoid inheriting a host ANTHROPIC_API_KEY accidentally. Use the
+      # service-specific override only when intentionally enabling legacy
+      # Workgraph direct Anthropic paths.
+      ANTHROPIC_API_KEY: ${WORKGRAPH_ANTHROPIC_API_KEY:-}
       CORS_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5176,http://localhost:5180
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
       AUTH_PROVIDER: iam
@@ -426,6 +432,9 @@ services:
       # OPENAI_API_KEY on the operator's host to enable real LLM calls.
       LLM_PROVIDER: ${MCP_LLM_PROVIDER:-mock}
       LLM_MODEL:    ${MCP_LLM_MODEL:-mock-fast}
+      MCP_ALLOWED_LLM_PROVIDERS: ${MCP_ALLOWED_LLM_PROVIDERS:-}
+      MCP_LLM_PROVIDER_CONFIG_JSON: ${MCP_LLM_PROVIDER_CONFIG_JSON:-}
+      MCP_LLM_PROVIDER_CONFIG_PATH: ${MCP_LLM_PROVIDER_CONFIG_PATH:-}
       MCP_LLM_MODEL_CATALOG_JSON: ${MCP_LLM_MODEL_CATALOG_JSON:-}
       MCP_LLM_MODEL_CATALOG_PATH: ${MCP_LLM_MODEL_CATALOG_PATH:-}
       # Provider keys live HERE on the operator's local machine — they
@@ -435,6 +444,7 @@ services:
       OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       COPILOT_TOKEN:     ${COPILOT_TOKEN:-}
+      COPILOT_BASE_URL:  ${COPILOT_BASE_URL:-https://api.githubcopilot.com}
       OPENAI_DEFAULT_MODEL:    ${OPENAI_DEFAULT_MODEL:-gpt-4o-mini}
       ANTHROPIC_DEFAULT_MODEL: ${ANTHROPIC_DEFAULT_MODEL:-claude-sonnet-4-6}
       COPILOT_DEFAULT_MODEL:   ${COPILOT_DEFAULT_MODEL:-gpt-4o}

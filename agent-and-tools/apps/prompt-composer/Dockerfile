@@ -14,7 +14,9 @@ COPY apps/prompt-composer/package.json ./apps/prompt-composer/package.json
 COPY apps/prompt-composer/prisma       ./apps/prompt-composer/prisma
 RUN npm install --workspaces --include-workspace-root --no-audit --no-fund
 RUN npm run build --workspace=packages/shared
-RUN cd apps/prompt-composer && npx prisma generate
+# M30 — generate BOTH Prisma clients (owned + runtime-reader)
+RUN cd apps/prompt-composer && npx prisma generate --schema=prisma/schema.prisma
+RUN cd apps/prompt-composer && npx prisma generate --schema=prisma/runtime-read.prisma
 
 FROM base AS dev
 COPY --from=deps /app/node_modules ./node_modules
@@ -27,7 +29,9 @@ COPY apps/prompt-composer ./apps/prompt-composer
 # generate in case the schema changed between stages.
 COPY --from=deps /app/apps/prompt-composer/generated ./apps/prompt-composer/generated
 WORKDIR /app/apps/prompt-composer
-RUN npx prisma generate
+# M30 — regenerate BOTH clients in case schemas changed between stages
+RUN npx prisma generate --schema=prisma/schema.prisma
+RUN npx prisma generate --schema=prisma/runtime-read.prisma
 EXPOSE 3004
 # M29 — DO NOT push schema at startup. Prisma `db push` drops any table not
 # in the active schema, and the shared-DB topology means composer's push
@@ -45,7 +49,9 @@ COPY --from=deps /app/packages ./packages
 COPY package.json package-lock.json* ./
 COPY apps/prompt-composer ./apps/prompt-composer
 WORKDIR /app/apps/prompt-composer
-RUN npx prisma generate && npm run build
+RUN npx prisma generate --schema=prisma/schema.prisma \
+ && npx prisma generate --schema=prisma/runtime-read.prisma \
+ && npm run build
 
 FROM base AS runner
 ENV NODE_ENV=production

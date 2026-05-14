@@ -1,4 +1,6 @@
-import { prisma } from "../../config/prisma";
+// M30 — `prisma` writes composer-OWNED tables on `singularity_composer`;
+// `runtimeReader` reads agent-runtime models on `singularity`.
+import { prisma, runtimeReader } from "../../config/prisma";
 import { logger } from "../../config/logger";
 import { NotFoundError } from "../../shared/errors";
 import { sha256, estimateTokens } from "../../shared/hash";
@@ -371,7 +373,7 @@ export const composeService = {
     const ctx = await this.buildVarsContext(input);
 
     // 1. Agent template + base prompt profile
-    const template = await prisma.agentTemplate.findUnique({ where: { id: input.agentTemplateId } });
+    const template = await runtimeReader.agentTemplate.findUnique({ where: { id: input.agentTemplateId } });
     if (!template) throw new NotFoundError("Agent template not found");
     if (template.basePromptProfileId) {
       layers.push(...await this.loadProfileLayers(template.basePromptProfileId, "agent template base profile", ctx, warnings));
@@ -380,7 +382,7 @@ export const composeService = {
     // 2. Binding overlay
     let binding: { id: string; promptProfileId: string | null; capabilityId: string | null } | null = null;
     if (input.agentBindingId) {
-      binding = await prisma.agentCapabilityBinding.findUnique({
+      binding = await runtimeReader.agentCapabilityBinding.findUnique({
         where: { id: input.agentBindingId },
         select: { id: true, promptProfileId: true, capabilityId: true },
       });
@@ -392,7 +394,7 @@ export const composeService = {
     // 3. Capability context, knowledge, distilled memory, code context
     const capabilityId = input.capabilityId ?? binding?.capabilityId ?? null;
     if (capabilityId) {
-      const capability = await prisma.capability.findUnique({ where: { id: capabilityId } });
+      const capability = await runtimeReader.capability.findUnique({ where: { id: capabilityId } });
       if (capability) {
         const capContent = `Capability: ${capability.name}\nType: ${capability.capabilityType ?? "—"}\nCriticality: ${capability.criticality ?? "—"}\n${capability.description ?? ""}`;
         const r = renderMustache(capContent, ctx); warnings.push(...r.warnings);
@@ -463,7 +465,7 @@ export const composeService = {
         // ── Knowledge artifacts → RUNTIME_EVIDENCE ──────────────────────────
         const artifacts = budget.knowledgeTopK === 0 ? [] : taskVec
           ? await this.semanticKnowledge(capabilityId, taskVec, budget.knowledgeTopK, input.task)
-          : (await prisma.capabilityKnowledgeArtifact.findMany({ where: { capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: budget.knowledgeTopK }))
+          : (await runtimeReader.capabilityKnowledgeArtifact.findMany({ where: { capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: budget.knowledgeTopK }))
             .map(a => ({ ...a, cosineSimilarity: 0, ageDays: 0, finalScore: 0, fts_score: 0, rrf_rank: null as number | null }));
         for (const a of artifacts) {
           const citation = makeCitationKey("knowledge", a.title, a.id);
@@ -507,7 +509,7 @@ export const composeService = {
         // ── Distilled memory → MEMORY_CONTEXT ──────────────────────────────
         const memory = budget.memoryTopK === 0 ? [] : taskVec
           ? await this.semanticMemory(capabilityId, taskVec, budget.memoryTopK, input.task)
-          : (await prisma.distilledMemory.findMany({ where: { scopeType: "CAPABILITY", scopeId: capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: budget.memoryTopK }))
+          : (await runtimeReader.distilledMemory.findMany({ where: { scopeType: "CAPABILITY", scopeId: capabilityId, status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: budget.memoryTopK }))
             .map(m => ({ ...m, cosineSimilarity: 0, ageDays: 0, finalScore: 0, fts_score: 0, rrf_rank: null as number | null }));
         for (const m of memory) {
           const citation = makeCitationKey("memory", m.title, m.id);
@@ -555,7 +557,7 @@ export const composeService = {
         if (includeCodeContext()) {
           const symbols = budget.codeTopK === 0 ? [] : taskVec
             ? await this.semanticSymbols(capabilityId, taskVec, budget.codeTopK)
-            : (await prisma.capabilityCodeSymbol.findMany({
+            : (await runtimeReader.capabilityCodeSymbol.findMany({
               where: { capabilityId }, orderBy: { createdAt: "desc" }, take: budget.codeTopK,
               include: { repository: true },
             })).map(s => ({
@@ -890,7 +892,7 @@ export const composeService = {
     let capabilityMeta: Record<string, unknown> = {};
     const capabilityId = input.capabilityId;
     if (capabilityId) {
-      const cap = await prisma.capability.findUnique({ where: { id: capabilityId } });
+      const cap = await runtimeReader.capability.findUnique({ where: { id: capabilityId } });
       if (cap) {
         capabilityMeta = {
           id: cap.id, name: cap.name, capabilityType: cap.capabilityType,
@@ -947,7 +949,7 @@ export const composeService = {
     if (input.agentBindingId) scopeFilters.push({ grantScopeType: "AGENT_BINDING", grantScopeId: input.agentBindingId });
     if (capabilityId) scopeFilters.push({ grantScopeType: "CAPABILITY", grantScopeId: capabilityId });
 
-    const grants = await prisma.toolGrant.findMany({
+    const grants = await runtimeReader.toolGrant.findMany({
       where: { OR: scopeFilters as never, status: "ACTIVE" },
       include: { tool: { include: { contracts: { where: { status: "ACTIVE" }, orderBy: { version: "desc" }, take: 1 } } } },
     });
@@ -1037,7 +1039,7 @@ Input contract: available to the execution layer; ask for only the fields needed
       id: string; artifactType: string; title: string; content: string;
       cosine_similarity: number; age_days: number;
     };
-    const vectorRows = mode === "fts" ? [] : await prisma.$queryRawUnsafe<Row[]>(
+    const vectorRows = mode === "fts" ? [] : await runtimeReader.$queryRawUnsafe<Row[]>(
       `SELECT id, "artifactType", title, content,
               1 - (embedding <=> $1::vector) AS cosine_similarity,
               EXTRACT(EPOCH FROM (now() - "createdAt")) / 86400.0 AS age_days
@@ -1050,7 +1052,7 @@ Input contract: available to the execution layer; ask for only the fields needed
     let ftsRows: Array<Row & { fts_score: number }> = [];
     if (mode !== "vector" && taskText && taskText.trim().length > 0) {
       try {
-        ftsRows = await prisma.$queryRawUnsafe<Array<Row & { fts_score: number }>>(
+        ftsRows = await runtimeReader.$queryRawUnsafe<Array<Row & { fts_score: number }>>(
           `SELECT id, "artifactType", title, content,
                   0::float AS cosine_similarity,
                   EXTRACT(EPOCH FROM (now() - "createdAt")) / 86400.0 AS age_days,
@@ -1077,7 +1079,7 @@ Input contract: available to the execution layer; ask for only the fields needed
     // tag the chunk so Run Insights can show "(recency fallback — no
     // semantic match)" instead of pretending the cosine score is real.
     if (EMPTY_FALLBACK_ENABLED && noMeaningfulHits(ranked)) {
-      const recencyRows = await prisma.capabilityKnowledgeArtifact.findMany({
+      const recencyRows = await runtimeReader.capabilityKnowledgeArtifact.findMany({
         where: { capabilityId, status: "ACTIVE" },
         orderBy: { createdAt: "desc" },
         take: EMPTY_FALLBACK_TOPK,
@@ -1103,7 +1105,7 @@ Input contract: available to the execution layer; ask for only the fields needed
       id: string; memoryType: string; title: string; content: string;
       cosine_similarity: number; age_days: number;
     };
-    const vectorRows = mode === "fts" ? [] : await prisma.$queryRawUnsafe<Row[]>(
+    const vectorRows = mode === "fts" ? [] : await runtimeReader.$queryRawUnsafe<Row[]>(
       `SELECT id, "memoryType", title, content,
               1 - (embedding <=> $1::vector) AS cosine_similarity,
               EXTRACT(EPOCH FROM (now() - "createdAt")) / 86400.0 AS age_days
@@ -1116,7 +1118,7 @@ Input contract: available to the execution layer; ask for only the fields needed
     let ftsRows: Array<Row & { fts_score: number }> = [];
     if (mode !== "vector" && taskText && taskText.trim().length > 0) {
       try {
-        ftsRows = await prisma.$queryRawUnsafe<Array<Row & { fts_score: number }>>(
+        ftsRows = await runtimeReader.$queryRawUnsafe<Array<Row & { fts_score: number }>>(
           `SELECT id, "memoryType", title, content,
                   0::float AS cosine_similarity,
                   EXTRACT(EPOCH FROM (now() - "createdAt")) / 86400.0 AS age_days,
@@ -1140,7 +1142,7 @@ Input contract: available to the execution layer; ask for only the fields needed
     // M25.6 H3 — see semanticKnowledge for rationale. Same shape as the
     // hybrid result so the caller stays uniform.
     if (EMPTY_FALLBACK_ENABLED && noMeaningfulHits(ranked)) {
-      const recencyRows = await prisma.distilledMemory.findMany({
+      const recencyRows = await runtimeReader.distilledMemory.findMany({
         where: { scopeType: "CAPABILITY", scopeId: capabilityId, status: "ACTIVE" },
         orderBy: { createdAt: "desc" },
         take: EMPTY_FALLBACK_TOPK,
@@ -1172,7 +1174,7 @@ Input contract: available to the execution layer; ask for only the fields needed
     };
     // Joined query — embedding lives on CapabilityCodeEmbedding, scoping +
     // display fields live on CapabilityCodeSymbol + CapabilityRepository.
-    const rows = await prisma.$queryRawUnsafe<Row[]>(
+    const rows = await runtimeReader.$queryRawUnsafe<Row[]>(
       `SELECT s.id AS symbol_id,
               s."symbolName", s."symbolType", s."filePath", s."startLine",
               s.summary, s.language, r."repoName",
@@ -1222,7 +1224,7 @@ Input contract: available to the execution layer; ask for only the fields needed
       ka_max: string | null; ka_count: bigint | number | null;
       dm_max: string | null; dm_count: bigint | number | null;
     };
-    const rows = await prisma.$queryRawUnsafe<Row[]>(
+    const rows = await runtimeReader.$queryRawUnsafe<Row[]>(
       `SELECT
          (SELECT MAX("updatedAt") FROM "CapabilityKnowledgeArtifact"
             WHERE "capabilityId" = $1) AS ka_max,

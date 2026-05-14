@@ -73,12 +73,20 @@ jobs:
       - name: prisma validate (M28 — schema must parse)
         if: matrix.service.prisma == true
         working-directory: ${{ matrix.service.dir }}
-        run: npx prisma validate
+        run: |
+          # Validate every schema file in prisma/ (M30: prompt-composer has two)
+          for schema in prisma/*.prisma; do
+            [ -f "$schema" ] && npx prisma validate --schema="$schema"
+          done
 
       - name: prisma generate
         if: matrix.service.prisma == true
         working-directory: ${{ matrix.service.dir }}
-        run: npx prisma generate
+        run: |
+          # Generate clients for every schema file (M30: prompt-composer has two)
+          for schema in prisma/*.prisma; do
+            [ -f "$schema" ] && npx prisma generate --schema="$schema"
+          done
 
       - name: typecheck
         working-directory: ${{ matrix.service.dir }}
@@ -191,71 +199,70 @@ jobs:
           # their parent schemas and check only that 03 applies clean.
           psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -d ci_sql_check -f seed/03-audit-governance.sql
 
-  # ─── M29 schema invariants ──────────────────────────────────────────────────
-  # Composer remains the AUTHORITATIVE WRITER of the 6 prompt-related models.
-  # Agent-runtime MIRRORS them in its schema as no-op declarations — required
-  # because Prisma's `db push` always drops tables not in the active schema,
-  # and the two services share one Postgres DB. The mirror keeps both pushes
-  # idempotent.
+  # ─── M30 schema invariants — physical DB split ──────────────────────────────
+  # Composer's OWNED tables (PromptAssembly, PromptProfile, ...) live on
+  # `singularity_composer`. Agent-runtime owns `singularity`. The two schemas
+  # are now FULLY DISJOINT — no mirrors, no shared models.
   #
-  # The per-service Prisma client OUTPUT paths ensure each service's generated
-  # client only exposes its own models — agent-runtime's runtime code never
-  # touches composer's tables even though they're in its schema. The
-  # `client_excludes_composer_models` healthz-strict invariant proves this at
-  # runtime.
+  # Composer keeps a SECOND Prisma schema (prisma/runtime-read.prisma) that
+  # declares the agent-runtime models composer needs to READ. The
+  # runtime-reader client is generated against that schema and connects to
+  # `singularity` via DATABASE_URL_RUNTIME_READ. It NEVER pushes DDL.
   #
   # Asserts:
-  #   1. Both schemas declare per-service Prisma client output paths.
-  #   2. Both schemas mirror the SAME set of composer-owned models.
-  #
-  # M30 will replace this whole arrangement with a physical DB split when
-  # composer's read sites for agent-runtime models are routed through HTTP
-  # instead of direct Prisma.
-  m29-schema-ownership:
-    name: M29 schema invariants (mirror set + per-service client paths)
+  #   1. agent-runtime + composer-owned schemas declare disjoint model sets
+  #      (zero overlap).
+  #   2. All three schemas use per-service Prisma client output paths.
+  #   3. Composer's runtime-read schema is a subset of agent-runtime's models
+  #      (every read-model composer declares must exist in agent-runtime).
+  #   4. agent-runtime source code never references composer-owned models.
+  m30-schema-ownership:
+    name: M30 schema invariants (disjoint DBs + read-only subset)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: assert per-service `output` paths on both schemas
+      - name: assert per-service `output` paths on all 3 schemas
         run: |
           set -e
           for f in \
             agent-and-tools/apps/prompt-composer/prisma/schema.prisma \
+            agent-and-tools/apps/prompt-composer/prisma/runtime-read.prisma \
             agent-and-tools/apps/agent-runtime/prisma/schema.prisma; do
             if ! grep -qE '^[[:space:]]+output[[:space:]]*=' "$f"; then
-              echo "::error::$f is missing a per-service `output` path — Prisma"
-              echo "::error::generates to the shared workspace node_modules and"
-              echo "::error::clobbers the other service's client."
+              echo "::error::$f is missing a per-service `output` path."
               exit 1
             fi
           done
-          echo "✓ Both schemas write to per-service output paths."
-      - name: assert mirror parity for composer-owned models
+          echo "✓ All 3 schemas use per-service Prisma client output paths."
+      - name: assert composer-OWNED schema ∩ agent-runtime schema = ∅
         run: |
           set -e
-          OWNED="PromptProfile PromptLayer PromptProfileLayer PromptAssembly PromptAssemblyLayer CapabilityCompiledContext"
-          RUNTIME_SCHEMA=agent-and-tools/apps/agent-runtime/prisma/schema.prisma
-          COMPOSER_SCHEMA=agent-and-tools/apps/prompt-composer/prisma/schema.prisma
-          fail=0
-          for m in $OWNED; do
-            if ! grep -qE "^model $m[[:space:]]" "$COMPOSER_SCHEMA"; then
-              echo "::error::Composer schema is missing model '$m' — composer is the authoritative writer; this model must be declared here."
-              fail=1
-            fi
-            if ! grep -qE "^model $m[[:space:]]" "$RUNTIME_SCHEMA"; then
-              echo "::error::Agent-runtime schema is missing mirror of '$m'. Without it, agent-runtime's prisma db push will silently drop the table from the shared Postgres."
-              fail=1
-            fi
-          done
-          [ $fail -eq 0 ] || exit 1
-          echo "✓ All 6 composer-owned models are declared in both schemas (composer writes, runtime mirrors)."
-      - name: assert agent-runtime CLIENT excludes composer models
+          OWNED=$(grep -oE '^model [A-Za-z]+' agent-and-tools/apps/prompt-composer/prisma/schema.prisma | awk '{print $2}' | sort -u)
+          RUNTIME=$(grep -oE '^model [A-Za-z]+' agent-and-tools/apps/agent-runtime/prisma/schema.prisma | awk '{print $2}' | sort -u)
+          OVERLAP=$(comm -12 <(echo "$OWNED") <(echo "$RUNTIME"))
+          if [ -n "$OVERLAP" ]; then
+            echo "::error::M30 violation — these models are declared in BOTH agent-runtime AND composer's owned schema:"
+            echo "$OVERLAP" | sed 's/^/  - /'
+            echo "::error::After M30 they own separate Postgres DBs and must NOT overlap."
+            exit 1
+          fi
+          echo "✓ composer-owned and agent-runtime schemas are disjoint."
+      - name: assert composer's runtime-read schema is a SUBSET of agent-runtime
         run: |
           set -e
-          # Even though both schemas declare these models, agent-runtime's
-          # *source code* must not import or use them. The runtime healthz-strict
-          # `client_excludes_composer_models` invariant catches this at runtime;
-          # this check is the build-time first line of defense.
+          READ=$(grep -oE '^model [A-Za-z]+' agent-and-tools/apps/prompt-composer/prisma/runtime-read.prisma | awk '{print $2}' | sort -u)
+          RUNTIME=$(grep -oE '^model [A-Za-z]+' agent-and-tools/apps/agent-runtime/prisma/schema.prisma | awk '{print $2}' | sort -u)
+          ROGUE=$(comm -23 <(echo "$READ") <(echo "$RUNTIME"))
+          if [ -n "$ROGUE" ]; then
+            echo "::error::composer's runtime-read schema declares models that agent-runtime does NOT own:"
+            echo "$ROGUE" | sed 's/^/  - /'
+            echo "::error::Add them to agent-runtime's schema or remove from runtime-read."
+            exit 1
+          fi
+          echo "✓ Every model in composer's runtime-read schema exists in agent-runtime."
+      - name: assert agent-runtime source code never references composer-owned models
+        run: |
+          set -e
           OWNED="promptAssembly promptProfile promptLayer promptAssemblyLayer promptProfileLayer capabilityCompiledContext"
           fail=0
           for m in $OWNED; do

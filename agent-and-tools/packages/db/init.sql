@@ -2,6 +2,21 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- M30 — prompt-composer owns its OWN Postgres DB (`singularity_composer`).
+-- Created here (idempotent) and pre-loaded with pgvector + pgcrypto so
+-- composer's prisma db push lands cleanly on first boot. Composer connects
+-- to it via `DATABASE_URL=postgresql://...:5432/singularity_composer`.
+-- It uses a second, READ-ONLY Prisma client against this `singularity` DB
+-- for agent-runtime reference data (AgentTemplate, Capability, ToolDefinition,
+-- DistilledMemory, CapabilityKnowledgeArtifact, etc.) via
+-- `DATABASE_URL_RUNTIME_READ`.
+SELECT 'CREATE DATABASE singularity_composer'
+ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_composer')\gexec
+\connect singularity_composer
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS vector;
+\connect singularity
+
 -- ==================== AGENT SCHEMA ====================
 CREATE SCHEMA IF NOT EXISTS agent;
 

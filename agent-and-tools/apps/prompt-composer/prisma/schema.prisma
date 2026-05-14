@@ -1,12 +1,14 @@
 // Prompt Composer — owns prompt assembly tables on its OWN Postgres DB.
 //
-// M29 split (Decision 2): composer's tables (PromptProfile, PromptLayer,
-// PromptAssembly, CapabilityCompiledContext, ...) live on the dedicated
-// `singularity_composer` DB. agent-runtime no longer mirrors or reads them.
+// M30 — physical DB split:
+//   • This schema's models live on `singularity_composer` (composer-owned).
+//   • Agent-runtime read-models live in prisma/runtime-read.prisma, served
+//     by a second client (`runtimeReader`) against `singularity`.
+//   • Composer never runs `prisma db push` against agent-runtime's DB.
 //
-// The Prisma client generates to a per-service output path so the workspace's
-// shared node_modules can't cause "last-generate-wins" model loss. Composer
-// code imports `PrismaClient` from "../generated/prisma-client" instead of
+// Per-service Prisma client output path ensures the workspace's shared
+// node_modules can't cause "last-generate-wins" client clobber. Composer
+// imports the client from "../generated/prisma-client" instead of
 // "@prisma/client".
 generator client {
   provider = "prisma-client-js"
@@ -19,7 +21,8 @@ datasource db {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Shared enums (must match agent-runtime declarations exactly)
+// Enums used by composer-OWNED models
+// (PromptScopeType + PromptLayerType are composer-only after M30)
 // ─────────────────────────────────────────────────────────────
 
 enum EntityStatus {
@@ -27,17 +30,6 @@ enum EntityStatus {
   ACTIVE
   INACTIVE
   ARCHIVED
-}
-
-enum AgentRoleType {
-  ARCHITECT
-  DEVELOPER
-  QA
-  GOVERNANCE
-  BUSINESS_ANALYST
-  PRODUCT_OWNER
-  DEVOPS
-  SECURITY
 }
 
 enum PromptScopeType {
@@ -70,31 +62,6 @@ enum PromptLayerType {
   OUTPUT_CONTRACT
   APPROVAL_POLICY
   DATA_ACCESS_POLICY
-}
-
-enum ToolRiskLevel {
-  LOW
-  MEDIUM
-  HIGH
-  CRITICAL
-}
-
-enum ToolGrantScopeType {
-  AGENT_TEMPLATE
-  AGENT_BINDING
-  CAPABILITY
-  ROLE
-  WORKFLOW_PHASE
-  TEAM
-  USER
-}
-
-enum MemoryPromotionStatus {
-  NOT_REVIEWED
-  CANDIDATE
-  APPROVED
-  REJECTED
-  PROMOTED
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -163,18 +130,13 @@ model PromptAssembly {
   estimatedInputTokens Int?
   createdAt            DateTime @default(now())
 
-  // M28 spine-2 — TraceId is the run evidence spine. Adding it as an indexed
-  // column (not just a value inside evidenceRefs JSON) so trace-first views
-  // can join PromptAssembly into the run timeline server-side.
+  // M28 spine-2 — TraceId is the run evidence spine.
   traceId              String?
 
-  // M25 — typed RetrievedChunk[] used to assemble this prompt. Stored as
-  // {source_kind, source_id, citation_key, excerpt, confidence, …} per
-  // chunk so Run Insights can show citations + the LLM can ground its
-  // output via the matching 〔cite: …〕 markers in the prompt itself.
+  // M25 — typed RetrievedChunk[] used to assemble this prompt.
   evidenceRefs         Json?
   // M25.5 — capsule id when this assembly was served from a precompiled
-  // task context cache. NULL means we ran fresh retrieval.
+  // task context cache.
   compiledContextId    String?
 
   layers PromptAssemblyLayer[]
@@ -182,30 +144,18 @@ model PromptAssembly {
   @@index([traceId])
 }
 
-// M25.5 — Context Compiler: precompiled task contexts (capsules) so that
-// repeated AGENT_TASK shapes skip the three semantic queries + reranking
-// and serve a stable paragraph directly. Cache key = SHA256 over
-// (capability_id, agent_template_id, normalized intent, contentRevision).
-// Any source-artifact change bumps the revision → cache key diverges →
-// stale capsules become unreachable on the next lookup.
+// M25.5 — Context Compiler: precompiled task contexts (capsules).
 model CapabilityCompiledContext {
   id                String   @id @default(uuid())
   capabilityId      String
   agentTemplateId   String
   taskSignature     String   @unique
   intent            String
-  // The compiled body the agent gets, with 〔cite: …〕 markers preserved.
-  // Interpretation depends on compileMode:
-  //   RAW — JSON-stringified AssembledLayer[] (M25.5 v1: latency win only)
-  //   LLM — natural-language paragraph (M25.5.next: token + latency win)
   compiledContent   String
   compileMode       String   @default("RAW")
-  // RetrievedChunk[] that backed the compile, kept for audit + Run Insights.
   citations         Json
-  // Token estimate so callers can compare hot-path vs cold-path budgets.
   estimatedTokens   Int      @default(0)
   hitCount          Int      @default(0)
-  // status: PENDING (compiling) | READY | FAILED. Hot path needs READY.
   status            String   @default("READY")
   expiresAt         DateTime?
   createdAt         DateTime @default(now())
@@ -213,8 +163,6 @@ model CapabilityCompiledContext {
 
   @@index([capabilityId, agentTemplateId])
   @@index([taskSignature])
-  // M25.5 C9 — GC sweep predicate hits this. Without it, the periodic
-  // delete-where-expired query is a seq scan at scale.
   @@index([expiresAt])
 }
 
@@ -230,230 +178,4 @@ model PromptAssemblyLayer {
   contentSnapshot  String?
 
   promptAssembly PromptAssembly @relation(fields: [promptAssemblyId], references: [id])
-}
-
-// ─────────────────────────────────────────────────────────────
-// READ — Models owned by agent-runtime, queried during assembly
-// (declarations must stay in lock-step with agent-runtime/prisma/schema.prisma)
-// ─────────────────────────────────────────────────────────────
-
-model AgentTemplate {
-  id                  String       @id @default(uuid())
-  name                String
-  roleType            AgentRoleType
-  description         String?
-  basePromptProfileId String?
-  defaultToolPolicyId String?
-  version             Int          @default(1)
-  status              EntityStatus @default(DRAFT)
-  createdBy           String?
-  createdAt           DateTime     @default(now())
-  updatedAt           DateTime     @updatedAt
-  // M23 — declared in agent-runtime's schema; mirrored here so composer's
-  // `db push` doesn't drop these columns when both services share a DB.
-  capabilityId        String?
-  baseTemplateId      String?
-  lockedReason        String?
-
-  bindings AgentCapabilityBinding[]
-
-  @@index([capabilityId])
-  @@index([baseTemplateId])
-}
-
-model Capability {
-  id                 String       @id @default(uuid())
-  name               String
-  parentCapabilityId String?
-  capabilityType     String?
-  businessUnitId     String?
-  ownerTeamId        String?
-  criticality        String?
-  description        String?
-  status             EntityStatus @default(ACTIVE)
-  createdAt          DateTime     @default(now())
-  updatedAt          DateTime     @updatedAt
-
-  parent             Capability?  @relation("CapabilityHierarchy", fields: [parentCapabilityId], references: [id])
-  children           Capability[] @relation("CapabilityHierarchy")
-  bindings           AgentCapabilityBinding[]
-  knowledgeArtifacts CapabilityKnowledgeArtifact[]
-  codeSymbols        CapabilityCodeSymbol[]
-  repositories       CapabilityRepository[]
-}
-
-// M14 — read-only mirrors of agent-runtime's repo + symbol tables so the
-// composer can pull code context without round-tripping. Both services
-// connect to the same Postgres; there's no migration here — agent-runtime's
-// migration creates the tables. Composer just gets a Prisma client view.
-model CapabilityRepository {
-  id              String     @id @default(uuid())
-  capabilityId    String
-  repoName        String
-  repoUrl         String
-  defaultBranch   String     @default("main")
-  repositoryType  String     @default("GITHUB")
-  status          EntityStatus @default(ACTIVE)
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
-
-  capability Capability             @relation(fields: [capabilityId], references: [id])
-  symbols    CapabilityCodeSymbol[]
-}
-
-model CapabilityCodeSymbol {
-  id             String   @id @default(uuid())
-  capabilityId   String
-  repositoryId   String
-  filePath       String
-  language       String?
-  symbolName     String?
-  symbolType     String?
-  parentSymbolId String?
-  startLine      Int?
-  endLine        Int?
-  summary        String?
-  symbolHash     String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  repository  CapabilityRepository      @relation(fields: [repositoryId], references: [id])
-  capability  Capability                @relation(fields: [capabilityId], references: [id])
-  embeddings  CapabilityCodeEmbedding[]
-}
-
-// M15 — composer needs visibility on the embedding column to query cosine.
-model CapabilityCodeEmbedding {
-  id             String   @id @default(uuid())
-  symbolId       String
-  embeddingModel String?
-  vectorId       String?
-  summary        String?
-  embedding      Unsupported("vector(1536)")?
-  createdAt      DateTime @default(now())
-
-  symbol CapabilityCodeSymbol @relation(fields: [symbolId], references: [id])
-}
-
-model AgentCapabilityBinding {
-  id                  String       @id @default(uuid())
-  agentTemplateId     String
-  capabilityId        String
-  bindingName         String
-  roleInCapability    String?
-  promptProfileId     String?
-  toolPolicyId        String?
-  memoryScopePolicyId String?
-  status              EntityStatus @default(ACTIVE)
-  createdBy           String?
-  createdAt           DateTime     @default(now())
-  updatedAt           DateTime     @updatedAt
-
-  agentTemplate AgentTemplate @relation(fields: [agentTemplateId], references: [id])
-  capability    Capability    @relation(fields: [capabilityId], references: [id])
-}
-
-model CapabilityKnowledgeArtifact {
-  id           String       @id @default(uuid())
-  capabilityId String
-  artifactType String
-  title        String
-  content      String
-  sourceType   String?
-  sourceRef    String?
-  confidence   Decimal?     @db.Decimal(5, 2)
-  version      Int          @default(1)
-  status       EntityStatus @default(ACTIVE)
-  contentHash  String?
-  // M15 — pgvector mirror (read-only from composer; written by agent-runtime).
-  embedding    Unsupported("vector(1536)")?
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
-
-  capability Capability @relation(fields: [capabilityId], references: [id])
-}
-
-model DistilledMemory {
-  id                 String       @id @default(uuid())
-  scopeType          String
-  scopeId            String
-  memoryType         String
-  title              String
-  content            String
-  sourceExecutionIds Json?
-  evidenceRefs       Json?
-  approvedBy         String?
-  confidence         Decimal?     @db.Decimal(5, 2)
-  version            Int          @default(1)
-  status             EntityStatus @default(ACTIVE)
-  // M15 — pgvector mirror (read-only from composer; written by agent-service).
-  embedding          Unsupported("vector(1536)")?
-  createdAt          DateTime     @default(now())
-  updatedAt          DateTime     @updatedAt
-}
-
-model ToolDefinition {
-  id          String       @id @default(uuid())
-  name        String
-  namespace   String
-  description String?
-  toolType    String?
-  version     Int          @default(1)
-  status      EntityStatus @default(ACTIVE)
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-
-  contracts ToolContract[]
-  grants    ToolGrant[]
-
-  @@unique([namespace, name, version])
-}
-
-model ToolContract {
-  id               String        @id @default(uuid())
-  toolId           String
-  inputSchema      Json
-  outputSchema     Json?
-  allowedUsage     String?
-  deniedUsage      String?
-  riskLevel        ToolRiskLevel @default(LOW)
-  requiresApproval Boolean       @default(false)
-  auditRequired    Boolean       @default(true)
-  timeoutMs        Int           @default(30000)
-  version          Int           @default(1)
-  status           EntityStatus  @default(ACTIVE)
-  createdAt        DateTime      @default(now())
-
-  tool ToolDefinition @relation(fields: [toolId], references: [id])
-}
-
-model ToolPolicy {
-  id          String       @id @default(uuid())
-  name        String
-  description String?
-  scopeType   String?
-  scopeId     String?
-  status      EntityStatus @default(ACTIVE)
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-
-  grants ToolGrant[]
-}
-
-model ToolGrant {
-  id                       String             @id @default(uuid())
-  toolPolicyId             String
-  toolId                   String
-  grantScopeType           ToolGrantScopeType
-  grantScopeId             String
-  allowedActions           Json?
-  deniedActions            Json?
-  environment              String?
-  workflowPhase            String?
-  requiresApprovalOverride Boolean?
-  status                   EntityStatus       @default(ACTIVE)
-  createdAt                DateTime           @default(now())
-
-  toolPolicy ToolPolicy     @relation(fields: [toolPolicyId], references: [id])
-  tool       ToolDefinition @relation(fields: [toolId], references: [id])
 }

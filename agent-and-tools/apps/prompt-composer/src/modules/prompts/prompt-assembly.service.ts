@@ -1,4 +1,5 @@
-import { prisma } from "../../config/prisma";
+// M30 — see compose.service.ts for the two-client comment.
+import { prisma, runtimeReader } from "../../config/prisma";
 import { NotFoundError } from "../../shared/errors";
 import { sha256, estimateTokens } from "../../shared/hash";
 import { AssembleInput } from "./prompt.schemas";
@@ -25,7 +26,7 @@ export const promptAssemblyService = {
     const layers: AssembledLayer[] = [];
 
     // 1. Agent template + base prompt profile
-    const template = await prisma.agentTemplate.findUnique({ where: { id: input.agentTemplateId } });
+    const template = await runtimeReader.agentTemplate.findUnique({ where: { id: input.agentTemplateId } });
     if (!template) throw new NotFoundError("Agent template not found");
 
     if (template.basePromptProfileId) {
@@ -36,7 +37,7 @@ export const promptAssemblyService = {
     // 2. Binding overlay
     let binding: { id: string; promptProfileId: string | null; capabilityId: string | null } | null = null;
     if (input.agentBindingId) {
-      binding = await prisma.agentCapabilityBinding.findUnique({
+      binding = await runtimeReader.agentCapabilityBinding.findUnique({
         where: { id: input.agentBindingId },
         select: { id: true, promptProfileId: true, capabilityId: true },
       });
@@ -49,7 +50,7 @@ export const promptAssemblyService = {
     // 3. Capability context, knowledge, distilled memory
     const capabilityId = input.capabilityId ?? binding?.capabilityId ?? null;
     if (capabilityId) {
-      const capability = await prisma.capability.findUnique({ where: { id: capabilityId } });
+      const capability = await runtimeReader.capability.findUnique({ where: { id: capabilityId } });
       if (capability) {
         const capContent = `Capability: ${capability.name}\nType: ${capability.capabilityType ?? "—"}\nCriticality: ${capability.criticality ?? "—"}\n${capability.description ?? ""}`;
         layers.push({
@@ -60,7 +61,7 @@ export const promptAssemblyService = {
           layerHash: sha256(capContent),
         });
 
-        const artifacts = await prisma.capabilityKnowledgeArtifact.findMany({
+        const artifacts = await runtimeReader.capabilityKnowledgeArtifact.findMany({
           where: { capabilityId, status: "ACTIVE" },
           orderBy: { createdAt: "desc" }, take: 10,
         });
@@ -75,7 +76,7 @@ export const promptAssemblyService = {
           });
         }
 
-        const memory = await prisma.distilledMemory.findMany({
+        const memory = await runtimeReader.distilledMemory.findMany({
           where: { scopeType: "CAPABILITY", scopeId: capabilityId, status: "ACTIVE" },
           orderBy: { createdAt: "desc" }, take: 10,
         });
@@ -212,7 +213,7 @@ async function resolveAllowedToolsSection(ctx: {
   if (ctx.agentBindingId) scopeFilters.push({ grantScopeType: "AGENT_BINDING", grantScopeId: ctx.agentBindingId });
   if (ctx.capabilityId) scopeFilters.push({ grantScopeType: "CAPABILITY", grantScopeId: ctx.capabilityId });
 
-  const grants = await prisma.toolGrant.findMany({
+  const grants = await runtimeReader.toolGrant.findMany({
     where: { OR: scopeFilters as never, status: "ACTIVE" },
     include: { tool: { include: { contracts: { where: { status: "ACTIVE" }, orderBy: { version: "desc" }, take: 1 } } } },
   });
