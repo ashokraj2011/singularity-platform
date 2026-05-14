@@ -1,0 +1,18 @@
+# Build artifacts
+dist
+node_modules
+*.log
+logs
+
+# Host-specific config — .env carries paths like /Users/<host-user>/...
+# from the `singularity-config` utility. Baking them into the image causes
+# /healthz/strict failures (sandbox/AST paths don't exist in the container).
+# docker-compose passes the right env explicitly.
+.env
+.env.local
+.env.*.local
+.singularity
+
+# IDE
+.vscode
+.idea

@@ -413,11 +413,19 @@ services:
       PORT: 7100
       LOG_LEVEL: info
       MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      # M28 boot-1 — explicit container-internal paths so /healthz/strict
+      # invariants pass. Bound to a writable git repo via the volume mount
+      # below. Override MCP_SANDBOX_HOST_PATH to point at a real working
+      # checkout when you want the AST/branch tools to operate on real code.
+      MCP_SANDBOX_ROOT: /workspace
+      MCP_AST_DB_PATH:  /workspace/.singularity/mcp-ast.sqlite
       # ── M11 follow-up: embedded LLM gateway ──────────────────────────────
       # Default provider when an LlmRequest doesn't pick one. Per-request
       # overrides via the `provider` field in the /mcp/invoke payload.
-      LLM_PROVIDER: ${MCP_LLM_PROVIDER:-openai}
-      LLM_MODEL:    ${MCP_LLM_MODEL:-gpt-4o-mini}
+      # Default `mock` (no key needed); set MCP_LLM_PROVIDER=openai +
+      # OPENAI_API_KEY on the operator's host to enable real LLM calls.
+      LLM_PROVIDER: ${MCP_LLM_PROVIDER:-mock}
+      LLM_MODEL:    ${MCP_LLM_MODEL:-mock-fast}
       MCP_LLM_MODEL_CATALOG_JSON: ${MCP_LLM_MODEL_CATALOG_JSON:-}
       MCP_LLM_MODEL_CATALOG_PATH: ${MCP_LLM_MODEL_CATALOG_PATH:-}
       # Provider keys live HERE on the operator's local machine — they
@@ -444,6 +452,11 @@ services:
       - "7100:7100"
     volumes:
       - ./mcp-server/src:/app/src
+      # M28 boot-1 — mount the operator's working repo as the sandbox.
+      # Defaults to a tmp git-initialized dir created by entrypoint.sh.
+      # Override MCP_SANDBOX_HOST_PATH=$HOME/my-repo when you want to
+      # iterate on real code.
+      - ${MCP_SANDBOX_HOST_PATH:-./mcp-server/.docker-sandbox}:/workspace
 
   # ─────────────────────────────────────────────────────────────────────
   # Singularity Portal (the wrapper SPA)
