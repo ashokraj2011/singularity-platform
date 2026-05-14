@@ -485,15 +485,15 @@ function WorkbenchSetup({
 function LoopWorkbench({ session, onSession }: { session: BlueprintSession | null; onSession: (session: BlueprintSession) => void }) {
   const [activeStageKey, setActiveStageKey] = useState<string | null>(null)
   const stages = session?.loopDefinition?.stages ?? []
+  const firstStageKey = stages[0]?.key ?? null
 
   useEffect(() => {
     if (!session) {
       setActiveStageKey(null)
       return
     }
-    const preferred = session.currentStageKey ?? stages[0]?.key ?? null
-    setActiveStageKey(current => current && stages.some(stage => stage.key === current) ? current : preferred)
-  }, [session?.id, session?.currentStageKey, stages])
+    setActiveStageKey(session.currentStageKey ?? firstStageKey)
+  }, [session?.id, session?.currentStageKey, firstStageKey])
 
   const activeStage = stages.find(stage => stage.key === activeStageKey) ?? stages[0]
 
