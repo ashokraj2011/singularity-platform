@@ -27,7 +27,12 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/packages ./packages
 COPY package.json package-lock.json* ./
 COPY apps/agent-runtime ./apps/agent-runtime
+# M29 — per-service Prisma client (output = "../generated/prisma-client")
+# is gitignored, so carry it over from deps + regenerate to ensure the
+# schema in the dev stage matches.
+COPY --from=deps /app/apps/agent-runtime/generated ./apps/agent-runtime/generated
 WORKDIR /app/apps/agent-runtime
+RUN npx prisma generate
 EXPOSE 3003
 CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && psql \"$DATABASE_URL\" -f prisma/post-push.sql && npx prisma db seed && npm run dev"]
 

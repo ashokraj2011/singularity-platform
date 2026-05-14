@@ -1,9 +1,11 @@
-import { PrismaClient } from "@prisma/client";
-import { createHash } from "crypto";
+// M29 — per-service Prisma client output. seed.ts is invoked from the
+// prisma/ dir, so the generated client is one level up.
+import { PrismaClient } from "../generated/prisma-client";
 
 const prisma = new PrismaClient();
 
-const sha = (s: string) => "sha256:" + createHash("sha256").update(s).digest("hex");
+// M29 — sha helper and createHash import removed; prompt-layer seeding
+// (which used content-hashing) moved to prompt-composer's seed.
 
 // Stable, valid-UUID ids for seed entities
 const IDS = {
@@ -49,35 +51,11 @@ const IDS = {
 async function main() {
   console.log("[seed] starting");
 
-  // Platform-wide layers
-  const platformConstitution = await prisma.promptLayer.upsert({
-    where: { id: IDS.layers.platformConstitution }, update: {},
-    create: {
-      id: IDS.layers.platformConstitution,
-      name: "Platform Constitution",
-      layerType: "PLATFORM_CONSTITUTION", scopeType: "PLATFORM",
-      content:
-        "You operate inside SingularityNeo. Always respect capability boundaries, " +
-        "never exfiltrate secrets, prefer evidence over speculation, and produce " +
-        "auditable outputs with sources.",
-      priority: 10, isRequired: true,
-      contentHash: sha("Platform Constitution v1"), status: "ACTIVE",
-    },
-  });
-
-  const outputContract = await prisma.promptLayer.upsert({
-    where: { id: IDS.layers.outputContract }, update: {},
-    create: {
-      id: IDS.layers.outputContract,
-      name: "Default Output Contract",
-      layerType: "OUTPUT_CONTRACT", scopeType: "PLATFORM",
-      content:
-        "Return your output with these sections:\n## Summary\n## Findings\n## Risks\n## Evidence Used",
-      priority: 950, isRequired: true,
-      contentHash: sha("Default Output Contract v1"), status: "ACTIVE",
-    },
-  });
-
+  // M29 — PromptLayer/PromptProfile/PromptProfileLayer seeding moved to
+  // prompt-composer's seed (composer owns the prompt tables). agent-runtime
+  // only seeds AgentTemplate rows here; the basePromptProfileId references
+  // a UUID that composer's seed creates, so the FK is stable even though
+  // the row lives in composer's authoritative schema.
   const roleContracts: Array<{ role: keyof typeof IDS.templates; name: string; content: string }> = [
     { role: "ARCHITECT", name: "Architect Role Contract", content: "You are an Architect Agent. Analyze design, dependencies, risks, and tradeoffs. Never approve or deploy your own recommendations." },
     { role: "DEVELOPER", name: "Developer Role Contract", content: "You are a Developer Agent. Implement changes safely, write code with tests, prefer small reversible steps." },
@@ -89,48 +67,7 @@ async function main() {
   ];
 
   for (const rc of roleContracts) {
-    const layerId = IDS.layers.role[rc.role];
-    const layer = await prisma.promptLayer.upsert({
-      where: { id: layerId }, update: {},
-      create: {
-        id: layerId, name: rc.name, layerType: "AGENT_ROLE",
-        scopeType: "AGENT_TEMPLATE", content: rc.content,
-        priority: 100, isRequired: true,
-        contentHash: sha(rc.content), status: "ACTIVE",
-      },
-    });
-
     const profileId = IDS.profiles[rc.role];
-    const profile = await prisma.promptProfile.upsert({
-      where: { id: profileId }, update: {},
-      create: {
-        id: profileId,
-        name: `${rc.role} Base Prompt Profile`,
-        description: `Base prompt profile for generic ${rc.role.toLowerCase()} agents.`,
-        ownerScopeType: "AGENT_TEMPLATE", status: "ACTIVE",
-      },
-    });
-
-    // Prisma 5.x upsert on this table emits an ON CONFLICT shape that
-    // Postgres rejects intermittently after force-resets; explicit find +
-    // create/update sidesteps that.
-    for (const [pl, pr] of [[platformConstitution.id, 10], [layer.id, 100], [outputContract.id, 950]] as const) {
-      const existing = await prisma.promptProfileLayer.findFirst({
-        where: { promptProfileId: profile.id, promptLayerId: pl },
-        select: { id: true },
-      });
-      if (existing) {
-        await prisma.promptProfileLayer.update({
-          where: { id: existing.id },
-          data:  { priority: pr, isEnabled: true },
-        });
-      } else {
-        await prisma.promptProfileLayer.create({
-          data: { promptProfileId: profile.id, promptLayerId: pl, priority: pr, isEnabled: true },
-        });
-      }
-    }
-
     const templateId = IDS.templates[rc.role];
     await prisma.agentTemplate.upsert({
       where: { id: templateId },
@@ -140,7 +77,7 @@ async function main() {
       create: {
         id: templateId,
         name: `${rc.role.charAt(0)}${rc.role.slice(1).toLowerCase()} Agent`,
-        roleType: rc.role, basePromptProfileId: profile.id,
+        roleType: rc.role, basePromptProfileId: profileId,
         description: rc.content, status: "ACTIVE",
         // capabilityId stays NULL — these are common-library baselines.
         // baseTemplateId stays NULL — they are roots of the derivation tree.
