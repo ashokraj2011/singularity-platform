@@ -29,10 +29,15 @@ COPY --from=deps /app/apps/prompt-composer/generated ./apps/prompt-composer/gene
 WORKDIR /app/apps/prompt-composer
 RUN npx prisma generate
 EXPOSE 3004
-# M29 — composer is now the authoritative writer of its tables (PromptProfile,
-# PromptLayer, PromptAssembly, CapabilityCompiledContext, ...). Push the
-# schema before starting so the tables exist; agent-runtime no longer owns them.
-CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && npm run dev"]
+# M29 — DO NOT push schema at startup. Prisma `db push` drops any table not
+# in the active schema, and the shared-DB topology means composer's push
+# would drop agent-runtime's tables (event_outbox, AgentExecution, etc.) and
+# vice-versa. Operators apply both schemas in order via:
+#   bin/bare-metal.sh up   (for bare-metal dev)
+#   bin/apply-schemas.sh   (for the docker stack, one-shot per-volume)
+# On every subsequent container restart, the DB shape is already correct and
+# no pushes are needed.
+CMD ["sh", "-c", "npm run dev"]
 
 FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules

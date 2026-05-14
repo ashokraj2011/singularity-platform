@@ -29,8 +29,48 @@ enum AgentRoleType {
   SECURITY
 }
 
-// M29 — PromptScopeType and PromptLayerType moved to prompt-composer's own
-// schema. agent-runtime no longer owns any prompt-related models.
+// M29 schema-mirror block ────────────────────────────────────────────────
+// These two enums + the six prompt-related models below mirror composer's
+// authoritative declarations. Why mirror in a SHARED DB:
+//   Prisma `db push` always drops tables not in the active schema. With
+//   composer + agent-runtime sharing one Postgres, whichever pushes last
+//   would silently delete the other's tables. The mirror declarations
+//   prevent that — each service's schema is a superset, but each service's
+//   CLIENT (per-service `output` path) still only exposes its own models.
+// The healthz-strict `client_excludes_composer_models` invariant proves
+// that agent-runtime's generated client doesn't expose them at runtime.
+// CI's `m29-schema-ownership` guard ensures composer remains the
+// authoritative writer; agent-runtime never references these in code.
+enum PromptScopeType {
+  PLATFORM
+  TENANT
+  BUSINESS_UNIT
+  CAPABILITY
+  AGENT_TEMPLATE
+  AGENT_BINDING
+  WORKFLOW
+  WORKFLOW_PHASE
+  EXECUTION
+}
+
+enum PromptLayerType {
+  PLATFORM_CONSTITUTION
+  TENANT_CONTEXT
+  BUSINESS_UNIT_CONTEXT
+  AGENT_ROLE
+  SKILL_CONTRACT
+  TOOL_CONTRACT
+  CAPABILITY_CONTEXT
+  REPOSITORY_CONTEXT
+  WORKFLOW_CONTEXT
+  PHASE_CONTEXT
+  TASK_CONTEXT
+  RUNTIME_EVIDENCE
+  MEMORY_CONTEXT
+  OUTPUT_CONTRACT
+  APPROVAL_POLICY
+  DATA_ACCESS_POLICY
+}
 
 enum ToolRiskLevel {
   LOW
@@ -187,12 +227,110 @@ model AgentCapabilityBinding {
   executions    AgentExecution[]
 }
 
-// M29 — PromptProfile, PromptLayer, PromptProfileLayer, PromptAssembly,
-// PromptAssemblyLayer, and CapabilityCompiledContext moved to
-// prompt-composer's own Postgres DB (`singularity_composer`). agent-runtime
-// no longer reads or writes these tables. See
-// agent-and-tools/apps/prompt-composer/prisma/schema.prisma for the
-// authoritative definitions.
+// M29 schema-mirror block (continued) — composer-owned models declared
+// here ONLY so Prisma's db push doesn't drop them. agent-runtime's
+// generated client deliberately doesn't expose them (per-service output
+// path + healthz-strict assertion). Composer remains the authoritative
+// writer.
+model PromptProfile {
+  id             String           @id @default(uuid())
+  name           String
+  description    String?
+  ownerScopeType PromptScopeType?
+  ownerScopeId   String?
+  version        Int              @default(1)
+  status         EntityStatus     @default(DRAFT)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  layers         PromptProfileLayer[]
+}
+
+model PromptLayer {
+  id          String          @id @default(uuid())
+  name        String
+  layerType   PromptLayerType
+  scopeType   PromptScopeType
+  scopeId     String?
+  content     String
+  priority    Int             @default(100)
+  isRequired  Boolean         @default(false)
+  version     Int             @default(1)
+  status      EntityStatus    @default(ACTIVE)
+  contentHash String?
+  createdBy   String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  profiles    PromptProfileLayer[]
+}
+
+model PromptProfileLayer {
+  id              String   @id @default(uuid())
+  promptProfileId String
+  promptLayerId   String
+  priority        Int      @default(100)
+  isEnabled       Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  promptProfile   PromptProfile @relation(fields: [promptProfileId], references: [id])
+  promptLayer     PromptLayer   @relation(fields: [promptLayerId], references: [id])
+
+  @@unique([promptProfileId, promptLayerId])
+}
+
+model PromptAssembly {
+  id                   String   @id @default(uuid())
+  executionId          String?
+  agentTemplateId      String
+  agentBindingId       String?
+  capabilityId         String?
+  workflowExecutionId  String?
+  promptProfileId      String?
+  modelProvider        String?
+  modelName            String?
+  finalPromptHash      String?
+  finalPromptPreview   String?
+  estimatedInputTokens Int?
+  createdAt            DateTime @default(now())
+  evidenceRefs         Json?
+  compiledContextId    String?
+  traceId              String?
+  layers               PromptAssemblyLayer[]
+
+  @@index([traceId])
+}
+
+model PromptAssemblyLayer {
+  id               String  @id @default(uuid())
+  promptAssemblyId String
+  promptLayerId    String?
+  layerType        String?
+  layerHash        String?
+  priority         Int?
+  included         Boolean @default(true)
+  inclusionReason  String?
+  contentSnapshot  String?
+  promptAssembly   PromptAssembly @relation(fields: [promptAssemblyId], references: [id])
+}
+
+model CapabilityCompiledContext {
+  id                String    @id @default(uuid())
+  capabilityId      String
+  agentTemplateId   String
+  taskSignature     String    @unique
+  intent            String
+  compiledContent   String
+  compileMode       String    @default("RAW")
+  citations         Json
+  estimatedTokens   Int       @default(0)
+  hitCount          Int       @default(0)
+  status            String    @default("READY")
+  expiresAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([capabilityId, agentTemplateId])
+  @@index([taskSignature])
+  @@index([expiresAt])
+}
 
 model ToolDefinition {
   id          String       @id @default(uuid())

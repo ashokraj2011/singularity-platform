@@ -65,32 +65,13 @@ const checks: InvariantCheck[] = [
     }
   },
 
-  // M29 — agent-runtime no longer declares composer-owned models in its
-  // own schema, but composer still pushes them into the SHARED Postgres
-  // (logical split, physical split deferred to M30). So the prompt tables
-  // may legitimately exist in this DB — composer owns them.
-  //
-  // The strict assertion here is the OPPOSITE: agent-runtime's own
-  // Prisma client must NOT KNOW about composer's models (proves the
-  // M29 schema separation in code, even with shared physical storage).
-  // We verify by attempting an unsafe-cast access of `prisma.promptAssembly`
-  // — if the M29 generated client is in use, that property is undefined.
-  async () => {
-    try {
-      const composerModelsInClient =
-        (prisma as unknown as { promptAssembly?: unknown }).promptAssembly !== undefined;
-      if (composerModelsInClient) {
-        return {
-          name: "client_excludes_composer_models",
-          ok: false,
-          reason: "agent-runtime's Prisma client still exposes composer-owned models (PromptAssembly). Did `prisma generate` run against the M29 schema?",
-        };
-      }
-      return { name: "client_excludes_composer_models", ok: true };
-    } catch (err) {
-      return { name: "client_excludes_composer_models", ok: false, reason: (err as Error).message };
-    }
-  },
+  // M29 — composer-owned models (PromptAssembly etc.) are mirror-declared in
+  // agent-runtime's schema so Prisma `db push` doesn't drop them from the
+  // shared Postgres. That means agent-runtime's generated client legitimately
+  // exposes them as a side-effect of the schema mirror. The CI source-code
+  // grep (m29-schema-ownership job) is the real guard: it ensures
+  // agent-runtime code never imports/calls `prisma.<composer-owned>`. No
+  // runtime invariant needed.
 ];
 
 export async function runInvariantChecks(): Promise<{ ok: boolean; checks: InvariantResult[] }> {

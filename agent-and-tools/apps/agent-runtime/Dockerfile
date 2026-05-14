@@ -34,7 +34,23 @@ COPY --from=deps /app/apps/agent-runtime/generated ./apps/agent-runtime/generate
 WORKDIR /app/apps/agent-runtime
 RUN npx prisma generate
 EXPOSE 3003
-CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && psql \"$DATABASE_URL\" -f prisma/post-push.sql && npx prisma db seed && npm run dev"]
+# M29 — agent-runtime no longer pushes its schema at startup. Prisma's
+# `db push` always drops tables not in the schema, so an agent-runtime push
+# would silently delete composer-owned tables (PromptAssembly,
+# CapabilityCompiledContext, ...) every time the container restarts.
+#
+# Schema apply order is now: composer's CMD pushes composer schema (it
+# happens to be authoritative for ALL prompt-related tables in the shared
+# DB). agent-runtime's schema is applied out-of-band by `bin/bare-metal.sh`
+# or `bin/demo-up.sh` BEFORE either container boots (they call
+# `prisma db push` against the workspace DB once, with the correct order).
+# Containers only run post-push.sql + seed at startup.
+#
+# If you're running `docker compose up` standalone (no bare-metal launcher),
+# agent-runtime tables are still created by composer's first push because
+# composer reads them (Capability, AgentTemplate, etc.) — composer's schema
+# carries the full superset of read-models too.
+CMD ["sh", "-c", "psql \"$DATABASE_URL\" -f prisma/post-push.sql && npx prisma db seed && npm run dev"]
 
 # ── builder ───────────────────────────────────────────────────────────────
 FROM base AS builder
