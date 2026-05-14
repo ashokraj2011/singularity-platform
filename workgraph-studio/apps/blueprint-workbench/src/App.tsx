@@ -58,6 +58,8 @@ const knownRoleMeta: Record<string, { label: string; icon: typeof Brain }> = {
 
 const defaultWorkbenchGoal = 'Create a governed planning, design, development, QA, and testing loop for this codebase.'
 
+type WorkbenchSection = 'workflow' | 'artifacts' | 'terminal'
+
 type WorkbenchHydratedDefaults = {
   goal?: string
   sourceType?: SourceType
@@ -100,6 +102,7 @@ export default function App() {
   const queryClient = useQueryClient()
   const workflowDefaults = useMemo(() => readWorkflowDefaults(), [])
   const [activeSession, setActiveSession] = useState<BlueprintSession | null>(null)
+  const [activeSection, setActiveSection] = useState<WorkbenchSection>('workflow')
   const [authTick, setAuthTick] = useState(0)
   const [setupOpen, setSetupOpen] = useState(false)
   const hasToken = Boolean(getToken())
@@ -157,6 +160,8 @@ export default function App() {
     <main className="app-shell">
       <WorkbenchCommandHeader
         session={activeSession}
+        activeSection={activeSection}
+        onSection={setActiveSection}
         onRefresh={() => sessionsQuery.refetch()}
         onSetup={() => setSetupOpen(true)}
         onSignOut={() => {
@@ -182,7 +187,7 @@ export default function App() {
             }}
           />
         </SetupDrawer>
-        <LoopWorkbench session={activeSession} onSession={refreshSession} />
+        <LoopWorkbench session={activeSession} activeSection={activeSection} onSession={refreshSession} />
       </section>
     </main>
   )
@@ -190,11 +195,15 @@ export default function App() {
 
 function WorkbenchCommandHeader({
   session,
+  activeSection,
+  onSection,
   onRefresh,
   onSetup,
   onSignOut,
 }: {
   session: BlueprintSession | null
+  activeSection: WorkbenchSection
+  onSection: (section: WorkbenchSection) => void
   onRefresh: () => void
   onSetup: () => void
   onSignOut: () => void
@@ -212,9 +221,21 @@ function WorkbenchCommandHeader({
         </div>
       </div>
       <nav className="command-tabs" aria-label="Workbench sections">
-        <span className="active">Workflow</span>
-        <span>Artifacts</span>
-        <span>Terminal</span>
+        {([
+          ['workflow', 'Workflow'],
+          ['artifacts', 'Artifacts'],
+          ['terminal', 'Terminal'],
+        ] as const).map(([section, label]) => (
+          <button
+            key={section}
+            type="button"
+            className={activeSection === section ? 'active' : ''}
+            onClick={() => onSection(section)}
+            aria-pressed={activeSection === section}
+          >
+            {label}
+          </button>
+        ))}
       </nav>
       <div className="command-search">
         <Search size={15} />
@@ -482,7 +503,15 @@ function WorkbenchSetup({
   )
 }
 
-function LoopWorkbench({ session, onSession }: { session: BlueprintSession | null; onSession: (session: BlueprintSession) => void }) {
+function LoopWorkbench({
+  session,
+  activeSection,
+  onSession,
+}: {
+  session: BlueprintSession | null
+  activeSection: WorkbenchSection
+  onSession: (session: BlueprintSession) => void
+}) {
   const [activeStageKey, setActiveStageKey] = useState<string | null>(null)
   const stages = session?.loopDefinition?.stages ?? []
   const firstStageKey = stages[0]?.key ?? null
@@ -503,6 +532,22 @@ function LoopWorkbench({ session, onSession }: { session: BlueprintSession | nul
         <Activity size={30} />
         <h2>Create or select a session</h2>
         <p>The cyclic workbench canvas, stage controls, assets, and terminal evidence stream will appear here.</p>
+      </section>
+    )
+  }
+
+  if (activeSection === 'artifacts') {
+    return (
+      <section className="focused-workbench-view artifacts-view">
+        <AssetRail session={session} onSession={onSession} />
+      </section>
+    )
+  }
+
+  if (activeSection === 'terminal') {
+    return (
+      <section className="focused-workbench-view terminal-view">
+        <WorkbenchTerminal session={session} />
       </section>
     )
   }

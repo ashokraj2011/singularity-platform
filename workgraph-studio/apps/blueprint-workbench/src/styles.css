@@ -102,7 +102,9 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   line-height: 1.1;
 }
 
-.command-tabs span {
+.command-tabs button {
+  border: 0;
+  background: transparent;
   color: var(--muted-low);
   padding: 7px 10px;
   border-radius: 8px;
@@ -110,7 +112,12 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   font-weight: 700;
 }
 
-.command-tabs .active {
+.command-tabs button:hover {
+  color: var(--text);
+  background: rgba(173, 198, 255, 0.08);
+}
+
+.command-tabs button.active {
   color: var(--primary);
   border-bottom: 2px solid var(--primary);
 }
@@ -177,6 +184,26 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   gap: 16px;
   max-width: 1760px;
   margin: 0 auto;
+}
+
+.focused-workbench-view {
+  max-width: 1760px;
+  margin: 0 auto;
+}
+
+.focused-workbench-view .asset-rail,
+.focused-workbench-view .terminal-panel {
+  min-height: calc(100vh - 112px);
+}
+
+.focused-workbench-view .asset-rail {
+  display: flex;
+  flex-direction: column;
+}
+
+.focused-workbench-view .artifact-layout,
+.focused-workbench-view .terminal-log {
+  flex: 1;
 }
 
 .control-card, .panel {
