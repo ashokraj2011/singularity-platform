@@ -72,6 +72,12 @@ services:
     depends_on:
       iam-postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8100/api/v1/health', timeout=2).status==200 else sys.exit(1)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
 
   # ─────────────────────────────────────────────────────────────────────
   # agent-and-tools
@@ -393,7 +399,8 @@ services:
     ports:
       - "5175:80"
     depends_on:
-      - iam-service
+      iam-service:
+        condition: service_healthy
 
   # ─────────────────────────────────────────────────────────────────────
   # MCP Server (reference / demo)
