@@ -138,7 +138,7 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
     response.headers["Sunset"] = "2026-07-01"
     response.headers["Link"] = '</execute>; rel="successor-version"'
     memory_url = settings.context_memory_url.rstrip("/")
-    mcp_url = (settings.mcp_default_base_url or "http://localhost:7100").rstrip("/")
+    gateway_url = settings.llm_gateway_url.rstrip("/")
     metrics_url = settings.metrics_ledger_url.rstrip("/")
 
     await post_json(f"{memory_url}/memory/messages", {
@@ -163,26 +163,39 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
         "system_prompt": req.system_prompt,
     })
 
-    mcp_payload = {
-        "history": compiled["compiled_messages"],
-        "message": req.message,
-        "modelConfig": {
-            "temperature": req.temperature,
-            "maxTokens": req.max_output_tokens,
-        },
-        "tools": [],
-        "limits": {"maxSteps": 1},
+    # M33 — one-shot synthesis goes through the central LLM gateway directly.
+    # The legacy code routed this through MCP's agent loop (maxSteps=1,
+    # tools=[]) which was a pure waste of orchestration overhead. Provider
+    # keys live only on the gateway.
+    gw_messages = [{"role": str(m.get("role", "user")), "content": str(m.get("content", ""))}
+                   for m in compiled.get("compiled_messages", [])]
+    gw_messages.append({"role": "user", "content": req.message})
+    gw_payload = {
+        "model_alias": settings.chat_respond_model_alias,
+        "messages": gw_messages,
+        "temperature": req.temperature,
+        "max_output_tokens": req.max_output_tokens,
+        "trace_id": f"chat-respond-{req.session_id}",
     }
-    headers = {"authorization": f"Bearer {settings.mcp_default_bearer_token}"} if settings.mcp_default_bearer_token else {}
+    headers = {"content-type": "application/json"}
+    if settings.llm_gateway_bearer:
+        headers["authorization"] = f"Bearer {settings.llm_gateway_bearer}"
     async with httpx.AsyncClient(timeout=180.0) as client:
-        mcp_http = await client.post(f"{mcp_url}/mcp/invoke", json=mcp_payload, headers=headers)
-        mcp_http.raise_for_status()
-        mcp_resp = mcp_http.json()
-    mcp_data = mcp_resp.get("data", {}) if isinstance(mcp_resp, dict) else {}
-    response_text = mcp_data.get("finalResponse", "")
-    model_usage = mcp_data.get("modelUsage", {}) or {}
-    tokens_used = mcp_data.get("tokensUsed", {}) or {}
-    model_call_id = (mcp_data.get("correlation", {}) or {}).get("mcpInvocationId") or (mcp_data.get("llmCallIds") or [""])[0] or ""
+        gw_http = await client.post(f"{gateway_url}/v1/chat/completions", json=gw_payload, headers=headers)
+        gw_http.raise_for_status()
+        gw_resp = gw_http.json()
+    response_text = (gw_resp.get("content") or "")
+    model_usage = {
+        "provider": gw_resp.get("provider"),
+        "model": gw_resp.get("model"),
+        "model_alias": gw_resp.get("model_alias"),
+        "latency_ms": gw_resp.get("latency_ms"),
+    }
+    tokens_used = {
+        "input": gw_resp.get("input_tokens"),
+        "output": gw_resp.get("output_tokens"),
+    }
+    model_call_id = ""
 
     await post_json(f"{memory_url}/memory/messages", {
         "session_id": req.session_id,

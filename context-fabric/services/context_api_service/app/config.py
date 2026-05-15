@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     mcp_default_bearer_token: str = ""
     mcp_default_server_id: str = "default-mcp"
 
+    # M33 — central LLM gateway. Used by the deprecated /chat/respond
+    # endpoint for one-shot synthesis. Provider keys never live here.
+    llm_gateway_url: str = "http://llm-gateway:8001"
+    llm_gateway_bearer: str = ""
+    chat_respond_model_alias: str = "mock"
+
     class Config:
         env_prefix = ""
         extra = "ignore"

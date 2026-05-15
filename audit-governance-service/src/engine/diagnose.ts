@@ -4,15 +4,18 @@
  * When an operator triggers diagnosis on an engine_issue, this module:
  *   1. Loads the issue's sample trace timelines from audit_events
  *   2. Builds a structured prompt for the LLM
- *   3. Calls the MCP server's /mcp/invoke endpoint
+ *   3. Calls the central LLM gateway's /v1/chat/completions endpoint (M33)
  *   4. Stores the diagnosis in engine_issues.root_cause
  *   5. Auto-generates a proposed fix based on the diagnosis
+ *
+ * No provider keys live here; the gateway is the single LLM call point.
  */
 import { query, queryOne } from "../db";
 
-const MCP_SERVER_URL = process.env.ENGINE_MCP_URL ?? "http://localhost:7100";
-const MCP_BEARER_TOKEN = process.env.ENGINE_MCP_BEARER_TOKEN ?? process.env.MCP_BEARER_TOKEN ?? "";
-const ENGINE_TIMEOUT_MS = Number(process.env.ENGINE_TIMEOUT_MS ?? 120_000);
+const LLM_GATEWAY_URL    = process.env.LLM_GATEWAY_URL    ?? "http://llm-gateway:8001";
+const LLM_GATEWAY_BEARER = process.env.LLM_GATEWAY_BEARER ?? "";
+const ENGINE_MODEL_ALIAS = process.env.ENGINE_MODEL_ALIAS ?? "mock";
+const ENGINE_TIMEOUT_MS  = Number(process.env.ENGINE_TIMEOUT_MS ?? 120_000);
 
 // ── Trace loading ──────────────────────────────────────────────────────
 
@@ -87,33 +90,37 @@ Respond ONLY in valid JSON matching this schema:
 }`;
 
 async function callLlmForDiagnosis(prompt: string): Promise<DiagnosisResult> {
-  // LLM call via MCP only. If MCP is unavailable, use deterministic local
-  // heuristics rather than falling back to any provider SDK/API.
+  // M33 — LLM call goes through the central llm-gateway. If the gateway
+  // is unavailable, fall back to deterministic local heuristics rather
+  // than reaching for any provider SDK or API directly.
   try {
     const headers: Record<string, string> = { "content-type": "application/json" };
-    if (MCP_BEARER_TOKEN) headers.authorization = `Bearer ${MCP_BEARER_TOKEN}`;
-    const llmRes = await fetch(`${MCP_SERVER_URL}/mcp/invoke`, {
+    if (LLM_GATEWAY_BEARER) headers.authorization = `Bearer ${LLM_GATEWAY_BEARER}`;
+    const llmRes = await fetch(`${LLM_GATEWAY_URL.replace(/\/$/, "")}/v1/chat/completions`, {
       method: "POST",
       headers,
       body: JSON.stringify({
-        systemPrompt: DIAGNOSIS_SYSTEM_PROMPT,
-        message: prompt,
-        modelConfig: {},
-        tools: [],
-        limits: { maxSteps: 1, timeoutSec: Math.ceil(ENGINE_TIMEOUT_MS / 1000) },
+        model_alias: ENGINE_MODEL_ALIAS,
+        messages: [
+          { role: "system", content: DIAGNOSIS_SYSTEM_PROMPT },
+          { role: "user",   content: prompt },
+        ],
+        temperature: 0,
+        max_output_tokens: 1500,
+        trace_id: `engine-diagnose-${Date.now()}`,
       }),
       signal: AbortSignal.timeout(ENGINE_TIMEOUT_MS),
     });
     if (llmRes.ok) {
-      const data = await llmRes.json() as { data?: { finalResponse?: string } };
-      const content = data.data?.finalResponse ?? "";
+      const data = await llmRes.json() as { content?: string };
+      const content = data.content ?? "";
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         return JSON.parse(jsonMatch[0]) as DiagnosisResult;
       }
     }
   } catch {
-    // MCP unavailable — fall through to heuristic analysis.
+    // Gateway unavailable — fall through to heuristic analysis.
   }
 
   // Heuristic fallback when LLM is not available.

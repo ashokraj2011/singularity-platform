@@ -14,8 +14,9 @@
  *   - extract_entities: LLM gateway wrapper that asks for JSON entities
  *
  * The first three use M15's pgvector + the same hybrid scoring formula
- * (cosine × recency boost) as the prompt-composer. The LLM wrappers call
- * mcp-server /mcp/invoke so they go through the configured gateway provider.
+ * (cosine × recency boost) as the prompt-composer. The LLM wrappers post
+ * directly to the central LLM gateway (/v1/chat/completions) — provider
+ * keys live only on llm-gateway-service.
  */
 import { Router, Request, Response } from "express";
 import { query } from "../database";
@@ -23,8 +24,9 @@ import { getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVecto
 
 const RECENCY_BOOST_DAYS = Number(process.env.EMBEDDING_RECENCY_DAYS ?? 30);
 const RECENCY_BOOST_MAX  = Number(process.env.EMBEDDING_RECENCY_BOOST ?? 0.2);
-const MCP_INVOKE_URL     = process.env.MCP_INVOKE_URL ?? "http://host.docker.internal:7100/mcp/invoke";
-const MCP_BEARER         = process.env.MCP_BEARER_TOKEN ?? "demo-bearer-token-must-be-min-16-chars";
+const LLM_GATEWAY_URL    = process.env.LLM_GATEWAY_URL    ?? "http://llm-gateway:8001";
+const LLM_GATEWAY_BEARER = process.env.LLM_GATEWAY_BEARER ?? "";
+const TOOL_LLM_MODEL_ALIAS = process.env.TOOL_LLM_MODEL_ALIAS ?? "mock";
 
 function recencyBoost(ageDays: number): number {
   if (ageDays >= RECENCY_BOOST_DAYS) return 0;
@@ -168,25 +170,31 @@ internalToolsRoutes.post("/extract_entities", async (req: Request, res: Response
   res.json({ entities: Array.isArray(parsed.entities) ? parsed.entities : [], raw: r.slice(0, 600) });
 });
 
-// ── shared MCP gateway call ─────────────────────────────────────────────────
-
+// ── shared LLM gateway call (M33) ──────────────────────────────────────────
+//
+// Pure synthesis calls (no tools, no loop) go directly to the central LLM
+// gateway. No provider keys live in tool-service.
 async function callMcp(opts: { systemPrompt: string; message: string }): Promise<string> {
-  const res = await fetch(MCP_INVOKE_URL, {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (LLM_GATEWAY_BEARER) headers.authorization = `Bearer ${LLM_GATEWAY_BEARER}`;
+  const res = await fetch(`${LLM_GATEWAY_URL.replace(/\/$/, "")}/v1/chat/completions`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${MCP_BEARER}` },
+    headers,
     body: JSON.stringify({
-      runContext: { traceId: `tool-${Date.now()}` },
-      systemPrompt: opts.systemPrompt,
-      message: opts.message,
-      tools: [],
-      modelConfig: {},
-      limits: { maxSteps: 1, timeoutSec: 60 },
+      model_alias: TOOL_LLM_MODEL_ALIAS,
+      messages: [
+        { role: "system", content: opts.systemPrompt },
+        { role: "user",   content: opts.message },
+      ],
+      temperature: 0,
+      max_output_tokens: 1500,
+      trace_id: `tool-${Date.now()}`,
     }),
     signal: AbortSignal.timeout(70_000),
   });
-  if (!res.ok) throw new Error(`mcp ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const data = (await res.json()) as { data?: { finalResponse?: string } };
-  return (data.data?.finalResponse ?? "").trim();
+  if (!res.ok) throw new Error(`LLM_GATEWAY_UPSTREAM ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const data = (await res.json()) as { content?: string };
+  return (data.content ?? "").trim();
 }
 
 // Required-dim guard surfaced for visibility in /healthz-style probes.

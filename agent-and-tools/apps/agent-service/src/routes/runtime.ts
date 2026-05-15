@@ -130,12 +130,14 @@ runtimeRoutes.post("/learning-candidates/:id/review", async (req: Request, res: 
 // DistilledMemory rows the prompt-composer auto-pulls, and marks the
 // originating candidates as `distilled`.
 //
-// LLM call uses mcp-server's /mcp/invoke directly. MCP sends only a model
-// alias/default to llm-gateway; provider keys never live in agent-service.
+// M33 — one-shot LLM synthesis goes through the central LLM gateway
+// (/v1/chat/completions). The MCP agent loop is not used for pure
+// synthesis. Provider keys never live in agent-service.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MCP_INVOKE_URL = process.env.MCP_INVOKE_URL ?? "http://host.docker.internal:7100/mcp/invoke";
-const MCP_BEARER     = process.env.MCP_BEARER_TOKEN ?? "demo-bearer-token-must-be-min-16-chars";
+const LLM_GATEWAY_URL    = process.env.LLM_GATEWAY_URL    ?? "http://llm-gateway:8001";
+const LLM_GATEWAY_BEARER = process.env.LLM_GATEWAY_BEARER ?? "";
+const DISTILL_MODEL_ALIAS = process.env.DISTILL_MODEL_ALIAS ?? "mock";
 
 interface DistilledMemoryEntry {
   title: string;
@@ -168,29 +170,31 @@ async function synthesiseCandidates(args: {
   ].join("\n");
 
   const body = {
-    runContext: { traceId: args.traceId, capabilityId: args.capabilityId, agentId: args.agentUid },
-    systemPrompt,
-    message: userMessage,
-    tools: [],
-    modelConfig: {},
-    limits: { maxSteps: 1, timeoutSec: 60 },
+    model_alias: DISTILL_MODEL_ALIAS,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user",   content: userMessage },
+    ],
+    temperature: 0,
+    max_output_tokens: 1500,
+    trace_id: args.traceId,
+    capability_id: args.capabilityId,
   };
 
-  const res = await fetch(MCP_INVOKE_URL, {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (LLM_GATEWAY_BEARER) headers.authorization = `Bearer ${LLM_GATEWAY_BEARER}`;
+  const res = await fetch(`${LLM_GATEWAY_URL.replace(/\/$/, "")}/v1/chat/completions`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${MCP_BEARER}`,
-    },
+    headers,
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(70_000),
   });
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 400);
-    throw new AppError(`Distillation LLM call failed (${res.status}): ${detail}`, 502);
+    throw new AppError(`Distillation LLM_GATEWAY_UPSTREAM (${res.status}): ${detail}`, 502);
   }
-  const data = (await res.json()) as { data?: { finalResponse?: string } };
-  const raw = data.data?.finalResponse ?? "";
+  const data = (await res.json()) as { content?: string };
+  const raw = data.content ?? "";
 
   // Synthetic fallback used when the LLM returns no parseable JSON (mock
   // provider, malformed reply, etc). Joins observations into one rule so the
