@@ -210,7 +210,7 @@ EOF
     ;;
 
   doctor)
-    python3 "$SCRIPT_DIR/bin/configure-platform.py" doctor
+    python3 "$SCRIPT_DIR/bin/configure-platform.py" doctor "$@"
     ;;
 
   office|office-copilot-only|copilot-only)

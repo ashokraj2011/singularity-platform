@@ -905,6 +905,22 @@ def http_check(name: str, url: str, timeout: float = 2.0) -> tuple[str, str]:
         return "FAIL", f"{name} unreachable: {exc}"
 
 
+def http_json(url: str, timeout: float = 2.0) -> tuple[str, dict | None, str]:
+    try:
+        req = urllib.request.Request(url, headers={"user-agent": "singularity-config-doctor"})
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            raw = res.read().decode()
+            return "OK", json.loads(raw), f"HTTP {res.status}"
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode()[:300]
+        except Exception:
+            detail = ""
+        return "FAIL", None, f"HTTP {exc.code} {detail}".strip()
+    except Exception as exc:
+        return "FAIL", None, str(exc)
+
+
 def gh_copilot_ready() -> tuple[bool, str]:
     gh = shutil.which("gh")
     if not gh:
@@ -934,7 +950,7 @@ def write_doctor_summary(records: list[dict[str, str]], *, failures: int, warnin
     PORTAL_DOCTOR_PATH.write_text(json.dumps(payload, indent=2) + "\n")
 
 
-def command_doctor(_: argparse.Namespace) -> None:
+def command_doctor(args: argparse.Namespace) -> None:
     failures = 0
     warnings = 0
     records: list[dict[str, str]] = []
@@ -950,10 +966,18 @@ def command_doctor(_: argparse.Namespace) -> None:
 
     print("Singularity configuration doctor\n")
 
+    config = load_local_config()
+    strict_office = bool(getattr(args, "office_copilot_only", False))
+
     if CONFIG_PATH.exists():
         record("OK", f"canonical config exists: {CONFIG_PATH.relative_to(ROOT)}")
     else:
         record("WARN", f"canonical config missing: {CONFIG_PATH.relative_to(ROOT)}", "./singularity.sh config init --profile office-laptop")
+    if strict_office:
+        if config.get("profile") == "office-copilot-only":
+            record("OK", "canonical profile is office-copilot-only")
+        else:
+            record("FAIL", "strict office validation requires profile=office-copilot-only", "./singularity.sh office-copilot-only")
 
     for path in [
         ROOT / ".env",
@@ -1009,7 +1033,8 @@ def command_doctor(_: argparse.Namespace) -> None:
         merged.update(parse_env(path))
     provider = merged.get("MCP_LLM_PROVIDER") or merged.get("LLM_PROVIDER") or "mock"
     allowed_providers = [item.strip().lower() for item in (merged.get("MCP_ALLOWED_LLM_PROVIDERS") or "").split(",") if item.strip()]
-    copilot_only = allowed_providers == ["copilot"]
+    profile_copilot_only = config.get("profile") == "office-copilot-only"
+    copilot_only = strict_office or profile_copilot_only or allowed_providers == ["copilot"]
     if provider == "openai" and not (merged.get("OPENAI_API_KEY") or merged.get("OPENAI_COMPATIBLE_API_KEY")):
         record("FAIL", "OpenAI provider selected but no OpenAI key is configured", "./singularity.sh config set llm.openai.apiKey sk-...")
     elif provider == "openrouter" and not merged.get("OPENROUTER_API_KEY"):
@@ -1031,6 +1056,11 @@ def command_doctor(_: argparse.Namespace) -> None:
             record("OK", "Copilot-only provider fence is active")
         cli_ok, cli_msg = gh_copilot_ready()
         record("OK" if cli_ok else "WARN", cli_msg, "gh auth login && gh extension install github/gh-copilot")
+        if strict_office:
+            if allowed_providers == ["copilot"]:
+                record("OK", "MCP provider allowlist is exactly copilot")
+            else:
+                record("FAIL", "strict office validation requires MCP_ALLOWED_LLM_PROVIDERS=copilot", "./singularity.sh office-copilot-only")
 
     mcp_token = merged.get("MCP_DEMO_BEARER_TOKEN") or merged.get("MCP_BEARER_TOKEN", "")
     if len(mcp_token) < 16:
@@ -1094,6 +1124,53 @@ def command_doctor(_: argparse.Namespace) -> None:
         else:
             fix = "./singularity.sh config mcp-catalog --copilot-only" if copilot_only else "./singularity.sh config mcp-catalog --default-alias balanced"
             record("WARN", f"MCP provider config missing: {p}", fix)
+
+    if copilot_only:
+        providers_status, providers_payload, providers_msg = http_json("http://localhost:7100/llm/providers")
+        if providers_status != "OK":
+            record("FAIL" if strict_office else "WARN", f"live MCP provider endpoint unavailable: {providers_msg}", "./singularity.sh restart mcp-server-demo")
+        else:
+            data = providers_payload.get("data", providers_payload) if isinstance(providers_payload, dict) else {}
+            default_provider = str(data.get("default_provider") or "").lower()
+            live_providers = data.get("providers", []) if isinstance(data, dict) else []
+            non_copilot_enabled = sorted(
+                str(row.get("name", "")).lower()
+                for row in live_providers
+                if isinstance(row, dict)
+                and str(row.get("name", "")).lower() != "copilot"
+                and (row.get("enabled") is True or row.get("allowed") is True)
+            )
+            copilot_row = next((row for row in live_providers if isinstance(row, dict) and str(row.get("name", "")).lower() == "copilot"), {})
+            if default_provider == "copilot":
+                record("OK", "live MCP default provider is copilot")
+            else:
+                record("FAIL", f"live MCP default provider is {default_provider or '(unset)'}, not copilot", "./singularity.sh office-copilot-only && ./singularity.sh restart mcp-server-demo")
+            if non_copilot_enabled:
+                record("FAIL", f"live MCP still enables/allows non-Copilot providers: {', '.join(non_copilot_enabled)}", "./singularity.sh office-copilot-only && ./singularity.sh restart mcp-server-demo")
+            else:
+                record("OK", "live MCP provider fence exposes only Copilot")
+            if copilot_row.get("ready") is True:
+                record("OK", "live MCP Copilot provider is ready")
+            else:
+                status = "FAIL" if strict_office else "WARN"
+                record(status, "live MCP Copilot provider is not ready", "./singularity.sh config set llm.copilot.token <token> && ./singularity.sh restart mcp-server-demo")
+
+        models_status, models_payload, models_msg = http_json("http://localhost:7100/llm/models")
+        if models_status != "OK":
+            record("FAIL" if strict_office else "WARN", f"live MCP model endpoint unavailable: {models_msg}", "./singularity.sh restart mcp-server-demo")
+        else:
+            data = models_payload.get("data", models_payload) if isinstance(models_payload, dict) else {}
+            default_alias = str(data.get("defaultModelAlias") or "").lower()
+            rows = data.get("models", []) if isinstance(data, dict) else []
+            model_providers = sorted({str(row.get("provider", "")).lower() for row in rows if isinstance(row, dict)})
+            if default_alias == "copilot":
+                record("OK", "live MCP default model alias is copilot")
+            else:
+                record("FAIL", f"live MCP default model alias is {default_alias or '(unset)'}, not copilot", "./singularity.sh config mcp-catalog --copilot-only && ./singularity.sh restart mcp-server-demo")
+            if model_providers == ["copilot"]:
+                record("OK", "live MCP model catalog exposes only Copilot")
+            else:
+                record("FAIL", f"live MCP model catalog exposes non-Copilot providers: {', '.join(model_providers)}", "./singularity.sh config mcp-catalog --copilot-only && ./singularity.sh restart mcp-server-demo")
 
     write_doctor_summary(records, failures=failures, warnings=warnings)
     print(f"\nWrote portal doctor summary: {PORTAL_DOCTOR_PATH.relative_to(ROOT)}")
@@ -1434,6 +1511,7 @@ def main() -> None:
     p_show.set_defaults(func=command_show)
 
     p_doctor = sub.add_parser("doctor", help="Validate env files, ports, service URLs, and key presence")
+    p_doctor.add_argument("--office-copilot-only", action="store_true", help="Fail unless this laptop is fenced to Copilot-only provider/model access")
     p_doctor.set_defaults(func=command_doctor)
 
     p_set = sub.add_parser("set", help="Set one canonical config key and rewrite env files")

@@ -31,6 +31,9 @@ const metadataSchema = z.object({
   tags:                 z.array(z.object({ key: z.string(), value: z.string() })).optional(),
 }).optional()
 
+const GOVERNANCE_MODES = ['fail_open', 'fail_closed', 'degraded', 'human_approval_required'] as const
+type GovernanceMode = typeof GOVERNANCE_MODES[number]
+
 const variableDefSchema = z.object({
   key:          z.string().min(1).max(80).regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, 'Key must be a valid identifier'),
   label:        z.string().optional(),
@@ -63,6 +66,36 @@ const updateTemplateSchema = z.object({
   budgetPolicy: z.record(z.unknown()).nullable().optional(),
 })
 
+function withTemplateGovernanceDefaults(budgetPolicy: unknown, metadata: unknown): Record<string, unknown> {
+  const raw = isRecord(budgetPolicy) ? { ...budgetPolicy } : {}
+  if (!isGovernanceMode(raw.governanceMode)) {
+    const defaultMode = defaultGovernanceModeForMetadata(metadata)
+    if (defaultMode) raw.governanceMode = defaultMode
+  }
+  return raw
+}
+
+function defaultGovernanceModeForMetadata(metadata: unknown): GovernanceMode | undefined {
+  const meta = isRecord(metadata) ? metadata : {}
+  const workflowType = String(meta.workflowType ?? '').toUpperCase()
+  const dataSensitivity = String(meta.dataSensitivity ?? '').toUpperCase()
+  const criticality = String(meta.criticality ?? meta.risk ?? '').toUpperCase()
+  if (workflowType === 'COMPLIANCE' || dataSensitivity === 'RESTRICTED') return 'fail_closed'
+  if (criticality === 'HIGH' || criticality === 'CRITICAL' || criticality === 'SOX' || criticality === 'PCI') {
+    return 'human_approval_required'
+  }
+  if (meta.requiresApprovalToRun === true) return 'human_approval_required'
+  return undefined
+}
+
+function isGovernanceMode(value: unknown): value is GovernanceMode {
+  return typeof value === 'string' && (GOVERNANCE_MODES as readonly string[]).includes(value)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
 workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, res, next) => {
   try {
     const { name, description, teamId, capabilityId, metadata, variables, budgetPolicy, starter } =
@@ -87,7 +120,7 @@ workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, re
         createdById:  req.user!.userId,
         metadata:     metadata as any ?? {},
         variables:    normalizedVariables as unknown as Prisma.InputJsonValue,
-        budgetPolicy: normalizeBudgetPolicy(budgetPolicy) as unknown as Prisma.InputJsonValue,
+        budgetPolicy: normalizeBudgetPolicy(withTemplateGovernanceDefaults(budgetPolicy, metadata)) as unknown as Prisma.InputJsonValue,
       },
     })
 
@@ -814,6 +847,10 @@ workflowTemplatesRouter.patch('/:id', validate(updateTemplateSchema), async (req
     const resolvedTeamId = body.teamId !== undefined
       ? await resolveTeamIdForWorkflow(body.teamId, tokenFromAuthorizationHeader(req.headers.authorization))
       : undefined
+    const existingForBudgetDefaults = body.budgetPolicy !== undefined && body.metadata === undefined
+      ? await prisma.workflow.findUnique({ where: { id }, select: { metadata: true } })
+      : null
+    const metadataForBudgetDefaults = body.metadata ?? existingForBudgetDefaults?.metadata
 
     const t = await prisma.workflow.update({
       where: { id },
@@ -824,7 +861,7 @@ workflowTemplatesRouter.patch('/:id', validate(updateTemplateSchema), async (req
         ...(body.capabilityId !== undefined ? { capabilityId: body.capabilityId }                                      : {}),
         ...(body.metadata     !== undefined ? { metadata:     body.metadata as any }                                   : {}),
         ...(body.variables    !== undefined ? { variables:    body.variables as unknown as Prisma.InputJsonValue }     : {}),
-        ...(body.budgetPolicy !== undefined ? { budgetPolicy: normalizeBudgetPolicy(body.budgetPolicy) as unknown as Prisma.InputJsonValue } : {}),
+        ...(body.budgetPolicy !== undefined ? { budgetPolicy: normalizeBudgetPolicy(withTemplateGovernanceDefaults(body.budgetPolicy, metadataForBudgetDefaults)) as unknown as Prisma.InputJsonValue } : {}),
       },
     })
     await logEvent('TemplateUpdated', 'WorkflowTemplate', t.id, req.user!.userId, {

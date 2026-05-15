@@ -22,6 +22,8 @@ const EXECUTE_EXCERPT_MAX_FILES = 8
 const EXECUTE_EXCERPT_MAX_CHARS = 4_000
 const EXECUTE_EXCERPT_BUDGET_CHARS = 18_000
 const WORKBENCH_DEFAULT_MODEL_ALIAS = process.env.WORKBENCH_DEFAULT_MODEL_ALIAS?.trim() || undefined
+const GOVERNANCE_MODES = ['fail_open', 'fail_closed', 'degraded', 'human_approval_required'] as const
+type GovernanceMode = typeof GOVERNANCE_MODES[number]
 
 const DEFAULT_EXCLUDES = new Set([
   '.git', 'node_modules', 'dist', 'build', '.next', '.turbo', '.cache',
@@ -52,7 +54,7 @@ const createSessionSchema = z.object({
   snapshotMode: z.enum(['summary', 'relevant_excerpts', 'full_debug']).default('relevant_excerpts'),
   excerptBudgetChars: z.number().int().min(2_000).max(120_000).optional(),
   reuseUnchangedAttempt: z.boolean().default(true),
-  governanceMode: z.enum(['fail_open', 'fail_closed', 'degraded', 'human_approval_required']).default('fail_open'),
+  governanceMode: z.enum(GOVERNANCE_MODES).optional(),
   modelAlias: z.string().min(1).max(80).optional(),
 })
 
@@ -278,6 +280,8 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
     const body = req.body as CreateSessionInput
     const workflowLink = await resolveWorkflowLink(body.workflowInstanceId, body.workflowNodeId)
     const initialLoopDefinition = normalizeLoopDefinition(body.loopDefinition, body)
+    const governanceMode = body.governanceMode
+      ?? await resolveWorkbenchGovernanceMode(workflowLink.workflowInstanceId ?? body.workflowInstanceId)
     const agentTemplateIds = resolveSessionAgentTemplateIds(body, initialLoopDefinition)
     const loopDefinition = hydrateLoopAgentTemplates(initialLoopDefinition, agentTemplateIds)
     const now = new Date().toISOString()
@@ -313,7 +317,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         snapshotMode: body.snapshotMode,
         excerptBudgetChars: body.excerptBudgetChars ?? EXECUTE_EXCERPT_BUDGET_CHARS,
         reuseUnchangedAttempt: body.reuseUnchangedAttempt,
-        governanceMode: body.governanceMode,
+        governanceMode,
         modelAlias: body.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS,
       },
     }
@@ -824,6 +828,45 @@ async function resolveWorkflowLink(
   }
 
   return { workflowInstanceId: instanceId, workflowNodeId: nodeId }
+}
+
+async function resolveWorkbenchGovernanceMode(workflowInstanceId?: string | null): Promise<GovernanceMode> {
+  const instanceId = typeof workflowInstanceId === 'string' && workflowInstanceId.trim()
+    ? workflowInstanceId.trim()
+    : undefined
+  if (!instanceId) return 'fail_open'
+
+  const instance = await prisma.workflowInstance.findUnique({
+    where: { id: instanceId },
+    select: {
+      template: {
+        select: {
+          status: true,
+          metadata: true,
+          budgetPolicy: true,
+        },
+      },
+    },
+  })
+  const template = instance?.template
+  const policy = isRecord(template?.budgetPolicy) ? template.budgetPolicy : {}
+  const policyMode = policy.governanceMode
+  if (isGovernanceMode(policyMode)) return policyMode
+
+  const metadata = isRecord(template?.metadata) ? template.metadata : {}
+  const criticality = String(metadata.criticality ?? metadata.risk ?? '').toUpperCase()
+  const dataSensitivity = String(metadata.dataSensitivity ?? '').toUpperCase()
+  const workflowType = String(metadata.workflowType ?? '').toUpperCase()
+  if (workflowType === 'COMPLIANCE' || dataSensitivity === 'RESTRICTED') return 'fail_closed'
+  if (criticality === 'HIGH' || criticality === 'CRITICAL' || criticality === 'SOX' || criticality === 'PCI') {
+    return 'human_approval_required'
+  }
+  if (template?.status && template.status !== 'DRAFT') return 'human_approval_required'
+  return 'fail_open'
+}
+
+function isGovernanceMode(value: unknown): value is GovernanceMode {
+  return typeof value === 'string' && (GOVERNANCE_MODES as readonly string[]).includes(value)
 }
 
 function readLoopState(session: LoopSessionSeed): LoopState {
