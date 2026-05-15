@@ -360,6 +360,7 @@ services:
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       CONTEXT_FABRIC_URL: http://context-api:8000
       CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
+      WORKBENCH_DEFAULT_MODEL_ALIAS: ${WORKBENCH_DEFAULT_MODEL_ALIAS:-fast}
     volumes:
       - ${HOST_DOWNLOADS_DIR:-/Users/ashokraj/Downloads}:/Users/ashokraj/Downloads:ro
     ports:

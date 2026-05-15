@@ -21,6 +21,7 @@ const EXECUTE_MANIFEST_MAX_FILES = 120
 const EXECUTE_EXCERPT_MAX_FILES = 8
 const EXECUTE_EXCERPT_MAX_CHARS = 4_000
 const EXECUTE_EXCERPT_BUDGET_CHARS = 18_000
+const WORKBENCH_DEFAULT_MODEL_ALIAS = process.env.WORKBENCH_DEFAULT_MODEL_ALIAS?.trim() || undefined
 
 const DEFAULT_EXCLUDES = new Set([
   '.git', 'node_modules', 'dist', 'build', '.next', '.turbo', '.cache',
@@ -52,6 +53,7 @@ const createSessionSchema = z.object({
   excerptBudgetChars: z.number().int().min(2_000).max(120_000).optional(),
   reuseUnchangedAttempt: z.boolean().default(true),
   governanceMode: z.enum(['fail_open', 'fail_closed', 'degraded', 'human_approval_required']).default('fail_open'),
+  modelAlias: z.string().min(1).max(80).optional(),
 })
 
 const decisionAnswerSchema = z.object({
@@ -312,6 +314,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         excerptBudgetChars: body.excerptBudgetChars ?? EXECUTE_EXCERPT_BUDGET_CHARS,
         reuseUnchangedAttempt: body.reuseUnchangedAttempt,
         governanceMode: body.governanceMode,
+        modelAlias: body.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS,
       },
     }
     const session = await prisma.blueprintSession.create({
@@ -1601,6 +1604,7 @@ async function runLoopStageExecute(
 ): Promise<ExecuteResponse> {
   const traceId = `blueprint-${session.id}-${stage.key}`
   const executionConfig = readLoopState(session).executionConfig
+  const modelAlias = executionConfig?.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS
   const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
     stageKey: stage.key,
     stageLabel: stage.label,
@@ -1642,7 +1646,7 @@ async function runLoopStageExecute(
       extraContext: 'This workbench is read-only. Produce implementation guidance, QA proof, and reviewable artifacts without mutating source files.',
     },
     model_overrides: {
-      ...(executionConfig?.modelAlias ? { modelAlias: executionConfig.modelAlias } : {}),
+      ...(modelAlias ? { modelAlias } : {}),
       temperature: 0.2,
       maxOutputTokens: 1200,
     },
@@ -1657,7 +1661,7 @@ async function runLoopStageExecute(
       maxPromptChars: 24_000,
     },
     limits: {
-      maxSteps: 3,
+      maxSteps: 8,
       timeoutSec: 180,
       inputTokenBudget: 6000,
       outputTokenBudget: 1200,
@@ -2300,6 +2304,7 @@ async function runStage(
 ): Promise<ExecuteResponse> {
   const traceId = `blueprint-${session.id}-${stage.toLowerCase()}`
   const executionConfig = readLoopState(session).executionConfig
+  const modelAlias = executionConfig?.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS
   const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
     stageKey: stage.toLowerCase(),
     stageLabel: humanStage(stage),
@@ -2339,7 +2344,7 @@ async function runStage(
       extraContext: 'This MVP must not mutate source code. Coding output is a simulated, reviewable proposal with evidence.',
     },
     model_overrides: {
-      ...(executionConfig?.modelAlias ? { modelAlias: executionConfig.modelAlias } : {}),
+      ...(modelAlias ? { modelAlias } : {}),
       temperature: 0.2,
       maxOutputTokens: 1200,
     },
@@ -2354,7 +2359,7 @@ async function runStage(
       maxPromptChars: 24_000,
     },
     limits: {
-      maxSteps: 3,
+      maxSteps: 8,
       timeoutSec: 180,
       inputTokenBudget: 6000,
       outputTokenBudget: 1200,
