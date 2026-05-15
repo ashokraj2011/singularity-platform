@@ -96,15 +96,16 @@ Conversation:
 {compact}
 """.strip()
     payload = {
+        "prompt": prompt,
         "provider": settings.summarizer_provider,
         "model": settings.summarizer_model,
-        "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.1,
-        "metadata": {"purpose": "session_summary", "agent_id": agent_id},
+        "tools": [],
+        "max_steps": 1,
     }
     try:
-        result = await post_json(settings.llm_gateway_internal_url.rstrip("/") + "/llm/respond", payload, timeout=120.0)
-        data = _extract_json(result.get("response", ""))
+        result = await post_json(settings.mcp_server_url.rstrip("/") + "/mcp/invoke", payload, timeout=120.0)
+        data = _extract_json(result.get("data", {}).get("finalResponse", ""))
         if data:
             return normalize_summary(data)
     except Exception:

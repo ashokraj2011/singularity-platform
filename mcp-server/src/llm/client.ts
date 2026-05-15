@@ -3,6 +3,7 @@ import { openaiRespond, openrouterRespond } from "./providers/openai";
 import { anthropicRespond } from "./providers/anthropic";
 import { copilotRespond } from "./providers/copilot";
 import { LlmRequest, LlmResponse, LlmStreamHooks } from "./types";
+import { log } from "../shared/log";
 import {
   SUPPORTED_PROVIDERS,
   configuredDefaultProvider,
@@ -34,14 +35,32 @@ export async function llmRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promi
   if (!isProviderAllowed(provider)) {
     throw new Error(`LLM provider is disabled by MCP provider config: ${provider}`);
   }
-  switch (provider) {
-    case "mock":      return mockLlmRespond(req, hooks);
-    case "openai":    return openaiRespond(req, hooks);
-    case "openrouter": return openrouterRespond(req, hooks);
-    case "anthropic": return anthropicRespond(req, hooks);
-    case "copilot":   return copilotRespond(req, hooks);
-    default:
-      throw new Error(`unknown LLM provider: ${provider}. Supported: mock, openai, openrouter, anthropic, copilot.`);
+  let attempts = 0;
+  const maxAttempts = 3;
+  
+  while (true) {
+    attempts++;
+    try {
+      switch (provider) {
+        case "mock":      return await mockLlmRespond(req, hooks);
+        case "openai":    return await openaiRespond(req, hooks);
+        case "openrouter": return await openrouterRespond(req, hooks);
+        case "anthropic": return await anthropicRespond(req, hooks);
+        case "copilot":   return await copilotRespond(req, hooks);
+        default:
+          throw new Error(`unknown LLM provider: ${provider}. Supported: mock, openai, openrouter, anthropic, copilot.`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isRetryable = msg.includes(" 429") || msg.includes(" 500") || msg.includes(" 502") || msg.includes(" 503") || msg.includes(" 504") || msg.includes("timeout") || msg.includes("ECONNRESET");
+      if (isRetryable && attempts < maxAttempts) {
+        const backoffMs = Math.pow(2, attempts) * 1000 + Math.random() * 500;
+        log.warn(`LLM provider ${provider} failed (attempt ${attempts}/${maxAttempts}): ${msg}. Retrying in ${Math.round(backoffMs)}ms...`);
+        await new Promise(r => setTimeout(r, backoffMs));
+        continue;
+      }
+      throw err;
+    }
   }
 }
 

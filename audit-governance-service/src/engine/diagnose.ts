@@ -11,8 +11,6 @@
 import { query, queryOne } from "../db";
 
 const MCP_SERVER_URL = process.env.ENGINE_MCP_URL ?? "http://localhost:7100";
-const ENGINE_LLM_PROVIDER = process.env.ENGINE_LLM_PROVIDER ?? "openai";
-const ENGINE_LLM_MODEL = process.env.ENGINE_LLM_MODEL ?? "gpt-4o-mini";
 const ENGINE_TIMEOUT_MS = Number(process.env.ENGINE_TIMEOUT_MS ?? 120_000);
 
 // ── Trace loading ──────────────────────────────────────────────────────
@@ -108,8 +106,6 @@ async function callLlmForDiagnosis(prompt: string): Promise<DiagnosisResult> {
         body: JSON.stringify({
           prompt,
           system_prompt: DIAGNOSIS_SYSTEM_PROMPT,
-          provider: ENGINE_LLM_PROVIDER,
-          model: ENGINE_LLM_MODEL,
           max_output_tokens: 2000,
           temperature: 0.1,
           tools: [],

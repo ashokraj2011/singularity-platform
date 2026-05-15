@@ -66,31 +66,23 @@ export function loadProviderConfig(): LoadedProviderConfig {
   try {
     const raw = readConfigSource();
     if (!raw) {
-      cached = {
-        settings: { allowedProviders: envAllowedProviders() },
-        source: config.MCP_ALLOWED_LLM_PROVIDERS ? "env-allowlist" : "fallback-env",
-        warnings,
-      };
-      return cached;
+      throw new Error("No platform LLM config provided (MCP_LLM_PROVIDER_CONFIG_JSON or MCP_LLM_PROVIDER_CONFIG_PATH is missing)");
     }
     const parsed = ProviderConfigSchema.safeParse(raw);
     if (!parsed.success) {
       throw new Error(JSON.stringify(parsed.error.flatten().fieldErrors));
     }
     cached = {
-      settings: {
-        ...parsed.data,
-        allowedProviders: parsed.data.allowedProviders ?? envAllowedProviders(),
-      },
+      settings: parsed.data,
       source: config.MCP_LLM_PROVIDER_CONFIG_JSON ? "env-json" : "file",
       warnings,
     };
     return cached;
   } catch (err) {
-    warnings.push(`Failed to load MCP LLM provider config; using env fallback. ${err instanceof Error ? err.message : String(err)}`);
+    warnings.push(`ConfigurationError: Failed to load MCP LLM provider config. Entering degraded state (only mock allowed). ${err instanceof Error ? err.message : String(err)}`);
     cached = {
-      settings: { allowedProviders: envAllowedProviders() },
-      source: "fallback-error",
+      settings: { defaultProvider: "mock", allowedProviders: ["mock"] },
+      source: "degraded-error",
       warnings,
     };
     return cached;

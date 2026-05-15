@@ -137,7 +137,7 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
     response.headers["Sunset"] = "2026-07-01"
     response.headers["Link"] = '</execute>; rel="successor-version"'
     memory_url = settings.context_memory_url.rstrip("/")
-    llm_url = settings.llm_gateway_url.rstrip("/")
+    mcp_url = (settings.mcp_default_base_url or "http://localhost:7100").rstrip("/")
     metrics_url = settings.metrics_ledger_url.rstrip("/")
 
     await post_json(f"{memory_url}/memory/messages", {
@@ -162,19 +162,19 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
         "system_prompt": req.system_prompt,
     })
 
-    llm_resp = await post_json(f"{llm_url}/llm/respond", {
+    mcp_resp = await post_json(f"{mcp_url}/mcp/invoke", {
+        "prompt": "",
+        "history": compiled["compiled_messages"],
+        "message": req.message,
         "provider": req.provider,
         "model": req.model,
-        "messages": compiled["messages"],
         "temperature": req.temperature,
-        "max_tokens": req.max_output_tokens,
-        "metadata": {
-            **req.metadata,
-            "session_id": req.session_id,
-            "agent_id": req.agent_id,
-            "context_package_id": compiled["context_package_id"],
-        },
-    }, timeout=240.0)
+        "maxOutputTokens": req.max_output_tokens,
+        "tools": [],
+        "maxSteps": 1,
+    })
+    
+    response_text = mcp_resp.get("data", {}).get("finalResponse", "")
 
     await post_json(f"{memory_url}/memory/messages", {
         "session_id": req.session_id,

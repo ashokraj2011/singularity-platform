@@ -4,7 +4,6 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    llm_gateway_url: str = "http://localhost:8001"
     context_memory_url: str = "http://localhost:8002"
     metrics_ledger_url: str = "http://localhost:8003"
 

@@ -223,18 +223,7 @@ services:
   # ─────────────────────────────────────────────────────────────────────
   # context-fabric
   # ─────────────────────────────────────────────────────────────────────
-  llm-gateway:
-    build:
-      context: ./context-fabric
-      dockerfile: services/llm_gateway_service/Dockerfile
-    container_name: singularity-llm-gateway
-    env_file: ./context-fabric/.env
-    environment:
-      LLM_GATEWAY_DB: /data/llm_gateway.db
-    ports:
-      - "8001:8001"
-    volumes:
-      - ./context-fabric/data/llm_gateway:/data
+
 
   context-memory:
     build:
@@ -244,13 +233,13 @@ services:
     env_file: ./context-fabric/.env
     environment:
       CONTEXT_MEMORY_DB: /data/context_memory.db
-      LLM_GATEWAY_INTERNAL_URL: http://llm-gateway:8001
+      MCP_SERVER_URL: http://mcp-server-demo:7100
     ports:
       - "8002:8002"
     volumes:
       - ./context-fabric/data/context_memory:/data
     depends_on:
-      - llm-gateway
+      - mcp-server-demo
 
   metrics-ledger:
     build:
@@ -271,8 +260,6 @@ services:
       dockerfile: services/context_api_service/Dockerfile
     container_name: singularity-context-api
     env_file: ./context-fabric/.env
-    environment:
-      LLM_GATEWAY_URL: http://llm-gateway:8001
       CONTEXT_MEMORY_URL: http://context-memory:8002
       METRICS_LEDGER_URL: http://metrics-ledger:8003
       IAM_BASE_URL: http://iam-service:8100/api/v1
@@ -287,7 +274,6 @@ services:
       - "8000:8000"
     depends_on:
       - iam-service
-      - llm-gateway
       - context-memory
       - metrics-ledger
       - mcp-server-demo

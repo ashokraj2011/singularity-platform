@@ -1,18 +1,5 @@
 services:
-  llm-gateway-service:
-    build:
-      context: .
-      dockerfile: services/llm_gateway_service/Dockerfile
-    env_file: .env
-    environment:
-      - LLM_GATEWAY_DB=/data/llm_gateway.db
-      # M11.a
-      - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
-      - PUBLIC_BASE_URL=${LLM_GATEWAY_PUBLIC_URL:-http://host.docker.internal:8001}
-    ports:
-      - "8001:8001"
-    volumes:
-      - ./data/llm_gateway:/data
+
 
   context-memory-service:
     build:
@@ -21,7 +8,7 @@ services:
     env_file: .env
     environment:
       - CONTEXT_MEMORY_DB=/data/context_memory.db
-      - LLM_GATEWAY_INTERNAL_URL=http://llm-gateway-service:8001
+      - MCP_SERVER_URL=${MCP_DEFAULT_BASE_URL:-http://host.docker.internal:7100}
       # M11.a
       - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       - PUBLIC_BASE_URL=${CONTEXT_MEMORY_PUBLIC_URL:-http://host.docker.internal:8002}
@@ -29,8 +16,7 @@ services:
       - "8002:8002"
     volumes:
       - ./data/context_memory:/data
-    depends_on:
-      - llm-gateway-service
+
 
   metrics-ledger-service:
     build:
@@ -53,7 +39,7 @@ services:
       dockerfile: services/context_api_service/Dockerfile
     env_file: .env
     environment:
-      - LLM_GATEWAY_URL=http://llm-gateway-service:8001
+
       - CONTEXT_MEMORY_URL=http://context-memory-service:8002
       - METRICS_LEDGER_URL=http://metrics-ledger-service:8003
       # M8 — orchestrator dependencies
@@ -83,7 +69,6 @@ services:
       - "8000:8000"
     volumes:
       - ./data/context_api:/data
-    depends_on:
-      - llm-gateway-service
+
       - context-memory-service
       - metrics-ledger-service
