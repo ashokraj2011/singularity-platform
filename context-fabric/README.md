@@ -1,13 +1,13 @@
 # Context Fabric
 
-Context Fabric is a standalone LLM context optimization platform. It sits between applications/agents and LLMs, keeps session context outside the model, summarizes long conversations, compiles optimized context packages, calls model providers through a gateway, and records raw-vs-optimized token savings.
+Context Fabric is a standalone LLM context optimization platform. It sits between applications/agents and the central LLM gateway, keeps session context outside the model, summarizes long conversations, compiles optimized context packages, and records raw-vs-optimized token savings.
 
 ## What is included
 
 This MVP contains four independent FastAPI services:
 
-1. **context-api-service** — public API for clients. Orchestrates memory, context compile, LLM calls, and metrics.
-2. **llm-gateway-service** — model gateway for mock, OpenRouter/OpenAI-compatible, OpenAI-compatible custom endpoints, and Ollama.
+1. **context-api-service** — public API for clients. Orchestrates memory, context compile, MCP execution, and metrics.
+2. **llm-gateway-service** — the only provider-calling gateway. Provider/model selection comes from `.singularity/llm-providers.json` and `.singularity/mcp-models.json`; raw provider/model request overrides are disabled by default.
 3. **context-memory-service** — conversation storage, summaries, memories, and context compiler.
 4. **metrics-ledger-service** — token-savings and cost-savings ledger.
 
@@ -17,7 +17,8 @@ It also includes a small Python SDK and smoke test.
 
 ```bash
 cp .env.example .env
-# Optional: edit OPENROUTER_API_KEY or OLLAMA_BASE_URL in .env
+# Default local setup is mock-only. For office mode, run:
+# ../singularity.sh config office-copilot-only
 
 docker compose up --build
 ```
@@ -38,43 +39,12 @@ curl -s http://localhost:8000/chat/respond \
     "session_id":"demo-session",
     "agent_id":"developer-agent",
     "message":"Design the first version of Context Fabric backend.",
-    "provider":"mock",
-    "model":"mock-fast",
+    "model_overrides":{"modelAlias":"mock"},
     "context_policy":{"optimization_mode":"medium","compare_with_raw":true,"max_context_tokens":12000}
   }' | jq
 ```
 
 Send multiple calls to the same `session_id`; summaries and optimized context become more useful as the session grows.
-
-## OpenRouter example
-
-Set `OPENROUTER_API_KEY` in `.env`, then call:
-
-```bash
-curl -s http://localhost:8000/chat/respond \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "session_id":"openrouter-demo",
-    "agent_id":"architect-agent",
-    "message":"Summarize our architecture decisions and continue the design.",
-    "provider":"openrouter",
-    "model":"openai/gpt-4o-mini",
-    "context_policy":{"optimization_mode":"medium","compare_with_raw":true,"max_context_tokens":16000}
-  }' | jq
-```
-
-## Ollama example
-
-Start Ollama locally and expose it to Docker, or run the services directly on your machine. Then call:
-
-```json
-{
-  "provider": "ollama",
-  "model": "qwen2.5-coder:7b"
-}
-```
-
-By default, `OLLAMA_BASE_URL=http://host.docker.internal:11434` in Docker Compose.
 
 ## Core API
 
@@ -88,7 +58,7 @@ It:
 2. Optionally refreshes the rolling summary.
 3. Builds raw context.
 4. Builds optimized context.
-5. Calls the LLM Gateway.
+5. Dispatches execution through MCP; MCP calls the central LLM Gateway by model alias.
 6. Saves assistant response.
 7. Records token savings in the metrics ledger.
 8. Returns response + savings receipt.

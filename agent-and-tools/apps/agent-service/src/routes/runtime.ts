@@ -125,13 +125,13 @@ runtimeRoutes.post("/learning-candidates/:id/review", async (req: Request, res: 
 //   { capability_id, agent_uid, candidate_type, candidate_ids[] }
 //
 // Looks up the named accepted candidates, batches their content, asks the
-// embedded LLM gateway to synthesise 1-3 distilled memory rules, writes
+// MCP loop to synthesize 1-3 distilled memory rules through the central
+// LLM gateway, writes
 // DistilledMemory rows the prompt-composer auto-pulls, and marks the
 // originating candidates as `distilled`.
 //
-// LLM call uses mcp-server's /mcp/invoke directly (its embedded gateway is
-// already wired to OpenAI/Anthropic/Copilot). The provider/model is whatever
-// mcp-server is configured with — no additional secrets needed here.
+// LLM call uses mcp-server's /mcp/invoke directly. MCP sends only a model
+// alias/default to llm-gateway; provider keys never live in agent-service.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MCP_INVOKE_URL = process.env.MCP_INVOKE_URL ?? "http://host.docker.internal:7100/mcp/invoke";

@@ -1,14 +1,29 @@
 services:
+  llm-gateway-service:
+    build:
+      context: .
+      dockerfile: services/llm_gateway_service/Dockerfile
+    env_file: .env
+    environment:
+      - LLM_PROVIDER_CONFIG_PATH=/etc/singularity/llm-providers.json
+      - LLM_MODEL_CATALOG_PATH=/etc/singularity/mcp-models.json
+      - ALLOW_CALLER_PROVIDER_OVERRIDE=${LLM_GATEWAY_ALLOW_OVERRIDE:-false}
+      - PUBLIC_BASE_URL=${LLM_GATEWAY_PUBLIC_URL:-http://host.docker.internal:8001}
+    ports:
+      - "8001:8001"
+    volumes:
+      - ../.singularity:/etc/singularity:ro
 
 
   context-memory-service:
     build:
       context: .
       dockerfile: services/context_memory_service/Dockerfile
-    env_file: .env
     environment:
       - CONTEXT_MEMORY_DB=/data/context_memory.db
-      - MCP_SERVER_URL=${MCP_DEFAULT_BASE_URL:-http://host.docker.internal:7100}
+      - LLM_GATEWAY_URL=http://llm-gateway-service:8001
+      - LLM_GATEWAY_BEARER=${LLM_GATEWAY_BEARER:-}
+      - SUMMARIZER_MODEL_ALIAS=${SUMMARIZER_MODEL_ALIAS:-mock}
       # M11.a
       - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       - PUBLIC_BASE_URL=${CONTEXT_MEMORY_PUBLIC_URL:-http://host.docker.internal:8002}
@@ -16,13 +31,14 @@ services:
       - "8002:8002"
     volumes:
       - ./data/context_memory:/data
+    depends_on:
+      - llm-gateway-service
 
 
   metrics-ledger-service:
     build:
       context: .
       dockerfile: services/metrics_ledger_service/Dockerfile
-    env_file: .env
     environment:
       - METRICS_LEDGER_DB=/data/metrics_ledger.db
       # M11.a
@@ -37,11 +53,12 @@ services:
     build:
       context: .
       dockerfile: services/context_api_service/Dockerfile
-    env_file: .env
     environment:
 
       - CONTEXT_MEMORY_URL=http://context-memory-service:8002
       - METRICS_LEDGER_URL=http://metrics-ledger-service:8003
+      - LLM_GATEWAY_URL=http://llm-gateway-service:8001
+      - LLM_GATEWAY_BEARER=${LLM_GATEWAY_BEARER:-}
       # M8 — orchestrator dependencies
       - COMPOSER_URL=http://host.docker.internal:3004
       - TOOL_SERVICE_URL=http://host.docker.internal:3002
@@ -69,6 +86,7 @@ services:
       - "8000:8000"
     volumes:
       - ./data/context_api:/data
-
+    depends_on:
+      - llm-gateway-service
       - context-memory-service
       - metrics-ledger-service

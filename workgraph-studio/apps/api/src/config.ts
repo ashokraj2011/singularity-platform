@@ -52,7 +52,8 @@ const envSchema = z.object({
   // dashboard to splice cost/token/governance rollups into the per-run view.
   AUDIT_GOV_URL: z.string().default('http://host.docker.internal:8500'),
 
-  // MCP owns the real LLM provider/model catalog for workflow execution.
+  // MCP owns local execution; the central LLM gateway owns provider/model
+  // routing. Workflow execution passes model aliases through Context Fabric.
   MCP_SERVER_URL: z.string().default('http://localhost:7100'),
   MCP_BEARER_TOKEN: z.string().default('demo-bearer-token-must-be-min-16-chars'),
 

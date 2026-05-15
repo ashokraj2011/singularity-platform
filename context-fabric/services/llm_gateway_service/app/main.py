@@ -1,10 +1,10 @@
 """M33 — LLM Gateway FastAPI app entrypoint.
 
 This is the ONE service in the platform that opens HTTP to provider URLs
-(api.openai.com, api.anthropic.com, openrouter.ai). Every other service
-calls /v1/chat/completions or /v1/embeddings here over HTTP via
-`LLM_GATEWAY_URL`. The only allowed fallback is the `mock` provider; the
-gateway never silently swaps providers on failure.
+declared in the external provider config. Every other service calls
+/v1/chat/completions or /v1/embeddings here over HTTP via `LLM_GATEWAY_URL`.
+The only allowed fallback is the `mock` provider; the gateway never silently
+swaps providers on failure.
 """
 from __future__ import annotations
 

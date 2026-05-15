@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # Allow caller-overrides of provider/model via the request body. When
     # false, the gateway resolves provider/model only from the configured
     # default + model_alias.
-    allow_caller_provider_override: bool = True
+    allow_caller_provider_override: bool = False
 
     class Config:
         env_prefix = ""
@@ -67,7 +67,7 @@ class Settings(BaseSettings):
         self.upstream_timeout_sec = int(env.get("UPSTREAM_TIMEOUT_SEC", str(self.upstream_timeout_sec)))
         self.gateway_bearer = env.get("LLM_GATEWAY_BEARER", "")
         self.allow_caller_provider_override = (
-            env.get("ALLOW_CALLER_PROVIDER_OVERRIDE", "true").lower() == "true"
+            env.get("ALLOW_CALLER_PROVIDER_OVERRIDE", "false").lower() == "true"
         )
 
     def credential_for(self, provider: str) -> Optional[str]:

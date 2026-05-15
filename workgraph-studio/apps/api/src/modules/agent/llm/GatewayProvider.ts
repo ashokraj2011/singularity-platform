@@ -45,12 +45,9 @@ export class GatewayProvider implements LLMProvider {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        // Pass `model` through verbatim; gateway resolves provider from it
-        // via the model alias catalog or directly when caller-override is
-        // allowed. The MCP_GATEWAY shim used to pass an opaque string here;
-        // post-M33 we prefer aliases (`model_alias=fast` etc.) but keep the
-        // raw model field for backwards compatibility.
-        model: request.model,
+        // The legacy Agent.model column is treated as a curated gateway alias.
+        // Raw provider/model overrides are intentionally not sent.
+        model_alias: request.model,
         messages,
         temperature: request.temperature,
         max_output_tokens: request.maxTokens,

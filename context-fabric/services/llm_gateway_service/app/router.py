@@ -30,6 +30,16 @@ from .types import (
 router = APIRouter()
 
 
+def _credentials() -> Dict[str, Optional[str]]:
+    return {
+        "openai":     settings.openai_api_key,
+        "openrouter": settings.openrouter_api_key,
+        "anthropic":  settings.anthropic_api_key,
+        "copilot":    settings.copilot_token,
+        "mock":       "mock",
+    }
+
+
 def _check_auth(authorization: Optional[str]) -> None:
     if not settings.gateway_bearer:
         return  # auth disabled (dev)
@@ -50,6 +60,7 @@ def _resolve_provider_and_model(
     if model_alias:
         try:
             entry = provider_config.resolve_alias(model_alias)
+            provider_config.validate_model_entry(entry, _credentials())
         except provider_config.ProviderConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return entry["provider"], entry["model"], model_alias
@@ -61,15 +72,25 @@ def _resolve_provider_and_model(
         m = model or provider_config.provider_default_model(p)
         if not m:
             raise HTTPException(status_code=400, detail=f"no default model for provider {p}")
+        reasons = provider_config.provider_unready_reasons(p, _credentials().get(p))
+        if reasons:
+            raise HTTPException(status_code=400, detail=f"provider {p} is not ready: {'; '.join(reasons)}")
         return p, m, None
 
-    # No alias and no provider/model: fall back to default alias.
+    # No alias and no provider/model: use the configured default alias. If no
+    # model catalog exists, the only implicit fallback allowed is mock.
     alias = provider_config.default_model_alias()
     if alias:
-        entry = provider_config.resolve_alias(alias)
+        try:
+            entry = provider_config.resolve_alias(alias)
+            provider_config.validate_model_entry(entry, _credentials())
+        except provider_config.ProviderConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         return entry["provider"], entry["model"], alias
     p = provider_config.default_provider()
-    return p, provider_config.provider_default_model(p) or "mock-fast", None
+    if p == "mock":
+        return "mock", provider_config.provider_default_model("mock") or "mock-fast", None
+    raise HTTPException(status_code=400, detail="model_alias is required; no default alias is configured")
 
 
 @router.get("/health")
@@ -80,13 +101,7 @@ def health() -> Dict[str, Any]:
 @router.get("/llm/providers")
 def list_providers(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
     _check_auth(authorization)
-    credentials = {
-        "openai":     settings.openai_api_key,
-        "openrouter": settings.openrouter_api_key,
-        "anthropic":  settings.anthropic_api_key,
-        "copilot":    settings.copilot_token,
-        "mock":       "mock",
-    }
+    credentials = _credentials()
     return {
         "default_provider": provider_config.default_provider(),
         "default_model_alias": provider_config.default_model_alias(),
@@ -99,19 +114,18 @@ def list_providers(authorization: Optional[str] = Header(None)) -> Dict[str, Any
 def list_models(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
     _check_auth(authorization)
     catalog = provider_config._load_catalog()  # noqa: SLF001 — internal helper
-    credentials = {
-        "openai":     settings.openai_api_key,
-        "openrouter": settings.openrouter_api_key,
-        "anthropic":  settings.anthropic_api_key,
-        "copilot":    settings.copilot_token,
-        "mock":       "mock",
-    }
+    credentials = _credentials()
     statuses = {row["name"]: row for row in provider_config.list_provider_status(credentials)}
     enriched = []
     for entry in catalog:
         provider = entry.get("provider")
         status = statuses.get(provider, {})
-        enriched.append({**entry, "ready": status.get("ready", False)})
+        warnings = list(status.get("warnings", []))
+        try:
+            provider_config.validate_model_entry(entry, credentials)
+        except provider_config.ProviderConfigError as exc:
+            warnings.append(str(exc))
+        enriched.append({**entry, "ready": not warnings, "warnings": warnings})
     return {
         "default_model_alias": provider_config.default_model_alias(),
         "models": enriched,
@@ -197,10 +211,8 @@ async def embeddings(
 
     try:
         if provider in ("openai", "openrouter"):
-            # Default embedding model when none specified.
-            emb_model = model or "text-embedding-3-small"
             vectors, tokens = await openai_provider.embed(
-                req.input, provider=provider, resolved_model=emb_model, api_key=credential,
+                req.input, provider=provider, resolved_model=model, api_key=credential,
             )
             dim = len(vectors[0]) if vectors else 0
             return EmbeddingsResponse(

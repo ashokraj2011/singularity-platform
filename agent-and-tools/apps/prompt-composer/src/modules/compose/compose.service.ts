@@ -709,14 +709,15 @@ export const composeService = {
     // 10. Persist PromptAssembly, reusing an unchanged stack when possible.
     // The final prompt hash already includes task text, rendered artifacts,
     // layer content, runtime overrides, and retrieved context.
+    const requestedModelAlias = input.modelOverrides.modelAlias ?? null;
     const cachedAssembly = await prisma.promptAssembly.findFirst({
       where: {
         agentTemplateId: input.agentTemplateId,
         agentBindingId: input.agentBindingId ?? null,
         capabilityId: capabilityId ?? null,
         finalPromptHash,
-        modelProvider: input.modelOverrides.provider ?? null,
-        modelName: input.modelOverrides.model ?? null,
+        modelProvider: null,
+        modelName: requestedModelAlias,
       },
       orderBy: { createdAt: "desc" },
     });
@@ -735,8 +736,8 @@ export const composeService = {
         capabilityId: capabilityId ?? null,
         workflowExecutionId: input.workflowContext.instanceId,
         promptProfileId: template.basePromptProfileId ?? null,
-        modelProvider: input.modelOverrides.provider ?? null,
-        modelName: input.modelOverrides.model ?? null,
+        modelProvider: null,
+        modelName: requestedModelAlias,
         finalPromptHash,
         finalPromptPreview: finalPrompt.slice(0, 4000),
         estimatedInputTokens,
@@ -831,8 +832,6 @@ export const composeService = {
       system_prompt: finalPrompt,
       model_overrides: {
         modelAlias: input.modelOverrides.modelAlias,
-        provider: input.modelOverrides.provider,
-        model: input.modelOverrides.model,
         temperature: input.modelOverrides.temperature,
         maxOutputTokens: input.modelOverrides.maxOutputTokens,
       },
@@ -878,8 +877,8 @@ export const composeService = {
       },
       modelUsage: {
         modelAlias: String(modelUsage.modelAlias ?? cfResp.usage?.modelAlias ?? input.modelOverrides.modelAlias ?? ""),
-        provider: String(modelUsage.provider ?? cfResp.usage?.provider ?? input.modelOverrides.provider ?? "unknown"),
-        model: String(modelUsage.model ?? cfResp.usage?.model ?? input.modelOverrides.model ?? "unknown"),
+        provider: String(modelUsage.provider ?? cfResp.usage?.provider ?? "unknown"),
+        model: String(modelUsage.model ?? cfResp.usage?.model ?? "unknown"),
         input_tokens: Number(modelUsage.inputTokens ?? cfResp.usage?.inputTokens ?? 0),
         output_tokens: Number(modelUsage.outputTokens ?? cfResp.usage?.outputTokens ?? 0),
         total_tokens: Number(modelUsage.totalTokens ?? cfResp.usage?.totalTokens ?? 0),

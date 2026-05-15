@@ -27,7 +27,8 @@ class ToolDescriptor(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    # One of `model_alias` or `(provider + model)` must be set.
+    # Normal callers must pass `model_alias`. Raw provider/model is accepted
+    # only when ALLOW_CALLER_PROVIDER_OVERRIDE=true, which defaults false.
     model_alias: Optional[str] = None
     provider:    Optional[str] = None
     model:       Optional[str] = None
@@ -66,7 +67,8 @@ class ChatCompletionResponse(BaseModel):
 
 
 class EmbeddingsRequest(BaseModel):
-    # One of `model_alias` or `(provider + model)`; falls back to default.
+    # Normal callers must pass `model_alias` or rely on the gateway's default
+    # alias. Raw provider/model is gated by ALLOW_CALLER_PROVIDER_OVERRIDE.
     model_alias: Optional[str] = None
     provider:    Optional[str] = None
     model:       Optional[str] = None

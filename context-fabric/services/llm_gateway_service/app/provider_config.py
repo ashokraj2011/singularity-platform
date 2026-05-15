@@ -75,7 +75,8 @@ def _load_catalog() -> List[Dict[str, Any]]:
 
 
 def default_provider() -> str:
-    return _load_providers().get("defaultProvider", "mock")
+    provider = str(_load_providers().get("defaultProvider", "mock")).lower()
+    return provider if provider in SUPPORTED_PROVIDERS else "mock"
 
 
 def default_model_alias() -> Optional[str]:
@@ -92,17 +93,20 @@ def provider_settings(provider: str) -> Dict[str, Any]:
 
 
 def provider_base_url(provider: str) -> str:
-    s = provider_settings(provider)
-    if "baseUrl" in s:
-        return s["baseUrl"]
-    # Hard-coded fallbacks match what the mcp-server defaults to.
-    return {
-        "openai":     "https://api.openai.com/v1",
-        "openrouter": "https://openrouter.ai/api/v1",
-        "anthropic":  "https://api.anthropic.com",
-        "copilot":    "https://api.githubcopilot.com",
-        "mock":       "",
-    }.get(provider.lower(), "")
+    """Return the configured provider base URL.
+
+    Non-mock providers must declare `baseUrl` in the external provider config.
+    There are intentionally no hard-coded OpenAI/Anthropic/OpenRouter/Copilot
+    URL fallbacks here.
+    """
+    p = provider.lower()
+    if p == "mock":
+        return ""
+    s = provider_settings(p)
+    base_url = str(s.get("baseUrl") or "").strip()
+    if not base_url:
+        raise ProviderConfigError(f"provider {p} is missing baseUrl in provider config")
+    return base_url
 
 
 def provider_default_model(provider: str) -> str:
@@ -115,7 +119,10 @@ def is_provider_allowed(provider: str) -> bool:
     if p not in SUPPORTED_PROVIDERS:
         return False
     settings_block = _load_providers()
-    pr = settings_block.get("providers", {}).get(p, {})
+    providers = settings_block.get("providers", {})
+    pr = providers.get(p, {})
+    if p != "mock" and not pr:
+        return False
     if pr.get("enabled") is False:
         return False
     allowed = settings_block.get("allowedProviders")
@@ -124,16 +131,41 @@ def is_provider_allowed(provider: str) -> bool:
     return True
 
 
-def provider_ready(provider: str, credential: Optional[str]) -> bool:
-    """A provider is `ready` only if it is allowed AND a credential is present
-    (the mock provider has no key requirement).
-    """
+def provider_unready_reasons(provider: str, credential: Optional[str]) -> List[str]:
     p = provider.lower()
+    reasons: List[str] = []
     if not is_provider_allowed(p):
-        return False
+        reasons.append("Provider blocked, disabled, unsupported, or missing from external config")
+        return reasons
     if p == "mock":
-        return True
-    return bool(credential)
+        return reasons
+    settings_block = provider_settings(p)
+    if not str(settings_block.get("baseUrl") or "").strip():
+        reasons.append("Missing baseUrl in external provider config")
+    if not str(settings_block.get("credentialEnv") or "").strip():
+        reasons.append("Missing credentialEnv in external provider config")
+    if not credential:
+        reasons.append("Missing credential")
+    return reasons
+
+
+def provider_ready(provider: str, credential: Optional[str]) -> bool:
+    """Ready means explicitly configured, allowed, baseUrl-present, and
+    credential-present. Mock has no credential/baseUrl requirement.
+    """
+    return len(provider_unready_reasons(provider, credential)) == 0
+
+
+def validate_model_entry(entry: Dict[str, Any], credentials: Dict[str, Optional[str]]) -> None:
+    provider = str(entry.get("provider") or "").lower()
+    model = str(entry.get("model") or "").strip()
+    if provider not in SUPPORTED_PROVIDERS:
+        raise ProviderConfigError(f"unsupported provider for alias {entry.get('id')}: {provider}")
+    if not model:
+        raise ProviderConfigError(f"model alias {entry.get('id')} is missing model")
+    reasons = provider_unready_reasons(provider, credentials.get(provider))
+    if reasons:
+        raise ProviderConfigError(f"model alias {entry.get('id')} is not ready: {'; '.join(reasons)}")
 
 
 def list_provider_status(credentials: Dict[str, Optional[str]]) -> List[Dict[str, Any]]:
@@ -141,14 +173,13 @@ def list_provider_status(credentials: Dict[str, Optional[str]]) -> List[Dict[str
     for p in SUPPORTED_PROVIDERS:
         cred = credentials.get(p)
         ready = provider_ready(p, cred)
+        reasons = provider_unready_reasons(p, cred)
         out.append({
             "name": p,
             "ready": ready,
             "allowed": is_provider_allowed(p),
             "default_model": provider_default_model(p) or None,
-            "warnings": [] if ready else [
-                "Provider blocked by external config" if not is_provider_allowed(p) else "Missing credential",
-            ],
+            "warnings": [] if ready else reasons,
         })
     return out
 

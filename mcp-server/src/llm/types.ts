@@ -14,8 +14,11 @@ export interface ToolDescriptorForLlm {
 }
 
 export interface LlmRequest {
-  provider: string;
-  model: string;
+  model_alias?: string;
+  // Provider/model are retained only as audit metadata on the MCP side. The
+  // gateway call must use model_alias or its configured default alias.
+  provider?: string;
+  model?: string;
   messages: ChatMessage[];
   tools?: ToolDescriptorForLlm[];
   temperature?: number;
@@ -41,4 +44,7 @@ export interface LlmResponse {
   input_tokens: number;
   output_tokens: number;
   latency_ms: number;
+  provider?: string;
+  model?: string;
+  model_alias?: string;
 }

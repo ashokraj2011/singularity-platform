@@ -4,7 +4,7 @@
 [![Status: Active development](https://img.shields.io/badge/status-active-brightgreen.svg)](#)
 [![Services: 11+](https://img.shields.io/badge/services-11%2B-blue.svg)](#service-inventory)
 
-An enterprise AI-agent platform composed of independently-deployable applications: identity, agent registry, prompt composition, LLM cost optimization, workflow orchestration, an MCP execution engine with embedded LLM gateway, a federated lookup + receipt + event-bus platform layer, and a unified portal that wraps them all.
+An enterprise AI-agent platform composed of independently-deployable applications: identity, agent registry, prompt composition, LLM cost optimization, workflow orchestration, an MCP execution engine, a single central LLM gateway, a federated lookup + receipt + event-bus platform layer, and a unified portal that wraps them all.
 
 > **Published as a monorepo**: `https://github.com/ashokraj2011/singularity-platform`
 
@@ -27,7 +27,7 @@ cd singularity-platform
 ### 2. Bring up — one command
 ```bash
 ./singularity.sh config init --profile office-laptop
-./singularity.sh config mcp-catalog --default-alias balanced
+./singularity.sh config mcp-catalog --default-alias mock
 ./singularity.sh config write
 ./singularity.sh up
 ./singularity.sh doctor
@@ -210,9 +210,9 @@ export CONTEXT_FABRIC_URL="http://localhost:8000"
 export MCP_SERVER_URL="http://localhost:7100"
 export MCP_BEARER_TOKEN="demo-bearer-token-must-be-min-16-chars"
 
-# LLM mock by default — no API keys required
-export LLM_PROVIDER="mock"
-export LLM_MODEL="mock-fast"
+# LLM gateway mock by default — no API keys required
+export LLM_GATEWAY_URL="http://localhost:8001"
+export WORKBENCH_DEFAULT_MODEL_ALIAS="mock"
 EOF
 
 source .env.local
@@ -305,7 +305,7 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
 | **M11.e** Event Bus | `event_outbox` + `event_subscriptions` + `event_deliveries` in 5 publishers (IAM Python, workgraph TS, agent-runtime TS, tool-service TS, agent-service TS); Postgres LISTEN/NOTIFY dispatcher with 30s safety sweep, HMAC, 5-attempt retry; workgraph receiver at `POST /api/events/incoming`; canonical envelope shape across all publishers | Subscribe to `*.created` → trigger from any service → workgraph `event_log` captures with `incoming.<event_name>` |
 | **M11 follow-up** OTel + Jaeger | Auto-instrumentation in workgraph-api (TS), context-api (Python), tool-service (TS), agent-runtime (TS), agent-service (TS); Jaeger all-in-one in `platform-registry` compose; W3C `traceparent` propagated automatically | Single trace `1cc8ef8ac9a1207b` had **59 spans across 4 services**. UI: `http://localhost:16686` |
 | **M11 follow-up** Service-token auto-mint | IAM `POST /api/v1/auth/service-token` + workgraph + cf bootstrap + `IAM_BOOTSTRAP_USERNAME/PASSWORD` env. Replaces 60-min admin-JWT-passing-via-env. | Both services start with `IAM_SERVICE_TOKEN=""`, mint 30-day tokens on first call |
-| **M11 follow-up** Embedded LLM gateway in MCP | LLM-agnostic provider router inside `mcp-server`: OpenAI Chat Completions, Anthropic Messages API (with tool-calling translation), GitHub Copilot Headless. Provider keys live in operator's local env. New `GET /llm/providers` route surfaces what's configured. | All 4 providers route correctly; missing keys produce clean errors. Set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `COPILOT_TOKEN` in env to use real providers. |
+| **M11 follow-up / M33 hardened** Central LLM gateway | `context-fabric/services/llm_gateway_service` is the only provider-calling service. MCP, Workgraph, Prompt Composer, Agent Runtime, and Context Memory send `model_alias` requests to `LLM_GATEWAY_URL`. | Missing non-mock provider config fails closed. `ALLOW_CALLER_PROVIDER_OVERRIDE=false` by default. The only implicit fallback is explicit mock mode. |
 
 ---
 
@@ -362,7 +362,7 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
 | **singularity-iam-service** | Identity, orgs, teams, roles, capabilities, skills, JWT, MCP server registry, service-token mint, event bus | Python · FastAPI · Postgres | `8100`, postgres `5433` |
 | **agent-and-tools** | Agent definitions, tool registry, prompt assembly, agent CRUD UI; per-service event bus + OTel | TypeScript monorepo · Express · Next.js · Prisma · Postgres+pgvector | `3000–3004`, postgres `5432` |
 | **context-fabric** | LLM cost optimizer (context compaction + token-saving ledger), `/execute` orchestrator, `/receipts` join, OTel | Python · 4× FastAPI · SQLite | `8000–8003` |
-| **mcp-server** | Per-tenant MCP execution engine + WS bridge + **embedded LLM gateway** (OpenAI / Anthropic / Copilot Headless / mock). Customer-deployed, holds its own provider keys. | TypeScript · Express · WebSocket | `7100` |
+| **mcp-server** | Per-tenant MCP execution engine + WS bridge. Customer-deployed, owns local tools/AST/branches, and calls the central LLM gateway by model alias. | TypeScript · Express · WebSocket | `7100` |
 | **workgraph-studio** | Visual DAG designer + workflow runtime, Blueprint Workbench stage loop, federated `/api/lookup/*`, snapshot layer, unified `/api/receipts`, event bus + receiver, OTel | React + ReactFlow + Zustand · Express + Prisma · MinIO | `5174` (web) / `5176` (workbench) / `8080` (api), postgres `5434`, minio `9000-9001` |
 | **platform-registry** | Service + Contract Registry: every service self-registers on startup with capabilities + OpenAPI/event/node contracts | TypeScript · Express · Postgres | `8090`, postgres `5435` |
 | **UserAndCapabillity** | Visual admin SPA for IAM | React 19 · Vite · Tailwind · Radix · Zustand | `5175` |
@@ -414,7 +414,7 @@ A useful mental model when deciding "which app should this feature live in?" —
 - Docker Desktop (or Docker Engine + the Compose v2 plugin)
 - 8 GB+ RAM available to Docker
 - Free host ports: `3000–3004`, `5174–5176`, `5180`, `5432–5434`, `8000–8003`, `8080`, `8100`, `9000–9001`
-- Optional: `OPENROUTER_API_KEY` in `context-fabric/.env` for real LLM calls (otherwise uses `mock` provider)
+- Optional: explicit central LLM gateway provider config. Fresh local setup is mock-only; office setup is Copilot-only.
 
 ### Option A — master compose (one shot)
 
@@ -469,11 +469,11 @@ It configures:
 - Database URLs for IAM, agent-and-tools, and Workgraph.
 - IAM vs pseudo-IAM endpoints.
 - Service endpoints for Workgraph, prompt-composer, context-fabric, agent-runtime, tool-service, agent-service, and MCP.
-- LLM provider policy, model aliases, and keys for OpenAI, OpenRouter, Anthropic, Copilot, Ollama, or mock mode. Provider policy lives in `.singularity/llm-providers.json`; secrets stay in generated env files.
-- Office-safe Copilot-only mode. `./singularity.sh config office-copilot-only` blanks OpenAI/OpenRouter/Anthropic/Ollama access in generated env files, writes Copilot-only MCP provider and model catalog files, and fences MCP to the Copilot provider.
+- LLM provider policy and model aliases for the central gateway. Provider policy lives in `.singularity/llm-providers.json`; secrets are passed only to the `llm-gateway` service.
+- Office-safe Copilot-only mode. `./singularity.sh config office-copilot-only` blanks OpenAI/OpenRouter/Anthropic/Ollama access in generated env files, writes Copilot-only provider and model catalog files, and fences the gateway to the Copilot provider.
 - Default/local MCP runtime URL, bearer token, public URL, sandbox root, AST index path, and local work-branch defaults. MCP does **not** need to belong to a capability; capability-specific MCP registration is advanced-only.
-- MCP-owned model aliases. Workflows choose aliases; MCP resolves aliases to real provider/model credentials.
-- Balanced token budget defaults. Workgraph owns run budgets, Prompt Composer owns layer/retrieval budgeting, Context Fabric enforces execution limits, and MCP owns provider/model routing.
+- Gateway-owned model aliases. Workflows choose aliases; MCP forwards aliases and receives resolved provider/model in receipts.
+- Balanced token budget defaults. Workgraph owns run budgets, Prompt Composer owns layer/retrieval budgeting, Context Fabric enforces execution limits, and the central gateway owns provider/model routing.
 - UI env files for the portal, Workgraph web, IAM admin, and agent-and-tools web.
 
 Common commands:
@@ -481,11 +481,9 @@ Common commands:
 ```bash
 ./singularity.sh config init --profile office-laptop
 ./singularity.sh config interactive
-./singularity.sh config set llm.openai.apiKey "$OPENAI_API_KEY"
-./singularity.sh config set llm.provider openai
 ./singularity.sh config office-copilot-only
 ./singularity.sh config mcp --base-url http://localhost:7100 --sandbox-root /path/to/repo
-./singularity.sh config mcp-catalog --default-alias balanced
+./singularity.sh config mcp-catalog --default-alias mock
 ./singularity.sh config providers
 ./singularity.sh config models
 ./singularity.sh config show
@@ -506,16 +504,16 @@ Office laptop / Copilot-only setup:
 cd mcp-server && npm run build && npx singularity-mcp doctor
 ```
 
-This mode is intentionally strict: generated env files leave `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`, and `OLLAMA_BASE_URL` blank. Workflows still choose model aliases, but MCP exposes only the `copilot` alias.
+This mode is intentionally strict: generated env files leave `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`, and `OLLAMA_BASE_URL` blank. Workflows still choose model aliases, but the gateway exposes only the `copilot` alias.
 
-### MCP LLM provider configuration
+### Single LLM gateway configuration
 
-MCP owns provider/model routing for workflow execution. Workgraph and Context Fabric pass a model alias; MCP validates that alias against local config, resolves the provider/model, and makes the provider call. This avoids scattering OpenAI/Anthropic/OpenRouter/Copilot decisions across services.
+`context-fabric/services/llm_gateway_service` owns provider/model routing for workflow execution. Workgraph, Context Fabric, Prompt Composer, Context Memory, Agent Runtime, and MCP pass a model alias to `LLM_GATEWAY_URL`; only the gateway can hold provider credentials or open provider URLs. Raw provider/model caller overrides are disabled by default with `ALLOW_CALLER_PROVIDER_OVERRIDE=false`.
 
-MCP reads two local JSON files:
+The gateway reads two local JSON files:
 
 - `.singularity/llm-providers.json` — provider policy: allowlist, default provider/model, base URLs, credential env names, and enabled/disabled flags.
-- `.singularity/mcp-models.json` — approved workflow-facing model aliases. Workflows choose aliases; MCP resolves aliases to real providers/models.
+- `.singularity/mcp-models.json` — approved workflow-facing model aliases. Workflows choose aliases; the gateway resolves aliases to real providers/models.
 
 These generated files are intentionally ignored by git because they are local setup state. Checked-in examples live under:
 
@@ -525,17 +523,13 @@ These generated files are intentionally ignored by git because they are local se
 The provider config is selected with:
 
 ```bash
-MCP_LLM_PROVIDER_CONFIG_PATH=.singularity/llm-providers.json
-# or, for automation:
-MCP_LLM_PROVIDER_CONFIG_JSON='{"defaultProvider":"copilot",...}'
+LLM_PROVIDER_CONFIG_PATH=/etc/singularity/llm-providers.json
+LLM_MODEL_CATALOG_PATH=/etc/singularity/mcp-models.json
 ```
 
-Secrets still stay in generated env files, not JSON:
+Secrets stay in generated env files, not JSON, and are passed only to `llm-gateway`:
 
 ```bash
-OPENAI_API_KEY=...
-OPENROUTER_API_KEY=...
-ANTHROPIC_API_KEY=...
 COPILOT_TOKEN=...
 ```
 
@@ -565,8 +559,8 @@ Example Copilot-only provider config:
 Useful commands:
 
 ```bash
-# Generate normal provider/model config.
-./singularity.sh config mcp-catalog --default-alias balanced
+# Generate local mock-only provider/model config.
+./singularity.sh config mcp-catalog --default-alias mock
 
 # Generate strict office mode: only Copilot is exposed.
 ./singularity.sh config office-copilot-only
@@ -591,7 +585,7 @@ curl http://localhost:7100/llm/providers
 curl http://localhost:7100/llm/models
 ```
 
-In office Copilot-only mode, `/llm/providers` should report `copilot` as allowed/enabled and `openai`, `openrouter`, `anthropic`, and `mock` as disabled or not allowed. If a workflow tries to force a disabled provider, MCP rejects it before making any provider call.
+In office Copilot-only mode, `/llm/providers` should report `copilot` as allowed/enabled and `openai`, `openrouter`, `anthropic`, and `mock` as disabled or not allowed. If a workflow tries to force a disabled provider or raw provider/model, the gateway rejects it before any provider call.
 
 ### Operator command center and guided delivery
 
@@ -741,7 +735,7 @@ AGENT_NODE=$(curl -sS -X POST http://localhost:8080/api/workflow-templates/$WF_I
       \"agentId\":\"$AGENT_ID\",
       \"agentTemplateId\":\"$TEMPLATE_ID\",
       \"task\":\"Audit {{instance.vars.module}} for OWASP issues.\",
-      \"modelOverrides\":{\"provider\":\"mock\",\"model\":\"mock-fast\"},
+      \"modelOverrides\":{\"modelAlias\":\"mock\"},
       \"contextPolicy\":{\"optimizationMode\":\"medium\"},
       \"toolDiscovery\":{\"enabled\":false}
     }

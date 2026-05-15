@@ -93,6 +93,17 @@ run_grep_check "no service opens api.openai.com / api.anthropic.com / openrouter
   'api\.openai\.com|api\.anthropic\.com|openrouter\.ai|api\.cohere\.|generativelanguage\.googleapis\.com|api\.githubcopilot\.com' \
   || failures=$((failures + 1))
 
+if grep -En 'api\.openai\.com|api\.anthropic\.com|openrouter\.ai|api\.githubcopilot\.com|text-embedding-3-small' \
+  context-fabric/services/llm_gateway_service/app/provider_config.py \
+  context-fabric/services/llm_gateway_service/app/router.py >/tmp/sg-gateway-fallbacks.$$ 2>/dev/null; then
+  red "FAIL: llm-gateway contains hard-coded provider URL/model fallbacks"
+  cat /tmp/sg-gateway-fallbacks.$$ >&2
+  failures=$((failures + 1))
+else
+  green "OK: llm-gateway has no hard-coded provider URL/model fallback"
+fi
+rm -f /tmp/sg-gateway-fallbacks.$$
+
 header "2. Banned provider credentials"
 run_grep_check "no provider API keys are read outside the gateway" \
   'OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|COPILOT_TOKEN|GOOGLE_API_KEY|COHERE_API_KEY' \
@@ -102,6 +113,17 @@ header "3. Banned provider-router env vars"
 run_grep_check "no service still routes by LLM_PROVIDER / EMBEDDING_PROVIDER / SUMMARIZER_PROVIDER / CAPSULE_COMPILE_PROVIDER / DEFAULT_MODEL_PROVIDER" \
   '\b(LLM_PROVIDER|EMBEDDING_PROVIDER|SUMMARIZER_PROVIDER|CAPSULE_COMPILE_PROVIDER|DEFAULT_MODEL_PROVIDER)\b' \
   || failures=$((failures + 1))
+
+header "3b. Caller override defaults"
+if grep -En 'allow_caller_provider_override:\s*bool\s*=\s*True|ALLOW_CALLER_PROVIDER_OVERRIDE",\s*"true"' \
+  context-fabric/services/llm_gateway_service/app/config.py >/tmp/sg-caller-override.$$ 2>/dev/null; then
+  red "FAIL: caller provider/model override defaults to true"
+  cat /tmp/sg-caller-override.$$ >&2
+  failures=$((failures + 1))
+else
+  green "OK: caller provider/model override defaults false"
+fi
+rm -f /tmp/sg-caller-override.$$
 
 header "4. docker-compose: provider keys appear only on llm-gateway"
 # Inspect each service block in the merged compose config. Any service other
@@ -129,6 +151,56 @@ if command -v docker >/dev/null 2>&1 && docker compose config >/dev/null 2>&1; t
 else
   echo "(skipped — docker compose not available)"
 fi
+
+header "5. Local .singularity provider policy"
+python3 - <<'PY' || failures=$((failures + 1))
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+allowed = {"mock", "copilot"}
+failures: list[str] = []
+
+providers_path = Path(".singularity/llm-providers.json")
+if providers_path.exists():
+    data = json.loads(providers_path.read_text())
+    default = str(data.get("defaultProvider", "")).lower()
+    if default and default not in allowed:
+        failures.append(f"{providers_path}: defaultProvider={default} is not mock/copilot")
+    allowlist = {str(x).lower() for x in data.get("allowedProviders", [])}
+    disallowed = sorted(allowlist - allowed)
+    if disallowed:
+        failures.append(f"{providers_path}: allowedProviders contains {disallowed}")
+    providers = data.get("providers", {})
+    if isinstance(providers, dict):
+        enabled = sorted(
+            name for name, body in providers.items()
+            if str(name).lower() not in allowed
+            and isinstance(body, dict)
+            and body.get("enabled") is not False
+        )
+        if enabled:
+            failures.append(f"{providers_path}: enabled non-office providers {enabled}")
+
+catalog_path = Path(".singularity/mcp-models.json")
+if catalog_path.exists():
+    catalog = json.loads(catalog_path.read_text())
+    if isinstance(catalog, list):
+        disallowed_models = [
+            str(row.get("id"))
+            for row in catalog
+            if isinstance(row, dict) and str(row.get("provider", "")).lower() not in allowed
+        ]
+        if disallowed_models:
+            failures.append(f"{catalog_path}: aliases outside mock/copilot {disallowed_models}")
+
+if failures:
+    for failure in failures:
+        print(f"FAIL: {failure}")
+    raise SystemExit(1)
+print("OK: local .singularity config is mock-only or Copilot-only")
+PY
 
 echo
 if (( failures > 0 )); then

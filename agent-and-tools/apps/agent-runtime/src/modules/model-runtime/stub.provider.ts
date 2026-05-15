@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import { ModelProvider, ModelRunInput, ModelRunOutput } from "./model-provider.interface";
 
 /**
- * Deterministic stub provider used until real OpenAI/OpenRouter providers are wired.
+ * Deterministic stub provider used by legacy receipt-only runtime paths.
  * Inspects the prompt for `<TOOL_CALL>name|json</TOOL_CALL>` markers and returns those
  * as toolCalls. Otherwise returns a canned analysis text.
  */
@@ -25,8 +25,8 @@ export const stubProvider: ModelProvider = {
     return {
       text:
         "## Summary\n" +
-        "Stub model response. Replace `stub` with `openai` or `openrouter` and provide an API key " +
-        "to get real analysis.\n\n" +
+        "Stub model response. Governed model execution must go through prompt-composer, " +
+        "context-fabric, and the central LLM gateway.\n\n" +
         "## Evidence Used\n" +
         "(none — stub provider)\n",
       usage: { inputTokens: input.messages.reduce((n, m) => n + m.content.length / 4, 0) | 0, outputTokens: 50 },

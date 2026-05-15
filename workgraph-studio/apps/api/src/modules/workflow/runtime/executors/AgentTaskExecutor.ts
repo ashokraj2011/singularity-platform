@@ -37,7 +37,7 @@ type GovernanceMode = NonNullable<ExecuteRequest['governance_mode']>
  *     phaseId:           string,
  *     artifacts:         ComposeArtifact[],
  *     overrides:         { additionalLayers, systemPromptAppend, extraContext },
- *     modelOverrides:    { provider, model, temperature, maxOutputTokens },
+ *     modelOverrides:    { modelAlias, temperature, maxOutputTokens },
  *     contextPolicy:     { optimizationMode, maxContextTokens, compareWithRaw },
  *     limits:            { maxSteps, timeoutSec },
  *     previewOnly:       boolean,
@@ -155,15 +155,17 @@ export async function activateAgentTask(
     : workflowDefaultModelAlias
       ? 'workflow default'
       : legacyModel
-        ? 'advanced provider/model override'
-        : 'mcp fallback default'
-  const modelOverrides = {
+        ? 'legacy alias'
+        : 'gateway default alias'
+  const modelOverrides: Record<string, unknown> = {
     maxOutputTokens: 1200,
     ...((cfg.modelOverrides as Record<string, unknown> | undefined) ?? {}),
     ...(workflowDefaultModelAlias ? { modelAlias: workflowDefaultModelAlias } : {}),
     ...(nodeModelAlias && nodeModelAlias !== '__workflow_default__' ? { modelAlias: nodeModelAlias } : {}),
-    ...(legacyModel && !nodeModelAlias ? { model: legacyModel } : {}),
+    ...(legacyModel && !nodeModelAlias && !workflowDefaultModelAlias ? { modelAlias: legacyModel } : {}),
   }
+  delete modelOverrides.provider
+  delete modelOverrides.model
   const standardMaxTokens = configNumber('maxTokens')
   if (standardMaxTokens) modelOverrides.maxOutputTokens = standardMaxTokens
   const contextPolicy = {

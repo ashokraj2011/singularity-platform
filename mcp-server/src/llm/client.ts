@@ -11,7 +11,6 @@ import { config } from "../config";
 import { log } from "../shared/log";
 import {
   SUPPORTED_PROVIDERS,
-  configuredDefaultProvider,
   isProviderAllowedByConfig,
   loadProviderConfig,
   providerDefaultModel,
@@ -25,8 +24,6 @@ export function isProviderAllowed(provider: string): boolean {
 
 
 interface GatewayChatRequest {
-  provider?: string;
-  model?: string;
   model_alias?: string;
   messages: LlmRequest["messages"];
   tools?: LlmRequest["tools"];
@@ -64,7 +61,7 @@ async function callGateway(body: GatewayChatRequest): Promise<GatewayChatRespons
       output_tokens: Math.max(1, Math.ceil(reply.length / 4)),
       latency_ms: 1,
       provider: "mock",
-      model: body.model || "mock-fast",
+      model: body.model_alias || "mock-fast",
       model_alias: body.model_alias,
     };
   }
@@ -85,14 +82,9 @@ async function callGateway(body: GatewayChatRequest): Promise<GatewayChatRespons
 
 
 export async function llmRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promise<LlmResponse> {
-  const provider = (req.provider || configuredDefaultProvider()).toLowerCase();
-  if (!isProviderAllowed(provider)) {
-    throw new Error(`LLM provider is disabled by MCP provider config: ${provider}`);
-  }
   const start = Date.now();
   const result = await callGateway({
-    provider,
-    model: req.model,
+    model_alias: req.model_alias,
     messages: req.messages,
     tools: req.tools,
     temperature: req.temperature,
@@ -110,6 +102,9 @@ export async function llmRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promi
     input_tokens: result.input_tokens,
     output_tokens: result.output_tokens,
     latency_ms: result.latency_ms || (Date.now() - start),
+    provider: result.provider,
+    model: result.model,
+    model_alias: result.model_alias,
   };
 }
 

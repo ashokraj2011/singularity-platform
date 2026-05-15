@@ -33,10 +33,6 @@ export type FinishReason = "stop" | "tool_call" | "length" | "error";
 export interface ChatCompletionRequest {
   /** Preferred — pick a curated alias from .singularity/mcp-models.json. */
   model_alias?: string;
-  /** Escape hatch — direct provider+model selection. The gateway can be
-   *  configured to reject these via ALLOW_CALLER_PROVIDER_OVERRIDE=false. */
-  provider?: string;
-  model?: string;
 
   messages: ChatMessage[];
   tools?: ToolDescriptor[];
@@ -66,8 +62,6 @@ export interface ChatCompletionResponse {
 
 export interface EmbeddingsRequest {
   model_alias?: string;
-  provider?: string;
-  model?: string;
   input: string[];
   trace_id?: string;
   capability_id?: string;

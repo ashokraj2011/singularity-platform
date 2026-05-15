@@ -148,22 +148,40 @@ jobs:
             nohup npm run dev > "$PWD/../../../logs/agent-runtime.log" 2>&1 &)
 
           # prompt-composer
+          mkdir -p .singularity
+          cat > .singularity/llm-providers.json <<'JSON'
+          {"defaultProvider":"mock","defaultModel":"mock-fast","allowedProviders":["mock"],"providers":{"mock":{"enabled":true,"defaultModel":"mock-fast"}}}
+          JSON
+          cat > .singularity/mcp-models.json <<'JSON'
+          [{"id":"mock","label":"Mock offline","provider":"mock","model":"mock-fast","default":true,"supportsTools":false,"costTier":"mock"}]
+          JSON
+
+          # llm-gateway (mock-only in CI)
+          ( cd context-fabric && LLM_PROVIDER_CONFIG_PATH="$GITHUB_WORKSPACE/.singularity/llm-providers.json" \
+            LLM_MODEL_CATALOG_PATH="$GITHUB_WORKSPACE/.singularity/mcp-models.json" \
+            ALLOW_CALLER_PROVIDER_OVERRIDE=false \
+            nohup python -m uvicorn services.llm_gateway_service.app.main:app --host 0.0.0.0 --port 8001 > "$GITHUB_WORKSPACE/logs/llm-gateway.log" 2>&1 &)
+
+          # prompt-composer
           ( cd agent-and-tools/apps/prompt-composer && DATABASE_URL="$AT_URL" PORT=3004 \
+            LLM_GATEWAY_URL=http://localhost:8001 CAPSULE_COMPILE_MODEL_ALIAS=mock \
             nohup npm run dev > "$PWD/../../../logs/prompt-composer.log" 2>&1 &)
 
-          # mcp-server (mock provider — no LLM key in CI)
+          # mcp-server (central gateway mock alias — no provider key in CI)
           ( cd mcp-server && PORT=7100 \
             MCP_BEARER_TOKEN="demo-bearer-token-must-be-min-16-chars" \
             MCP_SANDBOX_ROOT=/tmp/mcp-sandbox \
             MCP_AST_DB_PATH=/tmp/mcp-sandbox/.mcp-ast.sqlite \
-            LLM_PROVIDER=mock LLM_MODEL=mock-fast \
+            LLM_GATEWAY_URL=http://localhost:8001 \
+            MCP_LLM_PROVIDER_CONFIG_PATH="$GITHUB_WORKSPACE/.singularity/llm-providers.json" \
+            MCP_LLM_MODEL_CATALOG_PATH="$GITHUB_WORKSPACE/.singularity/mcp-models.json" \
             AUDIT_GOV_URL=http://localhost:8500 \
             nohup npm run dev > "$PWD/../logs/mcp-server.log" 2>&1 &)
 
       - name: wait for services
         run: |
           set -e
-          for svc in "audit-gov 8500 /health" "tool-svc 3002 /health" "agent-runtime 3003 /health" "prompt-composer 3004 /health" "mcp-server 7100 /health"; do
+          for svc in "audit-gov 8500 /health" "tool-svc 3002 /health" "agent-runtime 3003 /health" "llm-gateway 8001 /health" "prompt-composer 3004 /health" "mcp-server 7100 /health"; do
             name=$(echo $svc | cut -d' ' -f1)
             port=$(echo $svc | cut -d' ' -f2)
             path=$(echo $svc | cut -d' ' -f3)

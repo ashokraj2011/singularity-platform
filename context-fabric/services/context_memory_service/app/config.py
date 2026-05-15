@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     # gateway resolves the model via its alias catalog.
     llm_gateway_url: str = "http://llm-gateway:8001"
     llm_gateway_bearer: str = ""
-    summarizer_model_alias: str = "fast"
+    summarizer_model_alias: str = "mock"
 
     class Config:
         env_prefix = ""

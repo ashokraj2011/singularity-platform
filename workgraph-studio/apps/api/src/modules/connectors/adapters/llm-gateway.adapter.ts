@@ -17,7 +17,6 @@ import type { ConnectorAdapter, OperationDef } from '../connector-adapter'
 interface LlmGatewayConfig {
   baseUrl: string
   defaultModelAlias?: string
-  defaultModel?: string
   defaultMaxTokens?: number
   defaultTemperature?: number
 }
@@ -72,11 +71,9 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
     }
 
     const modelAlias = (p.modelAlias as string) ?? this.config.defaultModelAlias
-    const model      = (p.model as string)      ?? this.config.defaultModel
 
     const r = await this.client.post('/v1/chat/completions', {
       ...(modelAlias ? { model_alias: modelAlias } : {}),
-      ...(model && !modelAlias ? { model } : {}),
       messages,
       ...(p.temperature !== undefined ? { temperature: p.temperature } : (this.config.defaultTemperature !== undefined ? { temperature: this.config.defaultTemperature } : {})),
       ...(p.maxTokens !== undefined ? { max_output_tokens: p.maxTokens } : (this.config.defaultMaxTokens !== undefined ? { max_output_tokens: this.config.defaultMaxTokens } : {})),
@@ -106,10 +103,8 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
       throw new Error('LLM Gateway embed: `input` must be a non-empty string or string[]')
     }
     const modelAlias = (p.modelAlias as string) ?? this.config.defaultModelAlias
-    const model      = (p.model as string)      ?? this.config.defaultModel
     const r = await this.client.post('/v1/embeddings', {
       ...(modelAlias ? { model_alias: modelAlias } : {}),
-      ...(model && !modelAlias ? { model } : {}),
       input,
       trace_id: `connector-emb-${Date.now()}`,
     })
@@ -132,7 +127,6 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
         params: [
           { key: 'messages', label: 'Messages (JSON array)', type: 'json', required: true },
           { key: 'modelAlias', label: 'Model alias (e.g. fast, balanced, mock)', type: 'string' },
-          { key: 'model', label: 'Raw model name (escape hatch)', type: 'string' },
           { key: 'systemPrompt', label: 'System prompt', type: 'text' },
           { key: 'maxTokens', label: 'Max output tokens', type: 'number' },
           { key: 'temperature', label: 'Temperature', type: 'number' },
@@ -153,7 +147,6 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
         params: [
           { key: 'input', label: 'Input text or string[]', type: 'text', required: true },
           { key: 'modelAlias', label: 'Embeddings alias', type: 'string' },
-          { key: 'model', label: 'Raw embeddings model name', type: 'string' },
         ],
       },
     ]

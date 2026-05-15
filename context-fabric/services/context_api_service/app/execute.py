@@ -817,8 +817,6 @@ async def execute(req: ExecuteRequest):
         ),
         "modelConfig": _strip_nones({
             "modelAlias": req.model_overrides.get("modelAlias") or req.model_overrides.get("model_alias"),
-            "provider": req.model_overrides.get("provider"),
-            "model": req.model_overrides.get("model"),
             "temperature": req.model_overrides.get("temperature"),
             "maxTokens": (
                 req.model_overrides.get("maxOutputTokens")

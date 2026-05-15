@@ -84,8 +84,8 @@ services:
       DATABASE_URL: postgresql://postgres:singularity@postgres:5432/singularity
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
       LOG_LEVEL: info
-      DEFAULT_MODEL_PROVIDER: stub
-      DEFAULT_MODEL_NAME: stub-model
+      AGENT_RUN_FALLBACK_PROVIDER: stub
+      AGENT_RUN_FALLBACK_MODEL: stub-model
       # M11.a — self-register
       PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       PUBLIC_BASE_URL:       ${AGENT_RUNTIME_PUBLIC_URL:-http://host.docker.internal:3003}
@@ -125,20 +125,16 @@ services:
       # M21 — central audit ledger; composer fires events on every compose call.
       AUDIT_GOV_URL:    ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
-      # M25.5.next — mcp-server reachable for LLM-capsule compile. Default
-      # mode is RAW (no LLM call); flip CAPSULE_COMPILE_MODE=LLM to enable.
-      MCP_SERVER_URL:   ${MCP_SERVER_URL:-http://host.docker.internal:7100}
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      # M33 — capsule compile + embeddings use the central LLM gateway only.
+      LLM_GATEWAY_URL:    ${LLM_GATEWAY_URL:-http://host.docker.internal:8001}
+      LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
       CAPSULE_COMPILE_MODE:     ${CAPSULE_COMPILE_MODE:-RAW}
-      CAPSULE_COMPILE_PROVIDER: ${CAPSULE_COMPILE_PROVIDER:-mock}
-      CAPSULE_COMPILE_MODEL:    ${CAPSULE_COMPILE_MODEL:-mock-fast}
+      CAPSULE_COMPILE_MODEL_ALIAS: ${CAPSULE_COMPILE_MODEL_ALIAS:-mock}
+      EMBEDDING_MODEL_ALIAS:       ${EMBEDDING_MODEL_ALIAS:-}
       # M11.a — self-register
       PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       PUBLIC_BASE_URL:       ${PROMPT_COMPOSER_PUBLIC_URL:-http://host.docker.internal:3004}
-    # M25.5.next — composer reaches mcp-server-demo on the host (different
-    # compose stack); host-gateway makes host.docker.internal resolve to the
-    # host's gateway inside the container, so :7100 works through the host
-    # port mapping.
+    # composer reaches the host-side gateway when run as a standalone stack.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

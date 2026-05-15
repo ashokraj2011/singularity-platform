@@ -4,7 +4,6 @@ import { z } from "zod";
 import { config } from "../config";
 import { listConfiguredProviders } from "./client";
 import { AppError } from "../shared/errors";
-import { configuredDefaultProvider } from "./provider-config";
 
 const CatalogEntrySchema = z.object({
   id: z.string().min(1),
@@ -37,11 +36,6 @@ export type ResolvedModelConfig = {
 function providerReady(provider: string): boolean {
   const row = listConfiguredProviders().find(p => p.name === provider.toLowerCase());
   return row?.ready ?? false;
-}
-
-function defaultModelForProvider(provider: string): string {
-  const row = listConfiguredProviders().find(p => p.name === provider.toLowerCase());
-  return row?.default_model || (provider.toLowerCase() === "mock" ? "mock-fast" : "");
 }
 
 function readCatalogSource(): unknown {
@@ -142,64 +136,33 @@ export function resolveModelConfig(input: {
   const alias = input.modelAlias?.trim();
   if (alias) {
     const entry = catalog.entries.find(e => e.id === alias);
-    if (!entry) {
-      throw new AppError(`Unknown MCP model alias: ${alias}`, 400, "MODEL_ALIAS_UNKNOWN", {
-        alias,
-        availableAliases: catalog.entries.map(e => e.id),
-      });
-    }
-    if (!entry.ready) {
-      throw new AppError(`MCP model alias is not ready: ${alias}`, 400, "MODEL_ALIAS_NOT_READY", {
-        alias,
-        warnings: entry.warnings,
-      });
-    }
+    if (!entry) warnings.push(`Alias ${alias} is not present in MCP's display catalog; llm-gateway will validate it.`);
+    if (entry && !entry.ready) warnings.push(...entry.warnings);
     return {
-      modelAlias: entry.id,
-      provider: entry.provider,
-      model: entry.model,
+      modelAlias: alias,
+      provider: "gateway",
+      model: entry?.model ?? alias,
       temperature: input.temperature,
-      maxTokens: input.maxTokens ?? entry.maxOutputTokens,
+      maxTokens: input.maxTokens ?? entry?.maxOutputTokens,
       warnings,
     };
   }
 
   if (input.provider || input.model) {
-    const provider = input.provider ?? configuredDefaultProvider();
-    const ready = providerReady(provider);
-    if (!ready) {
-      throw new AppError(`MCP provider is not ready or not allowed: ${provider}`, 400, "MODEL_PROVIDER_NOT_READY", {
-        provider,
-      });
-    }
-    const model = input.model ?? defaultModelForProvider(provider);
-    if (!model) {
-      throw new AppError(`No model configured for MCP provider: ${provider}`, 400, "MODEL_REQUIRED", {
-        provider,
-      });
-    }
-    return {
-      provider,
-      model,
-      temperature: input.temperature,
-      maxTokens: input.maxTokens,
-      warnings,
-    };
+    throw new AppError("Raw MCP provider/model overrides are disabled; pass modelAlias", 400, "MODEL_ALIAS_REQUIRED", {
+      provider: input.provider,
+      model: input.model,
+    });
   }
 
   const defaultEntry = catalog.entries.find(e => e.default) ?? catalog.entries[0];
-  if (!defaultEntry.ready) {
-    throw new AppError(`Default MCP model alias is not ready: ${defaultEntry.id}`, 400, "MODEL_ALIAS_NOT_READY", {
-      alias: defaultEntry.id,
-      warnings: defaultEntry.warnings,
-    });
-  }
+  if (defaultEntry && !defaultEntry.ready) warnings.push(...defaultEntry.warnings);
   return {
-    modelAlias: defaultEntry.id,
-    provider: defaultEntry.provider,
-    model: defaultEntry.model,
+    modelAlias: defaultEntry?.id,
+    provider: "gateway",
+    model: defaultEntry?.model ?? "gateway-default",
     temperature: input.temperature,
-    maxTokens: input.maxTokens ?? defaultEntry.maxOutputTokens,
+    maxTokens: input.maxTokens ?? defaultEntry?.maxOutputTokens,
     warnings,
   };
 }

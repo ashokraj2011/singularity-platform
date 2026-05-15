@@ -39,7 +39,7 @@ const PLATFORM_CONTEXT = {
     AgentRuntime: 'agent templates, capability runtime assets, tools, prompt profile references, knowledge and learning candidates',
     PromptComposer: 'prompt layers, context plans, citations and prompt assembly receipts',
     ContextFabric: 'execution orchestration, token governor, memory, Context Fabric receipts',
-    MCP: 'local/private files, AST index, local tools, branches, commits and provider/model routing',
+    MCP: 'local/private files, AST index, local tools, branches and commits; LLM calls go through the central gateway',
     AuditGovernance: 'audit events, policy/rate/budget receipts and governance reports',
   },
   operatorWorkflows: [

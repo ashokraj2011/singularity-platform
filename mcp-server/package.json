@@ -1,7 +1,7 @@
 {
   "name": "@singularity/mcp-server",
   "version": "0.1.0",
-  "description": "Reference MCP server for the Singularity platform — runs in the customer VPC, holds provider/tool secrets locally, drives the LLM↔tool agent loop.",
+  "description": "Reference MCP server for the Singularity platform — runs in the customer VPC, holds local tool secrets, drives the LLM↔tool agent loop through the central LLM gateway.",
   "private": true,
   "bin": {
     "singularity-mcp": "./dist/cli/index.js"

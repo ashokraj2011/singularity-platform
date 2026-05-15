@@ -59,16 +59,9 @@ fi
 pg_isready -h localhost -p 5432 >/dev/null 2>&1 || { err "Postgres still not reachable. Start it manually."; exit 1; }
 ok "Postgres on 5432 is up"
 
-# OpenAI key for real LLM responses (Event Horizon + AGENT_TASK)
-OPENAI_KEY="${OPENAI_API_KEY:-}"
-if [ -z "$OPENAI_KEY" ] && [ -f ~/.zshrc ]; then
-  OPENAI_KEY=$(grep "^export OPENAI_API_KEY" ~/.zshrc 2>/dev/null | head -1 | sed -E 's/^export OPENAI_API_KEY="?([^"]+)"?$/\1/')
-fi
-if [ -z "$OPENAI_KEY" ]; then
-  warn "OPENAI_API_KEY not found — Event Horizon chat will fall back to mock LLM"
-else
-  ok "OpenAI key resolved"
-fi
+# LLM calls route through the central gateway. Demo mode is mock-only unless
+# the operator has explicitly reconfigured .singularity for Copilot.
+LLM_GATEWAY_URL="${LLM_GATEWAY_URL:-http://localhost:8001}"
 
 # ── 2. Prep todoapp sandbox ────────────────────────────────────────────────
 if [ ! -d "$SANDBOX/.git" ]; then
@@ -96,9 +89,8 @@ PGPASSWORD=postgres psql -h localhost -p 5432 -U ashokraj -d audit_governance \
   -f audit-governance-service/db/init.sql >/dev/null 2>&1 || \
   warn "audit-gov init.sql had warnings (likely already applied)"
 
-# ── 5. Re-launch mcp-server with real OpenAI + todoapp sandbox ─────────────
-info "swapping mcp-server to OpenAI + todoapp sandbox…"
-# bare-metal launched mcp-server on mock with /workspace — kill it and relaunch
+# ── 5. Re-launch mcp-server with todoapp sandbox + central gateway ─────────
+info "swapping mcp-server to todoapp sandbox + central LLM gateway…"
 lsof -nP -iTCP:7100 -sTCP:LISTEN -t 2>/dev/null | xargs -I{} kill -9 {} 2>/dev/null || true
 sleep 1
 (cd "$ROOT/mcp-server" && nohup env \
@@ -106,29 +98,12 @@ sleep 1
    MCP_BEARER_TOKEN="$MCP_BEARER" \
    MCP_SANDBOX_ROOT="$SANDBOX" \
    MCP_AST_DB_PATH="$SANDBOX/.singularity/mcp-ast.sqlite" \
-   LLM_PROVIDER="${OPENAI_KEY:+openai}" \
-   LLM_PROVIDER="${LLM_PROVIDER:-${OPENAI_KEY:+openai}}" \
-   LLM_MODEL="${OPENAI_KEY:+gpt-4.1}" \
-   OPENAI_API_KEY="$OPENAI_KEY" \
-   OPENAI_DEFAULT_MODEL="${OPENAI_KEY:+gpt-4.1}" \
-   OPENAI_PARALLEL_TOOLS=false \
+   LLM_GATEWAY_URL="$LLM_GATEWAY_URL" \
+   MCP_LLM_PROVIDER_CONFIG_PATH="$ROOT/.singularity/llm-providers.json" \
+   MCP_LLM_MODEL_CATALOG_PATH="$ROOT/.singularity/mcp-models.json" \
    AUDIT_GOV_URL="${AUDIT_GOV_URL:-http://localhost:8500}" \
    MAX_AGENT_STEPS=8 \
    npm run dev > "$LOG_DIR/mcp-server.log" 2>&1 &)
-
-# Fall back to mock if no OpenAI key
-if [ -z "$OPENAI_KEY" ]; then
-  warn "Restarting mcp-server in mock mode (no OpenAI key)"
-  lsof -nP -iTCP:7100 -sTCP:LISTEN -t 2>/dev/null | xargs -I{} kill -9 {} 2>/dev/null || true
-  sleep 1
-  (cd "$ROOT/mcp-server" && nohup env \
-     PORT=7100 MCP_BEARER_TOKEN="$MCP_BEARER" \
-     MCP_SANDBOX_ROOT="$SANDBOX" \
-     MCP_AST_DB_PATH="$SANDBOX/.singularity/mcp-ast.sqlite" \
-     LLM_PROVIDER=mock LLM_MODEL=mock-fast \
-     AUDIT_GOV_URL="${AUDIT_GOV_URL:-http://localhost:8500}" \
-     npm run dev > "$LOG_DIR/mcp-server.log" 2>&1 &)
-fi
 ok "mcp-server relaunched"
 
 # ── 6. Re-launch context-api with IAM bootstrap + writable SQLite paths ────

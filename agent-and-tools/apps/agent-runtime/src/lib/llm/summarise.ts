@@ -14,7 +14,7 @@ import { llmRespond } from "@agentandtools/shared";
 
 const log = { warn: (msg: string) => console.warn(`[summarise] ${msg}`) };
 const TIMEOUT_MS = 30_000;
-const MODEL_ALIAS = process.env.SUMMARISE_MODEL_ALIAS ?? "fast";
+const MODEL_ALIAS = process.env.SUMMARISE_MODEL_ALIAS ?? "mock";
 
 export interface SummariseInput {
   symbolName: string;

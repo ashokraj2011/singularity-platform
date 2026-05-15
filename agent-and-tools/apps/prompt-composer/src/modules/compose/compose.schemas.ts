@@ -49,8 +49,6 @@ export const composeSchema = z.object({
   }).default({ additionalLayers: [] }),
   modelOverrides: z.object({
     modelAlias: z.string().min(1).max(80).optional(),
-    provider: z.string().optional(),
-    model: z.string().optional(),
     temperature: z.number().optional(),
     maxOutputTokens: z.number().int().optional(),
   }).default({}),

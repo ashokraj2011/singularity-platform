@@ -27,7 +27,7 @@ function mockChat(req: ChatCompletionRequest): ChatCompletionResponse {
     output_tokens: approxTokens(reply),
     latency_ms: 1,
     provider: "mock",
-    model: req.model || "mock-fast",
+    model: req.model_alias || "mock-fast",
     model_alias: req.model_alias,
   };
 }
@@ -52,7 +52,7 @@ function mockEmbed(req: EmbeddingsRequest): EmbeddingsResponse {
     embeddings: vectors,
     dim,
     provider: "mock",
-    model: req.model || "mock-embed",
+    model: req.model_alias || "mock-embed",
     model_alias: req.model_alias,
     input_tokens: req.input.reduce((n, t) => n + approxTokens(t), 0),
     latency_ms: 0,

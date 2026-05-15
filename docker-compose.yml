@@ -197,7 +197,7 @@ services:
       # M33 — composer's capsule compiler + embeddings flow through llm-gateway.
       LLM_GATEWAY_URL:    http://llm-gateway:8001
       LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
-      CAPSULE_COMPILE_MODEL_ALIAS: ${CAPSULE_COMPILE_MODEL_ALIAS:-fast}
+      CAPSULE_COMPILE_MODEL_ALIAS: ${CAPSULE_COMPILE_MODEL_ALIAS:-mock}
       EMBEDDING_MODEL_ALIAS:       ${EMBEDDING_MODEL_ALIAS:-}
     ports:
       - "3004:3004"
@@ -251,7 +251,7 @@ services:
       CONTEXT_MEMORY_DB: /data/context_memory.db
       LLM_GATEWAY_URL:    http://llm-gateway:8001
       LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
-      SUMMARIZER_MODEL_ALIAS: ${SUMMARIZER_MODEL_ALIAS:-fast}
+      SUMMARIZER_MODEL_ALIAS: ${SUMMARIZER_MODEL_ALIAS:-mock}
     ports:
       - "8002:8002"
     volumes:
@@ -327,7 +327,7 @@ services:
       LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
       # When ALLOW_CALLER_PROVIDER_OVERRIDE=false the gateway refuses
       # explicit provider/model overrides and forces model_alias use.
-      ALLOW_CALLER_PROVIDER_OVERRIDE: ${LLM_GATEWAY_ALLOW_OVERRIDE:-true}
+      ALLOW_CALLER_PROVIDER_OVERRIDE: ${LLM_GATEWAY_ALLOW_OVERRIDE:-false}
       UPSTREAM_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-240}
       # Provider credentials — passed ONLY to this service. Every other
       # service in the stack is enforced to NOT receive these keys (CI guard
@@ -417,7 +417,7 @@ services:
       CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
       MCP_SERVER_URL: http://mcp-server-demo:7100
       MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
-      WORKBENCH_DEFAULT_MODEL_ALIAS: ${WORKBENCH_DEFAULT_MODEL_ALIAS:-fast}
+      WORKBENCH_DEFAULT_MODEL_ALIAS: ${WORKBENCH_DEFAULT_MODEL_ALIAS:-mock}
       # M33 — legacy direct LLM calls (e.g. POST /api/agents/:id/runs) now
       # route through llm-gateway. No provider keys in this service.
       LLM_GATEWAY_URL:        http://llm-gateway:8001

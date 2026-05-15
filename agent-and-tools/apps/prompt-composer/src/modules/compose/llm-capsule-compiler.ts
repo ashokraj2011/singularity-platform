@@ -17,7 +17,7 @@ import { logger } from "../../config/logger";
 import type { RetrievedChunk } from "./retrieval";
 
 const TIMEOUT_MS = Number(process.env.CAPSULE_COMPILE_TIMEOUT_MS ?? 30_000);
-const MODEL_ALIAS = process.env.CAPSULE_COMPILE_MODEL_ALIAS ?? "fast";
+const MODEL_ALIAS = process.env.CAPSULE_COMPILE_MODEL_ALIAS ?? "mock";
 
 const SYSTEM_PROMPT = `You are a Context Compiler.
 

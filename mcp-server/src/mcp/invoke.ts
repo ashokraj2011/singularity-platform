@@ -263,6 +263,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
     });
 
     const llmResp = await llmRespond({
+      model_alias: state.modelConfig.modelAlias,
       provider: state.modelConfig.provider,
       model: state.modelConfig.model,
       messages: state.messages,
@@ -288,6 +289,9 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
     });
     state.totalInputTokens += llmResp.input_tokens;
     state.totalOutputTokens += llmResp.output_tokens;
+    if (llmResp.provider) state.modelConfig.provider = llmResp.provider;
+    if (llmResp.model) state.modelConfig.model = llmResp.model;
+    if (llmResp.model_alias) state.modelConfig.modelAlias = llmResp.model_alias;
 
     const llmRec = recordLlmCall({
       correlation: state.correlation,
