@@ -4,13 +4,14 @@
  * When an operator triggers diagnosis on an engine_issue, this module:
  *   1. Loads the issue's sample trace timelines from audit_events
  *   2. Builds a structured prompt for the LLM
- *   3. Calls the MCP server's /mcp/invoke endpoint (or a direct LLM call)
+ *   3. Calls the MCP server's /mcp/invoke endpoint
  *   4. Stores the diagnosis in engine_issues.root_cause
  *   5. Auto-generates a proposed fix based on the diagnosis
  */
 import { query, queryOne } from "../db";
 
 const MCP_SERVER_URL = process.env.ENGINE_MCP_URL ?? "http://localhost:7100";
+const MCP_BEARER_TOKEN = process.env.ENGINE_MCP_BEARER_TOKEN ?? process.env.MCP_BEARER_TOKEN ?? "";
 const ENGINE_TIMEOUT_MS = Number(process.env.ENGINE_TIMEOUT_MS ?? 120_000);
 
 // ── Trace loading ──────────────────────────────────────────────────────
@@ -86,43 +87,29 @@ Respond ONLY in valid JSON matching this schema:
 }`;
 
 async function callLlmForDiagnosis(prompt: string): Promise<DiagnosisResult> {
-  // Direct LLM call via MCP server's /llm/respond-like endpoint.
-  // Falls back to a simpler analysis if MCP is unavailable.
+  // LLM call via MCP only. If MCP is unavailable, use deterministic local
+  // heuristics rather than falling back to any provider SDK/API.
   try {
-    const res = await fetch(`${MCP_SERVER_URL}/mcp/tools/call`, {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (MCP_BEARER_TOKEN) headers.authorization = `Bearer ${MCP_BEARER_TOKEN}`;
+    const llmRes = await fetch(`${MCP_SERVER_URL}/mcp/invoke`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({
-        name: "echo",   // We use the LLM directly, not a tool
-        args: {},
+        systemPrompt: DIAGNOSIS_SYSTEM_PROMPT,
+        message: prompt,
+        modelConfig: {},
+        tools: [],
+        limits: { maxSteps: 1, timeoutSec: Math.ceil(ENGINE_TIMEOUT_MS / 1000) },
       }),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(ENGINE_TIMEOUT_MS),
     });
-    // If MCP is available, use it for a proper LLM call
-    if (res.ok) {
-      const llmRes = await fetch(`${MCP_SERVER_URL}/mcp/invoke`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          prompt,
-          system_prompt: DIAGNOSIS_SYSTEM_PROMPT,
-          max_output_tokens: 2000,
-          temperature: 0.1,
-          tools: [],
-          max_steps: 1,
-        }),
-        signal: AbortSignal.timeout(ENGINE_TIMEOUT_MS),
-      });
-      if (llmRes.ok) {
-        const data = await llmRes.json() as { response?: string; messages?: Array<{ role: string; content: string }> };
-        const content = data.response
-          ?? data.messages?.filter((m) => m.role === "assistant").pop()?.content
-          ?? "";
-        // Extract JSON from the LLM response.
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          return JSON.parse(jsonMatch[0]) as DiagnosisResult;
-        }
+    if (llmRes.ok) {
+      const data = await llmRes.json() as { data?: { finalResponse?: string } };
+      const content = data.data?.finalResponse ?? "";
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]) as DiagnosisResult;
       }
     }
   } catch {

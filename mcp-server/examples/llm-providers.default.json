@@ -1,6 +1,6 @@
 {
-  "defaultProvider": "openai",
-  "defaultModel": "gpt-4o-mini",
+  "defaultProvider": "mock",
+  "defaultModel": "mock-fast",
   "allowedProviders": [],
   "providers": {
     "mock": {

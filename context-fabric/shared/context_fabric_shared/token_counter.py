@@ -16,7 +16,7 @@ def _encoding_for_model(model: str):
         return None
 
 
-def count_text_tokens(text: str, model: str = "gpt-4o-mini") -> int:
+def count_text_tokens(text: str, model: str = "mock-fast") -> int:
     if not text:
         return 0
     enc = _encoding_for_model(model)
@@ -28,7 +28,7 @@ def count_text_tokens(text: str, model: str = "gpt-4o-mini") -> int:
     return max(1, math.ceil(len(text) / 4))
 
 
-def count_message_tokens(messages: list[dict], model: str = "gpt-4o-mini") -> int:
+def count_message_tokens(messages: list[dict], model: str = "mock-fast") -> int:
     total = 0
     for msg in messages:
         total += 4

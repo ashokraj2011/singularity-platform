@@ -71,7 +71,7 @@ const CONFIG_FIELDS: Record<ConnectorType, { key: string; label: string; placeho
   CONFLUENCE:   [{ key: 'baseUrl', label: 'Confluence URL', placeholder: 'https://myorg.atlassian.net' }, { key: 'defaultSpaceKey', label: 'Default Space Key' }],
   DATADOG:      [{ key: 'site', label: 'Site (datadoghq.com|datadoghq.eu)', placeholder: 'datadoghq.com' }],
   SERVICENOW:   [{ key: 'instanceUrl', label: 'Instance URL', placeholder: 'https://myinst.service-now.com' }, { key: 'defaultAssignmentGroup', label: 'Default Assignment Group' }],
-  LLM_GATEWAY:  [{ key: 'baseUrl', label: 'Gateway URL', placeholder: 'https://api.anthropic.com/v1' }, { key: 'defaultModel', label: 'Default Model', placeholder: 'claude-sonnet-4-6' }],
+  LLM_GATEWAY:  [{ key: 'baseUrl', label: 'MCP Gateway URL', placeholder: 'http://localhost:7100' }, { key: 'defaultModelAlias', label: 'Default MCP Model Alias', placeholder: 'mock' }],
   S3:           [{ key: 'bucket', label: 'Default Bucket' }, { key: 'region', label: 'Region', placeholder: 'us-east-1' }, { key: 'endpointUrl', label: 'Custom Endpoint (MinIO etc)' }],
   POSTGRES:     [{ key: 'schema', label: 'Schema', placeholder: 'public' }],
 }

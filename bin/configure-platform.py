@@ -156,9 +156,9 @@ def config_template(profile: str, args: argparse.Namespace | None = None) -> dic
     sandbox_root = getattr(args, "mcp_sandbox_root", None) if args else None
     sandbox_root = sandbox_root or str(ROOT)
     provider = getattr(args, "llm_provider", None) if args else None
-    provider = provider or ("copilot" if copilot_only else "openai")
+    provider = provider or ("copilot" if copilot_only else "mock")
     model = getattr(args, "llm_model", None) if args else None
-    model = model or ("mock-fast" if provider == "mock" else "gpt-4o" if provider == "copilot" else "gpt-4o-mini")
+    model = model or ("gpt-4o" if provider == "copilot" else "mock-fast")
     openai_key = getattr(args, "openai_api_key", None) if args else None
     openrouter_key = getattr(args, "openrouter_api_key", None) if args else None
     copilot_token = getattr(args, "copilot_token", None) if args else None
@@ -335,12 +335,12 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
         use_pseudo = True
     allowed_providers = pick("MCP_ALLOWED_LLM_PROVIDERS", "allowed_llm_providers", "MCP_ALLOWED_LLM_PROVIDERS", "")
     copilot_only = allowed_providers.strip().lower() == "copilot"
-    llm_provider = pick("LLM_PROVIDER", "llm_provider", "LLM_PROVIDER", "copilot" if copilot_only else "openai")
+    llm_provider = pick("LLM_PROVIDER", "llm_provider", "LLM_PROVIDER", "copilot" if copilot_only else "mock")
     llm_model = pick("LLM_MODEL", "llm_model", "LLM_MODEL", (
         "mock-fast" if llm_provider == "mock"
         else "gpt-4o" if llm_provider == "copilot"
         else "openai/gpt-4o-mini" if llm_provider == "openrouter"
-        else "gpt-4o-mini"
+        else "mock-fast"
     ))
     openai_key = pick("OPENAI_API_KEY", "openai_api_key", "OPENAI_API_KEY", "")
     openrouter_key = pick("OPENROUTER_API_KEY", "openrouter_api_key", "OPENROUTER_API_KEY", "")
@@ -393,7 +393,7 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
         "LLM_MODEL": llm_model,
         "OPENAI_API_KEY": "" if copilot_only else openai_key,
         "OPENAI_BASE_URL": pick("OPENAI_BASE_URL", "openai_base_url", "OPENAI_BASE_URL", "https://api.openai.com/v1"),
-        "OPENAI_DEFAULT_MODEL": llm_model if llm_provider == "openai" else "gpt-4o-mini",
+        "OPENAI_DEFAULT_MODEL": llm_model if llm_provider == "openai" else "",
         "OPENAI_COMPATIBLE_API_KEY": "" if copilot_only else openai_key,
         "OPENAI_COMPATIBLE_BASE_URL": pick("OPENAI_BASE_URL", "openai_base_url", "OPENAI_COMPATIBLE_BASE_URL", "https://api.openai.com/v1"),
         "OPENROUTER_API_KEY": "" if copilot_only else openrouter_key,
@@ -404,10 +404,10 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
         "WORKGRAPH_ANTHROPIC_API_KEY": "",
         "COPILOT_TOKEN": copilot_token,
         "COPILOT_BASE_URL": pick("COPILOT_BASE_URL", "copilot_base_url", "COPILOT_BASE_URL", "https://api.githubcopilot.com"),
-        "COPILOT_DEFAULT_MODEL": pick("COPILOT_DEFAULT_MODEL", None, "COPILOT_DEFAULT_MODEL", llm_model if llm_provider == "copilot" else "gpt-4o"),
+        "COPILOT_DEFAULT_MODEL": pick("COPILOT_DEFAULT_MODEL", None, "COPILOT_DEFAULT_MODEL", llm_model if llm_provider == "copilot" else ""),
         "OLLAMA_BASE_URL": "" if copilot_only else pick("OLLAMA_BASE_URL", None, "OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
-        "SUMMARIZER_PROVIDER": "mock" if llm_provider in ("mock", "copilot") else "openai_compatible",
-        "SUMMARIZER_MODEL": "mock-summarizer" if llm_provider in ("mock", "copilot") else llm_model,
+        "SUMMARIZER_PROVIDER": "mock",
+        "SUMMARIZER_MODEL": "mock-summarizer",
         "MCP_SANDBOX_ROOT": sandbox_root,
         "MCP_AST_DB_PATH": pick("MCP_AST_DB_PATH", None, "MCP_AST_DB_PATH", f"{sandbox_root.rstrip('/')}/.singularity/mcp-ast.sqlite"),
         "MCP_AST_MAX_FILE_BYTES": pick("MCP_AST_MAX_FILE_BYTES", None, "MCP_AST_MAX_FILE_BYTES", "200000"),
@@ -645,7 +645,7 @@ def command_init(args: argparse.Namespace) -> None:
     if args.profile == "office-copilot-only":
         print("  cd mcp-server && npm run build && npx singularity-mcp doctor")
     else:
-        print("  ./singularity.sh config mcp-catalog --default-alias balanced")
+        print("  ./singularity.sh config mcp-catalog --default-alias mock")
     print("  ./singularity.sh doctor")
 
 
@@ -1283,7 +1283,7 @@ def command_mcp_catalog(args: argparse.Namespace) -> None:
             "maxOutputTokens": 1200,
             "supportsTools": True,
             "costTier": "low",
-            "description": "OpenRouter fallback when that provider is configured locally.",
+            "description": "OpenRouter option when that provider is explicitly configured locally.",
         },
         {
             "id": "anthropic-balanced",
@@ -1331,8 +1331,8 @@ def command_mcp_catalog(args: argparse.Namespace) -> None:
     provider_config_path = ".singularity/llm-providers.json"
     provider_config = mcp_provider_config_payload(
         copilot_only=args.copilot_only,
-        default_provider="copilot" if args.copilot_only else "openai",
-        default_model=args.copilot_model if args.copilot_only else args.openai_fast_model,
+        default_provider="copilot" if args.copilot_only else "mock",
+        default_model=args.copilot_model if args.copilot_only else "mock-fast",
     )
     provider_config_out = write_mcp_provider_config(provider_config_path, provider_config)
 
@@ -1392,7 +1392,7 @@ def command_models(_: argparse.Namespace) -> None:
     if not p.exists():
         print(f"No MCP model catalog found at {p}")
         print("Create one with:")
-        print("  ./singularity.sh config mcp-catalog --default-alias balanced")
+        print("  ./singularity.sh config mcp-catalog --default-alias mock")
         return
     rows = json.loads(p.read_text())
     print(f"MCP model catalog: {p.relative_to(ROOT) if p.is_relative_to(ROOT) else p}\n")
@@ -1433,7 +1433,7 @@ def command_providers(_: argparse.Namespace) -> None:
     if not p.exists():
         print(f"No MCP provider config found at {p}")
         print("Create one with:")
-        print("  ./singularity.sh config mcp-catalog --default-alias balanced")
+        print("  ./singularity.sh config mcp-catalog --default-alias mock")
         print("or:")
         print("  ./singularity.sh config office-copilot-only")
         return
@@ -1557,7 +1557,7 @@ def main() -> None:
 
     p_mcp_catalog = sub.add_parser("mcp-catalog", help="Create a local MCP model catalog file and wire env files to it")
     p_mcp_catalog.add_argument("--path", default=".singularity/mcp-models.json")
-    p_mcp_catalog.add_argument("--default-alias", choices=["fast", "balanced", "openrouter-fast", "anthropic-balanced", "mock", "copilot"], default="fast")
+    p_mcp_catalog.add_argument("--default-alias", choices=["fast", "balanced", "openrouter-fast", "anthropic-balanced", "mock", "copilot"], default="mock")
     p_mcp_catalog.add_argument("--copilot-only", action="store_true", help="Write a catalog containing only the GitHub Copilot alias")
     p_mcp_catalog.add_argument("--copilot-model", default="gpt-4o")
     p_mcp_catalog.add_argument("--openai-fast-model", default="gpt-4o-mini")

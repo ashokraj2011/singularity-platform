@@ -2,13 +2,13 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
-import { AnthropicProvider } from './llm/AnthropicProvider'
+import { GatewayProvider } from './llm/GatewayProvider'
 import { NotFoundError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 
 export const agentsRouter: Router = Router()
 
-const llmProvider = new AnthropicProvider()
+const llmProvider = new GatewayProvider()
 
 // M10 — local Agent CRUD removed. Agents are snapshots of agent-and-tools
 // templates created on demand by AgentTaskExecutor. Use the agent-and-tools

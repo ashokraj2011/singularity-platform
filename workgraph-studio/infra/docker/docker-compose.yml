@@ -53,12 +53,13 @@ services:
       MINIO_ACCESS_KEY: workgraph
       MINIO_SECRET_KEY: workgraph_secret
       MINIO_BUCKET: workgraph-documents
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CORS_ORIGINS: http://localhost:3000,http://localhost:5173
       # M5 — kept for back-compat; M8 routes AGENT_TASK through context-fabric
       PROMPT_COMPOSER_URL: ${PROMPT_COMPOSER_URL:-http://host.docker.internal:3004}
       # M8 — AGENT_TASK executor calls context-fabric /execute
       CONTEXT_FABRIC_URL: ${CONTEXT_FABRIC_URL:-http://host.docker.internal:8000}
+      MCP_SERVER_URL: ${MCP_SERVER_URL:-http://host.docker.internal:7100}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       # Event Horizon normally inherits MCP's provider/model. Set these only
       # when the chat assistant should override MCP defaults.
       EVENT_HORIZON_PROVIDER: ${EVENT_HORIZON_PROVIDER:-}

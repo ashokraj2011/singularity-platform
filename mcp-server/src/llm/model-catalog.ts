@@ -4,7 +4,7 @@ import { z } from "zod";
 import { config } from "../config";
 import { listConfiguredProviders } from "./client";
 import { AppError } from "../shared/errors";
-import { configuredDefaultModel, configuredDefaultProvider } from "./provider-config";
+import { configuredDefaultProvider } from "./provider-config";
 
 const CatalogEntrySchema = z.object({
   id: z.string().min(1),
@@ -41,7 +41,7 @@ function providerReady(provider: string): boolean {
 
 function defaultModelForProvider(provider: string): string {
   const row = listConfiguredProviders().find(p => p.name === provider.toLowerCase());
-  return row?.default_model ?? config.LLM_MODEL;
+  return row?.default_model || (provider.toLowerCase() === "mock" ? "mock-fast" : "");
 }
 
 function readCatalogSource(): unknown {
@@ -56,19 +56,18 @@ function readCatalogSource(): unknown {
 }
 
 function fallbackCatalog(): LlmModelCatalogEntry[] {
-  const provider = configuredDefaultProvider();
   return [{
     id: "default",
-    label: `${provider} / ${configuredDefaultModel() || defaultModelForProvider(provider)}`,
-    provider,
-    model: configuredDefaultModel() || defaultModelForProvider(provider),
-    ready: providerReady(provider),
+    label: "Mock offline",
+    provider: "mock",
+    model: "mock-fast",
+    ready: true,
     default: true,
     maxOutputTokens: undefined,
-    supportsTools: provider !== "mock",
-    costTier: provider === "mock" ? "mock" : "medium",
-    description: "Fallback model from LLM_PROVIDER and LLM_MODEL.",
-    warnings: providerReady(provider) ? [] : [`Provider ${provider} is missing required credentials.`],
+    supportsTools: false,
+    costTier: "mock",
+    description: "Mock-only fallback used when external MCP model catalog config is missing or invalid.",
+    warnings: [],
   }];
 }
 
@@ -80,7 +79,8 @@ export function loadModelCatalog() {
   try {
     const raw = readCatalogSource();
     if (!raw) {
-      cachedCatalog = { entries: fallbackCatalog(), warnings, source: "fallback-env" };
+      warnings.push("No external MCP model catalog was provided; using mock only.");
+      cachedCatalog = { entries: fallbackCatalog(), warnings, source: "fallback-mock" };
       return cachedCatalog;
     }
     const parsed = z.array(CatalogEntrySchema).safeParse(raw);
@@ -99,8 +99,8 @@ export function loadModelCatalog() {
       };
     });
     if (entries.length === 0) {
-      warnings.push("MCP model catalog was empty; using fallback env default.");
-      cachedCatalog = { entries: fallbackCatalog(), warnings, source: "fallback-empty" };
+      warnings.push("MCP model catalog was empty; using mock only.");
+      cachedCatalog = { entries: fallbackCatalog(), warnings, source: "fallback-empty-mock" };
       return cachedCatalog;
     }
     if (!entries.some(e => e.default)) {
@@ -109,8 +109,8 @@ export function loadModelCatalog() {
     }
     cachedCatalog = { entries, warnings, source: config.MCP_LLM_MODEL_CATALOG_JSON ? "env-json" : "file" };
   } catch (err) {
-    warnings.push(`Failed to load MCP model catalog; using fallback env default. ${err instanceof Error ? err.message : String(err)}`);
-    cachedCatalog = { entries: fallbackCatalog(), warnings, source: "fallback-error" };
+    warnings.push(`Failed to load MCP model catalog; using mock only. ${err instanceof Error ? err.message : String(err)}`);
+    cachedCatalog = { entries: fallbackCatalog(), warnings, source: "fallback-error-mock" };
   }
   return cachedCatalog;
 }
@@ -165,12 +165,22 @@ export function resolveModelConfig(input: {
   }
 
   if (input.provider || input.model) {
-    const provider = input.provider ?? config.LLM_PROVIDER;
+    const provider = input.provider ?? configuredDefaultProvider();
     const ready = providerReady(provider);
-    if (!ready) warnings.push(`Provider ${provider} is not marked ready by MCP.`);
+    if (!ready) {
+      throw new AppError(`MCP provider is not ready or not allowed: ${provider}`, 400, "MODEL_PROVIDER_NOT_READY", {
+        provider,
+      });
+    }
+    const model = input.model ?? defaultModelForProvider(provider);
+    if (!model) {
+      throw new AppError(`No model configured for MCP provider: ${provider}`, 400, "MODEL_REQUIRED", {
+        provider,
+      });
+    }
     return {
       provider,
-      model: input.model ?? defaultModelForProvider(provider),
+      model,
       temperature: input.temperature,
       maxTokens: input.maxTokens,
       warnings,

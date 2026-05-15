@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 from fastapi import FastAPI, Response
 from pydantic import BaseModel, Field
+import httpx
 
 from context_fabric_shared.schemas import ContextPolicy
 from context_fabric_shared.http_client import post_json, get_json
@@ -162,25 +163,32 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
         "system_prompt": req.system_prompt,
     })
 
-    mcp_resp = await post_json(f"{mcp_url}/mcp/invoke", {
-        "prompt": "",
+    mcp_payload = {
         "history": compiled["compiled_messages"],
         "message": req.message,
-        "provider": req.provider,
-        "model": req.model,
-        "temperature": req.temperature,
-        "maxOutputTokens": req.max_output_tokens,
+        "modelConfig": {
+            "temperature": req.temperature,
+            "maxTokens": req.max_output_tokens,
+        },
         "tools": [],
-        "maxSteps": 1,
-    })
-    
-    response_text = mcp_resp.get("data", {}).get("finalResponse", "")
+        "limits": {"maxSteps": 1},
+    }
+    headers = {"authorization": f"Bearer {settings.mcp_default_bearer_token}"} if settings.mcp_default_bearer_token else {}
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        mcp_http = await client.post(f"{mcp_url}/mcp/invoke", json=mcp_payload, headers=headers)
+        mcp_http.raise_for_status()
+        mcp_resp = mcp_http.json()
+    mcp_data = mcp_resp.get("data", {}) if isinstance(mcp_resp, dict) else {}
+    response_text = mcp_data.get("finalResponse", "")
+    model_usage = mcp_data.get("modelUsage", {}) or {}
+    tokens_used = mcp_data.get("tokensUsed", {}) or {}
+    model_call_id = (mcp_data.get("correlation", {}) or {}).get("mcpInvocationId") or (mcp_data.get("llmCallIds") or [""])[0] or ""
 
     await post_json(f"{memory_url}/memory/messages", {
         "session_id": req.session_id,
         "agent_id": req.agent_id,
         "role": "assistant",
-        "content": llm_resp["response"],
+        "content": response_text,
     })
 
     opt = compiled["optimization"]
@@ -190,39 +198,39 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
             "session_id": req.session_id,
             "agent_id": req.agent_id,
             "context_package_id": compiled["context_package_id"],
-            "model_call_id": llm_resp["model_call_id"],
+            "model_call_id": model_call_id,
             "optimization_mode": opt["mode"],
             "raw_input_tokens": opt["raw_input_tokens"],
             "optimized_input_tokens": opt["optimized_input_tokens"],
-            "output_tokens": llm_resp.get("output_tokens", 0),
+            "output_tokens": tokens_used.get("output", 0),
             "tokens_saved": opt["tokens_saved"],
             "percent_saved": opt["percent_saved"],
             "estimated_raw_cost": opt.get("estimated_raw_cost", 0.0),
             "estimated_optimized_cost": opt.get("estimated_optimized_cost", 0.0),
             "estimated_cost_saved": opt.get("estimated_cost_saved", 0.0),
-            "provider": req.provider,
-            "model_name": req.model,
-            "latency_ms": llm_resp.get("latency_ms"),
+            "provider": model_usage.get("provider", "mcp-default"),
+            "model_name": model_usage.get("model", "mcp-default"),
+            "latency_ms": mcp_data.get("metrics", {}).get("mcpLatencyMs"),
         })
         metrics_run_id = metrics.get("id")
     except Exception:
         metrics_run_id = None
 
     return ChatRespondResponse(
-        response=llm_resp["response"],
+        response=response_text,
         session_id=req.session_id,
         agent_id=req.agent_id,
         context_package_id=compiled["context_package_id"],
-        model_call_id=llm_resp["model_call_id"],
+        model_call_id=model_call_id,
         optimization=opt,
         model_usage={
-            "provider": llm_resp["provider"],
-            "model": llm_resp["model"],
-            "input_tokens": llm_resp["input_tokens"],
-            "output_tokens": llm_resp["output_tokens"],
-            "total_tokens": llm_resp["total_tokens"],
-            "estimated_cost": llm_resp["estimated_cost"],
-            "latency_ms": llm_resp["latency_ms"],
+            "provider": model_usage.get("provider", "mcp-default"),
+            "model": model_usage.get("model", "mcp-default"),
+            "input_tokens": tokens_used.get("input", 0),
+            "output_tokens": tokens_used.get("output", 0),
+            "total_tokens": tokens_used.get("total", 0),
+            "estimated_cost": model_usage.get("estimatedCost"),
+            "latency_ms": mcp_data.get("metrics", {}).get("mcpLatencyMs"),
         },
         metrics_run_id=metrics_run_id,
     )
