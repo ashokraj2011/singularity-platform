@@ -28,6 +28,7 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
 COPY apps/api ./apps/api
 COPY packages/shared-types ./packages/shared-types
 COPY packages/engine ./packages/engine
+RUN mkdir -p /docs/data-model
 RUN pnpm --filter @workgraph/api exec prisma generate
 RUN pnpm --filter @workgraph/api build
 

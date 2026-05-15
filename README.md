@@ -593,6 +593,34 @@ curl http://localhost:7100/llm/models
 
 In office Copilot-only mode, `/llm/providers` should report `copilot` as allowed/enabled and `openai`, `openrouter`, `anthropic`, and `mock` as disabled or not allowed. If a workflow tries to force a disabled provider, MCP rejects it before making any provider call.
 
+### Operator command center and guided delivery
+
+The Operations Portal (`http://localhost:5180/operations`) is the command center for day-to-day governed delivery:
+
+- **Setup Center** — service health, DNS/reachability, config doctor summary, MCP/model readiness, and generated env drift.
+- **Readiness** — capability readiness score from agent-runtime: identity/governance, agent team, knowledge/code, workflow readiness, and runtime readiness.
+- **Run Audit** — evidence-pack export for a workflow run with stage timings, tokens/cost, approvals, artifacts, receipts, Workbench stages, budget events, and gaps.
+- **WorkItems** — cross-capability WorkItem queue with child capability targets, claim/start actions, child run links, submitted consumables, approval, and rework.
+- **Architecture** — capability architecture diagrams from agent-runtime, including application diagrams and TOGAF-style collection views.
+- **AI Causality Proof** — conservative RCA report for a run and optional subject such as a file path, commit SHA, artifact id, or incident symptom.
+
+Key APIs:
+
+```bash
+GET http://localhost:3003/api/v1/capabilities/:id/readiness
+GET http://localhost:3003/api/v1/capabilities/:id/architecture-diagram
+GET http://localhost:8080/api/workflow-instances/:id/evidence-pack
+GET http://localhost:8080/api/workflow-instances/:id/evidence-pack?format=markdown
+GET http://localhost:8080/api/workflow-instances/:id/ai-causality-report
+GET http://localhost:8080/api/work-items
+```
+
+The embedded Workbench at `http://localhost:5176` is now the **Story-to-Delivery Workbench**. A workflow-linked Workbench opens with resolved workflow values, guides the operator from story → agents → artifacts → gates → handoff, and mirrors stage outputs into normal Workgraph consumables so downstream nodes and resumed workflows can consume approved artifacts outside the Workbench session.
+
+Capability bootstrap in agent-and-tools web (`http://localhost:3000/capabilities`) acts as a **Capability Agent Team Factory**. It previews predefined PO/Architect/Developer/QA/Security/DevOps/Governance/Verifier-style agents, marks locked governance/verifier gates, shows Git-grounded roles, and keeps generated agents or learned knowledge draft/inactive until human activation.
+
+MCP local code intelligence indexes Python, TypeScript, TSX, JavaScript, JSX, Go, and Java files from `MCP_SANDBOX_ROOT`. Agents should prefer `find_symbol`, `get_symbol`, `get_ast_slice`, and `get_dependencies` before full-file `read_file`; this keeps local/private code local while giving the model compact symbol summaries, signatures, line ranges, imports, branches, and commit evidence.
+
 ### Option C — per-app compose files
 
 Each app still has its own `docker-compose.yml` if you want to run a subset without the master:

@@ -14,6 +14,7 @@
 #   ./singularity.sh ls                    list known service names
 #   ./singularity.sh login                 quick smoke: IAM /auth/local/login
 #   ./singularity.sh doctor                validate config, ports, health, keys
+#   ./singularity.sh office-copilot-only   configure strict office mode: Copilot only
 #   ./singularity.sh config <command>      configure DBs, keys, endpoints, LLMs, MCP
 #     common: init | show | doctor | set | mcp | providers | models | export | write
 #
@@ -210,6 +211,16 @@ EOF
 
   doctor)
     python3 "$SCRIPT_DIR/bin/configure-platform.py" doctor
+    ;;
+
+  office|office-copilot-only|copilot-only)
+    if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+      python3 "$SCRIPT_DIR/bin/configure-platform.py" office-copilot-only "$@"
+      exit 0
+    fi
+    info "configuring strict office mode (GitHub Copilot only) …"
+    python3 "$SCRIPT_DIR/bin/configure-platform.py" office-copilot-only "$@"
+    ok "office Copilot-only config written. Restart services with \`$0 restart mcp-server-demo\` or \`$0 up\`."
     ;;
 
   help|--help|-h|"")

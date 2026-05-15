@@ -830,6 +830,7 @@ export const composeService = {
       task: taskRendered.rendered,
       system_prompt: finalPrompt,
       model_overrides: {
+        modelAlias: input.modelOverrides.modelAlias,
         provider: input.modelOverrides.provider,
         model: input.modelOverrides.model,
         temperature: input.modelOverrides.temperature,
@@ -876,6 +877,7 @@ export const composeService = {
         estimated_cost_saved: Number(optimization.estimated_cost_saved ?? optimization.estimatedCostSaved ?? 0),
       },
       modelUsage: {
+        modelAlias: String(modelUsage.modelAlias ?? cfResp.usage?.modelAlias ?? input.modelOverrides.modelAlias ?? ""),
         provider: String(modelUsage.provider ?? cfResp.usage?.provider ?? input.modelOverrides.provider ?? "unknown"),
         model: String(modelUsage.model ?? cfResp.usage?.model ?? input.modelOverrides.model ?? "unknown"),
         input_tokens: Number(modelUsage.inputTokens ?? cfResp.usage?.inputTokens ?? 0),

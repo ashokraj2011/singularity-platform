@@ -25,6 +25,12 @@ export const capabilityController = {
   async get(req: Request, res: Response) {
     return ok(res, await capabilityService.get(req.params.id));
   },
+  async readiness(req: Request, res: Response) {
+    return ok(res, await capabilityService.readiness(req.params.id));
+  },
+  async architectureDiagram(req: Request, res: Response) {
+    return ok(res, await capabilityService.architectureDiagram(req.params.id));
+  },
   async update(req: Request, res: Response) {
     return ok(res, await capabilityService.update(req.params.id, req.body, req.headers.authorization));
   },

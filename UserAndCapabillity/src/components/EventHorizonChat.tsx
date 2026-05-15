@@ -16,9 +16,6 @@ type ContextSnapshot = {
 
 const SESSION_KEY = 'event-horizon.iam.session'
 const SESSION_ID_KEY = 'event-horizon.iam.session-id'
-const DEFAULT_CAPABILITY_ID = import.meta.env.VITE_EVENT_HORIZON_CAPABILITY_ID ?? '00000000-0000-0000-0000-00000000aaaa'
-const EVENT_HORIZON_PROVIDER = import.meta.env.VITE_EVENT_HORIZON_PROVIDER
-const EVENT_HORIZON_MODEL = import.meta.env.VITE_EVENT_HORIZON_MODEL
 
 function newId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -175,51 +172,26 @@ export function EventHorizonChat() {
 
   async function callEventHorizon(text: string) {
     const sid = activeSessionId()
-    const capability = String(ctx.capability?.id ?? ctx.capability?.capability_id ?? capabilityId ?? DEFAULT_CAPABILITY_ID)
-    const payload = {
-      trace_id: `event-horizon:${sid}:${Date.now()}`,
-      idempotency_key: `event-horizon:${sid}:${Date.now()}`,
-      run_context: {
-        workflow_instance_id: `event-horizon-${sid}`,
-        workflow_node_id: 'event-horizon-chat',
-        agent_run_id: `event-horizon-${Date.now()}`,
-        capability_id: capability,
-        user_id: token ? 'iam-user' : undefined,
-        trace_id: `event-horizon:${sid}`,
-      },
-      system_prompt: [
-        'You are Event Horizon, the Singularity IAM and capability governance assistant.',
-        'Help with users, teams, roles, permissions, capability memberships, and cross-platform governance.',
-        'Answer concisely and do not claim you performed mutations.',
-      ].join('\n'),
-      task: [
-        `User question: ${text}`,
-        `Current app: ${ctx.app}`,
-        `Current surface: ${ctx.surface}`,
-        `Current path: ${ctx.path}`,
-        `Context JSON: ${JSON.stringify(ctx).slice(0, 6000)}`,
-      ].join('\n\n'),
-      model_overrides: { provider: EVENT_HORIZON_PROVIDER, model: EVENT_HORIZON_MODEL, temperature: 0.2, maxOutputTokens: 700 },
-      context_policy: { optimizationMode: 'aggressive', maxContextTokens: 4000, compareWithRaw: false },
-      limits: {
-        inputTokenBudget: 4000,
-        outputTokenBudget: 700,
-        maxHistoryMessages: 4,
-        maxSteps: 2,
-        maxToolResultChars: 2000,
-        maxPromptChars: 12000,
-        timeoutSec: 180,
-      },
-      prefer_laptop: false,
-    }
-    const res = await fetch('/api/cf/execute', {
+    const capability = String(ctx.capability?.id ?? ctx.capability?.capability_id ?? capabilityId ?? '00000000-0000-0000-0000-00000000aaaa')
+    const res = await fetch('/api/wg/event-horizon/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        message: text,
+        sessionId: sid,
+        app: ctx.app,
+        surface: ctx.surface,
+        path: ctx.path,
+        capabilityId: capability,
+        context: ctx,
+      }),
     })
     if (!res.ok) throw new Error((await res.text()).slice(0, 300) || `Context Fabric returned ${res.status}`)
-    const json = await res.json() as { finalResponse?: string; status?: string }
-    return json.finalResponse || `Event Horizon completed with status ${json.status ?? 'UNKNOWN'}, but returned no text.`
+    const json = await res.json() as { response?: string; status?: string }
+    return json.response || `Event Horizon completed with status ${json.status ?? 'UNKNOWN'}, but returned no text.`
   }
 
   async function send() {

@@ -6,6 +6,7 @@ WORKDIR /app
 # postgresql-client provides `psql` for the M15 post-push SQL hook.
 # git is used by the M17 polling worker to clone + diff repositories.
 RUN apk add --no-cache openssl postgresql-client git
+RUN mkdir -p /docs/data-model
 
 # ── deps ──────────────────────────────────────────────────────────────────
 # Install at workspace root so npm resolves @agentandtools/shared via symlink.
@@ -19,7 +20,7 @@ COPY apps/prompt-composer/package.json ./apps/prompt-composer/package.json
 COPY apps/agent-runtime/prisma         ./apps/agent-runtime/prisma
 RUN npm install --workspaces --include-workspace-root --no-audit --no-fund
 RUN npm run build --workspace=packages/shared
-RUN cd apps/agent-runtime && npx prisma generate
+RUN cd apps/agent-runtime && npx prisma generate --generator client
 
 # ── dev ───────────────────────────────────────────────────────────────────
 FROM base AS dev
@@ -32,7 +33,7 @@ COPY apps/agent-runtime ./apps/agent-runtime
 # schema in the dev stage matches.
 COPY --from=deps /app/apps/agent-runtime/generated ./apps/agent-runtime/generated
 WORKDIR /app/apps/agent-runtime
-RUN npx prisma generate
+RUN npx prisma generate --generator client
 EXPOSE 3003
 # M29 — agent-runtime no longer pushes its schema at startup. Prisma's
 # `db push` always drops tables not in the schema, so an agent-runtime push
@@ -59,7 +60,7 @@ COPY --from=deps /app/packages ./packages
 COPY package.json package-lock.json* ./
 COPY apps/agent-runtime ./apps/agent-runtime
 WORKDIR /app/apps/agent-runtime
-RUN npx prisma generate && npm run build
+RUN npx prisma generate --generator client && npm run build
 
 # ── runner ────────────────────────────────────────────────────────────────
 FROM base AS runner

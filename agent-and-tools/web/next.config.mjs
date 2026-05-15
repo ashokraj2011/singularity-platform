@@ -18,6 +18,10 @@ const nextConfig = {
         destination: `${process.env.IAM_BASE_URL ?? "http://host.docker.internal:8100/api/v1"}/:path*`,
       },
       {
+        source: "/api/workgraph/:path*",
+        destination: `${process.env.WORKGRAPH_API_URL ?? "http://localhost:8080"}/api/:path*`,
+      },
+      {
         source: "/api/agents/:path*",
         destination: `${process.env.AGENT_SERVICE_URL ?? "http://localhost:3001"}/api/v1/:path*`,
       },

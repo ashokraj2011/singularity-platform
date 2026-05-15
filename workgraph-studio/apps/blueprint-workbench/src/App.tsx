@@ -219,7 +219,7 @@ function WorkbenchCommandHeader({
         <div className="brand-mark"><Terminal size={18} /></div>
         <div>
           <p className="eyebrow">Singularity Core Engine</p>
-          <h1>Blueprint Workbench</h1>
+          <h1>Story-to-Delivery Workbench</h1>
         </div>
       </div>
       <nav className="command-tabs" aria-label="Workbench sections">
@@ -393,9 +393,25 @@ function WorkbenchSetup({
       <div className="panel-heading">
         <Boxes size={18} />
         <div>
-          <h2>Source + Loop Context</h2>
-          <p>Read-only source intake plus governed stage bindings.</p>
+          <h2>Guided Delivery Intake</h2>
+          <p>Enter the story once. Singularity resolves source, agents, stages, artifacts, and approval gates.</p>
         </div>
+      </div>
+
+      <div className="delivery-intake-steps" aria-label="Story-to-delivery flow">
+        {[
+          ['Story', 'Capture goal and source'],
+          ['Agents', 'Bind capability team'],
+          ['Artifacts', 'Produce stage evidence'],
+          ['Gates', 'Approve or send back'],
+          ['Handoff', 'Finalize consumables'],
+        ].map(([title, body], index) => (
+          <div key={title} className="delivery-intake-step">
+            <span>{index + 1}</span>
+            <strong>{title}</strong>
+            <em>{body}</em>
+          </div>
+        ))}
       </div>
 
       {sessions.length > 0 && (
@@ -499,7 +515,7 @@ function WorkbenchSetup({
         })}
       >
         {createMutation.isPending ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
-        Create Loop Session
+        Start guided delivery
       </button>
     </aside>
   )
@@ -532,8 +548,8 @@ function LoopWorkbench({
     return (
       <section className="empty-workbench">
         <Activity size={30} />
-        <h2>Create or select a session</h2>
-        <p>The cyclic workbench canvas, stage controls, assets, and terminal evidence stream will appear here.</p>
+        <h2>Start with a story</h2>
+        <p>Create or select a guided delivery session. The system will map the story to agents, stages, artifacts, approval gates, and final consumables.</p>
       </section>
     )
   }
@@ -555,12 +571,84 @@ function LoopWorkbench({
   }
 
   return (
-    <section className="control-room-grid">
-      <CyclicLoopCanvas session={session} activeStageKey={activeStage?.key ?? null} onStage={setActiveStageKey} onSession={onSession} />
-      <StageDetailsPanel session={session} stage={activeStage} onSession={onSession} />
-      <AssetRail session={session} activeStageKey={activeStage?.key} onSession={onSession} />
-      <WorkbenchTerminal session={session} />
+    <>
+      <DeliveryCockpit session={session} activeStage={activeStage} onStage={setActiveStageKey} />
+      <section className="control-room-grid">
+        <CyclicLoopCanvas session={session} activeStageKey={activeStage?.key ?? null} onStage={setActiveStageKey} onSession={onSession} />
+        <StageDetailsPanel session={session} stage={activeStage} onSession={onSession} />
+        <AssetRail session={session} activeStageKey={activeStage?.key} onSession={onSession} />
+        <WorkbenchTerminal session={session} />
+      </section>
+    </>
+  )
+}
+
+function DeliveryCockpit({
+  session,
+  activeStage,
+  onStage,
+}: {
+  session: BlueprintSession
+  activeStage?: LoopStage
+  onStage: (stageKey: string) => void
+}) {
+  const stages = session.loopDefinition?.stages ?? []
+  const requiredStages = stages.filter(stage => stage.required !== false)
+  const approvedStages = requiredStages.filter(stage => {
+    const latest = attemptsFor(session, stage.key).at(-1)
+    return latest?.verdict === 'PASS' || latest?.verdict === 'ACCEPTED_WITH_RISK'
+  }).length
+  const producedArtifacts = session.artifacts.length
+  const consumables = collectStageConsumables(session).length
+  const nextStage = stages.find(stage => stage.key === session.currentStageKey) ?? activeStage ?? stages[0]
+  const finalReady = isLoopGreen(session)
+
+  return (
+    <section className="delivery-cockpit" aria-label="Story delivery cockpit">
+      <div className="delivery-story-card">
+        <span className="stage-key">Story</span>
+        <h2>{session.goal}</h2>
+        <p>
+          {session.sourceType} source {session.sourceUri}
+          {session.sourceRef ? ` @ ${session.sourceRef}` : ''} · {session.gateMode === 'auto' ? 'conservative auto gates' : 'manual approval gates'}
+        </p>
+      </div>
+      <div className="delivery-summary-grid">
+        <DeliveryMetric label="Next action" value={nextStage?.label ?? 'Finalize'} tone="primary" />
+        <DeliveryMetric label="Approved gates" value={`${approvedStages}/${requiredStages.length}`} tone={finalReady ? 'ok' : 'default'} />
+        <DeliveryMetric label="Artifacts" value={String(producedArtifacts)} />
+        <DeliveryMetric label="Consumables" value={String(consumables)} tone={consumables > 0 ? 'ok' : 'default'} />
+      </div>
+      <div className="delivery-stage-plan">
+        {stages.map(stage => {
+          const latest = attemptsFor(session, stage.key).at(-1)
+          const status = latestStatus(latest)
+          const Icon = roleMeta(stage.agentRole).icon
+          return (
+            <button
+              key={stage.key}
+              type="button"
+              className={`delivery-stage-chip ${activeStage?.key === stage.key ? 'active' : ''} ${status}`}
+              onClick={() => onStage(stage.key)}
+            >
+              <Icon size={14} />
+              <span>{stage.label}</span>
+              <em>{roleMeta(stage.agentRole).label}</em>
+              {stage.approvalRequired !== false && <strong>Gate</strong>}
+            </button>
+          )
+        })}
+      </div>
     </section>
+  )
+}
+
+function DeliveryMetric({ label, value, tone = 'default' }: { label: string; value: string; tone?: 'default' | 'primary' | 'ok' }) {
+  return (
+    <div className={`delivery-metric ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   )
 }
 
@@ -989,6 +1077,8 @@ function DeveloperCodeReview({
   const hasMcpDiff = files.some(file => file.source === 'mcp' && file.hasDiff)
   const hasArtifactDiff = files.some(file => file.source === 'artifact' && file.hasDiff)
   const status = latest.verdict ? verdictLabels[latest.verdict] : latest.status
+  const totals = reviewTotals(files)
+  const activeStats = activeFile ? reviewFileStats(activeFile) : { additions: 0, deletions: 0, total: 0 }
 
   return (
     <section className="code-review-panel">
@@ -999,6 +1089,13 @@ function DeveloperCodeReview({
           <p>Review changed files and highlighted diffs before approving or sending work back.</p>
         </div>
         <span className={`status ${latestStatus(latest)}`}>{status}</span>
+      </div>
+
+      <div className="code-review-stats" aria-label="Developer review summary">
+        <span><FileCode2 size={13} /> {files.length} changed file{files.length === 1 ? '' : 's'}</span>
+        <span className="stat-add">+{totals.additions}</span>
+        <span className="stat-remove">-{totals.deletions}</span>
+        <span>{hasMcpDiff ? 'Live MCP diff captured' : hasArtifactDiff ? 'Workbench diff evidence' : 'Evidence fallback'}</span>
       </div>
 
       {codeChangesQuery.isError && (
@@ -1030,46 +1127,144 @@ function DeveloperCodeReview({
           <span>No code-change evidence captured yet. Run the developer stage to generate a review packet.</span>
         </div>
       ) : (
-        <div className="code-review-shell">
-          <nav className="code-review-files" aria-label="Changed files">
+        <div className="vscode-review-shell">
+          <aside className="vscode-review-activity" aria-label="Review activity rail">
+            <span className="active"><FileCode2 size={17} /></span>
+            <span><GitBranch size={17} /></span>
+            <span><ShieldCheck size={17} /></span>
+          </aside>
+
+          <nav className="vscode-review-explorer" aria-label="Changed files">
+            <div className="vscode-explorer-title">
+              <span>Changes</span>
+              <strong>{files.length}</strong>
+            </div>
             {files.map(file => (
-              <button
-                type="button"
+              <ReviewFileButton
                 key={file.id}
-                className={file.id === activeFile?.id ? 'active' : ''}
+                file={file}
+                active={file.id === activeFile?.id}
                 onClick={() => setActiveFileId(file.id)}
-              >
-                <FileCode2 size={13} />
-                <span>{file.path}</span>
-                <small>{file.additions ?? 0}+ / {file.deletions ?? 0}-</small>
-              </button>
+              />
             ))}
           </nav>
 
-          <article className="code-review-editor">
-            <div className="editor-toolbar">
+          <article className="vscode-review-editor">
+            <div className="vscode-editor-tabs">
+              <button type="button" className="active">
+                <FileCode2 size={13} />
+                <span>{activeFile?.path ?? 'diff'}</span>
+              </button>
+            </div>
+
+            <div className="vscode-editor-toolbar">
               <span>{activeFile?.path}</span>
               <em>{activeFile?.source === 'mcp' ? 'MCP diff' : 'artifact evidence'}</em>
             </div>
+
             {activeFile?.commitSha && (
               <div className="editor-commit">
                 <GitBranch size={13} />
                 <code>{activeFile.commitSha}</code>
               </div>
             )}
-            <div className="diff-code" role="region" aria-label="Code diff">
+
+            <div className="vscode-review-guidance">
+              <div>
+                <strong>{activeStats.total}</strong>
+                <span>review lines</span>
+              </div>
+              <div className="stat-add">
+                <strong>+{activeStats.additions}</strong>
+                <span>added</span>
+              </div>
+              <div className="stat-remove">
+                <strong>-{activeStats.deletions}</strong>
+                <span>removed</span>
+              </div>
+              <div>
+                <strong>{activeFile?.status ?? 'pending'}</strong>
+                <span>evidence status</span>
+              </div>
+            </div>
+
+            <div className="vscode-diff-code" role="region" aria-label="Code diff">
               {(activeFile?.diffLines ?? []).map((line, index) => (
                 <div className={`diff-line diff-${line.kind}`} key={`${activeFile?.id}-${index}`}>
                   <span className="diff-gutter">{line.lineNo ?? ''}</span>
+                  <span className="diff-sign">{diffSign(line.kind)}</span>
                   <code className="diff-text">{line.text || ' '}</code>
                 </div>
               ))}
             </div>
           </article>
+
+          <aside className="vscode-review-checklist">
+            <h4>Approval checklist</h4>
+            <p>Use this review before marking the developer stage complete.</p>
+            <ul>
+              <li><CheckCircle2 size={13} /> Diff matches the story intent.</li>
+              <li><CheckCircle2 size={13} /> No unexpected files changed.</li>
+              <li><CheckCircle2 size={13} /> Evidence is enough for QA to continue.</li>
+            </ul>
+            <div className="review-source-card">
+              <span>Source</span>
+              <strong>{hasMcpDiff ? 'Live MCP' : hasArtifactDiff ? 'Workbench artifact' : 'Synthesized evidence'}</strong>
+            </div>
+          </aside>
         </div>
       )}
     </section>
   )
+}
+
+function ReviewFileButton({
+  file,
+  active,
+  onClick,
+}: {
+  file: ReviewFile
+  active: boolean
+  onClick: () => void
+}) {
+  const stats = reviewFileStats(file)
+  return (
+    <button
+      type="button"
+      className={active ? 'active' : ''}
+      onClick={onClick}
+    >
+      <FileCode2 size={13} />
+      <span>{file.path}</span>
+      <small>{file.source === 'mcp' ? 'MCP' : 'artifact'} · {file.status}</small>
+      <b><span className="stat-add">+{stats.additions}</span> <span className="stat-remove">-{stats.deletions}</span></b>
+    </button>
+  )
+}
+
+function reviewFileStats(file: ReviewFile) {
+  const additions = file.additions ?? file.diffLines.filter(line => line.kind === 'add').length
+  const deletions = file.deletions ?? file.diffLines.filter(line => line.kind === 'remove').length
+  return { additions, deletions, total: file.diffLines.length }
+}
+
+function reviewTotals(files: ReviewFile[]) {
+  return files.reduce(
+    (acc, file) => {
+      const stats = reviewFileStats(file)
+      acc.additions += stats.additions
+      acc.deletions += stats.deletions
+      return acc
+    },
+    { additions: 0, deletions: 0 },
+  )
+}
+
+function diffSign(kind: DiffLineKind) {
+  if (kind === 'add') return '+'
+  if (kind === 'remove') return '-'
+  if (kind === 'meta') return '@'
+  return ''
 }
 
 function buildReviewFiles(session: BlueprintSession, stageKey: string, changes: CodeChangeRecord[]): ReviewFile[] {
@@ -1319,6 +1514,10 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
   }, [session.artifacts])
   const visible = artifacts.filter(artifact => !activeStageKey || !artifact.stageKey || artifact.stageKey === activeStageKey || artifact.kind === 'final_implementation_pack')
   const active = visible.find(artifact => artifact.id === activeArtifactId) ?? visible[0]
+  const consumableRefs = collectStageConsumables(session)
+  const publishWarnings = visible
+    .map(artifact => artifact.payload?.consumablePublish)
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object' && !Array.isArray(item)))
 
   useEffect(() => {
     setActiveArtifactId(current => current && visible.some(artifact => artifact.id === current) ? current : visible[0]?.id ?? null)
@@ -1350,6 +1549,37 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
         </button>
       </div>
       {finalizeMutation.isError && <p className="error-text">{finalizeMutation.error.message}</p>}
+
+      {(consumableRefs.length > 0 || publishWarnings.length > 0) && (
+        <div className="workflow-consumable-ledger">
+          <div className="ledger-title">
+            <Boxes size={14} />
+            <span>Workflow consumables</span>
+          </div>
+          {consumableRefs.length > 0 ? (
+            <div className="ledger-list">
+              {consumableRefs.slice(0, 8).map(ref => (
+                <div className="ledger-item" key={`${ref.consumableId}-${ref.artifactId ?? ref.artifactKind}`}>
+                  <strong>{String(ref.title ?? ref.artifactKind ?? 'Workbench artifact')}</strong>
+                  <span>{String(ref.stageKey ?? 'final')} · v{String(ref.consumableVersion ?? 1)}</span>
+                  <em className={`consumable-badge ${String(ref.status ?? '').toLowerCase()}`}>
+                    {String(ref.status ?? 'UNDER_REVIEW').replaceAll('_', ' ')}
+                  </em>
+                  <code>{String(ref.consumableId).slice(0, 8)}</code>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="ledger-empty">No workflow consumables have been created for this session yet.</p>
+          )}
+          {publishWarnings.slice(0, 3).map((warning, index) => (
+            <p className="ledger-warning" key={`${warning.reason ?? 'warning'}-${index}`}>
+              <AlertTriangle size={13} />
+              {String(warning.message ?? 'Consumable publishing was skipped.')}
+            </p>
+          ))}
+        </div>
+      )}
 
       {visible.length === 0 ? (
         <p className="empty">Artifacts appear as stage attempts complete.</p>

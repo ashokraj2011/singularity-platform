@@ -1,27 +1,35 @@
 import { z } from "zod";
 
+function jsonCharLength(value: unknown): number {
+  try {
+    return JSON.stringify(value ?? {}).length;
+  } catch {
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
 export const artifactSchema = z.object({
   consumableId: z.string().optional(),
   consumableType: z.string().optional(),
   role: z.enum(["INPUT", "CONTEXT", "REFERENCE"]).default("CONTEXT"),
-  label: z.string().min(1),
+  label: z.string().min(1).max(160),
   mediaType: z.string().optional(),
-  content: z.string().optional(),
+  content: z.string().max(12_000).optional(),
   minioRef: z.string().optional(),
-  excerpt: z.string().optional(),
+  excerpt: z.string().max(3_000).optional(),
 });
 export type ArtifactInput = z.infer<typeof artifactSchema>;
 
 export const layerOverrideSchema = z.object({
   layerType: z.string().default("EXECUTION_OVERRIDE"),
-  content: z.string().min(1),
+  content: z.string().min(1).max(4_000),
 });
 
 export const composeSchema = z.object({
   agentTemplateId: z.string().uuid(),
   agentBindingId: z.string().uuid().optional(),
   capabilityId: z.string().uuid().optional(),
-  task: z.string().min(1),
+  task: z.string().min(1).max(4_000),
   workflowContext: z.object({
     instanceId: z.string().min(1),
     nodeId: z.string().min(1),
@@ -29,17 +37,18 @@ export const composeSchema = z.object({
     // M28 spine-2 — TraceId is the run evidence spine. Optional for back-compat;
     // when absent the composer derives it from instanceId at persist time.
     traceId: z.string().optional(),
-    vars: z.record(z.unknown()).default({}),
-    globals: z.record(z.unknown()).default({}),
-    priorOutputs: z.record(z.unknown()).default({}),
+    vars: z.record(z.unknown()).default({}).refine(v => jsonCharLength(v) <= 8_000, "workflowContext.vars is too large; pass compact variables only"),
+    globals: z.record(z.unknown()).default({}).refine(v => jsonCharLength(v) <= 8_000, "workflowContext.globals is too large; pass compact globals only"),
+    priorOutputs: z.record(z.unknown()).default({}).refine(v => jsonCharLength(v) <= 12_000, "workflowContext.priorOutputs is too large; pass summaries and artifact references instead of full outputs"),
   }),
   artifacts: z.array(artifactSchema).default([]),
   overrides: z.object({
     additionalLayers: z.array(layerOverrideSchema).default([]),
-    systemPromptAppend: z.string().optional(),
-    extraContext: z.string().optional(),
+    systemPromptAppend: z.string().max(2_000).optional(),
+    extraContext: z.string().max(4_000).optional(),
   }).default({ additionalLayers: [] }),
   modelOverrides: z.object({
+    modelAlias: z.string().min(1).max(80).optional(),
     provider: z.string().optional(),
     model: z.string().optional(),
     temperature: z.number().optional(),

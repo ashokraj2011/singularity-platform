@@ -17,6 +17,7 @@ export const env = {
   mode,
   iamBase:           pick('/api/iam',      import.meta.env.VITE_IAM_BASE_URL),
   workgraphBase:     pick('/api/wg',       import.meta.env.VITE_WORKGRAPH_BASE_URL),
+  runtimeBase:       pick('/api/runtime',  import.meta.env.VITE_AGENT_RUNTIME_BASE_URL),
   composerBase:      pick('/api/composer', import.meta.env.VITE_COMPOSER_BASE_URL),
   contextFabricBase: pick('/api/cf',       import.meta.env.VITE_CONTEXT_FABRIC_BASE_URL),
   mcpBase:           pick('/api/mcp',      import.meta.env.VITE_MCP_BASE_URL),

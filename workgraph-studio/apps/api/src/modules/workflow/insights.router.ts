@@ -454,13 +454,284 @@ function sumBudgetEvents(events: Array<{
   }
 }
 
-insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) => {
+type CausalityClassification =
+  | 'NO_AI_ACTION_FOUND'
+  | 'AI_ACTION_NOT_TOUCHING_SUBJECT'
+  | 'AI_ACTION_PRESENT_HUMAN_APPROVED'
+  | 'AI_ACTION_PRESENT_UNAPPROVED'
+  | 'INCONCLUSIVE'
+
+function compactJson(value: unknown, max = 800): string {
+  try {
+    return JSON.stringify(value ?? {}).slice(0, max)
+  } catch {
+    return String(value).slice(0, max)
+  }
+}
+
+function stringsFromValue(value: unknown): string[] {
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : []
+  if (Array.isArray(value)) return value.flatMap(stringsFromValue)
+  if (!isRecord(value)) return []
+  return Object.values(value).flatMap(stringsFromValue)
+}
+
+function extractNamedStrings(payload: Record<string, unknown>, keys: string[]): string[] {
+  return keys.flatMap(key => stringsFromValue(payload[key]))
+}
+
+function subjectMatches(row: unknown, needles: string[]): boolean {
+  if (needles.length === 0) return false
+  const haystack = compactJson(row, 10_000).toLowerCase()
+  return needles.some(needle => haystack.includes(needle.toLowerCase()))
+}
+
+function isAiAuditKind(kind: string): boolean {
+  return kind.startsWith('llm.')
+    || kind.startsWith('mcp.')
+    || kind.startsWith('tool.invocation')
+    || kind.startsWith('code_change')
+    || kind.startsWith('git.commit')
+    || kind.startsWith('cf.execute')
+}
+
+function isApprovalPositive(status?: string | null): boolean {
+  const value = (status ?? '').toUpperCase()
+  return ['APPROVED', 'PASS', 'ACCEPTED_WITH_RISK', 'COMPLETED'].includes(value)
+}
+
+function verdictFor(classification: CausalityClassification): string {
+  switch (classification) {
+    case 'NO_AI_ACTION_FOUND':
+      return 'No AI-backed action was found for this run in Workgraph or the audit trail.'
+    case 'AI_ACTION_NOT_TOUCHING_SUBJECT':
+      return 'AI activity was present, but the available evidence does not show it touching the incident subject.'
+    case 'AI_ACTION_PRESENT_HUMAN_APPROVED':
+      return 'AI activity touched the subject, and at least one related human approval is present.'
+    case 'AI_ACTION_PRESENT_UNAPPROVED':
+      return 'AI activity touched the subject and no human approval evidence was found.'
+    case 'INCONCLUSIVE':
+    default:
+      return 'The available evidence is incomplete, so Singularity cannot prove or disprove AI causality.'
+  }
+}
+
+insightsRouter.get('/:id/ai-causality-report', async (req: Request, res: Response, next) => {
   try {
     const id = String(req.params.id)
-    // Reuse the existing instance-permission helper so the dashboard is scoped
-    // to capabilities the user can already see.
     await assertInstancePermission(req.user!.userId, id, 'view')
 
+    const [instance, nodes, agentRuns, approvals, consumables, budget, blueprintSessions, auditEvents] = await Promise.all([
+      prisma.workflowInstance.findUnique({
+        where: { id },
+        select: { id: true, name: true, status: true, templateId: true, startedAt: true, completedAt: true, createdAt: true },
+      }),
+      prisma.workflowNode.findMany({
+        where: { instanceId: id },
+        select: { id: true, label: true, nodeType: true, status: true },
+      }),
+      prisma.agentRun.findMany({
+        where: { instanceId: id },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true,
+          nodeId: true,
+          status: true,
+          startedAt: true,
+          completedAt: true,
+          createdAt: true,
+          outputs: {
+            orderBy: { createdAt: 'asc' },
+            select: { id: true, outputType: true, rawContent: true, structuredPayload: true, tokenCount: true, createdAt: true },
+          },
+        },
+      }),
+      prisma.approvalRequest.findMany({
+        where: { instanceId: id },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true,
+          nodeId: true,
+          subjectType: true,
+          subjectId: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true,
+          decisions: { select: { decision: true, notes: true, decidedAt: true, decidedById: true } },
+        },
+      }),
+      prisma.consumable.findMany({
+        where: { instanceId: id },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, nodeId: true, name: true, status: true, currentVersion: true, formData: true, createdAt: true, updatedAt: true },
+      }),
+      prisma.workflowRunBudget.findUnique({
+        where: { instanceId: id },
+        include: { events: { orderBy: { createdAt: 'asc' } } },
+      }),
+      prisma.blueprintSession.findMany({
+        where: { workflowInstanceId: id },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true,
+          status: true,
+          goal: true,
+          artifacts: { orderBy: { createdAt: 'asc' }, select: { id: true, stage: true, kind: true, title: true, payload: true, createdAt: true } },
+        },
+      }),
+      fetchEventsForInstance(id, 500),
+    ])
+    if (!instance) return res.status(404).json({ code: 'NOT_FOUND', message: 'Workflow instance not found' })
+
+    const nodeById = new Map(nodes.map(node => [node.id, node]))
+    const query = {
+      subject: str(req.query.subject),
+      path: str(req.query.path),
+      artifactId: str(req.query.artifactId),
+      commitSha: str(req.query.commitSha),
+    }
+    const needles = uniqueStrings([query.subject, query.path, query.artifactId, query.commitSha])
+
+    const agentActions = agentRuns.flatMap(run => {
+      const node = run.nodeId ? nodeById.get(run.nodeId) : undefined
+      return run.outputs.map(output => {
+        const payload = payloadOf(output.structuredPayload)
+        const changedPaths = extractNamedStrings(payload, ['changedPaths', 'changed_paths', 'paths_touched', 'touchedPaths'])
+        const commits = extractNamedStrings(payload, ['workspaceCommitSha', 'commitSha', 'commit_sha'])
+        const artifactIds = extractNamedStrings(payload, ['artifactIds', 'artifact_ids', 'consumableIds', 'consumableId'])
+        const promptAssemblyIds = extractNamedStrings(payload, ['promptAssemblyId', 'prompt_assembly_id'])
+        const modelAliases = extractNamedStrings(payload, ['modelAlias', 'model_alias'])
+        return {
+          source: 'agent_run_output',
+          runId: run.id,
+          nodeId: run.nodeId,
+          nodeLabel: node?.label,
+          nodeType: node?.nodeType,
+          status: run.status,
+          outputId: output.id,
+          outputType: output.outputType,
+          createdAt: output.createdAt,
+          tokenCount: output.tokenCount,
+          changedPaths,
+          commits,
+          artifactIds,
+          promptAssemblyIds,
+          modelAliases,
+          preview: output.rawContent?.slice(0, 500) ?? compactJson(payload, 500),
+          matched: subjectMatches({ payload, rawContent: output.rawContent }, needles),
+        }
+      })
+    })
+
+    const auditActions = auditEvents
+      .filter(event => isAiAuditKind(event.kind))
+      .map(event => {
+        const payload = event.payload ?? {}
+        return {
+          source: 'audit_event',
+          id: event.id,
+          kind: event.kind,
+          traceId: event.trace_id,
+          timestamp: event.created_at,
+          severity: event.severity,
+          changedPaths: extractNamedStrings(payload, ['changedPaths', 'changed_paths', 'paths_touched', 'touchedPaths', 'path']),
+          commits: extractNamedStrings(payload, ['workspaceCommitSha', 'commitSha', 'commit_sha']),
+          artifactIds: extractNamedStrings(payload, ['artifactIds', 'artifact_ids', 'artifactId', 'consumableId']),
+          promptAssemblyIds: extractNamedStrings(payload, ['promptAssemblyId', 'prompt_assembly_id']),
+          modelAliases: extractNamedStrings(payload, ['modelAlias', 'model_alias']),
+          preview: compactJson(payload, 500),
+          matched: subjectMatches(payload, needles),
+        }
+      })
+
+    const consumableEvidence = consumables.map(consumable => ({
+      source: 'consumable',
+      id: consumable.id,
+      nodeId: consumable.nodeId,
+      name: consumable.name,
+      status: consumable.status,
+      currentVersion: consumable.currentVersion,
+      updatedAt: consumable.updatedAt,
+      matched: subjectMatches(consumable, needles),
+    }))
+    const blueprintEvidence = blueprintSessions.flatMap(session => session.artifacts.map(artifact => ({
+      source: 'blueprint_artifact',
+      sessionId: session.id,
+      id: artifact.id,
+      stage: artifact.stage,
+      kind: artifact.kind,
+      title: artifact.title,
+      createdAt: artifact.createdAt,
+      matched: subjectMatches(artifact, needles),
+    })))
+    const approvalEvidence = approvals.map(approval => ({
+      id: approval.id,
+      nodeId: approval.nodeId,
+      subjectType: approval.subjectType,
+      subjectId: approval.subjectId,
+      status: approval.status,
+      approved: isApprovalPositive(approval.status) || approval.decisions.some(decision => isApprovalPositive(decision.decision)),
+      createdAt: approval.createdAt,
+      updatedAt: approval.updatedAt,
+      decisions: approval.decisions,
+    }))
+
+    const allAiActions = [...agentActions, ...auditActions]
+    const matches = [
+      ...allAiActions.filter(action => action.matched),
+      ...consumableEvidence.filter(item => item.matched),
+      ...blueprintEvidence.filter(item => item.matched),
+    ]
+    const humanApproved = approvalEvidence.some(approval => approval.approved)
+    const warnings: string[] = []
+    if (auditEvents.length === 0) warnings.push('No audit-governance events were available for this run.')
+    if (allAiActions.some(action => action.source === 'audit_event' && String((action as { kind?: string }).kind ?? '').startsWith('code_change') && !action.preview.includes('diff') && !action.preview.includes('patch'))) {
+      warnings.push('At least one MCP code-change event lacks a live diff/patch body.')
+    }
+    if (agentRuns.length > 0 && allAiActions.length === 0) warnings.push('Agent runs exist, but no model/tool/code audit events were found.')
+
+    let classification: CausalityClassification
+    if (allAiActions.length === 0 && warnings.length > 0) classification = 'INCONCLUSIVE'
+    else if (allAiActions.length === 0) classification = 'NO_AI_ACTION_FOUND'
+    else if (needles.length > 0 && matches.length === 0) classification = warnings.length > 0 ? 'INCONCLUSIVE' : 'AI_ACTION_NOT_TOUCHING_SUBJECT'
+    else if (humanApproved) classification = 'AI_ACTION_PRESENT_HUMAN_APPROVED'
+    else classification = 'AI_ACTION_PRESENT_UNAPPROVED'
+
+    res.json({
+      run: instance,
+      generatedAt: new Date().toISOString(),
+      query,
+      classification,
+      verdict: verdictFor(classification),
+      confidence: classification === 'INCONCLUSIVE' ? 'LOW' : warnings.length > 0 ? 'MEDIUM' : 'HIGH',
+      evidence: {
+        whatAiDid: allAiActions,
+        whatAiDidNotTouch: needles.length > 0 ? allAiActions.filter(action => !action.matched).slice(0, 50) : [],
+        humanApprovals: approvalEvidence,
+        codeAndArtifactEvidence: [...consumableEvidence, ...blueprintEvidence],
+        budget: budget ? {
+          status: budget.status,
+          consumedInputTokens: budget.consumedInputTokens,
+          consumedOutputTokens: budget.consumedOutputTokens,
+          consumedTotalTokens: budget.consumedTotalTokens,
+          consumedEstimatedCost: budget.consumedEstimatedCost,
+          pricingStatus: budget.pricingStatus,
+          eventCount: budget.events.length,
+        } : null,
+        touchedPaths: uniqueStrings(allAiActions.flatMap(action => action.changedPaths)),
+        commits: uniqueStrings(allAiActions.flatMap(action => action.commits)),
+        artifactIds: uniqueStrings(allAiActions.flatMap(action => action.artifactIds).concat(consumables.map(c => c.id))),
+        promptAssemblyIds: uniqueStrings(allAiActions.flatMap(action => action.promptAssemblyIds)),
+        modelAliases: uniqueStrings(allAiActions.flatMap(action => action.modelAliases)),
+        warnings,
+      },
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
+async function buildInsightsResponse(id: string): Promise<InsightsResponse | null> {
     const [instance, nodes, documents, consumables, agentRuns, budget, blueprintSessions, approvalRequests, workItems] = await Promise.all([
       prisma.workflowInstance.findUnique({
         where: { id },
@@ -567,10 +838,7 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
       }),
     ])
 
-    if (!instance) {
-      res.status(404).json({ code: 'NOT_FOUND' })
-      return
-    }
+    if (!instance) return null
 
     const events: AuditEvent[] = await fetchEventsForInstance(id, 500)
     const rollup = rollupFromEvents(events)
@@ -1009,6 +1277,188 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
       auditReport,
     }
 
+    return response
+}
+
+function money(value: number | null | undefined): string {
+  return typeof value === 'number' ? `$${value.toFixed(4)}` : 'UNPRICED'
+}
+
+function ms(value: number | null | undefined): string {
+  if (typeof value !== 'number') return 'n/a'
+  if (value < 1000) return `${value}ms`
+  const seconds = Math.round(value / 100) / 10
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m ${Math.round(seconds % 60)}s`
+}
+
+function buildEvidenceWarnings(insights: InsightsResponse): string[] {
+  return uniqueStrings([
+    insights.auditReport.totals.unpricedCalls > 0
+      ? `${insights.auditReport.totals.unpricedCalls} stage(s) include unpriced usage.`
+      : undefined,
+    insights.missionControl.receiptsCount === 0
+      ? 'No model execution receipts were linked to this run.'
+      : undefined,
+    insights.missionControl.codeChangeEvents > 0 && insights.missionControl.workspaceSteps === 0
+      ? 'Code-change activity exists, but no MCP workspace branch/commit evidence was linked.'
+      : undefined,
+    insights.auditReport.coverage.auditEvents === 0
+      ? 'No audit-governance events were available for this run.'
+      : undefined,
+    insights.nodes.some(node => node.receipts.some(receipt => receipt.blockedReason))
+      ? 'One or more model calls were blocked or degraded.'
+      : undefined,
+  ])
+}
+
+function renderEvidenceMarkdown(pack: any): string {
+  const lines = [
+    `# Run Evidence Pack: ${pack.summary.name}`,
+    '',
+    `- Run ID: ${pack.manifest.workflowInstanceId}`,
+    `- Status: ${pack.summary.status}`,
+    `- Generated: ${pack.manifest.generatedAt}`,
+    `- Duration: ${ms(pack.summary.durationMs)}`,
+    `- Tokens: ${pack.summary.tokens.total.toLocaleString()} total (${pack.summary.tokens.input.toLocaleString()} input / ${pack.summary.tokens.output.toLocaleString()} output)`,
+    `- Estimated cost: ${money(pack.summary.estimatedCost)}`,
+    `- Approvals: ${pack.summary.approvals}`,
+    `- Artifacts: ${pack.summary.artifacts}`,
+    `- Consumables: ${pack.summary.consumables}`,
+    `- Documents: ${pack.summary.documents}`,
+    '',
+    '## Evidence Gaps',
+    ...(pack.summary.warnings.length ? pack.summary.warnings.map((warning: string) => `- ${warning}`) : ['- None recorded.']),
+    '',
+    '## Stage Timeline',
+    ...pack.sections.stageTimeline.map((stage: AuditStageReport) =>
+      `- ${stage.label} [${stage.type}] ${stage.status}; duration ${ms(stage.durationMs)}; tokens ${stage.totalTokens.toLocaleString()}; cost ${money(stage.estimatedCost)}; approvals ${stage.approvalCount}; artifacts ${stage.artifactIds.length}; consumables ${stage.consumableIds.length}`,
+    ),
+    '',
+    '## Budget Ledger',
+    ...(pack.sections.budgetLedger.length
+      ? pack.sections.budgetLedger.map((event: InsightsResponse['auditReport']['ledger'][number]) =>
+        `- ${event.createdAt}: ${event.eventType} node=${event.nodeId ?? event.stageKey ?? 'run'} tokens=${event.totalTokensDelta} cost=${money(event.estimatedCostDelta)} pricing=${event.pricingStatus}`,
+      )
+      : ['- No budget ledger events recorded.']),
+    '',
+    '## Workspace Evidence',
+    ...(pack.sections.workspaceEvidence.length
+      ? pack.sections.workspaceEvidence.map((item: NodeInsight['workspace'][number] & { nodeLabel: string }) =>
+        `- ${item.nodeLabel}: branch=${item.branch ?? 'n/a'} commit=${item.commitSha ?? 'n/a'} ast=${item.astIndexStatus ?? 'n/a'} paths=${item.changedPaths.join(', ') || 'none'}`,
+      )
+      : ['- No MCP workspace evidence linked.']),
+    '',
+    '## Citations',
+    ...(pack.sections.citations.length
+      ? pack.sections.citations.map((item: NodeInsight['citations'][number] & { nodeLabel: string }) =>
+        `- ${item.nodeLabel}: ${item.citationKey || item.sourceId} (${item.sourceKind}, confidence ${item.confidence ?? 'n/a'})`,
+      )
+      : ['- No prompt citations linked.']),
+  ]
+  return lines.join('\n')
+}
+
+function buildEvidencePack(insights: InsightsResponse) {
+  const warnings = buildEvidenceWarnings(insights)
+  const workspaceEvidence = insights.nodes.flatMap(node =>
+    node.workspace.map(item => ({ nodeId: node.id, nodeLabel: node.label, ...item })),
+  )
+  const citations = insights.nodes.flatMap(node =>
+    node.citations.map(item => ({ nodeId: node.id, nodeLabel: node.label, ...item })),
+  )
+  const receipts = insights.nodes.flatMap(node =>
+    node.receipts.map(receipt => ({ nodeId: node.id, nodeLabel: node.label, ...receipt })),
+  )
+  const workItems = insights.nodes.flatMap(node =>
+    node.workItems.map(item => ({ nodeId: node.id, nodeLabel: node.label, ...item })),
+  )
+  const pack = {
+    manifest: {
+      generatedAt: new Date().toISOString(),
+      evidencePackVersion: 1,
+      workflowInstanceId: insights.run.id,
+      templateId: insights.run.templateId,
+      source: 'workgraph.run_insights',
+    },
+    summary: {
+      id: insights.run.id,
+      name: insights.run.name,
+      status: insights.run.status,
+      startedAt: insights.run.startedAt,
+      completedAt: insights.run.completedAt,
+      durationMs: insights.auditReport.totals.durationMs,
+      tokens: {
+        input: insights.auditReport.totals.inputTokens,
+        output: insights.auditReport.totals.outputTokens,
+        total: insights.auditReport.totals.totalTokens,
+      },
+      estimatedCost: insights.auditReport.totals.estimatedCost,
+      unpricedCalls: insights.auditReport.totals.unpricedCalls,
+      approvals: insights.auditReport.totals.approvals,
+      artifacts: insights.auditReport.totals.artifacts,
+      documents: insights.auditReport.totals.documents,
+      consumables: insights.auditReport.totals.consumables,
+      warnings,
+    },
+    sections: {
+      stageTimeline: insights.auditReport.stages,
+      budgetLedger: insights.auditReport.ledger,
+      approvals: insights.auditReport.stages
+        .filter(stage => stage.approvalCount > 0)
+        .map(stage => ({
+          stageId: stage.id,
+          nodeId: stage.nodeId,
+          label: stage.label,
+          approvalCount: stage.approvalCount,
+          status: stage.status,
+        })),
+      documents: insights.documents,
+      consumables: insights.consumables,
+      receipts,
+      workspaceEvidence,
+      citations,
+      workItems,
+      missionControl: insights.missionControl,
+      auditEvents: insights.events,
+      costByModel: insights.costByModel,
+    },
+    sourceLinks: {
+      runInsights: `/runs/${insights.run.id}/insights`,
+      workflowInstanceApi: `/api/workflow-instances/${insights.run.id}`,
+      insightsApi: `/api/workflow-instances/${insights.run.id}/insights`,
+    },
+    markdown: '',
+  }
+  return { ...pack, markdown: renderEvidenceMarkdown(pack) }
+}
+
+insightsRouter.get('/:id/evidence-pack', async (req: Request, res: Response, next) => {
+  try {
+    const id = String(req.params.id)
+    await assertInstancePermission(req.user!.userId, id, 'view')
+    const insights = await buildInsightsResponse(id)
+    if (!insights) return res.status(404).json({ code: 'NOT_FOUND' })
+    const pack = buildEvidencePack(insights)
+    if (req.query.format === 'markdown') {
+      res.type('text/markdown').send(pack.markdown)
+      return
+    }
+    res.json(pack)
+  } catch (err) {
+    next(err)
+  }
+})
+
+insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) => {
+  try {
+    const id = String(req.params.id)
+    // Reuse the existing instance-permission helper so the dashboard is scoped
+    // to capabilities the user can already see.
+    await assertInstancePermission(req.user!.userId, id, 'view')
+    const response = await buildInsightsResponse(id)
+    if (!response) return res.status(404).json({ code: 'NOT_FOUND' })
     res.json(response)
   } catch (err) {
     next(err)

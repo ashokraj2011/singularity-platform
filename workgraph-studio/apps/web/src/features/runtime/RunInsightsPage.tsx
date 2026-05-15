@@ -382,6 +382,7 @@ export function RunInsightsPage() {
           <Tile icon={GitBranch} label="Branches / commits" value={`${data.missionControl.branchEvents}/${data.missionControl.commitEvents}`} sub={`${data.missionControl.codeChangeEvents} code changes`} />
           <Tile icon={Network} label="WorkItems" value={`${data.missionControl.workItemCount}`} sub="cross-capability delegations" />
         </div>
+        <MissionCommandDeck data={data} budget={budget} />
         <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 8 }}>
           <MissionHint icon={Network} title="Execution chain" text="Workflow → Prompt Composer → Context Fabric → MCP → receipts." />
           <MissionHint icon={Database} title="Private code posture" text="MCP AST tools provide symbols and slices; full files stay local unless explicitly read." />
@@ -974,6 +975,201 @@ function MissionHint({
       </div>
     </div>
   )
+}
+
+function MissionCommandDeck({ data, budget }: { data: InsightsResponse; budget?: BudgetResponse }) {
+  const failedNodes = data.nodes.filter(node => ['FAILED', 'BLOCKED'].includes(node.status)).length
+  const activeNodes = data.nodes.filter(node => ['ACTIVE', 'RUNNING', 'WAITING'].includes(node.status)).length
+  const approvalWaits = data.missionControl.approvalWaits
+  const evidenceItems = data.documents.length + data.consumables.length + data.missionControl.citationCount
+  const budgetPct = budget?.percentUsed.totalTokens ?? null
+  const nextStage = data.auditReport.stages.find(stage => !['COMPLETED', 'APPROVED', 'PASS'].includes(stage.status))
+  const runTone = failedNodes > 0
+    ? 'red'
+    : approvalWaits > 0
+      ? 'amber'
+      : activeNodes > 0
+        ? 'blue'
+        : 'green'
+  const runPosture = failedNodes > 0
+    ? `${failedNodes} blocked node${failedNodes === 1 ? '' : 's'}`
+    : approvalWaits > 0
+      ? `${approvalWaits} approval wait${approvalWaits === 1 ? '' : 's'}`
+      : activeNodes > 0
+        ? `${activeNodes} active node${activeNodes === 1 ? '' : 's'}`
+        : data.run.status
+
+  return (
+    <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+        <MissionCommandCard
+          icon={Route}
+          title="Run posture"
+          value={runPosture}
+          tone={runTone}
+          meta={nextStage ? `Next focus: ${nextStage.label}` : 'No pending stage visible'}
+        />
+        <MissionCommandCard
+          icon={Coins}
+          title="Token economy"
+          value={`${data.auditReport.totals.totalTokens.toLocaleString()} tokens`}
+          tone={budgetPct != null && budgetPct >= 80 ? 'amber' : 'green'}
+          meta={budgetPct == null ? 'No total-token ceiling' : `${budgetPct.toFixed(1)}% of run budget`}
+        />
+        <MissionCommandCard
+          icon={FileText}
+          title="Evidence payload"
+          value={`${evidenceItems} items`}
+          tone={evidenceItems > 0 ? 'green' : 'blue'}
+          meta={`${data.documents.length} docs · ${data.consumables.length} consumables · ${data.missionControl.citationCount} citations`}
+        />
+        <MissionCommandCard
+          icon={Cpu}
+          title="MCP workspace"
+          value={`${data.missionControl.astEvents} AST events`}
+          tone={data.missionControl.codeChangeEvents > 0 || data.missionControl.commitEvents > 0 ? 'green' : 'blue'}
+          meta={`${data.missionControl.branchEvents} branches · ${data.missionControl.commitEvents} commits · ${data.missionControl.codeChangeEvents} code changes`}
+        />
+      </div>
+
+      <div style={{
+        border: '1px solid #dbe5ea',
+        borderRadius: 10,
+        background: 'linear-gradient(180deg, #f8fbfb 0%, #ffffff 100%)',
+        padding: 12,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline', marginBottom: 10 }}>
+          <div>
+            <h3 style={{ margin: 0, color: '#0f172a', fontSize: 12, fontWeight: 900 }}>Stage command lane</h3>
+            <p style={{ margin: '3px 0 0', color: '#64748b', fontSize: 10 }}>
+              Audit-backed timing, model, budget, and artifact posture for each workflow or Workbench stage.
+            </p>
+          </div>
+          <span style={{ color: '#64748b', fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+            {data.auditReport.stages.length} stages
+          </span>
+        </div>
+        {data.auditReport.stages.length === 0 ? (
+          <p style={{ color: '#94a3b8', fontSize: 11, margin: 0 }}>No stage audit rows are available yet.</p>
+        ) : (
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+            gap: 8,
+          }}>
+            {data.auditReport.stages.slice(0, 12).map(stage => (
+              <MissionStageCard key={`${stage.type}-${stage.id}`} stage={stage} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function MissionCommandCard({
+  icon: Icon,
+  title,
+  value,
+  meta,
+  tone,
+}: {
+  icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>
+  title: string
+  value: string
+  meta: string
+  tone: 'red' | 'amber' | 'green' | 'blue'
+}) {
+  const palette = missionPalette(tone)
+  return (
+    <div style={{
+      display: 'grid',
+      gap: 8,
+      border: `1px solid ${palette.border}`,
+      borderRadius: 10,
+      background: palette.bg,
+      padding: 12,
+      minHeight: 104,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: palette.fg, fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+        <Icon size={14} /> {title}
+      </div>
+      <strong style={{ color: '#0f172a', fontSize: 18, lineHeight: 1.1 }}>{value}</strong>
+      <span style={{ color: '#64748b', fontSize: 11, lineHeight: 1.35 }}>{meta}</span>
+    </div>
+  )
+}
+
+function MissionStageCard({ stage }: { stage: InsightsResponse['auditReport']['stages'][number] }) {
+  const tone = stage.status === 'FAILED' || stage.warnings.length > 0
+    ? 'red'
+    : stage.status === 'WAITING' || stage.approvalCount > 0 || stage.pricingStatus === 'UNPRICED'
+      ? 'amber'
+      : stage.status === 'COMPLETED' || stage.status === 'APPROVED' || stage.status === 'PASS'
+        ? 'green'
+        : 'blue'
+  const palette = missionPalette(tone)
+  const evidence = stage.artifactIds.length + stage.consumableIds.length + stage.documentIds.length
+  return (
+    <div style={{
+      border: `1px solid ${palette.border}`,
+      borderLeft: `4px solid ${palette.fg}`,
+      borderRadius: 9,
+      background: '#fff',
+      padding: 10,
+      display: 'grid',
+      gap: 7,
+      minWidth: 0,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
+        <div style={{ minWidth: 0 }}>
+          <strong style={{ display: 'block', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#0f172a', fontSize: 12 }}>
+            {stage.label}
+          </strong>
+          <span style={{ color: '#94a3b8', fontSize: 9, textTransform: 'uppercase', letterSpacing: '0.07em', fontWeight: 800 }}>
+            {stage.type === 'workbench_stage' ? 'Workbench' : stage.nodeType ?? 'Workflow'}{stage.stageKey ? ` · ${stage.stageKey}` : ''}
+          </span>
+        </div>
+        <span style={{
+          flexShrink: 0,
+          border: `1px solid ${palette.border}`,
+          borderRadius: 999,
+          color: palette.fg,
+          background: palette.bg,
+          padding: '2px 6px',
+          fontSize: 9,
+          fontWeight: 900,
+          textTransform: 'uppercase',
+        }}>{stage.status}</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
+        <MissionMini label="Time" value={stage.durationMs == null ? '—' : `${stage.durationPrecise ? '' : '≈'}${fmtDuration(stage.durationMs)}`} />
+        <MissionMini label="Tokens" value={stage.totalTokens ? stage.totalTokens.toLocaleString() : '—'} />
+        <MissionMini label="Evidence" value={`${evidence}`} />
+      </div>
+      <div style={{ color: '#64748b', fontSize: 10, minHeight: 16 }}>
+        {stage.modelAlias || stage.model || stage.provider
+          ? `${stage.modelAlias ?? stage.provider ?? 'model'}${stage.model ? ` · ${stage.model}` : ''}`
+          : stage.warnings[0] ?? 'No model receipt yet'}
+      </div>
+    </div>
+  )
+}
+
+function MissionMini({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ color: '#94a3b8', fontSize: 8, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{label}</div>
+      <div style={{ color: '#0f172a', fontSize: 11, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</div>
+    </div>
+  )
+}
+
+function missionPalette(tone: 'red' | 'amber' | 'green' | 'blue') {
+  if (tone === 'red') return { bg: '#fef2f2', border: '#fecaca', fg: '#b91c1c' }
+  if (tone === 'amber') return { bg: '#fffbeb', border: '#fde68a', fg: '#b45309' }
+  if (tone === 'green') return { bg: '#ecfdf5', border: '#bbf7d0', fg: '#047857' }
+  return { bg: '#f8fafc', border: '#dbe5ea', fg: '#0369a1' }
 }
 
 function NodeMap({ nodes }: { nodes: InsightNode[] }) {

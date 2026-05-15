@@ -70,6 +70,7 @@ export interface ExecuteRespondResponse {
     llmCallIds?: string[];
   };
   usage?: {
+    modelAlias?: string;
     provider?: string;
     model?: string;
     inputTokens?: number;
@@ -79,6 +80,7 @@ export interface ExecuteRespondResponse {
     tokensSaved?: number | null;
   };
   modelUsage?: {
+    modelAlias?: string;
     provider?: string;
     model?: string;
     inputTokens?: number;

@@ -11,6 +11,11 @@ export default defineConfig({
   server: {
     port: 5175,
     proxy: {
+      '/api/wg': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/api\/wg/, '/api'),
+      },
       '/api/cf': {
         target: 'http://localhost:8000',
         changeOrigin: true,

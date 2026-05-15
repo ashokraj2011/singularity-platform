@@ -1,6 +1,7 @@
 const AGENT_BASE = "/api/agents";
 const TOOL_BASE = "/api/tools";
 const AUDIT_GOV_BASE = "/api/audit-gov";
+const WORKGRAPH_BASE = "/api/workgraph";
 
 export class ApiError extends Error {
   constructor(
@@ -47,7 +48,7 @@ export function clearAgentToolsToken(): void {
   localStorage.removeItem("agent-tools-token");
 }
 
-function authHeaders(): Record<string, string> {
+export function authHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {};
   for (const key of ["agent-tools-token", "auth-token", "token"]) {
     const header = bearerHeader(localStorage.getItem(key));
@@ -200,6 +201,11 @@ type Row = Record<string, unknown>;
 export type IamTeam = { id: string; team_key?: string; name: string; bu_id?: string | null };
 export type IamBusinessUnit = { id: string; bu_key?: string; name: string };
 
+export function workgraphRunInsightsUrl(runId: string): string {
+  const base = process.env.NEXT_PUBLIC_WORKGRAPH_WEB_URL ?? "http://localhost:5174";
+  return `${base.replace(/\/$/, "")}/runs/${encodeURIComponent(runId)}/insights`;
+}
+
 function unwrapList<T>(data: unknown, key?: string): T[] {
   if (Array.isArray(data)) return data as T[];
   if (data && typeof data === "object") {
@@ -220,6 +226,16 @@ export const identityApi = {
     }),
   listTeams: async () => unwrapList<IamTeam>(await req<unknown>("/api/iam/teams?page=1&size=200"), "items"),
   listBusinessUnits: async () => unwrapList<IamBusinessUnit>(await req<unknown>("/api/iam/business-units?page=1&size=200"), "items"),
+};
+
+export const workgraphApi = {
+  createWorkflowTemplate: (body: Row) =>
+    req<Row>(`${WORKGRAPH_BASE}/workflow-templates`, { method: "POST", body: JSON.stringify(body) }),
+  startWorkflowRun: (workflowId: string, body: Row) =>
+    req<Row>(`${WORKGRAPH_BASE}/workflow-templates/${encodeURIComponent(workflowId)}/runs`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 export const runtimeApi = {
@@ -312,6 +328,8 @@ export const runtimeApi = {
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${id}/archive`, { method: "POST" }),
   bootstrapCapability: (body: Row) =>
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities/bootstrap`, { method: "POST", body: JSON.stringify(body) }),
+  bootstrapAgentCatalog: () =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/bootstrap-agent-catalog`),
   getBootstrapRun: (capabilityId: string, runId: string) =>
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/bootstrap-runs/${runId}`),
   reviewBootstrapRun: (capabilityId: string, runId: string, body: Row) =>

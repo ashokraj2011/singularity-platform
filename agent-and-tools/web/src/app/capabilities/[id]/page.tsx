@@ -2,10 +2,10 @@
 import { useRef, useState } from "react";
 import useSWR from "swr";
 import { useSearchParams } from "next/navigation";
-import { identityApi, runtimeApi, type IamBusinessUnit, type IamTeam } from "@/lib/api";
+import { identityApi, runtimeApi, workgraphApi, workgraphRunInsightsUrl, type IamBusinessUnit, type IamTeam } from "@/lib/api";
 import { CAPABILITY_ROLE_OPTIONS, capabilityRoleLabel } from "@/lib/capabilityRoles";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { Archive, Bot, CheckCircle2, Pencil, Plus, RefreshCw, Save, Sparkles, Upload, X } from "lucide-react";
+import { Archive, Bot, CheckCircle2, ExternalLink, Pencil, PlayCircle, Plus, RefreshCw, Rocket, Save, Sparkles, Upload, X } from "lucide-react";
 
 type CapabilityEditForm = {
   name: string;
@@ -31,7 +31,7 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
     () => runtimeApi.getBootstrapRun(id, latestRunId as string),
   );
 
-  const [tab, setTab] = useState<"agents" | "bootstrap" | "bindings" | "repos" | "knowledge" | "code" | "sources" | "tuning">(
+  const [tab, setTab] = useState<"architecture" | "agents" | "bootstrap" | "bindings" | "repos" | "knowledge" | "code" | "sources" | "tuning">(
     runIdFromQuery ? "bootstrap" : "agents",
   );
 
@@ -60,6 +60,7 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
   const bindings = (c.bindings as Array<Record<string, unknown>>) ?? [];
   const know_artifacts = (c.knowledgeArtifacts as Array<Record<string, unknown>>) ?? [];
   const isArchived = c.status === "ARCHIVED";
+  const defaultRepoUrl = repos.map(repo => capabilityString(repo.repoUrl)).find(Boolean) ?? "";
 
   async function addRepo() {
     if (!repo.repoName || !repo.repoUrl) return;
@@ -288,7 +289,7 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
       )}
 
       <div className="flex gap-1 mb-6 border-b border-slate-200">
-        {(["agents", "bootstrap", "bindings", "repos", "knowledge", "code", "sources", "tuning"] as const).map(t => (
+        {(["architecture", "agents", "bootstrap", "bindings", "repos", "knowledge", "code", "sources", "tuning"] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors capitalize ${
               tab === t ? "border-singularity-600 text-singularity-700" : "border-transparent text-slate-500 hover:text-slate-800"
@@ -310,8 +311,37 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
         </div>
       )}
 
-      {architectureDiagram && (
+      <UltraModePanel capability={c} capabilityId={id} defaultRepoUrl={defaultRepoUrl} disabled={isArchived} />
+
+      {architectureDiagram && tab !== "architecture" && (
         <CapabilityArchitecturePanel diagram={architectureDiagram} />
+      )}
+
+      {tab === "architecture" && (
+        architectureDiagram ? (
+          <div className="space-y-4">
+            <CapabilityArchitecturePanel diagram={architectureDiagram} />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <SummaryCard
+                label="Architecture source"
+                value={bootstrapRun ? "Bootstrap packet" : "Live capability metadata"}
+                note="Bootstrap diagrams include discovered repo/doc signals. Metadata diagrams are regenerated from current capability state."
+              />
+              <SummaryCard
+                label="View type"
+                value={String(architectureDiagram.view ?? architectureDiagram.kind ?? "application").replace(/_/g, " ")}
+                note="Collection capabilities use a TOGAF-style layered map; application capabilities use a delivery/runtime map."
+              />
+              <SummaryCard
+                label="Runtime grounding"
+                value={`${asObjectArray(c.bindings).length} agents · ${asObjectArray(c.repositories).length} repos`}
+                note="Agents, knowledge, repos, and receipts feed the operating model shown above."
+              />
+            </div>
+          </div>
+        ) : (
+          <div className="card p-6 text-sm text-slate-500">No architecture diagram is available for this capability yet.</div>
+        )
       )}
 
       {tab === "agents" && (
@@ -491,6 +521,246 @@ function CapabilityField({ label, children }: { label: string; children: React.R
       {children}
     </label>
   );
+}
+
+function SummaryCard({ label, value, note }: { label: string; value: string; note: string }) {
+  return (
+    <div className="card p-4">
+      <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">{label}</div>
+      <div className="text-lg font-semibold text-slate-900 capitalize">{value}</div>
+      <p className="text-xs text-slate-500 mt-2">{note}</p>
+    </div>
+  );
+}
+
+function UltraModePanel({
+  capability,
+  capabilityId,
+  defaultRepoUrl,
+  disabled,
+}: {
+  capability: Record<string, unknown>;
+  capabilityId: string;
+  defaultRepoUrl: string;
+  disabled?: boolean;
+}) {
+  const capabilityName = capabilityString(capability.name) || "Capability";
+  const [expanded, setExpanded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{ workflowId: string; runId: string; url: string } | null>(null);
+  const [form, setForm] = useState({
+    goal: "",
+    acceptanceCriteria: "",
+    repoUrl: "",
+    budgetPreset: "balanced",
+    modelAlias: "",
+  });
+
+  function openUltraMode() {
+    setExpanded(true);
+    setError(null);
+    setForm(current => ({ ...current, repoUrl: current.repoUrl || defaultRepoUrl }));
+  }
+
+  async function launchUltraMode(event: React.FormEvent) {
+    event.preventDefault();
+    const goal = form.goal.trim();
+    const repoUrl = (form.repoUrl || defaultRepoUrl).trim();
+    if (!goal) {
+      setError("Enter the delivery goal or story for the agent team.");
+      return;
+    }
+    if (!repoUrl) {
+      setError("Attach or enter a GitHub repository URL so Ultra Mode has a workspace.");
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const shortGoal = goal.length > 54 ? `${goal.slice(0, 54)}...` : goal;
+      const workflow = await workgraphApi.createWorkflowTemplate({
+        name: `Ultra: ${capabilityName} - ${shortGoal}`,
+        description: goal,
+        capabilityId,
+        starter: "CAPABILITY_WORKBENCH_BRIDGE",
+        metadata: {
+          workflowType: "SDLC",
+          criticality: normalizeCriticality(capability.criticality),
+          executionTarget: "SERVER",
+          visibility: "PRIVATE",
+          requiresApprovalToRun: false,
+          tags: [
+            { key: "mode", value: "ultra" },
+            { key: "capability", value: capabilityName },
+          ],
+        },
+        budgetPolicy: ultraBudgetPolicy(form.budgetPreset),
+      });
+      const workflowId = capabilityString(workflow.id);
+      if (!workflowId) throw new Error("Ultra Mode created a workflow without an id.");
+
+      const run = await workgraphApi.startWorkflowRun(workflowId, {
+        name: `Ultra delivery - ${shortGoal}`,
+        vars: {
+          story: goal,
+          acceptanceCriteria: form.acceptanceCriteria.trim(),
+          repoUrl,
+        },
+        globals: {
+          ultraMode: true,
+          capabilityId,
+          capabilityName,
+          budgetPreset: form.budgetPreset,
+          modelAlias: form.modelAlias.trim() || undefined,
+        },
+      });
+      const runId = capabilityString(run.id);
+      if (!runId) throw new Error("Ultra Mode started a run without an id.");
+      const url = workgraphRunInsightsUrl(runId);
+      setResult({ workflowId, runId, url });
+      window.location.href = url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Ultra Mode launch failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card p-4 mb-6 border-singularity-100 bg-gradient-to-r from-singularity-50 to-white">
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="rounded-xl bg-singularity-600 text-white p-2.5 shadow-sm">
+            <Rocket size={19} />
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wide text-singularity-700 font-semibold">Ultra Mode</div>
+            <h2 className="text-base font-semibold text-slate-900">Give the agent team an outcome, not a workflow.</h2>
+            <p className="text-sm text-slate-600 mt-1 max-w-3xl">
+              Singularity creates the governed Workbench workflow, starts the run, tracks budget and receipts, then opens Mission Control while the capability agents produce reviewable consumables.
+            </p>
+          </div>
+        </div>
+        <button className="btn-primary" disabled={disabled} onClick={openUltraMode}>
+          <PlayCircle size={15} /> New Ultra delivery
+        </button>
+      </div>
+
+      {expanded && (
+        <form onSubmit={launchUltraMode} className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div className="lg:col-span-2">
+              <CapabilityField label="Delivery goal *">
+                <textarea
+                  rows={3}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                  placeholder="Example: Change the Todo app color theme to red and produce QA proof."
+                  value={form.goal}
+                  onChange={event => setForm(current => ({ ...current, goal: event.target.value }))}
+                  required
+                />
+              </CapabilityField>
+            </div>
+            <CapabilityField label="Acceptance criteria">
+              <textarea
+                rows={2}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                placeholder="Optional constraints, tests, or definition of done."
+                value={form.acceptanceCriteria}
+                onChange={event => setForm(current => ({ ...current, acceptanceCriteria: event.target.value }))}
+              />
+            </CapabilityField>
+            <CapabilityField label="Repository / workspace *">
+              <input
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                placeholder="https://github.com/org/repo"
+                value={form.repoUrl}
+                onChange={event => setForm(current => ({ ...current, repoUrl: event.target.value }))}
+                required
+              />
+            </CapabilityField>
+            <CapabilityField label="Budget preset">
+              <select
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                value={form.budgetPreset}
+                onChange={event => setForm(current => ({ ...current, budgetPreset: event.target.value }))}
+              >
+                <option value="balanced">Balanced governed delivery</option>
+                <option value="coding">Coding heavy</option>
+                <option value="verification">Verification focused</option>
+                <option value="summary">Lean summary / handoff</option>
+              </select>
+            </CapabilityField>
+            <CapabilityField label="Model alias">
+              <input
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                placeholder="Optional. Defaults from MCP catalog / workflow config."
+                value={form.modelAlias}
+                onChange={event => setForm(current => ({ ...current, modelAlias: event.target.value }))}
+              />
+            </CapabilityField>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="text-xs text-slate-500">
+              Internally this still uses Workgraph, Workbench, budgets, approvals, MCP workspace context, and consumable receipts. The workflow design is just generated for you.
+            </div>
+            <div className="flex gap-2">
+              <button type="button" className="btn-secondary" onClick={() => setExpanded(false)} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" className="btn-primary" disabled={busy || disabled}>
+                <Rocket size={14} /> {busy ? "Launching..." : "Launch Ultra Mode"}
+              </button>
+            </div>
+          </div>
+
+          {error && <div className="mt-3 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+          {result && (
+            <a className="mt-3 inline-flex items-center gap-1 text-sm text-singularity-700 hover:underline" href={result.url}>
+              <ExternalLink size={13} /> Open Ultra run {result.runId.slice(0, 8)}
+            </a>
+          )}
+        </form>
+      )}
+    </section>
+  );
+}
+
+function ultraBudgetPolicy(preset: string): Record<string, unknown> {
+  const base = {
+    warnAtPercent: 80,
+    enforcementMode: "PAUSE_FOR_APPROVAL",
+  };
+  const byPreset: Record<string, Record<string, number>> = {
+    balanced: { maxInputTokens: 60000, maxOutputTokens: 12000, maxTotalTokens: 72000, maxEstimatedCost: 10 },
+    coding: { maxInputTokens: 90000, maxOutputTokens: 16000, maxTotalTokens: 106000, maxEstimatedCost: 18 },
+    verification: { maxInputTokens: 50000, maxOutputTokens: 10000, maxTotalTokens: 60000, maxEstimatedCost: 8 },
+    summary: { maxInputTokens: 20000, maxOutputTokens: 5000, maxTotalTokens: 25000, maxEstimatedCost: 3 },
+  };
+  const limits = byPreset[preset] ?? byPreset.balanced;
+  return {
+    ...base,
+    ...limits,
+    perNodeTypeDefaults: {
+      WORKBENCH_TASK: {
+        maxInputTokens: Math.min(limits.maxInputTokens, 50000),
+        maxOutputTokens: Math.min(limits.maxOutputTokens, 10000),
+      },
+      AGENT_TASK: {
+        maxInputTokens: Math.min(limits.maxInputTokens, 16000),
+        maxOutputTokens: Math.min(limits.maxOutputTokens, 2000),
+      },
+    },
+  };
+}
+
+function normalizeCriticality(value: unknown): "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" {
+  const next = String(value ?? "").toUpperCase();
+  return next === "CRITICAL" || next === "HIGH" || next === "LOW" ? next : "MEDIUM";
 }
 
 function capabilityString(value: unknown): string {

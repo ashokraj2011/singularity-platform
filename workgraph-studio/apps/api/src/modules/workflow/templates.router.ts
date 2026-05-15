@@ -838,7 +838,13 @@ workflowTemplatesRouter.get('/', async (req, res, next) => {
   try {
     const pg = parsePagination(req.query as Record<string, unknown>)
     const showArchived = req.query.archived === 'true'
-    const where = showArchived ? { archivedAt: { not: null } } : { archivedAt: null }
+    const capabilityId = typeof req.query.capabilityId === 'string' && req.query.capabilityId.trim()
+      ? req.query.capabilityId.trim()
+      : undefined
+    const where: Prisma.WorkflowWhereInput = {
+      archivedAt: showArchived ? { not: null } : null,
+      ...(capabilityId ? { capabilityId } : {}),
+    }
     const [templates, total] = await Promise.all([
       prisma.workflow.findMany({ where, skip: pg.skip, take: pg.take, orderBy: { name: 'asc' } }),
       prisma.workflow.count({ where }),

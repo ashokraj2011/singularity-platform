@@ -23,6 +23,8 @@ capabilityRoutes.post("/bootstrap", validate(bootstrapCapabilitySchema), capabil
 capabilityRoutes.get("/bootstrap-agent-catalog", capabilityController.bootstrapAgentCatalog);
 capabilityRoutes.post("/", validate(createCapabilitySchema), capabilityController.create);
 capabilityRoutes.get("/", capabilityController.list);
+capabilityRoutes.get("/:id/readiness", capabilityController.readiness);
+capabilityRoutes.get("/:id/architecture-diagram", capabilityController.architectureDiagram);
 capabilityRoutes.get("/:id", capabilityController.get);
 capabilityRoutes.patch("/:id", validate(updateCapabilitySchema), capabilityController.update);
 capabilityRoutes.post("/:id/archive", capabilityController.archive);

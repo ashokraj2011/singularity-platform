@@ -2519,7 +2519,22 @@ async function publishBlueprintArtifactAsConsumable(args: {
   const state = readLoopState(args.session)
   const rawWorkflowInstanceId = args.session.workflowInstanceId ?? undefined
   const rawWorkflowNodeId = state.workflowNodeId ?? args.session.workflowNodeId ?? args.session.phaseId ?? undefined
-  if (!rawWorkflowInstanceId || !rawWorkflowNodeId) return undefined
+  if (!rawWorkflowInstanceId) return undefined
+  if (!rawWorkflowNodeId) {
+    await markConsumablePublishSkipped({
+      session: args.session,
+      artifact: args.artifact,
+      actorId: args.actorId,
+      warning: {
+        reason: 'workflow_node_not_found',
+        message: 'Workflow run is linked, but no workflow node id was provided. Workbench artifact was kept locally and no workflow consumable was created.',
+        workflowInstanceId: rawWorkflowInstanceId,
+        workflowNodeId: undefined,
+        suggestedFix: 'Open the Workbench from the Workbench Task drawer or regenerate the embedded Workbench URL so workflowNodeId is present.',
+      },
+    })
+    return undefined
+  }
   const workflowLink = await resolveWorkflowLink(rawWorkflowInstanceId, rawWorkflowNodeId)
   if (!workflowLink.workflowInstanceId) {
     await markConsumablePublishSkipped({

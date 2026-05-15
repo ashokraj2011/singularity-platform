@@ -1,14 +1,16 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import {
-  Activity, AlertTriangle, CheckCircle2, Copy, Database, KeyRound,
+  Activity, AlertTriangle, Boxes, CheckCircle2, ClipboardList, Copy, Database, FileText,
+  Gauge, GitBranch, KeyRound,
   Network, RefreshCw, ServerCog, ShieldCheck, SlidersHorizontal, Terminal,
   WifiOff, Zap,
 } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
-import { mcpApi } from '@/lib/api'
+import { mcpApi, runtimeApi, workgraphApi } from '@/lib/api'
 import { cn } from '@/lib/cn'
+import { env } from '@/lib/env'
 
 type HealthState = 'ONLINE' | 'DEGRADED' | 'OFFLINE'
 
@@ -26,6 +28,86 @@ interface DoctorSummary {
   configPath?: string
   summary?: { failures: number; warnings: number; checks: number }
   checks?: Array<{ status: 'OK' | 'WARN' | 'FAIL'; message: string; fix?: string }>
+}
+
+type OpsTab = 'setup' | 'readiness' | 'audit' | 'workitems' | 'architecture' | 'causality'
+
+interface WorkflowRunRow {
+  id: string
+  name: string
+  status: string
+  templateId?: string | null
+  startedAt?: string | null
+  completedAt?: string | null
+  createdAt?: string
+}
+
+interface WorkItemRow {
+  id: string
+  title: string
+  description?: string | null
+  status: string
+  parentCapabilityId?: string | null
+  priority?: number
+  dueAt?: string | null
+  createdAt?: string
+  updatedAt?: string
+  targets?: Array<{
+    id: string
+    targetCapabilityId: string
+    status: string
+    roleKey?: string | null
+    childWorkflowTemplateId?: string | null
+    childWorkflowInstanceId?: string | null
+    claimedById?: string | null
+  }>
+  events?: Array<{ id: string; eventType: string; createdAt: string; payload?: unknown }>
+}
+
+interface CapabilityRow {
+  id: string
+  name: string
+  appId?: string | null
+  capabilityType?: string | null
+  criticality?: string | null
+}
+
+interface WorkflowTemplateRow {
+  id: string
+  name: string
+  status: string
+  budgetPolicy?: Record<string, unknown> | null
+}
+
+interface CapabilityReadiness {
+  capabilityId: string
+  generatedAt: string
+  score: number
+  status: 'READY' | 'NEEDS_ATTENTION' | 'NOT_READY' | 'UNKNOWN'
+  categories: Array<{
+    key: string
+    label: string
+    score: number
+    maxScore: number
+    status: string
+    summary: string
+    checks: Array<{ key: string; label: string; ok: boolean; detail: string; severity: string }>
+  }>
+  blockers: Array<{ category: string; key: string; message: string }>
+  warnings: Array<{ category: string; key: string; message: string; severity: string }>
+  recommendedActions: string[]
+  facts?: Record<string, unknown>
+}
+
+interface ArchitectureDiagram {
+  capabilityId: string
+  generatedAt: string
+  source: string
+  kind: string
+  title: string
+  description: string
+  layers: Array<{ key: string; label: string; items: string[] }>
+  mermaid: string
 }
 
 const services: ServiceCheck[] = [
@@ -84,6 +166,15 @@ const commandGroups = [
   },
 ]
 
+const opsTabs: Array<{ key: OpsTab; label: string; icon: typeof SlidersHorizontal; description: string }> = [
+  { key: 'setup', label: 'Setup Center', icon: ServerCog, description: 'Health, config, models' },
+  { key: 'readiness', label: 'Readiness', icon: Gauge, description: 'Capability launch score' },
+  { key: 'audit', label: 'Run Audit', icon: FileText, description: 'Timing, cost, receipts' },
+  { key: 'workitems', label: 'WorkItems', icon: ClipboardList, description: 'Cross-capability queue' },
+  { key: 'architecture', label: 'Architecture', icon: GitBranch, description: 'Capability diagrams' },
+  { key: 'causality', label: 'AI Causality Proof', icon: ShieldCheck, description: 'Incident evidence' },
+]
+
 function stateFromQuery(q: { isSuccess: boolean; isError: boolean; data?: unknown }): HealthState {
   if (q.isSuccess) return 'ONLINE'
   if (q.isError) return 'OFFLINE'
@@ -127,6 +218,7 @@ function CodeLine({ command }: { command: string }) {
 }
 
 export function OperationsPage() {
+  const [activeTab, setActiveTab] = useState<OpsTab>('setup')
   const healthQueries = useQueries({
     queries: services.map((svc) => ({
       queryKey: ['ops-health', svc.id],
@@ -222,6 +314,30 @@ export function OperationsPage() {
         </div>
       </div>
 
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-5">
+        {opsTabs.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setActiveTab(tab.key)}
+            className={cn(
+              'flex items-start gap-3 rounded-xl border px-4 py-3 text-left transition',
+              activeTab === tab.key
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-900 shadow-sm'
+                : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50',
+            )}
+          >
+            <tab.icon className="mt-0.5 h-4 w-4 shrink-0" />
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold">{tab.label}</span>
+              <span className="mt-0.5 block text-[11px] opacity-75">{tab.description}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'setup' ? (
+        <>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
         <SetupTile
           title="Canonical profile"
@@ -410,8 +526,553 @@ export function OperationsPage() {
           body="Secrets are written through the CLI into env files and masked in output. The browser never asks you to paste provider keys into the portal."
         />
       </div>
+        </>
+      ) : activeTab === 'readiness' ? (
+        <ReadinessPanel />
+      ) : activeTab === 'audit' ? (
+        <RunAuditPanel />
+      ) : activeTab === 'workitems' ? (
+        <WorkItemsPanel />
+      ) : activeTab === 'architecture' ? (
+        <ArchitecturePanel />
+      ) : (
+        <CausalityPanel />
+      )}
     </div>
   )
+}
+
+function unwrapEnvelope<T>(value: unknown): T {
+  const root = value as any
+  return (root?.data?.data ?? root?.data ?? root) as T
+}
+
+function unwrapItems<T>(value: unknown): T[] {
+  const root = unwrapEnvelope<any>(value)
+  if (Array.isArray(root)) return root as T[]
+  if (Array.isArray(root?.content)) return root.content as T[]
+  if (Array.isArray(root?.items)) return root.items as T[]
+  if (Array.isArray(root?.data)) return root.data as T[]
+  return []
+}
+
+async function copyText(value: string) {
+  try {
+    await navigator.clipboard.writeText(value)
+  } catch {
+    // Visible text remains available.
+  }
+}
+
+function downloadText(filename: string, text: string, type = 'text/plain') {
+  const blob = new Blob([text], { type })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+function readinessTone(status?: string): 'ok' | 'warn' | 'danger' | 'neutral' {
+  if (status === 'READY') return 'ok'
+  if (status === 'NOT_READY') return 'danger'
+  if (status === 'NEEDS_ATTENTION' || status === 'UNKNOWN') return 'warn'
+  return 'neutral'
+}
+
+function workflowBudgetConfigured(workflow: WorkflowTemplateRow): boolean {
+  return Boolean(workflow.budgetPolicy && Object.keys(workflow.budgetPolicy).length > 0)
+}
+
+function ReadinessPanel() {
+  const [capabilityId, setCapabilityId] = useState('')
+  const capabilities = useQuery({
+    queryKey: ['ops', 'readiness-capabilities'],
+    queryFn: async () => unwrapItems<CapabilityRow>(await runtimeApi.get('/capabilities')),
+    retry: 1,
+  })
+  const readiness = useQuery({
+    queryKey: ['ops', 'capability-readiness', capabilityId],
+    queryFn: async () => unwrapEnvelope<CapabilityReadiness>(await runtimeApi.get(`/capabilities/${capabilityId}/readiness`)),
+    enabled: Boolean(capabilityId),
+    retry: 1,
+  })
+  const workflows = useQuery({
+    queryKey: ['ops', 'capability-workflows', capabilityId],
+    queryFn: async () => unwrapItems<WorkflowTemplateRow>(await workgraphApi.get('/workflows', { params: { capabilityId, size: 100 } })),
+    enabled: Boolean(capabilityId),
+    retry: 1,
+  })
+  const workflowRows = workflows.data ?? []
+  const workflowWarnings = [
+    workflowRows.length === 0 ? 'No Workgraph workflow is attached to this capability.' : undefined,
+    workflowRows.length > 0 && !workflowRows.some(workflowBudgetConfigured) ? 'Attached workflows do not have a template budget policy.' : undefined,
+  ].filter(Boolean) as string[]
+  const selected = capabilities.data?.find(cap => cap.id === capabilityId)
+  const data = readiness.data
+
+  return (
+    <div className="grid grid-cols-1 gap-5 xl:grid-cols-[0.8fr_1.4fr]">
+      <Card>
+        <CardHeader title="Capability Readiness" subtitle="Choose a capability to see launch blockers, warnings, workflows, and next actions." />
+        <CardBody className="space-y-3">
+          {(capabilities.data ?? []).map(cap => (
+            <button key={cap.id} type="button" onClick={() => setCapabilityId(cap.id)} className={cn('w-full rounded-lg border px-3 py-2 text-left', capabilityId === cap.id ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-white hover:bg-slate-50')}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-sm font-semibold text-slate-900">{cap.name}</span>
+                <Badge tone="neutral">{cap.criticality ?? 'unrated'}</Badge>
+              </div>
+              <div className="mt-1 truncate text-xs text-slate-500">{cap.appId ? `App ID ${cap.appId}` : cap.id}</div>
+            </button>
+          ))}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title={selected ? `${selected.name} readiness` : 'Readiness Score'}
+          subtitle={data ? `Generated ${formatDate(data.generatedAt)}` : 'Runtime readiness plus Workgraph workflow/budget evidence.'}
+          action={readiness.isFetching || workflows.isFetching ? <RefreshCw className="h-4 w-4 animate-spin text-slate-400" /> : undefined}
+        />
+        <CardBody className="space-y-5">
+          {readiness.isError ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">Unable to fetch capability readiness. Check agent-runtime health and auth.</div>
+          ) : !capabilityId ? (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-8 text-center text-sm text-slate-500">Choose a capability to generate its readiness score.</div>
+          ) : data ? (
+            <>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-[180px_1fr]">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-center">
+                  <div className="text-xs font-semibold uppercase tracking-widest text-slate-500">Score</div>
+                  <div className="mt-3 text-5xl font-black text-slate-950">{data.score}</div>
+                  <div className="mt-3"><Badge tone={readinessTone(data.status)}>{data.status}</Badge></div>
+                </div>
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <Metric title="Active agents" value={String(data.facts?.activeAgents ?? 0)} />
+                  <Metric title="Knowledge" value={String(data.facts?.knowledgeArtifacts ?? 0)} />
+                  <Metric title="Workflows" value={String(workflowRows.length)} />
+                  <Metric title="Budgeted" value={String(workflowRows.filter(workflowBudgetConfigured).length)} />
+                </div>
+              </div>
+
+              {(data.blockers.length > 0 || data.warnings.length > 0 || workflowWarnings.length > 0) && (
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                  <div className="rounded-xl border border-red-100 bg-red-50 p-4">
+                    <div className="text-xs font-semibold uppercase tracking-widest text-red-700">Blockers</div>
+                    <ul className="mt-2 space-y-1 text-sm text-red-700">
+                      {(data.blockers.length ? data.blockers.map(item => item.message) : ['No hard blockers reported.']).map(item => <li key={item}>- {item}</li>)}
+                    </ul>
+                  </div>
+                  <div className="rounded-xl border border-amber-100 bg-amber-50 p-4">
+                    <div className="text-xs font-semibold uppercase tracking-widest text-amber-700">Warnings</div>
+                    <ul className="mt-2 space-y-1 text-sm text-amber-700">
+                      {[...data.warnings.map(item => item.message), ...workflowWarnings].slice(0, 8).map(item => <li key={item}>- {item}</li>)}
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                {data.categories.map(category => (
+                  <div key={category.key} className="rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-900">{category.label}</div>
+                        <div className="mt-1 text-xs text-slate-500">{category.score}/{category.maxScore} · {category.summary}</div>
+                      </div>
+                      <Badge tone={readinessTone(category.status)}>{category.status}</Badge>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {category.checks.map(check => (
+                        <div key={check.key} className="flex gap-2 text-xs text-slate-600">
+                          {check.ok ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 text-emerald-600" /> : <AlertTriangle className="mt-0.5 h-3.5 w-3.5 text-amber-600" />}
+                          <span><span className="font-semibold text-slate-800">{check.label}:</span> {check.detail}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-xs font-semibold uppercase tracking-widest text-slate-500">Recommended next actions</div>
+                <ul className="mt-2 space-y-1 text-sm text-slate-700">
+                  {[...data.recommendedActions, ...workflowWarnings].slice(0, 8).map(item => <li key={item}>- {item}</li>)}
+                </ul>
+              </div>
+            </>
+          ) : (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-8 text-center text-sm text-slate-500">Loading readiness.</div>
+          )}
+        </CardBody>
+      </Card>
+    </div>
+  )
+}
+
+function RunAuditPanel() {
+  const [runId, setRunId] = useState('')
+  const recentRuns = useQuery({
+    queryKey: ['ops', 'workflow-instances'],
+    queryFn: async () => unwrapItems<WorkflowRunRow>(await workgraphApi.get('/workflow-instances')),
+    retry: 1,
+  })
+  const report = useQuery({
+    queryKey: ['ops', 'run-audit', runId],
+    queryFn: async () => unwrapEnvelope<any>(await workgraphApi.get(`/workflow-instances/${runId}/evidence-pack`)),
+    enabled: Boolean(runId.trim()),
+    retry: 1,
+  })
+  const data = report.data ?? {}
+  const summary = data.summary ?? {}
+  const sections = data.sections ?? {}
+  const stages: any[] = Array.isArray(sections.stageTimeline) ? sections.stageTimeline : []
+  const markdown = typeof data.markdown === 'string' ? data.markdown : ''
+  const jsonText = JSON.stringify(data, null, 2)
+
+  return (
+    <div className="grid grid-cols-1 gap-5 xl:grid-cols-[0.8fr_1.4fr]">
+      <Card>
+        <CardHeader title="Run Audit" subtitle="Select a workflow run and generate an operator-readable audit report." />
+        <CardBody className="space-y-4">
+          <label className="block text-xs font-semibold uppercase tracking-widest text-slate-500">Workflow run id</label>
+          <input
+            value={runId}
+            onChange={(event) => setRunId(event.target.value)}
+            placeholder="Paste workflowInstanceId"
+            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-400"
+          />
+          <div className="space-y-2">
+            <div className="text-xs font-semibold uppercase tracking-widest text-slate-500">Recent runs</div>
+            {(recentRuns.data ?? []).slice(0, 8).map(run => (
+              <button
+                key={run.id}
+                type="button"
+                onClick={() => setRunId(run.id)}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left hover:bg-slate-50"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-sm font-semibold text-slate-900">{run.name}</span>
+                  <Badge tone={run.status === 'COMPLETED' ? 'ok' : run.status === 'FAILED' ? 'danger' : 'neutral'}>{run.status}</Badge>
+                </div>
+                <div className="mt-1 truncate font-mono text-[11px] text-slate-500">{run.id}</div>
+              </button>
+            ))}
+          </div>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Audit Report"
+          subtitle="Stage timing, token/cost rollups, approvals, artifacts, receipts, and Workbench evidence."
+          action={report.isFetching ? <RefreshCw className="h-4 w-4 animate-spin text-slate-400" /> : undefined}
+        />
+        <CardBody className="space-y-4">
+          {report.isError ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">Unable to fetch run insights.</div>
+          ) : !runId ? (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">Choose a run to generate the audit report.</div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <Metric title="Status" value={summary.status ?? 'loading'} />
+                <Metric title="Tokens" value={String(summary.tokens?.total ?? 0)} />
+                <Metric title="Cost" value={summary.estimatedCost == null ? 'UNPRICED' : `$${Number(summary.estimatedCost).toFixed(4)}`} />
+                <Metric title="Artifacts" value={String(summary.artifacts ?? 0)} />
+              </div>
+              {Array.isArray(summary.warnings) && summary.warnings.length > 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  <div className="font-semibold">Evidence gaps</div>
+                  <ul className="mt-1 space-y-1">
+                    {summary.warnings.map((warning: string) => <li key={warning}>- {warning}</li>)}
+                  </ul>
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => copyText(markdown)}>Copy Markdown</button>
+                <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => downloadText(`${runId}-evidence-pack.md`, markdown, 'text/markdown')}>Download Markdown</button>
+                <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => downloadText(`${runId}-evidence-pack.json`, jsonText, 'application/json')}>Download JSON</button>
+                <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => copyText(jsonText)}>Copy JSON</button>
+                <a className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700" href={`${env.links.workgraphDesigner}/runs/${runId}/insights`} target="_blank" rel="noreferrer">Open Run Insights</a>
+              </div>
+              <div className="overflow-hidden rounded-lg border border-slate-200">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-slate-500">
+                    <tr><th className="px-3 py-2">Stage</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Duration</th><th className="px-3 py-2">Evidence</th></tr>
+                  </thead>
+                  <tbody>
+                    {stages.map((stage: any) => (
+                      <tr key={stage.id ?? stage.nodeId} className="border-t border-slate-100">
+                        <td className="px-3 py-2 font-semibold text-slate-900">{stage.label ?? stage.nodeId ?? stage.id}</td>
+                        <td className="px-3 py-2 text-slate-600">{stage.status ?? '-'}</td>
+                        <td className="px-3 py-2 text-slate-600">{formatDuration(stage.durationMs)}</td>
+                        <td className="px-3 py-2 text-slate-600">{stage.approvalCount ?? 0} approvals · {(stage.consumableIds?.length ?? 0)} consumables · {(stage.artifactIds?.length ?? 0)} artifacts</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </CardBody>
+      </Card>
+    </div>
+  )
+}
+
+function WorkItemsPanel() {
+  const [targetCapabilityId, setTargetCapabilityId] = useState('')
+  const [status, setStatus] = useState('')
+  const [mine, setMine] = useState(false)
+  const workItems = useQuery({
+    queryKey: ['ops', 'work-items', targetCapabilityId, status, mine],
+    queryFn: async () => {
+      const res = await workgraphApi.get('/work-items', { params: { targetCapabilityId: targetCapabilityId || undefined, status: status || undefined, mine: mine ? 'true' : undefined } })
+      return unwrapEnvelope<{ items: WorkItemRow[] }>(res).items ?? []
+    },
+    retry: 1,
+  })
+  async function mutate(path: string, body?: unknown) {
+    await workgraphApi.post(path, body ?? {})
+    await workItems.refetch()
+  }
+
+  return (
+    <div className="space-y-5">
+      <Card>
+        <CardHeader title="Cross-Capability WorkItems" subtitle="Child capability queues, claims, child runs, parent approvals, and rework loops." />
+        <CardBody>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_180px_120px]">
+            <input value={targetCapabilityId} onChange={e => setTargetCapabilityId(e.target.value)} placeholder="Target capability id" className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-400" />
+            <select value={status} onChange={e => setStatus(e.target.value)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+              <option value="">Any status</option>
+              <option value="QUEUED">Queued</option>
+              <option value="CLAIMED">Claimed</option>
+              <option value="STARTED">Started</option>
+              <option value="SUBMITTED">Submitted</option>
+              <option value="APPROVED">Approved</option>
+              <option value="REWORK">Rework</option>
+            </select>
+            <label className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600">
+              <input type="checkbox" checked={mine} onChange={e => setMine(e.target.checked)} />
+              Mine
+            </label>
+          </div>
+        </CardBody>
+      </Card>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        {(workItems.data ?? []).map(item => (
+          <Card key={item.id}>
+            <CardHeader
+              title={item.title}
+              subtitle={`Parent capability ${item.parentCapabilityId ?? 'n/a'} · priority ${item.priority ?? 50}`}
+              action={<Badge tone={item.status === 'COMPLETED' ? 'ok' : item.status === 'CANCELLED' ? 'danger' : 'neutral'}>{item.status}</Badge>}
+            />
+            <CardBody className="space-y-4">
+              {item.description && <p className="text-sm leading-6 text-slate-600">{item.description}</p>}
+              <div className="space-y-2">
+                {(item.targets ?? []).map(target => (
+                  <div key={target.id} className="rounded-lg border border-slate-200 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-mono text-xs text-slate-500">{target.targetCapabilityId}</div>
+                        <div className="mt-1 text-xs text-slate-600">Role {target.roleKey ?? 'any'} · child run {target.childWorkflowInstanceId ?? 'not started'}</div>
+                      </div>
+                      <Badge tone={target.status === 'SUBMITTED' || target.status === 'APPROVED' ? 'ok' : target.status === 'REWORK' ? 'warn' : 'neutral'}>{target.status}</Badge>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => mutate(`/work-items/${item.id}/targets/${target.id}/claim`)}>Claim</button>
+                      <button className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => mutate(`/work-items/${item.id}/targets/${target.id}/start`)}>Start child workflow</button>
+                      {target.childWorkflowInstanceId && <a className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700" href={`${env.links.workgraphDesigner}/runs/${target.childWorkflowInstanceId}/insights`} target="_blank" rel="noreferrer">Child evidence</a>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700" onClick={() => mutate(`/work-items/${item.id}/approve`)}>Approve parent result</button>
+                <button className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700" onClick={() => mutate(`/work-items/${item.id}/request-rework`, { reason: 'Operator requested rework from Operations Portal.' })}>Request rework</button>
+              </div>
+            </CardBody>
+          </Card>
+        ))}
+        {workItems.data?.length === 0 && <Card><CardBody><div className="py-8 text-center text-sm text-slate-500">No WorkItems match the current filters.</div></CardBody></Card>}
+      </div>
+    </div>
+  )
+}
+
+function ArchitecturePanel() {
+  const [capabilityId, setCapabilityId] = useState('')
+  const capabilities = useQuery({
+    queryKey: ['ops', 'capabilities'],
+    queryFn: async () => unwrapItems<CapabilityRow>(await runtimeApi.get('/capabilities')),
+    retry: 1,
+  })
+  const diagram = useQuery({
+    queryKey: ['ops', 'architecture-diagram', capabilityId],
+    queryFn: async () => unwrapEnvelope<ArchitectureDiagram>(await runtimeApi.get(`/capabilities/${capabilityId}/architecture-diagram`)),
+    enabled: Boolean(capabilityId),
+    retry: 1,
+  })
+
+  return (
+    <div className="grid grid-cols-1 gap-5 xl:grid-cols-[0.8fr_1.4fr]">
+      <Card>
+        <CardHeader title="Capability Architecture" subtitle="Application and TOGAF collection views generated by agent-runtime." />
+        <CardBody className="space-y-3">
+          {(capabilities.data ?? []).map(cap => (
+            <button key={cap.id} type="button" onClick={() => setCapabilityId(cap.id)} className={cn('w-full rounded-lg border px-3 py-2 text-left', capabilityId === cap.id ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-white hover:bg-slate-50')}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-sm font-semibold text-slate-900">{cap.name}</span>
+                <Badge tone={cap.capabilityType?.toLowerCase().includes('collection') ? 'warn' : 'neutral'}>{cap.capabilityType ?? 'application'}</Badge>
+              </div>
+              <div className="mt-1 truncate text-xs text-slate-500">{cap.appId ? `App ID ${cap.appId}` : cap.id}</div>
+            </button>
+          ))}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title={diagram.data?.title ?? 'Diagram Viewer'}
+          subtitle={diagram.data ? `${diagram.data.source} · ${diagram.data.kind} · ${formatDate(diagram.data.generatedAt)}` : 'Select a capability.'}
+          action={diagram.isFetching ? <RefreshCw className="h-4 w-4 animate-spin text-slate-400" /> : undefined}
+        />
+        <CardBody className="space-y-4">
+          {diagram.data ? (
+            <>
+              <p className="text-sm leading-6 text-slate-600">{diagram.data.description}</p>
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                {diagram.data.layers.map(layer => (
+                  <div key={layer.key} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <div className="text-xs font-semibold uppercase tracking-widest text-slate-500">{layer.label}</div>
+                    <ul className="mt-2 space-y-1 text-sm text-slate-700">
+                      {layer.items.map(item => <li key={item}>- {item}</li>)}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => copyText(diagram.data!.mermaid)}>Copy Mermaid</button>
+                <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => downloadText(`${diagram.data!.capabilityId}.mmd`, diagram.data!.mermaid)}>Export .mmd</button>
+                <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => copyText(JSON.stringify(diagram.data, null, 2))}>Copy JSON</button>
+              </div>
+              <pre className="max-h-80 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100">{diagram.data.mermaid}</pre>
+            </>
+          ) : (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-8 text-center text-sm text-slate-500">Choose a capability to view its architecture diagram.</div>
+          )}
+        </CardBody>
+      </Card>
+    </div>
+  )
+}
+
+function CausalityPanel() {
+  const [form, setForm] = useState({ runId: '', subject: '', path: '', artifactId: '', commitSha: '' })
+  const [request, setRequest] = useState<typeof form | null>(null)
+  const report = useQuery({
+    queryKey: ['ops', 'causality', request],
+    queryFn: async () => unwrapEnvelope<any>(await workgraphApi.get(`/workflow-instances/${request!.runId}/ai-causality-report`, {
+      params: {
+        subject: request!.subject || undefined,
+        path: request!.path || undefined,
+        artifactId: request!.artifactId || undefined,
+        commitSha: request!.commitSha || undefined,
+      },
+    })),
+    enabled: Boolean(request?.runId),
+    retry: 1,
+  })
+  const data = report.data
+
+  return (
+    <div className="grid grid-cols-1 gap-5 xl:grid-cols-[0.8fr_1.4fr]">
+      <Card>
+        <CardHeader title="AI Causality Proof" subtitle="Incident-style evidence report. Incomplete evidence is marked inconclusive." />
+        <CardBody className="space-y-3">
+          {(['runId', 'subject', 'path', 'artifactId', 'commitSha'] as const).map(field => (
+            <label key={field} className="block">
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-widest text-slate-500">{field}</span>
+              <input value={form[field]} onChange={e => setForm({ ...form, [field]: e.target.value })} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-400" />
+            </label>
+          ))}
+          <button className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700" onClick={() => setRequest(form)}>Generate evidence report</button>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader title="Evidence-Backed RCA" subtitle="Verdict first, then the audit facts behind it." />
+        <CardBody className="space-y-4">
+          {report.isError ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">Unable to generate causality report.</div>
+          ) : !data ? (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-8 text-center text-sm text-slate-500">Enter a run id and optional incident subject.</div>
+          ) : (
+            <>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={data.classification === 'INCONCLUSIVE' ? 'warn' : data.classification?.includes('UNAPPROVED') ? 'danger' : 'ok'}>{data.classification}</Badge>
+                  <Badge tone="neutral">Confidence {data.confidence}</Badge>
+                </div>
+                <p className="mt-3 text-sm leading-6 text-slate-700">{data.verdict}</p>
+              </div>
+              <EvidenceList title="What AI did" rows={data.evidence?.whatAiDid} />
+              <EvidenceList title="Human approvals involved" rows={data.evidence?.humanApprovals} />
+              <EvidenceList title="Code/artifact evidence" rows={data.evidence?.codeAndArtifactEvidence} />
+              <EvidenceList title="Gaps that make this inconclusive" rows={(data.evidence?.warnings ?? []).map((message: string) => ({ message }))} />
+              <div className="flex flex-wrap gap-2">
+                <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => copyText(JSON.stringify(data, null, 2))}>Copy JSON</button>
+                <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => copyText(`# AI Causality Proof\n\n${data.classification}\n\n${data.verdict}`)}>Copy Markdown</button>
+              </div>
+            </>
+          )}
+        </CardBody>
+      </Card>
+    </div>
+  )
+}
+
+function Metric({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="text-xs font-semibold uppercase tracking-widest text-slate-500">{title}</div>
+      <div className="mt-2 truncate text-sm font-semibold text-slate-900">{value}</div>
+    </div>
+  )
+}
+
+function EvidenceList({ title, rows }: { title: string; rows?: any[] }) {
+  const visible = Array.isArray(rows) ? rows.slice(0, 8) : []
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
+        <Boxes className="h-3.5 w-3.5" />
+        {title}
+      </div>
+      {visible.length ? (
+        <div className="space-y-2">
+          {visible.map((row, idx) => (
+            <pre key={idx} className="max-h-28 overflow-auto rounded-lg border border-slate-200 bg-white p-3 text-[11px] text-slate-700">{JSON.stringify(row, null, 2)}</pre>
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-500">No evidence rows.</div>
+      )}
+    </div>
+  )
+}
+
+function formatDuration(value?: number | string | null) {
+  const ms = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(ms) || ms <= 0) return 'n/a'
+  if (ms < 1000) return `${Math.round(ms)} ms`
+  const sec = ms / 1000
+  if (sec < 60) return `${sec.toFixed(1)} s`
+  return `${(sec / 60).toFixed(1)} min`
 }
 
 function formatDate(value?: string) {

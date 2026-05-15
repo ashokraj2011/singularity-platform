@@ -20,6 +20,21 @@ import { CAPABILITY_ROLE_OPTIONS } from "@/lib/capabilityRoles";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 
 type LocalBootstrapFile = { path: string; content: string };
+type BootstrapCatalogAgent = {
+  key: string;
+  roleType: string;
+  bindingRole?: string;
+  label: string;
+  locked?: boolean;
+  activationRequired?: boolean;
+  learnsFromGit?: boolean;
+  grounding?: string;
+  description?: string;
+};
+type BootstrapAgentCatalog = {
+  presets?: Array<{ key: string; label: string; agents: string[] }>;
+  agents?: BootstrapCatalogAgent[];
+};
 
 type BootstrapForm = {
   name: string;
@@ -63,13 +78,25 @@ const BOOTSTRAP_AGENT_PREVIEW = [
   { key: "governance", role: "GOVERNANCE", label: "Governance", locked: true, required: true, git: false },
 ] as const;
 
-function agentPreviewForPreset(preset: string) {
-  const keys = preset === "minimal"
-    ? new Set(["product_owner", "architect", "developer", "verifier", "governance"])
-    : preset === "engineering_core"
-      ? new Set(["product_owner", "business_analyst", "architect", "developer", "verifier", "qa", "security", "devops", "governance"])
-      : new Set(BOOTSTRAP_AGENT_PREVIEW.map(agent => agent.key));
-  return BOOTSTRAP_AGENT_PREVIEW.filter(agent => keys.has(agent.key));
+function agentPreviewForPreset(preset: string, catalog?: BootstrapAgentCatalog): BootstrapCatalogAgent[] {
+  const backendAgents = Array.isArray(catalog?.agents) && catalog.agents.length > 0
+    ? catalog.agents
+    : BOOTSTRAP_AGENT_PREVIEW.map(agent => ({
+        ...agent,
+        roleType: agent.role,
+        bindingRole: agent.role,
+        activationRequired: agent.required,
+        learnsFromGit: agent.git,
+      }));
+  const backendPreset = catalog?.presets?.find(item => item.key === preset);
+  const keys = backendPreset
+    ? new Set(backendPreset.agents)
+    : preset === "minimal"
+      ? new Set(["product_owner", "architect", "developer", "verifier", "governance"])
+      : preset === "engineering_core"
+        ? new Set(["product_owner", "business_analyst", "architect", "developer", "verifier", "qa", "security", "devops", "governance"])
+        : new Set(backendAgents.map(agent => agent.key));
+  return backendAgents.filter(agent => keys.has(agent.key));
 }
 
 const LOCAL_DISCOVERY_CAP = 500;
@@ -83,6 +110,7 @@ export default function CapabilitiesPage() {
   const { data, isLoading, mutate } = useSWR("runtime-capabilities", () => runtimeApi.listCapabilities());
   const { data: iamTeams = [] } = useSWR<IamTeam[]>("iam-teams", () => identityApi.listTeams());
   const { data: iamBusinessUnits = [] } = useSWR<IamBusinessUnit[]>("iam-business-units", () => identityApi.listBusinessUnits());
+  const { data: bootstrapAgentCatalog } = useSWR<BootstrapAgentCatalog>("bootstrap-agent-catalog", () => runtimeApi.bootstrapAgentCatalog() as Promise<BootstrapAgentCatalog>);
   const [showCreate, setShowCreate] = useState(false);
   const [step, setStep] = useState(1);
   const [form, setForm] = useState<BootstrapForm>(DEFAULT_FORM);
@@ -90,6 +118,10 @@ export default function CapabilitiesPage() {
   const [localNote, setLocalNote] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const selectedAgents = agentPreviewForPreset(form.agentPreset, bootstrapAgentCatalog);
+  const lockedAgentCount = selectedAgents.filter(agent => agent.locked).length;
+  const gitGroundedAgentCount = selectedAgents.filter(agent => agent.learnsFromGit).length;
+  const requiredAgentCount = selectedAgents.filter(agent => agent.activationRequired).length;
 
   async function handleLocalDirectory(files: FileList) {
     setError(null);
@@ -199,6 +231,21 @@ export default function CapabilitiesPage() {
               </p>
             </div>
             <button type="button" className="btn-secondary" onClick={() => setShowCreate(false)}>Cancel</button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 mb-6">
+            <SummaryCard icon={<Bot size={18} />} label="Agent team"
+              value={`${selectedAgents.length} agents`}
+              note={`${lockedAgentCount} locked gates, ${requiredAgentCount} activation-required.`} />
+            <SummaryCard icon={<GitBranch size={18} />} label="Grounding"
+              value={`${gitGroundedAgentCount} Git-aware`}
+              note="Agents learn from approved repo/docs before runtime use." />
+            <SummaryCard icon={<ShieldCheck size={18} />} label="Governance"
+              value="Human reviewed"
+              note="Generated agents and learned knowledge stay draft first." />
+            <SummaryCard icon={<Layers3 size={18} />} label="Delivery pattern"
+              value={form.targetWorkflowPattern.replace(/_/g, " ")}
+              note="Starter workflow and artifacts are staged for review." />
           </div>
 
           <div className="grid grid-cols-4 gap-2 mb-6">
@@ -342,17 +389,22 @@ export default function CapabilitiesPage() {
               <Field label="Agent team preset">
                 <select className={FIELD_CLASS} value={form.agentPreset}
                   onChange={e => setForm(f => ({ ...f, agentPreset: e.target.value }))}>
-                  <option value="minimal">Minimal governed crew</option>
-                  <option value="engineering_core">Engineering core crew</option>
-                  <option value="governed_delivery">Full governed delivery crew</option>
+                  {(bootstrapAgentCatalog?.presets?.length ? bootstrapAgentCatalog.presets : [
+                    { key: "minimal", label: "Minimal governed crew", agents: [] },
+                    { key: "engineering_core", label: "Engineering core crew", agents: [] },
+                    { key: "governed_delivery", label: "Full governed delivery crew", agents: [] },
+                  ]).map(preset => (
+                    <option key={preset.key} value={preset.key}>{preset.label}</option>
+                  ))}
                 </select>
               </Field>
               <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900">
                 Locked gates are mandatory and derived from platform baselines. Capability owners can activate them and use them, but only platform admins can edit their baseline behavior.
               </div>
               <div className="grid grid-cols-2 gap-3">
-                {agentPreviewForPreset(form.agentPreset).map((agent) => {
-                  const role = CAPABILITY_ROLE_OPTIONS.find(item => item.value === agent.role);
+                {selectedAgents.map((agent) => {
+                  const roleValue = agent.bindingRole ?? agent.roleType;
+                  const role = CAPABILITY_ROLE_OPTIONS.find(item => item.value === roleValue || item.value === agent.roleType);
                   return (
                     <div key={agent.key} className="rounded-xl border border-slate-200 bg-white p-4">
                       <div className="flex items-center gap-2 mb-2 flex-wrap">
@@ -360,10 +412,11 @@ export default function CapabilitiesPage() {
                         <span className="font-medium text-slate-900">{agent.label}</span>
                         <span className="text-[10px] uppercase tracking-wide bg-amber-50 text-amber-700 px-2 py-0.5 rounded">Draft</span>
                         {agent.locked && <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide bg-slate-900 text-white px-2 py-0.5 rounded"><Lock size={10} /> Locked</span>}
-                        {agent.required && <span className="text-[10px] uppercase tracking-wide bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded">Required</span>}
-                        {agent.git && <span className="text-[10px] uppercase tracking-wide bg-purple-50 text-purple-700 px-2 py-0.5 rounded">Git grounded</span>}
+                        {agent.activationRequired && <span className="text-[10px] uppercase tracking-wide bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded">Required</span>}
+                        {agent.learnsFromGit && <span className="text-[10px] uppercase tracking-wide bg-purple-50 text-purple-700 px-2 py-0.5 rounded">Git grounded</span>}
                       </div>
-                      <p className="text-sm text-slate-600">{role?.description ?? "Capability-grounded operating agent."}</p>
+                      <p className="text-sm text-slate-600">{agent.description ?? role?.description ?? "Capability-grounded operating agent."}</p>
+                      {agent.grounding && <p className="text-xs text-slate-500 mt-2">{agent.grounding}</p>}
                     </div>
                   );
                 })}
@@ -372,19 +425,35 @@ export default function CapabilitiesPage() {
           )}
 
           {step === 4 && (
-            <div className="grid grid-cols-3 gap-4">
-              <SummaryCard icon={<Layers3 size={18} />} label="Learning packet"
-                value={`${sourceCount(form, localFiles)} source groups`}
-                note="Findings are staged as pending candidates. Nothing enters prompt retrieval until approval." />
-              <SummaryCard icon={<ShieldCheck size={18} />} label="Runtime safety"
-                value="Approval gated"
-                note="Generated agents and learning candidates are draft until the review page activates them." />
-              <SummaryCard icon={<FileText size={18} />} label="Discovery signals"
-                value={`${localFiles.length} local files`}
-                note="README, AGENTS, CLAUDE, SKILL, docs, and editor rule files are prioritized." />
-              <SummaryCard icon={<GitBranch size={18} />} label="Starter workflow"
-                value={form.targetWorkflowPattern.replace(/_/g, " ")}
-                note="The operating model packet includes a suggested governed workflow, artifact gates, and activation review." />
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+                <SummaryCard icon={<Layers3 size={18} />} label="Learning packet"
+                  value={`${sourceCount(form, localFiles)} source groups`}
+                  note="Findings are staged as pending candidates. Nothing enters prompt retrieval until approval." />
+                <SummaryCard icon={<ShieldCheck size={18} />} label="Runtime safety"
+                  value="Approval gated"
+                  note="Generated agents and learning candidates are draft until the review page activates them." />
+                <SummaryCard icon={<FileText size={18} />} label="Discovery signals"
+                  value={`${localFiles.length} local files`}
+                  note="README, AGENTS, CLAUDE, SKILL, docs, and editor rule files are prioritized." />
+                <SummaryCard icon={<GitBranch size={18} />} label="Starter workflow"
+                  value={form.targetWorkflowPattern.replace(/_/g, " ")}
+                  note="The operating model packet includes a suggested governed workflow, artifact gates, and activation review." />
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <ShieldCheck size={18} className="text-emerald-600" />
+                  <h3 className="font-semibold text-slate-900">Activation checklist</h3>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 text-sm">
+                  <ChecklistItem ok={Boolean(form.name.trim())} label="Capability identity captured" />
+                  <ChecklistItem ok={Boolean(form.ownerTeamId || iamTeams.length === 0)} label="Owner team selected or dev fallback allowed" />
+                  <ChecklistItem ok={sourceCount(form, localFiles) > 0} label="At least one learning source attached" />
+                  <ChecklistItem ok={lockedAgentCount > 0} label="Locked governance gates included" />
+                  <ChecklistItem ok={requiredAgentCount > 0} label="Required verifier/security/governance activation planned" />
+                  <ChecklistItem ok={selectedAgents.length >= 3} label="Delivery team has enough roles to start" />
+                </div>
+              </div>
             </div>
           )}
 
@@ -457,6 +526,15 @@ function SummaryCard({ icon, label, value, note }: { icon: React.ReactNode; labe
       </div>
       <div className="text-lg font-semibold text-slate-900">{value}</div>
       <p className="text-xs text-slate-500 mt-1">{note}</p>
+    </div>
+  );
+}
+
+function ChecklistItem({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 ${ok ? "border-emerald-100 bg-emerald-50 text-emerald-800" : "border-amber-100 bg-amber-50 text-amber-800"}`}>
+      {ok ? <ShieldCheck size={14} /> : <Lock size={14} />}
+      <span>{label}</span>
     </div>
   );
 }

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Bot, RefreshCcw, Send, Sparkles, Trash2, X } from "lucide-react";
-import { runtimeApi } from "@/lib/api";
+import { authHeaders, runtimeApi } from "@/lib/api";
 
 type ChatMessage = {
   id: string;
@@ -25,8 +25,6 @@ type ContextSnapshot = {
 const SESSION_KEY = "event-horizon.agent-tools.session";
 const SESSION_ID_KEY = "event-horizon.agent-tools.session-id";
 const DEFAULT_CAPABILITY_ID = process.env.NEXT_PUBLIC_EVENT_HORIZON_CAPABILITY_ID ?? "00000000-0000-0000-0000-00000000aaaa";
-const EVENT_HORIZON_PROVIDER = process.env.NEXT_PUBLIC_EVENT_HORIZON_PROVIDER;
-const EVENT_HORIZON_MODEL = process.env.NEXT_PUBLIC_EVENT_HORIZON_MODEL;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function newId(): string {
@@ -100,6 +98,13 @@ const ACTIONS: Array<{ intent: ActionIntent; label: string; prompt: string }> = 
   { intent: "recommend_agent_team", label: "Agent team advice", prompt: "Recommend the right agent team, roles, tools, and artifact gates for this capability." },
   { intent: "explain_prompt_stack", label: "Prompt stack", prompt: "Explain the prompt profile/layer stack for this screen in user-friendly terms and call out what is editable." },
 ];
+
+function mapActionIntent(intent: ActionIntent | null): "find_evidence" | "draft_approval_note" | "recommend_budget_model" | undefined {
+  if (intent === "find_runtime_evidence") return "find_evidence";
+  if (intent === "draft_review_note") return "draft_approval_note";
+  if (intent === "recommend_agent_team" || intent === "explain_prompt_stack" || intent === "explain_capability") return "recommend_budget_model";
+  return undefined;
+}
 
 export function EventHorizonChat() {
   const pathname = usePathname();
@@ -183,54 +188,26 @@ export function EventHorizonChat() {
   async function callEventHorizon(text: string, actionIntent?: ActionIntent | null): Promise<string> {
     const sid = activeSessionId();
     const capability = (ctx.capability?.id ?? ctx.capability?.capabilityId ?? ctx.capability?.capability_id ?? capabilityId ?? DEFAULT_CAPABILITY_ID) as string;
-    const payload = {
-      trace_id: `event-horizon:${sid}:${Date.now()}`,
-      idempotency_key: `event-horizon:${sid}:${Date.now()}`,
-      run_context: {
-        workflow_instance_id: `event-horizon-${sid}`,
-        workflow_node_id: "event-horizon-chat",
-        agent_run_id: `event-horizon-${Date.now()}`,
-        capability_id: capability,
-        trace_id: `event-horizon:${sid}`,
-      },
-      system_prompt: [
-        "You are Event Horizon, the Singularity Agent Runtime assistant.",
-        "Help with the current screen, capability context, agents, tools, prompt profiles, and runtime evidence.",
-        "Answer concisely and do not claim you performed mutations.",
-        "Safe action intents are explain_capability, find_runtime_evidence, draft_review_note, recommend_agent_team, and explain_prompt_stack.",
-      ].join("\n"),
-      task: [
-        `User question: ${text}`,
-        `Current app: ${ctx.app}`,
-        `Current surface: ${ctx.surface}`,
-        `Current path: ${ctx.path}`,
-        `Requested safe action intent: ${actionIntent ?? ctx.actionIntent ?? "answer_context_question"}`,
-        `Context JSON: ${JSON.stringify({ ...ctx, actionIntent: actionIntent ?? ctx.actionIntent ?? null }).slice(0, 6000)}`,
-      ].join("\n\n"),
-      model_overrides: { provider: EVENT_HORIZON_PROVIDER, model: EVENT_HORIZON_MODEL, temperature: 0.2, maxOutputTokens: 700 },
-      context_policy: { optimizationMode: "aggressive", maxContextTokens: 4000, compareWithRaw: false },
-      limits: {
-        inputTokenBudget: 4000,
-        outputTokenBudget: 700,
-        maxHistoryMessages: 4,
-        maxSteps: 2,
-        maxToolResultChars: 2000,
-        maxPromptChars: 12000,
-        timeoutSec: 180,
-      },
-      prefer_laptop: false,
-    };
-    const res = await fetch("/api/cf/execute", {
+    const res = await fetch("/api/workgraph/event-horizon/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({
+        message: text,
+        sessionId: sid,
+        app: ctx.app,
+        surface: ctx.surface,
+        path: ctx.path,
+        capabilityId: capability,
+        actionIntent: mapActionIntent(actionIntent ?? ctx.actionIntent ?? null),
+        context: { ...ctx, actionIntent: actionIntent ?? ctx.actionIntent ?? null },
+      }),
     });
     if (!res.ok) {
       const raw = await res.text();
-      throw new Error(raw.slice(0, 300) || `Context Fabric returned ${res.status}`);
+      throw new Error(raw.slice(0, 300) || `Event Horizon returned ${res.status}`);
     }
-    const json = await res.json() as { finalResponse?: string; status?: string };
-    return json.finalResponse || `Event Horizon completed with status ${json.status ?? "UNKNOWN"}, but returned no text.`;
+    const json = await res.json() as { response?: string; status?: string };
+    return json.response || `Event Horizon completed with status ${json.status ?? "UNKNOWN"}, but returned no text.`;
   }
 
   async function send() {

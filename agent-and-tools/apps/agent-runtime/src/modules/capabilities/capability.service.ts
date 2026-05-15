@@ -177,6 +177,26 @@ type CapabilityArchitectureDiagram = {
   layers: Array<{ key: string; label: string; items: string[] }>;
 };
 
+type ReadinessStatus = "READY" | "NEEDS_ATTENTION" | "NOT_READY" | "UNKNOWN";
+
+type ReadinessCheck = {
+  key: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+  severity: "blocker" | "warning" | "info";
+};
+
+type ReadinessCategory = {
+  key: string;
+  label: string;
+  score: number;
+  maxScore: number;
+  status: ReadinessStatus;
+  summary: string;
+  checks: ReadinessCheck[];
+};
+
 export const capabilityService = {
   bootstrapAgentCatalog() {
     return {
@@ -570,6 +590,299 @@ export const capabilityService = {
     });
     if (!cap) throw new NotFoundError("Capability not found");
     return cap;
+  },
+
+  async readiness(id: string) {
+    const cap = await prisma.capability.findUnique({
+      where: { id },
+      include: {
+        repositories: true,
+        knowledgeArtifacts: true,
+        knowledgeSources: true,
+        bindings: { include: { agentTemplate: true } },
+        bootstrapRuns: { orderBy: { createdAt: "desc" }, take: 3 },
+        learningCandidates: { orderBy: { createdAt: "desc" }, take: 100 },
+      },
+    });
+    if (!cap) throw new NotFoundError("Capability not found");
+
+    const activeBindings = cap.bindings.filter(binding =>
+      String(binding.status) === "ACTIVE" && String(binding.agentTemplate?.status ?? "") === "ACTIVE",
+    );
+    const allBindings = cap.bindings.filter(binding => String(binding.status) !== "ARCHIVED");
+    const activeRepos = cap.repositories.filter(repo => String(repo.status) === "ACTIVE");
+    const activeKnowledge = cap.knowledgeArtifacts.filter(artifact => String(artifact.status) === "ACTIVE");
+    const activeSources = cap.knowledgeSources.filter(source => String(source.status) === "ACTIVE");
+    const latestBootstrap = cap.bootstrapRuns[0];
+    const materializedLearning = cap.learningCandidates.filter(candidate => candidate.status === "MATERIALIZED");
+    const pendingLearning = cap.learningCandidates.filter(candidate => candidate.status === "PENDING");
+    const codeSymbols = await prisma.capabilityCodeSymbol.count({ where: { capabilityId: id } });
+    const lockedRoles = new Set(
+      allBindings
+        .filter(binding => Boolean(binding.agentTemplate?.lockedReason))
+        .map(binding => String(binding.roleInCapability ?? binding.agentTemplate?.roleType ?? "").toUpperCase()),
+    );
+    const activeRoles = new Set(activeBindings.map(binding =>
+      String(binding.roleInCapability ?? binding.agentTemplate?.roleType ?? "").toUpperCase(),
+    ));
+
+    const category = (
+      key: string,
+      label: string,
+      maxScore: number,
+      checks: ReadinessCheck[],
+      summary: string,
+      forcedStatus?: ReadinessStatus,
+    ): ReadinessCategory => {
+      const passed = checks.filter(check => check.ok).length;
+      const score = checks.length === 0 ? 0 : Math.round((passed / checks.length) * maxScore);
+      const hasBlocker = checks.some(check => !check.ok && check.severity === "blocker");
+      const hasWarning = checks.some(check => !check.ok && check.severity === "warning");
+      const percent = maxScore > 0 ? score / maxScore : 0;
+      const status: ReadinessStatus = forcedStatus ?? (hasBlocker ? "NOT_READY" : hasWarning || percent < 0.85 ? "NEEDS_ATTENTION" : "READY");
+      return { key, label, score, maxScore, status, summary, checks };
+    };
+
+    const categories = [
+      category("identity_governance", "Identity & governance", 20, [
+        {
+          key: "active",
+          label: "Capability is active",
+          ok: String(cap.status) === "ACTIVE",
+          detail: `Current status is ${String(cap.status)}.`,
+          severity: "blocker",
+        },
+        {
+          key: "owner_team",
+          label: "Owner team is set",
+          ok: Boolean(cap.ownerTeamId),
+          detail: cap.ownerTeamId ? `Owner team ${cap.ownerTeamId}.` : "No IAM owner team is recorded.",
+          severity: "blocker",
+        },
+        {
+          key: "business_unit",
+          label: "Business unit is set",
+          ok: Boolean(cap.businessUnitId),
+          detail: cap.businessUnitId ? `Business unit ${cap.businessUnitId}.` : "No business unit is recorded.",
+          severity: "warning",
+        },
+        {
+          key: "criticality",
+          label: "Criticality is set",
+          ok: Boolean(cap.criticality),
+          detail: cap.criticality ? `Criticality ${cap.criticality}.` : "No criticality is recorded.",
+          severity: "warning",
+        },
+      ], "Capability identity has enough metadata for ownership and governance routing."),
+      category("agent_team", "Agent team", 25, [
+        {
+          key: "active_agents",
+          label: "Capability agents are active",
+          ok: activeBindings.length >= 3,
+          detail: `${activeBindings.length} active agent binding(s).`,
+          severity: "blocker",
+        },
+        {
+          key: "governance_gate",
+          label: "Locked governance gate exists",
+          ok: lockedRoles.has("GOVERNANCE"),
+          detail: lockedRoles.has("GOVERNANCE") ? "Governance agent is locked." : "No locked Governance agent binding found.",
+          severity: "blocker",
+        },
+        {
+          key: "verifier_gate",
+          label: "Locked verifier gate exists",
+          ok: lockedRoles.has("VERIFIER") || lockedRoles.has("QA"),
+          detail: lockedRoles.has("VERIFIER") || lockedRoles.has("QA") ? "Verifier/QA gate is locked." : "No locked Verifier/QA gate found.",
+          severity: "warning",
+        },
+        {
+          key: "prompt_bindings",
+          label: "Prompt bindings exist",
+          ok: activeBindings.some(binding => Boolean(binding.promptProfileId ?? binding.agentTemplate?.basePromptProfileId)),
+          detail: `${activeBindings.filter(binding => Boolean(binding.promptProfileId ?? binding.agentTemplate?.basePromptProfileId)).length} agent(s) have prompt profile references.`,
+          severity: "warning",
+        },
+        {
+          key: "core_roles",
+          label: "Core delivery roles exist",
+          ok: ["PRODUCT_OWNER", "ARCHITECT", "DEVELOPER"].every(role => activeRoles.has(role)),
+          detail: `Active roles: ${Array.from(activeRoles).sort().join(", ") || "none"}.`,
+          severity: "warning",
+        },
+      ], "Activated agents, prompt bindings, and locked gates are ready for governed delivery."),
+      category("knowledge_code", "Knowledge & code grounding", 20, [
+        {
+          key: "repository",
+          label: "Repository/source configured",
+          ok: activeRepos.length > 0 || activeSources.length > 0,
+          detail: `${activeRepos.length} active repo(s), ${activeSources.length} active knowledge source(s).`,
+          severity: "warning",
+        },
+        {
+          key: "knowledge_artifacts",
+          label: "Knowledge artifacts materialized",
+          ok: activeKnowledge.length > 0,
+          detail: `${activeKnowledge.length} active knowledge artifact(s).`,
+          severity: "warning",
+        },
+        {
+          key: "learning_review",
+          label: "Learning review is not stuck",
+          ok: pendingLearning.length === 0 || materializedLearning.length > 0,
+          detail: `${pendingLearning.length} pending learning candidate(s), ${materializedLearning.length} materialized.`,
+          severity: "warning",
+        },
+        {
+          key: "code_symbols",
+          label: "Code symbols or MCP AST available",
+          ok: codeSymbols > 0 || activeRepos.length > 0,
+          detail: codeSymbols > 0 ? `${codeSymbols} central code symbol(s).` : "Central symbols absent; MCP local AST can supply private code context.",
+          severity: "info",
+        },
+      ], "Knowledge, source, and learning signals exist for grounded context."),
+      category("workflow_readiness", "Workflow readiness", 20, [
+        {
+          key: "bootstrap_completed",
+          label: "Bootstrap produced an operating model",
+          ok: Boolean(latestBootstrap && ["COMPLETED", "REVIEWED"].includes(latestBootstrap.status)),
+          detail: latestBootstrap ? `Latest bootstrap status ${latestBootstrap.status}.` : "No bootstrap run found.",
+          severity: "warning",
+        },
+        {
+          key: "bootstrap_reviewed",
+          label: "Bootstrap review completed",
+          ok: Boolean(latestBootstrap?.reviewedAt),
+          detail: latestBootstrap?.reviewedAt ? `Reviewed ${latestBootstrap.reviewedAt.toISOString()}.` : "Bootstrap packet has not been fully reviewed.",
+          severity: "warning",
+        },
+      ], "Agent-runtime can confirm bootstrap intent; Workgraph confirms actual workflows and budgets in Operations."),
+      category("runtime_readiness", "Runtime readiness", 15, [
+        {
+          key: "mcp_endpoint",
+          label: "MCP invoke endpoint configured",
+          ok: Boolean(process.env.MCP_INVOKE_URL),
+          detail: process.env.MCP_INVOKE_URL ? `MCP invoke URL configured.` : "MCP invoke URL is not set in agent-runtime.",
+          severity: "info",
+        },
+        {
+          key: "embedding_provider",
+          label: "Embedding provider configured",
+          ok: Boolean(process.env.EMBEDDING_PROVIDER || process.env.OPENAI_API_KEY),
+          detail: `Embedding dim target is ${REQUIRED_EMBEDDING_DIM}.`,
+          severity: "info",
+        },
+      ], "Runtime endpoint checks are local configuration hints; full health is shown in Operations.", "UNKNOWN"),
+    ];
+
+    const blockers = categories.flatMap(cat => cat.checks
+      .filter(check => !check.ok && check.severity === "blocker")
+      .map(check => ({ category: cat.key, key: check.key, message: check.detail })));
+    const warnings = categories.flatMap(cat => cat.checks
+      .filter(check => !check.ok && check.severity !== "blocker")
+      .map(check => ({ category: cat.key, key: check.key, message: check.detail, severity: check.severity })));
+    const maxScore = categories.reduce((sum, cat) => sum + cat.maxScore, 0);
+    const score = Math.round(categories.reduce((sum, cat) => sum + cat.score, 0) / Math.max(maxScore, 1) * 100);
+    const status: ReadinessStatus = blockers.length > 0
+      ? "NOT_READY"
+      : score >= 85 && warnings.length === 0
+          ? "READY"
+          : score >= 60
+            ? "NEEDS_ATTENTION"
+            : "NOT_READY";
+    const recommendedActions = [
+      ...blockers.map(blocker => blocker.message),
+      ...warnings.slice(0, 5).map(warning => warning.message),
+    ];
+
+    return {
+      capabilityId: cap.id,
+      generatedAt: new Date().toISOString(),
+      score,
+      status,
+      categories,
+      blockers,
+      warnings,
+      recommendedActions,
+      facts: {
+        activeAgents: activeBindings.length,
+        repositories: activeRepos.length,
+        knowledgeSources: activeSources.length,
+        knowledgeArtifacts: activeKnowledge.length,
+        pendingLearningCandidates: pendingLearning.length,
+        materializedLearningCandidates: materializedLearning.length,
+        codeSymbols,
+        latestBootstrapStatus: latestBootstrap?.status ?? null,
+      },
+    };
+  },
+
+  async architectureDiagram(id: string) {
+    const cap = await prisma.capability.findUnique({
+      where: { id },
+      include: {
+        repositories: { where: { status: "ACTIVE" }, orderBy: { createdAt: "asc" } },
+        knowledgeSources: { where: { status: "ACTIVE" }, orderBy: { createdAt: "asc" } },
+        bindings: { where: { status: "ACTIVE" }, include: { agentTemplate: true }, orderBy: { createdAt: "asc" } },
+        bootstrapRuns: { orderBy: { createdAt: "desc" }, take: 1 },
+      },
+    });
+    if (!cap) throw new NotFoundError("Capability not found");
+
+    const bootstrap = cap.bootstrapRuns[0];
+    const summary = jsonRecord(bootstrap?.sourceSummary);
+    const operatingModel = jsonRecord(summary.operatingModel);
+    const stored = normalizeArchitectureDiagram(operatingModel.architectureDiagram);
+    if (stored) {
+      return {
+        capabilityId: cap.id,
+        generatedAt: (bootstrap.completedAt ?? bootstrap.updatedAt ?? bootstrap.createdAt).toISOString(),
+        source: "bootstrap",
+        ...stored,
+      };
+    }
+
+    const input: BootstrapInput = {
+      name: cap.name,
+      appId: cap.appId ?? undefined,
+      parentCapabilityId: cap.parentCapabilityId ?? undefined,
+      capabilityType: cap.capabilityType ?? undefined,
+      businessUnitId: cap.businessUnitId ?? undefined,
+      ownerTeamId: cap.ownerTeamId ?? undefined,
+      criticality: cap.criticality ?? undefined,
+      description: cap.description ?? undefined,
+      repositories: cap.repositories.map(repo => ({
+        repoName: repo.repoName,
+        repoUrl: repo.repoUrl,
+        defaultBranch: repo.defaultBranch ?? undefined,
+        repositoryType: repo.repositoryType ?? undefined,
+      })),
+      documentLinks: cap.knowledgeSources.map(source => ({
+        url: source.url,
+        artifactType: source.artifactType,
+        title: source.title ?? undefined,
+        pollIntervalSec: source.pollIntervalSec ?? undefined,
+      })),
+    };
+    const generatedAgents = cap.bindings.map(binding => ({
+      label: binding.agentTemplate?.name ?? binding.bindingName,
+      roleType: String(binding.roleInCapability ?? binding.agentTemplate?.roleType ?? "AGENT"),
+      locked: Boolean(binding.agentTemplate?.lockedReason),
+      learnsFromGit: true,
+    }));
+    const docs: DiscoveryDoc[] = cap.knowledgeSources.map(source => ({
+      title: source.title ?? source.url,
+      content: source.url,
+      sourceType: "DOCUMENT_LINK",
+      sourceRef: source.url,
+    }));
+    const diagram = buildCapabilityArchitectureDiagram(cap, input, generatedAgents, docs);
+    return {
+      capabilityId: cap.id,
+      generatedAt: new Date().toISOString(),
+      source: "live",
+      ...diagram,
+    };
   },
 
   async update(id: string, input: {
@@ -1332,6 +1645,41 @@ function buildArchitectureDiagramCandidate(
     sourceType: "BOOTSTRAP_ARCHITECTURE",
     sourceRef: "capability-bootstrap:architecture-diagram",
     confidence: 0.9,
+  };
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function normalizeArchitectureDiagram(value: unknown): CapabilityArchitectureDiagram | null {
+  const raw = jsonRecord(value);
+  const kind = raw.kind === "TOGAF_CAPABILITY_COLLECTION" ? raw.kind
+    : raw.kind === "APPLICATION_CAPABILITY_ARCHITECTURE" ? raw.kind
+      : null;
+  const view = raw.view === "togaf" ? "togaf"
+    : raw.view === "application" ? "application"
+      : null;
+  if (!kind || !view || typeof raw.title !== "string" || typeof raw.description !== "string" || typeof raw.mermaid !== "string") {
+    return null;
+  }
+  const layers = Array.isArray(raw.layers)
+    ? raw.layers.map(layer => {
+      const row = jsonRecord(layer);
+      return {
+        key: typeof row.key === "string" ? row.key : "layer",
+        label: typeof row.label === "string" ? row.label : "Layer",
+        items: Array.isArray(row.items) ? row.items.map(String) : [],
+      };
+    })
+    : [];
+  return {
+    kind,
+    view,
+    title: raw.title,
+    description: raw.description,
+    mermaid: raw.mermaid,
+    layers,
   };
 }
 

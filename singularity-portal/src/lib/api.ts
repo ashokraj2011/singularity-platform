@@ -37,6 +37,7 @@ function makeClient(baseURL: string, opts: ClientOptions = {}): AxiosInstance {
 // Only IAM is the authoritative session source.
 export const iamApi = makeClient(env.iamBase, { authoritative: true })
 export const workgraphApi = makeClient(env.workgraphBase)
+export const runtimeApi = makeClient(env.runtimeBase)
 export const composerApi = makeClient(env.composerBase)
 // context-fabric has no auth today; same axios for consistency.
 export const contextFabricApi = makeClient(env.contextFabricBase)

@@ -14,10 +14,6 @@ type ContextSnapshot = {
 
 const SESSION_KEY = 'event-horizon.portal.session'
 const SESSION_ID_KEY = 'event-horizon.portal.session-id'
-const DEFAULT_CAPABILITY_ID = import.meta.env.VITE_EVENT_HORIZON_CAPABILITY_ID ?? '00000000-0000-0000-0000-00000000aaaa'
-const EVENT_HORIZON_PROVIDER = import.meta.env.VITE_EVENT_HORIZON_PROVIDER
-const EVENT_HORIZON_MODEL = import.meta.env.VITE_EVENT_HORIZON_MODEL
-
 function newId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
@@ -147,43 +143,15 @@ export function EventHorizonChat() {
 
   async function callEventHorizon(text: string) {
     const sid = activeSessionId()
-    const payload = {
-      trace_id: `event-horizon:${sid}:${Date.now()}`,
-      idempotency_key: `event-horizon:${sid}:${Date.now()}`,
-      run_context: {
-        workflow_instance_id: `event-horizon-${sid}`,
-        workflow_node_id: 'event-horizon-chat',
-        agent_run_id: `event-horizon-${Date.now()}`,
-        capability_id: DEFAULT_CAPABILITY_ID,
-        user_id: token ? 'portal-user' : undefined,
-        trace_id: `event-horizon:${sid}`,
-      },
-      system_prompt: [
-        'You are Event Horizon, the Singularity cross-utility portal assistant.',
-        'Help users choose the right utility and understand capability, workflow, token, and governance status.',
-        'Answer concisely and do not claim you performed mutations.',
-      ].join('\n'),
-      task: [
-        `User question: ${text}`,
-        `Current app: ${ctx.app}`,
-        `Current path: ${ctx.path}`,
-        `Context JSON: ${JSON.stringify(ctx).slice(0, 6000)}`,
-      ].join('\n\n'),
-      model_overrides: { provider: EVENT_HORIZON_PROVIDER, model: EVENT_HORIZON_MODEL, temperature: 0.2, maxOutputTokens: 700 },
-      context_policy: { optimizationMode: 'aggressive', maxContextTokens: 4000, compareWithRaw: false },
-      limits: {
-        inputTokenBudget: 4000,
-        outputTokenBudget: 700,
-        maxHistoryMessages: 4,
-        maxSteps: 2,
-        maxToolResultChars: 2000,
-        maxPromptChars: 12000,
-        timeoutSec: 180,
-      },
-      prefer_laptop: false,
-    }
-    const res = await contextFabricApi.post('/execute', payload).then(r => r.data as { finalResponse?: string; status?: string })
-    return res.finalResponse || `Event Horizon completed with status ${res.status ?? 'UNKNOWN'}, but returned no text.`
+    const res = await workgraphApi.post('/event-horizon/chat', {
+      message: text,
+      sessionId: sid,
+      app: ctx.app,
+      surface: 'Operations Portal',
+      path: ctx.path,
+      context: ctx,
+    }).then(r => r.data as { response?: string; status?: string })
+    return res.response || `Event Horizon completed with status ${res.status ?? 'UNKNOWN'}, but returned no text.`
   }
 
   async function send() {
