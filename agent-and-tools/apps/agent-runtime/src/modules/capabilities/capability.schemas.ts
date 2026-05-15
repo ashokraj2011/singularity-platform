@@ -38,6 +38,9 @@ export const attachRepositorySchema = z.object({
 
 export const bootstrapCapabilitySchema = createCapabilitySchema.extend({
   targetWorkflowPattern: z.string().max(80).optional(),
+  agentPreset: z.enum(["minimal", "engineering_core", "governed_delivery"]).default("governed_delivery"),
+  includeAgentKeys: z.array(z.string().min(1).max(80)).max(20).optional(),
+  excludeAgentKeys: z.array(z.string().min(1).max(80)).max(20).optional(),
   repositories: z.array(attachRepositorySchema.partial({ repoName: true }).extend({
     repoUrl: z.string().url(),
   })).max(5).default([]),

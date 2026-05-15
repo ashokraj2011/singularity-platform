@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import useSWR from "swr";
-import { auditGovApi } from "@/lib/api";
+import { auditGovApi, runtimeApi } from "@/lib/api";
 import { ShieldCheck, AlertTriangle, Activity, CheckCircle, XCircle } from "lucide-react";
 
 /**
@@ -27,6 +27,7 @@ type AuditEvent = {
 
 export default function AuditPage() {
   const { data: summary }  = useSWR("audit-summary",   () => auditGovApi.summary(), { refreshInterval: 5_000 });
+  const { data: capabilities } = useSWR("audit-capabilities", () => runtimeApi.listCapabilities());
   const { data: pendData, mutate: mutatePend } = useSWR(
     "audit-approvals-pending",
     () => auditGovApi.approvals({ status: "pending" }),
@@ -41,6 +42,7 @@ export default function AuditPage() {
 
   const pending = (pendData?.items ?? []) as Approval[];
   const events  = (tlData?.items   ?? []) as AuditEvent[];
+  const capabilityOptions = (capabilities ?? []) as Array<Record<string, unknown>>;
 
   async function decide(id: string, decision: "approved" | "rejected") {
     await auditGovApi.decideApproval(id, { decision, decided_by: "operator", decision_reason: `${decision} via /audit dashboard` });
@@ -97,18 +99,35 @@ export default function AuditPage() {
       {/* Timeline */}
       <section>
         <h2 className="text-lg font-semibold text-slate-900 mb-3">Audit timeline</h2>
-        <div className="card p-3 mb-3 flex gap-2 items-end">
+        <div className="card p-3 mb-3 flex gap-2 items-end flex-wrap">
           <select className="px-2 py-1.5 text-sm border border-slate-200 rounded-md"
             value={filter.kind}
-            onChange={e => setFilter(f => ({ ...f, kind: e.target.value as typeof f.kind }))}>
-            <option value="capability_id">capability_id</option>
-            <option value="trace_id">trace_id</option>
-            <option value="actor_id">actor_id</option>
+            onChange={e => setFilter({ kind: e.target.value as typeof filter.kind, value: "" })}>
+            <option value="capability_id">Capability</option>
+            <option value="trace_id">Trace ID</option>
+            <option value="actor_id">Actor ID</option>
           </select>
-          <input className="flex-1 px-2 py-1.5 text-sm border border-slate-200 rounded-md"
-            placeholder={`Enter ${filter.kind} to filter`}
-            value={filter.value}
-            onChange={e => setFilter(f => ({ ...f, value: e.target.value }))} />
+          {filter.kind === "capability_id" ? (
+            <select
+              className="flex-1 min-w-[260px] px-2 py-1.5 text-sm border border-slate-200 rounded-md"
+              value={filter.value}
+              onChange={e => setFilter(f => ({ ...f, value: e.target.value }))}
+            >
+              <option value="">Select capability…</option>
+              {capabilityOptions.map(capability => {
+                const id = String(capability.id ?? capability.capabilityId ?? capability.capability_id ?? "");
+                if (!id) return null;
+                const name = String(capability.name ?? capability.capabilityName ?? id);
+                const status = capability.status ? ` · ${String(capability.status)}` : "";
+                return <option key={id} value={id}>{name}{status}</option>;
+              })}
+            </select>
+          ) : (
+            <input className="flex-1 min-w-[260px] px-2 py-1.5 text-sm border border-slate-200 rounded-md"
+              placeholder={`Enter ${filter.kind === "trace_id" ? "trace id" : "actor id"} to filter`}
+              value={filter.value}
+              onChange={e => setFilter(f => ({ ...f, value: e.target.value.trim() }))} />
+          )}
         </div>
         {!filter.value ? (
           <p className="text-sm text-slate-400">Enter a value above to load timeline events.</p>

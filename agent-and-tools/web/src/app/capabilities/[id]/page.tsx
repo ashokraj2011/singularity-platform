@@ -638,7 +638,7 @@ function BootstrapTab({
         if (decision === "REJECT") rejectGroupKeys.push(group.key);
       }
       const activateAgentTemplateIds = generatedAgents
-        .filter(agent => (agentSelection[agent.id] ?? true) && agent.status !== "ACTIVE")
+        .filter(agent => (agent.activationRequired || (agentSelection[agent.id] ?? true)) && agent.status !== "ACTIVE")
         .map(agent => agent.id);
       await runtimeApi.reviewBootstrapRun(capabilityId, activeRunId, {
         approveGroupKeys,
@@ -686,7 +686,7 @@ function BootstrapTab({
         <div className="card p-4">
           <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Generated agents</div>
           <div className="text-2xl font-semibold text-slate-900">{generatedAgents.length}</div>
-          <p className="text-xs text-slate-500">Default set: Architect, Developer, QA, Security, DevOps, Product Owner.</p>
+          <p className="text-xs text-slate-500">Predefined capability crew with locked Governance / Verifier / Security gates.</p>
         </div>
         <div className="card p-4">
           <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Learning groups</div>
@@ -762,16 +762,20 @@ function BootstrapTab({
               <input
                 type="checkbox"
                 className="mt-1"
-                checked={agentSelection[agent.id] ?? true}
+                checked={agent.activationRequired || (agentSelection[agent.id] ?? true)}
                 onChange={e => setAgentSelection(s => ({ ...s, [agent.id]: e.target.checked }))}
-                disabled={agent.status === "ACTIVE"}
+                disabled={agent.status === "ACTIVE" || agent.activationRequired}
               />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-medium text-slate-900">{agent.name}</span>
                   <StatusBadge value={agent.status} />
-                  <span className="text-[10px] uppercase tracking-wide text-slate-500">{agent.roleType}</span>
+                  <span className="text-[10px] uppercase tracking-wide text-slate-500">{agent.bindingRole ?? agent.roleType}</span>
+                  {agent.locked && <span className="text-[10px] uppercase tracking-wide bg-slate-900 text-white px-2 py-0.5 rounded">Locked</span>}
+                  {agent.activationRequired && <span className="text-[10px] uppercase tracking-wide bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded">Required</span>}
+                  {agent.learnsFromGit && <span className="text-[10px] uppercase tracking-wide bg-purple-50 text-purple-700 px-2 py-0.5 rounded">Git grounded</span>}
                 </div>
+                {agent.grounding && <p className="text-xs text-slate-500 mt-1">{agent.grounding}</p>}
                 <div className="font-mono text-[11px] text-slate-400 mt-1">template: {agent.id}</div>
               </div>
             </label>
@@ -908,7 +912,12 @@ function getGeneratedAgents(run: Record<string, unknown>, capability: Record<str
       id,
       name: String(template?.name ?? agent.name ?? id),
       roleType: String(template?.roleType ?? agent.roleType ?? "AGENT"),
+      bindingRole: String(agent.bindingRole ?? agent.roleType ?? template?.roleType ?? "AGENT"),
       status: String(template?.status ?? "DRAFT"),
+      locked: Boolean(template?.lockedReason ?? agent.locked),
+      activationRequired: Boolean(agent.activationRequired),
+      learnsFromGit: Boolean(agent.learnsFromGit),
+      grounding: typeof agent.grounding === "string" ? agent.grounding : "",
     };
   });
 }

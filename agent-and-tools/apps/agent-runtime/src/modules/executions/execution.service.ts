@@ -17,6 +17,7 @@
 import { prisma } from "../../config/prisma";
 import { NotFoundError } from "../../shared/errors";
 import { env } from "../../config/env";
+import { Prisma } from "../../../generated/prisma-client";
 
 export const executionService = {
   async create(input: {
@@ -81,10 +82,7 @@ export const executionService = {
   async start(id: string, _opts: { workflowPhase?: string; task?: string }) {
     const exec = await this.get(id);
 
-    const message =
-      "In-process agent execution is deprecated (M29). Use a workgraph " +
-      "workflow with an AGENT_TASK node bound to this template instead. " +
-      `Template: ${exec.agentTemplateId}`;
+    const message = legacyRuntimeMessage(exec.agentTemplateId);
 
     await prisma.agentExecution.update({
       where: { id },
@@ -92,6 +90,16 @@ export const executionService = {
         executionStatus: "FAILED",
         startedAt: new Date(),
         completedAt: new Date(),
+      },
+    });
+    await prisma.agentExecutionReceipt.create({
+      data: {
+        agentExecutionId: id,
+        finalStatus: "FAILED",
+        evidenceRefs: legacyRuntimeEvidence(exec.agentTemplateId, message),
+        memoryRefs: [],
+        approvalRefs: [],
+        toolReceiptRefs: [],
       },
     });
 
@@ -122,10 +130,40 @@ export const executionService = {
       promptHash: receipt?.promptHash ?? null,
       outputHash: receipt?.outputHash ?? null,
       toolReceipts: exec.toolReceipts,
-      evidenceRefs: receipt?.evidenceRefs ?? [],
+      evidenceRefs: receipt?.evidenceRefs ?? (exec.executionStatus === "FAILED"
+        ? legacyRuntimeEvidence(exec.agentTemplateId, legacyRuntimeMessage(exec.agentTemplateId))
+        : []),
       memoryRefs: receipt?.memoryRefs ?? [],
       approvalRefs: receipt?.approvalRefs ?? [],
-      finalStatus: receipt?.finalStatus ?? null,
+      finalStatus: receipt?.finalStatus ?? (exec.executionStatus === "FAILED" ? "FAILED" : null),
+      message: receipt
+        ? null
+        : exec.executionStatus === "FAILED"
+          ? legacyRuntimeMessage(exec.agentTemplateId)
+          : null,
+      executionPath: "workgraph-context-fabric-mcp",
     };
   },
 };
+
+function legacyRuntimeMessage(agentTemplateId: string) {
+  return [
+    "Direct agent-runtime execution is retired.",
+    "Use Workflow Manager to run an AGENT_TASK so the call goes through Workgraph, Prompt Composer, Context Fabric, MCP, budgets, approvals, and Run Insights.",
+    `Template: ${agentTemplateId}`,
+  ].join(" ");
+}
+
+function legacyRuntimeEvidence(agentTemplateId: string, message: string): Prisma.InputJsonValue {
+  return [{
+    source_kind: "runtime",
+    source_id: agentTemplateId,
+    citation_key: "runtime:direct-execution-retired",
+    content: message,
+    confidence: 1,
+    metadata: {
+      replacement_path: "Workflow Manager -> workflow run -> AGENT_TASK -> Context Fabric /execute -> MCP",
+      workgraph_runs_url: "http://localhost:5174/runs",
+    },
+  }];
+}

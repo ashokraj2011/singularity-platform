@@ -193,6 +193,9 @@ export const agentService = {
   async updateTemplate(id: string, patch: UpdateAgentTemplateInput, actor?: AuthUser) {
     const existing = await prisma.agentTemplate.findUnique({ where: { id } });
     if (!existing) throw new NotFoundError("Agent template not found");
+    if (existing.lockedReason && !isPlatformAdmin(actor)) {
+      throw new ForbiddenError(`Editing locked agent template requires platform admin access: ${existing.lockedReason}`);
+    }
     if (!existing.capabilityId) {
       requirePlatformAdmin(actor, existing.lockedReason ? `Editing locked common template (${existing.lockedReason})` : "Editing common template");
     } else {
@@ -228,6 +231,9 @@ export const agentService = {
   ) {
     const existing = await prisma.agentTemplate.findUnique({ where: { id } });
     if (!existing) throw new NotFoundError("Agent template not found");
+    if (existing.lockedReason && !isPlatformAdmin(actor)) {
+      throw new ForbiddenError(`Restoring locked agent template requires platform admin access: ${existing.lockedReason}`);
+    }
     if (!existing.capabilityId) {
       requirePlatformAdmin(actor, existing.lockedReason ? `Restoring locked common template (${existing.lockedReason})` : "Restoring common template");
     } else {

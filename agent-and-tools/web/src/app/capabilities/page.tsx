@@ -9,6 +9,7 @@ import {
   FileText,
   GitBranch,
   Layers3,
+  Lock,
   Plus,
   ShieldCheck,
   Sparkles,
@@ -31,6 +32,7 @@ type BootstrapForm = {
   githubBranch: string;
   documentLinks: string;
   targetWorkflowPattern: string;
+  agentPreset: string;
 };
 
 const DEFAULT_FORM: BootstrapForm = {
@@ -44,11 +46,29 @@ const DEFAULT_FORM: BootstrapForm = {
   githubBranch: "main",
   documentLinks: "",
   targetWorkflowPattern: "governed_delivery",
+  agentPreset: "governed_delivery",
 };
 
-const AGENT_PREVIEW = CAPABILITY_ROLE_OPTIONS.filter((role) =>
-  ["ARCHITECT", "DEVELOPER", "QA", "SECURITY", "DEVOPS", "PRODUCT_OWNER"].includes(role.value),
-);
+const BOOTSTRAP_AGENT_PREVIEW = [
+  { key: "product_owner", role: "PRODUCT_OWNER", label: "Product Owner", locked: false, required: false, git: true },
+  { key: "business_analyst", role: "BUSINESS_ANALYST", label: "Business Analyst", locked: false, required: false, git: true },
+  { key: "architect", role: "ARCHITECT", label: "Architect", locked: false, required: false, git: true },
+  { key: "developer", role: "DEVELOPER", label: "Developer", locked: false, required: false, git: true },
+  { key: "verifier", role: "QA", label: "Verifier", locked: true, required: true, git: true },
+  { key: "qa", role: "QA", label: "QA", locked: false, required: false, git: true },
+  { key: "security", role: "SECURITY", label: "Security", locked: true, required: true, git: true },
+  { key: "devops", role: "DEVOPS", label: "DevOps", locked: false, required: false, git: true },
+  { key: "governance", role: "GOVERNANCE", label: "Governance", locked: true, required: true, git: false },
+] as const;
+
+function agentPreviewForPreset(preset: string) {
+  const keys = preset === "minimal"
+    ? new Set(["product_owner", "architect", "developer", "verifier", "governance"])
+    : preset === "engineering_core"
+      ? new Set(["product_owner", "business_analyst", "architect", "developer", "verifier", "qa", "security", "devops", "governance"])
+      : new Set(BOOTSTRAP_AGENT_PREVIEW.map(agent => agent.key));
+  return BOOTSTRAP_AGENT_PREVIEW.filter(agent => keys.has(agent.key));
+}
 
 const LOCAL_DISCOVERY_CAP = 500;
 const LOCAL_FILE_SIZE_CAP = 250_000;
@@ -123,6 +143,7 @@ export default function CapabilitiesPage() {
         businessUnitId: form.businessUnitId.trim() || undefined,
         ownerTeamId: form.ownerTeamId.trim() || undefined,
         targetWorkflowPattern: form.targetWorkflowPattern.trim() || undefined,
+        agentPreset: form.agentPreset,
         repositories: form.githubUrl.trim()
           ? [{
               repoUrl: form.githubUrl.trim(),
@@ -308,17 +329,36 @@ export default function CapabilitiesPage() {
           )}
 
           {step === 3 && (
-            <div className="grid grid-cols-2 gap-3">
-              {AGENT_PREVIEW.map((role) => (
-                <div key={role.value} className="rounded-xl border border-slate-200 bg-white p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Bot size={16} className="text-singularity-600" />
-                    <span className="font-medium text-slate-900">{role.label}</span>
-                    <span className="text-[10px] uppercase tracking-wide bg-amber-50 text-amber-700 px-2 py-0.5 rounded">Draft</span>
-                  </div>
-                  <p className="text-sm text-slate-600">{role.description}</p>
-                </div>
-              ))}
+            <div className="space-y-4">
+              <Field label="Agent team preset">
+                <select className={FIELD_CLASS} value={form.agentPreset}
+                  onChange={e => setForm(f => ({ ...f, agentPreset: e.target.value }))}>
+                  <option value="minimal">Minimal governed crew</option>
+                  <option value="engineering_core">Engineering core crew</option>
+                  <option value="governed_delivery">Full governed delivery crew</option>
+                </select>
+              </Field>
+              <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900">
+                Locked gates are mandatory and derived from platform baselines. Capability owners can activate them and use them, but only platform admins can edit their baseline behavior.
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                {agentPreviewForPreset(form.agentPreset).map((agent) => {
+                  const role = CAPABILITY_ROLE_OPTIONS.find(item => item.value === agent.role);
+                  return (
+                    <div key={agent.key} className="rounded-xl border border-slate-200 bg-white p-4">
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
+                        <Bot size={16} className="text-singularity-600" />
+                        <span className="font-medium text-slate-900">{agent.label}</span>
+                        <span className="text-[10px] uppercase tracking-wide bg-amber-50 text-amber-700 px-2 py-0.5 rounded">Draft</span>
+                        {agent.locked && <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide bg-slate-900 text-white px-2 py-0.5 rounded"><Lock size={10} /> Locked</span>}
+                        {agent.required && <span className="text-[10px] uppercase tracking-wide bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded">Required</span>}
+                        {agent.git && <span className="text-[10px] uppercase tracking-wide bg-purple-50 text-purple-700 px-2 py-0.5 rounded">Git grounded</span>}
+                      </div>
+                      <p className="text-sm text-slate-600">{role?.description ?? "Capability-grounded operating agent."}</p>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 

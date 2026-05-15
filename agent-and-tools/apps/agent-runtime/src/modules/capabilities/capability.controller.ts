@@ -10,6 +10,9 @@ type PdfParseFn = (data: Buffer) => Promise<{ text?: string }>;
 const pdfExtract = pdfParse as unknown as PdfParseFn;
 
 export const capabilityController = {
+  async bootstrapAgentCatalog(_req: Request, res: Response) {
+    return ok(res, capabilityService.bootstrapAgentCatalog());
+  },
   async create(req: Request, res: Response) {
     return ok(res, await capabilityService.create(req.body, req.headers.authorization), 201);
   },

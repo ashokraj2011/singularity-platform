@@ -184,6 +184,38 @@ interface NodeInsight {
   eventCount: number
 }
 
+interface AuditStageReport {
+  id: string
+  type: 'workflow_node' | 'workbench_stage'
+  label: string
+  stageKey?: string
+  nodeId?: string | null
+  nodeType?: string
+  status: string
+  startedAt: string | null
+  completedAt: string | null
+  durationMs: number | null
+  durationPrecise: boolean
+  attempts: number
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  estimatedCost: number | null
+  pricingStatus: 'PRICED' | 'UNPRICED' | 'MIXED'
+  provider?: string
+  model?: string
+  modelAlias?: string
+  cfCallIds: string[]
+  promptAssemblyIds: string[]
+  mcpInvocationIds: string[]
+  artifactIds: string[]
+  consumableIds: string[]
+  documentIds: string[]
+  approvalCount: number
+  eventCount: number
+  warnings: string[]
+}
+
 interface InsightsResponse {
   run: {
     id: string
@@ -235,6 +267,47 @@ interface InsightsResponse {
     workspaceSteps: number
     citationCount: number
   }
+  auditReport: {
+    generatedAt: string
+    coverage: {
+      workflowStages: number
+      workbenchStages: number
+      budgetEvents: number
+      auditEvents: number
+      approvalRequests: number
+    }
+    totals: {
+      durationMs: number | null
+      inputTokens: number
+      outputTokens: number
+      totalTokens: number
+      estimatedCost: number | null
+      unpricedCalls: number
+      approvals: number
+      artifacts: number
+      documents: number
+      consumables: number
+    }
+    stages: AuditStageReport[]
+    ledger: Array<{
+      id: string
+      eventType: string
+      nodeId: string | null
+      stageKey?: string
+      agentRunId: string | null
+      cfCallId: string | null
+      promptAssemblyId: string | null
+      inputTokensDelta: number
+      outputTokensDelta: number
+      totalTokensDelta: number
+      estimatedCostDelta: number | null
+      pricingStatus: string
+      provider?: string
+      model?: string
+      modelAlias?: string
+      createdAt: string
+    }>
+  }
 }
 
 function durationOf(node: {
@@ -283,6 +356,87 @@ async function fetchAssemblyCitations(promptAssemblyId: string): Promise<NodeIns
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function num(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function str(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.filter((value): value is string => Boolean(value))))
+}
+
+function payloadOf(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {}
+}
+
+function metadataOf(event: { metadata?: unknown }): Record<string, unknown> {
+  return payloadOf(event.metadata)
+}
+
+function stageKeyOfBudgetEvent(event: { metadata?: unknown }): string | undefined {
+  const metadata = metadataOf(event)
+  return str(metadata.stageKey) ?? str(metadata.stage_key)
+}
+
+function durationFromIso(startedAt?: string | null, completedAt?: string | null): number | null {
+  if (!startedAt || !completedAt) return null
+  const start = Date.parse(startedAt)
+  const end = Date.parse(completedAt)
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null
+  return Math.max(0, end - start)
+}
+
+function stageAttemptsFromMetadata(metadata: unknown): Array<Record<string, unknown>> {
+  const raw = payloadOf(metadata).stageAttempts
+  if (!Array.isArray(raw)) return []
+  return raw.filter(isRecord)
+}
+
+function artifactStageKey(artifact: { stage?: unknown; payload?: unknown }): string | undefined {
+  const payload = payloadOf(artifact.payload)
+  return str(payload.stageKey) ?? str(payload.stage_key) ?? (typeof artifact.stage === 'string' ? artifact.stage.toLowerCase() : undefined)
+}
+
+function consumableIdFromPayload(payload: unknown): string | undefined {
+  const row = payloadOf(payload)
+  const direct = str(row.consumableId)
+  if (direct) return direct
+  const publish = payloadOf(row.consumablePublish)
+  return str(publish.consumableId)
+}
+
+function sumBudgetEvents(events: Array<{
+  inputTokensDelta: number
+  outputTokensDelta: number
+  totalTokensDelta: number
+  estimatedCostDelta: number | null
+  pricingStatus: string
+}>) {
+  const inputTokens = events.reduce((sum, event) => sum + event.inputTokensDelta, 0)
+  const outputTokens = events.reduce((sum, event) => sum + event.outputTokensDelta, 0)
+  const totalTokens = events.reduce((sum, event) => sum + event.totalTokensDelta, 0)
+  const pricedEvents = events.filter(event => event.estimatedCostDelta != null)
+  const estimatedCost = pricedEvents.length > 0
+    ? pricedEvents.reduce((sum, event) => sum + (event.estimatedCostDelta ?? 0), 0)
+    : null
+  const hasUnpriced = events.some(event => event.pricingStatus === 'UNPRICED')
+  const hasPriced = events.some(event => event.pricingStatus === 'PRICED' && event.estimatedCostDelta != null)
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    estimatedCost,
+    pricingStatus: hasPriced && hasUnpriced ? 'MIXED' as const : hasUnpriced ? 'UNPRICED' as const : 'PRICED' as const,
+  }
+}
+
 insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) => {
   try {
     const id = String(req.params.id)
@@ -290,7 +444,7 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
     // to capabilities the user can already see.
     await assertInstancePermission(req.user!.userId, id, 'view')
 
-    const [instance, nodes, documents, consumables, agentRuns] = await Promise.all([
+    const [instance, nodes, documents, consumables, agentRuns, budget, blueprintSessions, approvalRequests] = await Promise.all([
       prisma.workflowInstance.findUnique({
         where: { id },
         select: {
@@ -328,12 +482,49 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
           id: true,
           nodeId: true,
           status: true,
+          startedAt: true,
+          completedAt: true,
+          createdAt: true,
+          updatedAt: true,
           outputs: {
             where: { outputType: 'LLM_RESPONSE' },
             orderBy: { createdAt: 'desc' },
             take: 1,
             select: { structuredPayload: true },
           },
+        },
+      }),
+      prisma.workflowRunBudget.findUnique({
+        where: { instanceId: id },
+        include: { events: { orderBy: { createdAt: 'asc' } } },
+      }),
+      prisma.blueprintSession.findMany({
+        where: { workflowInstanceId: id },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true,
+          goal: true,
+          status: true,
+          workflowInstanceId: true,
+          metadata: true,
+          artifacts: {
+            orderBy: { createdAt: 'asc' },
+            select: { id: true, stage: true, kind: true, title: true, payload: true, createdAt: true },
+          },
+        },
+      }),
+      prisma.approvalRequest.findMany({
+        where: { instanceId: id },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true,
+          nodeId: true,
+          subjectType: true,
+          subjectId: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true,
+          decisions: { select: { decision: true, decidedAt: true } },
         },
       }),
     ])
@@ -499,6 +690,194 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
       })
     })
 
+    const budgetEvents = budget?.events ?? []
+    const budgetEventsByNode = new Map<string, typeof budgetEvents>()
+    const budgetEventsByStage = new Map<string, typeof budgetEvents>()
+    for (const event of budgetEvents) {
+      if (event.nodeId) {
+        const arr = budgetEventsByNode.get(event.nodeId) ?? []
+        arr.push(event)
+        budgetEventsByNode.set(event.nodeId, arr)
+      }
+      const stageKey = stageKeyOfBudgetEvent(event)
+      if (stageKey) {
+        const arr = budgetEventsByStage.get(stageKey) ?? []
+        arr.push(event)
+        budgetEventsByStage.set(stageKey, arr)
+      }
+    }
+
+    const approvalsByNode = new Map<string, typeof approvalRequests>()
+    for (const request of approvalRequests) {
+      if (!request.nodeId) continue
+      const arr = approvalsByNode.get(request.nodeId) ?? []
+      arr.push(request)
+      approvalsByNode.set(request.nodeId, arr)
+    }
+
+    const auditEventsByStage = new Map<string, number>()
+    for (const event of events) {
+      const stageKey = str(payloadOf(event.payload).stageKey) ?? str(payloadOf(event.payload).stage_key)
+      if (stageKey) auditEventsByStage.set(stageKey, (auditEventsByStage.get(stageKey) ?? 0) + 1)
+    }
+
+    const workflowAuditStages: AuditStageReport[] = nodeInsights.map((node) => {
+      const nodeBudgetEvents = budgetEventsByNode.get(node.id) ?? []
+      const budgetTotals = sumBudgetEvents(nodeBudgetEvents)
+      const receiptInput = node.receipts.reduce((sum, receipt) => sum + (receipt.inputTokens ?? 0), 0)
+      const receiptOutput = node.receipts.reduce((sum, receipt) => sum + (receipt.outputTokens ?? 0), 0)
+      const receiptTotal = node.receipts.reduce((sum, receipt) => sum + (receipt.totalTokens ?? 0), 0)
+      const receiptCostValues = node.receipts.map(receipt => receipt.estimatedCost).filter((value): value is number => typeof value === 'number')
+      const receiptCost = receiptCostValues.length > 0 ? receiptCostValues.reduce((sum, value) => sum + value, 0) : null
+      const firstBudgetMetadata = nodeBudgetEvents.map(metadataOf).find(meta => str(meta.provider) || str(meta.model) || str(meta.modelAlias))
+      const warnings = uniqueStrings([
+        ...node.receipts.flatMap(receipt => receipt.budgetWarnings),
+        budgetTotals.pricingStatus === 'UNPRICED' || budgetTotals.pricingStatus === 'MIXED' ? 'At least one usage record has no estimated cost.' : undefined,
+        node.receipts.some(receipt => receipt.blockedReason) ? 'One or more model calls were blocked or degraded.' : undefined,
+      ])
+      return {
+        id: node.id,
+        type: 'workflow_node' as const,
+        label: node.label,
+        nodeId: node.id,
+        nodeType: node.nodeType,
+        status: node.status,
+        startedAt: node.startedAt,
+        completedAt: node.completedAt,
+        durationMs: node.durationMs,
+        durationPrecise: node.durationPrecise,
+        attempts: Math.max(1, node.receipts.length),
+        inputTokens: budgetTotals.inputTokens || receiptInput,
+        outputTokens: budgetTotals.outputTokens || receiptOutput,
+        totalTokens: budgetTotals.totalTokens || receiptTotal,
+        estimatedCost: budgetTotals.estimatedCost ?? receiptCost,
+        pricingStatus: budgetTotals.pricingStatus,
+        provider: str(firstBudgetMetadata?.provider) ?? node.receipts.find(receipt => receipt.provider)?.provider,
+        model: str(firstBudgetMetadata?.model) ?? node.receipts.find(receipt => receipt.model)?.model,
+        modelAlias: str(firstBudgetMetadata?.modelAlias) ?? node.receipts.find(receipt => receipt.modelAlias)?.modelAlias,
+        cfCallIds: uniqueStrings([...node.receipts.map(receipt => receipt.cfCallId), ...nodeBudgetEvents.map(event => event.cfCallId)]),
+        promptAssemblyIds: uniqueStrings([...node.receipts.map(receipt => receipt.promptAssemblyId), ...nodeBudgetEvents.map(event => event.promptAssemblyId)]),
+        mcpInvocationIds: uniqueStrings(node.receipts.map(receipt => receipt.mcpInvocationId)),
+        artifactIds: uniqueStrings(node.receipts.flatMap(receipt => receipt.artifactIds)),
+        consumableIds: node.consumables.map(consumable => consumable.id),
+        documentIds: node.documents.map(document => document.id),
+        approvalCount: approvalsByNode.get(node.id)?.length ?? 0,
+        eventCount: node.eventCount,
+        warnings,
+      }
+    })
+
+    const workbenchAuditStages: AuditStageReport[] = []
+    for (const session of blueprintSessions) {
+      const metadata = payloadOf(session.metadata)
+      const workflowNodeId = str(metadata.workflowNodeId)
+      const attempts = stageAttemptsFromMetadata(session.metadata)
+      for (const attempt of attempts) {
+        const stageKey = str(attempt.stageKey) ?? 'stage'
+        const stageArtifacts = session.artifacts.filter(artifact => artifactStageKey(artifact) === stageKey)
+        const stageBudgetEvents = (budgetEventsByStage.get(stageKey) ?? []).filter(event =>
+          !workflowNodeId || !event.nodeId || event.nodeId === workflowNodeId,
+        )
+        const budgetTotals = sumBudgetEvents(stageBudgetEvents)
+        const tokensUsed = payloadOf(attempt.tokensUsed)
+        const correlation = payloadOf(attempt.correlation)
+        const inputTokens = budgetTotals.inputTokens || num(tokensUsed.input) || 0
+        const outputTokens = budgetTotals.outputTokens || num(tokensUsed.output) || 0
+        const totalTokens = budgetTotals.totalTokens || num(tokensUsed.total) || inputTokens + outputTokens
+        const firstBudgetMetadata = stageBudgetEvents.map(metadataOf).find(meta => str(meta.provider) || str(meta.model) || str(meta.modelAlias))
+        const startedAt = str(attempt.startedAt) ?? null
+        const completedAt = str(attempt.completedAt) ?? null
+        const verdict = str(attempt.verdict)
+        const status = verdict ?? str(attempt.status) ?? String(session.status)
+        const warnings = uniqueStrings([
+          budgetTotals.pricingStatus === 'UNPRICED' || budgetTotals.pricingStatus === 'MIXED' ? 'At least one usage record has no estimated cost.' : undefined,
+          str(attempt.error),
+        ])
+        workbenchAuditStages.push({
+          id: str(attempt.id) ?? `${session.id}:${stageKey}`,
+          type: 'workbench_stage',
+          label: str(attempt.stageLabel) ?? stageKey,
+          stageKey,
+          nodeId: workflowNodeId ?? null,
+          nodeType: 'WORKBENCH_STAGE',
+          status,
+          startedAt,
+          completedAt,
+          durationMs: durationFromIso(startedAt, completedAt),
+          durationPrecise: Boolean(startedAt && completedAt),
+          attempts: num(attempt.attemptNumber) ?? 1,
+          inputTokens,
+          outputTokens,
+          totalTokens,
+          estimatedCost: budgetTotals.estimatedCost,
+          pricingStatus: budgetTotals.pricingStatus,
+          provider: str(firstBudgetMetadata?.provider),
+          model: str(firstBudgetMetadata?.model),
+          modelAlias: str(firstBudgetMetadata?.modelAlias),
+          cfCallIds: uniqueStrings([str(correlation.cfCallId), ...stageBudgetEvents.map(event => event.cfCallId)]),
+          promptAssemblyIds: uniqueStrings([str(correlation.promptAssemblyId), ...stageBudgetEvents.map(event => event.promptAssemblyId)]),
+          mcpInvocationIds: uniqueStrings([str(correlation.mcpInvocationId)]),
+          artifactIds: uniqueStrings([
+            ...(Array.isArray(attempt.artifactIds) ? attempt.artifactIds.map(String) : []),
+            ...stageArtifacts.map(artifact => artifact.id),
+          ]),
+          consumableIds: uniqueStrings(stageArtifacts.map(artifact => consumableIdFromPayload(artifact.payload))),
+          documentIds: [],
+          approvalCount: verdict ? 1 : 0,
+          eventCount: auditEventsByStage.get(stageKey) ?? 0,
+          warnings,
+        })
+      }
+    }
+
+    const auditStages = [...workflowAuditStages, ...workbenchAuditStages]
+      .sort((a, b) => Date.parse(a.startedAt ?? '') - Date.parse(b.startedAt ?? ''))
+    const auditEstimatedCosts = auditStages.map(stage => stage.estimatedCost).filter((value): value is number => typeof value === 'number')
+    const auditReport = {
+      generatedAt: new Date().toISOString(),
+      coverage: {
+        workflowStages: workflowAuditStages.length,
+        workbenchStages: workbenchAuditStages.length,
+        budgetEvents: budgetEvents.length,
+        auditEvents: events.length,
+        approvalRequests: approvalRequests.length,
+      },
+      totals: {
+        durationMs: runDuration(instance),
+        inputTokens: auditStages.reduce((sum, stage) => sum + stage.inputTokens, 0),
+        outputTokens: auditStages.reduce((sum, stage) => sum + stage.outputTokens, 0),
+        totalTokens: auditStages.reduce((sum, stage) => sum + stage.totalTokens, 0),
+        estimatedCost: auditEstimatedCosts.length > 0 ? auditEstimatedCosts.reduce((sum, value) => sum + value, 0) : null,
+        unpricedCalls: auditStages.filter(stage => stage.pricingStatus === 'UNPRICED' || stage.pricingStatus === 'MIXED').length,
+        approvals: approvalRequests.length + workbenchAuditStages.filter(stage => stage.approvalCount > 0).length,
+        artifacts: uniqueStrings(auditStages.flatMap(stage => stage.artifactIds)).length,
+        documents: documents.length,
+        consumables: consumables.length,
+      },
+      stages: auditStages,
+      ledger: budgetEvents.map(event => {
+        const metadata = metadataOf(event)
+        return {
+          id: event.id,
+          eventType: String(event.eventType),
+          nodeId: event.nodeId,
+          stageKey: stageKeyOfBudgetEvent(event),
+          agentRunId: event.agentRunId,
+          cfCallId: event.cfCallId,
+          promptAssemblyId: event.promptAssemblyId,
+          inputTokensDelta: event.inputTokensDelta,
+          outputTokensDelta: event.outputTokensDelta,
+          totalTokensDelta: event.totalTokensDelta,
+          estimatedCostDelta: event.estimatedCostDelta,
+          pricingStatus: event.pricingStatus,
+          provider: str(metadata.provider),
+          model: str(metadata.model),
+          modelAlias: str(metadata.modelAlias),
+          createdAt: event.createdAt.toISOString(),
+        }
+      }),
+    }
+
     const eventKinds = events.map(e => e.kind)
     const countKind = (predicate: (kind: string) => boolean) =>
       eventKinds.reduce((count, kind) => count + (predicate(kind) ? 1 : 0), 0)
@@ -559,6 +938,7 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
         workspaceSteps: Array.from(workspaceByNode.values()).reduce((sum, arr) => sum + arr.length, 0),
         citationCount: Array.from(citationsByNode.values()).reduce((sum, arr) => sum + arr.length, 0),
       },
+      auditReport,
     }
 
     res.json(response)

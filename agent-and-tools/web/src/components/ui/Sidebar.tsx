@@ -23,7 +23,7 @@ const runtime = [
   { label: "Behavior Profiles",   href: "/prompt-profiles",     icon: Layers },
   { label: "Instruction Blocks",  href: "/prompt-layers",       icon: ScrollText },
   { label: "Tool Grants",         href: "/tool-grants",         icon: ShieldCheck },
-  { label: "Runtime Runs",        href: "/runtime-executions",  icon: Activity },
+  { label: "Runtime Receipts",    href: "/runtime-executions",  icon: Activity },
   { label: "Memory",              href: "/memory",              icon: Brain },
 ];
 

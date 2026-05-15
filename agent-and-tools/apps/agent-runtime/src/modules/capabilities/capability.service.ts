@@ -9,14 +9,118 @@ import {
 import { summariseSymbol, fileSnippetFor } from "../../lib/llm/summarise";
 import { syncIamCapabilityReference } from "./iam-capability-reference";
 
-const DEFAULT_BOOTSTRAP_ROLES = [
-  "ARCHITECT",
-  "DEVELOPER",
-  "QA",
-  "SECURITY",
-  "DEVOPS",
-  "PRODUCT_OWNER",
+const BOOTSTRAP_AGENT_CATALOG = [
+  {
+    key: "product_owner",
+    label: "Product Owner",
+    roleType: "PRODUCT_OWNER",
+    bindingRole: "PRODUCT_OWNER",
+    baseRoleType: "PRODUCT_OWNER",
+    locked: false,
+    activationRequired: false,
+    learnsFromGit: true,
+    grounding: "Learns story shape, domain terms, acceptance contracts, and release scope from approved repo/docs.",
+    description: "Clarifies outcomes, acceptance criteria, user impact, and scope before engineering starts.",
+  },
+  {
+    key: "business_analyst",
+    label: "Business Analyst",
+    roleType: "BUSINESS_ANALYST",
+    bindingRole: "BUSINESS_ANALYST",
+    baseRoleType: "PRODUCT_OWNER",
+    locked: false,
+    activationRequired: false,
+    learnsFromGit: true,
+    grounding: "Learns domain vocabulary, process rules, validation paths, and edge cases from approved sources.",
+    description: "Extracts business rules, constraints, process impact, and open questions.",
+  },
+  {
+    key: "architect",
+    label: "Architect",
+    roleType: "ARCHITECT",
+    bindingRole: "ARCHITECT",
+    baseRoleType: "ARCHITECT",
+    locked: false,
+    activationRequired: false,
+    learnsFromGit: true,
+    grounding: "Learns architecture, dependency boundaries, modules, and code ownership from approved Git/doc signals.",
+    description: "Owns design shape, dependencies, tradeoffs, and implementation plan quality.",
+  },
+  {
+    key: "developer",
+    label: "Developer",
+    roleType: "DEVELOPER",
+    bindingRole: "DEVELOPER",
+    baseRoleType: "DEVELOPER",
+    locked: false,
+    activationRequired: false,
+    learnsFromGit: true,
+    grounding: "Learns build/run conventions, source layout, component patterns, and local MCP AST/code symbols.",
+    description: "Produces implementation tasks, code-change evidence, and handoff notes grounded in the capability codebase.",
+  },
+  {
+    key: "verifier",
+    label: "Verifier",
+    roleType: "QA",
+    bindingRole: "VERIFIER",
+    baseRoleType: "QA",
+    locked: true,
+    activationRequired: true,
+    learnsFromGit: true,
+    grounding: "Learns test strategy, expected behavior, regression risks, and proof requirements from approved sources.",
+    description: "Locked verification gate. Reviews evidence, tests, acceptance criteria, and traceability before completion.",
+  },
+  {
+    key: "qa",
+    label: "QA",
+    roleType: "QA",
+    bindingRole: "QA",
+    baseRoleType: "QA",
+    locked: false,
+    activationRequired: false,
+    learnsFromGit: true,
+    grounding: "Learns existing test layout, quality signals, and regression coverage from approved source context.",
+    description: "Creates QA task packs, regression checks, and release confidence evidence.",
+  },
+  {
+    key: "security",
+    label: "Security",
+    roleType: "SECURITY",
+    bindingRole: "SECURITY",
+    baseRoleType: "SECURITY",
+    locked: true,
+    activationRequired: true,
+    learnsFromGit: true,
+    grounding: "Learns authentication, data handling, secrets, dependency risk, and threat boundaries from approved sources.",
+    description: "Locked security gate. Reviews unsafe tool use, data exposure, authz, dependency risk, and evidence.",
+  },
+  {
+    key: "devops",
+    label: "DevOps",
+    roleType: "DEVOPS",
+    bindingRole: "DEVOPS",
+    baseRoleType: "DEVOPS",
+    locked: false,
+    activationRequired: false,
+    learnsFromGit: true,
+    grounding: "Learns build, deployment, observability, rollback, and environment readiness from approved runbooks.",
+    description: "Owns release readiness, deployability, rollback, and operational evidence.",
+  },
+  {
+    key: "governance",
+    label: "Governance",
+    roleType: "GOVERNANCE",
+    bindingRole: "GOVERNANCE",
+    baseRoleType: "GOVERNANCE",
+    locked: true,
+    activationRequired: true,
+    learnsFromGit: false,
+    grounding: "Grounded to capability identity, owner team, approvals, budget policy, audit receipts, and required evidence.",
+    description: "Locked governance gate. Verifies approvals, budgets, receipts, policy, and promotion readiness.",
+  },
 ] as const;
+
+type BootstrapAgentCatalogItem = (typeof BOOTSTRAP_AGENT_CATALOG)[number];
 
 const DISCOVERY_FILE_CAP = 60;
 const DISCOVERY_TOTAL_CHAR_CAP = 500_000;
@@ -47,6 +151,9 @@ type BootstrapInput = {
   criticality?: string;
   description?: string;
   targetWorkflowPattern?: string;
+  agentPreset?: "minimal" | "engineering_core" | "governed_delivery";
+  includeAgentKeys?: string[];
+  excludeAgentKeys?: string[];
   repositories?: BootstrapRepositoryInput[];
   documentLinks?: BootstrapDocumentInput[];
   localFiles?: InputFile[];
@@ -61,6 +168,17 @@ type DiscoveryDoc = {
 };
 
 export const capabilityService = {
+  bootstrapAgentCatalog() {
+    return {
+      presets: [
+        { key: "minimal", label: "Minimal governed crew", agents: selectBootstrapAgents({ name: "preview", agentPreset: "minimal" }).map(agent => agent.key) },
+        { key: "engineering_core", label: "Engineering core crew", agents: selectBootstrapAgents({ name: "preview", agentPreset: "engineering_core" }).map(agent => agent.key) },
+        { key: "governed_delivery", label: "Full governed delivery crew", agents: selectBootstrapAgents({ name: "preview", agentPreset: "governed_delivery" }).map(agent => agent.key) },
+      ],
+      agents: BOOTSTRAP_AGENT_CATALOG,
+    };
+  },
+
   async create(input: {
     name: string; parentCapabilityId?: string; capabilityType?: string;
     businessUnitId?: string; ownerTeamId?: string; criticality?: string; description?: string;
@@ -109,7 +227,20 @@ export const capabilityService = {
       },
     });
 
-    const generatedAgents: Array<{ id: string; roleType: string; name: string; baseTemplateId?: string | null; bindingId?: string }> = [];
+    const generatedAgents: Array<{
+      id: string;
+      key: string;
+      roleType: string;
+      bindingRole: string;
+      label: string;
+      name: string;
+      baseTemplateId?: string | null;
+      bindingId?: string;
+      locked: boolean;
+      activationRequired: boolean;
+      learnsFromGit: boolean;
+      grounding: string;
+    }> = [];
     const discovered: DiscoveryDoc[] = [];
 
     try {
@@ -118,19 +249,20 @@ export const capabilityService = {
         orderBy: { createdAt: "asc" },
       });
 
-      for (const role of DEFAULT_BOOTSTRAP_ROLES) {
-        const base = common.find(t => t.roleType === role);
-        if (!base) warnings.push(`No common ${role} base template found; created a draft placeholder.`);
+      const selectedAgents = selectBootstrapAgents(input);
+      for (const agent of selectedAgents) {
+        const base = common.find(t => t.roleType === agent.baseRoleType);
+        if (!base) warnings.push(`No common ${agent.baseRoleType} base template found for ${agent.label}; created a draft placeholder.`);
         const template = await prisma.agentTemplate.create({
           data: {
-            name: `${capability.name} ${role.replace("_", " ").toLowerCase().replace(/\b\w/g, c => c.toUpperCase())} Agent`,
-            roleType: role,
-            description: base?.description ?? `Draft ${role} agent generated during capability bootstrap. Review prompts and tools before activation.`,
+            name: `${capability.name} ${agent.label} Agent`,
+            roleType: agent.roleType,
+            description: capabilityAgentDescription(capability.name, agent, base?.description),
             basePromptProfileId: base?.basePromptProfileId ?? undefined,
             defaultToolPolicyId: base?.defaultToolPolicyId ?? undefined,
             capabilityId: capability.id,
             baseTemplateId: base?.id ?? undefined,
-            lockedReason: null,
+            lockedReason: agent.locked ? `${agent.label} is a locked capability gate derived from the platform baseline.` : null,
             status: "DRAFT",
             createdBy: userId,
           },
@@ -139,13 +271,26 @@ export const capabilityService = {
           data: {
             capabilityId: capability.id,
             agentTemplateId: template.id,
-            bindingName: `${role} binding`,
-            roleInCapability: role,
+            bindingName: `${agent.label} binding`,
+            roleInCapability: agent.bindingRole,
             status: "DRAFT",
             createdBy: userId,
           },
         });
-        generatedAgents.push({ id: template.id, roleType: role, name: template.name, baseTemplateId: base?.id, bindingId: binding.id });
+        generatedAgents.push({
+          id: template.id,
+          key: agent.key,
+          roleType: agent.roleType,
+          bindingRole: agent.bindingRole,
+          label: agent.label,
+          name: template.name,
+          baseTemplateId: base?.id,
+          bindingId: binding.id,
+          locked: agent.locked,
+          activationRequired: agent.activationRequired,
+          learnsFromGit: agent.learnsFromGit,
+          grounding: agent.grounding,
+        });
       }
 
       for (const repoInput of input.repositories ?? []) {
@@ -201,7 +346,10 @@ export const capabilityService = {
         discovered.push(...discoverLocalSignals(input.localFiles ?? []));
       }
 
-      const candidates = buildLearningCandidates(discovered);
+      const candidates = [
+        ...buildLearningCandidates(discovered),
+        ...buildAgentGroundingCandidates(capability.name, selectedAgents, discovered),
+      ];
       for (const candidate of candidates) {
         await prisma.capabilityLearningCandidate.create({
           data: {
@@ -234,6 +382,7 @@ export const capabilityService = {
             localFiles: input.localFiles?.length ?? 0,
             discoveredSignals: discovered.length,
             candidateGroups: candidates.length,
+            agentPreset: input.agentPreset ?? "governed_delivery",
             operatingModel: buildOperatingModel(capability.name, input.targetWorkflowPattern, generatedAgents, candidates.length),
           },
         },
@@ -295,13 +444,24 @@ export const capabilityService = {
       });
     }
 
-    if (input.activateAgentTemplateIds.length > 0) {
+    const generatedAgentSnapshot = Array.isArray(run.generatedAgentIds)
+      ? (run.generatedAgentIds as unknown[])
+      : [];
+    const generatedAgents = generatedAgentSnapshot.filter((agent): agent is Record<string, unknown> =>
+      Boolean(agent && typeof agent === "object" && !Array.isArray(agent)),
+    );
+    const requiredActivationIds = generatedAgents
+      .filter(agent => agent.activationRequired === true && typeof agent.id === "string")
+      .map(agent => agent.id as string);
+    const activateAgentTemplateIds = Array.from(new Set([...input.activateAgentTemplateIds, ...requiredActivationIds]));
+
+    if (activateAgentTemplateIds.length > 0) {
       await prisma.agentTemplate.updateMany({
-        where: { capabilityId, id: { in: input.activateAgentTemplateIds } },
+        where: { capabilityId, id: { in: activateAgentTemplateIds } },
         data: { status: "ACTIVE" },
       });
       await prisma.agentCapabilityBinding.updateMany({
-        where: { capabilityId, agentTemplateId: { in: input.activateAgentTemplateIds } },
+        where: { capabilityId, agentTemplateId: { in: activateAgentTemplateIds } },
         data: { status: "ACTIVE" },
       });
     }
@@ -1018,6 +1178,45 @@ function isDiscoveryPath(p: string): boolean {
   return false;
 }
 
+function selectBootstrapAgents(input: BootstrapInput): BootstrapAgentCatalogItem[] {
+  const preset = input.agentPreset ?? "governed_delivery";
+  const presetKeys = new Set(
+    preset === "minimal"
+      ? ["product_owner", "architect", "developer", "verifier", "governance"]
+      : preset === "engineering_core"
+        ? ["product_owner", "business_analyst", "architect", "developer", "verifier", "qa", "security", "devops", "governance"]
+        : BOOTSTRAP_AGENT_CATALOG.map(agent => agent.key),
+  );
+  for (const key of input.includeAgentKeys ?? []) presetKeys.add(key);
+  for (const key of input.excludeAgentKeys ?? []) {
+    const agent = BOOTSTRAP_AGENT_CATALOG.find(item => item.key === key);
+    if (agent?.activationRequired) continue;
+    presetKeys.delete(key);
+  }
+  return BOOTSTRAP_AGENT_CATALOG.filter(agent => presetKeys.has(agent.key));
+}
+
+function capabilityAgentDescription(
+  capabilityName: string,
+  agent: BootstrapAgentCatalogItem,
+  baseDescription?: string | null,
+): string {
+  const lock = agent.locked
+    ? "This capability agent is locked: capability owners can activate or use it, but cannot edit its baseline prompt/tool policy without platform-admin review."
+    : "This capability agent starts as a draft: capability owners can tune it before activation.";
+  const learning = agent.learnsFromGit
+    ? "It should use approved Git/doc/local learning candidates, capability knowledge artifacts, compiled context, and MCP AST/symbol tools before reading large files."
+    : "It should rely on capability identity, policy, audit receipts, approvals, budget evidence, and required artifact lineage.";
+  return [
+    `${agent.description}`,
+    `Capability grounding: ${agent.grounding}`,
+    `Capability: ${capabilityName}.`,
+    learning,
+    lock,
+    baseDescription ? `Platform baseline: ${baseDescription}` : undefined,
+  ].filter(Boolean).join("\n\n");
+}
+
 function buildLearningCandidates(docs: DiscoveryDoc[]): Array<{
   groupKey: string; groupTitle: string; artifactType: string; title: string; content: string;
   sourceType: string; sourceRef: string; confidence: number;
@@ -1052,6 +1251,43 @@ function buildLearningCandidates(docs: DiscoveryDoc[]): Array<{
   return out;
 }
 
+function buildAgentGroundingCandidates(
+  capabilityName: string,
+  agents: BootstrapAgentCatalogItem[],
+  docs: DiscoveryDoc[],
+): Array<{
+  groupKey: string; groupTitle: string; artifactType: string; title: string; content: string;
+  sourceType: string; sourceRef: string; confidence: number;
+}> {
+  if (agents.length === 0) return [];
+  const sourceRefs = Array.from(new Set(docs.map(doc => doc.sourceRef).filter(Boolean))).join(",") || "capability-bootstrap";
+  const gitBacked = agents.filter(agent => agent.learnsFromGit).map(agent => `- ${agent.label}: ${agent.grounding}`).join("\n");
+  const locked = agents.filter(agent => agent.locked).map(agent => `- ${agent.label}: locked gate; activation required=${agent.activationRequired ? "yes" : "no"}`).join("\n");
+  return [{
+    groupKey: "agent_team_grounding",
+    groupTitle: "Capability agent team grounding",
+    artifactType: "AGENT_TEAM_GROUNDING",
+    title: `${capabilityName} agent team grounding`,
+    content: [
+      `# ${capabilityName} agent team grounding`,
+      "This candidate records the predefined capability agent team created by bootstrap. Approving it makes the operating model visible to runtime retrieval and later compiled-context capsules.",
+      "",
+      "## Git/doc grounded agents",
+      gitBacked || "- No Git/doc-grounded agents selected.",
+      "",
+      "## Locked governance gates",
+      locked || "- No locked gates selected.",
+      "",
+      "## Runtime rule",
+      "All activated agents are capability-scoped. They should use approved capability knowledge, memory, code symbols, MCP AST slices, citations, budget receipts, and artifact lineage instead of ungrounded free-form context.",
+    ].join("\n"),
+    sourceType: "BOOTSTRAP_AGENT_CATALOG",
+    sourceRef: sourceRefs,
+    confidence: 0.9,
+  }];
+}
+
+
 function formatCandidateContent(title: string, docs: DiscoveryDoc[]): string {
   const parts = [`# ${title}`];
   let chars = parts[0].length;
@@ -1068,7 +1304,20 @@ function formatCandidateContent(title: string, docs: DiscoveryDoc[]): string {
 function buildOperatingModel(
   capabilityName: string,
   targetWorkflowPattern: string | undefined,
-  generatedAgents: Array<{ id: string; roleType: string; name: string; baseTemplateId?: string | null; bindingId?: string }>,
+  generatedAgents: Array<{
+    id: string;
+    key?: string;
+    roleType: string;
+    bindingRole?: string;
+    label?: string;
+    name: string;
+    baseTemplateId?: string | null;
+    bindingId?: string;
+    locked?: boolean;
+    activationRequired?: boolean;
+    learnsFromGit?: boolean;
+    grounding?: string;
+  }>,
   candidateGroups: number,
 ) {
   const pattern = (targetWorkflowPattern?.trim() || "governed_delivery").toLowerCase();
@@ -1083,10 +1332,17 @@ function buildOperatingModel(
     starterWorkflow,
     draftAgents: generatedAgents.map(agent => ({
       id: agent.id,
+      key: agent.key,
       roleType: agent.roleType,
+      bindingRole: agent.bindingRole ?? agent.roleType,
+      label: agent.label ?? agent.roleType,
       name: agent.name,
       bindingId: agent.bindingId,
-      activation: "requires human review",
+      locked: agent.locked === true,
+      activationRequired: agent.activationRequired === true,
+      learnsFromGit: agent.learnsFromGit === true,
+      grounding: agent.grounding,
+      activation: agent.activationRequired ? "required during review" : "requires human review",
     })),
     suggestedTools: [
       { name: "repo.search", reason: "Locate code and docs without full-file prompt payloads.", status: "suggested" },
@@ -1104,6 +1360,7 @@ function buildOperatingModel(
     ],
     approvalGates: [
       "Activate generated agents",
+      "Locked Governance / Verifier / Security gates must stay enabled",
       "Materialize learned knowledge",
       "Promote major artifacts",
       "Approve budget/tool pauses",

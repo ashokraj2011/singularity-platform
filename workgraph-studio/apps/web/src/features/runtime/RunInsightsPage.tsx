@@ -13,6 +13,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   ArrowLeft, Clock, Activity, Coins, AlertTriangle, FileText, Box, ShieldCheck, GitBranch,
   Bot, Wrench, UserCheck, Radio, Database, Cpu, Network, Route, ClipboardCheck, Zap,
+  Download,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { LiveEventsPanel } from './LiveEventsPanel'
@@ -116,6 +117,77 @@ interface InsightsResponse {
     receiptsCount: number
     workspaceSteps: number
     citationCount: number
+  }
+  auditReport: {
+    generatedAt: string
+    coverage: {
+      workflowStages: number
+      workbenchStages: number
+      budgetEvents: number
+      auditEvents: number
+      approvalRequests: number
+    }
+    totals: {
+      durationMs: number | null
+      inputTokens: number
+      outputTokens: number
+      totalTokens: number
+      estimatedCost: number | null
+      unpricedCalls: number
+      approvals: number
+      artifacts: number
+      documents: number
+      consumables: number
+    }
+    stages: Array<{
+      id: string
+      type: 'workflow_node' | 'workbench_stage'
+      label: string
+      stageKey?: string
+      nodeId?: string | null
+      nodeType?: string
+      status: string
+      startedAt: string | null
+      completedAt: string | null
+      durationMs: number | null
+      durationPrecise: boolean
+      attempts: number
+      inputTokens: number
+      outputTokens: number
+      totalTokens: number
+      estimatedCost: number | null
+      pricingStatus: 'PRICED' | 'UNPRICED' | 'MIXED'
+      provider?: string
+      model?: string
+      modelAlias?: string
+      cfCallIds: string[]
+      promptAssemblyIds: string[]
+      mcpInvocationIds: string[]
+      artifactIds: string[]
+      consumableIds: string[]
+      documentIds: string[]
+      approvalCount: number
+      eventCount: number
+      warnings: string[]
+    }>
+    ledger: Array<{
+      id: string
+      eventType: string
+      nodeId: string | null
+      stageKey?: string
+      agentRunId: string | null
+      cfCallId: string | null
+      promptAssemblyId: string | null
+      inputTokensDelta: number
+      outputTokensDelta: number
+      totalTokensDelta: number
+      estimatedCostDelta: number | null
+      pricingStatus: string
+      provider?: string
+      model?: string
+      modelAlias?: string
+      createdAt: string
+    }>
   }
 }
 interface BudgetEvent {
@@ -325,6 +397,87 @@ export function RunInsightsPage() {
         <Tile icon={Box}           label="Consumables"     value={`${data.totals.consumablesCount}`} />
         <Tile icon={ShieldCheck}   label="Denials"         value={`${data.totals.governance_denied}`} highlight={data.totals.governance_denied > 0 ? 'red' : undefined} />
       </div>
+
+      <Section title="Run audit report">
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 12 }}>
+          <div style={{ flex: 1 }}>
+            <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>
+              Stage-level timing, token usage, cost, receipts, approvals, artifacts, and audit coverage generated {new Date(data.auditReport.generatedAt).toLocaleString()}.
+            </p>
+            <p style={{ fontSize: 10, color: '#94a3b8', margin: '4px 0 0 0' }}>
+              Coverage: {data.auditReport.coverage.workflowStages} workflow stages · {data.auditReport.coverage.workbenchStages} workbench stages · {data.auditReport.coverage.budgetEvents} budget events · {data.auditReport.coverage.auditEvents} audit events.
+            </p>
+          </div>
+          <button
+            onClick={() => downloadAuditReport(data)}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              border: '1px solid #cbd5e1', background: '#f8fafc', color: '#0f172a',
+              borderRadius: 7, padding: '7px 10px', fontSize: 10, fontWeight: 800,
+              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.05em',
+            }}
+          >
+            <Download size={12} /> Export JSON
+          </button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))', gap: 8, marginBottom: 12 }}>
+          <MiniMetric label="Run time" value={fmtDuration(data.auditReport.totals.durationMs)} />
+          <MiniMetric label="Input tokens" value={data.auditReport.totals.inputTokens.toLocaleString()} />
+          <MiniMetric label="Output tokens" value={data.auditReport.totals.outputTokens.toLocaleString()} />
+          <MiniMetric label="Total tokens" value={data.auditReport.totals.totalTokens.toLocaleString()} />
+          <MiniMetric label="Estimated cost" value={data.auditReport.totals.estimatedCost == null ? 'UNPRICED' : `$${data.auditReport.totals.estimatedCost.toFixed(4)}`} warn={data.auditReport.totals.unpricedCalls > 0} />
+          <MiniMetric label="Approvals" value={data.auditReport.totals.approvals.toLocaleString()} />
+        </div>
+        <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: '#64748b' }}>
+              <th style={th()}>Stage</th>
+              <th style={th()}>Status</th>
+              <th style={th()}>Duration</th>
+              <th style={th(true)}>Input</th>
+              <th style={th(true)}>Output</th>
+              <th style={th(true)}>Total</th>
+              <th style={th(true)}>Cost</th>
+              <th style={th()}>Model</th>
+              <th style={th()}>Receipts</th>
+              <th style={th()}>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.auditReport.stages.map(stage => (
+              <tr key={`${stage.type}-${stage.id}`} style={{ borderTop: '1px solid #f1f5f9' }}>
+                <td style={td()}>
+                  <strong style={{ color: '#0f172a' }}>{stage.label}</strong>
+                  <div style={{ fontSize: 9, color: '#94a3b8' }}>{stage.type === 'workbench_stage' ? 'Workbench' : stage.nodeType ?? 'Workflow'}{stage.stageKey ? ` · ${stage.stageKey}` : ''}</div>
+                </td>
+                <td style={td()}>{stage.status}</td>
+                <td style={td()}>{stage.durationPrecise ? fmtDuration(stage.durationMs) : `≈ ${fmtDuration(stage.durationMs)}`}</td>
+                <td style={td(true)}>{stage.inputTokens ? stage.inputTokens.toLocaleString() : '—'}</td>
+                <td style={td(true)}>{stage.outputTokens ? stage.outputTokens.toLocaleString() : '—'}</td>
+                <td style={td(true)}>{stage.totalTokens ? stage.totalTokens.toLocaleString() : '—'}</td>
+                <td style={td(true)}>
+                  {stage.estimatedCost == null ? <span style={{ color: stage.pricingStatus === 'PRICED' ? '#94a3b8' : '#b45309' }}>{stage.pricingStatus === 'PRICED' ? '—' : stage.pricingStatus}</span> : `$${stage.estimatedCost.toFixed(4)}`}
+                </td>
+                <td style={td()}>
+                  {stage.modelAlias || stage.provider || stage.model ? (
+                    <span>{stage.modelAlias ?? stage.provider ?? 'model'}{stage.model ? <small style={{ color: '#94a3b8' }}> · {stage.model}</small> : null}</span>
+                  ) : '—'}
+                </td>
+                <td style={td()}>
+                  {stage.cfCallIds.length > 0 ? <code>{stage.cfCallIds[0].slice(0, 10)}</code> : '—'}
+                  {stage.cfCallIds.length > 1 ? <span style={{ color: '#94a3b8' }}> +{stage.cfCallIds.length - 1}</span> : null}
+                  {stage.promptAssemblyIds.length > 0 ? <div style={{ fontSize: 9, color: '#64748b' }}>prompt {stage.promptAssemblyIds[0].slice(0, 8)}</div> : null}
+                </td>
+                <td style={td()}>
+                  {stage.artifactIds.length + stage.consumableIds.length + stage.documentIds.length} items
+                  {stage.approvalCount > 0 ? <div style={{ fontSize: 9, color: '#b45309' }}>{stage.approvalCount} approval</div> : null}
+                  {stage.warnings.length > 0 ? <div style={{ fontSize: 9, color: '#b45309' }}>{stage.warnings[0]}</div> : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Section>
 
       {budget && (
         <Section title="Workflow run budget">
@@ -713,6 +866,36 @@ function Tile({
       {sub && <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>{sub}</div>}
     </div>
   )
+}
+
+function MiniMetric({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+  return (
+    <div style={{
+      border: `1px solid ${warn ? '#fde68a' : '#e2e8f0'}`,
+      background: warn ? '#fffbeb' : '#f8fafc',
+      borderRadius: 8,
+      padding: '8px 10px',
+    }}>
+      <div style={{ fontSize: 9, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.07em', fontWeight: 800 }}>{label}</div>
+      <div style={{ fontSize: 15, color: warn ? '#b45309' : '#0f172a', fontWeight: 800, marginTop: 2 }}>{value}</div>
+    </div>
+  )
+}
+
+function downloadAuditReport(data: InsightsResponse) {
+  const blob = new Blob([JSON.stringify({
+    run: data.run,
+    auditReport: data.auditReport,
+    events: data.events,
+  }, null, 2)], { type: 'application/json' })
+  const href = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = href
+  link.download = `singularity-run-audit-${data.run.id}.json`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(href)
 }
 
 function MissionHint({

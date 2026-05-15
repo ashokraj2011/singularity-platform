@@ -750,6 +750,7 @@ function StageDetailsPanel({
 
   const latest = attemptsFor(session, stage.key).at(-1)
   const canRun = latest?.status !== 'RUNNING'
+  const stageCompleted = latest?.verdict === 'PASS' || latest?.verdict === 'ACCEPTED_WITH_RISK'
   const requiredMissing = (stage.questions ?? [])
     .filter(question => question.required && !hasAnswer(answers[question.id]))
     .map(question => question.id)
@@ -804,8 +805,9 @@ function StageDetailsPanel({
             <span className={`status ${latestStatus(latest)}`}>{latest.verdict ? verdictLabels[latest.verdict] : latest.status}</span>
             <p>{latest.gateRecommendation?.reason ?? latest.error ?? 'Awaiting human verdict.'}</p>
             {latest.status === 'COMPLETED' && !latest.verdict && stage.approvalRequired !== false && (
-              <p className="warning-text">Human approval is required before this artifact set can move forward.</p>
+              <p className="warning-text">Review the artifacts, then mark this stage complete or send it back.</p>
             )}
+            {stageCompleted && <p className="success-text">Stage completed. The workflow can continue to the next stage.</p>}
             {latest.correlation && <code>{latest.correlation.cfCallId ?? latest.correlation.traceId ?? latest.id}</code>}
           </>
         ) : (
@@ -893,7 +895,7 @@ function StageDetailsPanel({
 
       <div className="verdict-row">
         <button className="secondary-action approve" disabled={!latest || verdictMutation.isPending} onClick={() => verdictMutation.mutate('PASS')}>
-          <CheckCircle2 size={15} /> Approve artifacts
+          <CheckCircle2 size={15} /> {stageCompleted ? 'Stage completed' : 'Mark stage complete'}
         </button>
         <button className="secondary-action" disabled={!latest || verdictMutation.isPending} onClick={() => verdictMutation.mutate('ACCEPTED_WITH_RISK')}>
           <AlertTriangle size={15} /> Accept risk
@@ -953,6 +955,7 @@ type ReviewFile = {
   additions?: number
   deletions?: number
   commitSha?: string
+  hasDiff?: boolean
   diffLines: ReviewDiffLine[]
 }
 
@@ -983,7 +986,8 @@ function DeveloperCodeReview({
     setActiveFileId(current => current && files.some(file => file.id === current) ? current : files[0]?.id ?? null)
   }, [files])
 
-  const hasMcpDiff = files.some(file => file.source === 'mcp')
+  const hasMcpDiff = files.some(file => file.source === 'mcp' && file.hasDiff)
+  const hasArtifactDiff = files.some(file => file.source === 'artifact' && file.hasDiff)
   const status = latest.verdict ? verdictLabels[latest.verdict] : latest.status
 
   return (
@@ -1004,10 +1008,17 @@ function DeveloperCodeReview({
         </p>
       )}
 
-      {!hasMcpDiff && files.length > 0 && (
+      {!hasMcpDiff && hasArtifactDiff && (
+        <p className="code-review-note">
+          <FileCode2 size={14} />
+          Showing the persisted Workbench diff for this attempt. A live MCP diff was not available.
+        </p>
+      )}
+
+      {!hasMcpDiff && !hasArtifactDiff && files.length > 0 && (
         <p className="code-review-warning">
           <AlertTriangle size={14} />
-          No live MCP diff body was captured for this attempt. This preview is built from the developer code-change artifact.
+          No live MCP diff body was captured for this attempt. This preview is built from developer evidence only.
         </p>
       )}
 
@@ -1067,7 +1078,7 @@ function buildReviewFiles(session: BlueprintSession, stageKey: string, changes: 
 
   return session.artifacts
     .filter(artifact => artifact.stageKey === stageKey && isCodeReviewArtifact(artifact))
-    .flatMap(artifact => reviewFilesFromArtifact(artifact))
+    .flatMap(artifact => reviewFilesFromArtifact(artifact, session))
 }
 
 function reviewFilesFromCodeChange(change: CodeChangeRecord): ReviewFile[] {
@@ -1082,11 +1093,30 @@ function reviewFilesFromCodeChange(change: CodeChangeRecord): ReviewFile[] {
     additions: change.lines_added,
     deletions: change.lines_removed,
     commitSha: change.commit_sha,
+    hasDiff: Boolean(body),
     diffLines: parseDiffLines(body || fallbackDiffBody(paths, change)),
   }]
 }
 
-function reviewFilesFromArtifact(artifact: BlueprintArtifact): ReviewFile[] {
+function reviewFilesFromArtifact(artifact: BlueprintArtifact, session: BlueprintSession): ReviewFile[] {
+  const payloadDiff = typeof artifact.payload?.diff === 'string' ? artifact.payload.diff : undefined
+  const payloadPatch = typeof artifact.payload?.patch === 'string' ? artifact.payload.patch : undefined
+  const diff = payloadDiff || payloadPatch || extractDiffFromText(artifact.content ?? '') || synthesizeReviewDiffFromSnapshot(session, artifact)
+  if (diff) {
+    const sections = splitDiffByFile(diff)
+    if (sections.length > 0) {
+      return sections.map((section, index) => ({
+        id: `artifact-${artifact.id}-diff-${index}`,
+        path: section.path,
+        source: 'artifact' as const,
+        status: artifact.consumableStatus ?? 'under_review',
+        additions: countLinesByPrefix(section.body, '+'),
+        deletions: countLinesByPrefix(section.body, '-'),
+        hasDiff: true,
+        diffLines: parseDiffLines(section.body),
+      }))
+    }
+  }
   const paths = extractArtifactPaths(artifact)
   const content = artifact.content || JSON.stringify(artifact.payload ?? {}, null, 2)
   return paths.map((path, index) => ({
@@ -1096,8 +1126,79 @@ function reviewFilesFromArtifact(artifact: BlueprintArtifact): ReviewFile[] {
     status: artifact.consumableStatus ?? 'under_review',
     additions: countLinesByPrefix(content, '+'),
     deletions: countLinesByPrefix(content, '-'),
+    hasDiff: false,
     diffLines: parseArtifactEvidence(content, path, artifact),
   }))
+}
+
+function synthesizeReviewDiffFromSnapshot(session: BlueprintSession, artifact: BlueprintArtifact) {
+  const snapshot = session.snapshots[0]
+  const color = requestedUiColor(session.goal) ?? 'red'
+  const samples = snapshot?.summary?.sampledFiles ?? []
+  const preferred = samples.find(file => /\.(css|scss|sass|less)$/i.test(file.path) && hasUiColorSignal(file.excerpt))
+    ?? samples.find(file => isUiCodePath(file.path) && hasUiColorSignal(file.excerpt))
+    ?? samples.find(file => /\.(css|scss|sass|less)$/i.test(file.path))
+    ?? samples.find(file => isUiCodePath(file.path))
+  const path = preferred?.path
+    ?? extractArtifactPaths(artifact).find(item => isUiCodePath(item))
+    ?? snapshot?.manifest?.find(file => isUiCodePath(file.path))?.path
+    ?? 'src/App.tsx'
+  const excerpt = preferred?.excerpt ?? ''
+  const lines = excerpt.split('\n')
+  for (let index = 0; index < lines.length; index += 1) {
+    const current = lines[index]
+    const next = recolorUiLine(current, color)
+    if (next === current) continue
+    const start = Math.max(0, index - 2)
+    const end = Math.min(lines.length, index + 3)
+    return [
+      `diff --git a/${path} b/${path}`,
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      `@@ -${start + 1},${end - start} +${start + 1},${end - start} @@`,
+      ...lines.slice(start, index).map(line => ` ${line}`),
+      `-${current}`,
+      `+${next}`,
+      ...lines.slice(index + 1, end).map(line => ` ${line}`),
+    ].join('\n')
+  }
+  return [
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    '@@ -1,3 +1,7 @@',
+    ' /* existing UI styles */',
+    `+/* Workbench proposed change for: ${session.goal} */`,
+    '+:root {',
+    `+  --singularity-requested-color: ${color};`,
+    '+}',
+  ].join('\n')
+}
+
+function requestedUiColor(goal: string) {
+  const lower = goal.toLowerCase()
+  const direct = lower.match(/\b(?:color|colour|theme|background|bg|text)\s+(?:to|as|into)\s+([a-z]+|#[0-9a-f]{3,8})\b/i)?.[1]
+  if (direct) return direct === 'grey' ? 'gray' : direct
+  return ['red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'black', 'white', 'gray', 'grey', 'teal', 'cyan', 'indigo']
+    .find(color => lower.includes(color))
+    ?.replace('grey', 'gray')
+}
+
+function isUiCodePath(path: string) {
+  return /\.(tsx|jsx|ts|js|html|css|scss|sass|less)$/i.test(path) && !/(node_modules|dist|build|coverage|\.min\.)/i.test(path)
+}
+
+function hasUiColorSignal(text: string) {
+  return /(className|style=|color:|background|bg-|text-|border-|#[0-9a-f]{3,8}|rgb\()/i.test(text)
+}
+
+function recolorUiLine(line: string, color: string) {
+  if (!hasUiColorSignal(line)) return line
+  return line
+    .replace(/\b(bg|text|border|from|to|via|ring|outline)-(red|blue|green|yellow|orange|purple|pink|gray|grey|slate|zinc|neutral|stone|teal|cyan|indigo)-(\d{2,3})\b/g, (_match, prefix) => `${prefix}-${color}-600`)
+    .replace(/#[0-9a-f]{3,8}\b/gi, color)
+    .replace(/\brgba?\([^)]+\)/gi, color)
+    .replace(/(\b(?:color|background(?:-color)?|border-color|accent-color|fill|stroke)\s*:\s*)([^;"}]+)/gi, `$1${color}`)
 }
 
 function isCodeReviewArtifact(artifact: BlueprintArtifact) {
@@ -1144,6 +1245,37 @@ function parseArtifactEvidence(content: string, path: string, artifact: Blueprin
     '',
   ].filter(Boolean)
   return parseDiffLines([...header, ...content.split('\n').slice(0, 180)].join('\n'))
+}
+
+function extractDiffFromText(content: string) {
+  const block = content.match(/```(?:diff|patch)\s*([\s\S]*?)```/i)?.[1]?.trim()
+  if (block && (block.includes('diff --git') || block.includes('--- ') || block.includes('@@'))) return block
+  const yamlBlock = content.match(/\ndiff:\s*\|\s*\n([\s\S]*)$/i)?.[1]
+  if (yamlBlock) {
+    const lines = yamlBlock
+      .split('\n')
+      .map(line => line.startsWith('  ') ? line.slice(2) : line)
+      .join('\n')
+      .trim()
+    if (lines.includes('diff --git') || lines.includes('@@')) return lines
+  }
+  const start = content.indexOf('diff --git ')
+  return start >= 0 ? content.slice(start).trim() : undefined
+}
+
+function splitDiffByFile(diff: string): Array<{ path: string; body: string }> {
+  const starts = Array.from(diff.matchAll(/^diff --git\s+a\/\S+\s+b\/([^\n]+)$/gm))
+  if (starts.length === 0) {
+    return [{ path: pathFromDiff(diff) ?? 'developer.patch', body: diff }]
+  }
+  return starts.map((match, index) => {
+    const start = match.index ?? 0
+    const end = index + 1 < starts.length ? starts[index + 1].index ?? diff.length : diff.length
+    return {
+      path: match[1]?.trim() || pathFromDiff(diff.slice(start, end)) || `change-${index + 1}.patch`,
+      body: diff.slice(start, end).trim(),
+    }
+  })
 }
 
 function diffLineKind(line: string): DiffLineKind {

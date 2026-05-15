@@ -1731,9 +1731,21 @@ async function createLoopStageArtifacts(
       { kind: 'approved_spec_draft', title: `Spec draft v${attempt.attemptNumber}`, content: buildApprovedSpec(session, ctx, response) },
     )
   } else if (normalizeAgentRole(stage.agentRole).includes('DEV')) {
+    const codeChangeEvidence = buildCodeChangeEvidence(session, ctx, response)
     specs.push(
       { kind: 'developer_task_pack', title: `Developer task pack v${attempt.attemptNumber}`, content: buildDeveloperTaskPack(session, ctx, response) },
-      { kind: 'simulated_code_change', title: `Code-change evidence v${attempt.attemptNumber}`, content: buildCodeChangeEvidence(session, ctx) },
+      {
+        kind: 'simulated_code_change',
+        title: `Code-change evidence v${attempt.attemptNumber}`,
+        content: codeChangeEvidence.markdown,
+        payload: {
+          paths: codeChangeEvidence.paths,
+          diff: codeChangeEvidence.diff,
+          lines_added: codeChangeEvidence.linesAdded,
+          lines_removed: codeChangeEvidence.linesRemoved,
+          simulated: true,
+        },
+      },
     )
   } else if (stage.key.includes('test') || stage.terminal) {
     specs.push(
@@ -2432,6 +2444,7 @@ async function createStageArtifacts(session: ArtifactSession, snapshot: Artifact
     warnings: result.warnings ?? [],
   }
   type ArtifactSpec = { kind: string; title: string; content: string; payload?: Record<string, unknown> }
+  const codeChangeEvidence = stage === BlueprintStage.DEVELOPER ? buildCodeChangeEvidence(session, ctx, response) : undefined
   const artifacts =
     stage === BlueprintStage.ARCHITECT ? [
       { kind: 'decision_tree', title: 'Question tree', content: buildDecisionTreeMarkdown(session, ctx), payload: { tree: buildDecisionTreePayload(session, ctx) } },
@@ -2443,7 +2456,18 @@ async function createStageArtifacts(session: ArtifactSession, snapshot: Artifact
     ] :
 	    stage === BlueprintStage.DEVELOPER ? [
 	      { kind: 'developer_task_pack', title: 'Developer task pack', content: buildDeveloperTaskPack(session, ctx, response) },
-	      { kind: 'simulated_code_change', title: 'Simulated code-change evidence', content: buildCodeChangeEvidence(session, ctx) },
+	      {
+	        kind: 'simulated_code_change',
+	        title: 'Simulated code-change evidence',
+	        content: codeChangeEvidence?.markdown ?? '',
+	        payload: {
+	          paths: codeChangeEvidence?.paths ?? [],
+	          diff: codeChangeEvidence?.diff ?? '',
+	          lines_added: codeChangeEvidence?.linesAdded ?? 0,
+	          lines_removed: codeChangeEvidence?.linesRemoved ?? 0,
+	          simulated: true,
+	        },
+	      },
 	    ] : [
 	      { kind: 'implementation_contract', title: 'Implementation contract', content: buildImplementationContractMarkdown(session, ctx, readSessionDecisionAnswers(session)), payload: { contract: buildImplementationContractPayload(session, ctx, readSessionDecisionAnswers(session)) } },
 	      { kind: 'qa_task_pack', title: 'QA task pack', content: buildQaTaskPack(session, ctx, response) },
@@ -3120,20 +3144,167 @@ function buildDeveloperTaskPack(session: ArtifactSession, ctx: SnapshotContext, 
   ].join('\n')
 }
 
-function buildCodeChangeEvidence(_session: ArtifactSession, ctx: SnapshotContext) {
-  return [
+type CodeChangeEvidence = {
+  markdown: string
+  paths: string[]
+  diff: string
+  linesAdded: number
+  linesRemoved: number
+}
+
+function buildCodeChangeEvidence(session: ArtifactSession, ctx: SnapshotContext, response = ''): CodeChangeEvidence {
+  const proposed = synthesizeCodeDiff(session, ctx, response)
+  const markdown = [
     '# code-change-evidence.yaml',
     '',
     'simulated_change_set:',
-    '  mode: read_only_mvp',
+    '  mode: proposed_patch_preview',
     '  repository_mutated: false',
     '  expected_paths:',
-    ...ctx.keyFiles.map(f => `    - ${f}`),
+    ...(proposed.paths.length ? proposed.paths : ctx.keyFiles).map(f => `    - ${f}`),
     '  summary:',
-    '    - Verify or add inclusive `between` support.',
-    '    - Add boundary and malformed payload tests.',
-    '    - Update README/API examples if missing.',
+    `    - ${proposed.summary}`,
+    '    - Review the proposed diff before marking the Developer stage complete.',
+    '',
+    'diff: |',
+    ...proposed.diff.split('\n').map(line => `  ${line}`),
   ].join('\n')
+  return {
+    markdown,
+    paths: proposed.paths,
+    diff: proposed.diff,
+    linesAdded: proposed.linesAdded,
+    linesRemoved: proposed.linesRemoved,
+  }
+}
+
+function synthesizeCodeDiff(session: ArtifactSession, ctx: SnapshotContext, response: string) {
+  const explicit = extractDiffBlock(response)
+  if (explicit) {
+    const paths = pathsFromUnifiedDiff(explicit)
+    return {
+      paths: paths.length ? paths : ['developer-output.patch'],
+      diff: explicit,
+      linesAdded: countDiffLines(explicit, '+'),
+      linesRemoved: countDiffLines(explicit, '-'),
+      summary: 'Developer output included a patch-style diff.',
+    }
+  }
+
+  const color = requestedColor(session.goal) ?? 'red'
+  const sampled = preferredChangeFiles(ctx)
+  const sections = sampled.flatMap(file => synthesizeFilePatch(file.path, file.excerpt, color))
+  const fallbackPath = sampled[0]?.path ?? ctx.files.find(file => isLikelyEditableUiFile(file.path))?.path ?? 'src/App.tsx'
+  const fallback = sections.length ? [] : [fallbackPatch(fallbackPath, color)]
+  const diff = [...sections, ...fallback].join('\n')
+  return {
+    paths: uniqueStrings([...sections.map(section => pathFromPatchSection(section)), fallback.length ? fallbackPath : undefined]),
+    diff,
+    linesAdded: countDiffLines(diff, '+'),
+    linesRemoved: countDiffLines(diff, '-'),
+    summary: `Proposed UI color update to ${color} based on the source snapshot and stage goal.`,
+  }
+}
+
+function extractDiffBlock(response: string) {
+  const fenced = response.match(/```(?:diff|patch)\s*([\s\S]*?)```/i)?.[1]?.trim()
+  if (fenced && (fenced.includes('diff --git') || fenced.includes('--- ') || fenced.includes('@@'))) return fenced
+  const start = response.indexOf('diff --git ')
+  if (start >= 0) return response.slice(start).trim()
+  return undefined
+}
+
+function pathsFromUnifiedDiff(diff: string) {
+  return uniqueStrings(Array.from(diff.matchAll(/\+\+\+\s+b\/([^\n]+)/g)).map(match => match[1]?.trim()).filter(Boolean))
+}
+
+function requestedColor(goal: string) {
+  const known = ['red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'black', 'white', 'gray', 'grey', 'teal', 'cyan', 'indigo']
+  const lower = goal.toLowerCase()
+  const direct = lower.match(/\b(?:color|colour|theme|background|bg|text)\s+(?:to|as|into)\s+([a-z]+|#[0-9a-f]{3,8})\b/i)?.[1]
+  if (direct) return direct === 'grey' ? 'gray' : direct
+  return known.find(color => lower.includes(color))?.replace('grey', 'gray')
+}
+
+function preferredChangeFiles(ctx: SnapshotContext) {
+  const sampled = [...ctx.sampledFiles]
+  const css = sampled.filter(file => /\.(css|scss|sass|less)$/i.test(file.path))
+  const ui = sampled.filter(file => isLikelyEditableUiFile(file.path))
+  const withColorSignals = sampled.filter(file => /(className|style=|color:|background|bg-|text-|border-|#[0-9a-f]{3,8}|rgb\()/i.test(file.excerpt))
+  return uniqueByPath([...css, ...withColorSignals, ...ui]).slice(0, 3)
+}
+
+function uniqueByPath(files: Array<{ path: string; excerpt: string }>) {
+  const seen = new Set<string>()
+  return files.filter(file => {
+    if (seen.has(file.path)) return false
+    seen.add(file.path)
+    return true
+  })
+}
+
+function isLikelyEditableUiFile(path: string) {
+  return /\.(tsx|jsx|ts|js|html|css|scss|sass|less)$/i.test(path) &&
+    !/(node_modules|dist|build|coverage|\.min\.)/i.test(path)
+}
+
+function synthesizeFilePatch(path: string, excerpt: string, color: string) {
+  const lines = excerpt.split('\n')
+  const patches: string[] = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const current = lines[index]
+    const next = recolorLine(current, color)
+    if (next === current) continue
+    const start = Math.max(0, index - 2)
+    const end = Math.min(lines.length, index + 3)
+    const hunk = [
+      `diff --git a/${path} b/${path}`,
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      `@@ -${start + 1},${end - start} +${start + 1},${end - start} @@`,
+      ...lines.slice(start, index).map(line => ` ${line}`),
+      `-${current}`,
+      `+${next}`,
+      ...lines.slice(index + 1, end).map(line => ` ${line}`),
+    ].join('\n')
+    patches.push(hunk)
+    break
+  }
+  return patches
+}
+
+function recolorLine(line: string, color: string) {
+  let next = line
+  const hasStyleSignal = /(color|background|border|accent|fill|stroke|className|class=|bg-|text-|border-)/i.test(line)
+  if (!hasStyleSignal) return line
+  next = next.replace(/\b(bg|text|border|from|to|via|ring|outline)-(red|blue|green|yellow|orange|purple|pink|gray|grey|slate|zinc|neutral|stone|teal|cyan|indigo)-(\d{2,3})\b/g, (_match, prefix) => `${prefix}-${color}-600`)
+  next = next.replace(/#[0-9a-f]{3,8}\b/gi, color)
+  next = next.replace(/\brgba?\([^)]+\)/gi, color)
+  next = next.replace(/(\b(?:color|background(?:-color)?|border-color|accent-color|fill|stroke)\s*:\s*)([^;"}]+)/gi, `$1${color}`)
+  return next
+}
+
+function fallbackPatch(path: string, color: string) {
+  const safePath = path || 'src/App.tsx'
+  return [
+    `diff --git a/${safePath} b/${safePath}`,
+    `--- a/${safePath}`,
+    `+++ b/${safePath}`,
+    '@@ -1,3 +1,7 @@',
+    ' /* existing UI styles */',
+    `+/* Workbench proposed change for: change color to ${color} */`,
+    '+:root {',
+    `+  --singularity-requested-color: ${color};`,
+    '+}',
+  ].join('\n')
+}
+
+function pathFromPatchSection(section: string) {
+  return section.match(/\+\+\+\s+b\/([^\n]+)/)?.[1]?.trim()
+}
+
+function countDiffLines(diff: string, prefix: '+' | '-') {
+  return diff.split('\n').filter(line => line.startsWith(prefix) && !line.startsWith(`${prefix}${prefix}${prefix}`)).length
 }
 
 function buildQaTaskPack(session: ArtifactSession, _ctx: SnapshotContext, response: string) {

@@ -39,6 +39,7 @@ const IDS = {
     SECURITY:   "00000000-0000-0000-0000-0000000000d5",
     DEVOPS:     "00000000-0000-0000-0000-0000000000d6",
     PRODUCT_OWNER: "00000000-0000-0000-0000-0000000000d7",
+    BUSINESS_ANALYST: "00000000-0000-0000-0000-0000000000d8",
   },
   tools: {
     repoSearch:        "00000000-0000-0000-0000-0000000000e1",
@@ -56,7 +57,7 @@ async function main() {
   // only seeds AgentTemplate rows here; the basePromptProfileId references
   // a UUID that composer's seed creates, so the FK is stable even though
   // the row lives in composer's authoritative schema.
-  const roleContracts: Array<{ role: keyof typeof IDS.templates; name: string; content: string }> = [
+  const roleContracts: Array<{ role: keyof typeof IDS.templates; profileRole?: keyof typeof IDS.profiles; name: string; content: string }> = [
     { role: "ARCHITECT", name: "Architect Role Contract", content: "You are an Architect Agent. Analyze design, dependencies, risks, and tradeoffs. Never approve or deploy your own recommendations." },
     { role: "DEVELOPER", name: "Developer Role Contract", content: "You are a Developer Agent. Implement changes safely, write code with tests, prefer small reversible steps." },
     { role: "QA",        name: "QA Role Contract",         content: "You are a QA Agent. Identify regressions, edge cases, performance risks, and missing test coverage." },
@@ -64,19 +65,29 @@ async function main() {
     { role: "SECURITY", name: "Security Role Contract", content: "You are a Security Agent. Threat-model the change, check authorization, data exposure, dependency risk, and evidence before approval." },
     { role: "DEVOPS", name: "DevOps Role Contract", content: "You are a DevOps Agent. Validate deployability, observability, rollback, environment readiness, and operational risk." },
     { role: "PRODUCT_OWNER", name: "Product Owner Role Contract", content: "You are a Product Owner Agent. Clarify outcomes, acceptance criteria, user impact, release scope, and approval readiness." },
+    { role: "BUSINESS_ANALYST", profileRole: "PRODUCT_OWNER", name: "Business Analyst Role Contract", content: "You are a Business Analyst Agent. Extract business rules, process impact, domain vocabulary, acceptance details, and open questions from approved capability sources." },
   ];
 
   for (const rc of roleContracts) {
-    const profileId = IDS.profiles[rc.role];
+    const profileRole = (rc.profileRole ?? rc.role) as keyof typeof IDS.profiles;
+    const profileId = IDS.profiles[profileRole];
     const templateId = IDS.templates[rc.role];
+    const templateName = `${titleRole(rc.role)} Agent`;
     await prisma.agentTemplate.upsert({
       where: { id: templateId },
       // M23 — re-stamp the lockedReason on every seed run so older databases
       // pick up the governance flag without a manual migration.
-      update: { lockedReason: "common platform baseline" },
+      update: {
+        name: templateName,
+        roleType: rc.role,
+        basePromptProfileId: profileId,
+        description: rc.content,
+        status: "ACTIVE",
+        lockedReason: "common platform baseline",
+      },
       create: {
         id: templateId,
-        name: `${rc.role.charAt(0)}${rc.role.slice(1).toLowerCase()} Agent`,
+        name: templateName,
         roleType: rc.role, basePromptProfileId: profileId,
         description: rc.content, status: "ACTIVE",
         // capabilityId stays NULL — these are common-library baselines.
@@ -135,3 +146,11 @@ async function main() {
 main()
   .catch((e) => { console.error(e); process.exit(1); })
   .finally(() => prisma.$disconnect());
+
+function titleRole(role: string) {
+  return role
+    .toLowerCase()
+    .split("_")
+    .map(part => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}

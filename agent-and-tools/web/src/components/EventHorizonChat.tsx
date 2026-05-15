@@ -49,7 +49,7 @@ function surfaceFor(path: string): string {
   if (path.startsWith("/tools")) return "Tools";
   if (path.startsWith("/prompt-profiles")) return "Agent Behavior Profiles";
   if (path.startsWith("/prompt-layers")) return "Prompt Layers";
-  if (path.startsWith("/runtime-executions")) return "Runtime Executions";
+  if (path.startsWith("/runtime-executions")) return "Runtime Receipts";
   return "Agent Runtime";
 }
 
@@ -90,12 +90,12 @@ function answer(question: string, ctx: ContextSnapshot): string {
   if (q.includes("status") || q.includes("workflow") || q.includes("run")) {
     return "Workflow execution status is owned by Workflow Manager. Open the Workflow Manager or Run Insights to see active runs, node status, budgets, events, citations, and branch/commit evidence.";
   }
-  return `For this ${ctx.surface} screen: ${ctx.hints.join(" ")} Ask me about capability setup, agent versions, tool creation, prompt layers, runtime executions, or where to inspect workflow status.`;
+  return `For this ${ctx.surface} screen: ${ctx.hints.join(" ")} Ask me about capability setup, agent versions, tool creation, prompt layers, runtime receipts, or where to inspect workflow status.`;
 }
 
 const ACTIONS: Array<{ intent: ActionIntent; label: string; prompt: string }> = [
   { intent: "explain_capability", label: "Explain capability", prompt: "Explain this capability setup, including agents, bindings, learning review, and what still needs approval." },
-  { intent: "find_runtime_evidence", label: "Find evidence", prompt: "Tell me where to inspect runtime executions, workflow evidence, prompt assemblies, artifacts, and audit receipts for this capability." },
+  { intent: "find_runtime_evidence", label: "Find evidence", prompt: "Tell me where to inspect runtime receipts, workflow evidence, prompt assemblies, artifacts, and audit receipts for this capability." },
   { intent: "draft_review_note", label: "Draft review note", prompt: "Draft a concise human review note for activating generated agents or materializing learned knowledge." },
   { intent: "recommend_agent_team", label: "Agent team advice", prompt: "Recommend the right agent team, roles, tools, and artifact gates for this capability." },
   { intent: "explain_prompt_stack", label: "Prompt stack", prompt: "Explain the prompt profile/layer stack for this screen in user-friendly terms and call out what is editable." },

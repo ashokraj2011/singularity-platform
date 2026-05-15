@@ -1,98 +1,45 @@
 "use client";
-import { useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { Activity, Play, Plus } from "lucide-react";
+import { Activity, ExternalLink, Info } from "lucide-react";
 import { runtimeApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 
+const WORKGRAPH_WEB_URL = process.env.NEXT_PUBLIC_WORKGRAPH_WEB_URL ?? "http://localhost:5174";
+
 export default function RuntimeExecutionsPage() {
-  const { data: execs, isLoading, mutate } = useSWR("runtime-executions", () => runtimeApi.listExecutions(), { refreshInterval: 5000 });
-  const { data: templates } = useSWR("tmpl-options-exec", () => runtimeApi.listTemplates());
-  const { data: capabilities } = useSWR("cap-options-exec", () => runtimeApi.listCapabilities());
-
-  const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({
-    agentTemplateId: "", agentBindingId: "", capabilityId: "",
-    userRequest: "Analyze impact of adding evaluation_group support to CCRE.",
-    modelProvider: "stub", modelName: "stub-model",
-  });
-  const [creating, setCreating] = useState(false);
-
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault();
-    setCreating(true);
-    try {
-      const created = await runtimeApi.createExecution({
-        agentTemplateId: form.agentTemplateId,
-        agentBindingId: form.agentBindingId || undefined,
-        capabilityId: form.capabilityId || undefined,
-        userRequest: form.userRequest,
-        modelProvider: form.modelProvider,
-        modelName: form.modelName,
-      } as never) as Record<string, unknown>;
-      const id = created.id as string;
-      // start immediately
-      await runtimeApi.startExecution(id, { workflowPhase: "IMPACT_ANALYSIS", task: form.userRequest } as never);
-      setShowCreate(false);
-      await mutate();
-    } finally { setCreating(false); }
-  }
-
-  async function handleStart(id: string) {
-    await runtimeApi.startExecution(id, { workflowPhase: "IMPACT_ANALYSIS" } as never);
-    await mutate();
-  }
-
+  const { data: execs, isLoading } = useSWR("runtime-executions", () => runtimeApi.listExecutions(), { refreshInterval: 5000 });
   const items = (execs ?? []) as Record<string, unknown>[];
-  const tmplOptions = (templates?.items ?? []) as Record<string, unknown>[];
-  const capOptions = (capabilities ?? []) as Record<string, unknown>[];
 
   return (
     <div>
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Runtime Runs</h1>
-          <p className="text-slate-500 mt-1">Live agent runs · auto-refreshes every 5s</p>
+          <h1 className="text-2xl font-bold text-slate-900">Runtime Receipts</h1>
+          <p className="text-slate-500 mt-1">Historical direct-runtime receipts · workflow execution now lives in Workflow Manager.</p>
         </div>
-        <button className="btn-primary" onClick={() => setShowCreate(true)}><Plus size={16} /> New Execution</button>
+        <div className="flex gap-2">
+          <a className="btn-secondary" href={`${WORKGRAPH_WEB_URL}/runs`} target="_blank" rel="noreferrer">
+            <ExternalLink size={16} /> Open Runs
+          </a>
+          <a className="btn-primary" href={`${WORKGRAPH_WEB_URL}/workflows`} target="_blank" rel="noreferrer">
+            <ExternalLink size={16} /> Workflow Manager
+          </a>
+        </div>
       </div>
 
-      {showCreate && (
-        <form onSubmit={handleCreate} className="card p-6 mb-6 space-y-3">
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Agent Template *</label>
-              <select required className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                value={form.agentTemplateId} onChange={e => setForm(f => ({ ...f, agentTemplateId: e.target.value }))}>
-                <option value="">—</option>
-                {tmplOptions.map(t => <option key={t.id as string} value={t.id as string}>{t.name as string}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Capability</label>
-              <select className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                value={form.capabilityId} onChange={e => setForm(f => ({ ...f, capabilityId: e.target.value }))}>
-                <option value="">—</option>
-                {capOptions.map(c => <option key={c.id as string} value={c.id as string}>{c.name as string}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Binding ID (optional)</label>
-              <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                placeholder="binding uuid"
-                value={form.agentBindingId} onChange={e => setForm(f => ({ ...f, agentBindingId: e.target.value }))} />
-            </div>
+      <div className="card p-5 mb-6 border-blue-100 bg-blue-50">
+        <div className="flex items-start gap-3">
+          <Info size={18} className="text-blue-700 mt-0.5 shrink-0" />
+          <div>
+            <div className="font-semibold text-blue-950">Direct agent-runtime runs are retired.</div>
+            <p className="text-sm text-blue-900 mt-1">
+              Start agent work from a workflow AGENT_TASK. That path enforces Prompt Composer context plans,
+              Context Fabric/MCP execution, model aliases, budgets, approvals, artifacts, and Run Insights.
+            </p>
           </div>
-          <textarea rows={3} required className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
-            placeholder="user request"
-            value={form.userRequest} onChange={e => setForm(f => ({ ...f, userRequest: e.target.value }))} />
-          <div className="flex gap-2">
-            <button className="btn-primary" disabled={creating}>{creating ? "Starting…" : "Create + Start"}</button>
-            <button type="button" className="btn-secondary" onClick={() => setShowCreate(false)}>Cancel</button>
-          </div>
-        </form>
-      )}
+        </div>
+      </div>
 
       {isLoading && <div className="text-slate-500 text-sm">Loading…</div>}
 
@@ -117,9 +64,6 @@ export default function RuntimeExecutionsPage() {
               </div>
               <div className="flex flex-col gap-2 shrink-0">
                 <Link href={`/runtime-executions/${e.id}`} className="btn-secondary text-xs">View receipt</Link>
-                {e.executionStatus === "CREATED" && (
-                  <button onClick={() => handleStart(e.id as string)} className="btn-primary text-xs"><Play size={12} /> Start</button>
-                )}
               </div>
             </div>
           );

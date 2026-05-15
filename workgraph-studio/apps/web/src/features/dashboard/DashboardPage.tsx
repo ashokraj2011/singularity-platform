@@ -1,11 +1,12 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'motion/react'
 import {
   GitBranch, ExternalLink, Search, Filter,
-  ChevronDown, AlertTriangle, CheckCircle2, Clock, Users,
-  FileCode, Layers, Tag, Globe, PlayCircle, LayoutDashboard,
+  ChevronDown, AlertTriangle, Clock, Users,
+  Layers, Tag, PlayCircle, LayoutDashboard,
+  Activity, Package, DollarSign, Cpu, PauseCircle, BarChart3,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 
@@ -35,6 +36,62 @@ type WorkflowTemplate = {
   metadata?: TemplateMetadata
 }
 
+type WorkflowRun = {
+  id: string
+  name: string
+  status: string
+  templateId?: string | null
+  templateVersion?: number | null
+  context?: Record<string, unknown>
+  startedAt?: string | null
+  completedAt?: string | null
+  archivedAt?: string | null
+  createdAt: string
+  updatedAt?: string
+}
+
+type BudgetEvent = {
+  id?: string
+  eventType?: string
+  inputTokensDelta?: number | null
+  outputTokensDelta?: number | null
+  totalTokensDelta?: number | null
+  estimatedCostDelta?: number | null
+  pricingStatus?: string | null
+}
+
+type RunBudgetOverview = {
+  id?: string
+  instanceId?: string
+  status?: string
+  maxTotalTokens?: number | null
+  maxEstimatedCost?: number | null
+  consumedInputTokens?: number | null
+  consumedOutputTokens?: number | null
+  consumedTotalTokens?: number | null
+  consumedEstimatedCost?: number | null
+  percentUsed?: {
+    inputTokens?: number | null
+    outputTokens?: number | null
+    totalTokens?: number | null
+    estimatedCost?: number | null
+  }
+  warnings?: string[]
+  events?: BudgetEvent[]
+}
+
+type ConsumableRow = {
+  id: string
+  name: string
+  status: string
+  instanceId?: string | null
+  nodeId?: string | null
+  currentVersion?: number
+  createdAt: string
+  updatedAt?: string
+  type?: { name?: string; key?: string }
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const TYPE_LABEL: Record<string, string> = {
@@ -47,6 +104,14 @@ const TYPE_COLOR: Record<string, string> = {
 }
 const STATUS_COLOR: Record<string, string> = {
   DRAFT: '#94a3b8', PUBLISHED: '#00843D', FINAL: '#6366f1', ARCHIVED: '#64748b',
+}
+const RUN_STATUS_COLOR: Record<string, string> = {
+  ACTIVE: '#00843D', PAUSED: '#f59e0b', COMPLETED: '#2563eb', FAILED: '#dc2626',
+  CANCELLED: '#64748b', DRAFT: '#94a3b8',
+}
+const ARTIFACT_STATUS_COLOR: Record<string, string> = {
+  DRAFT: '#94a3b8', UNDER_REVIEW: '#f59e0b', APPROVED: '#00843D', PUBLISHED: '#2563eb',
+  SUPERSEDED: '#64748b', CONSUMED: '#6366f1', REJECTED: '#dc2626',
 }
 const CRIT_COLOR: Record<string, string> = {
   CRITICAL: '#ef4444', HIGH: '#f97316', MEDIUM: '#f59e0b', LOW: '#22c55e',
@@ -80,6 +145,80 @@ const buttonBase: React.CSSProperties = {
   fontWeight: 700,
   cursor: 'pointer',
   fontFamily: 'var(--font-sans)',
+}
+
+function pageContent<T>(data: unknown): T[] {
+  if (Array.isArray(data)) return data as T[]
+  if (data && typeof data === 'object' && Array.isArray((data as { content?: unknown }).content)) {
+    return (data as { content: T[] }).content
+  }
+  return []
+}
+
+function pageTotal(data: unknown, fallback: number) {
+  if (data && typeof data === 'object' && typeof (data as { totalElements?: unknown }).totalElements === 'number') {
+    return (data as { totalElements: number }).totalElements
+  }
+  if (data && typeof data === 'object' && typeof (data as { total?: unknown }).total === 'number') {
+    return (data as { total: number }).total
+  }
+  return fallback
+}
+
+function num(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function formatTokens(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 10_000) return `${(value / 1_000).toFixed(1)}k`
+  return value.toLocaleString()
+}
+
+function formatCost(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return 'UNPRICED'
+  if (value === 0) return '$0.0000'
+  return `$${value.toFixed(value < 1 ? 4 : 2)}`
+}
+
+function formatShortDate(value?: string | null) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function formatDuration(run: WorkflowRun) {
+  const start = new Date(run.startedAt ?? run.createdAt).getTime()
+  const end = run.completedAt ? new Date(run.completedAt).getTime() : Date.now()
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return '—'
+  const mins = Math.max(1, Math.round((end - start) / 60_000))
+  if (mins < 60) return `${mins}m`
+  const hours = Math.floor(mins / 60)
+  const rem = mins % 60
+  return rem ? `${hours}h ${rem}m` : `${hours}h`
+}
+
+function isRunActive(status: string) {
+  return ['ACTIVE', 'RUNNING', 'IN_PROGRESS'].includes(status)
+}
+
+function isRunPaused(status: string) {
+  return ['PAUSED', 'BLOCKED', 'WAITING_APPROVAL', 'PENDING_APPROVAL'].includes(status)
+}
+
+function isRunFailed(status: string) {
+  return ['FAILED', 'CANCELLED'].includes(status)
+}
+
+function isRunCompleted(status: string) {
+  return ['COMPLETED', 'SUCCEEDED'].includes(status)
 }
 
 // ─── Small helpers ───────────────────────────────────────────────────────────
@@ -224,6 +363,111 @@ function WorkflowRow({ tmpl, onOpen }: { tmpl: WorkflowTemplate; onOpen: () => v
   )
 }
 
+function RunHealthRow({
+  run,
+  templateName,
+  budget,
+  onOpen,
+  onInsights,
+}: {
+  run: WorkflowRun
+  templateName?: string
+  budget?: RunBudgetOverview | null
+  onOpen: () => void
+  onInsights: () => void
+}) {
+  const statusColor = RUN_STATUS_COLOR[run.status] ?? '#64748b'
+  const totalTokens = num(budget?.consumedTotalTokens)
+  const cost = num(budget?.consumedEstimatedCost)
+  const pct = num(budget?.percentUsed?.totalTokens)
+  const unpriced = (budget?.events ?? []).some(event => event.pricingStatus === 'UNPRICED')
+
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'minmax(210px, 1fr) 92px 92px 92px 76px 72px',
+      alignItems: 'center',
+      gap: 12,
+      padding: '12px 14px',
+      borderTop: `1px solid ${BORDER}`,
+    }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <Pill label={run.status} color={statusColor} />
+          <p style={{ fontSize: 13, fontWeight: 800, color: TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {run.name}
+          </p>
+        </div>
+        <p style={{ fontSize: 11, color: MUTED, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {templateName ?? 'Ad hoc run'} · started {formatShortDate(run.startedAt ?? run.createdAt)}
+        </p>
+      </div>
+      <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: TEXT }}>{formatDuration(run)}</span>
+      <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: TEXT }}>{formatTokens(totalTokens)}</span>
+      <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: unpriced && !cost ? '#b45309' : TEXT }}>{unpriced && !cost ? 'UNPRICED' : formatCost(cost)}</span>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ height: 6, borderRadius: 999, background: BORDER, overflow: 'hidden' }}>
+          <div style={{
+            width: pct == null ? '0%' : `${Math.min(100, Math.max(0, pct))}%`,
+            height: '100%',
+            background: pct != null && pct >= 80 ? '#f59e0b' : PRIMARY,
+          }} />
+        </div>
+        <p style={{ fontSize: 9, color: MUTED, marginTop: 3, fontFamily: 'var(--font-mono)' }}>{pct == null ? 'no cap' : `${Math.round(pct)}%`}</p>
+      </div>
+      <div style={{ display: 'flex', gap: 5, justifyContent: 'flex-end' }}>
+        <button
+          title="Open run"
+          onClick={onOpen}
+          style={{ ...buttonBase, width: 30, height: 30, padding: 0, color: TEXT, background: SURFACE_LOW, border: `1px solid ${BORDER}` }}
+        >
+          <ExternalLink size={12} />
+        </button>
+        <button
+          title="Open insights"
+          onClick={onInsights}
+          style={{ ...buttonBase, width: 30, height: 30, padding: 0, color: PRIMARY, background: 'rgba(0,132,61,0.08)', border: `1px solid rgba(0,132,61,0.20)` }}
+        >
+          <BarChart3 size={12} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function ArtifactRow({ artifact, runName, onOpen }: { artifact: ConsumableRow; runName?: string; onOpen: () => void }) {
+  const statusColor = ARTIFACT_STATUS_COLOR[artifact.status] ?? '#64748b'
+  const typeName = artifact.type?.name ?? artifact.type?.key ?? 'Artifact'
+  return (
+    <button
+      onClick={onOpen}
+      style={{
+        width: '100%',
+        border: 'none',
+        borderTop: `1px solid ${BORDER}`,
+        background: 'transparent',
+        padding: '11px 14px',
+        textAlign: 'left',
+        cursor: 'pointer',
+      }}
+      onMouseEnter={e => (e.currentTarget.style.background = SURFACE_LOW)}
+      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+        <div style={{ minWidth: 0 }}>
+          <p style={{ fontSize: 12, color: TEXT, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {artifact.name}
+          </p>
+          <p style={{ fontSize: 10, color: MUTED, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {typeName} · {runName ?? 'No linked run'} · v{artifact.currentVersion ?? 1}
+          </p>
+        </div>
+        <Pill label={artifact.status.replace(/_/g, ' ')} color={statusColor} />
+      </div>
+    </button>
+  )
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export function DashboardPage() {
@@ -245,21 +489,58 @@ export function DashboardPage() {
     refetchInterval: 30_000,
   })
 
-  const templates: WorkflowTemplate[] = Array.isArray(templatesData)
-    ? templatesData
-    : (templatesData?.content ?? [])
+  const { data: consumablesData } = useQuery({
+    queryKey: ['dashboard-consumables'],
+    queryFn: () => api.get('/consumables', { params: { size: 75 } }).then(r => r.data),
+    refetchInterval: 30_000,
+  })
 
-  const instances: Array<{ status: string; templateId?: string }> = Array.isArray(instancesData)
-    ? instancesData
-    : (instancesData?.content ?? [])
+  const templates: WorkflowTemplate[] = pageContent<WorkflowTemplate>(templatesData)
+
+  const instances: WorkflowRun[] = pageContent<WorkflowRun>(instancesData)
+  const consumables: ConsumableRow[] = pageContent<ConsumableRow>(consumablesData)
+  const consumableTotal = pageTotal(consumablesData, consumables.length)
+
+  const recentBudgetRunIds = useMemo(() => instances.slice(0, 12).map(instance => instance.id), [instances])
+
+  const { data: budgetRows = [] } = useQuery<Array<{ id: string; budget: RunBudgetOverview | null }>>({
+    queryKey: ['dashboard-run-budgets', recentBudgetRunIds.join('|')],
+    enabled: recentBudgetRunIds.length > 0,
+    refetchInterval: 30_000,
+    queryFn: async () => Promise.all(recentBudgetRunIds.map(async id => {
+      try {
+        const response = await api.get(`/workflow-instances/${encodeURIComponent(id)}/budget`)
+        return { id, budget: response.data as RunBudgetOverview }
+      } catch {
+        return { id, budget: null as RunBudgetOverview | null }
+      }
+    })),
+  })
+
+  const templateNames = useMemo(() => new Map(templates.map(template => [template.id, template.name])), [templates])
+  const runNames = useMemo(() => new Map(instances.map(instance => [instance.id, instance.name])), [instances])
+  const budgetsByRun = useMemo(() => new Map(budgetRows.map(row => [row.id, row.budget])), [budgetRows])
 
   // ── Derived KPIs ──
   const total = templates.length
-  const published = templates.filter(t => t.status === 'PUBLISHED').length
-  const draft = templates.filter(t => t.status === 'DRAFT').length
-  const critical = templates.filter(t => t.metadata?.criticality === 'CRITICAL').length
-  const needsApproval = templates.filter(t => t.metadata?.requiresApprovalToRun).length
-  const globalCount = templates.filter(t => t.metadata?.globallyAvailable).length
+  const activeRuns = instances.filter(run => isRunActive(run.status)).length
+  const pausedRuns = instances.filter(run => isRunPaused(run.status)).length
+  const failedRuns = instances.filter(run => isRunFailed(run.status)).length
+  const completedRuns = instances.filter(run => isRunCompleted(run.status)).length
+  const artifactUnderReview = consumables.filter(artifact => artifact.status === 'UNDER_REVIEW').length
+  const artifactApproved = consumables.filter(artifact => ['APPROVED', 'PUBLISHED', 'CONSUMED'].includes(artifact.status)).length
+
+  const budgetTotals = budgetRows.reduce((acc, row) => {
+    const budget = row.budget
+    if (!budget) return acc
+    acc.input += num(budget.consumedInputTokens) ?? 0
+    acc.output += num(budget.consumedOutputTokens) ?? 0
+    acc.total += num(budget.consumedTotalTokens) ?? 0
+    acc.cost += num(budget.consumedEstimatedCost) ?? 0
+    acc.unpriced += (budget.events ?? []).filter(event => event.pricingStatus === 'UNPRICED').length
+    acc.warningCount += (budget.warnings ?? []).length
+    return acc
+  }, { input: 0, output: 0, total: 0, cost: 0, unpriced: 0, warningCount: 0 })
 
   // ── Type distribution ──
   const typeCounts: Record<string, number> = {}
@@ -286,6 +567,9 @@ export function DashboardPage() {
     if (inst.templateId) runsByTemplate.set(inst.templateId, (runsByTemplate.get(inst.templateId) ?? 0) + 1)
   }
 
+  const recentRuns = instances.slice(0, 7)
+  const recentArtifacts = consumables.slice(0, 7)
+
   return (
     <div style={{ padding: '24px 28px 48px', maxWidth: 1280, margin: '0 auto' }}>
 
@@ -300,12 +584,12 @@ export function DashboardPage() {
             }}>
               <LayoutDashboard size={17} style={{ color: PRIMARY }} />
             </div>
-            <div>
-              <h1 className="page-header" style={{ marginBottom: 0 }}>Workflow Manager</h1>
-              <p style={{ fontSize: 12, color: MUTED, marginTop: 3, maxWidth: 620 }}>
-                Design workflows, run them, approve pauses, and inspect execution evidence.
-              </p>
-            </div>
+	            <div>
+	              <h1 className="page-header" style={{ marginBottom: 0 }}>Workflow Manager</h1>
+	              <p style={{ fontSize: 12, color: MUTED, marginTop: 3, maxWidth: 620 }}>
+	                Monitor runs, budget burn, produced artifacts, approvals, and execution evidence from one place.
+	              </p>
+	            </div>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -325,18 +609,120 @@ export function DashboardPage() {
         </div>
       </motion.div>
 
-      {/* ── KPI strip ──────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
-        <KpiCard title="Total Designs"   value={total}        icon={GitBranch}    color="#00843D"  delay={0.04} />
-        <KpiCard title="Published"       value={published}    icon={CheckCircle2} color="#00843D"  delay={0.07} sub={total > 0 ? `${Math.round(published/total*100)}%` : undefined} />
-        <KpiCard title="In Draft"        value={draft}        icon={FileCode}     color="#94a3b8"  delay={0.10} />
-        <KpiCard title="Critical"        value={critical}     icon={AlertTriangle}color="#ef4444"  delay={0.13} />
-        <KpiCard title="Need Approval"   value={needsApproval}icon={Users}        color="#f59e0b"  delay={0.16} />
-        <KpiCard title="Globally Avail." value={globalCount}  icon={Globe}        color="#6366f1"  delay={0.19} />
-      </div>
+	      {/* ── Runtime KPI strip ───────────────────────────────────────── */}
+	      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
+	        <KpiCard title="Active Runs"      value={activeRuns}                  icon={Activity}       color="#00843D"  delay={0.04} sub={`${instances.length} total`} />
+	        <KpiCard title="Paused / Review"  value={pausedRuns}                  icon={PauseCircle}    color="#f59e0b"  delay={0.07} sub={artifactUnderReview ? `${artifactUnderReview} artifacts` : undefined} />
+	        <KpiCard title="Failed Runs"      value={failedRuns}                  icon={AlertTriangle}  color="#dc2626"  delay={0.10} sub={completedRuns ? `${completedRuns} complete` : undefined} />
+	        <KpiCard title="Tokens Used"      value={formatTokens(budgetTotals.total)} icon={Cpu}       color="#6366f1"  delay={0.13} sub={`${formatTokens(budgetTotals.input)} in / ${formatTokens(budgetTotals.output)} out`} />
+	        <KpiCard title="Est. Cost"        value={formatCost(budgetTotals.cost)}    icon={DollarSign} color="#0ea5e9"  delay={0.16} sub={budgetTotals.unpriced ? `${budgetTotals.unpriced} unpriced` : 'priced'} />
+	        <KpiCard title="Artifacts"        value={consumableTotal}             icon={Package}       color="#8b5cf6"  delay={0.19} sub={`${artifactApproved} approved`} />
+	      </div>
 
-      {/* ── Two-column: catalog + breakdown ───────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 300px', gap: 20, alignItems: 'start' }}>
+	      {/* ── Run operations dashboard ───────────────────────────────── */}
+	      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 340px', gap: 20, alignItems: 'start', marginBottom: 26 }}>
+	        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.24, delay: 0.18 }}>
+	          <SectionHeader action="Open all runs" onAction={() => navigate('/runs')}>
+	            Run Health
+	          </SectionHeader>
+	          <div style={{ ...panelStyle, overflow: 'hidden' }}>
+	            <div style={{
+	              display: 'grid',
+	              gridTemplateColumns: 'minmax(210px, 1fr) 92px 92px 92px 76px 72px',
+	              alignItems: 'center',
+	              gap: 12,
+	              padding: '8px 14px',
+	              background: SURFACE_LOW,
+	            }}>
+	              {['Run', 'Duration', 'Tokens', 'Cost', 'Budget', ''].map(header => (
+	                <span key={header} style={{ fontSize: 9, fontWeight: 800, color: MUTED, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{header}</span>
+	              ))}
+	            </div>
+	            {recentRuns.length === 0 ? (
+	              <div style={{ padding: '34px 20px', textAlign: 'center' }}>
+	                <Activity size={24} style={{ color: BORDER, margin: '0 auto 8px' }} />
+	                <p style={{ fontSize: 12, color: MUTED }}>No workflow runs yet.</p>
+	                <button onClick={() => navigate('/run')} style={{ marginTop: 10, fontSize: 12, fontWeight: 800, color: PRIMARY, background: 'none', border: 'none', cursor: 'pointer' }}>
+	                  Start a run
+	                </button>
+	              </div>
+	            ) : (
+	              recentRuns.map(run => (
+	                <RunHealthRow
+	                  key={run.id}
+	                  run={run}
+	                  templateName={run.templateId ? templateNames.get(run.templateId) : undefined}
+	                  budget={budgetsByRun.get(run.id)}
+	                  onOpen={() => navigate(`/runs/${run.id}`)}
+	                  onInsights={() => navigate(`/runs/${run.id}/insights`)}
+	                />
+	              ))
+	            )}
+	          </div>
+	        </motion.div>
+
+	        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+	          <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.24, delay: 0.22 }}>
+	            <SectionHeader action="Open artifacts" onAction={() => navigate('/consumables')}>
+	              Artifacts Produced
+	            </SectionHeader>
+	            <div style={{ ...panelStyle, overflow: 'hidden' }}>
+	              <div style={{ padding: '13px 14px', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, background: SURFACE_LOW }}>
+	                <div>
+	                  <p style={{ fontSize: 18, fontWeight: 900, color: TEXT, lineHeight: 1 }}>{consumableTotal}</p>
+	                  <p style={{ fontSize: 9, color: MUTED, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Total</p>
+	                </div>
+	                <div>
+	                  <p style={{ fontSize: 18, fontWeight: 900, color: '#f59e0b', lineHeight: 1 }}>{artifactUnderReview}</p>
+	                  <p style={{ fontSize: 9, color: MUTED, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Review</p>
+	                </div>
+	                <div>
+	                  <p style={{ fontSize: 18, fontWeight: 900, color: PRIMARY, lineHeight: 1 }}>{artifactApproved}</p>
+	                  <p style={{ fontSize: 9, color: MUTED, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Approved</p>
+	                </div>
+	              </div>
+	              {recentArtifacts.length === 0 ? (
+	                <div style={{ padding: '26px 14px', textAlign: 'center' }}>
+	                  <Package size={22} style={{ color: BORDER, margin: '0 auto 8px' }} />
+	                  <p style={{ fontSize: 12, color: MUTED }}>No artifacts produced yet.</p>
+	                </div>
+	              ) : (
+	                recentArtifacts.map(artifact => (
+	                  <ArtifactRow
+	                    key={artifact.id}
+	                    artifact={artifact}
+	                    runName={artifact.instanceId ? runNames.get(artifact.instanceId) : undefined}
+	                    onOpen={() => navigate(artifact.instanceId ? `/runs/${artifact.instanceId}/insights` : '/consumables')}
+	                  />
+	                ))
+	              )}
+	            </div>
+	          </motion.div>
+
+	          <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.24, delay: 0.26 }}>
+	            <SectionHeader>Token Economy</SectionHeader>
+	            <div style={{ ...panelStyle, padding: 16 }}>
+	              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+	                <Cpu size={14} style={{ color: PRIMARY }} />
+	                <span style={{ fontSize: 12, fontWeight: 900, color: TEXT }}>{formatTokens(budgetTotals.total)} tokens tracked</span>
+	              </div>
+	              <TypeBar label="Input tokens" count={Math.round(budgetTotals.input)} total={Math.max(1, Math.round(budgetTotals.total))} color="#6366f1" />
+	              <TypeBar label="Output tokens" count={Math.round(budgetTotals.output)} total={Math.max(1, Math.round(budgetTotals.total))} color="#0ea5e9" />
+	              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, paddingTop: 12, borderTop: `1px solid ${BORDER}` }}>
+	                <span style={{ fontSize: 11, color: MUTED }}>Budget warnings</span>
+	                <span style={{ fontSize: 12, fontWeight: 900, color: budgetTotals.warningCount ? '#f59e0b' : PRIMARY, fontFamily: 'var(--font-mono)' }}>{budgetTotals.warningCount}</span>
+	              </div>
+	              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 7 }}>
+	                <span style={{ fontSize: 11, color: MUTED }}>Unpriced usage events</span>
+	                <span style={{ fontSize: 12, fontWeight: 900, color: budgetTotals.unpriced ? '#b45309' : PRIMARY, fontFamily: 'var(--font-mono)' }}>{budgetTotals.unpriced}</span>
+	              </div>
+	            </div>
+	          </motion.div>
+	        </div>
+	      </div>
+
+	      {/* ── Two-column: catalog + breakdown ───────────────────────── */}
+	      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 300px', gap: 20, alignItems: 'start' }}>
 
         {/* ── Workflow catalog ──────────────────────────────────────── */}
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.26, delay: 0.22 }}>

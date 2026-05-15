@@ -20,6 +20,7 @@ const knowledgeUpload = multer({
 export const capabilityRoutes = Router();
 
 capabilityRoutes.post("/bootstrap", validate(bootstrapCapabilitySchema), capabilityController.bootstrap);
+capabilityRoutes.get("/bootstrap-agent-catalog", capabilityController.bootstrapAgentCatalog);
 capabilityRoutes.post("/", validate(createCapabilitySchema), capabilityController.create);
 capabilityRoutes.get("/", capabilityController.list);
 capabilityRoutes.get("/:id", capabilityController.get);
