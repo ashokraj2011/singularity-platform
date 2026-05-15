@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# M33 — CI guard.
+#
+# Enforces the "single LLM gateway" invariant:
+#   1. Only `context-fabric/services/llm_gateway_service/` opens HTTP to a
+#      provider URL.
+#   2. Only that service reads provider API keys (OPENAI_API_KEY,
+#      ANTHROPIC_API_KEY, OPENROUTER_API_KEY, COPILOT_TOKEN, GOOGLE_API_KEY,
+#      COHERE_API_KEY).
+#   3. No service-side TypeScript / Python file references the legacy
+#      provider-router env vars (LLM_PROVIDER, EMBEDDING_PROVIDER, etc.).
+#
+# Fails with a clear diff when a regression sneaks in.
+#
+# Exit 0 → clean. Exit non-zero → at least one banned reference outside the
+# gateway service.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+red()    { printf '\033[31m%s\033[0m\n' "$*" >&2; }
+green()  { printf '\033[32m%s\033[0m\n' "$*"; }
+header() { printf '\n=== %s ===\n' "$*"; }
+
+EXCLUDE_DIRS=(
+  --exclude-dir=node_modules
+  --exclude-dir=.git
+  --exclude-dir=dist
+  --exclude-dir=generated
+  --exclude-dir=.next
+  --exclude-dir=__pycache__
+  --exclude-dir=.venv
+)
+
+# Always-excluded paths:
+#  - The gateway service itself owns the provider HTTP + keys.
+#  - bin/configure-platform.py is a config-write tool (no runtime LLM call).
+#  - mcp-server/src/healthz-strict.ts checks for these very keys; mentioning
+#    them in a guard is necessary, not a leak.
+#  - Generated client outputs (dist/, generated/), docs, .env, and this
+#    guard itself are out of scope.
+PATH_FILTER='context-fabric/services/llm_gateway_service/|(^|/)docs/|(^|/)\.singularity/|(^|/)docker-compose\.yml:|(^|/)\.env(\.[^:]*)?:|bin/check-llm-gateway-single-source\.sh:|bin/configure-platform\.py:|mcp-server/src/healthz-strict\.ts:|/dist/|/generated/|\.md:'
+
+# Lines that are pure comments (// /* * # docstrings) don't introduce a
+# runtime call — strip them when grepping. Be a bit lenient (we strip only
+# leading-whitespace-then-comment patterns).
+strip_comment_lines() {
+  # input: file:line:content   output: same, minus pure-comment lines
+  awk -F: 'BEGIN { OFS=FS }
+    {
+      content = $0
+      # rebuild content after the third colon (file:line:rest)
+      n = index($0, ":");
+      if (n) {
+        rest = substr($0, n+1);
+        m = index(rest, ":");
+        if (m) {
+          body = substr(rest, m+1);
+          # Trim leading whitespace.
+          sub(/^[[:space:]]+/, "", body);
+          # Skip pure comment lines.
+          if (body ~ /^(\/\/|#|\*|\/\*)/) next;
+        }
+      }
+      print
+    }'
+}
+
+run_grep_check() {
+  local label="$1"; shift
+  local pattern="$1"; shift
+  local globs=(--include='*.ts' --include='*.tsx' --include='*.py' --include='*.js' --include='*.mjs' --include='*.cjs')
+  set +e
+  hits="$(grep -rEn "$pattern" "${globs[@]}" "${EXCLUDE_DIRS[@]}" . 2>/dev/null \
+    | grep -vE "$PATH_FILTER" \
+    | strip_comment_lines || true)"
+  set -e
+  if [[ -n "$hits" ]]; then
+    red "FAIL: $label"
+    echo "$hits" >&2
+    return 1
+  fi
+  green "OK: $label"
+  return 0
+}
+
+failures=0
+
+header "1. Banned provider HTTP endpoints"
+run_grep_check "no service opens api.openai.com / api.anthropic.com / openrouter.ai / cohere / google generative outside the gateway" \
+  'api\.openai\.com|api\.anthropic\.com|openrouter\.ai|api\.cohere\.|generativelanguage\.googleapis\.com|api\.githubcopilot\.com' \
+  || failures=$((failures + 1))
+
+header "2. Banned provider credentials"
+run_grep_check "no provider API keys are read outside the gateway" \
+  'OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|COPILOT_TOKEN|GOOGLE_API_KEY|COHERE_API_KEY' \
+  || failures=$((failures + 1))
+
+header "3. Banned provider-router env vars"
+run_grep_check "no service still routes by LLM_PROVIDER / EMBEDDING_PROVIDER / SUMMARIZER_PROVIDER / CAPSULE_COMPILE_PROVIDER / DEFAULT_MODEL_PROVIDER" \
+  '\b(LLM_PROVIDER|EMBEDDING_PROVIDER|SUMMARIZER_PROVIDER|CAPSULE_COMPILE_PROVIDER|DEFAULT_MODEL_PROVIDER)\b' \
+  || failures=$((failures + 1))
+
+header "4. docker-compose: provider keys appear only on llm-gateway"
+# Inspect each service block in the merged compose config. Any service other
+# than `llm-gateway` that surfaces a non-empty provider key is a leak.
+if command -v docker >/dev/null 2>&1 && docker compose config >/dev/null 2>&1; then
+  set +e
+  leaks="$(docker compose config 2>/dev/null | awk '
+    /^  [a-z][a-z0-9_-]*:$/ { svc=$1; sub(/:$/, "", svc) }
+    svc != "llm-gateway" && /^      (OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|COPILOT_TOKEN|GOOGLE_API_KEY|COHERE_API_KEY):/ {
+      # only flag non-empty values
+      v = $0
+      sub(/^.*: */, "", v)
+      gsub(/^"|"$/, "", v)
+      if (length(v) > 0) print svc ": " $0
+    }
+  ')"
+  set -e
+  if [[ -n "$leaks" ]]; then
+    red "FAIL: provider keys leaked into non-gateway services in docker-compose"
+    echo "$leaks" >&2
+    failures=$((failures + 1))
+  else
+    green "OK: provider keys are gated to llm-gateway in docker-compose"
+  fi
+else
+  echo "(skipped — docker compose not available)"
+fi
+
+echo
+if (( failures > 0 )); then
+  red "M33 single-gateway guard failed: $failures issue(s)."
+  exit 1
+fi
+green "M33 single-gateway guard passed."
+exit 0

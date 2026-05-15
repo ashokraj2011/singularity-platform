@@ -1,59 +1,58 @@
 /**
- * Embeddings dispatcher — picks a provider from `EMBEDDING_PROVIDER` env.
+ * M33 — Embeddings client. Single call path through the central LLM
+ * gateway (`LLM_GATEWAY_URL`).
  *
- *   EMBEDDING_PROVIDER=openai (default if OPENAI_API_KEY is set)
- *   EMBEDDING_PROVIDER=ollama
- *   EMBEDDING_PROVIDER=mock   (default fallback when no API key — keeps dev unblocked)
+ * The legacy auto-detection (EMBEDDING_PROVIDER → openai → mock) is gone:
+ * provider keys live ONLY on the gateway. There is no provider fallback
+ * chain — the gateway 502/503s propagate to the caller. The only allowed
+ * fallback is `LLM_GATEWAY_URL=mock`, which short-circuits to a
+ * deterministic in-process mock for unit tests.
  *
- * Per-provider config:
- *   OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_EMBEDDING_MODEL
- *   OLLAMA_BASE_URL, OLLAMA_EMBEDDING_MODEL
- *
- * Lazy-instantiated and cached so callers can `getEmbeddingProvider().embed(...)`
- * without tracking lifecycle.
+ * The legacy `EmbeddingProvider` interface (with `name`, `defaultModel`,
+ * `.embed`) is preserved so call sites in compose.service.ts /
+ * capability.service.ts continue to work. The "provider" returned by
+ * `getEmbeddingProvider()` is now a thin adapter over `llmEmbed`.
  */
-import { OpenAiEmbeddingProvider } from "./openai";
-import { OllamaEmbeddingProvider } from "./ollama";
-import { MockEmbeddingProvider } from "./mock";
-import type { EmbeddingProvider, EmbeddingProviderName } from "./types";
+import { llmEmbed } from "../llm-gateway/client";
+import type { EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, EmbeddingProviderName } from "./types";
 
 let cached: EmbeddingProvider | undefined;
 
-function pickProvider(): EmbeddingProviderName {
-  const explicit = (process.env.EMBEDDING_PROVIDER ?? "").toLowerCase();
-  if (explicit === "openai" || explicit === "ollama" || explicit === "mock") return explicit;
-  if (process.env.OPENAI_API_KEY) return "openai";
-  // Fallback to mock so dev environments don't crash. Logs a one-line warning
-  // so it's obvious in the agent-runtime log on startup.
-  // eslint-disable-next-line no-console
-  console.warn(
-    "[embeddings] no EMBEDDING_PROVIDER or OPENAI_API_KEY set — falling back to mock provider",
-  );
-  return "mock";
+class GatewayEmbeddingProvider implements EmbeddingProvider {
+  readonly name: EmbeddingProviderName = "openai"; // wire-shape marker; gateway picks the real provider
+  readonly defaultModel: string;
+
+  constructor(defaultModel?: string) {
+    this.defaultModel = defaultModel ?? "gateway-default";
+  }
+
+  async embed(req: EmbeddingRequest): Promise<EmbeddingResponse> {
+    const start = Date.now();
+    const result = await llmEmbed({
+      model_alias: process.env.EMBEDDING_MODEL_ALIAS, // optional curated alias
+      model: req.model,                                // raw model name passthrough
+      input: [req.text],
+    });
+    const vector = result.embeddings?.[0];
+    if (!Array.isArray(vector) || vector.length === 0) {
+      throw new Error("LLM gateway returned no embedding");
+    }
+    return {
+      vector,
+      provider: (result.provider as EmbeddingProviderName) ?? this.name,
+      model: result.model,
+      dim: vector.length,
+      metadata: {
+        latencyMs: Date.now() - start,
+        promptTokens: result.input_tokens,
+      },
+    };
+  }
 }
 
 export function getEmbeddingProvider(): EmbeddingProvider {
   if (cached) return cached;
-  const name = pickProvider();
-  switch (name) {
-    case "openai":
-      cached = new OpenAiEmbeddingProvider({
-        apiKey: process.env.OPENAI_API_KEY ?? "",
-        baseUrl: process.env.OPENAI_BASE_URL,
-        defaultModel: process.env.OPENAI_EMBEDDING_MODEL,
-      });
-      break;
-    case "ollama":
-      cached = new OllamaEmbeddingProvider({
-        baseUrl: process.env.OLLAMA_BASE_URL,
-        defaultModel: process.env.OLLAMA_EMBEDDING_MODEL,
-      });
-      break;
-    case "mock":
-    default:
-      cached = new MockEmbeddingProvider();
-      break;
-  }
+  cached = new GatewayEmbeddingProvider();
   return cached;
 }
 

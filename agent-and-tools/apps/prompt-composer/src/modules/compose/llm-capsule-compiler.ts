@@ -8,17 +8,16 @@
  * task signature pays ~700 tokens for the paragraph instead of ~4k+ for
  * the raw chunks.
  *
- * Calls mcp-server `/mcp/invoke` with mock-fast by default. Failure path:
- * return null and the caller falls back to the RAW (JSON-layer) cache mode.
+ * M33 — Calls the central LLM gateway (`LLM_GATEWAY_URL`). Provider keys
+ * live ONLY on the gateway. No fallback chain — gateway errors propagate
+ * up; caller falls back to the RAW (JSON-layer) cache mode on null.
  */
+import { llmRespond } from "@agentandtools/shared";
 import { logger } from "../../config/logger";
 import type { RetrievedChunk } from "./retrieval";
 
-const MCP_URL    = process.env.MCP_SERVER_URL    ?? "http://host.docker.internal:7100";
-const MCP_BEARER = process.env.MCP_BEARER_TOKEN  ?? "demo-bearer-token-must-be-min-16-chars";
 const TIMEOUT_MS = Number(process.env.CAPSULE_COMPILE_TIMEOUT_MS ?? 30_000);
-const PROVIDER   = process.env.CAPSULE_COMPILE_PROVIDER ?? "mock";
-const MODEL      = process.env.CAPSULE_COMPILE_MODEL    ?? "mock-fast";
+const MODEL_ALIAS = process.env.CAPSULE_COMPILE_MODEL_ALIAS ?? "fast";
 
 const SYSTEM_PROMPT = `You are a Context Compiler.
 
@@ -51,47 +50,30 @@ export async function compileCapsuleViaLlm(
   const message = `Intent: ${intent.trim().slice(0, 4000)}\n\n${body}`;
 
   try {
-    const res = await fetch(`${MCP_URL.replace(/\/$/, "")}/mcp/invoke`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "authorization": `Bearer ${MCP_BEARER}`,
-      },
-      body: JSON.stringify({
-        systemPrompt: SYSTEM_PROMPT,
-        message,
-        tools: [],   // no tool calls; pure synthesis
-        modelConfig: { provider: PROVIDER, model: MODEL, temperature: 0.0, maxTokens: 800 },
-        runContext: { traceId: `capsule-compile-${Date.now()}` },
-        limits: { maxSteps: 1, timeoutSec: Math.ceil(TIMEOUT_MS / 1000) },
+    const result = await Promise.race([
+      llmRespond({
+        model_alias: MODEL_ALIAS,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: message },
+        ],
+        temperature: 0,
+        max_output_tokens: 800,
+        trace_id: `capsule-compile-${Date.now()}`,
       }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      logger.warn({ status: res.status }, "[capsule] LLM compile HTTP failure");
-      return null;
-    }
-    const json = await res.json() as {
-      success?: boolean;
-      data?: {
-        status: string;
-        finalResponse: string;
-        tokensUsed?: { input?: number; output?: number };
-      };
-    };
-    if (!json.success || !json.data || json.data.status !== "COMPLETED") {
-      logger.warn({ data: json.data }, "[capsule] LLM compile non-COMPLETED");
-      return null;
-    }
-    const paragraph = (json.data.finalResponse ?? "").trim();
+      new Promise<never>((_, rej) =>
+        setTimeout(() => rej(new Error("capsule compile timeout")), TIMEOUT_MS),
+      ),
+    ]);
+    const paragraph = (result.content ?? "").trim();
     if (!paragraph) return null;
     return {
       paragraph,
-      inputTokens:  json.data.tokensUsed?.input,
-      outputTokens: json.data.tokensUsed?.output,
+      inputTokens:  result.input_tokens,
+      outputTokens: result.output_tokens,
     };
   } catch (err) {
-    logger.warn({ err: (err as Error).message }, "[capsule] LLM compile threw");
+    logger.warn({ err: (err as Error).message }, "[capsule] LLM compile failed");
     return null;
   }
 }

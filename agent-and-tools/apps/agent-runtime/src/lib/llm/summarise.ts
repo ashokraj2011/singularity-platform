@@ -2,19 +2,19 @@
  * M15 — LLM-driven one-liner summariser for code symbols.
  *
  * When the regex / tree-sitter extractor finds a symbol with no docstring,
- * we ask mcp-server's embedded LLM gateway to produce a concise summary.
- * Used to populate `CapabilityCodeSymbol.summary` so retrieval has a useful
- * signal beyond just the symbol name.
+ * we ask the central LLM gateway to produce a concise summary. Used to
+ * populate `CapabilityCodeSymbol.summary` so retrieval has a useful signal
+ * beyond just the symbol name.
  *
- * Failures fall back silently (return null) — the caller persists the symbol
- * with summary=null and life goes on.
+ * M33 — Routes through the central gateway (`LLM_GATEWAY_URL`). No provider
+ * fallback chain. Failures fall back silently (return null) — the caller
+ * persists the symbol with summary=null and life goes on.
  */
-// agent-runtime doesn't have a shared logger; fall back to console.warn.
-const log = { warn: (msg: string) => console.warn(`[summarise] ${msg}`) };
+import { llmRespond } from "@agentandtools/shared";
 
-const MCP_INVOKE_URL = process.env.MCP_INVOKE_URL ?? "http://host.docker.internal:7100/mcp/invoke";
-const MCP_BEARER     = process.env.MCP_BEARER_TOKEN ?? "demo-bearer-token-must-be-min-16-chars";
-const TIMEOUT_MS     = 30_000;
+const log = { warn: (msg: string) => console.warn(`[summarise] ${msg}`) };
+const TIMEOUT_MS = 30_000;
+const MODEL_ALIAS = process.env.SUMMARISE_MODEL_ALIAS ?? "fast";
 
 export interface SummariseInput {
   symbolName: string;
@@ -44,34 +44,26 @@ export async function summariseSymbol(input: SummariseInput): Promise<string | n
   ].join("\n");
 
   try {
-    const res = await fetch(MCP_INVOKE_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${MCP_BEARER}`,
-      },
-      body: JSON.stringify({
-        runContext: { traceId: `summarise-${input.symbolName}` },
-        systemPrompt,
-        message: userMessage,
-        tools: [],
-        modelConfig: {},
-        limits: { maxSteps: 1, timeoutSec: 30 },
+    const result = await Promise.race([
+      llmRespond({
+        model_alias: MODEL_ALIAS,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
+        max_output_tokens: 200,
+        temperature: 0,
+        trace_id: `summarise-${input.symbolName}`,
       }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      log.warn(`summariseSymbol: mcp ${res.status}: ${(await res.text()).slice(0, 200)}`);
-      return null;
-    }
-    const data = (await res.json()) as { data?: { finalResponse?: string } };
-    const raw = data.data?.finalResponse?.trim() ?? "";
+      new Promise<never>((_, rej) =>
+        setTimeout(() => rej(new Error("summarise timeout")), TIMEOUT_MS),
+      ),
+    ]);
+    const raw = (result.content ?? "").trim();
     if (!raw) return null;
     // Strip the mock-provider's "[mock] ..." preamble — we want the
-    // actual summary or nothing. If the LLM returned the mock placeholder,
-    // fall back so the regex docstring or `null` wins.
+    // actual summary or nothing.
     if (raw.startsWith("[mock]")) return null;
-    // Cap length so we don't blow up the prompt-composer downstream.
     return raw.slice(0, 280);
   } catch (err) {
     log.warn(`summariseSymbol: ${(err as Error).message}`);

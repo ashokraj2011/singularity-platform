@@ -47,17 +47,8 @@ function readConfigSource(): unknown {
   return null;
 }
 
-function envAllowedProviders(): SupportedProvider[] | undefined {
-  const raw = config.MCP_ALLOWED_LLM_PROVIDERS?.trim();
-  if (!raw) return undefined;
-  const providers = raw
-    .split(",")
-    .map(v => v.trim().toLowerCase())
-    .filter(Boolean)
-    .map(v => SupportedProviderSchema.safeParse(v))
-    .filter((result): result is z.SafeParseSuccess<SupportedProvider> => result.success)
-    .map(result => result.data);
-  return providers.length ? providers : undefined;
+function settingsFor(provider: SupportedProvider): ProviderSettings | undefined {
+  return loadProviderConfig().settings.providers?.[provider];
 }
 
 export function loadProviderConfig(): LoadedProviderConfig {
@@ -92,80 +83,40 @@ export function loadProviderConfig(): LoadedProviderConfig {
 export function providerSettings(provider: string): ProviderSettings {
   const parsed = SupportedProviderSchema.safeParse(provider.toLowerCase());
   if (!parsed.success) return {};
-  return loadProviderConfig().settings.providers?.[parsed.data] ?? {};
+  return settingsFor(parsed.data) ?? {};
 }
 
 export function configuredDefaultProvider(): SupportedProvider {
-  return loadProviderConfig().settings.defaultProvider ?? config.LLM_PROVIDER;
+  return loadProviderConfig().settings.defaultProvider ?? "mock";
 }
 
 export function providerDefaultModel(provider: string): string {
   const p = provider.toLowerCase();
   const setting = providerSettings(p).defaultModel;
   if (setting) return setting;
-  switch (p) {
-    case "mock": return config.LLM_MODEL || "mock-fast";
-    case "openai": return config.OPENAI_DEFAULT_MODEL;
-    case "openrouter": return "openai/gpt-4o-mini";
-    case "anthropic": return config.ANTHROPIC_DEFAULT_MODEL;
-    case "copilot": return config.COPILOT_DEFAULT_MODEL;
-    default: return config.LLM_MODEL;
-  }
+  return p === "mock" ? "mock-fast" : "";
 }
 
 export function configuredDefaultModel(): string {
   const settings = loadProviderConfig().settings;
-  return settings.defaultModel ?? providerDefaultModel(configuredDefaultProvider());
-}
-
-export function providerBaseUrl(provider: string): string {
-  const p = provider.toLowerCase();
-  const setting = providerSettings(p).baseUrl;
-  if (setting) return setting;
-  switch (p) {
-    case "openai": return config.OPENAI_BASE_URL;
-    case "openrouter": return config.OPENROUTER_BASE_URL;
-    case "anthropic": return config.ANTHROPIC_BASE_URL;
-    case "copilot": return config.COPILOT_BASE_URL;
-    default: return "";
-  }
+  return settings.defaultModel ?? (providerDefaultModel(configuredDefaultProvider()) || "mock-fast");
 }
 
 export function isProviderAllowedByConfig(provider: string): boolean {
   const parsed = SupportedProviderSchema.safeParse(provider.toLowerCase());
   if (!parsed.success) return false;
   const settings = loadProviderConfig().settings;
-  if (settings.providers?.[parsed.data]?.enabled === false) return false;
+  const providerConfig = settingsFor(parsed.data);
+  if (parsed.data !== "mock" && !providerConfig) return false;
+  if (providerConfig?.enabled === false) return false;
   const allowed = settings.allowedProviders;
   return !allowed?.length || allowed.includes(parsed.data);
 }
 
-export function providerCredentialConfigured(provider: string): boolean {
-  const p = provider.toLowerCase();
-  if (p === "mock") return true;
-  const credentialEnv = providerCredentialEnvName(p);
-  if (credentialEnv && providerSettings(p).credentialEnv) return Boolean(process.env[credentialEnv]);
-  switch (p) {
-    case "openai": return Boolean(config.OPENAI_API_KEY);
-    case "openrouter": return Boolean(config.OPENROUTER_API_KEY);
-    case "anthropic": return Boolean(config.ANTHROPIC_API_KEY);
-    case "copilot": return Boolean(config.COPILOT_TOKEN);
-    default: return false;
-  }
-}
-
-export function providerCredentialEnvName(provider: string): string {
-  const p = provider.toLowerCase();
-  const configured = providerSettings(p).credentialEnv;
-  if (configured) return configured;
-  switch (p) {
-    case "openai": return "OPENAI_API_KEY";
-    case "openrouter": return "OPENROUTER_API_KEY";
-    case "anthropic": return "ANTHROPIC_API_KEY";
-    case "copilot": return "COPILOT_TOKEN";
-    default: return "";
-  }
-}
+// M33 — credential presence is owned by llm-gateway-service. The mcp-server
+// no longer reads provider API keys directly. `providerCredentialConfigured`
+// and `providerCredentialEnvName` were retired here; introspect via the
+// gateway's /llm/providers endpoint instead (see client.refreshGatewayProviderStatus).
 
 export function providerConfigSummary() {
   const loaded = loadProviderConfig();

@@ -11,8 +11,13 @@ const schema = z.object({
   IAM_SERVICE_URL: z.string().url().optional(),
   IAM_BASE_URL: z.string().url().optional(),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
-  DEFAULT_MODEL_PROVIDER: z.string().default("stub"),
-  DEFAULT_MODEL_NAME: z.string().default("stub-model"),
+  // M33 — agent-runtime no longer chooses a real LLM provider; that
+  // decision is made by the central llm-gateway when prompt-composer
+  // composes the request. These two fields are informational defaults
+  // stamped on the `agentExecution` row when the caller hasn't provided
+  // a model_alias yet.
+  AGENT_RUN_FALLBACK_PROVIDER: z.string().default("stub"),
+  AGENT_RUN_FALLBACK_MODEL: z.string().default("stub-model"),
 });
 
 const parsed = schema.safeParse(process.env);

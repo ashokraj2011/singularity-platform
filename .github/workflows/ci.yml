@@ -351,6 +351,19 @@ jobs:
           done < <(find . -name "docker-compose.yml" -not -path "*/node_modules/*")
           exit $fail
 
+  # ─── M33 — Single LLM Gateway lockdown ──────────────────────────────────────
+  # Enforces that NO service outside context-fabric/services/llm_gateway_service/
+  # opens HTTP to a provider URL, reads a provider API key, or routes by
+  # legacy LLM_PROVIDER/EMBEDDING_PROVIDER/etc. env vars. Also verifies that
+  # docker-compose passes provider credentials only to the llm-gateway block.
+  llm-gateway-single-source-of-truth:
+    name: M33 single LLM gateway lockdown
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bin/check-llm-gateway-single-source.sh
+        run: bash bin/check-llm-gateway-single-source.sh
+
   # ─── Container images — build on PR, publish on main ───────────────────────
   container-images:
     name: image ${{ matrix.image }}

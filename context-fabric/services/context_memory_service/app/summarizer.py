@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+import httpx
 
-from context_fabric_shared.http_client import post_json
 from context_fabric_shared.token_counter import count_text_tokens
 from .config import settings
 
@@ -80,6 +80,8 @@ def normalize_summary(data: dict) -> dict:
 
 
 async def summarize_with_llm(messages: list[dict], agent_id: str | None = None) -> dict:
+    """M33 — Routes through the central LLM gateway. The only fallback is the
+    deterministic in-process string-parsing summary (no provider fallback)."""
     compact = "\n".join([f"{m['role']}: {m['content']}" for m in messages[-40:]])
     prompt = f"""
 You are Context Fabric's summarization engine.
@@ -96,16 +98,28 @@ Conversation:
 {compact}
 """.strip()
     payload = {
-        "prompt": prompt,
-        "provider": settings.summarizer_provider,
-        "model": settings.summarizer_model,
-        "temperature": 0.1,
-        "tools": [],
-        "max_steps": 1,
+        "model_alias": settings.summarizer_model_alias,
+        "messages": [
+            {"role": "system", "content": "You are Context Fabric's summarization engine. Return only valid JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0,
+        "max_output_tokens": 1500,
+        "trace_id": f"summarize-{agent_id or 'anon'}",
     }
     try:
-        result = await post_json(settings.mcp_server_url.rstrip("/") + "/mcp/invoke", payload, timeout=120.0)
-        data = _extract_json(result.get("data", {}).get("finalResponse", ""))
+        headers = {"content-type": "application/json"}
+        if settings.llm_gateway_bearer:
+            headers["authorization"] = f"Bearer {settings.llm_gateway_bearer}"
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                settings.llm_gateway_url.rstrip("/") + "/v1/chat/completions",
+                json=payload,
+                headers=headers,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+        data = _extract_json(result.get("content", "") or "")
         if data:
             return normalize_summary(data)
     except Exception:

@@ -18,6 +18,8 @@
 import { existsSync, statSync, accessSync, constants } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { config } from "./config";
+import { configuredDefaultProvider } from "./llm/provider-config";
+import { listConfiguredProviders } from "./llm/client";
 
 export interface InvariantResult {
   name: string;
@@ -58,14 +60,53 @@ const checks: InvariantCheck[] = [
     }
   },
 
-  // 4. LLM provider has a key (unless mock). Catches `model_not_found` 404s.
+  // 4. LLM gateway is reachable + the default provider is ready according to it.
+  async () => {
+    const url = config.LLM_GATEWAY_URL?.trim();
+    if (!url) return { name: "llm_gateway_reachable", ok: false, reason: "LLM_GATEWAY_URL is not set" };
+    if (url === "mock") return { name: "llm_gateway_reachable", ok: true, details: { mode: "in-process-mock" } };
+    try {
+      const res = await fetch(`${url.replace(/\/$/, "")}/health`, { signal: AbortSignal.timeout(1500) });
+      if (!res.ok) {
+        return { name: "llm_gateway_reachable", ok: false, reason: `LLM gateway /health returned ${res.status}`, details: { url } };
+      }
+      return { name: "llm_gateway_reachable", ok: true, details: { url } };
+    } catch (err) {
+      return { name: "llm_gateway_reachable", ok: false, reason: `LLM gateway unreachable: ${(err as Error).message}`, details: { url } };
+    }
+  },
+
+  // 4b. The default provider must be ready according to the gateway. Falls
+  // back to "mock-only" if the gateway can't be probed (the request above
+  // would have already failed in that case).
+  async () => {
+    // refreshGatewayProviderStatus is called via lazy import to avoid a
+    // boot-time circular dependency through ./llm/client.
+    const { refreshGatewayProviderStatus } = await import("./llm/client");
+    await refreshGatewayProviderStatus();
+    const provider = configuredDefaultProvider();
+    const info = listConfiguredProviders().find((p) => p.name === provider);
+    if (info?.ready) return { name: "llm_default_provider_ready", ok: true, details: { provider } };
+    return {
+      name: "llm_default_provider_ready",
+      ok: false,
+      reason: `Default provider ${provider} is not ready on the gateway`,
+      details: { provider, warnings: info?.warnings ?? [] },
+    };
+  },
+
+  // 4c. No forbidden provider keys leaked into this process's env. Reading
+  // a key here means the gateway lockdown was bypassed.
   () => {
-    const provider = config.LLM_PROVIDER;
-    if (provider === "mock") return { name: "llm_provider_key", ok: true, details: { provider, note: "mock requires no key" } };
-    if (provider === "openai" && !config.OPENAI_API_KEY) return { name: "llm_provider_key", ok: false, reason: "LLM_PROVIDER=openai but OPENAI_API_KEY is unset", details: { provider } };
-    if (provider === "anthropic" && !config.ANTHROPIC_API_KEY) return { name: "llm_provider_key", ok: false, reason: "LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is unset", details: { provider } };
-    if (provider === "copilot" && !config.COPILOT_TOKEN) return { name: "llm_provider_key", ok: false, reason: "LLM_PROVIDER=copilot but COPILOT_TOKEN is unset", details: { provider } };
-    return { name: "llm_provider_key", ok: true, details: { provider } };
+    const forbidden = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "COPILOT_TOKEN", "GOOGLE_API_KEY", "COHERE_API_KEY"];
+    const leaked = forbidden.filter((k) => Boolean(process.env[k]));
+    if (leaked.length === 0) return { name: "no_forbidden_provider_keys", ok: true };
+    return {
+      name: "no_forbidden_provider_keys",
+      ok: false,
+      reason: "Provider keys leaked into mcp-server env. Only llm-gateway-service may read these.",
+      details: { leaked },
+    };
   },
 
   // 5. MCP bearer token is non-default-empty + meets the > 16 char floor.

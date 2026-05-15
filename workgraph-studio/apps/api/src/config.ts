@@ -14,7 +14,6 @@ const envSchema = z.object({
   MINIO_ACCESS_KEY: z.string().default('workgraph'),
   MINIO_SECRET_KEY: z.string().default('workgraph_secret'),
   MINIO_BUCKET: z.string().default('workgraph-documents'),
-  ANTHROPIC_API_KEY: z.string().optional(),
   CORS_ORIGINS: z.string().default('http://localhost:5173,http://localhost:3000'),
 
   // ── Identity provider (Singularity IAM federation) ─────────────────────────
@@ -55,6 +54,15 @@ const envSchema = z.object({
 
   // MCP owns the real LLM provider/model catalog for workflow execution.
   MCP_SERVER_URL: z.string().default('http://localhost:7100'),
+  MCP_BEARER_TOKEN: z.string().default('demo-bearer-token-must-be-min-16-chars'),
+
+  // ── M33 — Central LLM Gateway ───────────────────────────────────────────
+  // Direct one-shot LLM calls (legacy /:id/runs endpoint) go through the
+  // central gateway. There is no provider fallback chain; gateway errors
+  // propagate. LLM_GATEWAY_URL=mock enables an in-process mock for tests.
+  LLM_GATEWAY_URL: z.string().default('http://llm-gateway:8001'),
+  LLM_GATEWAY_BEARER: z.string().optional(),
+  LLM_GATEWAY_TIMEOUT_SEC: z.coerce.number().int().positive().default(240),
 })
 
 function loadConfig() {

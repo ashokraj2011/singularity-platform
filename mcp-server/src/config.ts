@@ -9,43 +9,25 @@ const schema = z.object({
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   MCP_BEARER_TOKEN: z.string().min(16),
 
-  // ── LLM provider router (M11 follow-up) ─────────────────────────────────────
-  // Default provider when a request doesn't specify one. Per-request
-  // overrides via LlmRequest.provider.
-  LLM_PROVIDER: z.enum(["mock", "openai", "openrouter", "anthropic", "copilot"]).default("mock"),
-  LLM_MODEL: z.string().default("mock-fast"),
+  // ── M33 — Central LLM Gateway ───────────────────────────────────────────
+  // Every LLM call from mcp-server routes through the central
+  // `llm-gateway-service` (context-fabric, port 8001). Provider keys live
+  // ONLY in the gateway; mcp-server holds nothing more than the gateway
+  // URL + an optional service bearer. There is no provider fallback chain;
+  // gateway errors propagate. Set LLM_GATEWAY_URL=mock for in-process
+  // unit tests that don't want a live gateway container.
+  LLM_GATEWAY_URL:        z.string().min(1),
+  LLM_GATEWAY_BEARER:     z.string().optional(),
+  LLM_GATEWAY_TIMEOUT_SEC: z.coerce.number().int().positive().default(240),
+
+  // External MCP-side provider config (display-only after M33). The gateway
+  // owns the authoritative provider list; mcp-server reads this file only
+  // to render /llm/providers + /llm/models introspection on its own surface.
   MCP_ALLOWED_LLM_PROVIDERS: z.string().optional(),
   MCP_LLM_PROVIDER_CONFIG_JSON: z.string().optional(),
   MCP_LLM_PROVIDER_CONFIG_PATH: z.string().optional(),
   MCP_LLM_MODEL_CATALOG_JSON: z.string().optional(),
   MCP_LLM_MODEL_CATALOG_PATH: z.string().optional(),
-
-  // OpenAI Chat Completions (https://api.openai.com/v1/chat/completions).
-  OPENAI_API_KEY:  z.string().optional(),
-  OPENAI_BASE_URL: z.string().default("https://api.openai.com/v1"),
-  // Compatibility with context-fabric/.env naming so local demo stacks can
-  // share one provider secret without duplicating it into multiple files.
-  OPENAI_COMPATIBLE_API_KEY:  z.string().optional(),
-  OPENAI_COMPATIBLE_BASE_URL: z.string().optional(),
-  OPENROUTER_API_KEY: z.string().optional(),
-  OPENROUTER_BASE_URL: z.string().default("https://openrouter.ai/api/v1"),
-
-  // Anthropic Messages API (https://api.anthropic.com/v1/messages).
-  ANTHROPIC_API_KEY:  z.string().optional(),
-  ANTHROPIC_BASE_URL: z.string().default("https://api.anthropic.com"),
-  ANTHROPIC_VERSION:  z.string().default("2023-06-01"),
-
-  // GitHub Copilot Headless. OpenAI-compatible chat-completions surface
-  // hosted at api.githubcopilot.com, gated by a Copilot subscription token.
-  // Token is short-lived (~30 min); operator refreshes via gh auth or a
-  // companion mint script.
-  COPILOT_TOKEN:    z.string().optional(),
-  COPILOT_BASE_URL: z.string().default("https://api.githubcopilot.com"),
-
-  // Default per-provider model when LlmRequest.model is empty.
-  OPENAI_DEFAULT_MODEL:    z.string().default("gpt-4o-mini"),
-  ANTHROPIC_DEFAULT_MODEL: z.string().default("claude-sonnet-4-6"),
-  COPILOT_DEFAULT_MODEL:   z.string().default("gpt-4o"),
 
   MAX_AGENT_STEPS: z.coerce.number().int().positive().default(12),
   TIMEOUT_SEC: z.coerce.number().int().positive().default(240),
@@ -79,8 +61,4 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const config = {
-  ...parsed.data,
-  OPENAI_API_KEY: parsed.data.OPENAI_API_KEY || parsed.data.OPENAI_COMPATIBLE_API_KEY,
-  OPENAI_BASE_URL: parsed.data.OPENAI_BASE_URL || parsed.data.OPENAI_COMPATIBLE_BASE_URL || "https://api.openai.com/v1",
-};
+export const config = parsed.data;
