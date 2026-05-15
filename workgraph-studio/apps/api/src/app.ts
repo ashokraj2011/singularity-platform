@@ -43,6 +43,7 @@ import { eventSubscriptionsRouter } from './modules/audit/event-subscriptions.ro
 import { incomingEventsRouter } from './modules/audit/incoming-events.router'
 import { blueprintRouter } from './modules/blueprint/blueprint.router'
 import { eventHorizonRouter } from './modules/event-horizon/event-horizon.router'
+import { workItemsRouter } from './modules/work-items/work-items.router'
 
 export function createApp(): Express {
   const app = express()
@@ -94,6 +95,7 @@ export function createApp(): Express {
   // Webhook receiver is intentionally unauthenticated; secret-gated.
   app.use('/api/triggers/webhook', webhookRouter)
   app.use('/api/tasks', authMiddleware, tasksRouter)
+  app.use('/api/work-items', authMiddleware, workItemsRouter)
   app.use('/api/approvals', authMiddleware, approvalsRouter)
   app.use('/api/consumable-types', authMiddleware, consumableTypesRouter)
   app.use('/api/consumables', authMiddleware, consumablesRouter)

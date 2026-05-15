@@ -69,7 +69,7 @@ server {
 
   location /ops-health/blueprint-workbench {
     set $upstream http://blueprint-workbench:80;
-    rewrite ^/ops-health/blueprint-workbench$ / break;
+    rewrite ^/ops-health/blueprint-workbench$ /health break;
     proxy_pass $upstream;
   }
 

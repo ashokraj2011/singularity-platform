@@ -16,7 +16,7 @@ import {
   Star, Briefcase as BriefcaseIcon, Database, Globe, Mail, Phone,
   Calendar, AlertTriangle, Search, Filter, Activity, Coins,
   SlidersHorizontal, Plus, Trash2, GitFork, ShieldAlert,
-  Minimize2, GripVertical, HelpCircle, BookOpen, ChevronDown, Lock, Download, Braces, PenLine,
+  Minimize2, GripVertical, HelpCircle, BookOpen, ChevronDown, Lock, Download, Braces, PenLine, Network,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import {
@@ -45,6 +45,7 @@ const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType }> = 
   SIGNAL_WAIT:         { color: '#06b6d4', Icon: Radio },
   SIGNAL_EMIT:         { color: '#0891b2', Icon: RadioTower },
   CALL_WORKFLOW:       { color: '#8b5cf6', Icon: Workflow },
+  WORK_ITEM:           { color: '#7c3aed', Icon: Network },
   FOREACH:             { color: '#f43f5e', Icon: Repeat },
   PARALLEL_FORK:       { color: '#f97316', Icon: GitFork },
   PARALLEL_JOIN:       { color: '#d946ef', Icon: GitMerge },
@@ -61,7 +62,7 @@ const NODE_LABELS: Record<string, string> = {
   DECISION_GATE: 'Decision Gate', CONSUMABLE_CREATION: 'Create Artifact',
   TOOL_REQUEST: 'Tool Request', POLICY_CHECK: 'Policy Check',
   TIMER: 'Timer', SIGNAL_WAIT: 'Signal Wait', SIGNAL_EMIT: 'Signal Emit',
-  CALL_WORKFLOW: 'Sub-workflow',
+  CALL_WORKFLOW: 'Sub-workflow', WORK_ITEM: 'Work Item',
   FOREACH: 'For Each', PARALLEL_FORK: 'Parallel Fork', PARALLEL_JOIN: 'Parallel Join',
   INCLUSIVE_GATEWAY: 'Inclusive GW', EVENT_GATEWAY: 'Event GW',
   DATA_SINK: 'Data Sink', SET_CONTEXT: 'Set Context', ERROR_CATCH: 'Error Catch',
@@ -177,7 +178,7 @@ const NODE_GROUPS: Array<{ label: string; types: string[] }> = [
   { label: 'Control Flow', types: ['DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY'] },
   { label: 'Data', types: ['SET_CONTEXT'] },
   { label: 'Async & Timing', types: ['TIMER', 'SIGNAL_WAIT', 'SIGNAL_EMIT'] },
-  { label: 'Advanced', types: ['CALL_WORKFLOW', 'FOREACH', 'POLICY_CHECK', 'ERROR_CATCH'] },
+  { label: 'Advanced', types: ['WORK_ITEM', 'CALL_WORKFLOW', 'FOREACH', 'POLICY_CHECK', 'ERROR_CATCH'] },
 ]
 
 // ─── Validation constants ──────────────────────────────────────────────────────
@@ -414,6 +415,7 @@ const NODE_DESCRIPTIONS: Record<string, string> = {
   SIGNAL_WAIT: 'Pauses execution until an external signal with a matching name arrives.',
   SIGNAL_EMIT: 'Broadcasts a named signal, waking any SIGNAL_WAIT node listening for it.',
   CALL_WORKFLOW: 'Spawns a child run of another workflow. Parent advances when child completes.',
+  WORK_ITEM: 'Delegates work to one or more child capabilities, waits for child runs, then asks parent approval.',
   FOREACH: 'Iterates over a collection. Each item produces one branch of execution.',
   PARALLEL_FORK: 'AND-split gateway. All outgoing branches fire simultaneously.',
   PARALLEL_JOIN: 'AND-join gateway. Waits until ALL incoming parallel branches have arrived.',
@@ -913,7 +915,7 @@ const NODE_HELP_SECTIONS = [
   },
   {
     title: 'Task & Execution',
-    types: ['FOREACH', 'CALL_WORKFLOW', 'TOOL_REQUEST', 'POLICY_CHECK', 'CREATE_ARTIFACT'],
+    types: ['FOREACH', 'WORK_ITEM', 'CALL_WORKFLOW', 'TOOL_REQUEST', 'POLICY_CHECK', 'CREATE_ARTIFACT'],
   },
 ]
 
@@ -934,6 +936,7 @@ const NODE_USAGE_TIPS: Record<string, string> = {
   SIGNAL_EMIT:       'Use Correlation Key to target a specific instance rather than all listeners.',
   TIMER:             'Use "30s", "5m", "2h" format for Duration, or ISO datetime for Until.',
   FOREACH:           'Set Parallel=true + Max Concurrency to process items in batches.',
+  WORK_ITEM:         'Creates a child capability queue item. Parent waits for child outputs and approval.',
   CALL_WORKFLOW:     'Parent workflow pauses until child completes. Child result is in context.',
   TOOL_REQUEST:      'High-risk tools may auto-pause for approval before execution.',
   POLICY_CHECK:      'Use WARN mode during testing — it logs failures without blocking the workflow.',

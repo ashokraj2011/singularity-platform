@@ -28,7 +28,7 @@ export const runtimeRouter: Router = Router()
 
 // ── Types (echoed in the web app) ────────────────────────────────────────────
 
-type InboxKind = 'task' | 'approval' | 'consumable'
+type InboxKind = 'task' | 'approval' | 'consumable' | 'workitem'
 
 type InboxItem = {
   kind:               InboxKind
@@ -45,6 +45,8 @@ type InboxItem = {
   createdAt:          string
   updatedAt:          string
   claimable:          boolean       // can this user claim it (Available bucket)
+  targetId?:          string | null
+  targetCapabilityId?: string | null
 }
 
 const ROLE_LOOKUP_BUDGET = 30   // cap IAM authzCheck calls per request
@@ -189,6 +191,31 @@ function buildConsumableItem(c: {
   }
 }
 
+function buildWorkItemItem(target: {
+  id: string; targetCapabilityId: string; status: string; claimedById: string | null;
+  createdAt: Date; updatedAt: Date;
+  workItem: { id: string; title: string; sourceWorkflowInstanceId: string | null; sourceWorkflowNodeId: string | null; priority: number | null; dueAt: Date | null }
+}, instance: InstanceLite | null, node: NodeLite | null, claimable: boolean): InboxItem {
+  return {
+    kind:               'workitem',
+    id:                 target.workItem.id,
+    targetId:           target.id,
+    targetCapabilityId: target.targetCapabilityId,
+    title:              target.workItem.title,
+    workflowInstanceId: target.workItem.sourceWorkflowInstanceId,
+    workflowName:       instance?.name ?? null,
+    nodeId:             target.workItem.sourceWorkflowNodeId,
+    nodeLabel:          node?.label ?? null,
+    status:             target.status,
+    assignmentMode:     'ROLE_BASED',
+    dueAt:              target.workItem.dueAt?.toISOString() ?? null,
+    priority:           target.workItem.priority,
+    createdAt:          target.createdAt.toISOString(),
+    updatedAt:          target.updatedAt.toISOString(),
+    claimable,
+  }
+}
+
 // ── Endpoint ─────────────────────────────────────────────────────────────────
 
 runtimeRouter.get('/inbox', async (req, res, next) => {
@@ -203,6 +230,7 @@ runtimeRouter.get('/inbox', async (req, res, next) => {
       assignedTasks,
       directApprovals,
       directConsumables,
+      workItemTargets,
       queueItems,
       doneTasks,
       doneApprovals,
@@ -244,6 +272,18 @@ runtimeRouter.get('/inbox', async (req, res, next) => {
         },
         orderBy: { createdAt: 'desc' },
         take: 100,
+      }),
+      prisma.workItemTarget.findMany({
+        where: {
+          status: { in: ['QUEUED', 'REWORK_REQUESTED', 'CLAIMED', 'IN_PROGRESS', 'SUBMITTED'] },
+          OR: [
+            { claimedById: ctx.userId },
+            { claimedById: null },
+          ],
+        },
+        include: { workItem: true },
+        orderBy: { updatedAt: 'desc' },
+        take: 200,
       }),
       // Unclaimed queue items the caller might be eligible for.  We pull a
       // generous batch and filter in app code (the routing-field indexes keep
@@ -301,6 +341,10 @@ runtimeRouter.get('/inbox', async (req, res, next) => {
     }
     collectIds(directTasks); collectIds(assignedTasks)
     collectIds(directApprovals); collectIds(directConsumables)
+    collectIds(workItemTargets.map(t => ({
+      instanceId: t.workItem.sourceWorkflowInstanceId,
+      nodeId: t.workItem.sourceWorkflowNodeId,
+    })))
     collectIds(doneTasks); collectIds(doneApprovals)
     for (const q of queueItems) {
       if (q.task.instanceId) allInstanceIds.add(q.task.instanceId)
@@ -322,6 +366,7 @@ runtimeRouter.get('/inbox', async (req, res, next) => {
 
     // ── ROLE_BASED filtering via IAM (when configured) ────────────────────
     let roleEligibility: Map<string, boolean> = new Map()
+    let workItemEligibility: Map<string, boolean> = new Map()
     if (config.AUTH_PROVIDER === 'iam' && ctx.iamUserId) {
       const roleQueue = queueItems.filter(q => q.roleKey && q.capabilityId).slice(0, ROLE_LOOKUP_BUDGET)
       const checks = await Promise.all(
@@ -332,6 +377,18 @@ runtimeRouter.get('/inbox', async (req, res, next) => {
         ),
       )
       roleEligibility = new Map(checks)
+
+      const unclaimedWorkItems = workItemTargets
+        .filter(t => !t.claimedById && ['QUEUED', 'REWORK_REQUESTED'].includes(t.status))
+        .slice(0, ROLE_LOOKUP_BUDGET)
+      const workItemChecks = await Promise.all(
+        unclaimedWorkItems.map(t =>
+          authzCheck(ctx.iamUserId!, t.targetCapabilityId, 'claim_task', { resourceType: 'WorkItemTarget', resourceId: t.id })
+            .then(r => [t.id, r.allowed] as const)
+            .catch(() => [t.id, false] as const),
+        ),
+      )
+      workItemEligibility = new Map(workItemChecks)
     }
 
     // ── Build output ──────────────────────────────────────────────────────
@@ -354,6 +411,23 @@ runtimeRouter.get('/inbox', async (req, res, next) => {
     for (const c of directConsumables) {
       mine.push(buildConsumableItem(c, c.instanceId ? instanceById[c.instanceId] ?? null : null,
                                        c.nodeId     ? nodeById[c.nodeId]         ?? null : null, false))
+    }
+
+    for (const t of workItemTargets) {
+      const item = buildWorkItemItem(
+        t,
+        t.workItem.sourceWorkflowInstanceId ? instanceById[t.workItem.sourceWorkflowInstanceId] ?? null : null,
+        t.workItem.sourceWorkflowNodeId ? nodeById[t.workItem.sourceWorkflowNodeId] ?? null : null,
+        !t.claimedById && ['QUEUED', 'REWORK_REQUESTED'].includes(t.status),
+      )
+      if (t.claimedById === ctx.userId) {
+        mine.push(item)
+      } else if (!t.claimedById && ['QUEUED', 'REWORK_REQUESTED'].includes(t.status)) {
+        const eligible = config.AUTH_PROVIDER === 'iam' && ctx.iamUserId
+          ? workItemEligibility.get(t.id) === true
+          : true
+        if (eligible) available.push(item)
+      }
     }
 
     for (const q of queueItems) {

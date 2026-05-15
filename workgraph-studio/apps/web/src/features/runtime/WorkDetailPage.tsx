@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, AlertCircle, CheckCircle2, XCircle, Workflow, Layers, ExternalLink, Route } from 'lucide-react'
+import { ArrowLeft, AlertCircle, CheckCircle2, XCircle, Workflow, Layers, ExternalLink, Route, Network, Play } from 'lucide-react'
 import { api } from '../../lib/api'
 import { RuntimeWidgetForm, type RuntimeFormSubmitTarget } from '../forms/widgets/RuntimeWidgetForm'
 import type { FormWidget } from '../forms/widgets/types'
 import type { UploadedDocument } from '../../lib/uploadAttachment'
 
-type Kind = 'task' | 'approval' | 'consumable'
+type Kind = 'task' | 'approval' | 'consumable' | 'workitem'
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
@@ -15,7 +15,7 @@ export function WorkDetailPage() {
   const { kind, id } = useParams<{ kind: Kind; id: string }>()
   const navigate = useNavigate()
 
-  if (!kind || !id || !['task', 'approval', 'consumable'].includes(kind)) {
+  if (!kind || !id || !['task', 'approval', 'consumable', 'workitem'].includes(kind)) {
     return <ErrorState message="Unknown work item" onBack={() => navigate('/runtime')} />
   }
 
@@ -35,7 +35,200 @@ export function WorkDetailPage() {
       {kind === 'task'       && <TaskDetail       id={id} />}
       {kind === 'approval'   && <ApprovalDetail   id={id} />}
       {kind === 'consumable' && <ConsumableDetail id={id} />}
+      {kind === 'workitem'   && <WorkItemDetail   id={id} />}
     </div>
+  )
+}
+
+// ── WorkItem ──────────────────────────────────────────────────────────────────
+
+function WorkItemDetail({ id }: { id: string }) {
+  const navigate = useNavigate()
+  const [params] = useSearchParams()
+  const targetId = params.get('targetId')
+
+  const { data: workItem, isLoading, refetch } = useQuery<WorkItemRow>({
+    queryKey: ['runtime-workitem', id],
+    queryFn: () => api.get(`/work-items/${id}`).then(r => r.data),
+  })
+
+  const claimMut = useMutation({
+    mutationFn: (tid: string) => api.post(`/work-items/${id}/targets/${tid}/claim`).then(r => r.data),
+    onSuccess: () => refetch(),
+  })
+  const startMut = useMutation({
+    mutationFn: (tid: string) => api.post(`/work-items/${id}/targets/${tid}/start`).then(r => r.data),
+    onSuccess: () => refetch(),
+  })
+
+  if (isLoading) return <p style={{ fontSize: 13, color: 'var(--color-outline)' }}>Loading WorkItem…</p>
+  if (!workItem) return <ErrorState message="WorkItem not found" onBack={() => navigate('/runtime')} />
+
+  const activeTarget = workItem.targets.find(t => t.id === targetId) ?? workItem.targets[0]
+  const canClaim = activeTarget && ['QUEUED', 'REWORK_REQUESTED'].includes(activeTarget.status) && !activeTarget.claimedById
+  const canStart = activeTarget && activeTarget.status === 'CLAIMED' && !!activeTarget.claimedById && !!activeTarget.childWorkflowTemplateId && !activeTarget.childWorkflowInstanceId
+
+  return (
+    <div>
+      <Header
+        title={workItem.title}
+        subtitle={workItem.description ?? 'Cross-capability delegated work'}
+        kindLabel="WorkItem"
+        kindColor="#8b5cf6"
+        status={workItem.status}
+        assignmentMode="ROLE_BASED"
+      />
+
+      {activeTarget && (
+        <section style={cardStyle}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+            <Network size={16} style={{ color: '#8b5cf6' }} />
+            <div style={{ flex: 1 }}>
+              <h3 style={{ margin: 0, fontSize: 15, color: 'var(--color-on-surface)' }}>Child capability target</h3>
+              <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--color-outline)' }}>{activeTarget.targetCapabilityId}</p>
+            </div>
+            <StatusPill status={activeTarget.status} />
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+            {canClaim && (
+              <button style={primaryButtonStyle} disabled={claimMut.isPending} onClick={() => claimMut.mutate(activeTarget.id)}>
+                {claimMut.isPending ? 'Claiming…' : 'Claim WorkItem'}
+              </button>
+            )}
+            {canStart && (
+              <button style={primaryButtonStyle} disabled={startMut.isPending} onClick={() => startMut.mutate(activeTarget.id)}>
+                <Play size={13} /> {startMut.isPending ? 'Starting…' : 'Start child workflow'}
+              </button>
+            )}
+            {activeTarget.childWorkflowInstanceId && (
+              <button style={secondaryButtonStyle} onClick={() => navigate(`/runs/${activeTarget.childWorkflowInstanceId}/insights`)}>
+                <ExternalLink size={13} /> Open child run
+              </button>
+            )}
+          </div>
+
+          <KeyValue label="Child workflow template" value={activeTarget.childWorkflowTemplateId ?? 'Not configured'} />
+          <KeyValue label="Claimed by" value={activeTarget.claimedById ?? 'Unclaimed'} />
+          <KeyValue label="Role key" value={activeTarget.roleKey ?? 'Any eligible capability member'} />
+
+          {activeTarget.output && (
+            <pre style={preStyle}>{JSON.stringify(activeTarget.output, null, 2)}</pre>
+          )}
+        </section>
+      )}
+
+      <section style={cardStyle}>
+        <h3 style={{ margin: '0 0 10px', fontSize: 15, color: 'var(--color-on-surface)' }}>Targets</h3>
+        <div style={{ display: 'grid', gap: 8 }}>
+          {workItem.targets.map(target => (
+            <button
+              key={target.id}
+              onClick={() => navigate(`/runtime/work/workitem/${workItem.id}?targetId=${target.id}`)}
+              style={{
+                ...secondaryButtonStyle,
+                justifyContent: 'space-between',
+                background: target.id === activeTarget?.id ? 'rgba(139,92,246,0.08)' : '#fff',
+              }}
+            >
+              <span>{target.targetCapabilityId}</span>
+              <StatusPill status={target.status} />
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section style={cardStyle}>
+        <h3 style={{ margin: '0 0 10px', fontSize: 15, color: 'var(--color-on-surface)' }}>Timeline</h3>
+        <div style={{ display: 'grid', gap: 8 }}>
+          {workItem.events.map(event => (
+            <div key={event.id} style={{ fontSize: 12, color: 'var(--color-outline)' }}>
+              <strong style={{ color: 'var(--color-on-surface)' }}>{event.eventType}</strong>
+              {' '}· {new Date(event.createdAt).toLocaleString()}
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+const cardStyle: CSSProperties = {
+  padding: 14,
+  borderRadius: 12,
+  background: '#fff',
+  border: '1px solid var(--color-outline-variant)',
+  marginBottom: 14,
+}
+
+const primaryButtonStyle: CSSProperties = {
+  padding: '8px 13px',
+  borderRadius: 9,
+  border: 'none',
+  background: '#8b5cf6',
+  color: '#fff',
+  cursor: 'pointer',
+  fontSize: 12,
+  fontWeight: 800,
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+}
+
+const secondaryButtonStyle: CSSProperties = {
+  padding: '8px 13px',
+  borderRadius: 9,
+  border: '1px solid var(--color-outline-variant)',
+  background: '#fff',
+  color: 'var(--color-on-surface)',
+  cursor: 'pointer',
+  fontSize: 12,
+  fontWeight: 700,
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+}
+
+const preStyle: CSSProperties = {
+  marginTop: 12,
+  padding: 12,
+  borderRadius: 10,
+  background: '#0f172a',
+  color: '#cbd5e1',
+  overflow: 'auto',
+  fontSize: 11,
+  lineHeight: 1.45,
+}
+
+function KeyValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '150px 1fr', gap: 10, marginTop: 6, fontSize: 12 }}>
+      <span style={{ color: 'var(--color-outline)', fontWeight: 700 }}>{label}</span>
+      <span style={{ color: 'var(--color-on-surface)', overflowWrap: 'anywhere' }}>{value}</span>
+    </div>
+  )
+}
+
+function StatusPill({ status }: { status: string }) {
+  const color = status === 'APPROVED' || status === 'COMPLETED' ? '#16a34a'
+    : status === 'SUBMITTED' || status === 'IN_PROGRESS' ? '#0ea5e9'
+    : status === 'REWORK_REQUESTED' ? '#f59e0b'
+    : status === 'REJECTED' || status === 'CANCELLED' ? '#dc2626'
+    : '#64748b'
+  return (
+    <span style={{
+      fontSize: 10,
+      fontWeight: 800,
+      letterSpacing: '0.08em',
+      textTransform: 'uppercase',
+      color,
+      background: `${color}12`,
+      border: `1px solid ${color}30`,
+      padding: '3px 7px',
+      borderRadius: 999,
+    }}>
+      {status.replaceAll('_', ' ')}
+    </span>
   )
 }
 
@@ -683,4 +876,30 @@ type ConsumableRow = {
   instanceId?: string | null
   nodeId?: string | null
   formData?: Record<string, unknown> | null
+}
+type WorkItemTargetRow = {
+  id: string
+  targetCapabilityId: string
+  childWorkflowTemplateId?: string | null
+  childWorkflowInstanceId?: string | null
+  roleKey?: string | null
+  status: string
+  claimedById?: string | null
+  output?: Record<string, unknown> | null
+}
+type WorkItemEventRow = {
+  id: string
+  eventType: string
+  createdAt: string
+  actorId?: string | null
+  targetId?: string | null
+  payload?: Record<string, unknown> | null
+}
+type WorkItemRow = {
+  id: string
+  title: string
+  description?: string | null
+  status: string
+  targets: WorkItemTargetRow[]
+  events: WorkItemEventRow[]
 }

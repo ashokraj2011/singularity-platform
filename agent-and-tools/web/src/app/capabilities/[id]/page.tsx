@@ -9,6 +9,7 @@ import { Archive, Bot, CheckCircle2, Pencil, Plus, RefreshCw, Save, Sparkles, Up
 
 type CapabilityEditForm = {
   name: string;
+  appId: string;
   capabilityType: string;
   criticality: string;
   ownerTeamId: string;
@@ -45,6 +46,7 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
   const [editError, setEditError] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<CapabilityEditForm>({
     name: "",
+    appId: "",
     capabilityType: "",
     criticality: "MEDIUM",
     ownerTeamId: "",
@@ -107,6 +109,7 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
     setEditError(null);
     setEditForm({
       name: capabilityString(c.name),
+      appId: capabilityString(c.appId),
       capabilityType: capabilityString(c.capabilityType),
       criticality: capabilityString(c.criticality) || "MEDIUM",
       ownerTeamId: capabilityString(c.ownerTeamId),
@@ -127,6 +130,7 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
     try {
       await runtimeApi.updateCapability(id, {
         name: editForm.name.trim(),
+        appId: nullableTrim(editForm.appId),
         capabilityType: nullableTrim(editForm.capabilityType),
         criticality: nullableTrim(editForm.criticality),
         ownerTeamId: nullableTrim(editForm.ownerTeamId),
@@ -144,6 +148,7 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
 
   const tmplOptions = (templates?.items ?? []) as Record<string, unknown>[];
   const selectedTemplate = tmplOptions.find((template) => template.id === bind.agentTemplateId);
+  const architectureDiagram = getArchitectureDiagram(c, bootstrapRun as Record<string, unknown> | undefined);
 
   return (
     <div>
@@ -153,6 +158,7 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
             <div className="flex items-center gap-3 mb-1">
               <h1 className="text-xl font-bold text-slate-900">{c.name as string}</h1>
               <StatusBadge value={c.status as string} />
+              {!!c.appId && <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded">app: {c.appId as string}</span>}
             </div>
             {!!c.description && <p className="text-sm text-slate-600 mt-2">{c.description as string}</p>}
             <div className="font-mono text-xs text-slate-400 mt-2">id: {c.id as string}</div>
@@ -203,6 +209,15 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
                 value={editForm.capabilityType}
                 onChange={e => setEditForm(f => ({ ...f, capabilityType: e.target.value }))}
                 placeholder="APPLICATION"
+              />
+            </CapabilityField>
+            <CapabilityField label="App ID">
+              <input
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                value={editForm.appId}
+                onChange={e => setEditForm(f => ({ ...f, appId: e.target.value }))}
+                maxLength={120}
+                placeholder="Optional application / CMDB id"
               />
             </CapabilityField>
             <CapabilityField label="Criticality">
@@ -293,6 +308,10 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
             <Archive size={14} /> {archiving ? "Archiving..." : "Archive capability"}
           </button>
         </div>
+      )}
+
+      {architectureDiagram && (
+        <CapabilityArchitecturePanel diagram={architectureDiagram} />
       )}
 
       {tab === "agents" && (
@@ -483,6 +502,83 @@ function nullableTrim(value: string): string | null {
   return next ? next : null;
 }
 
+function CapabilityArchitecturePanel({
+  diagram, compact = false,
+}: {
+  diagram: Record<string, unknown>;
+  compact?: boolean;
+}) {
+  const layers = asObjectArray(diagram.layers);
+  const togaf = String(diagram.view ?? diagram.kind ?? "").toLowerCase().includes("togaf");
+  const title = String(diagram.title ?? (togaf ? "TOGAF capability map" : "Capability architecture"));
+  const description = String(diagram.description ?? "");
+
+  return (
+    <section className={`card p-4 ${compact ? "" : "mb-6"}`}>
+      <div className="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">
+            {togaf ? "Collection architecture" : "Capability architecture"}
+          </div>
+          <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
+          {description && <p className="text-xs text-slate-500 mt-1 max-w-3xl">{description}</p>}
+        </div>
+        <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+          {togaf ? "TOGAF view" : "Application view"}
+        </span>
+      </div>
+
+      {togaf ? (
+        <div className="space-y-2">
+          {layers.map((layer, index) => (
+            <div key={String(layer.key ?? index)} className="grid grid-cols-1 md:grid-cols-[180px_1fr] overflow-hidden rounded-lg border border-slate-200">
+              <div className="bg-slate-900 px-3 py-3 text-xs font-semibold text-white">
+                {String(layer.label ?? `Layer ${index + 1}`)}
+              </div>
+              <div className="bg-slate-50 px-3 py-3">
+                <div className="flex flex-wrap gap-2">
+                  {asStringArray(layer.items).map(item => (
+                    <span key={item} className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700">
+                      {item}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+          {layers.map((layer, index) => (
+            <div key={String(layer.key ?? index)} className="relative rounded-xl border border-slate-200 bg-slate-50 p-3 min-h-[132px]">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-2">{String(layer.label ?? `Layer ${index + 1}`)}</div>
+              <div className="space-y-1.5">
+                {asStringArray(layer.items).slice(0, 5).map(item => (
+                  <div key={item} className="rounded-md bg-white border border-slate-200 px-2 py-1 text-xs text-slate-700">
+                    {item}
+                  </div>
+                ))}
+              </div>
+              {index < layers.length - 1 && (
+                <div className="hidden md:block absolute -right-2 top-1/2 h-px w-4 bg-slate-300" />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {typeof diagram.mermaid === "string" && diagram.mermaid.trim() && (
+        <details className="mt-3">
+          <summary className="cursor-pointer text-xs font-semibold text-singularity-700">Mermaid source</summary>
+          <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">
+            {diagram.mermaid}
+          </pre>
+        </details>
+      )}
+    </section>
+  );
+}
+
 function AgentRosterTab({
   bindings, onBindMore,
 }: {
@@ -622,6 +718,7 @@ function BootstrapTab({
   const runWarnings = ((run.warnings as string[]) ?? []);
   const runErrors = ((run.errors as string[]) ?? []);
   const operatingModel = getOperatingModel(run);
+  const architectureDiagram = getArchitectureDiagram(capability, run);
   const repositories = (((run.capability as Record<string, unknown> | undefined)?.repositories as Array<Record<string, unknown>> | undefined) ??
     ((capability.repositories as Array<Record<string, unknown>>) ?? []));
   const knowledgeSources = (((run.capability as Record<string, unknown> | undefined)?.knowledgeSources as Array<Record<string, unknown>> | undefined) ?? []);
@@ -749,6 +846,10 @@ function BootstrapTab({
             </div>
           </div>
         </section>
+      )}
+
+      {architectureDiagram && (
+        <CapabilityArchitecturePanel diagram={architectureDiagram} compact />
       )}
 
       <section>
@@ -884,6 +985,86 @@ function getOperatingModel(run: Record<string, unknown>): Record<string, unknown
   const summary = run.sourceSummary as Record<string, unknown> | undefined;
   const model = summary?.operatingModel;
   return model && typeof model === "object" && !Array.isArray(model) ? model as Record<string, unknown> : null;
+}
+
+function getArchitectureDiagram(
+  capability: Record<string, unknown>,
+  run?: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const operatingModel = run ? getOperatingModel(run) : null;
+  const fromBootstrap = operatingModel?.architectureDiagram;
+  if (fromBootstrap && typeof fromBootstrap === "object" && !Array.isArray(fromBootstrap)) {
+    return fromBootstrap as Record<string, unknown>;
+  }
+
+  const name = String(capability.name ?? "Capability");
+  const appId = capabilityString(capability.appId);
+  const capabilityType = capabilityString(capability.capabilityType);
+  const collection = isCollectionCapability(capabilityType);
+  const repos = asObjectArray(capability.repositories).map(repo => String(repo.repoName ?? repo.repoUrl ?? "Repository")).slice(0, 4);
+  const children = asObjectArray(capability.children).map(child => String(child.name ?? child.id ?? "Child capability")).slice(0, 5);
+  const bindings = asObjectArray(capability.bindings)
+    .map(binding => {
+      const template = binding.agentTemplate as Record<string, unknown> | undefined;
+      return String(template?.name ?? binding.bindingName ?? "Capability agent");
+    })
+    .slice(0, 5);
+  const knowledge = asObjectArray(capability.knowledgeArtifacts).length;
+
+  if (collection) {
+    return {
+      kind: "TOGAF_CAPABILITY_COLLECTION",
+      view: "togaf",
+      title: `${name} TOGAF capability map`,
+      description: "Collection capabilities use a layered TOGAF-style view so child applications, data, technology, and governance are visible together.",
+      layers: [
+        { key: "business", label: "Business Architecture", items: [`${name}${appId ? ` (${appId})` : ""}`, "Outcomes, policies, owners"] },
+        { key: "application", label: "Application Architecture", items: children.length ? children : ["Child capabilities / applications"] },
+        { key: "data", label: "Data Architecture", items: [`${knowledge} approved knowledge artifacts`, "Shared memory, citations, evidence"] },
+        { key: "technology", label: "Technology Architecture", items: repos.length ? repos : ["MCP workspaces, Context Fabric, Workgraph"] },
+        { key: "governance", label: "Governance", items: ["Approvals", "Budgets", "Audit receipts", "Locked verifier/governance gates"] },
+      ],
+      mermaid: [
+        "flowchart TB",
+        `  B[Business Architecture<br/>${name}]`,
+        "  A[Application Architecture<br/>Child capabilities]",
+        "  D[Data Architecture<br/>Knowledge and evidence]",
+        "  T[Technology Architecture<br/>MCP and workflow runtime]",
+        "  G[Governance<br/>Approvals, budgets, audit]",
+        "  B --> A --> D --> T --> G",
+      ].join("\n"),
+    };
+  }
+
+  return {
+    kind: "APPLICATION_CAPABILITY_ARCHITECTURE",
+    view: "application",
+    title: `${name} application capability architecture`,
+    description: "This generated view links workflow stories, capability agents, grounding sources, execution runtime, and produced evidence.",
+    layers: [
+      { key: "entry", label: "Entry Points", items: ["Workflow stories", "Workbench stages", "Human approvals"] },
+      { key: "agents", label: "Capability Agent Team", items: bindings.length ? bindings : ["Draft agent team pending activation"] },
+      { key: "knowledge", label: "Grounding Sources", items: [...(repos.length ? repos : ["Repository pending"]), `${knowledge} knowledge artifacts`] },
+      { key: "execution", label: "Execution Runtime", items: ["Prompt Composer", "Context Fabric", "MCP model/tools/AST"] },
+      { key: "evidence", label: "Evidence Outputs", items: ["Stage artifacts", "Citations", "Budget receipts", "Audit trail"] },
+    ],
+    mermaid: [
+      "flowchart LR",
+      "  S[Story / Workflow Input]",
+      `  C[Capability<br/>${name}${appId ? `<br/>App ID: ${appId}` : ""}]`,
+      "  A[Agent Team]",
+      "  K[Grounding Sources]",
+      "  X[Context Fabric + MCP]",
+      "  E[Artifacts / Receipts]",
+      "  S --> C --> A",
+      "  K --> A",
+      "  A --> X --> E",
+    ].join("\n"),
+  };
+}
+
+function isCollectionCapability(value: string): boolean {
+  return ["COLLECTION", "CAPABILITY_COLLECTION", "PORTFOLIO", "DOMAIN_COLLECTION"].includes(value.trim().toUpperCase());
 }
 
 function asStringArray(value: unknown): string[] {

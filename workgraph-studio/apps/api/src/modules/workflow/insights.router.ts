@@ -169,6 +169,22 @@ interface NodeInsight {
     artifactIds: string[]
     toolInvocationIds: string[]
   }>
+  workItems: Array<{
+    id: string
+    title: string
+    status: string
+    priority: number
+    dueAt: string | null
+    targets: Array<{
+      id: string
+      targetCapabilityId: string
+      status: string
+      roleKey: string | null
+      childWorkflowInstanceId: string | null
+      output: unknown
+    }>
+    events: Array<{ id: string; eventType: string; targetId: string | null; createdAt: string }>
+  }>
   // M26 — present when the AGENT_TASK ran on a connected user laptop. The
   // SPA renders "🖥 served by your laptop ({device_name})" on the Gantt step.
   // Populated from cf.invoke.via_laptop events emitted by context-fabric.
@@ -266,6 +282,7 @@ interface InsightsResponse {
     receiptsCount: number
     workspaceSteps: number
     citationCount: number
+    workItemCount: number
   }
   auditReport: {
     generatedAt: string
@@ -444,7 +461,7 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
     // to capabilities the user can already see.
     await assertInstancePermission(req.user!.userId, id, 'view')
 
-    const [instance, nodes, documents, consumables, agentRuns, budget, blueprintSessions, approvalRequests] = await Promise.all([
+    const [instance, nodes, documents, consumables, agentRuns, budget, blueprintSessions, approvalRequests, workItems] = await Promise.all([
       prisma.workflowInstance.findUnique({
         where: { id },
         select: {
@@ -527,6 +544,27 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
           decisions: { select: { decision: true, decidedAt: true } },
         },
       }),
+      prisma.workItem.findMany({
+        where: { sourceWorkflowInstanceId: id },
+        orderBy: { createdAt: 'asc' },
+        include: {
+          targets: {
+            orderBy: { createdAt: 'asc' },
+            select: {
+              id: true,
+              targetCapabilityId: true,
+              status: true,
+              roleKey: true,
+              childWorkflowInstanceId: true,
+              output: true,
+            },
+          },
+          events: {
+            orderBy: { createdAt: 'asc' },
+            select: { id: true, eventType: true, targetId: true, createdAt: true },
+          },
+        },
+      }),
     ])
 
     if (!instance) {
@@ -567,6 +605,34 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
       const arr = consumablesByNode.get(c.nodeId) ?? []
       arr.push(c)
       consumablesByNode.set(c.nodeId, arr)
+    }
+
+    const workItemsByNode = new Map<string, NodeInsight['workItems']>()
+    for (const item of workItems) {
+      if (!item.sourceWorkflowNodeId) continue
+      const arr = workItemsByNode.get(item.sourceWorkflowNodeId) ?? []
+      arr.push({
+        id: item.id,
+        title: item.title,
+        status: item.status,
+        priority: item.priority,
+        dueAt: item.dueAt?.toISOString() ?? null,
+        targets: item.targets.map(target => ({
+          id: target.id,
+          targetCapabilityId: target.targetCapabilityId,
+          status: target.status,
+          roleKey: target.roleKey,
+          childWorkflowInstanceId: target.childWorkflowInstanceId,
+          output: target.output,
+        })),
+        events: item.events.map(event => ({
+          id: event.id,
+          eventType: event.eventType,
+          targetId: event.targetId,
+          createdAt: event.createdAt.toISOString(),
+        })),
+      })
+      workItemsByNode.set(item.sourceWorkflowNodeId, arr)
     }
 
     const workspaceByNode = new Map<string, NodeInsight['workspace']>()
@@ -685,6 +751,7 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
       workspace: workspaceByNode.get(n.id) ?? [],
       citations: citationsByNode.get(n.id) ?? [],
       receipts: receiptsByNode.get(n.id) ?? [],
+      workItems: workItemsByNode.get(n.id) ?? [],
       laptopDevice: laptopByNodeId.get(n.id),
       eventCount: eventsByNodeId.get(n.id) ?? 0,
       })
@@ -937,6 +1004,7 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
         receiptsCount: Array.from(receiptsByNode.values()).reduce((sum, arr) => sum + arr.length, 0),
         workspaceSteps: Array.from(workspaceByNode.values()).reduce((sum, arr) => sum + arr.length, 0),
         citationCount: Array.from(citationsByNode.values()).reduce((sum, arr) => sum + arr.length, 0),
+        workItemCount: workItems.length,
       },
       auditReport,
     }

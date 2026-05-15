@@ -3,6 +3,7 @@ import { agentRoleType } from "../agents/agent.schemas";
 
 export const createCapabilitySchema = z.object({
   name: z.string().min(2),
+  appId: z.string().max(120).optional(),
   parentCapabilityId: z.string().uuid().optional(),
   capabilityType: z.string().optional(),
   businessUnitId: z.string().optional(),
@@ -13,6 +14,7 @@ export const createCapabilitySchema = z.object({
 
 export const updateCapabilitySchema = z.object({
   name: z.string().min(2).optional(),
+  appId: z.string().max(120).nullable().optional(),
   parentCapabilityId: z.string().uuid().nullable().optional(),
   capabilityType: z.string().nullable().optional(),
   businessUnitId: z.string().nullable().optional(),

@@ -15,6 +15,7 @@ import { activatePolicyCheck } from './executors/PolicyCheckExecutor'
 import { activateTimer } from './executors/TimerExecutor'
 import { activateSignalWait } from './executors/SignalWaitExecutor'
 import { activateCallWorkflow } from './executors/CallWorkflowExecutor'
+import { activateWorkItem, handleWorkItemChildCompletion } from '../../work-items/work-items.service'
 import { activateForeach } from './executors/ForeachExecutor'
 import { activateInclusiveGateway } from './executors/InclusiveGatewayExecutor'
 import { activateEventGateway } from './executors/EventGatewayExecutor'
@@ -187,16 +188,19 @@ export async function advance(
 
   // 5. Check for instance completion
   if (await isComplete(instance)) {
+    const completedAt = new Date()
     await prisma.workflowInstance.update({
       where: { id: instanceId },
-      data: { status: 'COMPLETED', completedAt: new Date() },
+      data: { status: 'COMPLETED', completedAt },
     })
     const eventId = await logEvent('WorkflowCompleted', 'WorkflowInstance', instanceId, actorId)
     await createReceipt('WORKFLOW_COMPLETED', 'WorkflowInstance', instanceId, {
       instanceId,
-      completedAt: new Date().toISOString(),
+      completedAt: completedAt.toISOString(),
     }, eventId)
     await publishOutbox('WorkflowInstance', instanceId, 'WorkflowCompleted', { instanceId })
+    const completedInstance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
+    await handleWorkItemChildCompletion(completedInstance, actorId)
 
     // If this instance is a child, advance the parent's CALL_WORKFLOW node.
     if (instance.parentInstanceId && instance.parentNodeId) {
@@ -301,6 +305,9 @@ async function activateDownstream(
       case 'CALL_WORKFLOW':
         await activateCallWorkflow(nextNode, instance)
         break
+      case 'WORK_ITEM':
+        await activateWorkItem(nextNode, instance, actorId)
+        break
       case 'FOREACH':
         await activateForeach(nextNode, instance)
         break
@@ -353,6 +360,7 @@ async function activateDownstream(
           case 'TIMER': await activateTimer(nextNode, instance); break
           case 'SIGNAL_WAIT': await activateSignalWait(nextNode, instance); break
           case 'CALL_WORKFLOW': await activateCallWorkflow(nextNode, instance); break
+          case 'WORK_ITEM': await activateWorkItem(nextNode, instance, actorId); break
           case 'FOREACH': await activateForeach(nextNode, instance); break
           default: await activateHumanTask(nextNode, instance); break
         }
@@ -571,6 +579,9 @@ export async function failNode(
           break
         case 'CALL_WORKFLOW':
           await activateCallWorkflow(target, instance)
+          break
+        case 'WORK_ITEM':
+          await activateWorkItem(target, instance, actorId)
           break
         case 'FOREACH':
           await activateForeach(target, instance)

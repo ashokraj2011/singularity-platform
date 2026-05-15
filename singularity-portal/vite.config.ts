@@ -27,7 +27,7 @@ export default defineConfig({
       '/ops-health/blueprint-workbench': {
         target: 'http://localhost:5176',
         changeOrigin: true,
-        rewrite: () => '/',
+        rewrite: () => '/health',
       },
       '/ops-health/prompt-composer': {
         target: 'http://localhost:3004',

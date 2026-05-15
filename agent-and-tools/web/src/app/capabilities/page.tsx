@@ -23,6 +23,7 @@ type LocalBootstrapFile = { path: string; content: string };
 
 type BootstrapForm = {
   name: string;
+  appId: string;
   capabilityType: string;
   criticality: string;
   description: string;
@@ -37,6 +38,7 @@ type BootstrapForm = {
 
 const DEFAULT_FORM: BootstrapForm = {
   name: "",
+  appId: "",
   capabilityType: "APPLICATION",
   criticality: "MEDIUM",
   description: "",
@@ -137,6 +139,7 @@ export default function CapabilitiesPage() {
         .map((url) => ({ url, artifactType: "DOC" }));
       const body = {
         name: form.name.trim(),
+        appId: form.appId.trim() || undefined,
         capabilityType: form.capabilityType.trim() || "APPLICATION",
         criticality: form.criticality,
         description: form.description.trim() || undefined,
@@ -224,19 +227,25 @@ export default function CapabilitiesPage() {
                     onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                     placeholder="Core Common Rule Engine" />
                 </Field>
+                <Field label="App ID (optional)">
+                  <input className={FIELD_CLASS} value={form.appId}
+                    onChange={e => setForm(f => ({ ...f, appId: e.target.value }))}
+                    maxLength={120}
+                    placeholder="app-ccre, CMDB id, or portfolio id" />
+                </Field>
                 <Field label="Type">
                   <input className={FIELD_CLASS} value={form.capabilityType}
                     onChange={e => setForm(f => ({ ...f, capabilityType: e.target.value }))}
                     placeholder="APPLICATION" />
                 </Field>
+              </div>
+              <div className="grid grid-cols-3 gap-4">
                 <Field label="Criticality">
                   <select className={FIELD_CLASS} value={form.criticality}
                     onChange={e => setForm(f => ({ ...f, criticality: e.target.value }))}>
                     {["LOW", "MEDIUM", "HIGH", "CRITICAL"].map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </Field>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
                 <Field label="Owner team">
                   {iamTeams.length > 0 ? (
                     <select className={FIELD_CLASS} value={form.ownerTeamId}
@@ -410,6 +419,7 @@ export default function CapabilitiesPage() {
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-medium text-slate-900">{c.name as string}</span>
                 <StatusBadge value={c.status as string} />
+                {!!c.appId && <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded">app: {c.appId as string}</span>}
                 {!!c.capabilityType && <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded">{c.capabilityType as string}</span>}
                 {!!c.criticality && <span className="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded">crit: {c.criticality as string}</span>}
               </div>

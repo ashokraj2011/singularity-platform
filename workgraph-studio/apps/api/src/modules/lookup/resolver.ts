@@ -154,6 +154,21 @@ export function refsForNodeConfig(nodeType: string, config: Record<string, unkno
       push(literalRef('workbench.agentBindings.qaAgentTemplateId', bindings.qaAgentTemplateId, 'agent-template'))
       break
     }
+    case 'WORK_ITEM': {
+      const rows = Array.isArray(config.targets) ? config.targets
+        : Array.isArray(config.workItemTargets) ? config.workItemTargets
+        : []
+      for (const [idx, row] of rows.entries()) {
+        if (!row || typeof row !== 'object' || Array.isArray(row)) continue
+        const r = row as Record<string, unknown>
+        push(literalRef(`targets.${idx}.targetCapabilityId`, r.targetCapabilityId ?? r.capabilityId, 'capability'))
+      }
+      const std = config.standard && typeof config.standard === 'object' && !Array.isArray(config.standard)
+        ? config.standard as Record<string, unknown>
+        : {}
+      push(literalRef('targetCapabilityId', std.targetCapabilityId ?? config.targetCapabilityId, 'capability'))
+      break
+    }
     case 'TOOL_REQUEST':
       push(literalRef('tool',     config.tool,     'tool'))
       push(literalRef('toolName', config.toolName, 'tool'))

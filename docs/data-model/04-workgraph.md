@@ -16,6 +16,7 @@ TIMER TIMER
 SIGNAL_WAIT SIGNAL_WAIT
 SIGNAL_EMIT SIGNAL_EMIT
 CALL_WORKFLOW CALL_WORKFLOW
+WORK_ITEM WORK_ITEM
 FOREACH FOREACH
 PARALLEL_FORK PARALLEL_FORK
 PARALLEL_JOIN PARALLEL_JOIN
@@ -603,6 +604,50 @@ EVENT EVENT
     String eventType 
     Json payload "❓"
     DateTime occurredAt 
+    }
+  
+
+  "work_items" {
+    String id "🗝️"
+    String title 
+    String description "❓"
+    String parentCapabilityId "❓"
+    String status 
+    Json input 
+    Json finalOutput "❓"
+    Int priority 
+    DateTime dueAt "❓"
+    String createdById "❓"
+    String approvedById "❓"
+    String parentApprovalRequestId "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "work_item_targets" {
+    String id "🗝️"
+    String targetCapabilityId 
+    String childWorkflowTemplateId "❓"
+    String roleKey "❓"
+    String status 
+    String claimedById "❓"
+    Json output "❓"
+    DateTime claimedAt "❓"
+    DateTime startedAt "❓"
+    DateTime submittedAt "❓"
+    DateTime completedAt "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "work_item_events" {
+    String id "🗝️"
+    String eventType 
+    String actorId "❓"
+    Json payload "❓"
+    DateTime createdAt 
     }
   
 
@@ -1203,6 +1248,12 @@ EVENT EVENT
     "workflow_edges" }o--|| workflow_nodes : "target"
     "workflow_mutations" }o--|| workflow_instances : "instance"
     "workflow_events" }o--|| workflow_instances : "instance"
+    "work_items" }o--|o workflow_instances : "sourceWorkflowInstance"
+    "work_items" }o--|o workflow_nodes : "sourceWorkflowNode"
+    "work_item_targets" }o--|| work_items : "workItem"
+    "work_item_targets" }o--|o workflow_instances : "childWorkflowInstance"
+    "work_item_events" }o--|| work_items : "workItem"
+    "work_item_events" }o--|o work_item_targets : "target"
     "tasks" |o--|| "TaskStatus" : "enum:status"
     "tasks" |o--|| "AssignmentMode" : "enum:assignmentMode"
     "tasks" }o--|o workflow_instances : "instance"

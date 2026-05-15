@@ -13,6 +13,7 @@ export type NodeType =
   | 'SIGNAL_WAIT'
   | 'SIGNAL_EMIT'
   | 'CALL_WORKFLOW'
+  | 'WORK_ITEM'
   | 'FOREACH'
   | 'PARALLEL_FORK'
   | 'PARALLEL_JOIN'

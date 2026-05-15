@@ -3,14 +3,14 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { motion } from 'motion/react'
 import {
-  Inbox, Users, User, Layers, Workflow, GitMerge, Package,
+  Inbox, Users, User, Layers, Workflow, GitMerge, Package, Network,
   ArrowRight, Clock, Search, Filter,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 
 // ── Types (mirror of the API response) ───────────────────────────────────────
 
-type InboxKind = 'task' | 'approval' | 'consumable'
+type InboxKind = 'task' | 'approval' | 'consumable' | 'workitem'
 
 type InboxItem = {
   kind:               InboxKind
@@ -27,6 +27,8 @@ type InboxItem = {
   createdAt:          string
   updatedAt:          string
   claimable:          boolean
+  targetId?:          string | null
+  targetCapabilityId?: string | null
 }
 
 type InboxResponse = {
@@ -40,6 +42,7 @@ const KIND_META: Record<InboxKind, { label: string; color: string; Icon: React.E
   task:       { label: 'Task',       color: '#22c55e', Icon: User },
   approval:   { label: 'Approval',   color: '#f59e0b', Icon: GitMerge },
   consumable: { label: 'Deliverable',color: '#10b981', Icon: Package },
+  workitem:   { label: 'WorkItem',   color: '#8b5cf6', Icon: Network },
 }
 
 const MODE_META: Record<string, { label: string; color: string; Icon: React.ElementType }> = {
@@ -132,6 +135,7 @@ export function InboxPage() {
           <option value="task">Tasks</option>
           <option value="approval">Approvals</option>
           <option value="consumable">Deliverables</option>
+          <option value="workitem">WorkItems</option>
         </select>
         <button
           onClick={() => refetch()}
@@ -153,7 +157,11 @@ export function InboxPage() {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {list.map(item => (
-            <Row key={`${item.kind}:${item.id}`} item={item} onOpen={() => navigate(`/runtime/work/${item.kind}/${item.id}`)} />
+            <Row
+              key={`${item.kind}:${item.id}:${item.targetId ?? ''}`}
+              item={item}
+              onOpen={() => navigate(`/runtime/work/${item.kind}/${item.id}${item.targetId ? `?targetId=${item.targetId}` : ''}`)}
+            />
           ))}
         </div>
       )}

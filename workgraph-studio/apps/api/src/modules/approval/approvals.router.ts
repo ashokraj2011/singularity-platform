@@ -8,6 +8,7 @@ import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 import { advance } from '../workflow/runtime/WorkflowRuntime'
 import { approveBudgetIncreaseFromApproval } from '../workflow/runtime/budget'
 import { activateAgentTask } from '../workflow/runtime/executors/AgentTaskExecutor'
+import { approveWorkItem, requestWorkItemRework } from '../work-items/work-items.service'
 
 export const approvalsRouter: Router = Router()
 
@@ -153,6 +154,16 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
         if (node?.nodeType === 'AGENT_TASK' && instance) {
           await activateAgentTask(node, instance)
         }
+      }
+      res.status(201).json(approvalDecision)
+      return
+    }
+
+    if (approvalRequest.subjectType === 'WorkItem') {
+      if (decision === 'APPROVED' || decision === 'APPROVED_WITH_CONDITIONS') {
+        await approveWorkItem(approvalRequest.subjectId, userId, decision)
+      } else if (decision === 'REJECTED' || decision === 'NEEDS_MORE_INFORMATION') {
+        await requestWorkItemRework(approvalRequest.subjectId, userId, undefined, notes ?? conditions)
       }
       res.status(201).json(approvalDecision)
       return

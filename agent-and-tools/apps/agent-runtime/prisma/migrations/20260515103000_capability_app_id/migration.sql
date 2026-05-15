@@ -1,0 +1,2 @@
+ALTER TABLE "Capability"
+  ADD COLUMN IF NOT EXISTS "appId" TEXT;

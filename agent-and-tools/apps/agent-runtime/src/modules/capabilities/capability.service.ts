@@ -144,6 +144,7 @@ type BootstrapDocumentInput = {
 
 type BootstrapInput = {
   name: string;
+  appId?: string;
   parentCapabilityId?: string;
   capabilityType?: string;
   businessUnitId?: string;
@@ -167,6 +168,15 @@ type DiscoveryDoc = {
   path?: string;
 };
 
+type CapabilityArchitectureDiagram = {
+  kind: "APPLICATION_CAPABILITY_ARCHITECTURE" | "TOGAF_CAPABILITY_COLLECTION";
+  title: string;
+  view: "application" | "togaf";
+  description: string;
+  mermaid: string;
+  layers: Array<{ key: string; label: string; items: string[] }>;
+};
+
 export const capabilityService = {
   bootstrapAgentCatalog() {
     return {
@@ -181,7 +191,7 @@ export const capabilityService = {
 
   async create(input: {
     name: string; parentCapabilityId?: string; capabilityType?: string;
-    businessUnitId?: string; ownerTeamId?: string; criticality?: string; description?: string;
+    appId?: string; businessUnitId?: string; ownerTeamId?: string; criticality?: string; description?: string;
   }, authHeader?: string) {
     const capability = await prisma.capability.create({ data: { ...input, status: "ACTIVE" } });
     const warning = await syncIamCapabilityReference(capability, { authHeader });
@@ -197,6 +207,7 @@ export const capabilityService = {
     const capability = await prisma.capability.create({
       data: {
         name: input.name,
+        appId: input.appId,
         parentCapabilityId: input.parentCapabilityId,
         capabilityType: input.capabilityType,
         businessUnitId: input.businessUnitId,
@@ -346,7 +357,9 @@ export const capabilityService = {
         discovered.push(...discoverLocalSignals(input.localFiles ?? []));
       }
 
+      const architectureDiagram = buildCapabilityArchitectureDiagram(capability, input, generatedAgents, discovered);
       const candidates = [
+        buildArchitectureDiagramCandidate(capability.name, architectureDiagram),
         ...buildLearningCandidates(discovered),
         ...buildAgentGroundingCandidates(capability.name, selectedAgents, discovered),
       ];
@@ -383,7 +396,7 @@ export const capabilityService = {
             discoveredSignals: discovered.length,
             candidateGroups: candidates.length,
             agentPreset: input.agentPreset ?? "governed_delivery",
-            operatingModel: buildOperatingModel(capability.name, input.targetWorkflowPattern, generatedAgents, candidates.length),
+            operatingModel: buildOperatingModel(capability, input.targetWorkflowPattern, generatedAgents, candidates.length, architectureDiagram),
           },
         },
         include: { candidates: true, capability: { include: { bindings: { include: { agentTemplate: true } }, repositories: true, knowledgeSources: true } } },
@@ -561,6 +574,7 @@ export const capabilityService = {
 
   async update(id: string, input: {
     name?: string;
+    appId?: string | null;
     parentCapabilityId?: string | null;
     capabilityType?: string | null;
     businessUnitId?: string | null;
@@ -574,6 +588,7 @@ export const capabilityService = {
 
     const data: Prisma.CapabilityUpdateInput = {};
     if (input.name !== undefined) data.name = input.name;
+    if (input.appId !== undefined) data.appId = input.appId;
     if (input.parentCapabilityId !== undefined) {
       data.parent = input.parentCapabilityId
         ? { connect: { id: input.parentCapabilityId } }
@@ -1287,6 +1302,117 @@ function buildAgentGroundingCandidates(
   }];
 }
 
+function buildArchitectureDiagramCandidate(
+  capabilityName: string,
+  diagram: CapabilityArchitectureDiagram,
+): {
+  groupKey: string; groupTitle: string; artifactType: string; title: string; content: string;
+  sourceType: string; sourceRef: string; confidence: number;
+} {
+  return {
+    groupKey: "architecture_diagram",
+    groupTitle: "Capability architecture diagram",
+    artifactType: "ARCHITECTURE_DIAGRAM",
+    title: `${capabilityName} architecture diagram`,
+    content: [
+      `# ${diagram.title}`,
+      diagram.description,
+      "",
+      "```mermaid",
+      diagram.mermaid,
+      "```",
+      "",
+      "## Layers",
+      ...diagram.layers.flatMap(layer => [
+        "",
+        `### ${layer.label}`,
+        ...layer.items.map(item => `- ${item}`),
+      ]),
+    ].join("\n"),
+    sourceType: "BOOTSTRAP_ARCHITECTURE",
+    sourceRef: "capability-bootstrap:architecture-diagram",
+    confidence: 0.9,
+  };
+}
+
+function buildCapabilityArchitectureDiagram(
+  capability: { name: string; appId?: string | null; capabilityType?: string | null; criticality?: string | null },
+  input: BootstrapInput,
+  generatedAgents: Array<{ label: string; roleType: string; locked: boolean; learnsFromGit: boolean }>,
+  docs: DiscoveryDoc[],
+): CapabilityArchitectureDiagram {
+  const capabilityName = capability.name;
+  const collection = isCollectionCapabilityType(capability.capabilityType);
+  const repos = (input.repositories ?? []).map(repo => repo.repoName?.trim() || repoNameFromUrl(repo.repoUrl)).filter(Boolean);
+  const docCount = (input.documentLinks?.length ?? 0) + docs.filter(doc => doc.sourceType === "DOCUMENT_LINK").length;
+  const localCount = input.localFiles?.length ?? 0;
+  const agents = generatedAgents.map(agent => agent.label || agent.roleType);
+  const appSuffix = capability.appId ? ` (${capability.appId})` : "";
+
+  if (collection) {
+    const layers = [
+      { key: "business", label: "Business Architecture", items: [`${capabilityName}${appSuffix}`, "Outcomes, value streams, policies, owners"] },
+      { key: "application", label: "Application Architecture", items: repos.length > 0 ? repos : ["Child applications / bounded contexts"] },
+      { key: "data", label: "Data Architecture", items: [`${docCount || docs.length || 0} doc/source signals`, "Approved knowledge, memory, citations, artifacts"] },
+      { key: "technology", label: "Technology Architecture", items: ["MCP workspaces, branches, AST index, local tools", "Context Fabric, Prompt Composer, Workgraph runtime"] },
+      { key: "governance", label: "Governance", items: ["Locked governance/verifier/security agents", "Budgets, approvals, receipts, audit ledger"] },
+    ];
+    return {
+      kind: "TOGAF_CAPABILITY_COLLECTION",
+      title: `${capabilityName} TOGAF capability map`,
+      view: "togaf",
+      description: "Collection capabilities are shown as TOGAF-style business, application, data, technology, and governance layers so portfolio owners can see how child capabilities are governed.",
+      layers,
+      mermaid: [
+        "flowchart TB",
+        `  B[Business Architecture<br/>${escapeMermaid(capabilityName)}${capability.appId ? `<br/>App ID: ${escapeMermaid(capability.appId)}` : ""}]`,
+        "  A[Application Architecture<br/>Child capabilities / applications]",
+        "  D[Data Architecture<br/>Knowledge, memory, artifacts, citations]",
+        "  T[Technology Architecture<br/>MCP workspaces, AST index, Context Fabric]",
+        "  G[Governance<br/>Approvals, budgets, audit receipts]",
+        "  B --> A --> D --> T --> G",
+      ].join("\n"),
+    };
+  }
+
+  const agentItems = agents.length > 0 ? agents : ["Product Owner", "Architect", "Developer", "QA", "Governance"];
+  const layers = [
+    { key: "entry", label: "Entry Points", items: ["Workflow stories, workbench stages, human approvals"] },
+    { key: "agents", label: "Capability Agent Team", items: agentItems },
+    { key: "knowledge", label: "Grounding Sources", items: [...(repos.length ? repos : ["Repository pending"]), `${docCount || docs.length || 0} document/source signals`, `${localCount} local files`] },
+    { key: "execution", label: "Execution Runtime", items: ["Prompt Composer context plan", "Context Fabric token governor", "MCP model/tools/workspace"] },
+    { key: "evidence", label: "Evidence Outputs", items: ["Stage artifacts", "Citations", "Budget receipts", "Audit trail"] },
+  ];
+  return {
+    kind: "APPLICATION_CAPABILITY_ARCHITECTURE",
+    title: `${capabilityName} application capability architecture`,
+    view: "application",
+    description: "Application capabilities are shown as a governed delivery architecture: stories enter Workgraph, agents work through Composer and Context Fabric, MCP supplies local code intelligence, and outputs become reviewable artifacts.",
+    layers,
+    mermaid: [
+      "flowchart LR",
+      "  S[Story / Workflow Input]",
+      `  C[Capability<br/>${escapeMermaid(capabilityName)}${capability.appId ? `<br/>App ID: ${escapeMermaid(capability.appId)}` : ""}]`,
+      "  A[Agent Team<br/>PO / Architect / Developer / QA / Governance]",
+      "  K[Grounding<br/>Repos / Docs / Memory / Code Symbols]",
+      "  X[Context Fabric + MCP<br/>Budget / Model / Tools / AST]",
+      "  E[Evidence<br/>Artifacts / Citations / Receipts]",
+      "  S --> C --> A",
+      "  K --> A",
+      "  A --> X --> E",
+    ].join("\n"),
+  };
+}
+
+function isCollectionCapabilityType(value?: string | null): boolean {
+  const type = (value ?? "").trim().toUpperCase();
+  return ["COLLECTION", "CAPABILITY_COLLECTION", "PORTFOLIO", "DOMAIN_COLLECTION"].includes(type);
+}
+
+function escapeMermaid(value: string): string {
+  return value.replace(/[<>{}[\]|"]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
 
 function formatCandidateContent(title: string, docs: DiscoveryDoc[]): string {
   const parts = [`# ${title}`];
@@ -1302,7 +1428,7 @@ function formatCandidateContent(title: string, docs: DiscoveryDoc[]): string {
 }
 
 function buildOperatingModel(
-  capabilityName: string,
+  capability: { name: string; appId?: string | null; capabilityType?: string | null },
   targetWorkflowPattern: string | undefined,
   generatedAgents: Array<{
     id: string;
@@ -1319,7 +1445,9 @@ function buildOperatingModel(
     grounding?: string;
   }>,
   candidateGroups: number,
+  architectureDiagram?: CapabilityArchitectureDiagram,
 ) {
+  const capabilityName = capability.name;
   const pattern = (targetWorkflowPattern?.trim() || "governed_delivery").toLowerCase();
   const starterWorkflow = pattern.includes("support")
     ? "Intake -> Product Owner triage -> Developer fix plan -> QA proof -> Human approval -> Handoff"
@@ -1328,8 +1456,11 @@ function buildOperatingModel(
       : "Intake -> Architect plan -> Developer implementation -> QA proof -> Security review -> DevOps release note -> Human approval";
   return {
     name: `${capabilityName} operating model`,
+    appId: capability.appId ?? null,
+    capabilityType: capability.capabilityType ?? null,
     targetWorkflowPattern: pattern,
     starterWorkflow,
+    architectureDiagram,
     draftAgents: generatedAgents.map(agent => ({
       id: agent.id,
       key: agent.key,

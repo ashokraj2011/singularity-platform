@@ -76,6 +76,22 @@ interface InsightNode {
     artifactIds: string[]
     toolInvocationIds: string[]
   }>
+  workItems: Array<{
+    id: string
+    title: string
+    status: string
+    priority: number
+    dueAt: string | null
+    targets: Array<{
+      id: string
+      targetCapabilityId: string
+      status: string
+      roleKey: string | null
+      childWorkflowInstanceId: string | null
+      output: unknown
+    }>
+    events: Array<{ id: string; eventType: string; targetId: string | null; createdAt: string }>
+  }>
   laptopDevice?: {
     user_id: string
     device_id: string
@@ -117,6 +133,7 @@ interface InsightsResponse {
     receiptsCount: number
     workspaceSteps: number
     citationCount: number
+    workItemCount: number
   }
   auditReport: {
     generatedAt: string
@@ -363,6 +380,7 @@ export function RunInsightsPage() {
           <Tile icon={UserCheck} label="Approval waits" value={`${data.missionControl.approvalWaits}`} highlight={data.missionControl.approvalWaits > 0 ? 'amber' : undefined} />
           <Tile icon={Cpu} label="Local code intel" value={`${data.missionControl.astEvents}`} sub={`${data.missionControl.workspaceSteps} workspace receipts`} />
           <Tile icon={GitBranch} label="Branches / commits" value={`${data.missionControl.branchEvents}/${data.missionControl.commitEvents}`} sub={`${data.missionControl.codeChangeEvents} code changes`} />
+          <Tile icon={Network} label="WorkItems" value={`${data.missionControl.workItemCount}`} sub="cross-capability delegations" />
         </div>
         <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 8 }}>
           <MissionHint icon={Network} title="Execution chain" text="Workflow → Prompt Composer → Context Fabric → MCP → receipts." />
@@ -563,10 +581,11 @@ export function RunInsightsPage() {
                         fontSize: 10, color: '#0f172a',
                       }}>
                         {n.durationMs != null ? `${n.durationPrecise ? '' : '≈ '}${fmtDuration(n.durationMs)}` : n.status.toLowerCase()}
-                        {(n.documents.length > 0 || n.consumables.length > 0 || n.workspace.length > 0 || n.eventCount > 0 || !!n.laptopDevice || n.citations.length > 0) && (
+                        {(n.documents.length > 0 || n.consumables.length > 0 || n.workspace.length > 0 || n.eventCount > 0 || !!n.laptopDevice || n.citations.length > 0 || n.workItems.length > 0) && (
                           <span style={{ marginLeft: 'auto', fontSize: 9, color: '#475569', display: 'flex', gap: 8 }}>
                             {n.documents.length > 0  && <span>docs {n.documents.length}</span>}
                             {n.consumables.length > 0 && <span>artifacts {n.consumables.length}</span>}
+                            {n.workItems.length > 0 && <span>workitems {n.workItems.length}</span>}
                             {n.workspace.length > 0 && <span>branch {n.workspace[0].branch ?? 'workspace'}</span>}
                             {n.citations.length > 0 && <span>cites {n.citations.length}</span>}
                             {n.eventCount > 0        && <span>events {n.eventCount}</span>}
@@ -664,6 +683,47 @@ export function RunInsightsPage() {
                               {r.artifactIds.length > 0 && <span>artifacts {r.artifactIds.length}</span>}
                               {r.finishReason && <span>finish {r.finishReason}</span>}
                             </div>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                  {n.workItems.length > 0 && (
+                    <details style={{ marginLeft: 230, border: '1px solid #ddd6fe', borderRadius: 6, padding: '6px 8px', background: '#faf5ff' }}>
+                      <summary style={{ cursor: 'pointer', color: '#4c1d95', fontWeight: 700, fontSize: 10 }}>WorkItem delegation</summary>
+                      <div style={{ display: 'grid', gap: 8, marginTop: 6 }}>
+                        {n.workItems.map((item) => (
+                          <div key={item.id} style={{ fontSize: 10, color: '#475569', borderTop: '1px solid #ede9fe', paddingTop: 6 }}>
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <code style={{ color: '#312e81' }}>{item.id.slice(0, 8)}</code>
+                              <strong style={{ color: '#0f172a' }}>{item.title}</strong>
+                              <span>{item.status}</span>
+                              <span>priority {item.priority}</span>
+                              {item.dueAt && <span>due {new Date(item.dueAt).toLocaleString()}</span>}
+                            </div>
+                            <div style={{ display: 'grid', gap: 4, marginTop: 6 }}>
+                              {item.targets.map(target => (
+                                <div key={target.id} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                  <span>target <code>{target.targetCapabilityId.slice(0, 8)}</code></span>
+                                  {target.roleKey && <span>role {target.roleKey}</span>}
+                                  <span>{target.status}</span>
+                                  {target.childWorkflowInstanceId && (
+                                    <button
+                                      type="button"
+                                      onClick={() => navigate(`/runs/${target.childWorkflowInstanceId}/insights`)}
+                                      style={{ border: 'none', background: 'transparent', color: '#2563eb', cursor: 'pointer', padding: 0, fontSize: 10, fontWeight: 700 }}
+                                    >
+                                      child run
+                                    </button>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                            {item.events.length > 0 && (
+                              <div style={{ marginTop: 6, color: '#64748b' }}>
+                                {item.events.slice(-4).map(event => `${event.eventType} ${new Date(event.createdAt).toLocaleTimeString()}`).join(' · ')}
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>

@@ -22,7 +22,7 @@ const createSchema = z.object({
   baseType: z.enum([
     'HUMAN_TASK', 'AGENT_TASK', 'APPROVAL', 'DECISION_GATE',
     'CONSUMABLE_CREATION', 'TOOL_REQUEST', 'POLICY_CHECK',
-    'TIMER', 'SIGNAL_WAIT', 'CALL_WORKFLOW', 'FOREACH',
+    'TIMER', 'SIGNAL_WAIT', 'CALL_WORKFLOW', 'WORK_ITEM', 'FOREACH',
   ]).default('HUMAN_TASK'),
   fields: z.array(fieldDefSchema).default([]),
   supportsForms: z.boolean().default(false),

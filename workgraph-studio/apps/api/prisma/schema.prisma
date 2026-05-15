@@ -33,6 +33,7 @@ enum NodeType {
   SIGNAL_WAIT
   SIGNAL_EMIT
   CALL_WORKFLOW
+  WORK_ITEM
   FOREACH
   PARALLEL_FORK
   PARALLEL_JOIN
@@ -689,6 +690,8 @@ model WorkflowInstance {
   events            WorkflowEvent[]
   tasks             Task[]
   consumables       Consumable[]
+  sourceWorkItems   WorkItem[]         @relation("WorkItemSourceInstance")
+  childWorkItemTargets WorkItemTarget[] @relation("WorkItemChildInstance")
   agentRuns         AgentRun[]
   toolRuns          ToolRun[]
   pendingExecutions PendingExecution[]
@@ -791,6 +794,7 @@ model WorkflowNode {
   incoming           WorkflowEdge[]     @relation("TargetNode")
   pendingExecutions  PendingExecution[]
   documents          Document[]
+  workItems          WorkItem[]         @relation("WorkItemSourceNode")
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
   // M24.5 — authoritative per-step timing. Written by the runtime when a
@@ -841,6 +845,82 @@ model WorkflowEvent {
   occurredAt DateTime         @default(now())
 
   @@map("workflow_events")
+}
+
+// ─── CROSS-CAPABILITY WORK ITEMS ──────────────────────────────────────────────
+
+model WorkItem {
+  id                      String           @id @default(uuid())
+  title                   String
+  description             String?
+  parentCapabilityId      String?
+  sourceWorkflowInstanceId String?
+  sourceWorkflowNodeId    String?
+  status                  String           @default("QUEUED")
+  input                   Json             @default("{}")
+  finalOutput             Json?
+  priority                Int              @default(50)
+  dueAt                   DateTime?
+  createdById             String?
+  approvedById            String?
+  parentApprovalRequestId String?
+  sourceWorkflowInstance  WorkflowInstance? @relation("WorkItemSourceInstance", fields: [sourceWorkflowInstanceId], references: [id], onDelete: SetNull)
+  sourceWorkflowNode      WorkflowNode?    @relation("WorkItemSourceNode", fields: [sourceWorkflowNodeId], references: [id], onDelete: SetNull)
+  targets                 WorkItemTarget[]
+  events                  WorkItemEvent[]
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+
+  @@index([parentCapabilityId])
+  @@index([sourceWorkflowInstanceId])
+  @@index([sourceWorkflowNodeId])
+  @@index([status])
+  @@map("work_items")
+}
+
+model WorkItemTarget {
+  id                      String            @id @default(uuid())
+  workItemId              String
+  targetCapabilityId      String
+  childWorkflowTemplateId String?
+  childWorkflowInstanceId String?
+  roleKey                 String?
+  status                  String            @default("QUEUED")
+  claimedById             String?
+  output                  Json?
+  claimedAt               DateTime?
+  startedAt               DateTime?
+  submittedAt             DateTime?
+  completedAt             DateTime?
+  workItem                WorkItem          @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  childWorkflowInstance   WorkflowInstance? @relation("WorkItemChildInstance", fields: [childWorkflowInstanceId], references: [id], onDelete: SetNull)
+  events                  WorkItemEvent[]
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+
+  @@index([workItemId])
+  @@index([targetCapabilityId, status])
+  @@index([childWorkflowTemplateId])
+  @@index([childWorkflowInstanceId])
+  @@index([claimedById])
+  @@map("work_item_targets")
+}
+
+model WorkItemEvent {
+  id         String          @id @default(uuid())
+  workItemId String
+  targetId   String?
+  eventType  String
+  actorId    String?
+  payload    Json?
+  workItem   WorkItem        @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  target     WorkItemTarget? @relation(fields: [targetId], references: [id], onDelete: SetNull)
+  createdAt  DateTime        @default(now())
+
+  @@index([workItemId, createdAt])
+  @@index([targetId])
+  @@index([eventType])
+  @@map("work_item_events")
 }
 
 // ─── TASKS ────────────────────────────────────────────────────────────────────

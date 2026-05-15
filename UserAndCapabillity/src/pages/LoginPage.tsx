@@ -1,7 +1,8 @@
+import { useEffect, useMemo } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
 import { Fingerprint, AlertCircle, Lock, Mail } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -16,10 +17,21 @@ const schema = z.object({
 type FormValues = z.infer<typeof schema>
 
 export function LoginPage() {
-  const { setAuth } = useAuthStore()
-  const navigate = useNavigate()
+  const { setAuth, token } = useAuthStore()
   const location = useLocation()
-  const from = (location.state as { from?: { pathname: string } })?.from?.pathname ?? '/dashboard'
+  const from = useMemo(() => {
+    const next = (location.state as { from?: { pathname?: string; search?: string } } | null)?.from
+    const pathname = next?.pathname && next.pathname.startsWith('/') && next.pathname !== '/login'
+      ? next.pathname
+      : '/dashboard'
+    return `${pathname}${next?.search ?? ''}`
+  }, [location.state])
+
+  useEffect(() => {
+    if (token) {
+      window.location.replace(from)
+    }
+  }, [from, token])
 
   const { register, handleSubmit, formState: { errors, isSubmitting }, setError } = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -28,8 +40,14 @@ export function LoginPage() {
   async function onSubmit(values: FormValues) {
     try {
       const res = await authApi.login(values)
+      localStorage.setItem('iam-auth', JSON.stringify({
+        state: { token: res.access_token, user: res.user },
+        version: 0,
+      }))
       setAuth(res.access_token, res.user)
-      navigate(from, { replace: true })
+      // Force a full document navigation after authentication. This avoids a
+      // half-hydrated protected route when Chrome has stale SPA state.
+      window.location.replace(from)
     } catch {
       setError('root', { message: 'Invalid credentials. Please try again.' })
     }

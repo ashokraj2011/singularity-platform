@@ -133,7 +133,16 @@ export function OperationsPage() {
       queryFn: async () => {
         const res = await fetch(svc.endpoint, { headers: { accept: 'application/json' } })
         if (!res.ok) throw new Error(`${svc.name} returned ${res.status}`)
-        return res.json()
+        const contentType = res.headers.get('content-type') ?? ''
+        if (contentType.includes('application/json')) return res.json()
+        const body = await res.text()
+        return {
+          status: 'ok',
+          service: svc.id,
+          warning: 'Health endpoint returned non-JSON content.',
+          contentType,
+          bodyPreview: body.slice(0, 120),
+        }
       },
       retry: 1,
       refetchInterval: 15000,

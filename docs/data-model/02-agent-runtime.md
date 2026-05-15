@@ -115,6 +115,7 @@ PROMOTED PROMOTED
   "Capability" {
     String id "🗝️"
     String name 
+    String appId "❓"
     String capabilityType "❓"
     String businessUnitId "❓"
     String ownerTeamId "❓"

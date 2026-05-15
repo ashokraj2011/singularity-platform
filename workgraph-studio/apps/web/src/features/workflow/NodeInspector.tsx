@@ -6,7 +6,7 @@ import {
   User, Bot, CheckCircle, GitMerge, Package, Wrench, Shield, GitBranch,
   ArrowDownToLine, ArrowUpFromLine, Hash,
   LayoutGrid, Settings, Cpu,
-  Clock, Radio, RadioTower, Workflow, Repeat, Shuffle, Zap, RotateCcw, FileCode,
+  Clock, Radio, RadioTower, Workflow, Repeat, Shuffle, Zap, RotateCcw, FileCode, Network,
   Box, Star, Briefcase, Database, Globe, Mail, Phone,
   Calendar, AlertTriangle, Search, Filter, Activity,
   GitFork, ShieldAlert, SlidersHorizontal, Play, Square, Braces,
@@ -26,7 +26,7 @@ const CUSTOM_NODE_ICONS: Record<string, React.ElementType> = {
   Box, Bot, User, CheckCircle, GitMerge, Package, Wrench, Shield, GitBranch,
   Star, Briefcase, Database, Globe, Mail, Phone, Calendar, AlertTriangle, Search, Filter, Activity,
   Clock, Radio, RadioTower, Workflow, Repeat, Shuffle, Zap, RotateCcw,
-  GitFork, ShieldAlert, SlidersHorizontal,
+  GitFork, ShieldAlert, SlidersHorizontal, Network,
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -162,6 +162,13 @@ type WorkbenchConfig = {
   }
 }
 
+type WorkItemTargetConfig = {
+  id: string
+  targetCapabilityId: string
+  childWorkflowTemplateId: string
+  roleKey: string
+}
+
 export type NodeConfig = {
   description: string
   // Standard type-specific fields
@@ -193,6 +200,8 @@ export type NodeConfig = {
   globalAssignments?: KVPair[]
   // WORKBENCH_TASK configuration.
   workbench?: WorkbenchConfig
+  // WORK_ITEM target child capability rows.
+  targets?: WorkItemTargetConfig[]
   // ── Assignment routing (HUMAN_TASK / APPROVAL / CONSUMABLE_CREATION) ──────
   // assignmentMode picks which of the sub-fields is meaningful.  When unset,
   // runtime defaults to DIRECT_USER (legacy behaviour).
@@ -338,6 +347,17 @@ const NODE_META: Record<string, {
     standardFields: [
       { key: 'modelAlias', label: 'Model', placeholder: 'Use workflow default' },
       { key: 'governanceMode', label: 'Governance mode', placeholder: 'fail_open' },
+    ],
+  },
+  WORK_ITEM: {
+    label: 'Work Item', color: '#7c3aed', Icon: Network,
+    description: 'Creates a cross-capability work contract. Child capability owners claim it, run a child workflow, then the parent reviews the returned artifacts.',
+    standardFields: [
+      { key: 'title', label: 'Title', placeholder: 'Implement payment retry support' },
+      { key: 'description', label: 'Description', placeholder: 'What the child capability should deliver', multiline: true },
+      { key: 'priority', label: 'Priority', placeholder: '50' },
+      { key: 'dueAt', label: 'Due date', placeholder: '2026-05-20T09:00:00Z' },
+      { key: 'outputPath', label: 'Output path', placeholder: 'workItem' },
     ],
   },
   APPROVAL: {
@@ -737,6 +757,14 @@ function normalizeConfig(raw: unknown): NodeConfig {
     assignments: Array.isArray(r.assignments) ? r.assignments as KVPair[] : undefined,
     globalAssignments: Array.isArray(r.globalAssignments) ? r.globalAssignments as KVPair[] : undefined,
     workbench: r.workbench ? normalizeWorkbenchConfig(r.workbench) : undefined,
+    targets: Array.isArray(r.targets)
+      ? (r.targets as Array<Partial<WorkItemTargetConfig>>).map(t => ({
+          id: typeof t.id === 'string' ? t.id : uid(),
+          targetCapabilityId: typeof t.targetCapabilityId === 'string' ? t.targetCapabilityId : '',
+          childWorkflowTemplateId: typeof t.childWorkflowTemplateId === 'string' ? t.childWorkflowTemplateId : '',
+          roleKey: typeof t.roleKey === 'string' ? t.roleKey : '',
+        }))
+      : undefined,
     assignmentMode:
       r.assignmentMode === 'DIRECT_USER' || r.assignmentMode === 'TEAM_QUEUE' ||
       r.assignmentMode === 'ROLE_BASED'  || r.assignmentMode === 'SKILL_BASED' ||
@@ -755,6 +783,10 @@ function emptyArtifact(direction: 'INPUT' | 'OUTPUT'): ArtifactDef {
 }
 
 function emptyKV(): KVPair { return { id: uid(), key: '', value: '' } }
+
+function emptyWorkItemTarget(): WorkItemTargetConfig {
+  return { id: uid(), targetCapabilityId: '', childWorkflowTemplateId: '', roleKey: '' }
+}
 
 function emptyAttachment(): Attachment {
   return {
@@ -1070,9 +1102,9 @@ function ArtifactsTab({
             onDelete={() => deleteArtifact('INPUT', a.id)}
           />
         ))}
-      </div>
+		                </div>
 
-      <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+                <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
 
       {/* Output artifacts */}
       <div>
@@ -2529,6 +2561,90 @@ function TemplatePicker({ value, onChange }: { value: string; onChange: (v: stri
   )
 }
 
+function WorkItemTargetsEditor({
+  targets,
+  onChange,
+}: {
+  targets: WorkItemTargetConfig[]
+  onChange: (targets: WorkItemTargetConfig[]) => void
+}) {
+  const rows = targets.length > 0 ? targets : []
+  const update = (id: string, patch: Partial<WorkItemTargetConfig>) => {
+    onChange(rows.map(row => row.id === id ? { ...row, ...patch } : row))
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {rows.map((target, index) => (
+        <div key={target.id} style={{
+          border: '1px solid rgba(255,255,255,0.08)',
+          borderRadius: 10,
+          padding: 10,
+          background: 'rgba(255,255,255,0.035)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <span style={{ fontSize: 10, color: '#c4b5fd', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+              Target {index + 1}
+            </span>
+            <button
+              onClick={() => onChange(rows.filter(row => row.id !== target.id))}
+              style={{
+                border: '1px solid rgba(248,113,113,0.24)',
+                background: 'rgba(248,113,113,0.08)',
+                color: '#fecaca',
+                borderRadius: 7,
+                padding: '4px 7px',
+                cursor: 'pointer',
+                fontSize: 10,
+                fontWeight: 800,
+              }}
+            >
+              Remove
+            </button>
+          </div>
+
+          <FieldLabel>Target capability</FieldLabel>
+          <CapabilityPicker
+            value={target.targetCapabilityId}
+            onChange={value => update(target.id, { targetCapabilityId: value })}
+          />
+
+          <FieldLabel>Child workflow</FieldLabel>
+          <TemplatePicker
+            value={target.childWorkflowTemplateId}
+            onChange={value => update(target.id, { childWorkflowTemplateId: value })}
+          />
+
+          <FieldLabel>Role key</FieldLabel>
+          <NeoInput
+            value={target.roleKey}
+            onChange={value => update(target.id, { roleKey: value })}
+            placeholder="owner | developer | verifier"
+          />
+        </div>
+      ))}
+
+      <button
+        onClick={() => onChange([...rows, emptyWorkItemTarget()])}
+        style={{
+          border: '1px dashed rgba(124,58,237,0.55)',
+          background: 'rgba(124,58,237,0.10)',
+          color: '#ddd6fe',
+          borderRadius: 10,
+          padding: '8px 10px',
+          cursor: 'pointer',
+          fontSize: 11,
+          fontWeight: 800,
+        }}
+      >
+        + Add child capability target
+      </button>
+    </div>
+  )
+}
+
 // ─── Execution location section ─────────────────────────────────────────
 
 function ExecutionLocationSection({
@@ -3704,10 +3820,41 @@ export function NodeInspector({
                   )}
                 </div>
 
-                <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+	                <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
 
-                {/* Design-time KV */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: -4 }}>
+	                {node.data.nodeType === 'WORK_ITEM' && (
+	                  <>
+	                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: -4 }}>
+	                      <Network size={11} style={{ color: '#7c3aed' }} />
+	                      <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#7c3aed' }}>
+	                        Child capability targets
+	                      </span>
+	                    </div>
+	                    <WorkItemTargetsEditor
+	                      targets={config.targets ?? []}
+	                      onChange={targets => setConfig(c => ({ ...c, targets }))}
+	                    />
+	                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: -4 }}>
+	                      <Workflow size={11} style={{ color: '#7c3aed' }} />
+	                      <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#7c3aed' }}>
+	                        Parent input mapping
+	                      </span>
+	                    </div>
+	                    <KVSection
+	                      title=""
+	                      pairs={config.assignments ?? []}
+	                      onChange={assignments => setConfig(c => ({ ...c, assignments }))}
+	                      accentColor="#7c3aed"
+	                    />
+	                    <p style={{ fontSize: 9, color: '#64748b', marginTop: -10 }}>
+	                      Key = child input key · Value = parent context path or <code style={{ fontFamily: 'monospace' }}>{'{{vars.story}}'}</code>.
+	                    </p>
+	                    <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+	                  </>
+	                )}
+
+	                {/* Design-time KV */}
+	                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: -4 }}>
                   <Settings size={11} style={{ color: '#c084fc' }} />
                   <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#c084fc' }}>
                     Design-time config

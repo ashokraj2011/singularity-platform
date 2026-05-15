@@ -164,6 +164,7 @@ model AgentTemplateSkill {
 model Capability {
   id                 String       @id @default(uuid())
   name               String
+  appId              String?
   parentCapabilityId String?
   capabilityType     String?
   businessUnitId     String?

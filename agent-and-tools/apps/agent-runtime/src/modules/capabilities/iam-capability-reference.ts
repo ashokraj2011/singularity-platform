@@ -46,6 +46,7 @@ export async function syncIamCapabilityReference(
       sourceSystem: "agent-and-tools",
       bootstrapOwner: "agent-and-tools",
       agentRuntimeCapabilityId: capability.id,
+      appId: capability.appId ?? undefined,
       businessUnitId: capability.businessUnitId ?? undefined,
       ownerTeamId: ownerTeamRecord?.id ?? capability.ownerTeamId ?? undefined,
       ownerTeamKey: ownerTeamRecord?.team_key ?? undefined,
