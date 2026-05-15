@@ -566,12 +566,23 @@ async function copyText(value: string) {
 
 function downloadText(filename: string, text: string, type = 'text/plain') {
   const blob = new Blob([text], { type })
+  downloadBlob(filename, blob)
+}
+
+function downloadBlob(filename: string, blob: Blob) {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
   anchor.download = filename
   anchor.click()
   URL.revokeObjectURL(url)
+}
+
+function errorMessage(err: unknown): string {
+  const anyErr = err as any
+  const data = anyErr?.response?.data
+  if (typeof data === 'string') return data
+  return data?.message ?? data?.detail ?? data?.error ?? anyErr?.message ?? 'Request failed'
 }
 
 function readinessTone(status?: string): 'ok' | 'warn' | 'danger' | 'neutral' {
@@ -648,9 +659,12 @@ function ReadinessPanel() {
                   <div className="mt-3 text-5xl font-black text-slate-950">{data.score}</div>
                   <div className="mt-3"><Badge tone={readinessTone(data.status)}>{data.status}</Badge></div>
                 </div>
-                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-7">
                   <Metric title="Active agents" value={String(data.facts?.activeAgents ?? 0)} />
                   <Metric title="Knowledge" value={String(data.facts?.knowledgeArtifacts ?? 0)} />
+                  <Metric title="Learning pending" value={String(data.facts?.pendingLearningCandidates ?? 0)} />
+                  <Metric title="Learning approved" value={String(data.facts?.materializedLearningCandidates ?? 0)} />
+                  <Metric title="Code symbols" value={String(data.facts?.codeSymbols ?? 0)} />
                   <Metric title="Workflows" value={String(workflowRows.length)} />
                   <Metric title="Budgeted" value={String(workflowRows.filter(workflowBudgetConfigured).length)} />
                 </div>
@@ -713,6 +727,8 @@ function ReadinessPanel() {
 
 function RunAuditPanel() {
   const [runId, setRunId] = useState('')
+  const [pdfBusy, setPdfBusy] = useState(false)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
   const recentRuns = useQuery({
     queryKey: ['ops', 'workflow-instances'],
     queryFn: async () => unwrapItems<WorkflowRunRow>(await workgraphApi.get('/workflow-instances')),
@@ -730,6 +746,24 @@ function RunAuditPanel() {
   const stages: any[] = Array.isArray(sections.stageTimeline) ? sections.stageTimeline : []
   const markdown = typeof data.markdown === 'string' ? data.markdown : ''
   const jsonText = JSON.stringify(data, null, 2)
+
+  async function downloadEvidencePdf() {
+    if (!runId.trim()) return
+    setPdfBusy(true)
+    setDownloadError(null)
+    try {
+      const res = await workgraphApi.get(`/workflow-instances/${runId}/evidence-pack`, {
+        params: { format: 'pdf' },
+        responseType: 'blob',
+      })
+      const blob = res.data instanceof Blob ? res.data : new Blob([res.data], { type: 'application/pdf' })
+      downloadBlob(`${runId}-evidence-pack.pdf`, blob)
+    } catch (err) {
+      setDownloadError(errorMessage(err))
+    } finally {
+      setPdfBusy(false)
+    }
+  }
 
   return (
     <div className="grid grid-cols-1 gap-5 xl:grid-cols-[0.8fr_1.4fr]">
@@ -790,9 +824,15 @@ function RunAuditPanel() {
                   </ul>
                 </div>
               )}
+              {downloadError && (
+                <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                  PDF export failed: {downloadError}
+                </div>
+              )}
               <div className="flex flex-wrap gap-2">
                 <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => copyText(markdown)}>Copy Markdown</button>
                 <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => downloadText(`${runId}-evidence-pack.md`, markdown, 'text/markdown')}>Download Markdown</button>
+                <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50" disabled={pdfBusy} onClick={downloadEvidencePdf}>{pdfBusy ? 'Preparing PDF...' : 'Download PDF'}</button>
                 <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => downloadText(`${runId}-evidence-pack.json`, jsonText, 'application/json')}>Download JSON</button>
                 <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => copyText(jsonText)}>Copy JSON</button>
                 <a className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700" href={`${env.links.workgraphDesigner}/runs/${runId}/insights`} target="_blank" rel="noreferrer">Open Run Insights</a>
@@ -826,6 +866,13 @@ function WorkItemsPanel() {
   const [targetCapabilityId, setTargetCapabilityId] = useState('')
   const [status, setStatus] = useState('')
   const [mine, setMine] = useState(false)
+  const [actionKey, setActionKey] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const capabilities = useQuery({
+    queryKey: ['ops', 'workitem-capabilities'],
+    queryFn: async () => unwrapItems<CapabilityRow>(await runtimeApi.get('/capabilities')),
+    retry: 1,
+  })
   const workItems = useQuery({
     queryKey: ['ops', 'work-items', targetCapabilityId, status, mine],
     queryFn: async () => {
@@ -834,9 +881,19 @@ function WorkItemsPanel() {
     },
     retry: 1,
   })
-  async function mutate(path: string, body?: unknown) {
-    await workgraphApi.post(path, body ?? {})
-    await workItems.refetch()
+  const capabilityNames = useMemo(() => new Map((capabilities.data ?? []).map(cap => [cap.id, cap.name])), [capabilities.data])
+
+  async function mutate(path: string, body?: unknown, key?: string) {
+    setActionKey(key ?? path)
+    setActionError(null)
+    try {
+      await workgraphApi.post(path, body ?? {})
+      await workItems.refetch()
+    } catch (err) {
+      setActionError(errorMessage(err))
+    } finally {
+      setActionKey(null)
+    }
   }
 
   return (
@@ -845,15 +902,18 @@ function WorkItemsPanel() {
         <CardHeader title="Cross-Capability WorkItems" subtitle="Child capability queues, claims, child runs, parent approvals, and rework loops." />
         <CardBody>
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_180px_120px]">
-            <input value={targetCapabilityId} onChange={e => setTargetCapabilityId(e.target.value)} placeholder="Target capability id" className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-400" />
+            <select value={targetCapabilityId} onChange={e => setTargetCapabilityId(e.target.value)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-400">
+              <option value="">All target capabilities</option>
+              {(capabilities.data ?? []).map(cap => <option key={cap.id} value={cap.id}>{cap.name}</option>)}
+            </select>
             <select value={status} onChange={e => setStatus(e.target.value)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
               <option value="">Any status</option>
               <option value="QUEUED">Queued</option>
               <option value="CLAIMED">Claimed</option>
-              <option value="STARTED">Started</option>
+              <option value="IN_PROGRESS">In progress</option>
               <option value="SUBMITTED">Submitted</option>
               <option value="APPROVED">Approved</option>
-              <option value="REWORK">Rework</option>
+              <option value="REWORK_REQUESTED">Rework</option>
             </select>
             <label className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600">
               <input type="checkbox" checked={mine} onChange={e => setMine(e.target.checked)} />
@@ -863,41 +923,105 @@ function WorkItemsPanel() {
         </CardBody>
       </Card>
 
+      {actionError && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          WorkItem action failed: {actionError}
+        </div>
+      )}
+      {workItems.isError && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          Unable to load WorkItems. Check Workgraph health and IAM membership sync.
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        {(workItems.data ?? []).map(item => (
-          <Card key={item.id}>
-            <CardHeader
-              title={item.title}
-              subtitle={`Parent capability ${item.parentCapabilityId ?? 'n/a'} · priority ${item.priority ?? 50}`}
-              action={<Badge tone={item.status === 'COMPLETED' ? 'ok' : item.status === 'CANCELLED' ? 'danger' : 'neutral'}>{item.status}</Badge>}
-            />
-            <CardBody className="space-y-4">
-              {item.description && <p className="text-sm leading-6 text-slate-600">{item.description}</p>}
-              <div className="space-y-2">
-                {(item.targets ?? []).map(target => (
-                  <div key={target.id} className="rounded-lg border border-slate-200 p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="font-mono text-xs text-slate-500">{target.targetCapabilityId}</div>
-                        <div className="mt-1 text-xs text-slate-600">Role {target.roleKey ?? 'any'} · child run {target.childWorkflowInstanceId ?? 'not started'}</div>
+        {(workItems.data ?? []).map(item => {
+          const targets = item.targets ?? []
+          const canApprove = targets.length > 0 && targets.every(target => target.status === 'SUBMITTED' || target.status === 'APPROVED') && item.status !== 'COMPLETED'
+          const canRequestRework = targets.some(target => target.status === 'SUBMITTED' || target.status === 'APPROVED')
+          return (
+            <Card key={item.id}>
+              <CardHeader
+                title={item.title}
+                subtitle={`Parent capability ${item.parentCapabilityId ?? 'n/a'} · priority ${item.priority ?? 50}`}
+                action={<Badge tone={item.status === 'COMPLETED' ? 'ok' : item.status === 'CANCELLED' ? 'danger' : item.status === 'AWAITING_PARENT_APPROVAL' ? 'warn' : 'neutral'}>{item.status}</Badge>}
+              />
+              <CardBody className="space-y-4">
+                {item.description && <p className="text-sm leading-6 text-slate-600">{item.description}</p>}
+                <div className="space-y-2">
+                  {targets.map(target => {
+                    const canClaim = (target.status === 'QUEUED' || target.status === 'REWORK_REQUESTED') && !target.claimedById
+                    const canStart = target.status === 'CLAIMED' && Boolean(target.claimedById) && Boolean(target.childWorkflowTemplateId) && !target.childWorkflowInstanceId
+                    const busyClaim = actionKey === `claim-${target.id}`
+                    const busyStart = actionKey === `start-${target.id}`
+                    const targetName = capabilityNames.get(target.targetCapabilityId) ?? target.targetCapabilityId
+                    return (
+                      <div key={target.id} className="rounded-lg border border-slate-200 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-semibold text-slate-900">{targetName}</div>
+                            <div className="mt-1 font-mono text-[11px] text-slate-500">{target.targetCapabilityId}</div>
+                            <div className="mt-1 text-xs text-slate-600">
+                              Role {target.roleKey ?? 'any'} · {target.claimedById ? `claimed by ${target.claimedById.slice(0, 8)}` : 'unclaimed'} · child run {target.childWorkflowInstanceId ? target.childWorkflowInstanceId.slice(0, 8) : 'not started'}
+                            </div>
+                            {!target.childWorkflowTemplateId && <div className="mt-1 text-xs text-amber-700">No child workflow template configured.</div>}
+                          </div>
+                          <Badge tone={target.status === 'SUBMITTED' || target.status === 'APPROVED' ? 'ok' : target.status === 'REWORK_REQUESTED' ? 'warn' : 'neutral'}>{target.status}</Badge>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled={!canClaim || Boolean(actionKey)}
+                            onClick={() => mutate(`/work-items/${item.id}/targets/${target.id}/claim`, undefined, `claim-${target.id}`)}
+                          >
+                            {busyClaim ? 'Claiming...' : 'Claim'}
+                          </button>
+                          <button
+                            className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled={!canStart || Boolean(actionKey)}
+                            onClick={() => mutate(`/work-items/${item.id}/targets/${target.id}/start`, undefined, `start-${target.id}`)}
+                          >
+                            {busyStart ? 'Starting...' : 'Start child workflow'}
+                          </button>
+                          {target.childWorkflowInstanceId && <a className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700" href={`${env.links.workgraphDesigner}/runs/${target.childWorkflowInstanceId}/insights`} target="_blank" rel="noreferrer">Child evidence</a>}
+                        </div>
                       </div>
-                      <Badge tone={target.status === 'SUBMITTED' || target.status === 'APPROVED' ? 'ok' : target.status === 'REWORK' ? 'warn' : 'neutral'}>{target.status}</Badge>
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <button className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => mutate(`/work-items/${item.id}/targets/${target.id}/claim`)}>Claim</button>
-                      <button className="rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => mutate(`/work-items/${item.id}/targets/${target.id}/start`)}>Start child workflow</button>
-                      {target.childWorkflowInstanceId && <a className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700" href={`${env.links.workgraphDesigner}/runs/${target.childWorkflowInstanceId}/insights`} target="_blank" rel="noreferrer">Child evidence</a>}
+                    )
+                  })}
+                </div>
+                {item.events?.length ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <div className="text-xs font-semibold uppercase tracking-widest text-slate-500">Latest events</div>
+                    <div className="mt-2 space-y-1">
+                      {item.events.map(event => (
+                        <div key={event.id} className="flex items-center justify-between gap-3 text-xs text-slate-600">
+                          <span className="font-semibold text-slate-800">{event.eventType}</span>
+                          <span>{formatDate(event.createdAt)}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                ))}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700" onClick={() => mutate(`/work-items/${item.id}/approve`)}>Approve parent result</button>
-                <button className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700" onClick={() => mutate(`/work-items/${item.id}/request-rework`, { reason: 'Operator requested rework from Operations Portal.' })}>Request rework</button>
-              </div>
-            </CardBody>
-          </Card>
-        ))}
+                ) : null}
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={!canApprove || Boolean(actionKey)}
+                    onClick={() => mutate(`/work-items/${item.id}/approve`, undefined, `approve-${item.id}`)}
+                  >
+                    {actionKey === `approve-${item.id}` ? 'Approving...' : 'Approve parent result'}
+                  </button>
+                  <button
+                    className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={!canRequestRework || Boolean(actionKey)}
+                    onClick={() => mutate(`/work-items/${item.id}/request-rework`, { reason: 'Operator requested rework from Operations Portal.' }, `rework-${item.id}`)}
+                  >
+                    {actionKey === `rework-${item.id}` ? 'Requesting...' : 'Request rework'}
+                  </button>
+                </div>
+              </CardBody>
+            </Card>
+          )
+        })}
         {workItems.data?.length === 0 && <Card><CardBody><div className="py-8 text-center text-sm text-slate-500">No WorkItems match the current filters.</div></CardBody></Card>}
       </div>
     </div>

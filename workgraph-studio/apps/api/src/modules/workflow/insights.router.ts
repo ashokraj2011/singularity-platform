@@ -1360,6 +1360,84 @@ function renderEvidenceMarkdown(pack: any): string {
   return lines.join('\n')
 }
 
+function sanitizePdfText(value: string): string {
+  return value
+    .replace(/\t/g, '  ')
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '')
+}
+
+function escapePdfText(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)')
+}
+
+function wrapPdfLine(line: string, width = 95): string[] {
+  const clean = sanitizePdfText(line)
+  if (clean.length <= width) return [clean]
+  const out: string[] = []
+  let current = clean
+  while (current.length > width) {
+    let breakAt = current.lastIndexOf(' ', width)
+    if (breakAt < Math.floor(width * 0.55)) breakAt = width
+    out.push(current.slice(0, breakAt).trimEnd())
+    current = current.slice(breakAt).trimStart()
+  }
+  if (current) out.push(current)
+  return out
+}
+
+function renderEvidencePdf(markdown: string): Buffer {
+  const bodyLines = markdown
+    .split(/\r?\n/)
+    .flatMap(line => wrapPdfLine(line || ' '))
+  const linesPerPage = 58
+  const pages: string[][] = []
+  for (let i = 0; i < bodyLines.length; i += linesPerPage) {
+    pages.push(bodyLines.slice(i, i + linesPerPage))
+  }
+  if (pages.length === 0) pages.push(['Run Evidence Pack'])
+
+  const objects: string[] = []
+  const addObject = (body: string): number => {
+    objects.push(body)
+    return objects.length
+  }
+
+  addObject('<< /Type /Catalog /Pages 2 0 R >>')
+  const pagesId = addObject('PAGES_PLACEHOLDER')
+  const fontId = addObject('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+  const pageIds: number[] = []
+
+  for (const pageLines of pages) {
+    const commands = [
+      'BT',
+      `/F1 10 Tf`,
+      '50 780 Td',
+      '13 TL',
+      ...pageLines.map(line => `(${escapePdfText(line)}) Tj T*`),
+      'ET',
+    ].join('\n')
+    const contentId = addObject(`<< /Length ${Buffer.byteLength(commands, 'utf8')} >>\nstream\n${commands}\nendstream`)
+    const pageId = addObject(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R >>`)
+    pageIds.push(pageId)
+  }
+
+  objects[pagesId - 1] = `<< /Type /Pages /Kids [${pageIds.map(id => `${id} 0 R`).join(' ')}] /Count ${pageIds.length} >>`
+
+  let pdf = '%PDF-1.4\n%\xE2\xE3\xCF\xD3\n'
+  const offsets = [0]
+  objects.forEach((body, index) => {
+    offsets.push(Buffer.byteLength(pdf, 'binary'))
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`
+  })
+  const xrefOffset = Buffer.byteLength(pdf, 'binary')
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  for (let i = 1; i < offsets.length; i++) {
+    pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`
+  return Buffer.from(pdf, 'binary')
+}
+
 function buildEvidencePack(insights: InsightsResponse) {
   const warnings = buildEvidenceWarnings(insights)
   const workspaceEvidence = insights.nodes.flatMap(node =>
@@ -1443,6 +1521,14 @@ insightsRouter.get('/:id/evidence-pack', async (req: Request, res: Response, nex
     const pack = buildEvidencePack(insights)
     if (req.query.format === 'markdown') {
       res.type('text/markdown').send(pack.markdown)
+      return
+    }
+    if (req.query.format === 'pdf') {
+      const pdf = renderEvidencePdf(pack.markdown)
+      const filename = `${id}-evidence-pack.pdf`
+      res.setHeader('Content-Type', 'application/pdf')
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+      res.send(pdf)
       return
     }
     res.json(pack)
