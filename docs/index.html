@@ -782,6 +782,13 @@ if (!budgetRes.allowed) {
 <section id="schema-highlights">
 <h2>Schema highlights <a class="anchor" href="#schema-highlights">#</a></h2>
 
+<p style="background:#eef6ff;padding:10px 14px;border-left:4px solid #2563eb;border-radius:3px;">
+  <strong>Looking for full ERDs?</strong> The canonical data-model documentation lives in
+  <a href="data-model/README.md"><code>docs/data-model/</code></a> — one diagram per database (7 total) plus a
+  <a href="data-model/00-platform-overview.md">cross-DB platform overview</a> that maps which UUIDs flow between services.
+  The summaries below are an at-a-glance tour; click into the per-DB ERDs for the full picture.
+</p>
+
 <h3>workgraph-studio (Postgres on <code>:5434</code>)</h3>
 <ul>
   <li><code>Workflow</code> / <code>WorkflowVersion</code> — design-time templates (versioned)</li>

@@ -6,6 +6,22 @@ generator client {
   output   = "../generated/prisma-client"
 }
 
+// M31 — auto-generated ERD. Emits a Markdown file with an embedded Mermaid
+// diagram; GitHub renders it natively. Regenerated on every `prisma generate`,
+// so a schema PR that forgets to re-run will fail the CI drift gate.
+generator erd_md {
+  provider = "prisma-erd-generator"
+  output   = "../../../../docs/data-model/02-agent-runtime.md"
+  theme    = "default"
+}
+
+// Static PNG for offline use (slide decks, the docs/index.html landing page).
+generator erd_png {
+  provider = "prisma-erd-generator"
+  output   = "../../../../docs/data-model/02-agent-runtime.png"
+  theme    = "default"
+}
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")

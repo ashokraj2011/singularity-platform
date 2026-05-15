@@ -276,6 +276,64 @@ jobs:
           [ $fail -eq 0 ] || exit 1
           echo "✓ No composer-owned models used in agent-runtime code."
 
+  # ─── M31 data-model drift guard — auto-gen ERDs must stay in sync ──────────
+  # The 4 Prisma schemas have a `generator erd_md` block that emits a Markdown
+  # ERD (and PNG for the smaller schemas) to docs/data-model/ on every
+  # `prisma generate`. If a PR changes a schema without re-running generate,
+  # the committed ERD goes stale. This job regenerates and asserts no diff.
+  #
+  # Hand-written ERDs (01-iam, 05-audit-gov, 06-tool-service) are NOT checked
+  # here — they cover stable schemas that change too rarely to justify CI cost.
+  m31-data-model-drift:
+    name: M31 data-model drift (auto-gen ERDs in sync with schemas)
+    runs-on: ubuntu-latest
+    needs: [typecheck-ts]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: install agent-and-tools workspace
+        working-directory: agent-and-tools
+        run: npm ci --ignore-scripts
+      - name: install pnpm + workgraph
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: |
+            - cwd: workgraph-studio
+              args: [--frozen-lockfile, --ignore-scripts]
+      - name: regenerate Prisma ERDs (all 4 schemas)
+        run: |
+          set -e
+          # agent-runtime
+          ( cd agent-and-tools/apps/agent-runtime \
+            && DATABASE_URL=postgresql://stub:stub@stub/stub npx prisma generate )
+          # composer OWNED
+          ( cd agent-and-tools/apps/prompt-composer \
+            && DATABASE_URL=postgresql://stub:stub@stub/stub npx prisma generate --schema=prisma/schema.prisma )
+          # composer RUNTIME-READ
+          ( cd agent-and-tools/apps/prompt-composer \
+            && DATABASE_URL_RUNTIME_READ=postgresql://stub:stub@stub/stub npx prisma generate --schema=prisma/runtime-read.prisma )
+          # workgraph
+          ( cd workgraph-studio/apps/api \
+            && DATABASE_URL=postgresql://stub:stub@stub/stub npx prisma generate )
+      - name: assert no drift in committed ERDs
+        run: |
+          # Only check the .md files — PNGs have non-deterministic bytes
+          # (font hinting, layout RNG) and would falsely flag every CI run.
+          # If the Mermaid source is clean, the PNG is implicitly clean too.
+          changed=$(git diff --name-only docs/data-model/ \
+            | grep -E '\.md$' \
+            | grep -E '0[2-4]' || true)
+          if [ -n "$changed" ]; then
+            echo "::error::M31 drift detected — these auto-gen ERDs are out of sync with their Prisma schemas:"
+            echo "$changed" | sed 's/^/  - /'
+            echo "::error::Run \`npx prisma generate\` for the changed service(s) and commit the regenerated docs/data-model/ files."
+            git diff docs/data-model/ | head -100
+            exit 1
+          fi
+          echo "✓ All auto-generated ERDs are in sync with their Prisma schemas."
+
   # ─── Docker compose files parse cleanly ─────────────────────────────────────
   compose-syntax:
     name: docker compose syntax

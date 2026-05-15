@@ -344,6 +344,7 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
   - [Option B — singularity.sh CLI](#option-b--singularitysh-cli)
   - [Option C — per-app compose files](#option-c--per-app-compose-files)
 - [Service inventory](#service-inventory)
+- [Data model](#data-model)
 - [Using the platform](#using-the-platform)
 - [End-to-end demo: workgraph DAG calls composer calls context-fabric](#end-to-end-demo)
 - [`singularity.sh` cheatsheet](#singularitysh-cheatsheet)
@@ -632,6 +633,18 @@ cd singularity-portal             && npm install && npm run dev
 | **at-postgres** | localhost:5432 | `postgres / singularity` | `singularity` DB (pgvector) |
 | **wg-postgres** | localhost:5434 | `workgraph / workgraph_secret` | `workgraph` DB |
 | **wg-minio** | http://localhost:9000 (console :9001) | `workgraph / workgraph_secret` | artifact storage |
+
+---
+
+## Data model
+
+After M30 the platform owns **5 disjoint Postgres databases** (158 tables total). Each is owned by exactly one service; cross-DB references flow as opaque UUIDs at the application layer, never via SQL joins.
+
+- **[`docs/data-model/`](docs/data-model/README.md)** — index of all 7 ERDs.
+- **[`docs/data-model/00-platform-overview.md`](docs/data-model/00-platform-overview.md)** — start here. 5-DB topology graph + cross-DB UUID join-key table (which IDs flow where).
+- Per-DB ERDs: [IAM](docs/data-model/01-iam.md) · [agent-runtime](docs/data-model/02-agent-runtime.md) · [composer-owned](docs/data-model/03-prompt-composer-owned.md) · [composer-runtime-read](docs/data-model/03-prompt-composer-runtime-read.md) · [workgraph](docs/data-model/04-workgraph.md) · [audit-gov](docs/data-model/05-audit-gov.md) · [tool-service](docs/data-model/06-tool-service.md)
+
+Four of the seven diagrams are **auto-generated** by `prisma-erd-generator` on every `prisma generate`. CI's `data-model-drift` job fails red when a PR changes a Prisma schema without re-running generate.
 
 ---
 

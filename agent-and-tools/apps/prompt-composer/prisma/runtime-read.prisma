@@ -27,6 +27,21 @@ generator client {
   output   = "../generated/runtime-reader-client"
 }
 
+// M31 — auto-generated ERD for the READ-ONLY view composer has on
+// agent-runtime's DB. Documented separately from the OWNED schema so
+// readers see exactly which agent-runtime models composer touches.
+generator erd_md {
+  provider = "prisma-erd-generator"
+  output   = "../../../../docs/data-model/03-prompt-composer-runtime-read.md"
+  theme    = "default"
+}
+
+generator erd_png {
+  provider = "prisma-erd-generator"
+  output   = "../../../../docs/data-model/03-prompt-composer-runtime-read.png"
+  theme    = "default"
+}
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL_RUNTIME_READ")

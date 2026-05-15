@@ -7,6 +7,15 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// M31 — auto-generated ERD. Workgraph has ~76 models so PNG would be
+// illegible at typical resolutions; Markdown only — GitHub renders the
+// embedded Mermaid as a zoomable diagram in the browser.
+generator erd_md {
+  provider = "prisma-erd-generator"
+  output   = "../../../../docs/data-model/04-workgraph.md"
+  theme    = "default"
+}
+
 // ─── ENUMS ────────────────────────────────────────────────────────────────────
 
 enum NodeType {
