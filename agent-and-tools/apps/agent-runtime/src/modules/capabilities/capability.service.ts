@@ -568,6 +568,122 @@ export const capabilityService = {
     return { repositories, knowledgeSources, local, warnings };
   },
 
+  async runLearningWorker(capabilityId: string, input: {
+    approveGroupKeys?: string[];
+    rejectGroupKeys?: string[];
+    activateAgentTemplateIds?: string[];
+    syncApprovedSources?: boolean;
+    reembed?: boolean;
+    reembedKinds?: ("knowledge" | "memory" | "code")[];
+    dryRun?: boolean;
+  }, helpers: {
+    syncRepository: (capabilityId: string, repoId: string) => Promise<unknown>;
+    syncKnowledgeSource: (capabilityId: string, sourceId: string) => Promise<unknown>;
+  }, userId?: string) {
+    assertCapabilityNotArchived(await this.get(capabilityId));
+    const dryRun = input.dryRun === true;
+    const warnings: string[] = [];
+    const nextActions: string[] = [];
+    const before = await learningWorkerSnapshot(capabilityId);
+
+    const latestRun = await prisma.capabilityBootstrapRun.findFirst({
+      where: { capabilityId },
+      orderBy: { createdAt: "desc" },
+      include: { candidates: { orderBy: [{ groupKey: "asc" }, { createdAt: "asc" }] } },
+    });
+
+    const approveGroupKeys = input.approveGroupKeys ?? [];
+    const rejectGroupKeys = input.rejectGroupKeys ?? [];
+    const activateAgentTemplateIds = input.activateAgentTemplateIds ?? [];
+    let review: unknown = null;
+    if (latestRun && (approveGroupKeys.length > 0 || rejectGroupKeys.length > 0 || activateAgentTemplateIds.length > 0)) {
+      if (dryRun) {
+        review = {
+          dryRun: true,
+          bootstrapRunId: latestRun.id,
+          approveGroupKeys,
+          rejectGroupKeys,
+          activateAgentTemplateIds,
+        };
+      } else {
+        review = await this.reviewBootstrapRun(capabilityId, latestRun.id, {
+          approveGroupKeys,
+          rejectGroupKeys,
+          activateAgentTemplateIds,
+        }, userId);
+      }
+    }
+
+    if (latestRun && before.learning.pending > 0 && approveGroupKeys.length === 0 && rejectGroupKeys.length === 0) {
+      warnings.push(`${before.learning.pending} bootstrap learning candidate(s) are still pending human review.`);
+      nextActions.push("Review pending bootstrap learning groups, then rerun the worker to materialize approved knowledge.");
+    }
+
+    let sync: unknown = null;
+    if (input.syncApprovedSources !== false) {
+      const [repositories, knowledgeSources] = await Promise.all([
+        prisma.capabilityRepository.findMany({ where: { capabilityId, status: "ACTIVE" }, select: { id: true } }),
+        prisma.capabilityKnowledgeSource.findMany({ where: { capabilityId, status: "ACTIVE" }, select: { id: true } }),
+      ]);
+      if (dryRun) {
+        sync = {
+          dryRun: true,
+          repositoryIds: repositories.map(repo => repo.id),
+          knowledgeSourceIds: knowledgeSources.map(source => source.id),
+        };
+      } else {
+        try {
+          sync = await this.syncCapability(capabilityId, {
+            repositoryIds: repositories.map(repo => repo.id),
+            knowledgeSourceIds: knowledgeSources.map(source => source.id),
+          }, helpers);
+        } catch (err) {
+          const message = `Approved source sync failed: ${(err as Error).message}`;
+          warnings.push(message);
+          sync = { error: message };
+        }
+      }
+    }
+
+    if (sync && typeof sync === "object" && !Array.isArray(sync)) {
+      const syncWarnings = (sync as { warnings?: unknown }).warnings;
+      if (Array.isArray(syncWarnings)) warnings.push(...syncWarnings.map(String));
+    }
+
+    let reembed: unknown = null;
+    if (input.reembed !== false) {
+      const kinds = input.reembedKinds ?? ["knowledge", "memory", "code"];
+      if (dryRun) reembed = { dryRun: true, kinds };
+      else reembed = await this.reembedCapability(capabilityId, { kinds });
+    }
+
+    const after = dryRun ? before : await learningWorkerSnapshot(capabilityId);
+    if (after.learning.materialized === 0) {
+      nextActions.push("Approve at least one learning group so repo/doc sync can promote grounded knowledge.");
+    }
+    if (after.knowledge.active === 0) {
+      nextActions.push("Materialize bootstrap candidates or upload knowledge artifacts before running governed workflows.");
+    }
+    if (after.repositories.active > 0 && after.codeSymbols.total === 0) {
+      nextActions.push("Use MCP local AST indexing for private code, or enable POLL_REPOSITORIES_ENABLED and EXTRACTOR_MODE for central code-symbol mirroring.");
+    }
+
+    return {
+      capabilityId,
+      ranAt: new Date().toISOString(),
+      dryRun,
+      latestBootstrapRunId: latestRun?.id ?? null,
+      before,
+      review,
+      sync,
+      reembed,
+      after,
+      warnings: Array.from(new Set(warnings)),
+      nextActions: Array.from(new Set(nextActions)),
+      capsuleInvalidation: "No direct purge required. Prompt Composer task signatures include capability content timestamps/counts, so newly materialized artifacts and memory make old capsules unreachable.",
+    };
+  },
+
   async list() {
     return prisma.capability.findMany({
       orderBy: { createdAt: "desc" },
@@ -1761,6 +1877,43 @@ function escapeMermaid(value: string): string {
   return value.replace(/[<>{}[\]|"]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
 }
 
+async function learningWorkerSnapshot(capabilityId: string) {
+  const [
+    repositories,
+    knowledgeSources,
+    activeKnowledge,
+    pendingLearning,
+    materializedLearning,
+    rejectedLearning,
+    codeSymbols,
+    distilledMemory,
+    bootstrapRuns,
+  ] = await Promise.all([
+    prisma.capabilityRepository.count({ where: { capabilityId, status: "ACTIVE" } }),
+    prisma.capabilityKnowledgeSource.count({ where: { capabilityId, status: "ACTIVE" } }),
+    prisma.capabilityKnowledgeArtifact.count({ where: { capabilityId, status: "ACTIVE" } }),
+    prisma.capabilityLearningCandidate.count({ where: { capabilityId, status: "PENDING" } }),
+    prisma.capabilityLearningCandidate.count({ where: { capabilityId, status: "MATERIALIZED" } }),
+    prisma.capabilityLearningCandidate.count({ where: { capabilityId, status: "REJECTED" } }),
+    prisma.capabilityCodeSymbol.count({ where: { capabilityId } }),
+    prisma.distilledMemory.count({ where: { scopeType: "CAPABILITY", scopeId: capabilityId, status: "ACTIVE" } }),
+    prisma.capabilityBootstrapRun.count({ where: { capabilityId } }),
+  ]);
+
+  return {
+    repositories: { active: repositories },
+    knowledgeSources: { active: knowledgeSources },
+    knowledge: { active: activeKnowledge },
+    learning: {
+      pending: pendingLearning,
+      materialized: materializedLearning,
+      rejected: rejectedLearning,
+    },
+    codeSymbols: { total: codeSymbols },
+    distilledMemory: { active: distilledMemory },
+    bootstrapRuns: { total: bootstrapRuns },
+  };
+}
 
 function formatCandidateContent(title: string, docs: DiscoveryDoc[]): string {
   const parts = [`# ${title}`];

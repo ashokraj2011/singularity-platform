@@ -55,6 +55,15 @@ export const capabilityController = {
       }),
     );
   },
+  async runLearningWorker(req: Request, res: Response) {
+    return ok(
+      res,
+      await capabilityService.runLearningWorker(req.params.id, req.body, {
+        syncRepository: syncRepositoryNow,
+        syncKnowledgeSource: syncKnowledgeSourceNow,
+      }, req.user?.user_id),
+    );
+  },
   async attachRepo(req: Request, res: Response) {
     return ok(res, await capabilityService.attachRepository(req.params.id, req.body), 201);
   },

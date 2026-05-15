@@ -21,7 +21,7 @@ export interface CheckResult {
 
 export type GovernanceMode = "fail_open" | "fail_closed" | "degraded" | "human_approval_required";
 
-function outageResult(mode: GovernanceMode, check: "budget" | "rate_limit"): CheckResult {
+export function outageResult(mode: GovernanceMode, check: "budget" | "rate_limit"): CheckResult {
   if (mode === "fail_closed") {
     return { allowed: false, unavailable: true, reason: `audit-governance unavailable during ${check} check` };
   }

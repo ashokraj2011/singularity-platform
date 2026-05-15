@@ -7,6 +7,7 @@ import {
   extractSymbolsSchema,
   updateRepoPollSchema, knowledgeSourceSchema, updateKnowledgeSourceSchema,
   bootstrapCapabilitySchema, reviewBootstrapSchema, syncCapabilitySchema, updateCapabilitySchema,
+  learningWorkerRunSchema,
 } from "./capability.schemas";
 
 // M15 — multipart upload (knowledge artifacts). Memory storage keeps things
@@ -35,6 +36,11 @@ capabilityRoutes.post(
   capabilityController.reviewBootstrapRun,
 );
 capabilityRoutes.post("/:id/sync", validate(syncCapabilitySchema), capabilityController.sync);
+capabilityRoutes.post(
+  "/:id/learning-worker/run",
+  validate(learningWorkerRunSchema),
+  capabilityController.runLearningWorker,
+);
 
 capabilityRoutes.post("/:id/repositories", validate(attachRepositorySchema), capabilityController.attachRepo);
 

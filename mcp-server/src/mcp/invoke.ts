@@ -29,6 +29,7 @@ import { extractCodeChange } from "../audit/provenanceExtractor";
 import { events } from "../events/bus";
 import { emitAuditEvent } from "../lib/audit-gov-emit";
 import { checkBudget, checkRateLimit, GovernanceMode } from "../lib/audit-gov-check";
+import { isDegradedToolAllowedByPolicy, isRiskyToolByPolicy } from "../lib/governance-policy";
 import { persistApproval, consumeApproval } from "../lib/audit-gov-approvals";
 import {
   savePending, takePending, peekPending, PendingToolDescriptor,
@@ -189,34 +190,8 @@ function detectRepetition(history: LoopState["toolCallHistory"]): { name: string
   return count >= LOOP_REPETITION_THRESHOLD ? { name: tail.name, count } : null;
 }
 
-const MUTATION_TOOL_NAMES = new Set([
-  "write_file",
-  "write_file_demo",
-  "apply_patch",
-  "apply_patch_demo",
-  "edit_file",
-  "create_file",
-  "git_commit",
-  "finish_work_branch",
-]);
-
-function toolRisk(desc?: PendingToolDescriptor): "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" {
-  return desc?.risk_level ?? "LOW";
-}
-
-function isMutationTool(name: string): boolean {
-  return MUTATION_TOOL_NAMES.has(name);
-}
-
-function isRiskyTool(name: string, desc?: PendingToolDescriptor): boolean {
-  return isMutationTool(name) || desc?.execution_target === "SERVER" || desc?.requires_approval === true || ["HIGH", "CRITICAL"].includes(toolRisk(desc));
-}
-
 function isDegradedToolAllowed(state: LoopState, name: string, desc?: PendingToolDescriptor): boolean {
-  if (state.degradedActionsAllowed.length > 0 && !state.degradedActionsAllowed.includes(name)) return false;
-  if (desc?.execution_target === "SERVER") return false;
-  if (isMutationTool(name)) return false;
-  return toolRisk(desc) === "LOW";
+  return isDegradedToolAllowedByPolicy(name, desc, state.degradedActionsAllowed);
 }
 
 type DispatchToolResult = {
@@ -393,7 +368,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
           return { kind: "denied", finishReason: "governance_denied", reason, check: "tool_policy", details: { tool_name: tc.name, governanceMode: state.governanceMode } };
         }
 
-        const risky = isRiskyTool(tc.name, desc);
+        const risky = isRiskyToolByPolicy(tc.name, desc);
         const requiresApproval =
           desc?.requires_approval ||
           handler?.descriptor.requires_approval ||

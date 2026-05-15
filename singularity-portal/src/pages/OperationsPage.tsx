@@ -598,6 +598,9 @@ function workflowBudgetConfigured(workflow: WorkflowTemplateRow): boolean {
 
 function ReadinessPanel() {
   const [capabilityId, setCapabilityId] = useState('')
+  const [workerBusy, setWorkerBusy] = useState(false)
+  const [workerError, setWorkerError] = useState<string | null>(null)
+  const [workerResult, setWorkerResult] = useState<any | null>(null)
   const capabilities = useQuery({
     queryKey: ['ops', 'readiness-capabilities'],
     queryFn: async () => unwrapItems<CapabilityRow>(await runtimeApi.get('/capabilities')),
@@ -622,6 +625,26 @@ function ReadinessPanel() {
   ].filter(Boolean) as string[]
   const selected = capabilities.data?.find(cap => cap.id === capabilityId)
   const data = readiness.data
+
+  async function runLearningWorker() {
+    if (!capabilityId) return
+    setWorkerBusy(true)
+    setWorkerError(null)
+    setWorkerResult(null)
+    try {
+      const res = await runtimeApi.post(`/capabilities/${capabilityId}/learning-worker/run`, {
+        syncApprovedSources: true,
+        reembed: true,
+      })
+      const payload = unwrapEnvelope<any>(res)
+      setWorkerResult(payload)
+      await readiness.refetch()
+    } catch (err) {
+      setWorkerError(errorMessage(err))
+    } finally {
+      setWorkerBusy(false)
+    }
+  }
 
   return (
     <div className="grid grid-cols-1 gap-5 xl:grid-cols-[0.8fr_1.4fr]">
@@ -668,6 +691,38 @@ function ReadinessPanel() {
                   <Metric title="Workflows" value={String(workflowRows.length)} />
                   <Metric title="Budgeted" value={String(workflowRows.filter(workflowBudgetConfigured).length)} />
                 </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900">Capability learning worker</div>
+                    <div className="mt-1 text-xs text-slate-500">Sync approved repo/doc sources, backfill embeddings, and report any pending human review gates.</div>
+                  </div>
+                  <button
+                    className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={workerBusy || !capabilityId}
+                    onClick={runLearningWorker}
+                  >
+                    {workerBusy ? 'Running worker...' : 'Run learning worker'}
+                  </button>
+                </div>
+                {workerError && <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{workerError}</div>}
+                {workerResult && (
+                  <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
+                    <Metric title="Warnings" value={String(workerResult.warnings?.length ?? 0)} />
+                    <Metric title="Next actions" value={String(workerResult.nextActions?.length ?? 0)} />
+                    <Metric title="Knowledge after" value={String(workerResult.after?.knowledge?.active ?? 0)} />
+                    {(workerResult.nextActions ?? []).length > 0 && (
+                      <div className="rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs text-amber-800 lg:col-span-3">
+                        <div className="font-semibold">Worker next actions</div>
+                        <ul className="mt-1 space-y-1">
+                          {workerResult.nextActions.slice(0, 5).map((item: string) => <li key={item}>- {item}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {(data.blockers.length > 0 || data.warnings.length > 0 || workflowWarnings.length > 0) && (

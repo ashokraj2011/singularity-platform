@@ -1,4 +1,4 @@
-from context_api_service.app.execute import _context_plan_status, _governance_mode
+from context_api_service.app.execute import _context_plan_message, _context_plan_status, _governance_mode
 
 
 def test_governance_mode_normalizes_known_values():
@@ -55,3 +55,19 @@ def test_context_plan_status_rejects_missing_required_layers():
     assert status["reason"] == "missing_required_context"
     assert status["missingRequired"] == missing
     assert status["contextPlanHash"] == "sha256:bad"
+
+
+def test_context_plan_message_names_missing_layers_for_operator_fix():
+    status = {
+        "missingRequired": [
+            {"layerType": "PLATFORM_CONSTITUTION"},
+            {"layerType": "AGENT_ROLE"},
+            {"layerType": "TASK_CONTEXT"},
+        ]
+    }
+
+    message = _context_plan_message(status)
+
+    assert "PLATFORM_CONSTITUTION" in message
+    assert "AGENT_ROLE" in message
+    assert "TASK_CONTEXT" in message
