@@ -14,7 +14,7 @@ import { query, queryOne } from "../db";
 
 const LLM_GATEWAY_URL    = process.env.LLM_GATEWAY_URL    ?? "http://llm-gateway:8001";
 const LLM_GATEWAY_BEARER = process.env.LLM_GATEWAY_BEARER ?? "";
-const ENGINE_MODEL_ALIAS = process.env.ENGINE_MODEL_ALIAS ?? "mock";
+const ENGINE_MODEL_ALIAS = process.env.ENGINE_MODEL_ALIAS?.trim();
 const ENGINE_TIMEOUT_MS  = Number(process.env.ENGINE_TIMEOUT_MS ?? 120_000);
 
 // ── Trace loading ──────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ async function callLlmForDiagnosis(prompt: string): Promise<DiagnosisResult> {
       method: "POST",
       headers,
       body: JSON.stringify({
-        model_alias: ENGINE_MODEL_ALIAS,
+        ...(ENGINE_MODEL_ALIAS ? { model_alias: ENGINE_MODEL_ALIAS } : {}),
         messages: [
           { role: "system", content: DIAGNOSIS_SYSTEM_PROMPT },
           { role: "user",   content: prompt },

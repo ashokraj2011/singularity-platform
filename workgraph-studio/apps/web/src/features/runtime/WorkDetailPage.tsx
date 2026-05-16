@@ -551,6 +551,7 @@ function WorkbenchTaskCard({
 }) {
   const [sessionId, setSessionId] = useState('')
   const [finalizedPack, setFinalizedPack] = useState<Record<string, unknown> | null>(null)
+  const [showEmbeddedWorkbench, setShowEmbeddedWorkbench] = useState(false)
   const completedRef = useRef(false)
   const config = isPlainRecord(node.config) ? node.config : {}
   const workbenchConfig = isPlainRecord(config.workbench) ? config.workbench : {}
@@ -593,6 +594,13 @@ function WorkbenchTaskCard({
     const handler = (event: MessageEvent) => {
       if (event.origin !== 'http://localhost:5176') return
       const data = event.data
+      if (data && typeof data === 'object' && data.type === 'blueprintWorkbench.auth.request') {
+        const token = readWorkgraphToken()
+        if (token && event.source && 'postMessage' in event.source) {
+          ;(event.source as Window).postMessage({ type: 'blueprintWorkbench.auth', token }, event.origin)
+        }
+        return
+      }
       if (!data || typeof data !== 'object' || data.type !== 'blueprintWorkbench.finalized') return
       if (data.workflowInstanceId && data.workflowInstanceId !== task.instanceId) return
       if (data.workflowNodeId && data.workflowNodeId !== task.nodeId) return
@@ -642,7 +650,7 @@ function WorkbenchTaskCard({
           <strong style={{ fontSize: 13, color: 'var(--color-on-surface)' }}>Workbench Task bridge</strong>
         </div>
         <p style={{ margin: 0, fontSize: 12, lineHeight: 1.45, color: 'var(--color-outline)' }}>
-          The Blueprint Workbench runs inside this task. When the final implementation pack is approved, the workflow node completes and the next human approval stage receives the pack.
+          Blueprint Workbench opens in its own portal. When the final implementation pack is finalized, Workgraph completes this task automatically and advances the workflow with the approved pack.
         </p>
       </div>
 
@@ -660,19 +668,78 @@ function WorkbenchTaskCard({
         </div>
       )}
 
-      <iframe
-        title="Blueprint Workbench"
-        src={workbenchUrl}
-        style={{
-          width: '100%',
-          height: 720,
-          border: '1px solid var(--color-outline-variant)',
-          borderRadius: 12,
-          background: '#0b1326',
-          opacity: canComplete ? 1 : 0.55,
-          pointerEvents: canComplete ? 'auto' : 'none',
-        }}
-      />
+      <div style={{
+        border: '1px solid var(--color-outline-variant)',
+        borderRadius: 12,
+        background: '#f8fafc',
+        padding: 18,
+        display: 'grid',
+        gap: 12,
+      }}>
+        <div>
+          <p style={{ margin: '0 0 5px', fontSize: 14, fontWeight: 800, color: 'var(--color-on-surface)' }}>
+            Continue in Blueprint Workbench
+          </p>
+          <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: 'var(--color-outline)' }}>
+            The full portal has the stage canvas, artifact review, terminal evidence, and code diff approval. Keep this workflow page open; finalization is now recorded by the backend even if this page is closed.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <a
+            href={workbenchUrl}
+            target="_blank"
+            rel="opener"
+            style={{
+              minHeight: 38,
+              padding: '0 14px',
+              borderRadius: 9,
+              background: '#7c3aed',
+              color: '#fff',
+              textDecoration: 'none',
+              fontSize: 12,
+              fontWeight: 800,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            <ExternalLink size={14} /> Open Blueprint Workbench
+          </a>
+          <button
+            type="button"
+            onClick={() => setShowEmbeddedWorkbench(value => !value)}
+            style={{
+              minHeight: 38,
+              padding: '0 12px',
+              borderRadius: 9,
+              border: '1px solid var(--color-outline-variant)',
+              background: '#fff',
+              color: '#475569',
+              cursor: 'pointer',
+              fontSize: 12,
+              fontWeight: 800,
+            }}
+          >
+            {showEmbeddedWorkbench ? 'Hide embedded preview' : 'Show embedded preview'}
+          </button>
+        </div>
+      </div>
+
+      {showEmbeddedWorkbench && (
+        <iframe
+          title="Blueprint Workbench"
+          src={workbenchUrl}
+          style={{
+            width: '100%',
+            height: 720,
+            border: '1px solid var(--color-outline-variant)',
+            borderRadius: 12,
+            background: '#0b1326',
+            opacity: canComplete ? 1 : 0.55,
+            pointerEvents: canComplete ? 'auto' : 'none',
+          }}
+        />
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'end' }}>
         <label style={{ fontSize: 11, fontWeight: 700, color: '#334155' }}>
@@ -719,8 +786,8 @@ function WorkbenchTaskCard({
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-        <a href={workbenchUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: '#7c3aed', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-          <ExternalLink size={12} /> Open full workbench
+        <a href={workbenchUrl} target="_blank" rel="opener" style={{ fontSize: 12, color: '#7c3aed', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <ExternalLink size={12} /> Open Blueprint Workbench
         </a>
         {completeMut.isError && (
           <span style={{ fontSize: 11, color: '#b91c1c' }}>Could not complete the workflow task. Try again.</span>
@@ -836,6 +903,17 @@ function buildWorkbenchUrl(workflowInstanceId: string, workflowNodeId: string, c
     }
   }
   return url.toString()
+}
+
+function readWorkgraphToken(): string {
+  try {
+    const raw = window.localStorage.getItem('workgraph-auth')
+    if (!raw) return ''
+    const parsed = JSON.parse(raw) as { state?: { token?: string | null } }
+    return parsed.state?.token ?? ''
+  } catch {
+    return ''
+  }
 }
 
 // ── Row types (shape returned by /tasks/:id, /approvals/:id, /consumables/:id) ──

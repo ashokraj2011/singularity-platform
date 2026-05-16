@@ -396,6 +396,9 @@ jobs:
           - image: context-api
             context: context-fabric
             dockerfile: services/context_api_service/Dockerfile
+          - image: llm-gateway
+            context: context-fabric
+            dockerfile: services/llm_gateway_service/Dockerfile
           - image: agent-runtime
             context: agent-and-tools
             dockerfile: apps/agent-runtime/Dockerfile

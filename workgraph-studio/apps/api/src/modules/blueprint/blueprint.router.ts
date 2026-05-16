@@ -7,7 +7,7 @@ import { BlueprintStage, BlueprintSessionStatus, BlueprintStageStatus, Blueprint
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError } from '../../lib/errors'
-import { logEvent, publishOutbox } from '../../lib/audit'
+import { createReceipt, logEvent, publishOutbox } from '../../lib/audit'
 import { contextFabricClient, ContextFabricError, type ExecuteResponse } from '../../lib/context-fabric/client'
 import { recordWorkflowLlmUsage } from '../workflow/runtime/budget'
 
@@ -2576,22 +2576,34 @@ async function attachFinalPackToWorkflowNode(
   const finalPackKey = typeof outputs.finalPackKey === 'string' && outputs.finalPackKey.trim()
     ? outputs.finalPackKey.trim()
     : 'finalImplementationPack'
+  const workflowOutput = {
+    blueprintSessionId: session.id,
+    workbenchStatus: 'FINALIZED',
+    finalImplementationPack: finalPack,
+    [finalPackKey]: finalPack,
+    finalPackConsumableId: finalPack.finalPackConsumableId,
+    stageConsumables: finalPack.stageConsumables ?? [],
+    consumableIds: finalPack.consumableIds ?? [],
+    stageArtifactsByKind: stageConsumablesByKind(finalPack.stageConsumables ?? []),
+    workbench: {
+      profile: typeof workbench.profile === 'string' ? workbench.profile : 'blueprint',
+      sessionId: session.id,
+      workflowInstanceId: node.instanceId,
+      workflowNodeId: node.id,
+      completedAt: finalPack.generatedAt,
+      finalPackConsumableId: finalPack.finalPackConsumableId,
+      stageConsumables: finalPack.stageConsumables ?? [],
+      consumableIds: finalPack.consumableIds ?? [],
+      stageArtifactsByKind: stageConsumablesByKind(finalPack.stageConsumables ?? []),
+    },
+  }
   const nextConfig = {
     ...config,
     workbench: {
       ...workbench,
       sessionId: session.id,
       finalPack,
-      output: {
-        blueprintSessionId: session.id,
-        workbenchStatus: 'FINALIZED',
-        finalImplementationPack: finalPack,
-        [finalPackKey]: finalPack,
-        finalPackConsumableId: finalPack.finalPackConsumableId,
-        stageConsumables: finalPack.stageConsumables ?? [],
-        consumableIds: finalPack.consumableIds ?? [],
-        stageArtifactsByKind: stageConsumablesByKind(finalPack.stageConsumables ?? []),
-      },
+      output: workflowOutput,
       finalizedAt: finalPack.generatedAt,
     },
   }
@@ -2626,6 +2638,111 @@ async function attachFinalPackToWorkflowNode(
     workflowInstanceId: node.instanceId,
     actorId,
   })
+  await completeLinkedWorkbenchTask({
+    instanceId: node.instanceId,
+    nodeId: node.id,
+    sessionId: session.id,
+    finalPackId: finalPack.id,
+    output: workflowOutput,
+    actorId,
+  })
+}
+
+async function completeLinkedWorkbenchTask({
+  instanceId,
+  nodeId,
+  sessionId,
+  finalPackId,
+  output,
+  actorId,
+}: {
+  instanceId: string
+  nodeId: string
+  sessionId: string
+  finalPackId: string
+  output: Record<string, unknown>
+  actorId: string
+}) {
+  const node = await prisma.workflowNode.findFirst({
+    where: { id: nodeId, instanceId },
+    select: { id: true, status: true },
+  })
+  if (!node || node.status === 'COMPLETED') return
+  if (node.status !== 'ACTIVE') {
+    await logEvent('BlueprintWorkflowAutoAdvanceSkipped', 'WorkflowNode', nodeId, actorId, {
+      instanceId,
+      sessionId,
+      finalPackId,
+      nodeStatus: node.status,
+      reason: 'workbench node is not active',
+    })
+    return
+  }
+
+  const task = await prisma.task.findFirst({
+    where: {
+      instanceId,
+      nodeId,
+      status: { not: 'COMPLETED' },
+    },
+    orderBy: { createdAt: 'desc' },
+  })
+
+  if (task) {
+    await prisma.task.update({
+      where: { id: task.id },
+      data: { status: 'COMPLETED' },
+    })
+    await prisma.taskStatusHistory.create({
+      data: {
+        taskId: task.id,
+        previousStatus: task.status,
+        newStatus: 'COMPLETED',
+        changedById: actorId,
+      },
+    })
+    const eventId = await logEvent('TaskCompleted', 'Task', task.id, actorId, {
+      instanceId,
+      nodeId,
+      completedBy: 'blueprint-workbench-finalize',
+      blueprintSessionId: sessionId,
+      finalPackId,
+    })
+    await createReceipt('TASK_COMPLETED', 'Task', task.id, {
+      taskId: task.id,
+      completedBy: actorId,
+      instanceId,
+      nodeId,
+      blueprintSessionId: sessionId,
+      finalPackId,
+    }, eventId)
+    await publishOutbox('Task', task.id, 'TaskCompleted', {
+      taskId: task.id,
+      instanceId,
+      nodeId,
+      blueprintSessionId: sessionId,
+      finalPackId,
+      completedBy: actorId,
+    })
+  }
+
+  try {
+    const { advance } = await import('../workflow/runtime/WorkflowRuntime')
+    await advance(instanceId, nodeId, output, actorId)
+    await logEvent('BlueprintWorkflowAutoAdvanced', 'WorkflowNode', nodeId, actorId, {
+      instanceId,
+      sessionId,
+      finalPackId,
+    })
+  } catch (err) {
+    console.error('Workflow auto-advance failed after Blueprint finalization:', err)
+    await logEvent('BlueprintWorkflowAutoAdvanceFailed', 'WorkflowNode', nodeId, actorId, {
+      instanceId,
+      sessionId,
+      finalPackId,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
 }
 
 async function runStage(

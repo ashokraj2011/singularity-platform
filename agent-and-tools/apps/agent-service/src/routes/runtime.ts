@@ -137,7 +137,7 @@ runtimeRoutes.post("/learning-candidates/:id/review", async (req: Request, res: 
 
 const LLM_GATEWAY_URL    = process.env.LLM_GATEWAY_URL    ?? "http://llm-gateway:8001";
 const LLM_GATEWAY_BEARER = process.env.LLM_GATEWAY_BEARER ?? "";
-const DISTILL_MODEL_ALIAS = process.env.DISTILL_MODEL_ALIAS ?? "mock";
+const DISTILL_MODEL_ALIAS = process.env.DISTILL_MODEL_ALIAS?.trim();
 
 interface DistilledMemoryEntry {
   title: string;
@@ -170,7 +170,7 @@ async function synthesiseCandidates(args: {
   ].join("\n");
 
   const body = {
-    model_alias: DISTILL_MODEL_ALIAS,
+    ...(DISTILL_MODEL_ALIAS ? { model_alias: DISTILL_MODEL_ALIAS } : {}),
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user",   content: userMessage },

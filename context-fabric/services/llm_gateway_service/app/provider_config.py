@@ -19,6 +19,10 @@ class ProviderConfigError(Exception):
     pass
 
 
+class ProviderNotReadyError(ProviderConfigError):
+    pass
+
+
 _loaded_providers: Optional[Dict[str, Any]] = None
 _loaded_catalog:   Optional[List[Dict[str, Any]]] = None
 _warnings:         List[str] = []
@@ -165,7 +169,7 @@ def validate_model_entry(entry: Dict[str, Any], credentials: Dict[str, Optional[
         raise ProviderConfigError(f"model alias {entry.get('id')} is missing model")
     reasons = provider_unready_reasons(provider, credentials.get(provider))
     if reasons:
-        raise ProviderConfigError(f"model alias {entry.get('id')} is not ready: {'; '.join(reasons)}")
+        raise ProviderNotReadyError(f"model alias {entry.get('id')} is not ready: {'; '.join(reasons)}")
 
 
 def list_provider_status(credentials: Dict[str, Optional[str]]) -> List[Dict[str, Any]]:

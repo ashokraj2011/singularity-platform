@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     # gateway resolves the model via its alias catalog.
     llm_gateway_url: str = "http://llm-gateway:8001"
     llm_gateway_bearer: str = ""
-    summarizer_model_alias: str = "mock"
+    summarizer_model_alias: str = ""
 
     class Config:
         env_prefix = ""
@@ -23,7 +23,7 @@ class Settings(BaseSettings):
         self.db_path = os.getenv("CONTEXT_MEMORY_DB", self.db_path)
         self.llm_gateway_url = os.getenv("LLM_GATEWAY_URL", self.llm_gateway_url)
         self.llm_gateway_bearer = os.getenv("LLM_GATEWAY_BEARER", self.llm_gateway_bearer)
-        self.summarizer_model_alias = os.getenv("SUMMARIZER_MODEL_ALIAS", self.summarizer_model_alias)
+        self.summarizer_model_alias = os.getenv("SUMMARIZER_MODEL_ALIAS", self.summarizer_model_alias).strip()
 
 
 settings = Settings()

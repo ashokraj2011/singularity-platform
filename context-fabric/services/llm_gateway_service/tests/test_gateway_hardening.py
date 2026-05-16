@@ -71,8 +71,31 @@ def test_openai_alias_without_base_url_is_rejected(monkeypatch: pytest.MonkeyPat
     with pytest.raises(HTTPException) as exc:
         router._resolve_provider_and_model(model_alias="openai-test", provider=None, model=None)  # noqa: SLF001
 
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 503
     assert "Missing baseUrl" in str(exc.value.detail)
+
+
+def test_openai_alias_without_credential_is_provider_not_ready(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    providers = {
+        "defaultProvider": "openai",
+        "allowedProviders": ["openai"],
+        "providers": {
+            "openai": {
+                "enabled": True,
+                "baseUrl": "https://gateway.example.test/v1",
+                "credentialEnv": "OPENAI_API_KEY",
+                "defaultModel": "gpt-test",
+            }
+        },
+    }
+    catalog = [{"id": "openai-test", "provider": "openai", "model": "gpt-test", "default": True}]
+    _, _, router = load_modules(monkeypatch, tmp_path, providers, catalog)
+
+    with pytest.raises(HTTPException) as exc:
+        router._resolve_provider_and_model(model_alias="openai-test", provider=None, model=None)  # noqa: SLF001
+
+    assert exc.value.status_code == 503
+    assert "Missing credential" in str(exc.value.detail)
 
 
 def test_raw_provider_model_rejected_when_override_disabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

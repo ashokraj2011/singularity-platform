@@ -9,6 +9,8 @@
 #      COHERE_API_KEY).
 #   3. No service-side TypeScript / Python file references the legacy
 #      provider-router env vars (LLM_PROVIDER, EMBEDDING_PROVIDER, etc.).
+#   4. No service hard-codes mock model aliases instead of letting the gateway
+#      resolve its externally configured default alias.
 #
 # Fails with a clear diff when a regression sneaks in.
 #
@@ -125,6 +127,24 @@ else
 fi
 rm -f /tmp/sg-caller-override.$$
 
+header "3c. Hard-coded mock model aliases"
+set +e
+alias_hits="$(grep -rEn \
+  --include='*.ts' --include='*.tsx' --include='*.py' --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.yml' --include='*.yaml' \
+  "${EXCLUDE_DIRS[@]}" \
+  '\b[A-Z0-9_]*MODEL_ALIAS\b.*(\?\?|\|\|)[[:space:]]*["'\''"]mock["'\''"]|\b[a-z0-9_]*model_alias\b[[:space:]]*:[[:space:]]*str[[:space:]]*=[[:space:]]*["'\''"]mock["'\''"]|MODEL_ALIAS.*:-mock' \
+  . 2>/dev/null \
+  | grep -vE "$PATH_FILTER|/(test|tests)/|\.github/workflows/compose-smoke\.yml:" \
+  | strip_comment_lines || true)"
+set -e
+if [[ -n "$alias_hits" ]]; then
+  red "FAIL: service-side mock model alias defaults found"
+  echo "$alias_hits" >&2
+  failures=$((failures + 1))
+else
+  green "OK: no service-side mock model alias defaults"
+fi
+
 header "4. docker-compose: provider keys appear only on llm-gateway"
 # Inspect each service block in the merged compose config. Any service other
 # than `llm-gateway` that surfaces a non-empty provider key is a leak.
@@ -159,47 +179,54 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-allowed = {"mock", "copilot"}
+supported = {"mock", "copilot", "openai", "openrouter", "anthropic"}
 failures: list[str] = []
 
 providers_path = Path(".singularity/llm-providers.json")
 if providers_path.exists():
     data = json.loads(providers_path.read_text())
     default = str(data.get("defaultProvider", "")).lower()
-    if default and default not in allowed:
-        failures.append(f"{providers_path}: defaultProvider={default} is not mock/copilot")
+    if default and default not in supported:
+        failures.append(f"{providers_path}: defaultProvider={default} is unsupported")
     allowlist = {str(x).lower() for x in data.get("allowedProviders", [])}
-    disallowed = sorted(allowlist - allowed)
+    disallowed = sorted(allowlist - supported)
     if disallowed:
-        failures.append(f"{providers_path}: allowedProviders contains {disallowed}")
+        failures.append(f"{providers_path}: allowedProviders contains unsupported providers {disallowed}")
     providers = data.get("providers", {})
     if isinstance(providers, dict):
-        enabled = sorted(
-            name for name, body in providers.items()
-            if str(name).lower() not in allowed
-            and isinstance(body, dict)
-            and body.get("enabled") is not False
-        )
-        if enabled:
-            failures.append(f"{providers_path}: enabled non-office providers {enabled}")
+        for name, body in providers.items():
+            provider = str(name).lower()
+            if provider not in supported:
+                failures.append(f"{providers_path}: provider {provider} is unsupported")
+                continue
+            if not isinstance(body, dict) or body.get("enabled") is False or provider == "mock":
+                continue
+            if not str(body.get("baseUrl", "")).strip():
+                failures.append(f"{providers_path}: enabled provider {provider} is missing baseUrl")
 
 catalog_path = Path(".singularity/mcp-models.json")
 if catalog_path.exists():
     catalog = json.loads(catalog_path.read_text())
     if isinstance(catalog, list):
-        disallowed_models = [
-            str(row.get("id"))
-            for row in catalog
-            if isinstance(row, dict) and str(row.get("provider", "")).lower() not in allowed
-        ]
-        if disallowed_models:
-            failures.append(f"{catalog_path}: aliases outside mock/copilot {disallowed_models}")
+        for row in catalog:
+            if not isinstance(row, dict):
+                failures.append(f"{catalog_path}: catalog row is not an object")
+                continue
+            alias = str(row.get("id") or "").strip()
+            provider = str(row.get("provider") or "").lower()
+            model = str(row.get("model") or "").strip()
+            if not alias:
+                failures.append(f"{catalog_path}: model alias row is missing id")
+            if provider not in supported:
+                failures.append(f"{catalog_path}: alias {alias or '(missing id)'} uses unsupported provider {provider or '(missing provider)'}")
+            if not model:
+                failures.append(f"{catalog_path}: alias {alias or '(missing id)'} is missing model")
 
 if failures:
     for failure in failures:
         print(f"FAIL: {failure}")
     raise SystemExit(1)
-print("OK: local .singularity config is mock-only or Copilot-only")
+print("OK: local .singularity provider/model config is explicit and gateway-owned")
 PY
 
 echo

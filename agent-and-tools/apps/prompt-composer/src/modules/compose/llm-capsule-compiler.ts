@@ -17,7 +17,7 @@ import { logger } from "../../config/logger";
 import type { RetrievedChunk } from "./retrieval";
 
 const TIMEOUT_MS = Number(process.env.CAPSULE_COMPILE_TIMEOUT_MS ?? 30_000);
-const MODEL_ALIAS = process.env.CAPSULE_COMPILE_MODEL_ALIAS ?? "mock";
+const MODEL_ALIAS = process.env.CAPSULE_COMPILE_MODEL_ALIAS?.trim();
 
 const SYSTEM_PROMPT = `You are a Context Compiler.
 
@@ -52,7 +52,7 @@ export async function compileCapsuleViaLlm(
   try {
     const result = await Promise.race([
       llmRespond({
-        model_alias: MODEL_ALIAS,
+        ...(MODEL_ALIAS ? { model_alias: MODEL_ALIAS } : {}),
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: message },

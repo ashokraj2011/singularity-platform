@@ -98,7 +98,6 @@ Conversation:
 {compact}
 """.strip()
     payload = {
-        "model_alias": settings.summarizer_model_alias,
         "messages": [
             {"role": "system", "content": "You are Context Fabric's summarization engine. Return only valid JSON."},
             {"role": "user", "content": prompt},
@@ -107,6 +106,9 @@ Conversation:
         "max_output_tokens": 1500,
         "trace_id": f"summarize-{agent_id or 'anon'}",
     }
+    model_alias = settings.summarizer_model_alias.strip()
+    if model_alias:
+        payload["model_alias"] = model_alias
     try:
         headers = {"content-type": "application/json"}
         if settings.llm_gateway_bearer:

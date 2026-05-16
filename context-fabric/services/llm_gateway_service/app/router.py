@@ -61,6 +61,8 @@ def _resolve_provider_and_model(
         try:
             entry = provider_config.resolve_alias(model_alias)
             provider_config.validate_model_entry(entry, _credentials())
+        except provider_config.ProviderNotReadyError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
         except provider_config.ProviderConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return entry["provider"], entry["model"], model_alias
@@ -74,7 +76,7 @@ def _resolve_provider_and_model(
             raise HTTPException(status_code=400, detail=f"no default model for provider {p}")
         reasons = provider_config.provider_unready_reasons(p, _credentials().get(p))
         if reasons:
-            raise HTTPException(status_code=400, detail=f"provider {p} is not ready: {'; '.join(reasons)}")
+            raise HTTPException(status_code=503, detail=f"provider {p} is not ready: {'; '.join(reasons)}")
         return p, m, None
 
     # No alias and no provider/model: use the configured default alias. If no
@@ -84,6 +86,8 @@ def _resolve_provider_and_model(
         try:
             entry = provider_config.resolve_alias(alias)
             provider_config.validate_model_entry(entry, _credentials())
+        except provider_config.ProviderNotReadyError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
         except provider_config.ProviderConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return entry["provider"], entry["model"], alias

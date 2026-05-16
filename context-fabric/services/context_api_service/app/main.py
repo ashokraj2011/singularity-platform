@@ -180,12 +180,14 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
     # /execute; this endpoint is kept only for legacy direct callers.
     gw_messages = gateway_messages_from_compiled(compiled.get("compiled_messages", []), req.message)
     gw_payload = {
-        "model_alias": settings.chat_respond_model_alias,
         "messages": gw_messages,
         "temperature": req.temperature,
         "max_output_tokens": req.max_output_tokens,
         "trace_id": f"chat-respond-{req.session_id}",
     }
+    model_alias = settings.chat_respond_model_alias.strip()
+    if model_alias:
+        gw_payload["model_alias"] = model_alias
     headers = {"content-type": "application/json"}
     if settings.llm_gateway_bearer:
         headers["authorization"] = f"Bearer {settings.llm_gateway_bearer}"

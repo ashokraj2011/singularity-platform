@@ -14,7 +14,7 @@ import { llmRespond } from "@agentandtools/shared";
 
 const log = { warn: (msg: string) => console.warn(`[summarise] ${msg}`) };
 const TIMEOUT_MS = 30_000;
-const MODEL_ALIAS = process.env.SUMMARISE_MODEL_ALIAS ?? "mock";
+const MODEL_ALIAS = process.env.SUMMARISE_MODEL_ALIAS?.trim();
 
 export interface SummariseInput {
   symbolName: string;
@@ -46,7 +46,7 @@ export async function summariseSymbol(input: SummariseInput): Promise<string | n
   try {
     const result = await Promise.race([
       llmRespond({
-        model_alias: MODEL_ALIAS,
+        ...(MODEL_ALIAS ? { model_alias: MODEL_ALIAS } : {}),
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userMessage },

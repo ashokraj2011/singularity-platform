@@ -269,6 +269,7 @@ function BlueprintWorkbenchBody({
 }) {
   const [sessionId, setSessionId] = useState('')
   const [finalizedPack, setFinalizedPack] = useState<Record<string, unknown> | null>(null)
+  const [showEmbeddedWorkbench, setShowEmbeddedWorkbench] = useState(false)
   const completedRef = useRef(false)
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const runState = runtime.getState()
@@ -348,23 +349,82 @@ function BlueprintWorkbenchBody({
           <strong style={{ fontSize: 13, color: 'var(--color-on-surface)' }}>Workbench Task loop</strong>
         </div>
         <p style={{ margin: 0, fontSize: 12, lineHeight: 1.45, color: 'var(--color-outline)' }}>
-          This workflow node opens the Blueprint Workbench. The session is linked to this workflow run and node; finalization returns the approved implementation pack as this node output.
+          This workflow node opens Blueprint Workbench in its own portal. The session is linked to this workflow run and node; finalization now completes the workflow task automatically with the approved implementation pack.
         </p>
       </div>
 
-      <iframe
-        ref={iframeRef}
-        title="Blueprint Workbench"
-        src={workbenchUrl}
-        onLoad={postWorkbenchAuth}
-        style={{
-          width: '100%',
-          height: 680,
-          border: '1px solid var(--color-outline-variant)',
-          borderRadius: 12,
-          background: '#0b1326',
-        }}
-      />
+      <div style={{
+        border: '1px solid var(--color-outline-variant)',
+        borderRadius: 12,
+        background: '#f8fafc',
+        padding: 16,
+        display: 'grid',
+        gap: 12,
+      }}>
+        <div>
+          <p style={{ margin: '0 0 5px', fontSize: 14, fontWeight: 800, color: 'var(--color-on-surface)' }}>
+            Continue in Blueprint Workbench
+          </p>
+          <p style={{ margin: 0, fontSize: 12, lineHeight: 1.45, color: 'var(--color-outline)' }}>
+            Use the full portal for staged artifacts, terminal evidence, and code diff approval. Keep this run open for context; Workgraph advances when the final pack is finalized.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <a
+            href={workbenchUrl}
+            target="_blank"
+            rel="opener"
+            style={{
+              minHeight: 38,
+              padding: '0 14px',
+              borderRadius: 9,
+              background: '#004b8d',
+              color: '#fff',
+              textDecoration: 'none',
+              fontSize: 12,
+              fontWeight: 800,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            <ExternalLink size={14} /> Open Blueprint Workbench
+          </a>
+          <button
+            type="button"
+            onClick={() => setShowEmbeddedWorkbench(value => !value)}
+            style={{
+              minHeight: 38,
+              padding: '0 12px',
+              borderRadius: 9,
+              border: '1px solid var(--color-outline-variant)',
+              background: '#fff',
+              color: '#475569',
+              cursor: 'pointer',
+              fontSize: 12,
+              fontWeight: 800,
+            }}
+          >
+            {showEmbeddedWorkbench ? 'Hide embedded preview' : 'Show embedded preview'}
+          </button>
+        </div>
+      </div>
+
+      {showEmbeddedWorkbench && (
+        <iframe
+          ref={iframeRef}
+          title="Blueprint Workbench"
+          src={workbenchUrl}
+          onLoad={postWorkbenchAuth}
+          style={{
+            width: '100%',
+            height: 680,
+            border: '1px solid var(--color-outline-variant)',
+            borderRadius: 12,
+            background: '#0b1326',
+          }}
+        />
+      )}
 
       <label style={{ fontSize: 11, fontWeight: 700, color: '#334155' }}>
         Blueprint session / final pack reference
@@ -378,7 +438,7 @@ function BlueprintWorkbenchBody({
 
       <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center' }}>
         <a href={workbenchUrl} target="_blank" rel="opener" style={{ fontSize: 12, color: '#004b8d', fontWeight: 700 }}>
-          Open full workbench
+          Open Blueprint Workbench
         </a>
         <button
           disabled={!sessionId.trim()}
@@ -407,7 +467,7 @@ function BlueprintWorkbenchBody({
 
       {!claimed && (
         <p style={{ fontSize: 10, color: 'var(--color-outline)', textAlign: 'right' }}>
-          Claim this node before completing the workflow task. The embedded workbench remains available for inspection and setup.
+          Claim this node before completing the workflow task. The full Workbench portal remains available for inspection and setup.
         </p>
       )}
     </div>

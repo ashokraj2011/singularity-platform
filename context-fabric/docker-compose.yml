@@ -23,7 +23,7 @@ services:
       - CONTEXT_MEMORY_DB=/data/context_memory.db
       - LLM_GATEWAY_URL=http://llm-gateway-service:8001
       - LLM_GATEWAY_BEARER=${LLM_GATEWAY_BEARER:-}
-      - SUMMARIZER_MODEL_ALIAS=${SUMMARIZER_MODEL_ALIAS:-mock}
+      - SUMMARIZER_MODEL_ALIAS=${SUMMARIZER_MODEL_ALIAS:-}
       # M11.a
       - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       - PUBLIC_BASE_URL=${CONTEXT_MEMORY_PUBLIC_URL:-http://host.docker.internal:8002}

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     # endpoint for one-shot synthesis. Provider keys never live here.
     llm_gateway_url: str = "http://llm-gateway:8001"
     llm_gateway_bearer: str = ""
-    chat_respond_model_alias: str = "mock"
+    chat_respond_model_alias: str = ""
 
     class Config:
         env_prefix = ""

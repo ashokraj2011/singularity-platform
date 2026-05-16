@@ -161,6 +161,14 @@ tasksRouter.post('/:id/complete', async (req, res, next) => {
     const userId = req.user!.userId
     const task = await prisma.task.findUnique({ where: { id: req.params.id } })
     if (!task) throw new NotFoundError('Task', req.params.id)
+    if (task.status === 'COMPLETED') {
+      const existing = await prisma.task.findUnique({
+        where: { id: req.params.id },
+        include: { assignments: true },
+      })
+      res.json(existing)
+      return
+    }
 
     const updated = await prisma.task.update({
       where: { id: req.params.id },

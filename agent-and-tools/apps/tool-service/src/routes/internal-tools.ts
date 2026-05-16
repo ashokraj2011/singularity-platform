@@ -26,7 +26,7 @@ const RECENCY_BOOST_DAYS = Number(process.env.EMBEDDING_RECENCY_DAYS ?? 30);
 const RECENCY_BOOST_MAX  = Number(process.env.EMBEDDING_RECENCY_BOOST ?? 0.2);
 const LLM_GATEWAY_URL    = process.env.LLM_GATEWAY_URL    ?? "http://llm-gateway:8001";
 const LLM_GATEWAY_BEARER = process.env.LLM_GATEWAY_BEARER ?? "";
-const TOOL_LLM_MODEL_ALIAS = process.env.TOOL_LLM_MODEL_ALIAS ?? "mock";
+const TOOL_LLM_MODEL_ALIAS = process.env.TOOL_LLM_MODEL_ALIAS?.trim();
 
 function recencyBoost(ageDays: number): number {
   if (ageDays >= RECENCY_BOOST_DAYS) return 0;
@@ -181,7 +181,7 @@ async function callMcp(opts: { systemPrompt: string; message: string }): Promise
     method: "POST",
     headers,
     body: JSON.stringify({
-      model_alias: TOOL_LLM_MODEL_ALIAS,
+      ...(TOOL_LLM_MODEL_ALIAS ? { model_alias: TOOL_LLM_MODEL_ALIAS } : {}),
       messages: [
         { role: "system", content: opts.systemPrompt },
         { role: "user",   content: opts.message },
