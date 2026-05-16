@@ -1,5 +1,6 @@
 import { Router, type Router as ExpressRouter } from 'express'
 import { z } from 'zod'
+import { config } from '../../config'
 import { contextFabricClient } from '../../lib/context-fabric/client'
 import { prisma } from '../../lib/prisma'
 
@@ -68,6 +69,12 @@ function defaultCapabilityId() {
     ?? '00000000-0000-0000-0000-00000000aaaa'
 }
 
+function eventHorizonModelAlias() {
+  return nonBlank(config.EVENT_HORIZON_MODEL_ALIAS)
+    ?? nonBlank(process.env.DEFAULT_MODEL_ALIAS)
+    ?? nonBlank(process.env.WORKBENCH_DEFAULT_MODEL_ALIAS)
+}
+
 async function platformSnapshot() {
   try {
     const [workflowTemplates, activeRuns, pendingApprovals, workItems, consumables] = await Promise.all([
@@ -132,8 +139,7 @@ eventHorizonRouter.post('/chat', async (req, res) => {
       `Live platform summary JSON: ${JSON.stringify(snapshot).slice(0, 2000)}`,
     ].join('\n\n'),
     model_overrides: {
-      provider: nonBlank(process.env.EVENT_HORIZON_PROVIDER),
-      model: nonBlank(process.env.EVENT_HORIZON_MODEL),
+      modelAlias: eventHorizonModelAlias(),
       temperature: 0.2,
       maxOutputTokens: 700,
     },

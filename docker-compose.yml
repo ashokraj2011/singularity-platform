@@ -428,6 +428,7 @@ services:
       MCP_SERVER_URL: http://mcp-server-demo:7100
       MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       WORKBENCH_DEFAULT_MODEL_ALIAS: ${WORKBENCH_DEFAULT_MODEL_ALIAS:-mock}
+      EVENT_HORIZON_MODEL_ALIAS: ${EVENT_HORIZON_MODEL_ALIAS:-}
       # M33 — legacy direct LLM calls (e.g. POST /api/agents/:id/runs) now
       # route through llm-gateway. No provider keys in this service.
       LLM_GATEWAY_URL:        http://llm-gateway:8001
