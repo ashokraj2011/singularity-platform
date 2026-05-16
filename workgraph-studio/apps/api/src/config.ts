@@ -56,6 +56,7 @@ const envSchema = z.object({
   // routing. Workflow execution passes model aliases through Context Fabric.
   MCP_SERVER_URL: z.string().default('http://localhost:7100'),
   MCP_BEARER_TOKEN: z.string().default('demo-bearer-token-must-be-min-16-chars'),
+  WORKGRAPH_INTERNAL_TOKEN: z.string().default('dev-workgraph-internal-token'),
 
   // ── M33 — Central LLM Gateway ───────────────────────────────────────────
   // Direct one-shot LLM calls (legacy /:id/runs endpoint) go through the

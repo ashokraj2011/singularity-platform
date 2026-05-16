@@ -2,6 +2,7 @@
 // `runtimeReader` reads agent-runtime models on `singularity`.
 import { prisma, runtimeReader } from "../../config/prisma";
 import { logger } from "../../config/logger";
+import { env } from "../../config/env";
 import { NotFoundError, ValidationError } from "../../shared/errors";
 import { sha256, estimateTokens } from "../../shared/hash";
 import { render as renderMustache } from "../../shared/mustache";
@@ -144,6 +145,16 @@ type ContextPlan = {
   valid: boolean;
   missingRequired: MissingRequiredContext[];
   contextPlanHash: string;
+};
+
+type ArtifactFetchResponse = {
+  content?: string;
+  bytes?: number;
+  truncated?: boolean;
+  mediaType?: string | null;
+  source?: string;
+  bucket?: string;
+  key?: string;
 };
 
 const PRIORITY = {
@@ -1025,17 +1036,60 @@ Input contract: available to the execution layer; ask for only the fields needed
     if (art.content) body = art.content;
     else if (art.excerpt) body = art.excerpt;
     else if (art.minioRef) {
-      const warning = `Artifact "${art.label}" is stored at ${art.minioRef}, but MinIO fetch is not implemented; artifact body was not injected.`;
-      logger.warn({ minioRef: art.minioRef, label: art.label, role: art.role }, "minioRef fetch not implemented; omitting artifact body");
-      warnings.push(warning);
-      if (art.role === "INPUT") {
-        throw new ValidationError(`Required input artifact "${art.label}" is unavailable from MinIO; pass content/excerpt or enable artifact fetch.`);
+      const fetched = await this.fetchArtifactContent(art, warnings);
+      body = fetched?.content?.trim() ? fetched.content : null;
+      if (body && fetched?.truncated) {
+        warnings.push(`Artifact "${art.label}" was fetched and truncated to ${fetched.bytes ?? env.ARTIFACT_FETCH_MAX_BYTES} bytes for prompt safety.`);
       }
-      return null;
+      if (!body) {
+        if (art.role === "INPUT") {
+          throw new ValidationError(`Required input artifact "${art.label}" is unavailable; pass content/excerpt or configure WORKGRAPH_ARTIFACT_FETCH_URL.`);
+        }
+        return null;
+      }
     }
     if (!body) return null;
     const header = `## Artifact: ${art.label} (${art.role}${art.consumableType ? `, ${art.consumableType}` : ""})`;
     return `${header}\n${body}`;
+  },
+
+  async fetchArtifactContent(art: ArtifactInput, warnings: string[] = []): Promise<ArtifactFetchResponse | null> {
+    if (!art.minioRef) return null;
+    if (!env.WORKGRAPH_ARTIFACT_FETCH_URL) {
+      const warning = `Artifact "${art.label}" is stored at ${art.minioRef}, but WORKGRAPH_ARTIFACT_FETCH_URL is not configured; artifact body was not injected.`;
+      logger.warn({ minioRef: art.minioRef, label: art.label, role: art.role }, "artifact fetch URL not configured; omitting artifact body");
+      warnings.push(warning);
+      return null;
+    }
+    try {
+      const res = await fetch(env.WORKGRAPH_ARTIFACT_FETCH_URL, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(env.WORKGRAPH_ARTIFACT_FETCH_TOKEN ? { authorization: `Bearer ${env.WORKGRAPH_ARTIFACT_FETCH_TOKEN}` } : {}),
+        },
+        body: JSON.stringify({ minioRef: art.minioRef, maxBytes: env.ARTIFACT_FETCH_MAX_BYTES }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        const warning = `Artifact "${art.label}" could not be fetched (${res.status}): ${text.slice(0, 240)}`;
+        logger.warn({ minioRef: art.minioRef, label: art.label, status: res.status, body: text.slice(0, 500) }, "artifact fetch failed");
+        warnings.push(warning);
+        return null;
+      }
+      const json = await res.json() as ArtifactFetchResponse;
+      if (!json.content) {
+        warnings.push(`Artifact "${art.label}" fetch returned no text content.`);
+        return null;
+      }
+      return json;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: message, minioRef: art.minioRef, label: art.label }, "artifact fetch failed");
+      warnings.push(`Artifact "${art.label}" could not be fetched: ${message}`);
+      return null;
+    }
   },
 
   // ── M15 — semantic retrieval helpers (hybrid cosine × recency) ──────────

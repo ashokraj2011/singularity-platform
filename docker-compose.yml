@@ -197,6 +197,8 @@ services:
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       CONTEXT_FABRIC_URL: http://context-api:8000
+      WORKGRAPH_ARTIFACT_FETCH_URL: http://workgraph-api:8080/api/internal/artifacts/fetch
+      WORKGRAPH_ARTIFACT_FETCH_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       # M33 — composer's capsule compiler + embeddings flow through llm-gateway.
       LLM_GATEWAY_URL:    http://llm-gateway:8001
@@ -411,6 +413,7 @@ services:
       MINIO_ACCESS_KEY: workgraph
       MINIO_SECRET_KEY: workgraph_secret
       MINIO_BUCKET: workgraph-documents
+      WORKGRAPH_INTERNAL_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}
       CORS_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5176,http://localhost:5180
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
       AUTH_PROVIDER: iam

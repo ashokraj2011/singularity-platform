@@ -44,6 +44,7 @@ import { incomingEventsRouter } from './modules/audit/incoming-events.router'
 import { blueprintRouter } from './modules/blueprint/blueprint.router'
 import { eventHorizonRouter } from './modules/event-horizon/event-horizon.router'
 import { workItemsRouter } from './modules/work-items/work-items.router'
+import { internalArtifactFetchRouter } from './modules/internal/artifact-fetch.router'
 
 export function createApp(): Express {
   const app = express()
@@ -77,6 +78,9 @@ export function createApp(): Express {
 
   // Auth (no auth middleware)
   app.use('/api/auth', authRouter)
+
+  // Service-token endpoint for bounded artifact text fetch by prompt-composer.
+  app.use('/api/internal/artifacts', internalArtifactFetchRouter)
 
   // Protected routes
   app.use('/api/users', authMiddleware, usersRouter)

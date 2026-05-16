@@ -474,6 +474,7 @@ It configures:
 - Default/local MCP runtime URL, bearer token, public URL, sandbox root, AST index path, and local work-branch defaults. MCP does **not** need to belong to a capability; capability-specific MCP registration is advanced-only.
 - Gateway-owned model aliases. Workflows choose aliases; MCP forwards aliases and receives resolved provider/model in receipts.
 - Balanced token budget defaults. Workgraph owns run budgets, Prompt Composer owns layer/retrieval budgeting, Context Fabric enforces execution limits, and the central gateway owns provider/model routing.
+- Governed artifact fetch for prompt assembly. Prompt Composer can fetch bounded text from Workgraph MinIO/document refs through `WORKGRAPH_ARTIFACT_FETCH_URL` using `WORKGRAPH_ARTIFACT_FETCH_TOKEN`; required artifacts fail closed if only a missing/unreadable ref is provided.
 - UI env files for the portal, Workgraph web, IAM admin, and agent-and-tools web.
 
 Common commands:

@@ -21,3 +21,11 @@ Rules:
 - Cached or reused content may share hashes, but run-owned receipt rows must
   remain tied to the current `traceId` and `workflowInstanceId`.
 - Audit events use `traceId`; payloads may include child ids for joins.
+
+## Shared Types
+
+- Agent-and-Tools exports `TraceContractIds` from `@agentandtools/shared`.
+- Workgraph exports the same shape from `@workgraph/shared-types`.
+
+These types are intentionally small: they define the correlation ids carried in
+payloads, while each service keeps ownership of its own persistence schema.

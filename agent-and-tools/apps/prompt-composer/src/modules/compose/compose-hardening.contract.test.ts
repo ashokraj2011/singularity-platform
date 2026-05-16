@@ -17,6 +17,14 @@ assert(
   "MinIO-only artifacts must not inject fake placeholder content",
 );
 assert(
+  !serviceSource.includes("MinIO fetch is not implemented"),
+  "MinIO-only artifacts must not leave fake/placeholder fetch behavior in the prompt path",
+);
+assert(
+  serviceSource.includes("fetchArtifactContent"),
+  "MinIO/document references must route through the governed artifact fetch path",
+);
+assert(
   !serviceSource.includes("data: { evidenceRefs: evidenceRefs as never }"),
   "cached PromptAssembly rows must not be mutated across workflow runs",
 );

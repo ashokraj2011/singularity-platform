@@ -62,8 +62,10 @@ CONFIG_KEY_MAP = {
     "services.agentServiceUrl": "AGENT_SERVICE_URL",
     "services.contextFabricUrl": "CONTEXT_FABRIC_URL",
     "services.blueprintWorkbenchUrl": "BLUEPRINT_WORKBENCH_URL",
+    "services.workgraphArtifactFetchUrl": "WORKGRAPH_ARTIFACT_FETCH_URL",
     "tokens.contextFabricServiceToken": "CONTEXT_FABRIC_SERVICE_TOKEN",
     "tokens.auditGovServiceToken": "AUDIT_GOV_SERVICE_TOKEN",
+    "tokens.workgraphInternalToken": "WORKGRAPH_INTERNAL_TOKEN",
     "mcpRuntime.serverUrl": "MCP_SERVER_URL",
     "mcpRuntime.publicBaseUrl": "MCP_PUBLIC_BASE_URL",
     "mcpRuntime.bearerToken": "MCP_BEARER_TOKEN",
@@ -187,10 +189,12 @@ def config_template(profile: str, args: argparse.Namespace | None = None) -> dic
             "agentServiceUrl": "http://localhost:3001",
             "contextFabricUrl": "http://localhost:8000",
             "blueprintWorkbenchUrl": "http://localhost:5176",
+            "workgraphArtifactFetchUrl": "http://localhost:8080/api/internal/artifacts/fetch",
         },
         "tokens": {
             "contextFabricServiceToken": os.getenv("CONTEXT_FABRIC_SERVICE_TOKEN", "dev-context-fabric-service-token"),
             "auditGovServiceToken": os.getenv("AUDIT_GOV_SERVICE_TOKEN", "dev-audit-gov-service-token"),
+            "workgraphInternalToken": os.getenv("WORKGRAPH_INTERNAL_TOKEN", "dev-workgraph-internal-token"),
         },
         "mcpRuntime": {
             "serverUrl": "http://localhost:7100",
@@ -359,6 +363,7 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
     jwt_secret = pick("JWT_SECRET", "jwt_secret", "JWT_SECRET", "dev-secret-change-in-prod-min-32-chars!!")
     service_token = pick("CONTEXT_FABRIC_SERVICE_TOKEN", "service_token", "CONTEXT_FABRIC_SERVICE_TOKEN", "dev-context-fabric-service-token")
     audit_token = pick("AUDIT_GOV_SERVICE_TOKEN", "audit_token", "AUDIT_GOV_SERVICE_TOKEN", "dev-audit-gov-service-token")
+    workgraph_internal_token = pick("WORKGRAPH_INTERNAL_TOKEN", None, "WORKGRAPH_INTERNAL_TOKEN", "dev-workgraph-internal-token")
     sandbox_root = pick("MCP_SANDBOX_ROOT", "mcp_sandbox_root", "MCP_SANDBOX_ROOT", str(ROOT))
 
     iam_base_default = "http://localhost:8101/api/v1" if use_pseudo else "http://localhost:8100/api/v1"
@@ -378,6 +383,9 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
         "WORKGRAPH_DATABASE_URL": pick("WORKGRAPH_DATABASE_URL", "workgraph_database_url", "WORKGRAPH_DATABASE_URL", "postgresql://workgraph:workgraph_secret@localhost:5434/workgraph"),
         "CONTEXT_FABRIC_SERVICE_TOKEN": service_token,
         "AUDIT_GOV_SERVICE_TOKEN": audit_token,
+        "WORKGRAPH_INTERNAL_TOKEN": workgraph_internal_token,
+        "WORKGRAPH_ARTIFACT_FETCH_URL": pick("WORKGRAPH_ARTIFACT_FETCH_URL", None, "WORKGRAPH_ARTIFACT_FETCH_URL", "http://localhost:8080/api/internal/artifacts/fetch"),
+        "WORKGRAPH_ARTIFACT_FETCH_TOKEN": workgraph_internal_token,
         "PROMPT_COMPOSER_URL": pick("PROMPT_COMPOSER_URL", "prompt_composer_url", "PROMPT_COMPOSER_URL", "http://localhost:3004"),
         "AGENT_RUNTIME_URL": pick("AGENT_RUNTIME_URL", "agent_runtime_url", "AGENT_RUNTIME_URL", "http://localhost:3003"),
         "TOOL_SERVICE_URL": pick("TOOL_SERVICE_URL", "tool_service_url", "TOOL_SERVICE_URL", "http://localhost:3002"),
@@ -446,6 +454,9 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
                 "LOCAL_SUPER_ADMIN_PASSWORD",
                 "CONTEXT_FABRIC_SERVICE_TOKEN",
                 "AUDIT_GOV_SERVICE_TOKEN",
+                "WORKGRAPH_INTERNAL_TOKEN",
+                "WORKGRAPH_ARTIFACT_FETCH_URL",
+                "WORKGRAPH_ARTIFACT_FETCH_TOKEN",
                 "PROMPT_COMPOSER_URL",
                 "AGENT_RUNTIME_URL",
                 "TOOL_SERVICE_URL",
@@ -559,6 +570,7 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
             "MCP_SERVER_URL": values["MCP_SERVER_URL"],
             "TOOL_SERVICE_URL": values["TOOL_SERVICE_URL"],
             "AGENT_RUNTIME_URL": values["AGENT_RUNTIME_URL"],
+            "WORKGRAPH_INTERNAL_TOKEN": values["WORKGRAPH_INTERNAL_TOKEN"],
             "MINIO_ENDPOINT": "localhost",
             "MINIO_PORT": "9000",
             "MINIO_USE_SSL": "false",
@@ -586,6 +598,8 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
             "NEXT_PUBLIC_TOOL_SERVICE_URL": values["TOOL_SERVICE_URL"],
             "NEXT_PUBLIC_AGENT_RUNTIME_URL": values["AGENT_RUNTIME_URL"],
             "NEXT_PUBLIC_PROMPT_COMPOSER_URL": values["PROMPT_COMPOSER_URL"],
+            "WORKGRAPH_ARTIFACT_FETCH_URL": values["WORKGRAPH_ARTIFACT_FETCH_URL"],
+            "WORKGRAPH_ARTIFACT_FETCH_TOKEN": values["WORKGRAPH_ARTIFACT_FETCH_TOKEN"],
         },
         ROOT / "singularity-portal/.env.local": {
             "VITE_IAM_BASE_URL": values["IAM_BASE_URL"],
@@ -830,6 +844,9 @@ def command_show(_: argparse.Namespace) -> None:
         "PROMPT_COMPOSER_URL",
         "MCP_SERVER_URL",
         "MCP_BEARER_TOKEN",
+        "WORKGRAPH_INTERNAL_TOKEN",
+        "WORKGRAPH_ARTIFACT_FETCH_URL",
+        "WORKGRAPH_ARTIFACT_FETCH_TOKEN",
         "MCP_LLM_PROVIDER",
         "MCP_ALLOWED_LLM_PROVIDERS",
         "LLM_PROVIDER",
@@ -882,9 +899,12 @@ def http_check(name: str, url: str, timeout: float = 2.0) -> tuple[str, str]:
         return "FAIL", f"{name} unreachable: {exc}"
 
 
-def http_json(url: str, timeout: float = 2.0) -> tuple[str, dict | None, str]:
+def http_json(url: str, timeout: float = 2.0, bearer_token: str | None = None) -> tuple[str, dict | None, str]:
     try:
-        req = urllib.request.Request(url, headers={"user-agent": "singularity-config-doctor"})
+        headers = {"user-agent": "singularity-config-doctor"}
+        if bearer_token:
+            headers["authorization"] = f"Bearer {bearer_token}"
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as res:
             raw = res.read().decode()
             return "OK", json.loads(raw), f"HTTP {res.status}"
@@ -1103,7 +1123,7 @@ def command_doctor(args: argparse.Namespace) -> None:
             record("WARN", f"MCP provider config missing: {p}", fix)
 
     if copilot_only:
-        providers_status, providers_payload, providers_msg = http_json("http://localhost:7100/llm/providers")
+        providers_status, providers_payload, providers_msg = http_json("http://localhost:7100/llm/providers", bearer_token=mcp_token)
         if providers_status != "OK":
             record("FAIL" if strict_office else "WARN", f"live MCP provider endpoint unavailable: {providers_msg}", "./singularity.sh restart mcp-server-demo")
         else:
@@ -1132,7 +1152,7 @@ def command_doctor(args: argparse.Namespace) -> None:
                 status = "FAIL" if strict_office else "WARN"
                 record(status, "live MCP Copilot provider is not ready", "./singularity.sh config set llm.copilot.token <token> && ./singularity.sh restart mcp-server-demo")
 
-        models_status, models_payload, models_msg = http_json("http://localhost:7100/llm/models")
+        models_status, models_payload, models_msg = http_json("http://localhost:7100/llm/models", bearer_token=mcp_token)
         if models_status != "OK":
             record("FAIL" if strict_office else "WARN", f"live MCP model endpoint unavailable: {models_msg}", "./singularity.sh restart mcp-server-demo")
         else:
@@ -1323,7 +1343,7 @@ def command_mcp_catalog(args: argparse.Namespace) -> None:
     print("\nRestart MCP after catalog changes:")
     print("  ./singularity.sh restart mcp-server-demo")
     print("Then verify:")
-    print("  curl http://localhost:7100/llm/models")
+    print("  curl -H \"Authorization: Bearer $MCP_BEARER_TOKEN\" http://localhost:7100/llm/models")
 
 
 def command_models(_: argparse.Namespace) -> None:

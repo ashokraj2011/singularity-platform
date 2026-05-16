@@ -126,6 +126,8 @@ services:
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       CONTEXT_FABRIC_URL: ${CONTEXT_FABRIC_URL:-http://host.docker.internal:8000}
+      WORKGRAPH_ARTIFACT_FETCH_URL: ${WORKGRAPH_ARTIFACT_FETCH_URL:-http://host.docker.internal:8080/api/internal/artifacts/fetch}
+      WORKGRAPH_ARTIFACT_FETCH_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}
       # M21 — central audit ledger; composer fires events on every compose call.
       AUDIT_GOV_URL:    ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
