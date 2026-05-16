@@ -1,10 +1,10 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { motion } from 'motion/react'
 import {
   Inbox, Users, User, Layers, Workflow, GitMerge, Package, Network,
-  ArrowRight, Clock, Search, Filter,
+  ArrowRight, Clock, Search, Filter, Plus,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 
@@ -24,11 +24,30 @@ type InboxItem = {
   assignmentMode:     string | null
   dueAt:              string | null
   priority?:          number | null
+  workCode?:          string | null
+  originType?:        string | null
+  urgency?:           string | null
   createdAt:          string
   updatedAt:          string
   claimable:          boolean
   targetId?:          string | null
   targetCapabilityId?: string | null
+}
+
+type LookupCapability = {
+  id: string
+  name: string
+  capability_type?: string
+}
+
+type CreateWorkItemForm = {
+  title: string
+  description: string
+  targetCapabilityId: string
+  urgency: 'LOW' | 'NORMAL' | 'HIGH' | 'CRITICAL'
+  requiredBy: string
+  maxTotalTokens: string
+  maxEstimatedCost: string
 }
 
 type InboxResponse = {
@@ -60,11 +79,57 @@ export function InboxPage() {
   const [tab, setTab] = useState<'mine' | 'available' | 'done'>('mine')
   const [kindFilter, setKindFilter] = useState<'all' | InboxKind>('all')
   const [search, setSearch] = useState('')
+  const [showCreate, setShowCreate] = useState(false)
+  const [createForm, setCreateForm] = useState<CreateWorkItemForm>({
+    title: '',
+    description: '',
+    targetCapabilityId: '',
+    urgency: 'NORMAL',
+    requiredBy: '',
+    maxTotalTokens: '',
+    maxEstimatedCost: '',
+  })
 
   const { data, isLoading, refetch } = useQuery<InboxResponse>({
     queryKey: ['runtime-inbox'],
     queryFn:  () => api.get('/runtime/inbox').then(r => r.data),
     refetchInterval: 15_000,
+  })
+  const capabilities = useQuery<LookupCapability[]>({
+    queryKey: ['runtime-workitem-capabilities'],
+    queryFn: () => api.get('/lookup/capabilities', { params: { size: 200 } }).then(r => unwrapItems<LookupCapability>(r.data)),
+    staleTime: 60_000,
+  })
+  const createMut = useMutation({
+    mutationFn: async () => {
+      const title = createForm.title.trim()
+      if (!title || !createForm.targetCapabilityId) throw new Error('Title and target capability are required')
+      const budget: Record<string, unknown> = {}
+      const maxTotalTokens = Number(createForm.maxTotalTokens)
+      const maxEstimatedCost = Number(createForm.maxEstimatedCost)
+      if (Number.isFinite(maxTotalTokens) && maxTotalTokens > 0) budget.maxTotalTokens = maxTotalTokens
+      if (Number.isFinite(maxEstimatedCost) && maxEstimatedCost > 0) budget.maxEstimatedCost = maxEstimatedCost
+      return api.post('/work-items', {
+        title,
+        description: createForm.description.trim() || undefined,
+        originType: 'CAPABILITY_LOCAL',
+        details: {
+          title,
+          description: createForm.description.trim() || null,
+          source: 'runtime-worklist',
+        },
+        budget,
+        urgency: createForm.urgency,
+        requiredBy: createForm.requiredBy ? new Date(createForm.requiredBy).toISOString() : undefined,
+        dueAt: createForm.requiredBy ? new Date(createForm.requiredBy).toISOString() : undefined,
+        targets: [{ targetCapabilityId: createForm.targetCapabilityId }],
+      }).then(r => r.data)
+    },
+    onSuccess: () => {
+      setShowCreate(false)
+      setCreateForm({ title: '', description: '', targetCapabilityId: '', urgency: 'NORMAL', requiredBy: '', maxTotalTokens: '', maxEstimatedCost: '' })
+      refetch()
+    },
   })
 
   const list = useMemo(() => {
@@ -96,6 +161,20 @@ export function InboxPage() {
             Tasks, approvals, and deliverables routed to you across all workflows.
           </p>
         </div>
+        <button
+          onClick={() => setShowCreate(v => !v)}
+          style={{
+            marginLeft: 'auto',
+            display: 'inline-flex', alignItems: 'center', gap: 7,
+            padding: '9px 13px', borderRadius: 9,
+            border: '1px solid rgba(0,132,61,0.25)',
+            background: 'rgba(0,132,61,0.10)',
+            color: '#006227', fontSize: 12, fontWeight: 800,
+            cursor: 'pointer',
+          }}
+        >
+          <Plus size={14} /> New WorkItem
+        </button>
       </div>
 
       {/* Tab strip */}
@@ -104,6 +183,36 @@ export function InboxPage() {
         <Tab label="Available" count={data?.counts.available ?? 0} active={tab === 'available'} onClick={() => setTab('available')} />
         <Tab label="Done (30d)" count={data?.counts.done    ?? 0} active={tab === 'done'}      onClick={() => setTab('done')} />
       </div>
+
+      {showCreate && (
+        <div style={{ padding: 14, borderRadius: 12, background: '#fff', border: '1px solid var(--color-outline-variant)', marginBottom: 14 }}>
+          <h2 style={{ margin: '0 0 10px', fontSize: 16, color: 'var(--color-on-surface)' }}>Create capability WorkItem</h2>
+          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+            <input value={createForm.title} onChange={e => setCreateForm(f => ({ ...f, title: e.target.value }))} placeholder="WorkItem title" style={inputStyle} />
+            <select value={createForm.targetCapabilityId} onChange={e => setCreateForm(f => ({ ...f, targetCapabilityId: e.target.value }))} style={inputStyle}>
+              <option value="">Target capability</option>
+              {(capabilities.data ?? []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            <select value={createForm.urgency} onChange={e => setCreateForm(f => ({ ...f, urgency: e.target.value as CreateWorkItemForm['urgency'] }))} style={inputStyle}>
+              <option value="LOW">Low urgency</option>
+              <option value="NORMAL">Normal urgency</option>
+              <option value="HIGH">High urgency</option>
+              <option value="CRITICAL">Critical urgency</option>
+            </select>
+            <input value={createForm.requiredBy} onChange={e => setCreateForm(f => ({ ...f, requiredBy: e.target.value }))} type="datetime-local" style={inputStyle} />
+            <input value={createForm.maxTotalTokens} onChange={e => setCreateForm(f => ({ ...f, maxTotalTokens: e.target.value }))} placeholder="Token budget optional" style={inputStyle} />
+            <input value={createForm.maxEstimatedCost} onChange={e => setCreateForm(f => ({ ...f, maxEstimatedCost: e.target.value }))} placeholder="Cost budget optional" style={inputStyle} />
+          </div>
+          <textarea value={createForm.description} onChange={e => setCreateForm(f => ({ ...f, description: e.target.value }))} placeholder="Immutable request details, acceptance notes, constraints..." rows={4} style={{ ...inputStyle, marginTop: 10, resize: 'vertical' }} />
+          {createMut.error && <p style={{ margin: '8px 0 0', fontSize: 12, color: '#dc2626' }}>{(createMut.error as Error).message}</p>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+            <button onClick={() => setShowCreate(false)} style={secondaryButtonStyle}>Cancel</button>
+            <button onClick={() => createMut.mutate()} disabled={createMut.isPending} style={primaryButtonStyle}>
+              {createMut.isPending ? 'Creating...' : 'Create WorkItem'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
@@ -167,6 +276,57 @@ export function InboxPage() {
       )}
     </div>
   )
+}
+
+const inputStyle: CSSProperties = {
+  width: '100%',
+  boxSizing: 'border-box',
+  padding: '9px 11px',
+  borderRadius: 9,
+  border: '1px solid var(--color-outline-variant)',
+  background: '#fff',
+  fontSize: 13,
+  outline: 'none',
+}
+
+const primaryButtonStyle: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 7,
+  padding: '8px 12px',
+  borderRadius: 9,
+  border: 'none',
+  background: '#00843D',
+  color: '#fff',
+  fontSize: 12,
+  fontWeight: 800,
+  cursor: 'pointer',
+}
+
+const secondaryButtonStyle: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 7,
+  padding: '8px 12px',
+  borderRadius: 9,
+  border: '1px solid var(--color-outline-variant)',
+  background: '#fff',
+  color: 'var(--color-on-surface)',
+  fontSize: 12,
+  fontWeight: 800,
+  cursor: 'pointer',
+}
+
+function unwrapItems<T>(data: unknown): T[] {
+  if (Array.isArray(data)) return data as T[]
+  if (data && typeof data === 'object') {
+    const obj = data as Record<string, unknown>
+    if (Array.isArray(obj.items)) return obj.items as T[]
+    if (Array.isArray(obj.data)) return obj.data as T[]
+  }
+  return []
 }
 
 // ── Sub-components ──────────────────────────────────────────────────────────

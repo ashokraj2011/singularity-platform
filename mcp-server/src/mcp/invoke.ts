@@ -39,6 +39,7 @@ import {
 } from "../workspace/git-workspace";
 import { indexWorkspace, lastAstStats } from "../workspace/ast-index";
 import { ensureWorkspaceSource, WorkspaceSourceStatus } from "../workspace/source-materializer";
+import { sandboxRoot, withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbox";
 
 const ToolDescSchema = z.object({
   name: z.string(),
@@ -76,6 +77,7 @@ const InvokeSchema = z.object({
     runId: z.string().optional(),
     runStepId: z.string().optional(),
     workItemId: z.string().optional(),
+    workItemCode: z.string().optional(),
     traceId: z.string().optional(),
     workflowInstanceId: z.string().optional(),
     nodeId: z.string().optional(),
@@ -135,6 +137,7 @@ interface LoopState {
   toolCallHistory: Array<{ name: string; argsHash: string; stepIndex: number }>;
   workspace?: {
     branch?: WorkBranchInfo | null;
+    workspaceRoot?: string;
     commitSha?: string;
     changedPaths?: string[];
     astIndexStatus?: string;
@@ -537,10 +540,17 @@ async function buildResponseBody(
 
   if (outcome.kind === "complete") {
     if (state.workspace?.branch) {
-      const finish = await finishWorkBranch(`Singularity work item ${state.correlation.workItemId ?? state.workspace.branch.branch}`);
+      const finish = await finishWorkBranch(
+        `Singularity work item ${state.correlation.workItemId ?? state.workspace.branch.branch}`,
+        {
+          push: config.MCP_WORK_BRANCH_PUSH_ON_FINISH,
+          remote: config.MCP_WORK_BRANCH_PUSH_REMOTE,
+        },
+      );
       const stats = await indexWorkspace("auto_finish");
       state.workspace.commitSha = finish.commitSha;
       state.workspace.changedPaths = finish.changedPaths;
+      state.workspace.workspaceRoot = finish.workspaceRoot ?? state.workspace.workspaceRoot ?? sandboxRoot();
       state.workspace.astIndexStatus = stats.status;
       state.workspace.astIndexedFiles = stats.indexedFiles;
       state.workspace.astIndexedSymbols = stats.indexedSymbols;
@@ -552,7 +562,14 @@ async function buildResponseBody(
           commit_sha: finish.commitSha,
           tool_name: "finish_work_branch_auto",
           source: "heuristic",
-          metadata: { branch: finish.branch, message: finish.message },
+          metadata: {
+            branch: finish.branch,
+            message: finish.message,
+            workspaceRoot: finish.workspaceRoot,
+            pushed: finish.pushed,
+            pushError: finish.pushError,
+            remote: config.MCP_WORK_BRANCH_PUSH_ON_FINISH ? config.MCP_WORK_BRANCH_PUSH_REMOTE : undefined,
+          },
         });
         state.codeChangeIds.push(codeChange.id);
         events.publish({
@@ -675,6 +692,7 @@ async function buildResponseBody(
       degradedActionsAllowed: state.degradedActionsAllowed,
     },
     workspace: {
+      workspaceRoot: state.workspace?.workspaceRoot ?? sandboxRoot(),
       workspaceBranch: state.workspace?.branch?.branch,
       workspaceCommitSha: state.workspace?.commitSha,
       changedPaths: state.workspace?.changedPaths ?? [],
@@ -719,7 +737,13 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
   }
   const body = parsed.data;
   const startedAt = Date.now();
+  const workspaceRoot = workspaceRootForRunContext({
+    workItemId: body.runContext.workItemId,
+    workItemCode: body.runContext.workItemCode,
+    branchName: body.runContext.branchName,
+  });
 
+  return await withSandboxRoot(workspaceRoot, async () => {
   const correlation: CorrelationIds = {
     ...body.runContext,
     runId: body.runContext.runId ?? body.runContext.workflowInstanceId,
@@ -738,6 +762,7 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     workflowInstanceId: body.runContext.workflowInstanceId ?? body.runContext.runId,
     nodeId: body.runContext.nodeId ?? body.runContext.runStepId,
     workItemId: body.runContext.workItemId,
+    workItemCode: body.runContext.workItemCode,
     branchBase: body.runContext.branchBase,
     branchName: body.runContext.branchName,
   };
@@ -820,6 +845,7 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     toolCallHistory: [],
     workspace: {
       branch,
+      workspaceRoot: sandboxRoot(),
       source,
       astIndexStatus: astStats.status,
       astIndexedFiles: astStats.indexedFiles,
@@ -833,6 +859,7 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
 
   const outcome = await runLoop(state);
   return buildResponseBody(state, outcome, startedAt);
+  });
 }
 
 invokeRouter.post("/invoke", async (req, res) => {
@@ -875,6 +902,13 @@ invokeRouter.post("/resume", async (req, res) => {
   }
   if (!env) throw new NotFoundError(`continuation_token not found or already consumed: ${body.continuation_token}`);
 
+  const resumeWorkspaceRoot = env.workspace?.workspaceRoot
+    ?? env.workspace?.branch?.workspaceRoot
+    ?? workspaceRootForRunContext({
+      workItemId: env.correlation.workItemId,
+      branchName: env.workspace?.branch?.branch,
+    });
+  await withSandboxRoot(resumeWorkspaceRoot, async () => {
   const state: LoopState = {
     messages: env.messages,
     availableTools: env.available_tools,
@@ -899,6 +933,10 @@ invokeRouter.post("/resume", async (req, res) => {
     contextPlanHash: env.context_plan_hash,
     degradedActionsAllowed: env.degraded_actions_allowed ?? [],
     allowAutonomousMutation: env.allow_autonomous_mutation === true,
+  };
+  state.workspace = {
+    ...(state.workspace ?? {}),
+    workspaceRoot: state.workspace?.workspaceRoot ?? sandboxRoot(),
   };
 
   // M27.5 — re-establish the persisted work-branch on disk before resuming
@@ -975,6 +1013,7 @@ invokeRouter.post("/resume", async (req, res) => {
     success: true,
     data: await buildResponseBody(state, outcome, startedAt),
     requestId: res.locals.requestId,
+  });
   });
 });
 

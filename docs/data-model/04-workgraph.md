@@ -96,7 +96,40 @@ SUBMITTED SUBMITTED
 APPROVAL_REQUESTED APPROVAL_REQUESTED
 APPROVED APPROVED
 REWORK_REQUESTED REWORK_REQUESTED
+CLARIFICATION_REQUESTED CLARIFICATION_REQUESTED
+CLARIFICATION_ANSWERED CLARIFICATION_ANSWERED
 CANCELLED CANCELLED
+        }
+
+
+
+        WorkItemOriginType {
+            PARENT_DELEGATED PARENT_DELEGATED
+CAPABILITY_LOCAL CAPABILITY_LOCAL
+        }
+
+
+
+        WorkItemUrgency {
+            LOW LOW
+NORMAL NORMAL
+HIGH HIGH
+CRITICAL CRITICAL
+        }
+
+
+
+        WorkItemClarificationStatus {
+            OPEN OPEN
+ANSWERED ANSWERED
+CLOSED CLOSED
+        }
+
+
+
+        WorkItemClarificationDirection {
+            CHILD_TO_PARENT CHILD_TO_PARENT
+PARENT_TO_CHILD PARENT_TO_CHILD
         }
 
 
@@ -644,11 +677,18 @@ EVENT EVENT
 
   "work_items" {
     String id "🗝️"
+    String workCode
+    WorkItemOriginType originType
     String title
     String description "❓"
     String parentCapabilityId "❓"
     WorkItemStatus status
     Json input
+    Json details
+    Json budget
+    WorkItemUrgency urgency
+    DateTime requiredBy "❓"
+    Boolean detailsLocked
     Json finalOutput "❓"
     Int priority
     DateTime dueAt "❓"
@@ -683,6 +723,21 @@ EVENT EVENT
     String actorId "❓"
     Json payload "❓"
     DateTime createdAt
+    }
+
+
+  "work_item_clarifications" {
+    String id "🗝️"
+    WorkItemClarificationDirection direction
+    WorkItemClarificationStatus status
+    String question
+    String answer "❓"
+    String requestedById "❓"
+    String answeredById "❓"
+    DateTime answeredAt "❓"
+    Json payload "❓"
+    DateTime createdAt
+    DateTime updatedAt
     }
 
 
@@ -1283,7 +1338,9 @@ EVENT EVENT
     "workflow_edges" }o--|| workflow_nodes : "target"
     "workflow_mutations" }o--|| workflow_instances : "instance"
     "workflow_events" }o--|| workflow_instances : "instance"
+    "work_items" |o--|| "WorkItemOriginType" : "enum:originType"
     "work_items" |o--|| "WorkItemStatus" : "enum:status"
+    "work_items" |o--|| "WorkItemUrgency" : "enum:urgency"
     "work_items" }o--|o workflow_instances : "sourceWorkflowInstance"
     "work_items" }o--|o workflow_nodes : "sourceWorkflowNode"
     "work_item_targets" |o--|| "WorkItemTargetStatus" : "enum:status"
@@ -1292,6 +1349,10 @@ EVENT EVENT
     "work_item_events" |o--|| "WorkItemEventType" : "enum:eventType"
     "work_item_events" }o--|| work_items : "workItem"
     "work_item_events" }o--|o work_item_targets : "target"
+    "work_item_clarifications" |o--|| "WorkItemClarificationDirection" : "enum:direction"
+    "work_item_clarifications" |o--|| "WorkItemClarificationStatus" : "enum:status"
+    "work_item_clarifications" }o--|| work_items : "workItem"
+    "work_item_clarifications" }o--|o work_item_targets : "target"
     "tasks" |o--|| "TaskStatus" : "enum:status"
     "tasks" |o--|| "AssignmentMode" : "enum:assignmentMode"
     "tasks" }o--|o workflow_instances : "instance"

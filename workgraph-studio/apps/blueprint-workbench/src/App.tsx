@@ -31,6 +31,7 @@ import {
 } from 'lucide-react'
 import {
   api,
+  BLUEPRINT_AUTH_INVALID_EVENT,
   clearToken,
   getToken,
   pseudoLogin,
@@ -43,6 +44,7 @@ import {
   type GateMode,
   type LoopStage,
   type LoopDefinition,
+  type LoopQuestion,
   type LoopVerdict,
   type LookupAgent,
   type LookupCapability,
@@ -64,8 +66,17 @@ const knownRoleMeta: Record<string, { label: string; icon: typeof Brain }> = {
 const defaultWorkbenchGoal = 'Create a governed planning, design, development, QA, and testing loop for this codebase.'
 
 type WorkbenchSection = 'workflow' | 'artifacts' | 'terminal'
+type WorkbenchUiMode = 'neo' | 'classic'
+type NeoWorkspaceTab = 'stage' | 'review' | 'artifacts' | 'terminal'
+
+const WORKBENCH_UI_MODE_KEY = 'singularity-blueprint-workbench-ui'
+const WORKGRAPH_WEB_ORIGIN = normalizeOrigin(import.meta.env.VITE_WORKGRAPH_WEB_ORIGIN)
+  ?? `${window.location.protocol}//${window.location.hostname}:5174`
+const WORKBENCH_ORIGIN = normalizeOrigin(import.meta.env.VITE_BLUEPRINT_WORKBENCH_ORIGIN)
+  ?? `${window.location.protocol}//${window.location.hostname}:5176`
 
 type WorkbenchHydratedDefaults = {
+  browserRunId?: string
   goal?: string
   sourceType?: SourceType
   sourceUri?: string
@@ -81,10 +92,10 @@ type WorkbenchHydratedDefaults = {
 function requestWorkbenchAuthFromHost() {
   const message = { type: 'blueprintWorkbench.auth.request' }
   if (window.parent && window.parent !== window) {
-    window.parent.postMessage(message, 'http://localhost:5174')
+    window.parent.postMessage(message, '*')
   }
   if (window.opener && window.opener !== window) {
-    window.opener.postMessage(message, 'http://localhost:5174')
+    window.opener.postMessage(message, '*')
   }
 }
 
@@ -108,6 +119,7 @@ export default function App() {
   const workflowDefaults = useMemo(() => readWorkflowDefaults(), [])
   const [activeSession, setActiveSession] = useState<BlueprintSession | null>(null)
   const [activeSection, setActiveSection] = useState<WorkbenchSection>('workflow')
+  const [uiMode, setUiMode] = useState<WorkbenchUiMode>(() => readWorkbenchUiMode())
   const [authTick, setAuthTick] = useState(0)
   const [setupOpen, setSetupOpen] = useState(false)
   const [localCreatedSessionIds, setLocalCreatedSessionIds] = useState<Set<string>>(() => new Set())
@@ -119,21 +131,15 @@ export default function App() {
     enabled: hasToken,
   })
   const sessions = sessionsQuery.data?.items ?? []
-  const workflowScoped = Boolean(workflowDefaults.workflowInstanceId && workflowDefaults.workflowNodeId)
+  const workflowScoped = Boolean((workflowDefaults.workflowInstanceId || workflowDefaults.browserRunId) && workflowDefaults.workflowNodeId)
   const visibleSessions = useMemo(() => {
     if (!workflowScoped) return sessions
-    return sessions.filter(session =>
-      localCreatedSessionIds.has(session.id)
-      || (
-        session.workflowInstanceId === workflowDefaults.workflowInstanceId
-        && session.workflowNodeId === workflowDefaults.workflowNodeId
-      ),
-    )
-  }, [localCreatedSessionIds, sessions, workflowDefaults.workflowInstanceId, workflowDefaults.workflowNodeId, workflowScoped])
+    return sessions.filter(session => sessionMatchesWorkflowDefaults(session, workflowDefaults))
+  }, [sessions, workflowDefaults, workflowScoped])
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      if (event.origin !== 'http://localhost:5174') return
+      if (!isAllowedWorkbenchHostOrigin(event.origin)) return
       const data = event.data
       if (!data || typeof data !== 'object' || data.type !== 'blueprintWorkbench.auth') return
       const token = typeof data.token === 'string' ? data.token : ''
@@ -147,19 +153,35 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    const handler = () => {
+      clearToken()
+      setAuthTick(v => v + 1)
+      requestWorkbenchAuthFromHost()
+    }
+    window.addEventListener(BLUEPRINT_AUTH_INVALID_EVENT, handler)
+    return () => window.removeEventListener(BLUEPRINT_AUTH_INVALID_EVENT, handler)
+  }, [])
+
+  useEffect(() => {
     setActiveSession(current => {
       if (visibleSessions.length === 0) {
-        return current && localCreatedSessionIds.has(current.id) ? current : null
+        return workflowScoped ? null : current && localCreatedSessionIds.has(current.id) ? current : null
       }
+      if (workflowScoped && current && !sessionMatchesWorkflowDefaults(current, workflowDefaults)) return visibleSessions[0]
       if (!current) return visibleSessions[0]
       if (localCreatedSessionIds.has(current.id)) return current
       return visibleSessions.find(session => session.id === current.id) ?? visibleSessions[0]
     })
-  }, [localCreatedSessionIds, visibleSessions])
+  }, [localCreatedSessionIds, visibleSessions, workflowDefaults, workflowScoped])
 
   const refreshSession = (session: BlueprintSession) => {
     setActiveSession(session)
     void queryClient.invalidateQueries({ queryKey: ['blueprintSessions'] })
+  }
+
+  const chooseUiMode = (mode: WorkbenchUiMode) => {
+    setUiMode(mode)
+    persistWorkbenchUiMode(mode)
   }
 
   if (!hasToken) {
@@ -171,7 +193,9 @@ export default function App() {
       <WorkbenchCommandHeader
         session={activeSession}
         activeSection={activeSection}
+        uiMode={uiMode}
         onSection={setActiveSection}
+        onUiMode={chooseUiMode}
         onRefresh={() => sessionsQuery.refetch()}
         onSetup={() => setSetupOpen(true)}
         onSignOut={() => {
@@ -194,15 +218,26 @@ export default function App() {
             onCreated={(session) => {
               setLocalCreatedSessionIds(current => {
                 const next = new Set(current)
-                next.add(session.id)
+                if (!workflowScoped || sessionMatchesWorkflowDefaults(session, workflowDefaults)) next.add(session.id)
                 return next
               })
+              if (workflowScoped && !sessionMatchesWorkflowDefaults(session, workflowDefaults)) {
+                setActiveSession(null)
+                void queryClient.invalidateQueries({ queryKey: ['blueprintSessions'] })
+                setSetupOpen(true)
+                return
+              }
               refreshSession(session)
               setSetupOpen(false)
             }}
           />
         </SetupDrawer>
-        <LoopWorkbench session={activeSession} activeSection={activeSection} onSession={refreshSession} />
+        {uiMode === 'classic' ? (
+          <LoopWorkbench session={activeSession} activeSection={activeSection} onSession={refreshSession} />
+        ) : (
+          <WorkbenchNeo session={activeSession} activeSection={activeSection} onSection={setActiveSection} onSession={refreshSession} />
+        )}
+        <ClarificationPrompt session={activeSession} onSession={refreshSession} />
       </section>
     </main>
   )
@@ -211,14 +246,18 @@ export default function App() {
 function WorkbenchCommandHeader({
   session,
   activeSection,
+  uiMode,
   onSection,
+  onUiMode,
   onRefresh,
   onSetup,
   onSignOut,
 }: {
   session: BlueprintSession | null
   activeSection: WorkbenchSection
+  uiMode: WorkbenchUiMode
   onSection: (section: WorkbenchSection) => void
+  onUiMode: (mode: WorkbenchUiMode) => void
   onRefresh: () => void
   onSetup: () => void
   onSignOut: () => void
@@ -252,6 +291,19 @@ function WorkbenchCommandHeader({
           </button>
         ))}
       </nav>
+      <div className="mode-switch" aria-label="Workbench mode">
+        {(['neo', 'classic'] as const).map(mode => (
+          <button
+            key={mode}
+            type="button"
+            className={uiMode === mode ? 'active' : ''}
+            onClick={() => onUiMode(mode)}
+            aria-pressed={uiMode === mode}
+          >
+            {mode === 'neo' ? 'WorkbenchNeo' : 'Classic'}
+          </button>
+        ))}
+      </div>
       <div className="command-search">
         <Search size={15} />
         <input placeholder="Search session, stage, artifact..." />
@@ -298,7 +350,7 @@ function AuthGate({ onAuthed }: { onAuthed: () => void }) {
       <div>
         <Sparkles size={28} />
         <h1>Blueprint Workbench</h1>
-        <p>This standalone MVP uses the Workgraph API and needs a browser token on port 5176.</p>
+        <p>This standalone Workbench uses the Workgraph API and needs a browser token from the workflow portal.</p>
         <button className="primary-action" onClick={() => loginMutation.mutate()} disabled={loginMutation.isPending}>
           {loginMutation.isPending ? <Loader2 className="spin" size={16} /> : <ShieldCheck size={16} />}
           Continue as super admin
@@ -306,6 +358,87 @@ function AuthGate({ onAuthed }: { onAuthed: () => void }) {
         {loginMutation.isError && <p className="error-text">{loginMutation.error.message}</p>}
       </div>
     </main>
+  )
+}
+
+function ClarificationPrompt({
+  session,
+  onSession,
+}: {
+  session: BlueprintSession | null
+  onSession: (session: BlueprintSession) => void
+}) {
+  const [answers, setAnswers] = useState<Record<string, DecisionAnswer>>({})
+  const [dismissedKey, setDismissedKey] = useState('')
+  const stage = session?.loopDefinition?.stages.find(item => item.key === session.currentStageKey)
+  const questions = useMemo(() => {
+    if (!session || !stage) return []
+    return unansweredClarificationQuestions(session, stage)
+  }, [session, stage])
+  const promptKey = session && stage && questions.length
+    ? `${session.id}:${stage.key}:${questions.map(question => question.id).join('|')}`
+    : ''
+  const open = Boolean(promptKey && promptKey !== dismissedKey)
+  const saveMutation = useMutation({
+    mutationFn: () => {
+      if (!session) throw new Error('No Workbench session selected')
+      const current = Object.fromEntries((session.decisionAnswers ?? []).map(answer => [answer.questionId, answer]))
+      const merged = { ...current, ...answers }
+      return api.saveDecisionAnswers(session.id, answerList(merged))
+    },
+    onSuccess: (updated) => {
+      setAnswers({})
+      onSession(updated)
+      setDismissedKey(promptKey)
+    },
+  })
+
+  useEffect(() => {
+    if (!open || !session) return
+    setAnswers(Object.fromEntries((session.decisionAnswers ?? []).map(answer => [answer.questionId, answer])))
+  }, [open, session?.id, session?.decisionAnswers])
+
+  if (!open || !session || !stage) return null
+  const answeredCount = questions.filter(question => hasAnswerForQuestion(question, answerList(answers))).length
+
+  return (
+    <div className="clarification-scrim" role="dialog" aria-modal="true" aria-labelledby="clarification-title">
+      <section className="clarification-modal">
+        <div className="clarification-heading">
+          <div>
+            <p className="eyebrow">Agent clarification</p>
+            <h2 id="clarification-title">{stage.label} needs your input</h2>
+            <p>
+              The LLM returned open questions. Answer them here so the stage gate and downstream agents use your decisions instead of guessing.
+            </p>
+          </div>
+          <button className="icon-button" type="button" onClick={() => setDismissedKey(promptKey)} title="Answer later">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="question-stack">
+          {questions.map(question => (
+          <QuestionAnswerCard
+              key={question.id}
+              question={question}
+              answer={answerForQuestion(question, answerList(answers))}
+              onAnswer={(answer) => setAnswers(current => ({ ...current, [question.id]: answer }))}
+            />
+          ))}
+        </div>
+
+        {saveMutation.isError && <p className="error-text">{saveMutation.error.message}</p>}
+        <div className="clarification-actions">
+          <span>{answeredCount}/{questions.length} answered</span>
+          <button className="secondary-action" type="button" onClick={() => setDismissedKey(promptKey)}>Answer later</button>
+          <button className="primary-action compact" type="button" disabled={answeredCount === 0 || saveMutation.isPending} onClick={() => saveMutation.mutate()}>
+            {saveMutation.isPending ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
+            Save answers
+          </button>
+        </div>
+      </section>
+    </div>
   )
 }
 
@@ -660,6 +793,7 @@ function WorkbenchSetup({
           qaAgentTemplateId: qaAgentTemplateId || undefined,
           gateMode,
           workflowInstanceId: workflowDefaults.workflowInstanceId,
+          browserRunId: workflowDefaults.browserRunId,
           workflowNodeId: workflowDefaults.workflowNodeId,
           phaseId: workflowDefaults.phaseId,
           loopDefinition: loopDefinition
@@ -672,6 +806,330 @@ function WorkbenchSetup({
         Start guided delivery
       </button>
     </aside>
+  )
+}
+
+function WorkbenchNeo({
+  session,
+  activeSection,
+  onSection,
+  onSession,
+}: {
+  session: BlueprintSession | null
+  activeSection: WorkbenchSection
+  onSection: (section: WorkbenchSection) => void
+  onSession: (session: BlueprintSession) => void
+}) {
+  const [activeStageKey, setActiveStageKey] = useState<string | null>(null)
+  const [workspaceTab, setWorkspaceTab] = useState<NeoWorkspaceTab>(() => sectionToNeoTab(activeSection))
+  const stages = session?.loopDefinition?.stages ?? []
+  const firstStageKey = stages[0]?.key ?? null
+
+  useEffect(() => {
+    if (!session) {
+      setActiveStageKey(null)
+      return
+    }
+    setActiveStageKey(session.currentStageKey ?? firstStageKey)
+  }, [session?.id, session?.currentStageKey, firstStageKey])
+
+  useEffect(() => {
+    setWorkspaceTab(sectionToNeoTab(activeSection))
+  }, [activeSection])
+
+  const activeStage = stages.find(stage => stage.key === activeStageKey) ?? stages[0]
+  const activeAttempt = session && activeStage ? attemptsFor(session, activeStage.key).at(-1) : undefined
+  const showReview = Boolean(session && activeStage && activeAttempt && isDeveloperStage(activeStage))
+
+  useEffect(() => {
+    if (!session) return
+    if (showReview) {
+      setWorkspaceTab('review')
+    } else {
+      setWorkspaceTab(current => current === 'review' ? 'stage' : current)
+    }
+  }, [session?.id, activeStage?.key, showReview])
+
+  const chooseTab = (tab: NeoWorkspaceTab) => {
+    setWorkspaceTab(tab)
+    if (tab === 'artifacts') onSection('artifacts')
+    else if (tab === 'terminal') onSection('terminal')
+    else onSection('workflow')
+  }
+
+  if (!session) {
+    return (
+      <section className="empty-workbench neo-empty">
+        <Sparkles size={32} />
+        <h2>Start guided delivery</h2>
+        <p>Create or select a Workbench session. Neo will keep stages, evidence, artifacts, code review, and approvals in one cockpit.</p>
+      </section>
+    )
+  }
+
+  return (
+    <section className="neo-shell">
+      <NeoStageRail session={session} activeStageKey={activeStage?.key ?? null} onStage={(stageKey) => {
+        setActiveStageKey(stageKey)
+        chooseTab('stage')
+      }} />
+
+      <main className="neo-main">
+        <NeoPipeline session={session} activeStageKey={activeStage?.key ?? null} onStage={(stageKey) => {
+          setActiveStageKey(stageKey)
+          chooseTab('stage')
+        }} />
+
+        <section className="neo-workspace-card">
+          <div className="neo-workspace-tabs" aria-label="WorkbenchNeo workspace">
+            {([
+              ['stage', 'Stage'],
+              ['review', 'Code review'],
+              ['artifacts', 'Artifacts'],
+              ['terminal', 'Terminal'],
+            ] as const).map(([tab, label]) => (
+              <button
+                key={tab}
+                type="button"
+                className={workspaceTab === tab ? 'active' : ''}
+                disabled={tab === 'review' && !showReview}
+                onClick={() => chooseTab(tab)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="neo-workspace-body">
+            {workspaceTab === 'stage' && activeStage && (
+              <NeoStageOverview session={session} stage={activeStage} latest={activeAttempt} />
+            )}
+            {workspaceTab === 'review' && activeStage && activeAttempt && showReview && (
+              <DeveloperCodeReview session={session} stage={activeStage} latest={activeAttempt} layout="wide" />
+            )}
+            {workspaceTab === 'review' && !showReview && (
+              <section className="neo-placeholder">
+                <FileCode2 size={22} />
+                <h3>No code review for this stage</h3>
+                <p>Select a Developer stage after it runs to review actual MCP/git diff evidence.</p>
+              </section>
+            )}
+            {workspaceTab === 'artifacts' && (
+              <AssetRail session={session} activeStageKey={activeStage?.key} onSession={onSession} />
+            )}
+            {workspaceTab === 'terminal' && (
+              <WorkbenchTerminal session={session} />
+            )}
+          </div>
+        </section>
+
+        <NeoEvidenceConsole session={session} activeStage={activeStage} latest={activeAttempt} />
+      </main>
+
+      <aside className="neo-action-panel">
+        <StageDetailsPanel session={session} stage={activeStage} onSession={onSession} />
+      </aside>
+    </section>
+  )
+}
+
+function sectionToNeoTab(section: WorkbenchSection): NeoWorkspaceTab {
+  if (section === 'artifacts') return 'artifacts'
+  if (section === 'terminal') return 'terminal'
+  return 'stage'
+}
+
+function NeoStageRail({
+  session,
+  activeStageKey,
+  onStage,
+}: {
+  session: BlueprintSession
+  activeStageKey: string | null
+  onStage: (stageKey: string) => void
+}) {
+  const stages = session.loopDefinition?.stages ?? []
+  const approved = stages.filter(stage => {
+    const latest = attemptsFor(session, stage.key).at(-1)
+    return latest?.verdict === 'PASS' || latest?.verdict === 'ACCEPTED_WITH_RISK'
+  }).length
+  return (
+    <aside className="neo-stage-rail">
+      <div className="neo-project-card">
+        <span className="stage-key">Delivery cockpit</span>
+        <h2>{session.loopDefinition?.name ?? 'Workbench loop'}</h2>
+        <p>{session.sourceType} · {session.sourceUri}</p>
+        <div className="neo-progress-meter"><i style={{ width: `${stages.length ? Math.round((approved / stages.length) * 100) : 0}%` }} /></div>
+        <strong>{approved}/{stages.length} stages green</strong>
+      </div>
+
+      <nav className="neo-stage-list" aria-label="Workbench stages">
+        {stages.map(stage => {
+          const latest = attemptsFor(session, stage.key).at(-1)
+          const status = latestStatus(latest)
+          const Icon = roleMeta(stage.agentRole).icon
+          return (
+            <button
+              key={stage.key}
+              type="button"
+              className={`${activeStageKey === stage.key ? 'active' : ''} ${status}`}
+              onClick={() => onStage(stage.key)}
+            >
+              <span className="neo-stage-icon"><Icon size={16} /></span>
+              <span>
+                <strong>{stage.label}</strong>
+                <em>{roleMeta(stage.agentRole).label} · {attemptsFor(session, stage.key).length || 0} iter</em>
+              </span>
+              <small>{latest?.verdict ? verdictLabels[latest.verdict] : latest?.status ?? 'Ready'}</small>
+            </button>
+          )
+        })}
+      </nav>
+    </aside>
+  )
+}
+
+function NeoPipeline({
+  session,
+  activeStageKey,
+  onStage,
+}: {
+  session: BlueprintSession
+  activeStageKey: string | null
+  onStage: (stageKey: string) => void
+}) {
+  return (
+    <section className="neo-pipeline" aria-label="Stage pipeline">
+      {(session.loopDefinition?.stages ?? []).map((stage, index, stages) => {
+        const latest = attemptsFor(session, stage.key).at(-1)
+        const status = latestStatus(latest)
+        const Icon = roleMeta(stage.agentRole).icon
+        return (
+          <div className="neo-pipeline-item" key={stage.key}>
+            <button
+              type="button"
+              className={`${activeStageKey === stage.key ? 'active' : ''} ${status}`}
+              onClick={() => onStage(stage.key)}
+            >
+              <Icon size={16} />
+              <span>{stage.label}</span>
+              <strong>{latest?.verdict ? verdictLabels[latest.verdict] : latest?.status ?? 'Ready'}</strong>
+            </button>
+            {index < stages.length - 1 && <i />}
+          </div>
+        )
+      })}
+    </section>
+  )
+}
+
+function NeoStageOverview({
+  session,
+  stage,
+  latest,
+}: {
+  session: BlueprintSession
+  stage: LoopStage
+  latest?: StageAttempt
+}) {
+  const stageArtifacts = session.artifacts.filter(artifact => artifact.stageKey === stage.key)
+  const confidence = latest?.gateRecommendation?.confidence
+  return (
+    <section className="neo-stage-overview">
+      <div className="neo-stage-hero">
+        <div>
+          <span className="stage-key">{stage.key}</span>
+          <h2>{stage.label}</h2>
+          <p>{stage.description || session.goal}</p>
+        </div>
+        <div className="neo-stage-facts">
+          <DeliveryMetric label="Status" value={latest?.verdict ? verdictLabels[latest.verdict] : latest?.status ?? 'Ready'} tone={latest?.verdict === 'PASS' ? 'ok' : 'default'} />
+          <DeliveryMetric label="Role" value={roleMeta(stage.agentRole).label} />
+          <DeliveryMetric label="Confidence" value={typeof confidence === 'number' ? `${Math.round(confidence * 100)}%` : '--'} tone={typeof confidence === 'number' && confidence > 0.7 ? 'ok' : 'default'} />
+          <DeliveryMetric label="Artifacts" value={String(stageArtifacts.length)} />
+        </div>
+      </div>
+
+      <div className="neo-output-panel">
+        <div className="neo-output-header">
+          <strong>Latest stage output</strong>
+          {latest?.correlation && <code>{String(latest.correlation.cfCallId ?? latest.correlation.traceId ?? latest.id).slice(0, 36)}</code>}
+        </div>
+        {latest?.response ? (
+          <pre>{latest.response}</pre>
+        ) : (
+          <div className="neo-placeholder compact">
+            <Activity size={18} />
+            <p>No model-authored output yet. Run this stage to produce evidence and artifacts.</p>
+          </div>
+        )}
+      </div>
+
+      <div className="neo-contract-grid">
+        <section>
+          <h3>Expected artifacts</h3>
+          {(stage.expectedArtifacts ?? []).length === 0 && <p>No explicit artifact contract.</p>}
+          {(stage.expectedArtifacts ?? []).map(artifact => (
+            <span key={`${artifact.kind}-${artifact.title}`}>{artifact.kind} · {artifact.title}</span>
+          ))}
+        </section>
+        <section>
+          <h3>Produced for this stage</h3>
+          {stageArtifacts.length === 0 && <p>No artifacts yet.</p>}
+          {stageArtifacts.slice(0, 6).map(artifact => (
+            <span key={artifact.id}>{artifact.title}</span>
+          ))}
+        </section>
+      </div>
+    </section>
+  )
+}
+
+function NeoEvidenceConsole({
+  session,
+  activeStage,
+  latest,
+}: {
+  session: BlueprintSession
+  activeStage?: LoopStage
+  latest?: StageAttempt
+}) {
+  const recentEvents = [...(session.reviewEvents ?? [])].reverse().slice(0, 5)
+  const openQuestions = (activeStage?.questions ?? []).filter(question => question.required && !hasAnswerForQuestion(question, session.decisionAnswers ?? []))
+  return (
+    <section className="neo-console">
+      <div className="neo-console-head">
+        <div>
+          <ShieldCheck size={16} />
+          <strong>Evidence console</strong>
+        </div>
+        <span>{activeStage?.label ?? 'No stage selected'}</span>
+      </div>
+      <div className="neo-console-grid">
+        <div>
+          <span>Latest events</span>
+          {recentEvents.length === 0 && <p>No events yet.</p>}
+          {recentEvents.map(event => (
+            <p key={event.id}><code>{event.type.replaceAll('_', ' ')}</code>{event.message}</p>
+          ))}
+        </div>
+        <div>
+          <span>Receipt</span>
+          {latest?.correlation ? (
+            <p><code>{String(latest.correlation.cfCallId ?? latest.correlation.traceId ?? latest.id)}</code>{stageCostEvidence(latest)}</p>
+          ) : (
+            <p>No execution receipt yet.</p>
+          )}
+          {latest?.gateRecommendation?.reason && <p><code>gate</code>{latest.gateRecommendation.reason}</p>}
+        </div>
+        <div>
+          <span>Open questions</span>
+          {openQuestions.length === 0 ? <p>No required unanswered questions.</p> : openQuestions.slice(0, 4).map(question => (
+            <p key={question.id}><code>{question.source === 'llm_open_question' ? 'LLM' : 'gate'}</code>{question.question}</p>
+          ))}
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -1001,7 +1459,7 @@ function StageDetailsPanel({
   const canRun = latest?.status !== 'RUNNING'
   const stageCompleted = latest?.verdict === 'PASS' || latest?.verdict === 'ACCEPTED_WITH_RISK'
   const requiredMissing = (stage.questions ?? [])
-    .filter(question => question.required && !hasAnswer(answers[question.id]))
+    .filter(question => question.required && !hasAnswerForQuestion(question, answerList(answers)))
     .map(question => question.id)
 
   return (
@@ -1077,52 +1535,12 @@ function StageDetailsPanel({
 
       <div className="question-stack">
         {(stage.questions ?? []).map(question => (
-          <section className="question-card" key={question.id}>
-            <div>
-              <strong>{question.question}</strong>
-              <code>{question.id}{question.required ? ' · required' : ''}</code>
-            </div>
-            {question.options && question.options.length > 0 && (
-              <div className="option-grid">
-                {question.options.map(option => (
-                  <button
-                    type="button"
-                    key={option.label}
-                    className={`option-card ${answers[question.id]?.selectedOptionLabel === option.label ? 'selected' : ''}`}
-                    onClick={() => setAnswers(current => ({
-                      ...current,
-                      [question.id]: {
-                        questionId: question.id,
-                        answerType: 'option',
-                        selectedOptionLabel: option.label,
-                        notes: current[question.id]?.notes,
-                      },
-                    }))}
-                  >
-                    <strong>{option.label}</strong>
-                    {option.recommended && <span>recommended</span>}
-                    {option.impact && <p>{option.impact}</p>}
-                  </button>
-                ))}
-              </div>
-            )}
-            {question.freeform !== false && (
-              <textarea
-                rows={2}
-                value={answers[question.id]?.customAnswer ?? ''}
-                onChange={event => setAnswers(current => ({
-                  ...current,
-                  [question.id]: {
-                    questionId: question.id,
-                    answerType: 'freeform',
-                    customAnswer: event.target.value,
-                    notes: current[question.id]?.notes,
-                  },
-                }))}
-                placeholder="Free-form answer, constraints, or stakeholder note"
-              />
-            )}
-          </section>
+          <QuestionAnswerCard
+            key={question.id}
+            question={question}
+            answer={answerForQuestion(question, answerList(answers))}
+            onAnswer={(answer) => setAnswers(current => ({ ...current, [question.id]: answer }))}
+          />
         ))}
       </div>
 
@@ -1664,6 +2082,95 @@ function AgentSelect({
   )
 }
 
+function QuestionAnswerCard({
+  question,
+  answer,
+  onAnswer,
+}: {
+  question: LoopQuestion
+  answer?: DecisionAnswer
+  onAnswer: (answer: DecisionAnswer) => void
+}) {
+  const kind = question.type ?? ((question.options?.length ?? 0) > 0 ? 'single_select' : 'freeform')
+  const isMulti = kind === 'multi_select'
+  const selectedLabels = answer?.answerType === 'multi_option'
+    ? answer.selectedOptionLabels ?? []
+    : answer?.selectedOptionLabel ? [answer.selectedOptionLabel] : []
+  const setFreeform = (value: string) => {
+    onAnswer({
+      questionId: question.id,
+      questionText: question.question,
+      normalizedQuestion: normalizeQuestionText(question.question),
+      answerType: answer?.answerType === 'option' || answer?.answerType === 'multi_option' ? answer.answerType : 'freeform',
+      selectedOptionLabel: answer?.selectedOptionLabel,
+      selectedOptionLabels: answer?.selectedOptionLabels,
+      customAnswer: value,
+      notes: answer?.notes,
+    })
+  }
+  const toggleOption = (label: string) => {
+    if (isMulti) {
+      const next = selectedLabels.includes(label)
+        ? selectedLabels.filter(item => item !== label)
+        : [...selectedLabels, label]
+      onAnswer({
+        questionId: question.id,
+        questionText: question.question,
+        normalizedQuestion: normalizeQuestionText(question.question),
+        answerType: 'multi_option',
+        selectedOptionLabels: next,
+        customAnswer: answer?.customAnswer,
+        notes: answer?.notes,
+      })
+      return
+    }
+    onAnswer({
+      questionId: question.id,
+      questionText: question.question,
+      normalizedQuestion: normalizeQuestionText(question.question),
+      answerType: 'option',
+      selectedOptionLabel: label,
+      customAnswer: answer?.customAnswer,
+      notes: answer?.notes,
+    })
+  }
+
+  return (
+    <section className={`question-card ${question.source === 'llm_open_question' ? 'generated' : ''}`}>
+      <div>
+        <strong>{question.question}</strong>
+        <code>
+          {question.id}{question.required ? ' · required' : ''}{question.source === 'llm_open_question' ? ' · from LLM' : ''}
+        </code>
+      </div>
+      {question.options && question.options.length > 0 && (
+        <div className="option-grid">
+          {question.options.map(option => (
+            <button
+              type="button"
+              key={option.label}
+              className={`option-card ${selectedLabels.includes(option.label) ? 'selected' : ''}`}
+              onClick={() => toggleOption(option.label)}
+            >
+              <strong>{option.label}</strong>
+              {option.recommended && <span>recommended</span>}
+              {option.impact && <p>{option.impact}</p>}
+            </button>
+          ))}
+        </div>
+      )}
+      {question.freeform !== false && (
+        <textarea
+          rows={2}
+          value={answer?.customAnswer ?? ''}
+          onChange={event => setFreeform(event.target.value)}
+          placeholder={kind === 'clarification' ? 'Answer the clarification or add constraints' : 'Free-form answer, constraints, or stakeholder note'}
+        />
+      )}
+    </section>
+  )
+}
+
 function preferredAgent(agents: LookupAgent[], role: string) {
   return agents.find(agent => agent.name.toLowerCase().includes(role))
 }
@@ -1694,12 +2201,65 @@ function isLoopGreen(session: BlueprintSession) {
   })
 }
 
+function unansweredClarificationQuestions(session: BlueprintSession, stage: LoopStage) {
+  const latest = attemptsFor(session, stage.key).at(-1)
+  if (!latest || latest.status === 'RUNNING' || latest.verdict) return []
+  const generatedIds = new Set(latest.generatedQuestionIds ?? [])
+  return (stage.questions ?? []).filter(question => {
+    const generated = question.source === 'llm_open_question' || generatedIds.has(question.id)
+    return generated && !hasAnswerForQuestion(question, session.decisionAnswers ?? [])
+  })
+}
+
 function answerList(answers: Record<string, DecisionAnswer>) {
   return Object.values(answers).filter(hasAnswer)
 }
 
 function hasAnswer(answer?: DecisionAnswer) {
-  return Boolean(answer?.selectedOptionLabel?.trim() || answer?.customAnswer?.trim() || answer?.notes?.trim())
+  return Boolean(
+    answer?.selectedOptionLabel?.trim()
+    || answer?.selectedOptionLabels?.some(label => label.trim())
+    || answer?.customAnswer?.trim()
+    || answer?.notes?.trim(),
+  )
+}
+
+function normalizeQuestionText(value?: string) {
+  return (value ?? '')
+    .toLowerCase()
+    .replace(/["'`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\b(the|a|an|please|should|could|would|do|does|is|are|there|any)\b/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+}
+
+function answerForQuestion(question: LoopQuestion, answers: DecisionAnswer[]) {
+  const direct = answers.find(answer => answer.questionId === question.id && hasAnswer(answer))
+  if (direct) return direct
+  const normalized = normalizeQuestionText(question.question)
+  if (!normalized) return undefined
+  return answers.find(answer => {
+    if (!hasAnswer(answer)) return false
+    return questionKeysMatch(answer.normalizedQuestion || normalizeQuestionText(answer.questionText), normalized)
+  })
+}
+
+function hasAnswerForQuestion(question: LoopQuestion, answers: DecisionAnswer[]) {
+  return Boolean(answerForQuestion(question, answers))
+}
+
+function questionKeysMatch(left?: string, right?: string) {
+  if (!left || !right) return false
+  if (left === right) return true
+  const leftTokens = new Set(left.split(' ').filter(token => token.length > 2))
+  const rightTokens = new Set(right.split(' ').filter(token => token.length > 2))
+  if (leftTokens.size < 4 || rightTokens.size < 4) return false
+  let shared = 0
+  leftTokens.forEach(token => {
+    if (rightTokens.has(token)) shared += 1
+  })
+  return shared / Math.min(leftTokens.size, rightTokens.size) >= 0.72
 }
 
 function stageLabel(session: BlueprintSession, stageKey: string) {
@@ -1844,6 +2404,19 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 }
 
+function normalizeOrigin(value?: string): string | undefined {
+  if (!value?.trim()) return undefined
+  try {
+    return new URL(value).origin
+  } catch {
+    return undefined
+  }
+}
+
+function isAllowedWorkbenchHostOrigin(origin: string) {
+  return origin === WORKGRAPH_WEB_ORIGIN || origin === window.location.origin
+}
+
 function readWorkflowDefaults() {
   if (typeof window === 'undefined') return {}
   const params = new URLSearchParams(window.location.search)
@@ -1860,6 +2433,7 @@ function readWorkflowDefaults() {
   }
   return {
     workflowInstanceId: cleanQueryParam(params.get('workflowInstanceId')),
+    browserRunId: cleanQueryParam(params.get('browserRunId')),
     workflowNodeId: cleanQueryParam(params.get('workflowNodeId')),
     phaseId: cleanQueryParam(params.get('phaseId')),
     goal: cleanQueryParam(params.get('goal')),
@@ -1878,6 +2452,35 @@ function readWorkflowDefaults() {
   }
 }
 
+function readWorkbenchUiMode(): WorkbenchUiMode {
+  if (typeof window === 'undefined') return 'neo'
+  const param = new URLSearchParams(window.location.search).get('ui')
+  if (param === 'classic' || param === 'neo') return param
+  const stored = window.localStorage.getItem(WORKBENCH_UI_MODE_KEY)
+  return stored === 'classic' ? 'classic' : 'neo'
+}
+
+function persistWorkbenchUiMode(mode: WorkbenchUiMode) {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(WORKBENCH_UI_MODE_KEY, mode)
+  const url = new URL(window.location.href)
+  url.searchParams.set('ui', mode)
+  window.history.replaceState(null, '', url.toString())
+}
+
+function sessionMatchesWorkflowDefaults(session: BlueprintSession, defaults: ReturnType<typeof readWorkflowDefaults>) {
+  const browserRunId = defaults.browserRunId ?? defaults.workflowInstanceId
+  if (browserRunId && defaults.workflowNodeId && session.metadata?.browserRunId === browserRunId && session.workflowNodeId === defaults.workflowNodeId) {
+    return true
+  }
+  return Boolean(
+    defaults.workflowInstanceId
+    && defaults.workflowNodeId
+    && session.workflowInstanceId === defaults.workflowInstanceId
+    && session.workflowNodeId === defaults.workflowNodeId,
+  )
+}
+
 function cleanQueryParam(value: string | null): string | undefined {
   const text = value?.trim()
   if (!text || /\{\{[^}]+}}/.test(text)) return undefined
@@ -1885,25 +2488,38 @@ function cleanQueryParam(value: string | null): string | undefined {
 }
 
 function notifyWorkflowFinalized(session: BlueprintSession) {
-  if (typeof window === 'undefined' || window.parent === window) return
+  if (typeof window === 'undefined') return
   const stageConsumables = collectStageConsumables(session)
+  const workbenchDocuments = collectWorkbenchDocuments(session)
   const consumableIds = Array.from(new Set([
     ...(session.finalPack?.consumableIds ?? []),
     ...stageConsumables.map(ref => ref.consumableId).filter(Boolean),
     session.finalPack?.finalPackConsumableId,
   ].filter((id): id is string => Boolean(id))))
-  window.parent.postMessage({
+  const message = {
     type: 'blueprintWorkbench.finalized',
     sessionId: session.id,
     workflowInstanceId: session.workflowInstanceId,
+    browserRunId: session.metadata?.browserRunId,
     workflowNodeId: session.workflowNodeId,
     finalPack: session.finalPack,
     finalPackConsumableId: session.finalPack?.finalPackConsumableId,
     stageConsumables,
     consumableIds,
+    artifacts: workbenchDocuments,
+    workbenchArtifacts: workbenchDocuments,
+    workbenchDocuments,
+    workbenchArtifactsByKind: groupWorkbenchDocumentsByKind(workbenchDocuments),
+    workbenchDocumentsByKind: groupWorkbenchDocumentsByKind(workbenchDocuments),
     stageArtifactsByKind: groupStageConsumablesByKind(stageConsumables),
     status: session.status,
-  }, window.location.origin === 'http://localhost:5176' ? 'http://localhost:5174' : '*')
+  }
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage(message, window.location.origin === WORKBENCH_ORIGIN ? WORKGRAPH_WEB_ORIGIN : '*')
+  }
+  if (window.opener && window.opener !== window) {
+    window.opener.postMessage(message, WORKGRAPH_WEB_ORIGIN)
+  }
 }
 
 function collectStageConsumables(session: BlueprintSession): Array<Record<string, any>> {
@@ -1924,6 +2540,46 @@ function collectStageConsumables(session: BlueprintSession): Array<Record<string
       attemptId: artifact.attemptId,
     }]
   })
+}
+
+function collectWorkbenchDocuments(session: BlueprintSession): Array<Record<string, any>> {
+  return session.artifacts.map(artifact => {
+    const payload = artifact.payload && typeof artifact.payload === 'object' && !Array.isArray(artifact.payload)
+      ? artifact.payload
+      : {}
+    return {
+      id: artifact.id,
+      artifactId: artifact.id,
+      kind: artifact.kind,
+      title: artifact.title,
+      stage: artifact.stage,
+      stageKey: artifact.stageKey ?? stringValue(payload.stageKey),
+      attemptId: artifact.attemptId ?? stringValue(payload.attemptId),
+      version: artifact.version ?? numberValue(payload.version),
+      content: artifact.content ?? '',
+      createdAt: artifact.createdAt,
+      consumableId: artifact.consumableId ?? stringValue(payload.consumableId),
+      consumableVersion: artifact.consumableVersion ?? numberValue(payload.consumableVersion),
+      consumableStatus: artifact.consumableStatus ?? stringValue(payload.consumableStatus),
+      source: 'blueprint-workbench',
+    }
+  })
+}
+
+function groupWorkbenchDocumentsByKind(documents: Array<Record<string, any>>) {
+  return documents.reduce<Record<string, Array<Record<string, any>>>>((acc, document) => {
+    const key = typeof document.kind === 'string' && document.kind ? document.kind : 'artifact'
+    acc[key] = [...(acc[key] ?? []), document]
+    return acc
+  }, {})
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function groupStageConsumablesByKind(refs: Array<Record<string, any>>) {

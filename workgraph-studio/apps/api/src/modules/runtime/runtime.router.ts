@@ -42,6 +42,9 @@ type InboxItem = {
   assignmentMode:     string | null
   dueAt:              string | null
   priority?:          number | null
+  workCode?:          string | null
+  originType?:        string | null
+  urgency?:           string | null
   createdAt:          string
   updatedAt:          string
   claimable:          boolean       // can this user claim it (Available bucket)
@@ -194,14 +197,20 @@ function buildConsumableItem(c: {
 function buildWorkItemItem(target: {
   id: string; targetCapabilityId: string; status: string; claimedById: string | null;
   createdAt: Date; updatedAt: Date;
-  workItem: { id: string; title: string; sourceWorkflowInstanceId: string | null; sourceWorkflowNodeId: string | null; priority: number | null; dueAt: Date | null }
+  workItem: {
+    id: string; workCode?: string | null; originType?: string | null; title: string;
+    sourceWorkflowInstanceId: string | null; sourceWorkflowNodeId: string | null;
+    priority: number | null; dueAt: Date | null; urgency?: string | null
+  }
 }, instance: InstanceLite | null, node: NodeLite | null, claimable: boolean): InboxItem {
   return {
     kind:               'workitem',
     id:                 target.workItem.id,
+    workCode:           target.workItem.workCode ?? null,
+    originType:         target.workItem.originType ?? null,
     targetId:           target.id,
     targetCapabilityId: target.targetCapabilityId,
-    title:              target.workItem.title,
+    title:              target.workItem.workCode ? `${target.workItem.workCode} · ${target.workItem.title}` : target.workItem.title,
     workflowInstanceId: target.workItem.sourceWorkflowInstanceId,
     workflowName:       instance?.name ?? null,
     nodeId:             target.workItem.sourceWorkflowNodeId,
@@ -210,6 +219,7 @@ function buildWorkItemItem(target: {
     assignmentMode:     'ROLE_BASED',
     dueAt:              target.workItem.dueAt?.toISOString() ?? null,
     priority:           target.workItem.priority,
+    urgency:            target.workItem.urgency ?? null,
     createdAt:          target.createdAt.toISOString(),
     updatedAt:          target.updatedAt.toISOString(),
     claimable,

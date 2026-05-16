@@ -17,6 +17,8 @@ export interface ExecuteRunContext {
   workflow_instance_id?: string
   workflow_node_id?: string
   agent_run_id?: string
+  work_item_id?: string
+  work_item_code?: string
   capability_id: string
   tenant_id?: string
   agent_template_id?: string

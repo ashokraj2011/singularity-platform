@@ -6,7 +6,7 @@ import { Parser, Language } from "web-tree-sitter";
 import { config } from "../config";
 import { events } from "../events/bus";
 import { currentBranch, currentHeadSha } from "./git-workspace";
-import { sandboxRoot, SOURCE_EXT, SKIP_DIRS, toRelativeSandboxPath } from "./sandbox";
+import { baseSandboxRoot, sandboxRoot, SOURCE_EXT, SKIP_DIRS, toRelativeSandboxPath } from "./sandbox";
 
 type LangKey = "python" | "typescript" | "tsx" | "javascript" | "go" | "java";
 
@@ -81,9 +81,10 @@ let lastStats: AstIndexStats | null = null;
 let loadedSandboxRoot: string | null = null;
 
 function astDbPath(): string {
-  return config.MCP_AST_DB_PATH
+  const root = sandboxRoot();
+  return config.MCP_AST_DB_PATH && root === baseSandboxRoot()
     ? path.resolve(config.MCP_AST_DB_PATH)
-    : path.join(sandboxRoot(), ".singularity", "mcp-ast.sqlite");
+    : path.join(root, ".singularity", "mcp-ast.sqlite");
 }
 
 /** M27.5 — drop the in-memory database handle when the sandbox path has

@@ -5,6 +5,7 @@
 .singularity/config.local.json
 .singularity/ops-doctor.json
 .singularity/llm-providers.json
+.singularity/*.sqlite
 singularity-portal/public/ops-doctor.json
 *.pem
 *.key

@@ -804,7 +804,7 @@ function TabBtn({ label, active, onClick }: { label: string; active: boolean; on
     <button
       onClick={onClick}
       style={{
-        padding: '5px 10px', borderRadius: 8, fontSize: 10, fontWeight: 700,
+        padding: '6px 12px', borderRadius: 8, fontSize: 11, fontWeight: 700,
         textTransform: 'uppercase', letterSpacing: '0.1em', border: 'none', cursor: 'pointer',
         background: active ? 'rgba(34,197,94,0.15)' : 'transparent',
         color: active ? '#22c55e' : '#475569',
@@ -818,7 +818,7 @@ function TabBtn({ label, active, onClick }: { label: string; active: boolean; on
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return (
-    <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#475569', marginBottom: 5 }}>
+    <p style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#64748b', marginBottom: 6 }}>
       {children}
     </p>
   )
@@ -830,7 +830,7 @@ function NeoInput({ value, onChange, placeholder, multiline = false }: {
   const base: React.CSSProperties = {
     width: '100%', boxSizing: 'border-box',
     background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)',
-    borderRadius: 8, padding: '6px 10px', fontSize: 11, color: '#e2e8f0',
+    borderRadius: 9, padding: '9px 12px', fontSize: 13, lineHeight: 1.45, color: '#e2e8f0',
     outline: 'none', resize: 'vertical' as const, fontFamily: 'inherit',
     transition: 'border-color 0.12s',
   }
@@ -868,7 +868,7 @@ function ModelAliasPicker({ value, onChange }: { value: string; onChange: (v: st
         style={{
           width: '100%', boxSizing: 'border-box',
           background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)',
-          borderRadius: 8, padding: '6px 10px', fontSize: 11, color: '#e2e8f0',
+          borderRadius: 9, padding: '9px 12px', fontSize: 13, lineHeight: 1.45, color: '#e2e8f0',
           outline: 'none', cursor: 'pointer',
         }}
       >
@@ -911,7 +911,7 @@ function NeoSelect({ value, onChange, options }: { value: string; onChange: (v: 
       style={{
         width: '100%', boxSizing: 'border-box',
         background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)',
-        borderRadius: 8, padding: '6px 10px', fontSize: 11, color: '#e2e8f0',
+        borderRadius: 9, padding: '9px 12px', fontSize: 13, lineHeight: 1.45, color: '#e2e8f0',
         outline: 'none', appearance: 'none', cursor: 'pointer',
       }}
     >
@@ -3561,6 +3561,7 @@ export function NodeInspector({
 
   return (
     <motion.div
+      className="node-inspector-readable"
       key="inspector"
       initial={{ opacity: 0, x: 20 }}
       animate={{ opacity: 1, x: 0 }}
@@ -3570,7 +3571,7 @@ export function NodeInspector({
     >
       {/* ── Header ─────────────────────────────────────────────────── */}
       <div style={{
-        padding: '12px 14px 10px',
+        padding: '14px 16px 12px',
         borderBottom: '1px solid rgba(255,255,255,0.06)',
         flexShrink: 0,
       }}>
@@ -3584,18 +3585,18 @@ export function NodeInspector({
               <Icon style={{ width: 13, height: 13, color }} />
             </div>
             <div>
-              <p style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+              <p style={{ fontSize: 12, fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
                 {meta.label}
               </p>
-              <p style={{ fontSize: 8, color: '#334155', fontFamily: 'monospace', marginTop: 1 }}>
+              <p style={{ fontSize: 10, color: '#64748b', fontFamily: 'monospace', marginTop: 2 }}>
                 {node.id.slice(0, 12)}…
               </p>
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{
-              fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em',
-              padding: '2px 7px', borderRadius: 4,
+              fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em',
+              padding: '3px 8px', borderRadius: 5,
               background: `${statusColor}15`, color: statusColor, border: `1px solid ${statusColor}25`,
             }}>
               {node.data.status || 'PENDING'}
@@ -3625,7 +3626,7 @@ export function NodeInspector({
       </div>
 
       {/* ── Tab content ────────────────────────────────────────────── */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
         <AnimatePresence mode="wait">
           <motion.div
             key={tab}

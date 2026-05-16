@@ -109,15 +109,22 @@ export type BlueprintCodeChangesResponse = {
 export type LoopQuestion = {
   id: string
   question: string
+  type?: 'single_select' | 'multi_select' | 'freeform' | 'clarification'
   required?: boolean
   options?: Array<{ label: string; impact?: string; recommended?: boolean }>
   freeform?: boolean
+  source?: 'configured' | 'llm_open_question'
+  stageKey?: string
+  attemptId?: string
 }
 
 export type DecisionAnswer = {
   questionId: string
-  answerType: 'option' | 'freeform'
+  questionText?: string
+  normalizedQuestion?: string
+  answerType: 'option' | 'multi_option' | 'freeform'
   selectedOptionLabel?: string
+  selectedOptionLabels?: string[]
   customAnswer?: string
   notes?: string
   updatedAt?: string
@@ -192,6 +199,7 @@ export type StageAttempt = {
   acceptedAt?: string
   acceptedById?: string
   artifactIds?: string[]
+  generatedQuestionIds?: string[]
   gateRecommendation?: GateRecommendation
   correlation?: BlueprintStageRun['correlation']
   tokensUsed?: BlueprintStageRun['tokensUsed']
@@ -244,6 +252,7 @@ export type BlueprintSession = {
   status: SessionStatus
   approvedAt?: string
   workflowInstanceId?: string
+  browserRunId?: string
   workflowNodeId?: string
   phaseId?: string
   gateMode?: GateMode
@@ -258,6 +267,7 @@ export type BlueprintSession = {
   stageRuns: BlueprintStageRun[]
   artifacts: BlueprintArtifact[]
   metadata?: {
+    browserRunId?: string
     decisionAnswers?: DecisionAnswer[]
     decisionAnswersUpdatedAt?: string
     executionConfig?: WorkbenchExecutionConfig
@@ -303,6 +313,7 @@ export type CreateSessionRequest = {
   developerAgentTemplateId?: string
   qaAgentTemplateId?: string
   workflowInstanceId?: string
+  browserRunId?: string
   workflowNodeId?: string
   phaseId?: string
   loopDefinition?: LoopDefinition
@@ -313,6 +324,10 @@ export type CreateSessionRequest = {
 }
 
 type PersistedAuth = { state?: { token?: string | null } }
+
+export const BLUEPRINT_AUTH_INVALID_EVENT = 'blueprintWorkbench.auth.invalid'
+const PSEUDO_IAM_LOGIN_URL = import.meta.env.VITE_PSEUDO_IAM_LOGIN_URL
+  ?? `${window.location.protocol}//${window.location.hostname}:8101/api/v1/auth/local/login`
 
 export function getToken() {
   try {
@@ -332,8 +347,13 @@ export function clearToken() {
   localStorage.removeItem('workgraph-auth')
 }
 
+function notifyInvalidAuth() {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new Event(BLUEPRINT_AUTH_INVALID_EVENT))
+}
+
 export async function pseudoLogin() {
-  const res = await fetch('http://localhost:8101/api/v1/auth/local/login', {
+  const res = await fetch(PSEUDO_IAM_LOGIN_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email: 'admin@pseudo.local', password: 'pseudo' }),
@@ -357,7 +377,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     if (res.status === 401) {
-      localStorage.removeItem('workgraph-auth')
+      clearToken()
+      notifyInvalidAuth()
     }
     throw new Error(text || `Request failed with ${res.status}`)
   }

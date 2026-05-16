@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import type { CorrelationIds } from "../audit/store";
 import { config } from "../config";
 import { events } from "../events/bus";
-import { sandboxRoot } from "./sandbox";
+import { sandboxRoot, SKIP_DIRS } from "./sandbox";
 
 const execFileP = promisify(execFile);
 
@@ -22,6 +22,7 @@ export interface WorkspaceSourceStatus {
   sourceRef?: string;
   remoteUrl?: string;
   headSha?: string;
+  workspaceRoot?: string;
   message: string;
 }
 
@@ -48,6 +49,18 @@ function githubCloneUrl(raw: string): string | null {
   } catch {
     return null;
   }
+}
+
+function localSourcePath(raw: string): string | null {
+  try {
+    if (raw.startsWith("file://")) return new URL(raw).pathname;
+  } catch {
+    return null;
+  }
+  if (raw.startsWith("/") || raw.startsWith("~")) {
+    return raw.replace(/^~/, process.env.HOME ?? "~");
+  }
+  return null;
 }
 
 function normalizeRemote(raw?: string): string {
@@ -119,6 +132,23 @@ async function cloneIntoWorkspace(cloneUrl: string, sourceRef?: string): Promise
   }
 }
 
+async function copyLocalDirectoryIntoWorkspace(sourcePath: string): Promise<void> {
+  const root = sandboxRoot();
+  const resolvedSource = path.resolve(sourcePath);
+  if (resolvedSource === path.resolve(root)) return;
+  await removeWorkspaceContents(root);
+  await fs.promises.cp(resolvedSource, root, {
+    recursive: true,
+    force: true,
+    filter: (src) => {
+      const rel = path.relative(resolvedSource, src);
+      if (!rel) return true;
+      return !rel.split(path.sep).some((part) => SKIP_DIRS.has(part));
+    },
+  });
+  await git(["init", "-q"], { cwd: root, allowFail: true });
+}
+
 async function configureGitIdentity(): Promise<void> {
   await git(["config", "user.email", "mcp@local"], { allowFail: true });
   await git(["config", "user.name", "MCP Server"], { allowFail: true });
@@ -131,7 +161,67 @@ export async function ensureWorkspaceSource(
   if (!config.MCP_AUTO_CHECKOUT_SOURCE) return null;
   const sourceType = req.sourceType?.trim().toLowerCase();
   const sourceUri = req.sourceUri?.trim();
-  if (!sourceUri || sourceType !== "github") return null;
+  if (!sourceUri) return null;
+
+  if (sourceType && ["local", "local_dir", "local-directory", "filesystem", "dir"].includes(sourceType)) {
+    const localPath = localSourcePath(sourceUri);
+    if (!localPath) {
+      return {
+        checkedOut: false,
+        sourceType,
+        sourceUri,
+        sourceRef: req.sourceRef,
+        workspaceRoot: sandboxRoot(),
+        message: "Local source URI must be an absolute path or file:// URL.",
+      };
+    }
+    const stat = await fs.promises.stat(localPath).catch(() => null);
+    if (!stat?.isDirectory()) {
+      return {
+        checkedOut: false,
+        sourceType,
+        sourceUri,
+        sourceRef: req.sourceRef,
+        workspaceRoot: sandboxRoot(),
+        message: `Local source path was not found or is not a directory: ${localPath}`,
+      };
+    }
+    if (fs.existsSync(path.join(localPath, ".git"))) {
+      const existingRemote = normalizeRemote(await currentRemote());
+      const expected = normalizeRemote(localPath);
+      const dirty = await dirtyPaths();
+      if (existingRemote && existingRemote !== expected && dirty.length > 0) {
+        throw new Error(`MCP workspace has dirty changes for a different repo (${existingRemote}); refusing to replace it with ${expected}`);
+      }
+      if (existingRemote === expected) {
+        await git(["fetch", "origin"], { allowFail: true });
+        if (req.sourceRef?.trim()) await checkoutRef(req.sourceRef);
+      } else {
+        await cloneIntoWorkspace(localPath, req.sourceRef);
+      }
+    } else {
+      await copyLocalDirectoryIntoWorkspace(localPath);
+    }
+    await configureGitIdentity();
+    const status: WorkspaceSourceStatus = {
+      checkedOut: true,
+      sourceType,
+      sourceUri,
+      sourceRef: req.sourceRef,
+      remoteUrl: await currentRemote(),
+      headSha: await currentHead(),
+      workspaceRoot: sandboxRoot(),
+      message: "local workspace source materialized",
+    };
+    events.publish({
+      kind: "workspace.source.checked_out",
+      correlation: correlation ?? { mcpInvocationId: "workspace" },
+      payload: { ...status },
+    });
+    return status;
+  }
+
+  if (sourceType !== "github") return null;
 
   const cloneUrl = githubCloneUrl(sourceUri);
   if (!cloneUrl) {
@@ -140,6 +230,7 @@ export async function ensureWorkspaceSource(
       sourceType,
       sourceUri,
       sourceRef: req.sourceRef,
+      workspaceRoot: sandboxRoot(),
       message: "Only github.com source URLs can be automatically materialized by MCP v1.",
     };
   }
@@ -170,6 +261,7 @@ export async function ensureWorkspaceSource(
     sourceRef: req.sourceRef,
     remoteUrl: await currentRemote(),
     headSha: await currentHead(),
+    workspaceRoot: sandboxRoot(),
     message: existingRemote === expected ? "workspace source refreshed" : "workspace source cloned",
   };
   events.publish({

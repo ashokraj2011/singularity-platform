@@ -4,11 +4,13 @@ import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { NotFoundError } from '../../lib/errors'
 import {
+  answerWorkItemClarification,
   assertCanViewWorkItem,
   approveWorkItem,
   canViewWorkItem,
   claimWorkItemTarget,
   createWorkItem,
+  requestWorkItemClarification,
   requestWorkItemRework,
   startWorkItemTarget,
 } from './work-items.service'
@@ -34,13 +36,30 @@ const targetSchema = z.object({
 const createSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional(),
+  originType: z.enum(['PARENT_DELEGATED', 'CAPABILITY_LOCAL']).optional(),
   parentCapabilityId: z.string().optional(),
   sourceWorkflowInstanceId: z.string().uuid().optional(),
   sourceWorkflowNodeId: z.string().uuid().optional(),
   input: z.record(z.unknown()).optional(),
+  details: z.record(z.unknown()).optional(),
+  budget: z.record(z.unknown()).optional(),
+  urgency: z.enum(['LOW', 'NORMAL', 'HIGH', 'CRITICAL']).optional(),
+  requiredBy: z.string().datetime().optional(),
   priority: z.number().int().optional(),
   dueAt: z.string().datetime().optional(),
   targets: z.array(targetSchema).min(1),
+})
+
+const startTargetSchema = z.object({
+  childWorkflowTemplateId: z.string().uuid().optional(),
+}).default({})
+
+const clarificationSchema = z.object({
+  question: z.string().min(1),
+})
+
+const answerClarificationSchema = z.object({
+  answer: z.string().min(1),
 })
 
 const reworkSchema = z.object({
@@ -79,10 +98,11 @@ workItemsRouter.get('/', async (req, res, next) => {
     while (visible.length < limit && !exhausted) {
       const items = await prisma.workItem.findMany({
         where: Object.keys(targetWhere).length > 0 ? { targets: { some: targetWhere } } : undefined,
-        include: {
-          targets: Object.keys(targetWhere).length > 0 ? { where: targetWhere, orderBy: { createdAt: 'asc' } } : { orderBy: { createdAt: 'asc' } },
-          events: { orderBy: { createdAt: 'desc' }, take: 5 },
-        },
+      include: {
+        targets: Object.keys(targetWhere).length > 0 ? { where: targetWhere, orderBy: { createdAt: 'asc' } } : { orderBy: { createdAt: 'asc' } },
+        events: { orderBy: { createdAt: 'desc' }, take: 5 },
+        clarifications: { orderBy: { createdAt: 'desc' }, take: 5 },
+      },
         orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
         ...(nextCursor ? { cursor: { id: nextCursor }, skip: 1 } : {}),
         take: Math.min(100, Math.max(limit * 2, 25)),
@@ -109,6 +129,7 @@ workItemsRouter.get('/:id', async (req, res, next) => {
       include: {
         targets: { orderBy: { createdAt: 'asc' } },
         events: { orderBy: { createdAt: 'asc' } },
+        clarifications: { orderBy: { createdAt: 'asc' } },
       },
     })
     if (!workItem) throw new NotFoundError('WorkItem', id)
@@ -128,9 +149,32 @@ workItemsRouter.post('/:id/targets/:targetId/claim', async (req, res, next) => {
   }
 })
 
-workItemsRouter.post('/:id/targets/:targetId/start', async (req, res, next) => {
+workItemsRouter.post('/:id/targets/:targetId/start', validate(startTargetSchema), async (req, res, next) => {
   try {
-    const result = await startWorkItemTarget(String(req.params.id), String(req.params.targetId), req.user!.userId)
+    const body = req.body as z.infer<typeof startTargetSchema>
+    const result = await startWorkItemTarget(String(req.params.id), String(req.params.targetId), req.user!.userId, {
+      childWorkflowTemplateId: body?.childWorkflowTemplateId,
+    })
+    res.json(result)
+  } catch (err) {
+    next(err)
+  }
+})
+
+workItemsRouter.post('/:id/targets/:targetId/clarifications', validate(clarificationSchema), async (req, res, next) => {
+  try {
+    const { question } = req.body as z.infer<typeof clarificationSchema>
+    const result = await requestWorkItemClarification(String(req.params.id), String(req.params.targetId), req.user!.userId, question)
+    res.status(201).json(result)
+  } catch (err) {
+    next(err)
+  }
+})
+
+workItemsRouter.post('/:id/clarifications/:clarificationId/answer', validate(answerClarificationSchema), async (req, res, next) => {
+  try {
+    const { answer } = req.body as z.infer<typeof answerClarificationSchema>
+    const result = await answerWorkItemClarification(String(req.params.id), String(req.params.clarificationId), req.user!.userId, answer)
     res.json(result)
   } catch (err) {
     next(err)

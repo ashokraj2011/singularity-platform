@@ -101,7 +101,32 @@ enum WorkItemEventType {
   APPROVAL_REQUESTED
   APPROVED
   REWORK_REQUESTED
+  CLARIFICATION_REQUESTED
+  CLARIFICATION_ANSWERED
   CANCELLED
+}
+
+enum WorkItemOriginType {
+  PARENT_DELEGATED
+  CAPABILITY_LOCAL
+}
+
+enum WorkItemUrgency {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum WorkItemClarificationStatus {
+  OPEN
+  ANSWERED
+  CLOSED
+}
+
+enum WorkItemClarificationDirection {
+  CHILD_TO_PARENT
+  PARENT_TO_CHILD
 }
 
 enum NodeStatus {
@@ -880,6 +905,8 @@ model WorkflowEvent {
 
 model WorkItem {
   id                      String           @id @default(uuid())
+  workCode                String           @unique
+  originType              WorkItemOriginType @default(CAPABILITY_LOCAL)
   title                   String
   description             String?
   parentCapabilityId      String?
@@ -887,6 +914,11 @@ model WorkItem {
   sourceWorkflowNodeId    String?
   status                  WorkItemStatus   @default(QUEUED)
   input                   Json             @default("{}")
+  details                 Json             @default("{}")
+  budget                  Json             @default("{}")
+  urgency                 WorkItemUrgency   @default(NORMAL)
+  requiredBy              DateTime?
+  detailsLocked           Boolean          @default(true)
   finalOutput             Json?
   priority                Int              @default(50)
   dueAt                   DateTime?
@@ -897,9 +929,12 @@ model WorkItem {
   sourceWorkflowNode      WorkflowNode?    @relation("WorkItemSourceNode", fields: [sourceWorkflowNodeId], references: [id], onDelete: SetNull)
   targets                 WorkItemTarget[]
   events                  WorkItemEvent[]
+  clarifications          WorkItemClarification[]
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
 
+  @@index([workCode])
+  @@index([originType])
   @@index([parentCapabilityId])
   @@index([sourceWorkflowInstanceId])
   @@index([sourceWorkflowNodeId])
@@ -924,6 +959,7 @@ model WorkItemTarget {
   workItem                WorkItem          @relation(fields: [workItemId], references: [id], onDelete: Cascade)
   childWorkflowInstance   WorkflowInstance? @relation("WorkItemChildInstance", fields: [childWorkflowInstanceId], references: [id], onDelete: SetNull)
   events                  WorkItemEvent[]
+  clarifications          WorkItemClarification[]
   createdAt               DateTime          @default(now())
   updatedAt               DateTime          @updatedAt
 
@@ -950,6 +986,28 @@ model WorkItemEvent {
   @@index([targetId])
   @@index([eventType])
   @@map("work_item_events")
+}
+
+model WorkItemClarification {
+  id          String                         @id @default(uuid())
+  workItemId  String
+  targetId    String?
+  direction   WorkItemClarificationDirection @default(CHILD_TO_PARENT)
+  status      WorkItemClarificationStatus    @default(OPEN)
+  question    String
+  answer      String?
+  requestedById String?
+  answeredById  String?
+  answeredAt  DateTime?
+  payload     Json?
+  workItem    WorkItem        @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  target      WorkItemTarget? @relation(fields: [targetId], references: [id], onDelete: SetNull)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([workItemId, status])
+  @@index([targetId])
+  @@map("work_item_clarifications")
 }
 
 // ─── TASKS ────────────────────────────────────────────────────────────────────

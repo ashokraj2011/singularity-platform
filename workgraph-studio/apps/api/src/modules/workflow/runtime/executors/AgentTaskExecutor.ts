@@ -227,6 +227,15 @@ export async function activateAgentTask(
     return
   }
 
+  const instanceContext = isRecord(instance.context) ? instance.context : {}
+  const workItemRef = isRecord(instanceContext._workItem) ? instanceContext._workItem : {}
+  const realWorkItemId = typeof workItemRef.id === 'string' && workItemRef.id.trim()
+    ? workItemRef.id.trim()
+    : undefined
+  const workCode = typeof workItemRef.workCode === 'string' && workItemRef.workCode.trim()
+    ? workItemRef.workCode.trim()
+    : undefined
+
   const executeReq: ExecuteRequest = {
     trace_id: traceId,
     idempotency_key: run.id,
@@ -234,6 +243,8 @@ export async function activateAgentTask(
       workflow_instance_id: instance.id,
       workflow_node_id: node.id,
       agent_run_id: run.id,
+      work_item_id: realWorkItemId,
+      work_item_code: workCode,
       capability_id: capabilityId,
       tenant_id: configString('tenantId'),
       agent_template_id: agentTemplateId,
@@ -242,7 +253,7 @@ export async function activateAgentTask(
       user_id: run.initiatedById ?? undefined,
       trace_id: traceId,
       branch_base: configString('branchBase'),
-      branch_name: configString('branchName'),
+      branch_name: configString('branchName') ?? (workCode ? `work/${workCode}` : undefined),
     },
     task,
     vars,

@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client'
 import type { WorkflowInstance, WorkflowNode } from '@prisma/client'
+import { randomBytes } from 'node:crypto'
 import { prisma } from '../../lib/prisma'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { ForbiddenError, NotFoundError, ValidationError } from '../../lib/errors'
@@ -24,12 +25,18 @@ export type CreateWorkItemInput = {
   sourceWorkflowInstanceId?: string | null
   sourceWorkflowNodeId?: string | null
   input?: Record<string, unknown>
+  details?: Record<string, unknown>
+  budget?: Record<string, unknown>
+  urgency?: 'LOW' | 'NORMAL' | 'HIGH' | 'CRITICAL'
+  requiredBy?: string | Date | null
+  originType?: 'PARENT_DELEGATED' | 'CAPABILITY_LOCAL'
   priority?: number
   dueAt?: string | Date | null
   targets: WorkItemTargetInput[]
 }
 
 const DONE_TARGET_STATUSES = new Set(['SUBMITTED', 'APPROVED'])
+const VALID_URGENCIES = new Set(['LOW', 'NORMAL', 'HIGH', 'CRITICAL'])
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
@@ -81,6 +88,20 @@ function resolveInputMap(context: Record<string, unknown>, cfg: Record<string, u
   return out
 }
 
+async function generateWorkCode(): Promise<string> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const code = `WRK-${randomBytes(3).toString('hex').slice(0, 5).toUpperCase()}`
+    const existing = await prisma.workItem.findUnique({ where: { workCode: code }, select: { id: true } })
+    if (!existing) return code
+  }
+  return `WRK-${Date.now().toString(36).slice(-5).toUpperCase()}`
+}
+
+function normalizeUrgency(value: unknown): 'LOW' | 'NORMAL' | 'HIGH' | 'CRITICAL' {
+  const raw = String(value ?? 'NORMAL').trim().toUpperCase()
+  return VALID_URGENCIES.has(raw) ? raw as 'LOW' | 'NORMAL' | 'HIGH' | 'CRITICAL' : 'NORMAL'
+}
+
 async function sourceCapabilityId(instance: WorkflowInstance): Promise<string | null> {
   if (!instance.templateId) return null
   const workflow = await prisma.workflow.findUnique({
@@ -119,15 +140,29 @@ function normalizeTargets(cfg: Record<string, unknown>): WorkItemTargetInput[] {
 export async function createWorkItem(input: CreateWorkItemInput, actorId?: string | null) {
   if (input.targets.length === 0) throw new ValidationError('WorkItem requires at least one child capability target')
   const dueAt = input.dueAt ? new Date(input.dueAt) : undefined
+  const requiredBy = input.requiredBy ? new Date(input.requiredBy) : dueAt
+  const originType = input.originType ?? (input.sourceWorkflowInstanceId || input.parentCapabilityId ? 'PARENT_DELEGATED' : 'CAPABILITY_LOCAL')
+  const workCode = await generateWorkCode()
 
   const workItem = await prisma.workItem.create({
     data: {
+      workCode,
+      originType,
       title: input.title,
       description: input.description,
       parentCapabilityId: input.parentCapabilityId ?? undefined,
       sourceWorkflowInstanceId: input.sourceWorkflowInstanceId ?? undefined,
       sourceWorkflowNodeId: input.sourceWorkflowNodeId ?? undefined,
       input: (input.input ?? {}) as Prisma.InputJsonValue,
+      details: (input.details ?? {
+        title: input.title,
+        description: input.description ?? null,
+        input: input.input ?? {},
+      }) as Prisma.InputJsonValue,
+      budget: (input.budget ?? {}) as Prisma.InputJsonValue,
+      urgency: normalizeUrgency(input.urgency),
+      requiredBy,
+      detailsLocked: true,
       priority: input.priority ?? 50,
       dueAt,
       createdById: actorId ?? undefined,
@@ -147,10 +182,12 @@ export async function createWorkItem(input: CreateWorkItemInput, actorId?: strin
       workItemId: workItem.id,
       eventType: 'CREATED',
       actorId: actorId ?? undefined,
-      payload: { targetCount: workItem.targets.length } as Prisma.InputJsonValue,
+      payload: { workCode: workItem.workCode, originType: workItem.originType, targetCount: workItem.targets.length } as Prisma.InputJsonValue,
     },
   })
   await logEvent('WorkItemCreated', 'WorkItem', workItem.id, actorId ?? undefined, {
+    workCode: workItem.workCode,
+    originType: workItem.originType,
     parentCapabilityId: input.parentCapabilityId,
     sourceWorkflowInstanceId: input.sourceWorkflowInstanceId,
     sourceWorkflowNodeId: input.sourceWorkflowNodeId,
@@ -171,6 +208,9 @@ export async function activateWorkItem(node: WorkflowNode, instance: WorkflowIns
   const description = String(std.description ?? cfg.description ?? '').trim() || undefined
   const priority = Number(std.priority ?? cfg.priority ?? 50)
   const dueAtRaw = std.dueAt ?? cfg.dueAt
+  const requiredByRaw = std.requiredBy ?? cfg.requiredBy ?? dueAtRaw
+  const urgency = normalizeUrgency(std.urgency ?? cfg.urgency)
+  const budget = asRecord(std.budget ?? cfg.budget)
   const input = resolveInputMap(asRecord(instance.context), cfg)
 
   const workItem = await createWorkItem({
@@ -180,6 +220,18 @@ export async function activateWorkItem(node: WorkflowNode, instance: WorkflowIns
     sourceWorkflowInstanceId: instance.id,
     sourceWorkflowNodeId: node.id,
     input,
+    details: {
+      title,
+      description: description ?? null,
+      source: 'workflow',
+      workflowInstanceId: instance.id,
+      workflowNodeId: node.id,
+      input,
+    },
+    budget,
+    urgency,
+    requiredBy: typeof requiredByRaw === 'string' ? requiredByRaw : null,
+    originType: 'PARENT_DELEGATED',
     priority: Number.isFinite(priority) ? priority : 50,
     dueAt: typeof dueAtRaw === 'string' ? dueAtRaw : null,
     targets,
@@ -274,27 +326,38 @@ export async function claimWorkItemTarget(workItemId: string, targetId: string, 
   return updated
 }
 
-export async function startWorkItemTarget(workItemId: string, targetId: string, userId: string) {
+export async function startWorkItemTarget(
+  workItemId: string,
+  targetId: string,
+  userId: string,
+  options: { childWorkflowTemplateId?: string } = {},
+) {
   const target = await prisma.workItemTarget.findFirst({
     where: { id: targetId, workItemId },
     include: { workItem: true },
   })
   if (!target) throw new NotFoundError('WorkItemTarget', targetId)
   if (target.claimedById !== userId) throw new ValidationError('Claim this WorkItem target before starting it')
-  if (!target.childWorkflowTemplateId) throw new ValidationError('This WorkItem target has no child workflow template configured')
+  const templateId = options.childWorkflowTemplateId ?? target.childWorkflowTemplateId
+  if (!templateId) throw new ValidationError('Choose a workflow template before starting this WorkItem target')
   if (target.childWorkflowInstanceId) throw new ValidationError('This WorkItem target already has a child workflow run')
 
-  await assertTemplatePermission(userId, target.childWorkflowTemplateId, 'start')
+  await assertTemplatePermission(userId, templateId, 'start')
   const vars = {
     ...asRecord(target.workItem.input),
     workItemId,
+    workCode: target.workItem.workCode,
     workItemTargetId: targetId,
     parentCapabilityId: target.workItem.parentCapabilityId,
     targetCapabilityId: target.targetCapabilityId,
+    workItemUrgency: target.workItem.urgency,
+    workItemRequiredBy: target.workItem.requiredBy?.toISOString(),
+    workItemDetails: target.workItem.details,
+    workItemBudget: target.workItem.budget,
   }
   const result = await cloneDesignToRun({
-    templateId: target.childWorkflowTemplateId,
-    name: `${target.workItem.title} · ${target.targetCapabilityId.slice(0, 8)}`,
+    templateId,
+    name: `${target.workItem.workCode} · ${target.workItem.title}`,
     vars,
     createdById: userId,
   })
@@ -303,12 +366,19 @@ export async function startWorkItemTarget(workItemId: string, targetId: string, 
   const context = asRecord(instance.context)
   context._workItem = {
     id: workItemId,
+    workCode: target.workItem.workCode,
     targetId,
+    originType: target.workItem.originType,
     parentCapabilityId: target.workItem.parentCapabilityId,
     targetCapabilityId: target.targetCapabilityId,
     sourceWorkflowInstanceId: target.workItem.sourceWorkflowInstanceId,
     sourceWorkflowNodeId: target.workItem.sourceWorkflowNodeId,
     input: target.workItem.input,
+    details: target.workItem.details,
+    budget: target.workItem.budget,
+    urgency: target.workItem.urgency,
+    requiredBy: target.workItem.requiredBy?.toISOString(),
+    detailsLocked: target.workItem.detailsLocked,
   }
   await prisma.workflowInstance.update({
     where: { id: result.instance.id },
@@ -319,6 +389,7 @@ export async function startWorkItemTarget(workItemId: string, targetId: string, 
     where: { id: target.id },
     data: {
       status: 'IN_PROGRESS',
+      childWorkflowTemplateId: templateId,
       childWorkflowInstanceId: result.instance.id,
       startedAt: new Date(),
     },
@@ -329,7 +400,7 @@ export async function startWorkItemTarget(workItemId: string, targetId: string, 
       targetId,
       eventType: 'STARTED',
       actorId: userId,
-      payload: { childWorkflowInstanceId: result.instance.id } as Prisma.InputJsonValue,
+      payload: { childWorkflowInstanceId: result.instance.id, childWorkflowTemplateId: templateId } as Prisma.InputJsonValue,
     },
   })
   await logEvent('WorkItemTargetStarted', 'WorkItemTarget', targetId, userId, {
@@ -340,6 +411,101 @@ export async function startWorkItemTarget(workItemId: string, targetId: string, 
   const { startInstance } = await import('../workflow/runtime/WorkflowRuntime')
   await startInstance(result.instance.id, userId)
   return { target: updated, childWorkflowInstanceId: result.instance.id }
+}
+
+export async function requestWorkItemClarification(
+  workItemId: string,
+  targetId: string | undefined,
+  userId: string,
+  question: string,
+) {
+  const workItem = await prisma.workItem.findUnique({
+    where: { id: workItemId },
+    include: { targets: true },
+  })
+  if (!workItem) throw new NotFoundError('WorkItem', workItemId)
+  await assertCanViewWorkItem(userId, workItem)
+  const target = targetId ? workItem.targets.find(t => t.id === targetId) : undefined
+  if (targetId && !target) throw new NotFoundError('WorkItemTarget', targetId)
+  const text = question.trim()
+  if (!text) throw new ValidationError('Clarification question is required')
+
+  const clarification = await prisma.workItemClarification.create({
+    data: {
+      workItemId,
+      targetId,
+      direction: 'CHILD_TO_PARENT',
+      question: text,
+      requestedById: userId,
+      payload: { workCode: workItem.workCode } as Prisma.InputJsonValue,
+    },
+  })
+  await prisma.workItemEvent.create({
+    data: {
+      workItemId,
+      targetId,
+      eventType: 'CLARIFICATION_REQUESTED',
+      actorId: userId,
+      payload: { clarificationId: clarification.id, question: text } as Prisma.InputJsonValue,
+    },
+  })
+  await logEvent('WorkItemClarificationRequested', 'WorkItem', workItemId, userId, {
+    workCode: workItem.workCode,
+    targetId,
+    clarificationId: clarification.id,
+  })
+  await publishOutbox('WorkItem', workItemId, 'WorkItemClarificationRequested', {
+    workItemId,
+    targetId,
+    clarificationId: clarification.id,
+  })
+  return clarification
+}
+
+export async function answerWorkItemClarification(
+  workItemId: string,
+  clarificationId: string,
+  userId: string,
+  answer: string,
+) {
+  const workItem = await prisma.workItem.findUnique({
+    where: { id: workItemId },
+    include: { targets: true },
+  })
+  if (!workItem) throw new NotFoundError('WorkItem', workItemId)
+  await assertCanViewWorkItem(userId, workItem)
+  const text = answer.trim()
+  if (!text) throw new ValidationError('Clarification answer is required')
+
+  const clarification = await prisma.workItemClarification.update({
+    where: { id: clarificationId },
+    data: {
+      status: 'ANSWERED',
+      answer: text,
+      answeredById: userId,
+      answeredAt: new Date(),
+    },
+  })
+  await prisma.workItemEvent.create({
+    data: {
+      workItemId,
+      targetId: clarification.targetId,
+      eventType: 'CLARIFICATION_ANSWERED',
+      actorId: userId,
+      payload: { clarificationId, answer: text } as Prisma.InputJsonValue,
+    },
+  })
+  await logEvent('WorkItemClarificationAnswered', 'WorkItem', workItemId, userId, {
+    workCode: workItem.workCode,
+    targetId: clarification.targetId,
+    clarificationId,
+  })
+  await publishOutbox('WorkItem', workItemId, 'WorkItemClarificationAnswered', {
+    workItemId,
+    targetId: clarification.targetId,
+    clarificationId,
+  })
+  return clarification
 }
 
 async function buildChildOutput(instance: WorkflowInstance): Promise<Record<string, unknown>> {

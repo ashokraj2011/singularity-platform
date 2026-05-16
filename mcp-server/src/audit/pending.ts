@@ -58,8 +58,10 @@ export interface PendingApproval {
       branch: string;
       baseBranch?: string;
       headSha?: string;
+      workspaceRoot?: string;
       reused: boolean;
     } | null;
+    workspaceRoot?: string;
     commitSha?: string;
     changedPaths?: string[];
     astIndexStatus?: string;

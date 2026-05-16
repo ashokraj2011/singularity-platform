@@ -13,6 +13,7 @@ export interface BranchRequest {
   workflowInstanceId?: string;
   nodeId?: string;
   workItemId?: string;
+  workItemCode?: string;
   branchBase?: string;
   branchName?: string;
 }
@@ -21,6 +22,7 @@ export interface WorkBranchInfo {
   branch: string;
   baseBranch?: string;
   headSha?: string;
+  workspaceRoot?: string;
   reused: boolean;
 }
 
@@ -29,6 +31,7 @@ export interface FinishBranchResult {
   commitSha?: string;
   changedPaths: string[];
   patch?: string;
+  workspaceRoot?: string;
   committed: boolean;
   message: string;
   /** M27.5 — set only when caller asked for `push: true`. */
@@ -50,13 +53,14 @@ function safePart(value: string | undefined, fallback: string): string {
 
 export function branchNameForWork(req: BranchRequest): string | null {
   if (req.branchName) return safePart(req.branchName, "work").slice(0, 180);
-  if (!req.workflowInstanceId || !req.nodeId || !req.workItemId) return null;
+  const workIdentity = req.workItemCode || req.workItemId;
+  if (!req.workflowInstanceId || !req.nodeId || !workIdentity) return null;
   const prefix = safePart(config.MCP_WORK_BRANCH_PREFIX, "sg");
   return [
     prefix,
     safePart(req.workflowInstanceId, "workflow").slice(0, 36),
     safePart(req.nodeId, "node").slice(0, 36),
-    safePart(req.workItemId, "work").slice(0, 36),
+    safePart(workIdentity, "work").slice(0, 36),
   ].join("/").slice(0, 180);
 }
 
@@ -121,6 +125,7 @@ export async function prepareWorkBranch(
     branch,
     baseBranch: req.branchBase ?? before,
     headSha: await currentHeadSha(),
+    workspaceRoot: sandboxRoot(),
     reused: exists,
   };
   events.publish({
@@ -130,6 +135,7 @@ export async function prepareWorkBranch(
       branch,
       baseBranch: activeBranch.baseBranch,
       headSha: activeBranch.headSha,
+      workspaceRoot: activeBranch.workspaceRoot,
       reused: exists,
     },
   });
@@ -184,6 +190,7 @@ export async function restoreWorkBranch(
     branch,
     baseBranch: persisted.baseBranch,
     headSha: await currentHeadSha(),
+    workspaceRoot: sandboxRoot(),
     reused: true,
   };
   events.publish({
@@ -194,6 +201,7 @@ export async function restoreWorkBranch(
       branch,
       baseBranch: activeBranch.baseBranch,
       headSha: activeBranch.headSha,
+      workspaceRoot: activeBranch.workspaceRoot,
       reused: true,
       restored: true,
       persistedHeadSha: persisted.headSha,
@@ -218,6 +226,7 @@ export async function finishWorkBranch(
   if (changedPaths.length === 0) {
     return {
       branch,
+      workspaceRoot: sandboxRoot(),
       changedPaths: [],
       committed: false,
       message: "no changes to commit",
@@ -258,6 +267,7 @@ export async function finishWorkBranch(
     commitSha,
     changedPaths,
     patch: committedPatch || patch,
+    workspaceRoot: sandboxRoot(),
     committed: true,
     message: commitMessage,
     pushed: options?.push ? pushed : undefined,

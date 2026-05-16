@@ -1092,8 +1092,8 @@ type ApiEdge = { id: string; sourceNodeId: string; targetNodeId: string; edgeTyp
 
 // ─── Draggable + Resizable Inspector Panel ────────────────────────────────────
 
-const PANEL_MIN_W = 280
-const PANEL_MIN_H = 260
+const PANEL_MIN_W = 420
+const PANEL_MIN_H = 360
 
 type PanelGeom = { x: number; y: number; w: number; h: number }
 
@@ -1116,10 +1116,11 @@ function DraggableResizablePanel({
   useLayoutEffect(() => {
     if (geom || !containerRef.current) return
     const { clientWidth, clientHeight } = containerRef.current
+    const width = Math.min(560, Math.max(PANEL_MIN_W, Math.round(clientWidth * 0.36)))
     const g: PanelGeom = {
-      x: clientWidth - 336,
-      y: 72,
-      w: 320,
+      x: Math.max(16, clientWidth - width - 16),
+      y: 64,
+      w: width,
       h: Math.max(PANEL_MIN_H, clientHeight - 84),
     }
     defaultGeomRef.current = g
@@ -1212,20 +1213,20 @@ function DraggableResizablePanel({
           transition={{ duration: 0.18, type: 'spring', stiffness: 280, damping: 28 }}
           style={{
             ...gp(isLight),
-            width: 'min(900px, 92vw)',
-            height: 'min(720px, 88vh)',
+            width: 'min(1320px, 96vw)',
+            height: 'min(920px, 94vh)',
             display: 'flex', flexDirection: 'column', overflow: 'hidden',
-            borderRadius: 24,
+            borderRadius: 20,
           }}
         >
           {/* Modal header */}
           <div style={{
-            padding: '14px 18px 12px', flexShrink: 0,
+            padding: '16px 20px 14px', flexShrink: 0,
             borderBottom: `1px solid ${panelBdr}`,
             display: 'flex', alignItems: 'center', gap: 8,
             background: isLight ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.02)',
           }}>
-            <p style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.18em', color: panelMuted, flex: 1 }}>
+            <p style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.16em', color: panelMuted, flex: 1 }}>
               {title}
             </p>
             <button
@@ -1247,7 +1248,7 @@ function DraggableResizablePanel({
               <X size={13} />
             </button>
           </div>
-          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+          <div className="node-inspector-modal-content" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
             {children}
           </div>
         </motion.div>
@@ -1276,14 +1277,14 @@ function DraggableResizablePanel({
         onMouseDown={startDrag}
         onDoubleClick={resetPosition}
         style={{
-          padding: '11px 14px 10px', flexShrink: 0,
+          padding: '13px 16px 12px', flexShrink: 0,
           borderBottom: `1px solid ${panelBdr}`,
           cursor: 'grab', userSelect: 'none',
           display: 'flex', alignItems: 'center', gap: 7,
         }}
       >
         <GripVertical size={13} style={{ color: panelMuted, flexShrink: 0, opacity: 0.5 }} />
-        <p style={{ fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.18em', color: panelMuted, flex: 1 }}>
+        <p style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.16em', color: panelMuted, flex: 1 }}>
           {title}
         </p>
         {/* Expand to modal */}

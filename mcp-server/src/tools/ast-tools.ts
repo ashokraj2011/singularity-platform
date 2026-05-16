@@ -156,6 +156,7 @@ export const prepareWorkBranchTool: ToolHandler = {
         workflowInstanceId: { type: "string" },
         nodeId: { type: "string" },
         workItemId: { type: "string" },
+        workItemCode: { type: "string" },
         branchBase: { type: "string" },
         branchName: { type: "string" },
       },
@@ -168,6 +169,7 @@ export const prepareWorkBranchTool: ToolHandler = {
       workflowInstanceId: typeof args.workflowInstanceId === "string" ? args.workflowInstanceId : undefined,
       nodeId: typeof args.nodeId === "string" ? args.nodeId : undefined,
       workItemId: typeof args.workItemId === "string" ? args.workItemId : undefined,
+      workItemCode: typeof args.workItemCode === "string" ? args.workItemCode : undefined,
       branchBase: typeof args.branchBase === "string" ? args.branchBase : undefined,
       branchName: typeof args.branchName === "string" ? args.branchName : undefined,
     };

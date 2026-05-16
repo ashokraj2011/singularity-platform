@@ -29,6 +29,10 @@ import type { FormWidget } from '../forms/widgets/types'
 import { uploadAttachment, attachLink, type UploadedDocument } from '../../lib/uploadAttachment'
 import { api } from '../../lib/api'
 
+const BLUEPRINT_WORKBENCH_URL = import.meta.env.VITE_BLUEPRINT_WORKBENCH_URL
+  ?? `${window.location.protocol}//${window.location.hostname}:5176/`
+const BLUEPRINT_WORKBENCH_ORIGIN = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href).origin
+
 interface Props {
   runtime: BrowserWorkflowRuntime
   node: EngineNodeDef
@@ -270,6 +274,7 @@ function BlueprintWorkbenchBody({
   const [sessionId, setSessionId] = useState('')
   const [finalizedPack, setFinalizedPack] = useState<Record<string, unknown> | null>(null)
   const [showEmbeddedWorkbench, setShowEmbeddedWorkbench] = useState(false)
+  const [embeddedWorkbenchUi, setEmbeddedWorkbenchUi] = useState<'neo' | 'classic'>('neo')
   const completedRef = useRef(false)
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const runState = runtime.getState()
@@ -277,7 +282,9 @@ function BlueprintWorkbenchBody({
   const workbenchConfig = isPlainRecord(config)
     ? config
     : isPlainRecord(nodeConfig.workbench) ? nodeConfig.workbench : {}
-  const workbenchUrl = buildWorkbenchUrl(runState.runId, node.id, workbenchConfig, runState.context)
+  const workbenchUrl = buildWorkbenchUrl(runState.runId, node.id, workbenchConfig, runState.context, 'neo')
+  const classicWorkbenchUrl = buildWorkbenchUrl(runState.runId, node.id, workbenchConfig, runState.context, 'classic')
+  const embeddedWorkbenchUrl = embeddedWorkbenchUi === 'classic' ? classicWorkbenchUrl : workbenchUrl
   const outputs = isPlainRecord(workbenchConfig.outputs) ? workbenchConfig.outputs : {}
   const finalPackKey = typeof outputs.finalPackKey === 'string' && outputs.finalPackKey.trim()
     ? outputs.finalPackKey.trim()
@@ -288,19 +295,29 @@ function BlueprintWorkbenchBody({
     iframeRef.current.contentWindow.postMessage({
       type: 'blueprintWorkbench.auth',
       token,
-    }, 'http://localhost:5176')
+    }, BLUEPRINT_WORKBENCH_ORIGIN)
+  }
+  const postWorkbenchAuthTo = (target: MessageEventSource | null) => {
+    const token = readWorkgraphToken()
+    if (!token || !target || !('postMessage' in target)) return
+    ;(target as Window).postMessage({
+      type: 'blueprintWorkbench.auth',
+      token,
+    }, BLUEPRINT_WORKBENCH_ORIGIN)
   }
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      if (event.origin !== 'http://localhost:5176') return
+      if (event.origin !== BLUEPRINT_WORKBENCH_ORIGIN) return
       const data = event.data
       if (data && typeof data === 'object' && data.type === 'blueprintWorkbench.auth.request') {
+        postWorkbenchAuthTo(event.source)
         postWorkbenchAuth()
         return
       }
       if (!data || typeof data !== 'object' || data.type !== 'blueprintWorkbench.finalized') return
       if (data.workflowInstanceId && data.workflowInstanceId !== runState.runId) return
+      if (data.browserRunId && data.browserRunId !== runState.runId) return
       if (data.workflowNodeId && data.workflowNodeId !== node.id) return
       const nextSessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
       const nextFinalPack = data.finalPack && typeof data.finalPack === 'object' ? data.finalPack as Record<string, unknown> : null
@@ -319,7 +336,7 @@ function BlueprintWorkbenchBody({
             profile: typeof workbenchConfig.profile === 'string' ? workbenchConfig.profile : 'blueprint',
             sessionId: nextSessionId,
             workbenchUrl,
-            workflowInstanceId: runState.runId,
+            browserRunId: runState.runId,
             workflowNodeId: node.id,
             completedBy: actorEmail,
             completedAt: new Date().toISOString(),
@@ -363,10 +380,10 @@ function BlueprintWorkbenchBody({
       }}>
         <div>
           <p style={{ margin: '0 0 5px', fontSize: 14, fontWeight: 800, color: 'var(--color-on-surface)' }}>
-            Continue in Blueprint Workbench
+            Continue in WorkbenchNeo
           </p>
           <p style={{ margin: 0, fontSize: 12, lineHeight: 1.45, color: 'var(--color-outline)' }}>
-            Use the full portal for staged artifacts, terminal evidence, and code diff approval. Keep this run open for context; Workgraph advances when the final pack is finalized.
+            Use the cleaner Neo cockpit for staged artifacts, terminal evidence, and code diff approval. Classic is still available when you need the original canvas.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -388,7 +405,28 @@ function BlueprintWorkbenchBody({
               gap: 6,
             }}
           >
-            <ExternalLink size={14} /> Open Blueprint Workbench
+            <ExternalLink size={14} /> Open WorkbenchNeo
+          </a>
+          <a
+            href={classicWorkbenchUrl}
+            target="_blank"
+            rel="opener"
+            style={{
+              minHeight: 38,
+              padding: '0 12px',
+              borderRadius: 9,
+              border: '1px solid var(--color-outline-variant)',
+              background: '#fff',
+              color: '#475569',
+              textDecoration: 'none',
+              fontSize: 12,
+              fontWeight: 800,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            <ExternalLink size={14} /> Open Classic
           </a>
           <button
             type="button"
@@ -411,10 +449,32 @@ function BlueprintWorkbenchBody({
       </div>
 
       {showEmbeddedWorkbench && (
+        <>
+        <div style={{ display: 'inline-flex', gap: 4, alignSelf: 'flex-start', padding: 4, border: '1px solid var(--color-outline-variant)', borderRadius: 9, background: '#fff' }}>
+          {(['neo', 'classic'] as const).map(mode => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setEmbeddedWorkbenchUi(mode)}
+              style={{
+                border: 'none',
+                borderRadius: 7,
+                minHeight: 28,
+                padding: '0 10px',
+                background: embeddedWorkbenchUi === mode ? '#004b8d' : 'transparent',
+                color: embeddedWorkbenchUi === mode ? '#fff' : '#475569',
+                fontSize: 11,
+                fontWeight: 800,
+              }}
+            >
+              {mode === 'neo' ? 'Neo preview' : 'Classic preview'}
+            </button>
+          ))}
+        </div>
         <iframe
           ref={iframeRef}
           title="Blueprint Workbench"
-          src={workbenchUrl}
+          src={embeddedWorkbenchUrl}
           onLoad={postWorkbenchAuth}
           style={{
             width: '100%',
@@ -424,6 +484,7 @@ function BlueprintWorkbenchBody({
             background: '#0b1326',
           }}
         />
+        </>
       )}
 
       <label style={{ fontSize: 11, fontWeight: 700, color: '#334155' }}>
@@ -438,7 +499,7 @@ function BlueprintWorkbenchBody({
 
       <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center' }}>
         <a href={workbenchUrl} target="_blank" rel="opener" style={{ fontSize: 12, color: '#004b8d', fontWeight: 700 }}>
-          Open Blueprint Workbench
+          Open WorkbenchNeo
         </a>
         <button
           disabled={!sessionId.trim()}
@@ -452,7 +513,7 @@ function BlueprintWorkbenchBody({
               profile: typeof workbenchConfig.profile === 'string' ? workbenchConfig.profile : 'blueprint',
               sessionId: sessionId.trim(),
               workbenchUrl,
-              workflowInstanceId: runState.runId,
+              browserRunId: runState.runId,
               workflowNodeId: node.id,
               completedBy: actorEmail,
               completedAt: new Date().toISOString(),
@@ -486,18 +547,20 @@ function readWorkgraphToken(): string {
 }
 
 function buildWorkbenchUrl(
-  workflowInstanceId: string,
+  browserRunId: string,
   workflowNodeId: string,
   config?: Record<string, unknown>,
   runtimeContext?: Record<string, unknown>,
+  uiMode: 'neo' | 'classic' = 'neo',
 ) {
-  const url = new URL('http://localhost:5176/')
+  const url = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href)
   const renderedConfig = renderWorkbenchConfig(config ?? {}, runtimeContext ?? {})
   const bindings = renderedConfig.agentBindings && typeof renderedConfig.agentBindings === 'object' && !Array.isArray(renderedConfig.agentBindings)
     ? renderedConfig.agentBindings as Record<string, unknown>
     : {}
-  url.searchParams.set('workflowInstanceId', workflowInstanceId)
+  url.searchParams.set('browserRunId', browserRunId)
   url.searchParams.set('workflowNodeId', workflowNodeId)
+  url.searchParams.set('ui', uiMode)
   if (typeof renderedConfig.phaseId === 'string') url.searchParams.set('phaseId', renderedConfig.phaseId)
   if (typeof renderedConfig.goal === 'string') url.searchParams.set('goal', renderedConfig.goal)
   else if (typeof renderedConfig.task === 'string') url.searchParams.set('goal', renderedConfig.task)
@@ -1300,6 +1363,11 @@ function workbenchCompletionFields(data: unknown, finalPack: Record<string, unkn
   const stageConsumables = Array.isArray(record.stageConsumables)
     ? record.stageConsumables
     : Array.isArray(finalPack?.stageConsumables) ? finalPack.stageConsumables : []
+  const workbenchDocuments = Array.isArray(record.workbenchDocuments)
+    ? record.workbenchDocuments
+    : Array.isArray(record.workbenchArtifacts)
+      ? record.workbenchArtifacts
+      : Array.isArray(record.artifacts) ? record.artifacts : []
   const consumableIds = Array.from(new Set([
     ...(Array.isArray(record.consumableIds) ? record.consumableIds : []),
     ...(Array.isArray(finalPack?.consumableIds) ? finalPack.consumableIds : []),
@@ -1312,11 +1380,20 @@ function workbenchCompletionFields(data: unknown, finalPack: Record<string, unkn
   const stageArtifactsByKind = isPlainRecord(record.stageArtifactsByKind)
     ? record.stageArtifactsByKind
     : groupConsumablesByKind(stageConsumables)
+  const workbenchDocumentsByKind = isPlainRecord(record.workbenchDocumentsByKind)
+    ? record.workbenchDocumentsByKind
+    : isPlainRecord(record.workbenchArtifactsByKind)
+      ? record.workbenchArtifactsByKind
+      : groupArtifactsByKind(workbenchDocuments)
   return {
     finalPackConsumableId,
     stageConsumables,
     consumableIds,
     stageArtifactsByKind,
+    workbenchArtifacts: workbenchDocuments,
+    workbenchDocuments,
+    workbenchArtifactsByKind: workbenchDocumentsByKind,
+    workbenchDocumentsByKind,
   }
 }
 
@@ -1324,6 +1401,15 @@ function groupConsumablesByKind(refs: unknown[]) {
   return refs.reduce<Record<string, unknown[]>>((acc, ref) => {
     if (!isPlainRecord(ref)) return acc
     const key = typeof ref.artifactKind === 'string' && ref.artifactKind ? ref.artifactKind : 'artifact'
+    acc[key] = [...(acc[key] ?? []), ref]
+    return acc
+  }, {})
+}
+
+function groupArtifactsByKind(refs: unknown[]) {
+  return refs.reduce<Record<string, unknown[]>>((acc, ref) => {
+    if (!isPlainRecord(ref)) return acc
+    const key = typeof ref.kind === 'string' && ref.kind ? ref.kind : 'artifact'
     acc[key] = [...(acc[key] ?? []), ref]
     return acc
   }, {})

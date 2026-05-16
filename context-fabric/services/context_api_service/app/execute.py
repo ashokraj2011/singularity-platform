@@ -125,6 +125,8 @@ class RunContext(BaseModel):
     workflow_instance_id: Optional[str] = None
     workflow_node_id: Optional[str] = None
     agent_run_id: Optional[str] = None
+    work_item_id: Optional[str] = None
+    work_item_code: Optional[str] = None
     capability_id: Optional[str] = None
     tenant_id: Optional[str] = None
     agent_template_id: Optional[str] = None
@@ -844,7 +846,8 @@ async def execute(req: ExecuteRequest):
             "runStepId": req.run_context.workflow_node_id,
             "workflowInstanceId": req.run_context.workflow_instance_id,
             "nodeId": req.run_context.workflow_node_id,
-            "workItemId": req.run_context.agent_run_id,
+            "workItemId": req.run_context.work_item_id or req.run_context.agent_run_id,
+            "workItemCode": req.run_context.work_item_code,
             "branchBase": req.run_context.branch_base,
             "branchName": req.run_context.branch_name,
             "sourceType": req.run_context.source_type,

@@ -7,6 +7,10 @@ import { RuntimeWidgetForm, type RuntimeFormSubmitTarget } from '../forms/widget
 import type { FormWidget } from '../forms/widgets/types'
 import type { UploadedDocument } from '../../lib/uploadAttachment'
 
+const BLUEPRINT_WORKBENCH_URL = import.meta.env.VITE_BLUEPRINT_WORKBENCH_URL
+  ?? `${window.location.protocol}//${window.location.hostname}:5176/`
+const BLUEPRINT_WORKBENCH_ORIGIN = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href).origin
+
 type Kind = 'task' | 'approval' | 'consumable' | 'workitem'
 
 // ── Page ─────────────────────────────────────────────────────────────────────
@@ -46,6 +50,8 @@ function WorkItemDetail({ id }: { id: string }) {
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const targetId = params.get('targetId')
+  const [selectedWorkflowByTarget, setSelectedWorkflowByTarget] = useState<Record<string, string>>({})
+  const [clarificationByTarget, setClarificationByTarget] = useState<Record<string, string>>({})
 
   const { data: workItem, isLoading, refetch } = useQuery<WorkItemRow>({
     queryKey: ['runtime-workitem', id],
@@ -57,27 +63,62 @@ function WorkItemDetail({ id }: { id: string }) {
     onSuccess: () => refetch(),
   })
   const startMut = useMutation({
-    mutationFn: (tid: string) => api.post(`/work-items/${id}/targets/${tid}/start`).then(r => r.data),
+    mutationFn: ({ tid, childWorkflowTemplateId }: { tid: string; childWorkflowTemplateId?: string }) =>
+      api.post(`/work-items/${id}/targets/${tid}/start`, childWorkflowTemplateId ? { childWorkflowTemplateId } : {}).then(r => r.data),
     onSuccess: () => refetch(),
+  })
+  const clarificationMut = useMutation({
+    mutationFn: ({ tid, question }: { tid: string; question: string }) =>
+      api.post(`/work-items/${id}/targets/${tid}/clarifications`, { question }).then(r => r.data),
+    onSuccess: (_data, vars) => {
+      setClarificationByTarget(prev => ({ ...prev, [vars.tid]: '' }))
+      refetch()
+    },
+  })
+
+  const activeTarget = workItem?.targets.find(t => t.id === targetId) ?? workItem?.targets[0]
+  const canClaim = activeTarget && ['QUEUED', 'REWORK_REQUESTED'].includes(activeTarget.status) && !activeTarget.claimedById
+  const selectedTemplate = activeTarget ? selectedWorkflowByTarget[activeTarget.id] : ''
+  const effectiveTemplate = activeTarget?.childWorkflowTemplateId || selectedTemplate
+  const canStart = activeTarget && activeTarget.status === 'CLAIMED' && !!activeTarget.claimedById && !!effectiveTemplate && !activeTarget.childWorkflowInstanceId
+  const workflowsQuery = useQuery<WorkflowTemplateRow[]>({
+    queryKey: ['runtime-workitem-workflows', activeTarget?.targetCapabilityId],
+    enabled: Boolean(activeTarget?.targetCapabilityId),
+    queryFn: () => api.get('/workflows', { params: { capabilityId: activeTarget?.targetCapabilityId } }).then(r => unwrapItems<WorkflowTemplateRow>(r.data)),
   })
 
   if (isLoading) return <p style={{ fontSize: 13, color: 'var(--color-outline)' }}>Loading WorkItem…</p>
   if (!workItem) return <ErrorState message="WorkItem not found" onBack={() => navigate('/runtime')} />
 
-  const activeTarget = workItem.targets.find(t => t.id === targetId) ?? workItem.targets[0]
-  const canClaim = activeTarget && ['QUEUED', 'REWORK_REQUESTED'].includes(activeTarget.status) && !activeTarget.claimedById
-  const canStart = activeTarget && activeTarget.status === 'CLAIMED' && !!activeTarget.claimedById && !!activeTarget.childWorkflowTemplateId && !activeTarget.childWorkflowInstanceId
-
   return (
     <div>
       <Header
-        title={workItem.title}
+        title={`${workItem.workCode ?? workItem.id.slice(0, 8)} · ${workItem.title}`}
         subtitle={workItem.description ?? 'Cross-capability delegated work'}
         kindLabel="WorkItem"
         kindColor="#8b5cf6"
         status={workItem.status}
         assignmentMode="ROLE_BASED"
       />
+
+      <section style={cardStyle}>
+        <h3 style={{ margin: '0 0 10px', fontSize: 15, color: 'var(--color-on-surface)' }}>Request packet</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, marginBottom: 10 }}>
+          <KeyValue label="Type" value={workItem.originType === 'PARENT_DELEGATED' ? 'From parent capability' : 'Local capability work'} />
+          <KeyValue label="Urgency" value={workItem.urgency ?? 'NORMAL'} />
+          <KeyValue label="Required by" value={workItem.requiredBy ? new Date(workItem.requiredBy).toLocaleString() : workItem.dueAt ? new Date(workItem.dueAt).toLocaleString() : 'Not set'} />
+          <KeyValue label="Details" value={workItem.detailsLocked ? 'Locked after creation' : 'Editable'} />
+        </div>
+        {workItem.details && Object.keys(workItem.details).length > 0 && (
+          <pre style={preStyle}>{JSON.stringify(workItem.details, null, 2)}</pre>
+        )}
+        {workItem.budget && Object.keys(workItem.budget).length > 0 && (
+          <>
+            <h4 style={{ margin: '12px 0 6px', fontSize: 12, color: 'var(--color-outline)' }}>Budget</h4>
+            <pre style={preStyle}>{JSON.stringify(workItem.budget, null, 2)}</pre>
+          </>
+        )}
+      </section>
 
       {activeTarget && (
         <section style={cardStyle}>
@@ -97,7 +138,11 @@ function WorkItemDetail({ id }: { id: string }) {
               </button>
             )}
             {canStart && (
-              <button style={primaryButtonStyle} disabled={startMut.isPending} onClick={() => startMut.mutate(activeTarget.id)}>
+              <button
+                style={primaryButtonStyle}
+                disabled={startMut.isPending}
+                onClick={() => startMut.mutate({ tid: activeTarget.id, childWorkflowTemplateId: selectedTemplate || undefined })}
+              >
                 <Play size={13} /> {startMut.isPending ? 'Starting…' : 'Start child workflow'}
               </button>
             )}
@@ -108,9 +153,49 @@ function WorkItemDetail({ id }: { id: string }) {
             )}
           </div>
 
-          <KeyValue label="Child workflow template" value={activeTarget.childWorkflowTemplateId ?? 'Not configured'} />
+          {activeTarget.status === 'CLAIMED' && !activeTarget.childWorkflowInstanceId && (
+            <div style={{ marginBottom: 12 }}>
+              <KeyValue label="Attach workflow" value={activeTarget.childWorkflowTemplateId ? 'Configured on WorkItem' : 'Choose before starting'} />
+              <select
+                value={activeTarget.childWorkflowTemplateId ?? selectedTemplate}
+                onChange={e => setSelectedWorkflowByTarget(prev => ({ ...prev, [activeTarget.id]: e.target.value }))}
+                disabled={Boolean(activeTarget.childWorkflowTemplateId)}
+                style={{
+                  width: '100%', boxSizing: 'border-box', marginTop: 6,
+                  padding: '9px 11px', borderRadius: 9,
+                  border: '1px solid var(--color-outline-variant)', background: '#fff',
+                  fontSize: 13, outline: 'none',
+                }}
+              >
+                <option value="">Select workflow template</option>
+                {(workflowsQuery.data ?? []).map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+              </select>
+            </div>
+          )}
+
+          <KeyValue label="Child workflow template" value={activeTarget.childWorkflowTemplateId || selectedTemplate || 'Not configured'} />
           <KeyValue label="Claimed by" value={activeTarget.claimedById ?? 'Unclaimed'} />
           <KeyValue label="Role key" value={activeTarget.roleKey ?? 'Any eligible capability member'} />
+
+          {workItem.originType === 'PARENT_DELEGATED' && !activeTarget.childWorkflowInstanceId && (
+            <div style={{ marginTop: 12, padding: 10, borderRadius: 10, border: '1px solid var(--color-outline-variant)', background: 'var(--color-surface-low)' }}>
+              <h4 style={{ margin: '0 0 6px', fontSize: 12, color: 'var(--color-on-surface)' }}>Ask parent for clarification</h4>
+              <textarea
+                value={clarificationByTarget[activeTarget.id] ?? ''}
+                onChange={e => setClarificationByTarget(prev => ({ ...prev, [activeTarget.id]: e.target.value }))}
+                placeholder="What detail is missing or ambiguous?"
+                rows={3}
+                style={{ width: '100%', boxSizing: 'border-box', borderRadius: 8, border: '1px solid var(--color-outline-variant)', padding: 9, fontSize: 13, resize: 'vertical' }}
+              />
+              <button
+                style={{ ...secondaryButtonStyle, marginTop: 8 }}
+                disabled={clarificationMut.isPending || !(clarificationByTarget[activeTarget.id] ?? '').trim()}
+                onClick={() => clarificationMut.mutate({ tid: activeTarget.id, question: clarificationByTarget[activeTarget.id] ?? '' })}
+              >
+                Send clarification request
+              </button>
+            </div>
+          )}
 
           {activeTarget.output && (
             <pre style={preStyle}>{JSON.stringify(activeTarget.output, null, 2)}</pre>
@@ -137,6 +222,24 @@ function WorkItemDetail({ id }: { id: string }) {
           ))}
         </div>
       </section>
+
+      {workItem.clarifications?.length ? (
+        <section style={cardStyle}>
+          <h3 style={{ margin: '0 0 10px', fontSize: 15, color: 'var(--color-on-surface)' }}>Clarifications</h3>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {workItem.clarifications.map(item => (
+              <div key={item.id} style={{ border: '1px solid var(--color-outline-variant)', borderRadius: 9, padding: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                  <strong style={{ fontSize: 12, color: 'var(--color-on-surface)' }}>{item.status}</strong>
+                  <span style={{ fontSize: 11, color: 'var(--color-outline)' }}>{new Date(item.createdAt).toLocaleString()}</span>
+                </div>
+                <p style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--color-on-surface)' }}>{item.question}</p>
+                {item.answer && <p style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--color-outline)' }}>Answer: {item.answer}</p>}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section style={cardStyle}>
         <h3 style={{ margin: '0 0 10px', fontSize: 15, color: 'var(--color-on-surface)' }}>Timeline</h3>
@@ -552,6 +655,7 @@ function WorkbenchTaskCard({
   const [sessionId, setSessionId] = useState('')
   const [finalizedPack, setFinalizedPack] = useState<Record<string, unknown> | null>(null)
   const [showEmbeddedWorkbench, setShowEmbeddedWorkbench] = useState(false)
+  const [embeddedWorkbenchUi, setEmbeddedWorkbenchUi] = useState<'neo' | 'classic'>('neo')
   const completedRef = useRef(false)
   const config = isPlainRecord(node.config) ? node.config : {}
   const workbenchConfig = isPlainRecord(config.workbench) ? config.workbench : {}
@@ -560,7 +664,9 @@ function WorkbenchTaskCard({
     ? outputs.finalPackKey.trim()
     : 'finalImplementationPack'
   const canBuildUrl = !!task.instanceId && !!task.nodeId
-  const workbenchUrl = canBuildUrl ? buildWorkbenchUrl(task.instanceId!, task.nodeId!, workbenchConfig) : ''
+  const workbenchUrl = canBuildUrl ? buildWorkbenchUrl(task.instanceId!, task.nodeId!, workbenchConfig, 'neo') : ''
+  const classicWorkbenchUrl = canBuildUrl ? buildWorkbenchUrl(task.instanceId!, task.nodeId!, workbenchConfig, 'classic') : ''
+  const embeddedWorkbenchUrl = embeddedWorkbenchUi === 'classic' ? classicWorkbenchUrl : workbenchUrl
 
   const completeMut = useMutation({
     mutationFn: (output: Record<string, unknown>) =>
@@ -592,7 +698,7 @@ function WorkbenchTaskCard({
   useEffect(() => {
     if (!canBuildUrl) return
     const handler = (event: MessageEvent) => {
-      if (event.origin !== 'http://localhost:5176') return
+      if (event.origin !== BLUEPRINT_WORKBENCH_ORIGIN) return
       const data = event.data
       if (data && typeof data === 'object' && data.type === 'blueprintWorkbench.auth.request') {
         const token = readWorkgraphToken()
@@ -678,10 +784,10 @@ function WorkbenchTaskCard({
       }}>
         <div>
           <p style={{ margin: '0 0 5px', fontSize: 14, fontWeight: 800, color: 'var(--color-on-surface)' }}>
-            Continue in Blueprint Workbench
+            Continue in WorkbenchNeo
           </p>
           <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: 'var(--color-outline)' }}>
-            The full portal has the stage canvas, artifact review, terminal evidence, and code diff approval. Keep this workflow page open; finalization is now recorded by the backend even if this page is closed.
+            The Neo cockpit keeps stages, artifact review, terminal evidence, and code diff approval in one place. Classic remains available for the original canvas.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -703,7 +809,28 @@ function WorkbenchTaskCard({
               gap: 6,
             }}
           >
-            <ExternalLink size={14} /> Open Blueprint Workbench
+            <ExternalLink size={14} /> Open WorkbenchNeo
+          </a>
+          <a
+            href={classicWorkbenchUrl}
+            target="_blank"
+            rel="opener"
+            style={{
+              minHeight: 38,
+              padding: '0 12px',
+              borderRadius: 9,
+              border: '1px solid var(--color-outline-variant)',
+              background: '#fff',
+              color: '#475569',
+              textDecoration: 'none',
+              fontSize: 12,
+              fontWeight: 800,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            <ExternalLink size={14} /> Open Classic
           </a>
           <button
             type="button"
@@ -726,9 +853,31 @@ function WorkbenchTaskCard({
       </div>
 
       {showEmbeddedWorkbench && (
+        <>
+        <div style={{ display: 'inline-flex', gap: 4, alignSelf: 'flex-start', padding: 4, border: '1px solid var(--color-outline-variant)', borderRadius: 9, background: '#fff' }}>
+          {(['neo', 'classic'] as const).map(mode => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setEmbeddedWorkbenchUi(mode)}
+              style={{
+                border: 'none',
+                borderRadius: 7,
+                minHeight: 28,
+                padding: '0 10px',
+                background: embeddedWorkbenchUi === mode ? '#7c3aed' : 'transparent',
+                color: embeddedWorkbenchUi === mode ? '#fff' : '#475569',
+                fontSize: 11,
+                fontWeight: 800,
+              }}
+            >
+              {mode === 'neo' ? 'Neo preview' : 'Classic preview'}
+            </button>
+          ))}
+        </div>
         <iframe
           title="Blueprint Workbench"
-          src={workbenchUrl}
+          src={embeddedWorkbenchUrl}
           style={{
             width: '100%',
             height: 720,
@@ -739,6 +888,7 @@ function WorkbenchTaskCard({
             pointerEvents: canComplete ? 'auto' : 'none',
           }}
         />
+        </>
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'end' }}>
@@ -787,7 +937,7 @@ function WorkbenchTaskCard({
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
         <a href={workbenchUrl} target="_blank" rel="opener" style={{ fontSize: 12, color: '#7c3aed', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-          <ExternalLink size={12} /> Open Blueprint Workbench
+          <ExternalLink size={12} /> Open WorkbenchNeo
         </a>
         {completeMut.isError && (
           <span style={{ fontSize: 11, color: '#b91c1c' }}>Could not complete the workflow task. Try again.</span>
@@ -850,6 +1000,11 @@ function workbenchCompletionFields(data: unknown, finalPack: Record<string, unkn
   const stageConsumables = Array.isArray(record.stageConsumables)
     ? record.stageConsumables
     : Array.isArray(finalPack?.stageConsumables) ? finalPack.stageConsumables : []
+  const workbenchDocuments = Array.isArray(record.workbenchDocuments)
+    ? record.workbenchDocuments
+    : Array.isArray(record.workbenchArtifacts)
+      ? record.workbenchArtifacts
+      : Array.isArray(record.artifacts) ? record.artifacts : []
   const consumableIds = Array.from(new Set([
     ...(Array.isArray(record.consumableIds) ? record.consumableIds : []),
     ...(Array.isArray(finalPack?.consumableIds) ? finalPack.consumableIds : []),
@@ -862,11 +1017,20 @@ function workbenchCompletionFields(data: unknown, finalPack: Record<string, unkn
   const stageArtifactsByKind = isPlainRecord(record.stageArtifactsByKind)
     ? record.stageArtifactsByKind
     : groupConsumablesByKind(stageConsumables)
+  const workbenchDocumentsByKind = isPlainRecord(record.workbenchDocumentsByKind)
+    ? record.workbenchDocumentsByKind
+    : isPlainRecord(record.workbenchArtifactsByKind)
+      ? record.workbenchArtifactsByKind
+      : groupArtifactsByKind(workbenchDocuments)
   return {
     finalPackConsumableId,
     stageConsumables,
     consumableIds,
     stageArtifactsByKind,
+    workbenchArtifacts: workbenchDocuments,
+    workbenchDocuments,
+    workbenchArtifactsByKind: workbenchDocumentsByKind,
+    workbenchDocumentsByKind,
   }
 }
 
@@ -879,11 +1043,21 @@ function groupConsumablesByKind(refs: unknown[]) {
   }, {})
 }
 
-function buildWorkbenchUrl(workflowInstanceId: string, workflowNodeId: string, config?: Record<string, unknown>) {
-  const url = new URL('http://localhost:5176/')
+function groupArtifactsByKind(refs: unknown[]) {
+  return refs.reduce<Record<string, unknown[]>>((acc, ref) => {
+    if (!isPlainRecord(ref)) return acc
+    const key = typeof ref.kind === 'string' && ref.kind ? ref.kind : 'artifact'
+    acc[key] = [...(acc[key] ?? []), ref]
+    return acc
+  }, {})
+}
+
+function buildWorkbenchUrl(workflowInstanceId: string, workflowNodeId: string, config?: Record<string, unknown>, uiMode: 'neo' | 'classic' = 'neo') {
+  const url = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href)
   const bindings = isPlainRecord(config?.agentBindings) ? config.agentBindings : {}
   url.searchParams.set('workflowInstanceId', workflowInstanceId)
   url.searchParams.set('workflowNodeId', workflowNodeId)
+  url.searchParams.set('ui', uiMode)
   if (typeof config?.phaseId === 'string') url.searchParams.set('phaseId', config.phaseId)
   if (typeof config?.goal === 'string') url.searchParams.set('goal', config.goal)
   else if (typeof config?.task === 'string') url.searchParams.set('goal', config.task)
@@ -975,9 +1149,44 @@ type WorkItemEventRow = {
 }
 type WorkItemRow = {
   id: string
+  workCode?: string
+  originType?: 'PARENT_DELEGATED' | 'CAPABILITY_LOCAL'
   title: string
   description?: string | null
   status: string
+  details?: Record<string, unknown> | null
+  budget?: Record<string, unknown> | null
+  urgency?: string | null
+  requiredBy?: string | null
+  dueAt?: string | null
+  detailsLocked?: boolean
   targets: WorkItemTargetRow[]
   events: WorkItemEventRow[]
+  clarifications?: WorkItemClarificationRow[]
+}
+
+type WorkItemClarificationRow = {
+  id: string
+  targetId?: string | null
+  status: string
+  direction: string
+  question: string
+  answer?: string | null
+  createdAt: string
+}
+
+type WorkflowTemplateRow = {
+  id: string
+  name: string
+  capabilityId?: string | null
+}
+
+function unwrapItems<T>(data: unknown): T[] {
+  if (Array.isArray(data)) return data as T[]
+  if (data && typeof data === 'object') {
+    const obj = data as Record<string, unknown>
+    if (Array.isArray(obj.items)) return obj.items as T[]
+    if (Array.isArray(obj.data)) return obj.data as T[]
+  }
+  return []
 }

@@ -505,7 +505,10 @@ services:
       # below. Override MCP_SANDBOX_HOST_PATH to point at a real working
       # checkout when you want the AST/branch tools to operate on real code.
       MCP_SANDBOX_ROOT: /workspace
-      MCP_AST_DB_PATH:  /workspace/.singularity/mcp-ast.sqlite
+      MCP_WORKITEM_WORKSPACES_ROOT: ${MCP_WORKITEM_WORKSPACES_ROOT:-/workspace/.singularity/workitems}
+      MCP_AST_DB_PATH:  ${MCP_CONTAINER_AST_DB_PATH:-}
+      MCP_WORK_BRANCH_PUSH_ON_FINISH: ${MCP_WORK_BRANCH_PUSH_ON_FINISH:-false}
+      MCP_WORK_BRANCH_PUSH_REMOTE: ${MCP_WORK_BRANCH_PUSH_REMOTE:-origin}
       # ── M33 — Central LLM Gateway ────────────────────────────────────────
       # MCP no longer holds provider keys. Every LLM call routes through the
       # llm-gateway service. No provider fallback chain; gateway errors

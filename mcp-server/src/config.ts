@@ -45,6 +45,9 @@ const schema = z.object({
   // monorepos; tune down on laptops with constrained disk.
   MCP_AST_MAX_SYMBOLS: z.coerce.number().int().positive().default(250_000),
   MCP_WORK_BRANCH_PREFIX: z.string().default("sg"),
+  MCP_WORKITEM_WORKSPACES_ROOT: z.string().optional(),
+  MCP_WORK_BRANCH_PUSH_ON_FINISH: z.coerce.boolean().default(false),
+  MCP_WORK_BRANCH_PUSH_REMOTE: z.string().default("origin"),
   MCP_AUTO_CHECKOUT_SOURCE: z.coerce.boolean().default(true),
   MCP_AUDIT_LOG_PATH: z.string().optional(),
   MCP_AUDIT_RESTORE_LIMIT: z.coerce.number().int().positive().default(5000),

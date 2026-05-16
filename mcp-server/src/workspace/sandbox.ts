@@ -1,4 +1,6 @@
 import * as path from "node:path";
+import * as fs from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { config } from "../config";
 
 // M27.5 — Go + Java added so the AST index covers the four languages our
@@ -15,8 +17,55 @@ export const SKIP_DIRS = new Set([
   "vendor", ".gradle", ".idea", "bin",
 ]);
 
-export function sandboxRoot(): string {
+const sandboxContext = new AsyncLocalStorage<string>();
+
+export interface WorkspaceRootRequest {
+  workItemId?: string;
+  workItemCode?: string;
+  branchName?: string;
+}
+
+function safeWorkspaceSegment(value: string | undefined, fallback: string): string {
+  const cleaned = (value ?? fallback)
+    .trim()
+    .replace(/^work\//i, "")
+    .split("/")
+    .filter(Boolean)
+    .pop()
+    ?.replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "")
+    .slice(0, 80);
+  return cleaned || fallback;
+}
+
+export function baseSandboxRoot(): string {
   return path.resolve(config.MCP_SANDBOX_ROOT);
+}
+
+export function workItemWorkspacesRoot(): string {
+  const configured = config.MCP_WORKITEM_WORKSPACES_ROOT?.trim();
+  if (!configured) return path.join(baseSandboxRoot(), ".singularity", "workitems");
+  return path.isAbsolute(configured)
+    ? path.resolve(configured)
+    : path.resolve(baseSandboxRoot(), configured);
+}
+
+export function workspaceRootForRunContext(req: WorkspaceRootRequest): string {
+  const identity = req.workItemCode?.trim()
+    || (req.branchName?.trim() ? safeWorkspaceSegment(req.branchName, "") : "")
+    || req.workItemId?.trim();
+  if (!identity) return baseSandboxRoot();
+  return path.join(workItemWorkspacesRoot(), safeWorkspaceSegment(identity, "workitem"));
+}
+
+export async function withSandboxRoot<T>(root: string, fn: () => Promise<T>): Promise<T> {
+  const resolved = path.resolve(root);
+  await fs.promises.mkdir(resolved, { recursive: true });
+  return sandboxContext.run(resolved, fn);
+}
+
+export function sandboxRoot(): string {
+  return sandboxContext.getStore() ?? baseSandboxRoot();
 }
 
 export function resolveSandboxedPath(relPath: string): string {

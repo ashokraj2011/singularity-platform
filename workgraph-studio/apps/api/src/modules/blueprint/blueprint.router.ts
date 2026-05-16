@@ -74,6 +74,7 @@ const createSessionSchema = z.object({
   developerAgentTemplateId: optionalUuid,
   qaAgentTemplateId: optionalUuid,
   workflowInstanceId: z.string().optional(),
+  browserRunId: z.string().optional(),
   workflowNodeId: z.string().optional(),
   phaseId: z.string().optional(),
   loopDefinition: z.unknown().optional(),
@@ -90,12 +91,16 @@ const updateSessionSettingsSchema = executionSettingsSchema.refine(input => Obje
 
 const decisionAnswerSchema = z.object({
   questionId: z.string().min(1),
-  answerType: z.enum(['option', 'freeform']),
+  questionText: z.string().optional(),
+  normalizedQuestion: z.string().optional(),
+  answerType: z.enum(['option', 'multi_option', 'freeform']),
   selectedOptionLabel: z.string().optional(),
+  selectedOptionLabels: z.array(z.string()).max(20).optional(),
   customAnswer: z.string().optional(),
   notes: z.string().optional(),
 }).refine(answer => {
   if (answer.answerType === 'option') return Boolean(answer.selectedOptionLabel?.trim())
+  if (answer.answerType === 'multi_option') return Boolean(answer.selectedOptionLabels?.some(label => label.trim()))
   return Boolean(answer.customAnswer?.trim() || answer.notes?.trim())
 }, { message: 'Decision answers need either an option or free-form text' })
 
@@ -141,9 +146,13 @@ type LoopExpectedArtifact = {
 type LoopQuestion = {
   id: string
   question: string
+  type?: 'single_select' | 'multi_select' | 'freeform' | 'clarification'
   required?: boolean
   options?: Array<{ label: string; impact?: string; recommended?: boolean }>
   freeform?: boolean
+  source?: 'configured' | 'llm_open_question'
+  stageKey?: string
+  attemptId?: string
 }
 
 type LoopStageDefinition = {
@@ -194,6 +203,7 @@ type StageAttempt = {
   acceptedAt?: string
   acceptedById?: string
   artifactIds?: string[]
+  generatedQuestionIds?: string[]
   inputSignature?: string
   gateRecommendation?: GateRecommendation
   correlation?: Record<string, unknown>
@@ -215,10 +225,11 @@ type WorkbenchConsumableRef = {
 }
 
 type WorkflowLinkWarning = {
-  reason: 'workflow_instance_not_found' | 'workflow_node_not_found' | 'workflow_link_repaired'
+  reason: 'workflow_instance_not_found' | 'workflow_node_not_found' | 'workflow_link_repaired' | 'browser_run_snapshot'
   message: string
   workflowInstanceId?: string
   workflowNodeId?: string
+  browserRunId?: string
   originalWorkflowInstanceId?: string
   suggestedFix: string
 }
@@ -226,6 +237,7 @@ type WorkflowLinkWarning = {
 type WorkflowLinkResolution = {
   workflowInstanceId?: string
   workflowNodeId?: string
+  browserRunId?: string
   warning?: WorkflowLinkWarning
 }
 
@@ -256,8 +268,26 @@ type FinalPack = {
   finalPackConsumableVersion?: number
 }
 
+type WorkbenchDocumentRef = {
+  id: string
+  artifactId: string
+  kind: string
+  title: string
+  stage?: string
+  stageKey?: string
+  attemptId?: string
+  version?: number
+  content: string
+  createdAt?: string
+  consumableId?: string
+  consumableVersion?: number
+  consumableStatus?: string
+  source: 'blueprint-workbench'
+}
+
 type LoopState = {
   workflowNodeId?: string
+  browserRunId?: string
   gateMode: 'manual' | 'auto'
   loopDefinition: LoopDefinition
   currentStageKey: string | null
@@ -315,9 +345,16 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
   try {
     const body = req.body as CreateSessionInput
     const workflowLink = await resolveWorkflowLink(body.workflowInstanceId, body.workflowNodeId)
+    if (body.workflowInstanceId?.trim() && !workflowLink.workflowInstanceId && !workflowLink.browserRunId) {
+      throw new ValidationError(
+        workflowLink.warning?.message
+          ?? `Workflow run ${body.workflowInstanceId.trim()} was not found. Open the Workbench from an active workflow run/task so consumables can be published.`,
+      )
+    }
     const initialLoopDefinition = applyLoopLimitSettings(normalizeLoopDefinition(body.loopDefinition, body), body)
     const resolvedWorkflowInstanceId = workflowLink.workflowInstanceId ?? null
-    const resolvedWorkflowNodeId = resolvedWorkflowInstanceId ? workflowLink.workflowNodeId : undefined
+    const resolvedBrowserRunId = body.browserRunId?.trim() || workflowLink.browserRunId
+    const resolvedWorkflowNodeId = resolvedWorkflowInstanceId || resolvedBrowserRunId ? workflowLink.workflowNodeId : undefined
     const governanceMode = body.governanceMode
       ?? await resolveWorkbenchGovernanceMode(resolvedWorkflowInstanceId)
     const agentTemplateIds = resolveSessionAgentTemplateIds(body, initialLoopDefinition)
@@ -330,7 +367,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
       message: `Workbench session created with ${loopDefinition.stages.length} loop stages.`,
       actorId: req.user!.userId,
       createdAt: now,
-      payload: { gateMode: body.gateMode, workflowNodeId: resolvedWorkflowNodeId },
+      payload: { gateMode: body.gateMode, workflowNodeId: resolvedWorkflowNodeId, browserRunId: resolvedBrowserRunId },
     }]
     if (workflowLink.warning) {
       reviewEvents.push({
@@ -345,6 +382,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
     }
     const initialLoopState: LoopState = {
       workflowNodeId: resolvedWorkflowNodeId,
+      browserRunId: resolvedBrowserRunId,
       gateMode: body.gateMode,
       loopDefinition,
       currentStageKey: loopDefinition.stages[0]?.key ?? null,
@@ -744,8 +782,11 @@ blueprintRouter.post('/sessions/:id/decision-answers', validate(saveDecisionAnsw
     const updatedAt = new Date().toISOString()
     const decisionAnswers = body.answers.map(answer => ({
         questionId: answer.questionId,
+        questionText: answer.questionText?.trim() || undefined,
+        normalizedQuestion: answer.normalizedQuestion?.trim() || normalizeQuestionText(answer.questionText),
         answerType: answer.answerType,
         selectedOptionLabel: answer.selectedOptionLabel?.trim() || undefined,
+        selectedOptionLabels: answer.selectedOptionLabels?.map(label => label.trim()).filter(Boolean) ?? undefined,
         customAnswer: answer.customAnswer?.trim() || undefined,
         notes: answer.notes?.trim() || undefined,
         updatedAt,
@@ -791,6 +832,7 @@ blueprintRouter.post('/sessions/:id/decision-answers', validate(saveDecisionAnsw
 
     await recordBlueprintAudit(session.id, 'BlueprintDecisionAnswersSaved', req.user!.userId, {
       answerCount: body.answers.length,
+      normalizedQuestions: decisionAnswers.map(answer => answer.normalizedQuestion).filter(Boolean),
     })
     res.json(await loadSession(session.id, req.user!.userId))
   } catch (err) { next(err) }
@@ -852,6 +894,7 @@ function shapeSession<T extends LoopSessionSeed & { artifacts?: Array<{ payload?
   const loop = readLoopState(session)
   return {
     ...session,
+    browserRunId: loop.browserRunId,
     workflowNodeId: loop.workflowNodeId,
     gateMode: loop.gateMode,
     loopDefinition: loop.loopDefinition,
@@ -900,6 +943,23 @@ async function resolveWorkflowLink(
       : { id: true },
   })
   if (!instance) {
+    const browserRun = await prisma.runSnapshot.findUnique({
+      where: { runId: instanceId },
+      select: { runId: true },
+    })
+    if (browserRun) {
+      return {
+        browserRunId: browserRun.runId,
+        workflowNodeId: nodeId,
+        warning: {
+          reason: 'browser_run_snapshot',
+          message: `Workflow run ${instanceId} is a browser-player run snapshot, not a server workflow instance. Workbench will stay linked to this browser run and auto-return to the player, but workflow consumables will not be published.`,
+          browserRunId: browserRun.runId,
+          workflowNodeId: nodeId,
+          suggestedFix: 'Use a server workflow run when you need Workgraph consumables, or continue in browser-run mode for local guided delivery.',
+        },
+      }
+    }
     if (nodeId) {
       const node = await prisma.workflowNode.findUnique({
         where: { id: nodeId },
@@ -997,14 +1057,19 @@ function readLoopState(session: LoopSessionSeed): LoopState {
   const currentStageKey = typeof metadata.currentStageKey === 'string'
     ? metadata.currentStageKey
     : loopDefinition.stages[0]?.key ?? null
+  const decisionAnswers = enrichDecisionAnswers(
+    readDecisionAnswers(metadata.decisionAnswers),
+    loopDefinition,
+  )
   return {
     workflowNodeId: typeof metadata.workflowNodeId === 'string' ? metadata.workflowNodeId : undefined,
+    browserRunId: typeof metadata.browserRunId === 'string' ? metadata.browserRunId : undefined,
     gateMode: metadata.gateMode === 'auto' ? 'auto' : 'manual',
     loopDefinition,
     currentStageKey,
     stageAttempts: Array.isArray(metadata.stageAttempts) ? (metadata.stageAttempts as unknown[]).filter(isStageAttempt) : [],
     reviewEvents: Array.isArray(metadata.reviewEvents) ? (metadata.reviewEvents as unknown[]).filter(isReviewEvent) : [],
-    decisionAnswers: Array.isArray(metadata.decisionAnswers) ? (metadata.decisionAnswers as unknown[]).filter(isDecisionAnswerRecord) : [],
+    decisionAnswers,
     finalPack: isFinalPack(metadata.finalPack) ? metadata.finalPack : undefined,
     executionConfig: readExecutionConfig(metadata.executionConfig),
   }
@@ -1015,6 +1080,7 @@ function stateToMetadata(session: LoopSessionSeed, state: LoopState): Prisma.Inp
   return {
     ...current,
     workflowNodeId: state.workflowNodeId,
+    browserRunId: state.browserRunId,
     gateMode: state.gateMode,
     loopDefinition: state.loopDefinition,
     currentStageKey: state.currentStageKey,
@@ -1130,16 +1196,27 @@ function normalizeQuestion(raw: Record<string, unknown>): LoopQuestion | null {
   const id = typeof raw.id === 'string' ? raw.id : undefined
   const question = typeof raw.question === 'string' ? raw.question : undefined
   if (!id || !question) return null
+  const options = Array.isArray(raw.options) ? raw.options.filter(isRecord).map(option => ({
+    label: String(option.label ?? ''),
+    impact: typeof option.impact === 'string' ? option.impact : undefined,
+    recommended: option.recommended === true,
+  })).filter(option => option.label.trim()) : []
+  const rawType = typeof raw.type === 'string' ? raw.type : undefined
+  const type = rawType === 'single_select' || rawType === 'multi_select' || rawType === 'freeform' || rawType === 'clarification'
+    ? rawType
+    : options.length > 0
+      ? raw.multiSelect === true ? 'multi_select' : 'single_select'
+      : raw.freeform === false ? 'single_select' : 'freeform'
   return {
     id,
     question,
+    type,
     required: raw.required === true,
     freeform: raw.freeform !== false,
-    options: Array.isArray(raw.options) ? raw.options.filter(isRecord).map(option => ({
-      label: String(option.label ?? ''),
-      impact: typeof option.impact === 'string' ? option.impact : undefined,
-      recommended: option.recommended === true,
-    })).filter(option => option.label.trim()) : [],
+    options,
+    source: raw.source === 'llm_open_question' ? 'llm_open_question' : 'configured',
+    stageKey: typeof raw.stageKey === 'string' ? raw.stageKey : undefined,
+    attemptId: typeof raw.attemptId === 'string' ? raw.attemptId : undefined,
   }
 }
 
@@ -1316,6 +1393,17 @@ function slug(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
 }
 
+function normalizeQuestionText(value?: string | null): string | undefined {
+  const normalized = String(value ?? '')
+    .toLowerCase()
+    .replace(/["'`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\b(the|a|an|please|should|could|would|do|does|is|are|there|any)\b/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+  return normalized || undefined
+}
+
 function artifactKind(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
 }
@@ -1432,6 +1520,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
     const completedAt = new Date().toISOString()
     const gateRecommendation = buildGateRecommendation(result, stage)
     const artifactIds = await createLoopStageArtifacts(session, snapshot, stage, attempt, result, gateRecommendation, actorId)
+    const rawLlmOpenQuestions = extractLlmOpenQuestions(result.finalResponse ?? '', stage, attempt)
     await prisma.blueprintStageRun.update({
       where: { id: dbRun.id },
       data: {
@@ -1446,6 +1535,8 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
 
     const latest = await prisma.blueprintSession.findUnique({ where: { id: session.id } })
     const nextState = readLoopState(latest ?? session)
+    const llmOpenQuestions = filterNewLlmOpenQuestions(rawLlmOpenQuestions, nextState, stage.key)
+    const nextLoopDefinition = mergeStageQuestions(nextState.loopDefinition, stage.key, llmOpenQuestions)
     const updatedAttempts = nextState.stageAttempts.map(item => item.id === attempt.id ? {
       ...item,
       status: result.status === 'FAILED' ? 'FAILED' as const : 'COMPLETED' as const,
@@ -1457,12 +1548,26 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
       metrics: result.metrics as unknown as Record<string, unknown>,
       gateRecommendation,
       artifactIds,
+      generatedQuestionIds: llmOpenQuestions.map(question => question.id),
     } : item)
     let updatedState: LoopState = {
       ...nextState,
+      loopDefinition: nextLoopDefinition,
       currentStageKey: stage.key,
       stageAttempts: updatedAttempts,
-      reviewEvents: [...nextState.reviewEvents, reviewEvent(
+      reviewEvents: [
+        ...nextState.reviewEvents,
+        ...(llmOpenQuestions.length > 0 ? [reviewEvent(
+          'CLARIFICATIONS_REQUESTED',
+          `${stage.label} asked ${llmOpenQuestions.length} clarification question${llmOpenQuestions.length === 1 ? '' : 's'}.`,
+          actorId,
+          {
+            stageKey: stage.key,
+            attemptId: attempt.id,
+            questionIds: llmOpenQuestions.map(question => question.id),
+          },
+        )] : []),
+        reviewEvent(
         stage.approvalRequired !== false ? 'ARTIFACTS_AWAITING_APPROVAL' : 'STAGE_RUN_COMPLETED',
         stage.approvalRequired !== false
           ? `${stage.label} produced ${artifactIds.length} artifacts and is waiting for human approval.`
@@ -1494,9 +1599,10 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
       cfCallId: result.correlation?.cfCallId,
       traceId: result.correlation?.traceId,
       mcpInvocationId: result.correlation?.mcpInvocationId,
-    tokensUsed: result.tokensUsed,
-    metrics: result.metrics,
-  })
+      generatedQuestionIds: llmOpenQuestions.map(question => question.id),
+      tokensUsed: result.tokensUsed,
+      metrics: result.metrics,
+    })
     return loadSession(session.id, actorId)
   } catch (err) {
     const message = err instanceof ContextFabricError
@@ -1704,6 +1810,9 @@ async function finalizeLoop(sessionId: string, actorId: string) {
   if (!session) throw new NotFoundError('BlueprintSession', sessionId)
   assertBlueprintAccess(session, actorId)
   const state = readLoopState(session)
+  if (!session.workflowInstanceId && hasUnresolvedWorkflowLink(state)) {
+    throw new ValidationError('This Workbench session was opened from a workflow link that could not be resolved, so it cannot publish consumables or advance the workflow. Start a new Workbench session from the active workflow run.')
+  }
   if (!isLoopGreen(state)) {
     throw new ValidationError('All required loop stages must be passed or accepted with risk before finalizing')
   }
@@ -1740,21 +1849,29 @@ async function finalizeLoop(sessionId: string, actorId: string) {
       finalConsumable?.consumableId,
     ]),
   }
+  const finalArtifactPayload = {
+    finalPack: stampedPack,
+    stageKey: state.currentStageKey,
+    version: 1,
+    consumableId: stampedPack.finalPackConsumableId,
+    consumableVersion: stampedPack.finalPackConsumableVersion,
+    consumableStatus: finalConsumable?.status,
+    stageConsumables: stampedPack.stageConsumables ?? [],
+    consumableIds: stampedPack.consumableIds ?? [],
+  } satisfies Record<string, unknown>
   await prisma.blueprintArtifact.update({
     where: { id: artifact.id },
     data: {
-      payload: {
-        finalPack: stampedPack,
-        stageKey: state.currentStageKey,
-        version: 1,
-        consumableId: stampedPack.finalPackConsumableId,
-        consumableVersion: stampedPack.finalPackConsumableVersion,
-        consumableStatus: finalConsumable?.status,
-        stageConsumables: stampedPack.stageConsumables ?? [],
-        consumableIds: stampedPack.consumableIds ?? [],
-      } as Prisma.InputJsonValue,
+      payload: finalArtifactPayload as Prisma.InputJsonValue,
     },
   })
+  const handoffArtifacts = [
+    ...session.artifacts,
+    {
+      ...artifact,
+      payload: finalArtifactPayload as Prisma.JsonValue,
+    },
+  ]
   const finalizedState: LoopState = {
     ...state,
     finalPack: stampedPack,
@@ -1773,7 +1890,7 @@ async function finalizeLoop(sessionId: string, actorId: string) {
       metadata: stateToMetadata(session, finalizedState),
     },
   })
-  await attachFinalPackToWorkflowNode(session, stampedPack, actorId)
+  await attachFinalPackToWorkflowNode(session, stampedPack, actorId, handoffArtifacts)
   await recordBlueprintAudit(session.id, 'BlueprintFinalized', actorId, {
     artifactId: artifact.id,
     finalPackId: stampedPack.id,
@@ -2101,6 +2218,9 @@ function loopStageTask(session: ArtifactSession, stage: LoopStageDefinition, sta
   const sendBacks = state.reviewEvents.filter(event => event.type === 'SEND_BACK' || event.type === 'AUTO_SEND_BACK').slice(-5)
     .map(event => `- ${event.message}`)
     .join('\n') || '- No send-backs yet.'
+  const capturedDecisions = state.decisionAnswers.length
+    ? state.decisionAnswers.map(answer => `- ${answer.questionText ?? answer.questionId}: ${decisionAnswerText(answer) ?? answer.notes ?? 'answered'}${answer.notes ? ` | notes: ${answer.notes}` : ''}`).join('\n')
+    : '- No stakeholder decisions captured yet.'
   return [
     `Run Blueprint loop stage: ${stage.label}`,
     '',
@@ -2120,10 +2240,15 @@ function loopStageTask(session: ArtifactSession, stage: LoopStageDefinition, sta
     'Latest accepted stage decisions:',
     latestAccepted,
     '',
+    'Captured stakeholder decisions and clarifications:',
+    capturedDecisions,
+    '',
     'Recent feedback loops:',
     sendBacks,
     '',
-    'Return concise, structured workbench output with: decisions, risks, artifact updates for every expected artifact, open questions, and a gate recommendation of PASS, NEEDS_REWORK, or BLOCKED.',
+    'Do not ask an open question if the captured stakeholder decisions already answer the same intent. Reuse those answers as constraints for this stage.',
+    '',
+    'Return concise, structured workbench output with: decisions, risks, artifact updates for every expected artifact, only genuinely new open questions, and a gate recommendation of PASS, NEEDS_REWORK, or BLOCKED.',
   ].join('\n')
 }
 
@@ -2161,8 +2286,10 @@ function buildStageInputSignature(
     }))
   const answers = state.decisionAnswers.map(answer => ({
     questionId: answer.questionId,
+    normalizedQuestion: answer.normalizedQuestion ?? normalizeQuestionText(answer.questionText),
     answerType: answer.answerType,
     selectedOptionLabel: answer.selectedOptionLabel,
+    selectedOptionLabels: answer.selectedOptionLabels,
     customAnswer: answer.customAnswer,
     notes: answer.notes,
   }))
@@ -2437,28 +2564,243 @@ function verdictToAttemptStatus(verdict: LoopVerdict): LoopAttemptStatus {
   return verdict === 'PASS' ? 'PASSED' : verdict
 }
 
+function mergeStageQuestions(loopDefinition: LoopDefinition, stageKey: string, incoming: LoopQuestion[]): LoopDefinition {
+  if (incoming.length === 0) return loopDefinition
+  return {
+    ...loopDefinition,
+    stages: loopDefinition.stages.map(stage => {
+      if (stage.key !== stageKey) return stage
+      const byId = new Map((stage.questions ?? []).map(question => [question.id, question]))
+      const byQuestion = new Map((stage.questions ?? []).flatMap(question => {
+        const key = normalizeQuestionText(question.question)
+        return key ? [[key, question.id] as const] : []
+      }))
+      for (const question of incoming) {
+        const semanticKey = normalizeQuestionText(question.question)
+        const existingId = semanticKey ? byQuestion.get(semanticKey) : undefined
+        byId.set(existingId ?? question.id, existingId ? { ...question, id: existingId } : question)
+        if (semanticKey) byQuestion.set(semanticKey, existingId ?? question.id)
+      }
+      return {
+        ...stage,
+        questions: Array.from(byId.values()),
+      }
+    }),
+  }
+}
+
+function filterNewLlmOpenQuestions(incoming: LoopQuestion[], state: LoopState, stageKey: string): LoopQuestion[] {
+  if (incoming.length === 0) return []
+  const seenAnswered = new Set<string>()
+  for (const stage of state.loopDefinition.stages) {
+    for (const question of stage.questions ?? []) {
+      const key = normalizeQuestionText(question.question)
+      if (key && hasDecisionAnswerForQuestion(question, state.decisionAnswers)) seenAnswered.add(key)
+    }
+  }
+  const currentStage = state.loopDefinition.stages.find(stage => stage.key === stageKey)
+  for (const question of currentStage?.questions ?? []) {
+    const key = normalizeQuestionText(question.question)
+    if (key && hasDecisionAnswerForQuestion(question, state.decisionAnswers)) seenAnswered.add(key)
+  }
+  const emitted = new Set<string>()
+  return incoming.filter(question => {
+    if (hasDecisionAnswerForQuestion(question, state.decisionAnswers)) return false
+    const key = normalizeQuestionText(question.question)
+    if (!key) return true
+    if (seenAnswered.has(key) || emitted.has(key)) return false
+    emitted.add(key)
+    return true
+  })
+}
+
+function extractLlmOpenQuestions(response: string, stage: LoopStageDefinition, attempt: StageAttempt): LoopQuestion[] {
+  const section = extractMarkdownSection(response, ['open questions', 'questions for user', 'clarifications', 'clarification questions'])
+  if (!section) return []
+  const questions: LoopQuestion[] = []
+  for (const line of section.split('\n').map(item => item.trim()).filter(Boolean)) {
+    const cleaned = line
+      .replace(/^[-*]\s+/, '')
+      .replace(/^\d+[.)]\s+/, '')
+      .replace(/^\[[ xX]\]\s+/, '')
+      .trim()
+    if (!cleaned || cleaned.length < 12) continue
+    if (/^(none|n\/a|no open questions)/i.test(cleaned)) continue
+    const parsed = classifyOpenQuestion(cleaned)
+    const index = questions.length + 1
+    questions.push({
+      id: `${stage.key.toUpperCase()}-LLM-${attempt.attemptNumber}-${index}`,
+      question: parsed.question,
+      type: parsed.type,
+      required: true,
+      freeform: parsed.freeform,
+      options: parsed.options,
+      source: 'llm_open_question',
+      stageKey: stage.key,
+      attemptId: attempt.id,
+    })
+    if (questions.length >= 12) break
+  }
+  return questions
+}
+
+function extractMarkdownSection(markdown: string, headings: string[]): string {
+  if (!markdown.trim()) return ''
+  const lines = markdown.split('\n')
+  let start = -1
+  let headingLevel = 0
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].trim().match(/^(#{1,6})\s+(.+?)\s*#*$/)
+    if (!match) continue
+    const title = match[2].trim().toLowerCase().replace(/[:：]$/, '')
+    if (headings.some(heading => title.includes(heading))) {
+      start = index + 1
+      headingLevel = match[1].length
+      break
+    }
+  }
+  if (start === -1) return ''
+  const body: string[] = []
+  for (let index = start; index < lines.length; index += 1) {
+    const match = lines[index].trim().match(/^(#{1,6})\s+/)
+    if (match && match[1].length <= headingLevel) break
+    body.push(lines[index])
+  }
+  return body.join('\n').trim()
+}
+
+function classifyOpenQuestion(raw: string): Pick<LoopQuestion, 'question' | 'type' | 'options' | 'freeform'> {
+  const { question, options } = splitQuestionOptions(raw)
+  const lower = question.toLowerCase()
+  const hasOptions = options.length > 0
+  const isMulti = /\b(multi|multiple|choose all|select all|which .* apply|all that apply)\b/.test(lower)
+  const isBinary = /^(should|do|does|is|are|can|will|would|has|have)\b/.test(lower)
+  if (isMulti) {
+    return {
+      question,
+      type: 'multi_select',
+      options: hasOptions ? options.map((label, index) => ({ label, recommended: index === 0 })) : [],
+      freeform: true,
+    }
+  }
+  if (hasOptions || isBinary) {
+    return {
+      question,
+      type: 'single_select',
+      options: hasOptions ? options.map((label, index) => ({ label, recommended: index === 0 })) : [
+        { label: 'Yes', impact: 'Proceed with this assumption.' },
+        { label: 'No', impact: 'Send the stage back or adjust the plan.' },
+        { label: 'Needs discussion', impact: 'Capture details before approving.' },
+      ],
+      freeform: true,
+    }
+  }
+  return {
+    question,
+    type: 'clarification',
+    options: [],
+    freeform: true,
+  }
+}
+
+function splitQuestionOptions(raw: string): { question: string; options: string[] } {
+  const optionMatch = raw.match(/^(.*?)(?:\s+options?\s*[:：]\s*|\s+\((?:options?|choose|select)\s*[:：]\s*)(.+?)\)?$/i)
+  if (!optionMatch) return { question: raw.trim(), options: [] }
+  const question = optionMatch[1].trim().replace(/[;:,-]+$/, '')
+  const options = optionMatch[2]
+    .split(/\s*(?:\||,|;|\/|\bor\b)\s*/i)
+    .map(option => option.trim().replace(/^["']|["']$/g, ''))
+    .filter(option => option.length > 0)
+    .slice(0, 8)
+  return { question: question || raw.trim(), options }
+}
+
 function missingRequiredQuestions(stage: LoopStageDefinition, answers: DecisionAnswer[]): string[] {
-  const answered = new Set(answers.filter(answer =>
-    answer.selectedOptionLabel?.trim() || answer.customAnswer?.trim() || answer.notes?.trim(),
-  ).map(answer => answer.questionId))
-  return (stage.questions ?? []).filter(question => question.required && !answered.has(question.id)).map(question => question.id)
+  return (stage.questions ?? [])
+    .filter(question => question.required && !hasDecisionAnswerForQuestion(question, answers))
+    .map(question => question.id)
 }
 
 function mergeDecisionAnswers(existing: DecisionAnswer[], incoming: DecisionAnswer[], actorId: string): DecisionAnswer[] {
   const byId = new Map(existing.map(answer => [answer.questionId, answer]))
+  const byQuestion = new Map(existing.flatMap(answer => {
+    const key = answer.normalizedQuestion ?? normalizeQuestionText(answer.questionText)
+    return key ? [[key, answer] as const] : []
+  }))
   const updatedAt = new Date().toISOString()
   for (const answer of incoming) {
-    byId.set(answer.questionId, {
+    const normalizedQuestion = answer.normalizedQuestion?.trim() || normalizeQuestionText(answer.questionText)
+    const existingSemanticAnswer = normalizedQuestion ? byQuestion.get(normalizedQuestion) : undefined
+    const nextAnswer = {
       questionId: answer.questionId,
+      questionText: answer.questionText?.trim() || existingSemanticAnswer?.questionText,
+      normalizedQuestion,
       answerType: answer.answerType,
       selectedOptionLabel: answer.selectedOptionLabel?.trim() || undefined,
+      selectedOptionLabels: answer.selectedOptionLabels?.map(label => label.trim()).filter(Boolean) ?? undefined,
       customAnswer: answer.customAnswer?.trim() || undefined,
       notes: answer.notes?.trim() || undefined,
       updatedAt,
       updatedById: actorId,
-    })
+    }
+    if (existingSemanticAnswer && existingSemanticAnswer.questionId !== answer.questionId) byId.delete(existingSemanticAnswer.questionId)
+    byId.set(answer.questionId, nextAnswer)
+    if (normalizedQuestion) byQuestion.set(normalizedQuestion, nextAnswer)
   }
   return Array.from(byId.values())
+}
+
+function enrichDecisionAnswers(answers: DecisionAnswer[], loopDefinition: LoopDefinition): DecisionAnswer[] {
+  if (answers.length === 0) return []
+  const questionsById = new Map<string, LoopQuestion>()
+  for (const stage of loopDefinition.stages) {
+    for (const question of stage.questions ?? []) {
+      questionsById.set(question.id, question)
+    }
+  }
+  return answers.map(answer => {
+    const question = questionsById.get(answer.questionId)
+    const questionText = answer.questionText ?? question?.question
+    const normalizedQuestion = answer.normalizedQuestion ?? normalizeQuestionText(questionText)
+    return {
+      ...answer,
+      questionText,
+      normalizedQuestion,
+    }
+  })
+}
+
+function hasDecisionAnswerForQuestion(question: LoopQuestion, answers: DecisionAnswer[]): boolean {
+  const normalized = normalizeQuestionText(question.question)
+  return answers.some(answer => {
+    if (!isAnsweredDecision(answer)) return false
+    if (answer.questionId === question.id) return true
+    const answerQuestion = answer.normalizedQuestion ?? normalizeQuestionText(answer.questionText)
+    return questionKeysMatch(normalized, answerQuestion)
+  })
+}
+
+function questionKeysMatch(left?: string, right?: string): boolean {
+  if (!left || !right) return false
+  if (left === right) return true
+  const leftTokens = new Set(left.split(' ').filter(token => token.length > 2))
+  const rightTokens = new Set(right.split(' ').filter(token => token.length > 2))
+  if (leftTokens.size < 4 || rightTokens.size < 4) return false
+  let shared = 0
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) shared += 1
+  }
+  const overlap = shared / Math.min(leftTokens.size, rightTokens.size)
+  return overlap >= 0.72
+}
+
+function isAnsweredDecision(answer: DecisionAnswer): boolean {
+  return Boolean(
+    answer.selectedOptionLabel?.trim()
+    || answer.selectedOptionLabels?.some(label => label.trim())
+    || answer.customAnswer?.trim()
+    || answer.notes?.trim(),
+  )
 }
 
 function isLoopGreen(state: LoopState): boolean {
@@ -2468,6 +2810,13 @@ function isLoopGreen(state: LoopState): boolean {
       const attempt = latestStageAttempt(state, stage.key)
       return attempt?.verdict === 'PASS' || attempt?.verdict === 'ACCEPTED_WITH_RISK'
     })
+}
+
+function hasUnresolvedWorkflowLink(state: LoopState): boolean {
+  return state.reviewEvents.some(event => {
+    if (event.type !== 'WORKFLOW_LINK_WARNING') return false
+    return isRecord(event.payload) && event.payload.reason === 'workflow_instance_not_found'
+  })
 }
 
 function sendBackCount(state: LoopState): number {
@@ -2562,6 +2911,7 @@ async function attachFinalPackToWorkflowNode(
   session: { id: string; workflowInstanceId?: string | null; metadata?: Prisma.JsonValue },
   finalPack: FinalPack,
   actorId: string,
+  artifacts: Array<BlueprintArtifactRecord & { createdAt?: Date | string | null }> = [],
 ) {
   const state = readLoopState(session as LoopSessionSeed)
   if (!session.workflowInstanceId || !state.workflowNodeId) return
@@ -2576,6 +2926,8 @@ async function attachFinalPackToWorkflowNode(
   const finalPackKey = typeof outputs.finalPackKey === 'string' && outputs.finalPackKey.trim()
     ? outputs.finalPackKey.trim()
     : 'finalImplementationPack'
+  const workbenchDocuments = buildWorkbenchDocumentRefs(artifacts)
+  const workbenchDocumentsByKind = workbenchDocumentsByKindMap(workbenchDocuments)
   const workflowOutput = {
     blueprintSessionId: session.id,
     workbenchStatus: 'FINALIZED',
@@ -2585,6 +2937,10 @@ async function attachFinalPackToWorkflowNode(
     stageConsumables: finalPack.stageConsumables ?? [],
     consumableIds: finalPack.consumableIds ?? [],
     stageArtifactsByKind: stageConsumablesByKind(finalPack.stageConsumables ?? []),
+    workbenchArtifacts: workbenchDocuments,
+    workbenchDocuments,
+    workbenchArtifactsByKind: workbenchDocumentsByKind,
+    workbenchDocumentsByKind,
     workbench: {
       profile: typeof workbench.profile === 'string' ? workbench.profile : 'blueprint',
       sessionId: session.id,
@@ -2595,6 +2951,10 @@ async function attachFinalPackToWorkflowNode(
       stageConsumables: finalPack.stageConsumables ?? [],
       consumableIds: finalPack.consumableIds ?? [],
       stageArtifactsByKind: stageConsumablesByKind(finalPack.stageConsumables ?? []),
+      artifacts: workbenchDocuments,
+      documents: workbenchDocuments,
+      artifactsByKind: workbenchDocumentsByKind,
+      documentsByKind: workbenchDocumentsByKind,
     },
   }
   const nextConfig = {
@@ -3305,6 +3665,46 @@ function stageConsumablesByKind(refs: WorkbenchConsumableRef[]): Record<string, 
   }, {})
 }
 
+function buildWorkbenchDocumentRefs(
+  artifacts: Array<BlueprintArtifactRecord & { createdAt?: Date | string | null }>,
+): WorkbenchDocumentRef[] {
+  return artifacts.map(artifact => {
+    const payload = isRecord(artifact.payload) ? artifact.payload : {}
+    const consumable = isRecord(payload.consumable) ? payload.consumable : {}
+    const stage = typeof artifact.stage === 'string' ? artifact.stage : undefined
+    const stageKey = typeof payload.stageKey === 'string'
+      ? payload.stageKey
+      : typeof consumable.stageKey === 'string' ? consumable.stageKey : stage?.toLowerCase()
+    const createdAt = artifact.createdAt instanceof Date
+      ? artifact.createdAt.toISOString()
+      : typeof artifact.createdAt === 'string' ? artifact.createdAt : undefined
+    return {
+      id: artifact.id,
+      artifactId: artifact.id,
+      kind: artifact.kind,
+      title: artifact.title,
+      stage,
+      stageKey,
+      attemptId: typeof payload.attemptId === 'string' ? payload.attemptId : typeof consumable.attemptId === 'string' ? consumable.attemptId : undefined,
+      version: typeof payload.version === 'number' ? payload.version : undefined,
+      content: artifact.content ?? '',
+      createdAt,
+      consumableId: typeof payload.consumableId === 'string' ? payload.consumableId : typeof consumable.consumableId === 'string' ? consumable.consumableId : undefined,
+      consumableVersion: typeof payload.consumableVersion === 'number' ? payload.consumableVersion : typeof consumable.consumableVersion === 'number' ? consumable.consumableVersion : undefined,
+      consumableStatus: typeof payload.consumableStatus === 'string' ? payload.consumableStatus : typeof consumable.status === 'string' ? consumable.status : undefined,
+      source: 'blueprint-workbench',
+    }
+  })
+}
+
+function workbenchDocumentsByKindMap(refs: WorkbenchDocumentRef[]): Record<string, WorkbenchDocumentRef[]> {
+  return refs.reduce<Record<string, WorkbenchDocumentRef[]>>((acc, ref) => {
+    const key = ref.kind || 'artifact'
+    acc[key] = [...(acc[key] ?? []), ref]
+    return acc
+  }, {})
+}
+
 type SnapshotContext = {
   files: ManifestEntry[]
   sampledFiles: Array<{ path: string; excerpt: string }>
@@ -3847,7 +4247,7 @@ function buildImplementationContractPayload(session: ArtifactSession, ctx: Snaps
     goal: session.goal,
     capturedDecisions: decisionAnswers.map(answer => ({
       questionId: answer.questionId,
-      answer: answer.answerType === 'option' ? answer.selectedOptionLabel : answer.customAnswer,
+      answer: decisionAnswerText(answer),
       notes: answer.notes,
       updatedAt: answer.updatedAt,
     })),
@@ -3970,8 +4370,11 @@ function buildStakeholderAnswersMarkdown(answers: DecisionAnswer[]) {
     'answers:',
     ...(answers.length > 0 ? answers.flatMap(answer => [
       `  - question_id: ${answer.questionId}`,
+      answer.questionText ? `    question: "${answer.questionText.replaceAll('"', '\\"')}"` : undefined,
+      answer.normalizedQuestion ? `    normalized_question: "${answer.normalizedQuestion}"` : undefined,
       `    answer_type: ${answer.answerType}`,
       answer.selectedOptionLabel ? `    selected_option: "${answer.selectedOptionLabel}"` : undefined,
+      answer.selectedOptionLabels?.length ? `    selected_options: [${answer.selectedOptionLabels.map(label => `"${label}"`).join(', ')}]` : undefined,
       answer.customAnswer ? `    custom_answer: "${answer.customAnswer}"` : undefined,
       answer.notes ? `    notes: "${answer.notes}"` : undefined,
       answer.updatedAt ? `    updated_at: ${answer.updatedAt}` : undefined,
@@ -4078,25 +4481,37 @@ function readDecisionAnswers(value: unknown): DecisionAnswer[] {
   if (!Array.isArray(value)) return []
   return value.flatMap((item) => {
     if (!isRecord(item) || typeof item.questionId !== 'string') return []
-    const answerType = item.answerType === 'freeform' ? 'freeform' : 'option'
+    const answerType = item.answerType === 'freeform' ? 'freeform' : item.answerType === 'multi_option' ? 'multi_option' : 'option'
+    const questionText = typeof item.questionText === 'string' ? item.questionText : undefined
+    const normalizedQuestion = typeof item.normalizedQuestion === 'string'
+      ? item.normalizedQuestion
+      : normalizeQuestionText(questionText)
     const selectedOptionLabel = typeof item.selectedOptionLabel === 'string' ? item.selectedOptionLabel : undefined
+    const selectedOptionLabels = Array.isArray(item.selectedOptionLabels)
+      ? item.selectedOptionLabels.filter((label): label is string => typeof label === 'string' && Boolean(label.trim()))
+      : undefined
     const customAnswer = typeof item.customAnswer === 'string' ? item.customAnswer : undefined
     const notes = typeof item.notes === 'string' ? item.notes : undefined
     const updatedAt = typeof item.updatedAt === 'string' ? item.updatedAt : undefined
     const updatedById = typeof item.updatedById === 'string' ? item.updatedById : undefined
     if (answerType === 'option' && !selectedOptionLabel) return []
+    if (answerType === 'multi_option' && !selectedOptionLabels?.length) return []
     if (answerType === 'freeform' && !customAnswer && !notes) return []
-    return [{ questionId: item.questionId, answerType, selectedOptionLabel, customAnswer, notes, updatedAt, updatedById }]
+    return [{ questionId: item.questionId, questionText, normalizedQuestion, answerType, selectedOptionLabel, selectedOptionLabels, customAnswer, notes, updatedAt, updatedById }]
   })
 }
 
 function answerText(answers: DecisionAnswer[], questionId: string, fallback: string) {
   const answer = answers.find(item => item.questionId === questionId)
   if (!answer) return fallback
-  const base = answer.answerType === 'option'
-    ? answer.selectedOptionLabel
-    : answer.customAnswer
+  const base = decisionAnswerText(answer)
   return [base, answer.notes].filter(Boolean).join(' | notes: ') || fallback
+}
+
+function decisionAnswerText(answer: DecisionAnswer): string | undefined {
+  if (answer.answerType === 'option') return answer.selectedOptionLabel
+  if (answer.answerType === 'multi_option') return answer.selectedOptionLabels?.join(', ')
+  return answer.customAnswer
 }
 
 function isUsefulModelResponse(value: string | undefined) {

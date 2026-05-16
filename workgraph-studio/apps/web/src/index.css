@@ -410,6 +410,39 @@
     opacity: 0.45;
     cursor: not-allowed;
   }
+
+  .node-inspector-readable {
+    font-size: 14px;
+  }
+
+  .node-inspector-readable input,
+  .node-inspector-readable textarea,
+  .node-inspector-readable select {
+    font-size: 13px !important;
+    line-height: 1.45 !important;
+  }
+
+  .node-inspector-readable textarea {
+    min-height: 7.25rem;
+  }
+
+  .node-inspector-readable button {
+    line-height: 1.35;
+  }
+
+  .node-inspector-modal-content .node-inspector-readable {
+    font-size: 15px;
+  }
+
+  .node-inspector-modal-content .node-inspector-readable input,
+  .node-inspector-modal-content .node-inspector-readable textarea,
+  .node-inspector-modal-content .node-inspector-readable select {
+    font-size: 14px !important;
+  }
+
+  .node-inspector-modal-content .node-inspector-readable textarea {
+    min-height: 9rem;
+  }
 }
 
 /* ─── Skeleton ───────────────────────────────────────────────────────────── */
