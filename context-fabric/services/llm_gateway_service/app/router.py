@@ -105,6 +105,13 @@ def list_providers(authorization: Optional[str] = Header(None)) -> Dict[str, Any
     return {
         "default_provider": provider_config.default_provider(),
         "default_model_alias": provider_config.default_model_alias(),
+        "config": {
+            "provider_config_path": settings.provider_config_path,
+            "model_catalog_path": settings.model_catalog_path,
+            "allow_caller_provider_override": settings.allow_caller_provider_override,
+            "auth_required": bool(settings.gateway_bearer),
+            "upstream_timeout_sec": settings.upstream_timeout_sec,
+        },
         "providers": provider_config.list_provider_status(credentials),
         "warnings": provider_config.warnings(),
     }
@@ -219,7 +226,7 @@ async def embeddings(
                 embeddings=vectors,
                 dim=dim,
                 provider=provider,
-                model=emb_model,
+                model=model,
                 model_alias=alias,
                 input_tokens=tokens,
                 latency_ms=int((time.time() - start) * 1000),

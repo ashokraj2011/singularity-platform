@@ -74,7 +74,7 @@ async function platformSnapshot() {
       prisma.workflow.count(),
       prisma.workflowInstance.count({ where: { status: { in: ['ACTIVE', 'PAUSED'] } } }),
       prisma.approvalRequest.count({ where: { status: 'PENDING' } }),
-      prisma.workItem.count({ where: { status: { in: ['QUEUED', 'CLAIMED', 'STARTED', 'WAITING_APPROVAL', 'REWORK'] } } }),
+      prisma.workItem.count({ where: { status: { in: ['QUEUED', 'IN_PROGRESS', 'AWAITING_PARENT_APPROVAL'] } } }),
       prisma.consumable.count(),
     ])
     return {

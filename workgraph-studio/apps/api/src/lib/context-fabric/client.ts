@@ -24,6 +24,9 @@ export interface ExecuteRunContext {
   trace_id?: string
   branch_base?: string
   branch_name?: string
+  source_type?: string
+  source_uri?: string
+  source_ref?: string
 }
 
 export interface ExecuteRequest {
@@ -55,6 +58,7 @@ export interface ExecuteRequest {
     maxPromptChars?: number
   }
   preview_only?: boolean
+  allow_autonomous_mutation?: boolean
   // M26 — when true, require the calling user's laptop mcp-server (via the
   // context-fabric laptop-bridge). When false, force the shared HTTP mcp.
   // When unset, cf auto-prefers laptop if a connection exists for the user.

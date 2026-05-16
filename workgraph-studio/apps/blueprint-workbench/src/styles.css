@@ -378,6 +378,11 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   flex: 1;
 }
 
+.workbench-code-review-dock {
+  max-width: 1760px;
+  margin: 0 auto 16px;
+}
+
 .control-card, .panel {
   min-width: 0;
   border: 1px solid var(--outline-variant);
@@ -894,6 +899,11 @@ code, pre, .console-top code, .terminal-log {
   overflow: hidden;
 }
 
+.code-review-panel.wide-review {
+  margin-bottom: 0;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
+}
+
 .code-review-header {
   display: flex;
   justify-content: space-between;
@@ -993,6 +1003,23 @@ code, pre, .console-top code, .terminal-log {
   min-height: 360px;
   max-height: 560px;
   border-top: 1px solid rgba(173, 198, 255, 0.08);
+}
+
+.wide-review .vscode-review-shell {
+  grid-template-columns: 48px minmax(240px, 320px) minmax(0, 1fr) minmax(220px, 300px);
+  min-height: min(74vh, 820px);
+  max-height: none;
+}
+
+.wide-review .vscode-review-editor,
+.wide-review .vscode-review-explorer,
+.wide-review .vscode-review-checklist {
+  min-height: 0;
+}
+
+.wide-review .vscode-diff-code {
+  min-height: 0;
+  flex: 1;
 }
 
 .vscode-review-activity {
@@ -1442,6 +1469,7 @@ code, pre, .console-top code, .terminal-log {
 }
 
 @media (max-width: 1180px) {
+  .wide-review .vscode-review-shell,
   .vscode-review-shell {
     grid-template-columns: 40px minmax(150px, 210px) minmax(0, 1fr);
   }
@@ -1988,6 +2016,65 @@ pre {
   box-shadow: none;
   background: transparent;
   padding: 8px 0 0;
+}
+
+.settings-section {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid var(--outline-variant);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.settings-section-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--text);
+}
+
+.settings-section-title strong {
+  display: block;
+  font-size: 14px;
+}
+
+.settings-section-title span,
+.muted-hint {
+  display: block;
+  margin: 3px 0 0;
+  color: var(--muted-low);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.compact-fields {
+  gap: 10px;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+}
+
+.checkbox-row input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+}
+
+.checkbox-row span {
+  color: var(--text);
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.full-width {
+  width: 100%;
 }
 
 .empty-workbench, .auth-empty {

@@ -3,6 +3,8 @@ export type Stage = string
 export type SessionStatus = 'DRAFT' | 'SNAPSHOTTED' | 'RUNNING' | 'COMPLETED' | 'APPROVED' | 'FAILED'
 export type StageStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
 export type GateMode = 'manual' | 'auto'
+export type SnapshotMode = 'summary' | 'relevant_excerpts' | 'full_debug'
+export type GovernanceMode = 'fail_open' | 'fail_closed' | 'degraded' | 'human_approval_required'
 export type LoopVerdict = 'PASS' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_RISK'
 export type LoopAttemptStatus =
   | 'PENDING'
@@ -153,6 +155,18 @@ export type LoopDefinition = {
   maxTotalSendBacks: number
 }
 
+export type WorkbenchExecutionConfig = {
+  snapshotMode?: SnapshotMode
+  excerptBudgetChars?: number
+  reuseUnchangedAttempt?: boolean
+  modelAlias?: string
+  governanceMode?: GovernanceMode
+  maxContextTokens?: number
+  maxOutputTokens?: number
+  maxPromptChars?: number
+  maxLayerChars?: number
+}
+
 export type GateRecommendation = {
   verdict: LoopVerdict
   confidence: number
@@ -239,12 +253,14 @@ export type BlueprintSession = {
   reviewEvents?: ReviewEvent[]
   decisionAnswers?: DecisionAnswer[]
   finalPack?: FinalPack
+  executionConfig?: WorkbenchExecutionConfig
   snapshots: BlueprintSnapshot[]
   stageRuns: BlueprintStageRun[]
   artifacts: BlueprintArtifact[]
   metadata?: {
     decisionAnswers?: DecisionAnswer[]
     decisionAnswersUpdatedAt?: string
+    executionConfig?: WorkbenchExecutionConfig
     [key: string]: unknown
   }
 }
@@ -291,6 +307,9 @@ export type CreateSessionRequest = {
   phaseId?: string
   loopDefinition?: LoopDefinition
   gateMode?: GateMode
+} & WorkbenchExecutionConfig & {
+  maxLoopsPerStage?: number
+  maxTotalSendBacks?: number
 }
 
 type PersistedAuth = { state?: { token?: string | null } }
@@ -359,6 +378,8 @@ function unwrap<T>(data: unknown): T[] {
 export const api = {
   listSessions: () => request<{ items: BlueprintSession[] }>('/blueprint/sessions'),
   createSession: (body: CreateSessionRequest) => request<BlueprintSession>('/blueprint/sessions', { method: 'POST', body: JSON.stringify(body) }),
+  updateSettings: (id: string, body: WorkbenchExecutionConfig & { maxLoopsPerStage?: number; maxTotalSendBacks?: number }) =>
+    request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/settings`, { method: 'PATCH', body: JSON.stringify(body) }),
   snapshot: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/snapshot`, { method: 'POST' }),
   run: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/run`, { method: 'POST' }),
   runStage: (id: string, stageKey: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/run`, { method: 'POST' }),

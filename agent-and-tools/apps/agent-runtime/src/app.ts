@@ -9,9 +9,10 @@ import { executionRoutes } from "./modules/executions/execution.routes";
 import { memoryRoutes } from "./modules/memory/memory.routes";
 import { errorMiddleware } from "./middleware/error.middleware";
 import { requestIdMiddleware } from "./middleware/request-id.middleware";
-import { optionalAuth } from "./middleware/auth.middleware";
+import { optionalAuth, requireAuth } from "./middleware/auth.middleware";
 import { eventSubscriptionsRouter } from "./lib/eventbus/routes";
 import { prisma } from "./config/prisma";
+import { env } from "./config/env";
 
 // M3: prompt assembly is now owned by prompt-composer (port 3004).
 // agent-runtime no longer exposes /api/v1/prompts.
@@ -24,7 +25,6 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: "25mb" })); // M14 — code-extract payloads can carry hundreds of source files
 app.use(requestIdMiddleware);
-app.use(optionalAuth);
 
 app.get("/health", (_req, res) => {
   res.json({
@@ -48,6 +48,8 @@ app.get("/healthz/strict", async (_req, res) => {
     requestId: res.locals.requestId,
   });
 });
+
+app.use(env.AUTH_OPTIONAL ? optionalAuth : requireAuth);
 
 app.use("/api/v1/agents", agentRoutes);
 app.use("/api/v1/tools", toolRoutes);

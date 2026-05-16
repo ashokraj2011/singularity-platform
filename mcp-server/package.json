@@ -12,7 +12,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
-    "test:contracts": "ts-node --transpile-only src/lib/governance-policy.contract.test.ts"
+    "test:contracts": "MCP_BEARER_TOKEN=test-bearer-token-12345 LLM_GATEWAY_URL=mock ts-node --transpile-only src/lib/governance-policy.contract.test.ts && MCP_BEARER_TOKEN=test-bearer-token-12345 LLM_GATEWAY_URL=mock ts-node --transpile-only src/lib/http-auth.contract.test.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",

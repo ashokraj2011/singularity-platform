@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import FastAPI, Response
 from pydantic import BaseModel, Field
 import httpx
+import uuid
 
 from context_fabric_shared.schemas import ContextPolicy
 from context_fabric_shared.http_client import post_json, get_json
@@ -132,6 +133,17 @@ async def maybe_update_summary(session_id: str, agent_id: str, force: bool = Fal
         return {"updated": False, "reason": "summary_error", "error": str(e)}
 
 
+def gateway_messages_from_compiled(compiled_messages: list[dict[str, Any]], user_message: str) -> list[dict[str, str]]:
+    """Build gateway messages without duplicating the current user turn."""
+    messages = [
+        {"role": str(m.get("role", "user")), "content": str(m.get("content", ""))}
+        for m in compiled_messages
+    ]
+    if not messages or messages[-1].get("role") != "user" or messages[-1].get("content") != user_message:
+        messages.append({"role": "user", "content": user_message})
+    return messages
+
+
 @app.post("/chat/respond", response_model=ChatRespondResponse)
 async def chat_respond(req: ChatRespondRequest, response: Response):
     response.headers["Deprecation"] = "true"
@@ -163,13 +175,10 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
         "system_prompt": req.system_prompt,
     })
 
-    # M33 — one-shot synthesis goes through the central LLM gateway directly.
-    # The legacy code routed this through MCP's agent loop (maxSteps=1,
-    # tools=[]) which was a pure waste of orchestration overhead. Provider
-    # keys live only on the gateway.
-    gw_messages = [{"role": str(m.get("role", "user")), "content": str(m.get("content", ""))}
-                   for m in compiled.get("compiled_messages", [])]
-    gw_messages.append({"role": "user", "content": req.message})
+    # Deprecated one-shot synthesis goes through the central LLM gateway
+    # directly. Governance fail-open/fail-closed/degraded handling lives in
+    # /execute; this endpoint is kept only for legacy direct callers.
+    gw_messages = gateway_messages_from_compiled(compiled.get("compiled_messages", []), req.message)
     gw_payload = {
         "model_alias": settings.chat_respond_model_alias,
         "messages": gw_messages,
@@ -192,10 +201,11 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
         "latency_ms": gw_resp.get("latency_ms"),
     }
     tokens_used = {
-        "input": gw_resp.get("input_tokens"),
-        "output": gw_resp.get("output_tokens"),
+        "input": gw_resp.get("input_tokens", 0),
+        "output": gw_resp.get("output_tokens", 0),
     }
-    model_call_id = ""
+    tokens_used["total"] = int(tokens_used.get("input") or 0) + int(tokens_used.get("output") or 0)
+    model_call_id = str(gw_resp.get("call_id") or gw_resp.get("id") or uuid.uuid4())
 
     await post_json(f"{memory_url}/memory/messages", {
         "session_id": req.session_id,
@@ -223,7 +233,7 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
             "estimated_cost_saved": opt.get("estimated_cost_saved", 0.0),
             "provider": model_usage.get("provider", "mcp-default"),
             "model_name": model_usage.get("model", "mcp-default"),
-            "latency_ms": mcp_data.get("metrics", {}).get("mcpLatencyMs"),
+            "latency_ms": model_usage.get("latency_ms"),
         })
         metrics_run_id = metrics.get("id")
     except Exception:
@@ -242,8 +252,8 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
             "input_tokens": tokens_used.get("input", 0),
             "output_tokens": tokens_used.get("output", 0),
             "total_tokens": tokens_used.get("total", 0),
-            "estimated_cost": model_usage.get("estimatedCost"),
-            "latency_ms": mcp_data.get("metrics", {}).get("mcpLatencyMs"),
+            "estimated_cost": gw_resp.get("estimated_cost"),
+            "latency_ms": model_usage.get("latency_ms"),
         },
         metrics_run_id=metrics_run_id,
     )

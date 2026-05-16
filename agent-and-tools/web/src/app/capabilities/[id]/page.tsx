@@ -498,17 +498,46 @@ export default function CapabilityDetailPage({ params }: { params: { id: string 
           </div>
           <div className="space-y-2">
             {know_artifacts.map(a => (
-              <div key={a.id as string} className="card p-4">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded">{a.artifactType as string}</span>
-                  <span className="font-medium text-slate-800 text-sm">{a.title as string}</span>
-                </div>
-                <p className="text-sm text-slate-600">{a.content as string}</p>
-              </div>
+              <KnowledgeArtifactCard key={a.id as string} artifact={a} />
             ))}
             {know_artifacts.length === 0 && <p className="text-slate-400 text-sm">No knowledge artifacts.</p>}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+function KnowledgeArtifactCard({ artifact }: { artifact: Record<string, unknown> }) {
+  const artifactType = String(artifact.artifactType ?? "ARTIFACT");
+  const title = String(artifact.title ?? "Knowledge artifact");
+  const content = String(artifact.content ?? "");
+  const architecture = parseArchitectureArtifact(artifact);
+
+  return (
+    <div className="card p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">{artifactType}</span>
+        <span className="text-sm font-medium text-slate-800">{title}</span>
+        {artifact.version != null && (
+          <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+            v{String(artifact.version)}
+          </span>
+        )}
+      </div>
+
+      {architecture ? (
+        <div className="space-y-3">
+          <CapabilityArchitecturePanel diagram={architecture} compact />
+          <details>
+            <summary className="cursor-pointer text-xs font-semibold text-singularity-700">Original artifact Markdown</summary>
+            <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">
+              {content}
+            </pre>
+          </details>
+        </div>
+      ) : (
+        <div className="whitespace-pre-wrap text-sm leading-6 text-slate-600">{content}</div>
       )}
     </div>
   );
@@ -847,6 +876,66 @@ function CapabilityArchitecturePanel({
       )}
     </section>
   );
+}
+
+function parseArchitectureArtifact(artifact: Record<string, unknown>): Record<string, unknown> | null {
+  if (String(artifact.artifactType ?? "").toUpperCase() !== "ARCHITECTURE_DIAGRAM") return null;
+
+  const content = String(artifact.content ?? "");
+  const mermaidMatch = content.match(/```mermaid\s*([\s\S]*?)```/i);
+  const mermaid = mermaidMatch?.[1]?.trim();
+  if (!mermaid) return null;
+
+  const title = content.match(/^#\s+(.+)$/m)?.[1]?.trim() || String(artifact.title ?? "Capability architecture");
+  const description = content
+    .replace(/^#\s+.+$/m, "")
+    .split(/```mermaid/i)[0]
+    .trim();
+  const layers = parseArchitectureLayers(content);
+  const view = /togaf/i.test(title) || /TOGAF_CAPABILITY_COLLECTION/i.test(content) ? "togaf" : "application";
+
+  return {
+    kind: view === "togaf" ? "TOGAF_CAPABILITY_COLLECTION" : "APPLICATION_CAPABILITY_ARCHITECTURE",
+    view,
+    title,
+    description,
+    layers: layers.length ? layers : fallbackLayersFromMermaid(mermaid, view),
+    mermaid,
+  };
+}
+
+function parseArchitectureLayers(content: string): Array<{ key: string; label: string; items: string[] }> {
+  const layersText = content.split(/^##\s+Layers\s*$/m)[1];
+  if (!layersText) return [];
+  const layers: Array<{ key: string; label: string; items: string[] }> = [];
+  let current: { key: string; label: string; items: string[] } | null = null;
+
+  for (const rawLine of layersText.split("\n")) {
+    const line = rawLine.trim();
+    const heading = line.match(/^###\s+(.+)$/);
+    if (heading) {
+      if (current) layers.push(current);
+      const label = heading[1].trim();
+      current = { key: label.toLowerCase().replace(/[^a-z0-9]+/g, "_"), label, items: [] };
+      continue;
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    if (bullet && current) current.items.push(bullet[1].trim());
+  }
+  if (current) layers.push(current);
+  return layers;
+}
+
+function fallbackLayersFromMermaid(mermaid: string, view: string): Array<{ key: string; label: string; items: string[] }> {
+  const labels = Array.from(mermaid.matchAll(/\w+\[([^\]]+)\]/g))
+    .map(match => match[1].replace(/<br\s*\/?>/gi, " - ").trim())
+    .filter(Boolean);
+  if (labels.length === 0) return [];
+  return labels.map((label, index) => ({
+    key: `layer_${index + 1}`,
+    label: view === "togaf" ? label.split(" - ")[0] : label.split(" - ")[0],
+    items: label.split(" - ").slice(1).filter(Boolean),
+  }));
 }
 
 function AgentRosterTab({

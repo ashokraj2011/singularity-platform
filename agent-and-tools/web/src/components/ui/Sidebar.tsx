@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import {
   LayoutDashboard, Bot, Wrench, Play, Users, BookOpen,
   GitBranch, Layers, ScrollText, ShieldCheck, Activity, Brain,
-  ChevronLeft, ChevronRight, DollarSign,
+  ChevronLeft, ChevronRight, DollarSign, Cpu,
 } from "lucide-react";
 
 const registry = [
@@ -28,8 +28,9 @@ const runtime = [
 ];
 
 const governance = [
-  { label: "Audit",  href: "/audit", icon: ShieldCheck },
-  { label: "Cost",   href: "/cost",  icon: DollarSign },
+  { label: "LLM Settings", href: "/llm-settings", icon: Cpu },
+  { label: "Audit",        href: "/audit",         icon: ShieldCheck },
+  { label: "Cost",         href: "/cost",          icon: DollarSign },
 ];
 
 type ItemDef = { label: string; href: string; icon: typeof LayoutDashboard };

@@ -99,6 +99,11 @@ jobs:
             npx tsc --noEmit
           fi
 
+      - name: contract tests
+        if: matrix.service.name == 'mcp-server' || matrix.service.name == 'prompt-composer'
+        working-directory: ${{ matrix.service.dir }}
+        run: npm run test:contracts --if-present
+
   # ─── Python service (context-fabric) ────────────────────────────────────────
   python-syntax:
     name: python syntax (context-fabric)
@@ -108,6 +113,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: install python lint deps
+        run: python3 -m pip install -r context-fabric/requirements-dev.txt
       - name: compile all .py
         working-directory: context-fabric/services
         run: |
@@ -117,6 +124,9 @@ jobs:
             python3 -m py_compile "$f" || fail=1
           done < <(find . -name "*.py" -not -path "*/.venv/*")
           exit $fail
+      - name: ruff undefined-name check
+        working-directory: context-fabric
+        run: python3 -m ruff check services tests --select F821
 
   context-governance-contract:
     name: context plan + governance contracts
@@ -136,7 +146,11 @@ jobs:
       - name: context-fabric governance unit tests
         env:
           PYTHONPATH: context-fabric/services:context-fabric/shared
-        run: python3 -m pytest context-fabric/tests/test_context_plan_governance.py
+        run: python3 -m pytest context-fabric/tests/test_context_plan_governance.py context-fabric/tests/test_chat_respond_gateway.py
+      - name: llm-gateway hardening tests
+        env:
+          PYTHONPATH: context-fabric
+        run: python3 -m pytest context-fabric/services/llm_gateway_service/tests/test_gateway_hardening.py
 
   # ─── Shell scripts — bin/ + singularity.sh + seed/apply.sh ──────────────────
   shellcheck:

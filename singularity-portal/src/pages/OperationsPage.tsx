@@ -8,7 +8,7 @@ import {
   WifiOff, Zap,
 } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
-import { mcpApi, runtimeApi, workgraphApi } from '@/lib/api'
+import { runtimeApi, workgraphApi } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { env } from '@/lib/env'
 
@@ -244,14 +244,14 @@ export function OperationsPage() {
 
   const modelCatalog = useQuery({
     queryKey: ['mcp', 'models'],
-    queryFn: async () => (await mcpApi.get('/llm/models')).data?.data,
+    queryFn: async () => (await workgraphApi.get('/llm/models')).data?.data,
     retry: 1,
     refetchInterval: 30000,
   })
 
   const providers = useQuery({
     queryKey: ['mcp', 'providers'],
-    queryFn: async () => (await mcpApi.get('/llm/providers')).data?.data,
+    queryFn: async () => (await workgraphApi.get('/llm/providers')).data?.data,
     retry: 1,
     refetchInterval: 30000,
   })

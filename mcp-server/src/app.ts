@@ -55,8 +55,9 @@ app.get("/healthz/strict", async (_req, res) => {
 });
 
 // M11 follow-up — operators can verify which providers are configured
-// (without any key material being returned). Public (no bearer needed).
-app.get("/llm/providers", (_req, res) => {
+// (without any key material being returned). Protected because model/provider
+// posture is operational metadata; keep only health endpoints public.
+app.get("/llm/providers", bearerAuth, (_req, res) => {
   res.json({
     success: true,
     data: {
@@ -69,7 +70,7 @@ app.get("/llm/providers", (_req, res) => {
   });
 });
 
-app.get("/llm/models", (_req, res) => {
+app.get("/llm/models", bearerAuth, (_req, res) => {
   res.json({
     success: true,
     data: modelCatalogResponse(),

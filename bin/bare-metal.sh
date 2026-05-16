@@ -217,6 +217,11 @@ JSON
     && DATABASE_URL="$DATABASE_URL_COMPOSER" npx prisma generate --schema=prisma/schema.prisma >/dev/null 2>&1 ) \
     || warn "prompt-composer owned schema push had warnings"
 
+  info "seeding prompt-composer base prompt profiles…"
+  ( cd agent-and-tools/apps/prompt-composer \
+    && DATABASE_URL="$DATABASE_URL_COMPOSER" npm run seed >/dev/null 2>&1 ) \
+    || warn "prompt-composer seed had warnings"
+
   info "generating composer's runtime-reader client (read-only against singularity)…"
   ( cd agent-and-tools/apps/prompt-composer \
     && DATABASE_URL_RUNTIME_READ="$DATABASE_URL_RUNTIME_READ" npx prisma generate --schema=prisma/runtime-read.prisma >/dev/null 2>&1 ) \

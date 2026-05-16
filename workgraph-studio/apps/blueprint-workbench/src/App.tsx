@@ -46,8 +46,11 @@ import {
   type LoopVerdict,
   type LookupAgent,
   type LookupCapability,
+  type GovernanceMode,
+  type SnapshotMode,
   type SourceType,
   type StageAttempt,
+  type WorkbenchExecutionConfig,
   type WorkflowInstanceDetail,
   type WorkflowInstanceListItem,
 } from './api'
@@ -107,6 +110,7 @@ export default function App() {
   const [activeSection, setActiveSection] = useState<WorkbenchSection>('workflow')
   const [authTick, setAuthTick] = useState(0)
   const [setupOpen, setSetupOpen] = useState(false)
+  const [localCreatedSessionIds, setLocalCreatedSessionIds] = useState<Set<string>>(() => new Set())
   const hasToken = Boolean(getToken())
 
   const sessionsQuery = useQuery({
@@ -115,6 +119,17 @@ export default function App() {
     enabled: hasToken,
   })
   const sessions = sessionsQuery.data?.items ?? []
+  const workflowScoped = Boolean(workflowDefaults.workflowInstanceId && workflowDefaults.workflowNodeId)
+  const visibleSessions = useMemo(() => {
+    if (!workflowScoped) return sessions
+    return sessions.filter(session =>
+      localCreatedSessionIds.has(session.id)
+      || (
+        session.workflowInstanceId === workflowDefaults.workflowInstanceId
+        && session.workflowNodeId === workflowDefaults.workflowNodeId
+      ),
+    )
+  }, [localCreatedSessionIds, sessions, workflowDefaults.workflowInstanceId, workflowDefaults.workflowNodeId, workflowScoped])
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
@@ -132,22 +147,15 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const scopedSessions = workflowDefaults.workflowInstanceId && workflowDefaults.workflowNodeId
-      ? sessions.filter(session =>
-          session.workflowInstanceId === workflowDefaults.workflowInstanceId
-          && session.workflowNodeId === workflowDefaults.workflowNodeId,
-        )
-      : sessions
-    if (workflowDefaults.workflowInstanceId && workflowDefaults.workflowNodeId && scopedSessions.length === 0) {
-      setActiveSession(null)
-      return
-    }
-    if (scopedSessions.length === 0) return
     setActiveSession(current => {
-      if (!current) return scopedSessions[0]
-      return scopedSessions.find(session => session.id === current.id) ?? scopedSessions[0]
+      if (visibleSessions.length === 0) {
+        return current && localCreatedSessionIds.has(current.id) ? current : null
+      }
+      if (!current) return visibleSessions[0]
+      if (localCreatedSessionIds.has(current.id)) return current
+      return visibleSessions.find(session => session.id === current.id) ?? visibleSessions[0]
     })
-  }, [sessions, workflowDefaults.workflowInstanceId, workflowDefaults.workflowNodeId])
+  }, [localCreatedSessionIds, visibleSessions])
 
   const refreshSession = (session: BlueprintSession) => {
     setActiveSession(session)
@@ -177,13 +185,18 @@ export default function App() {
       <section className="loop-shell">
         <SetupDrawer open={setupOpen || !activeSession} onClose={() => setSetupOpen(false)}>
           <WorkbenchSetup
-            sessions={sessions}
+            sessions={visibleSessions}
             activeSession={activeSession}
             onSelect={(session) => {
               setActiveSession(session)
               setSetupOpen(false)
             }}
             onCreated={(session) => {
+              setLocalCreatedSessionIds(current => {
+                const next = new Set(current)
+                next.add(session.id)
+                return next
+              })
               refreshSession(session)
               setSetupOpen(false)
             }}
@@ -320,6 +333,17 @@ function WorkbenchSetup({
   const [loopDefinition, setLoopDefinition] = useState<LoopDefinition | undefined>(workflowDefaults.loopDefinition as LoopDefinition | undefined)
   const [includeGlobs, setIncludeGlobs] = useState('')
   const [excludeGlobs, setExcludeGlobs] = useState('**/node_modules/**,**/dist/**,**/.git/**')
+  const [maxLoopsPerStage, setMaxLoopsPerStage] = useState(workflowDefaults.loopDefinition?.maxLoopsPerStage ?? 3)
+  const [maxTotalSendBacks, setMaxTotalSendBacks] = useState(workflowDefaults.loopDefinition?.maxTotalSendBacks ?? 8)
+  const [snapshotMode, setSnapshotMode] = useState<SnapshotMode>('relevant_excerpts')
+  const [excerptBudgetChars, setExcerptBudgetChars] = useState(18_000)
+  const [reuseUnchangedAttempt, setReuseUnchangedAttempt] = useState(true)
+  const [governanceMode, setGovernanceMode] = useState<GovernanceMode>('fail_open')
+  const [modelAlias, setModelAlias] = useState('')
+  const [maxContextTokens, setMaxContextTokens] = useState(6_000)
+  const [maxOutputTokens, setMaxOutputTokens] = useState(1_200)
+  const [maxPromptChars, setMaxPromptChars] = useState(24_000)
+  const [maxLayerChars, setMaxLayerChars] = useState(2_000)
 
   const workflowInstanceQuery = useQuery({
     queryKey: ['workflowInstanceDefaults', workflowDefaults.workflowInstanceId, workflowDefaults.workflowNodeId],
@@ -358,8 +382,29 @@ function WorkbenchSetup({
     if (hydrated.architectAgentTemplateId) setArchitectAgentTemplateId(current => current || hydrated.architectAgentTemplateId!)
     if (hydrated.developerAgentTemplateId) setDeveloperAgentTemplateId(current => current || hydrated.developerAgentTemplateId!)
     if (hydrated.qaAgentTemplateId) setQaAgentTemplateId(current => current || hydrated.qaAgentTemplateId!)
-    if (hydrated.loopDefinition) setLoopDefinition(current => current ?? hydrated.loopDefinition)
+    if (hydrated.loopDefinition) {
+      setLoopDefinition(current => current ?? hydrated.loopDefinition)
+      if (typeof hydrated.loopDefinition.maxLoopsPerStage === 'number') setMaxLoopsPerStage(hydrated.loopDefinition.maxLoopsPerStage)
+      if (typeof hydrated.loopDefinition.maxTotalSendBacks === 'number') setMaxTotalSendBacks(hydrated.loopDefinition.maxTotalSendBacks)
+    }
   }, [workflowFallbackQuery.data, workflowInstanceQuery.data, workflowDefaults.workflowNodeId])
+
+  useEffect(() => {
+    if (!activeSession) return
+    if (typeof activeSession.loopDefinition?.maxLoopsPerStage === 'number') setMaxLoopsPerStage(activeSession.loopDefinition.maxLoopsPerStage)
+    if (typeof activeSession.loopDefinition?.maxTotalSendBacks === 'number') setMaxTotalSendBacks(activeSession.loopDefinition.maxTotalSendBacks)
+    const config = activeSession.executionConfig ?? activeSession.metadata?.executionConfig
+    if (!config) return
+    if (config.snapshotMode) setSnapshotMode(config.snapshotMode)
+    if (typeof config.excerptBudgetChars === 'number') setExcerptBudgetChars(config.excerptBudgetChars)
+    if (typeof config.reuseUnchangedAttempt === 'boolean') setReuseUnchangedAttempt(config.reuseUnchangedAttempt)
+    if (config.governanceMode) setGovernanceMode(config.governanceMode)
+    setModelAlias(config.modelAlias ?? '')
+    if (typeof config.maxContextTokens === 'number') setMaxContextTokens(config.maxContextTokens)
+    if (typeof config.maxOutputTokens === 'number') setMaxOutputTokens(config.maxOutputTokens)
+    if (typeof config.maxPromptChars === 'number') setMaxPromptChars(config.maxPromptChars)
+    if (typeof config.maxLayerChars === 'number') setMaxLayerChars(config.maxLayerChars)
+  }, [activeSession?.id])
 
   useEffect(() => {
     if (workflowDefaults.capabilityId) {
@@ -380,6 +425,27 @@ function WorkbenchSetup({
   const createMutation = useMutation({
     mutationFn: (body: CreateSessionRequest) => api.createSession(body),
     onSuccess: onCreated,
+  })
+  const settingsMutation = useMutation({
+    mutationFn: (body: WorkbenchExecutionConfig & { maxLoopsPerStage?: number; maxTotalSendBacks?: number }) => {
+      if (!activeSession) throw new Error('Select or start a session before saving settings.')
+      return api.updateSettings(activeSession.id, body)
+    },
+    onSuccess: onCreated,
+  })
+
+  const runtimeSettings = (): WorkbenchExecutionConfig & { maxLoopsPerStage: number; maxTotalSendBacks: number } => ({
+    maxLoopsPerStage,
+    maxTotalSendBacks,
+    snapshotMode,
+    excerptBudgetChars,
+    reuseUnchangedAttempt,
+    governanceMode,
+    modelAlias: modelAlias.trim(),
+    maxContextTokens,
+    maxOutputTokens,
+    maxPromptChars,
+    maxLayerChars,
   })
 
   const loopAgentReady = hasLoopAgentTemplates(loopDefinition)
@@ -492,6 +558,91 @@ function WorkbenchSetup({
         <AgentSelect label="QA" role="qa" agents={agents} value={qaAgentTemplateId} onChange={setQaAgentTemplateId} />
       </div>
 
+      <section className="settings-section" aria-label="Workbench runtime settings">
+        <div className="settings-section-title">
+          <Settings size={15} />
+          <div>
+            <strong>Runtime limits</strong>
+            <span>Controls loops, prompt size, context budget, and model routing for this delivery session.</span>
+          </div>
+        </div>
+        <div className="two-col compact-fields">
+          <label>
+            <span>Max loops / stage</span>
+            <input type="number" min={1} max={50} value={maxLoopsPerStage} onChange={event => setMaxLoopsPerStage(Number(event.target.value) || 1)} />
+          </label>
+          <label>
+            <span>Max send-backs</span>
+            <input type="number" min={0} max={200} value={maxTotalSendBacks} onChange={event => setMaxTotalSendBacks(Number(event.target.value) || 0)} />
+          </label>
+        </div>
+        <div className="two-col compact-fields">
+          <label>
+            <span>Context tokens</span>
+            <input type="number" min={1000} max={200000} step={500} value={maxContextTokens} onChange={event => setMaxContextTokens(Number(event.target.value) || 6000)} />
+          </label>
+          <label>
+            <span>Output tokens</span>
+            <input type="number" min={128} max={32000} step={100} value={maxOutputTokens} onChange={event => setMaxOutputTokens(Number(event.target.value) || 1200)} />
+          </label>
+        </div>
+        <div className="two-col compact-fields">
+          <label>
+            <span>Prompt chars</span>
+            <input type="number" min={2000} max={500000} step={1000} value={maxPromptChars} onChange={event => setMaxPromptChars(Number(event.target.value) || 24000)} />
+          </label>
+          <label>
+            <span>Layer chars</span>
+            <input type="number" min={500} max={100000} step={250} value={maxLayerChars} onChange={event => setMaxLayerChars(Number(event.target.value) || 2000)} />
+          </label>
+        </div>
+        <div className="two-col compact-fields">
+          <label>
+            <span>Snapshot mode</span>
+            <select value={snapshotMode} onChange={event => setSnapshotMode(event.target.value as SnapshotMode)}>
+              <option value="summary">Summary only</option>
+              <option value="relevant_excerpts">Relevant excerpts</option>
+              <option value="full_debug">Full debug</option>
+            </select>
+          </label>
+          <label>
+            <span>Snapshot chars</span>
+            <input type="number" min={2000} max={120000} step={1000} value={excerptBudgetChars} onChange={event => setExcerptBudgetChars(Number(event.target.value) || 18000)} />
+          </label>
+        </div>
+        <div className="two-col compact-fields">
+          <label>
+            <span>Governance</span>
+            <select value={governanceMode} onChange={event => setGovernanceMode(event.target.value as GovernanceMode)}>
+              <option value="fail_open">Fail open</option>
+              <option value="human_approval_required">Human approval</option>
+              <option value="degraded">Degraded only</option>
+              <option value="fail_closed">Fail closed</option>
+            </select>
+          </label>
+          <label>
+            <span>Model alias</span>
+            <input value={modelAlias} onChange={event => setModelAlias(event.target.value)} placeholder="default from MCP" />
+          </label>
+        </div>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={reuseUnchangedAttempt} onChange={event => setReuseUnchangedAttempt(event.target.checked)} />
+          <span>Reuse unchanged stage attempts</span>
+        </label>
+        <p className="muted-hint">Increase “Max loops / stage” when a stage needs more than three review/rework cycles. Lower prompt limits to force smaller, cheaper prompts.</p>
+        {settingsMutation.isError && <p className="error-text">{settingsMutation.error.message}</p>}
+        {settingsMutation.isSuccess && <p className="success-text">Runtime settings saved for this session.</p>}
+        <button
+          className="secondary-action full-width"
+          type="button"
+          disabled={!activeSession || settingsMutation.isPending}
+          onClick={() => settingsMutation.mutate(runtimeSettings())}
+        >
+          {settingsMutation.isPending ? <Loader2 className="spin" size={16} /> : <Settings size={16} />}
+          Save settings for current session
+        </button>
+      </section>
+
       {createMutation.isError && <p className="error-text">{createMutation.error.message}</p>}
       <button
         className="primary-action"
@@ -511,7 +662,10 @@ function WorkbenchSetup({
           workflowInstanceId: workflowDefaults.workflowInstanceId,
           workflowNodeId: workflowDefaults.workflowNodeId,
           phaseId: workflowDefaults.phaseId,
-          loopDefinition,
+          loopDefinition: loopDefinition
+            ? { ...loopDefinition, maxLoopsPerStage, maxTotalSendBacks }
+            : undefined,
+          ...runtimeSettings(),
         })}
       >
         {createMutation.isPending ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
@@ -543,6 +697,8 @@ function LoopWorkbench({
   }, [session?.id, session?.currentStageKey, firstStageKey])
 
   const activeStage = stages.find(stage => stage.key === activeStageKey) ?? stages[0]
+  const activeAttempt = session && activeStage ? attemptsFor(session, activeStage.key).at(-1) : undefined
+  const showTopCodeReview = Boolean(activeStage && activeAttempt && isDeveloperStage(activeStage))
 
   if (!session) {
     return (
@@ -573,6 +729,11 @@ function LoopWorkbench({
   return (
     <>
       <DeliveryCockpit session={session} activeStage={activeStage} onStage={setActiveStageKey} />
+      {showTopCodeReview && activeStage && activeAttempt && (
+        <section className="workbench-code-review-dock" aria-label="Developer code review">
+          <DeveloperCodeReview session={session} stage={activeStage} latest={activeAttempt} layout="wide" />
+        </section>
+      )}
       <section className="control-room-grid">
         <CyclicLoopCanvas session={session} activeStageKey={activeStage?.key ?? null} onStage={setActiveStageKey} onSession={onSession} />
         <StageDetailsPanel session={session} stage={activeStage} onSession={onSession} />
@@ -914,10 +1075,6 @@ function StageDetailsPanel({
         </div>
       )}
 
-      {isDeveloperStage(stage) && latest && (
-        <DeveloperCodeReview session={session} stage={stage} latest={latest} />
-      )}
-
       <div className="question-stack">
         {(stage.questions ?? []).map(question => (
           <section className="question-card" key={question.id}>
@@ -1051,10 +1208,12 @@ function DeveloperCodeReview({
   session,
   stage,
   latest,
+  layout = 'embedded',
 }: {
   session: BlueprintSession
   stage: LoopStage
   latest: StageAttempt
+  layout?: 'embedded' | 'wide'
 }) {
   const [activeFileId, setActiveFileId] = useState<string | null>(null)
   const codeChangesQuery = useQuery({
@@ -1075,13 +1234,13 @@ function DeveloperCodeReview({
   }, [files])
 
   const hasMcpDiff = files.some(file => file.source === 'mcp' && file.hasDiff)
-  const hasArtifactDiff = files.some(file => file.source === 'artifact' && file.hasDiff)
+  const hasAnyCapturedMcp = files.some(file => file.source === 'mcp')
   const status = latest.verdict ? verdictLabels[latest.verdict] : latest.status
   const totals = reviewTotals(files)
   const activeStats = activeFile ? reviewFileStats(activeFile) : { additions: 0, deletions: 0, total: 0 }
 
   return (
-    <section className="code-review-panel">
+    <section className={`code-review-panel ${layout === 'wide' ? 'wide-review' : ''}`}>
       <div className="code-review-header">
         <div>
           <span className="stage-key">Developer approval</span>
@@ -1095,27 +1254,20 @@ function DeveloperCodeReview({
         <span><FileCode2 size={13} /> {files.length} changed file{files.length === 1 ? '' : 's'}</span>
         <span className="stat-add">+{totals.additions}</span>
         <span className="stat-remove">-{totals.deletions}</span>
-        <span>{hasMcpDiff ? 'Live MCP diff captured' : hasArtifactDiff ? 'Workbench diff evidence' : 'Evidence fallback'}</span>
+        <span>{hasMcpDiff ? 'Actual MCP/git diff' : 'No actual diff'}</span>
       </div>
 
       {codeChangesQuery.isError && (
         <p className="code-review-warning">
           <AlertTriangle size={14} />
-          MCP code-change lookup failed; showing generated developer evidence when available.
+          MCP code-change lookup failed. This screen only treats MCP/git records as actual code changes.
         </p>
       )}
 
-      {!hasMcpDiff && hasArtifactDiff && (
-        <p className="code-review-note">
-          <FileCode2 size={14} />
-          Showing the persisted Workbench diff for this attempt. A live MCP diff was not available.
-        </p>
-      )}
-
-      {!hasMcpDiff && !hasArtifactDiff && files.length > 0 && (
+      {hasAnyCapturedMcp && !hasMcpDiff && (
         <p className="code-review-warning">
           <AlertTriangle size={14} />
-          No live MCP diff body was captured for this attempt. This preview is built from developer evidence only.
+          MCP reported a code-change record, but no diff body was available. Review the commit/paths and rerun if a patch is required for approval.
         </p>
       )}
 
@@ -1124,7 +1276,7 @@ function DeveloperCodeReview({
       ) : files.length === 0 ? (
         <div className="code-review-empty">
           <FileCode2 size={18} />
-          <span>No code-change evidence captured yet. Run the developer stage to generate a review packet.</span>
+          <span>No actual MCP/git code change was captured for this attempt. Re-run the Developer stage with a writable MCP workspace and a tool-capable model alias, then approve from the captured diff.</span>
         </div>
       ) : (
         <div className="vscode-review-shell">
@@ -1159,7 +1311,7 @@ function DeveloperCodeReview({
 
             <div className="vscode-editor-toolbar">
               <span>{activeFile?.path}</span>
-              <em>{activeFile?.source === 'mcp' ? 'MCP diff' : 'artifact evidence'}</em>
+              <em>{activeFile?.source === 'mcp' ? 'actual MCP/git diff' : 'proposed artifact patch'}</em>
             </div>
 
             {activeFile?.commitSha && (
@@ -1209,7 +1361,7 @@ function DeveloperCodeReview({
             </ul>
             <div className="review-source-card">
               <span>Source</span>
-              <strong>{hasMcpDiff ? 'Live MCP' : hasArtifactDiff ? 'Workbench artifact' : 'Synthesized evidence'}</strong>
+              <strong>{hasMcpDiff ? 'Actual MCP/git diff' : 'No actual code change'}</strong>
             </div>
           </aside>
         </div>
@@ -1268,12 +1420,9 @@ function diffSign(kind: DiffLineKind) {
 }
 
 function buildReviewFiles(session: BlueprintSession, stageKey: string, changes: CodeChangeRecord[]): ReviewFile[] {
-  const fromMcp = changes.flatMap(change => reviewFilesFromCodeChange(change))
-  if (fromMcp.length > 0) return fromMcp
-
-  return session.artifacts
-    .filter(artifact => artifact.stageKey === stageKey && isCodeReviewArtifact(artifact))
-    .flatMap(artifact => reviewFilesFromArtifact(artifact, session))
+  void session
+  void stageKey
+  return changes.flatMap(change => reviewFilesFromCodeChange(change))
 }
 
 function reviewFilesFromCodeChange(change: CodeChangeRecord): ReviewFile[] {
@@ -1293,133 +1442,6 @@ function reviewFilesFromCodeChange(change: CodeChangeRecord): ReviewFile[] {
   }]
 }
 
-function reviewFilesFromArtifact(artifact: BlueprintArtifact, session: BlueprintSession): ReviewFile[] {
-  const payloadDiff = typeof artifact.payload?.diff === 'string' ? artifact.payload.diff : undefined
-  const payloadPatch = typeof artifact.payload?.patch === 'string' ? artifact.payload.patch : undefined
-  const diff = payloadDiff || payloadPatch || extractDiffFromText(artifact.content ?? '') || synthesizeReviewDiffFromSnapshot(session, artifact)
-  if (diff) {
-    const sections = splitDiffByFile(diff)
-    if (sections.length > 0) {
-      return sections.map((section, index) => ({
-        id: `artifact-${artifact.id}-diff-${index}`,
-        path: section.path,
-        source: 'artifact' as const,
-        status: artifact.consumableStatus ?? 'under_review',
-        additions: countLinesByPrefix(section.body, '+'),
-        deletions: countLinesByPrefix(section.body, '-'),
-        hasDiff: true,
-        diffLines: parseDiffLines(section.body),
-      }))
-    }
-  }
-  const paths = extractArtifactPaths(artifact)
-  const content = artifact.content || JSON.stringify(artifact.payload ?? {}, null, 2)
-  return paths.map((path, index) => ({
-    id: `artifact-${artifact.id}-${index}`,
-    path,
-    source: 'artifact' as const,
-    status: artifact.consumableStatus ?? 'under_review',
-    additions: countLinesByPrefix(content, '+'),
-    deletions: countLinesByPrefix(content, '-'),
-    hasDiff: false,
-    diffLines: parseArtifactEvidence(content, path, artifact),
-  }))
-}
-
-function synthesizeReviewDiffFromSnapshot(session: BlueprintSession, artifact: BlueprintArtifact) {
-  const snapshot = session.snapshots[0]
-  const color = requestedUiColor(session.goal) ?? 'red'
-  const samples = snapshot?.summary?.sampledFiles ?? []
-  const preferred = samples.find(file => /\.(css|scss|sass|less)$/i.test(file.path) && hasUiColorSignal(file.excerpt))
-    ?? samples.find(file => isUiCodePath(file.path) && hasUiColorSignal(file.excerpt))
-    ?? samples.find(file => /\.(css|scss|sass|less)$/i.test(file.path))
-    ?? samples.find(file => isUiCodePath(file.path))
-  const path = preferred?.path
-    ?? extractArtifactPaths(artifact).find(item => isUiCodePath(item))
-    ?? snapshot?.manifest?.find(file => isUiCodePath(file.path))?.path
-    ?? 'src/App.tsx'
-  const excerpt = preferred?.excerpt ?? ''
-  const lines = excerpt.split('\n')
-  for (let index = 0; index < lines.length; index += 1) {
-    const current = lines[index]
-    const next = recolorUiLine(current, color)
-    if (next === current) continue
-    const start = Math.max(0, index - 2)
-    const end = Math.min(lines.length, index + 3)
-    return [
-      `diff --git a/${path} b/${path}`,
-      `--- a/${path}`,
-      `+++ b/${path}`,
-      `@@ -${start + 1},${end - start} +${start + 1},${end - start} @@`,
-      ...lines.slice(start, index).map(line => ` ${line}`),
-      `-${current}`,
-      `+${next}`,
-      ...lines.slice(index + 1, end).map(line => ` ${line}`),
-    ].join('\n')
-  }
-  return [
-    `diff --git a/${path} b/${path}`,
-    `--- a/${path}`,
-    `+++ b/${path}`,
-    '@@ -1,3 +1,7 @@',
-    ' /* existing UI styles */',
-    `+/* Workbench proposed change for: ${session.goal} */`,
-    '+:root {',
-    `+  --singularity-requested-color: ${color};`,
-    '+}',
-  ].join('\n')
-}
-
-function requestedUiColor(goal: string) {
-  const lower = goal.toLowerCase()
-  const direct = lower.match(/\b(?:color|colour|theme|background|bg|text)\s+(?:to|as|into)\s+([a-z]+|#[0-9a-f]{3,8})\b/i)?.[1]
-  if (direct) return direct === 'grey' ? 'gray' : direct
-  return ['red', 'blue', 'green', 'yellow', 'orange', 'purple', 'pink', 'black', 'white', 'gray', 'grey', 'teal', 'cyan', 'indigo']
-    .find(color => lower.includes(color))
-    ?.replace('grey', 'gray')
-}
-
-function isUiCodePath(path: string) {
-  return /\.(tsx|jsx|ts|js|html|css|scss|sass|less)$/i.test(path) && !/(node_modules|dist|build|coverage|\.min\.)/i.test(path)
-}
-
-function hasUiColorSignal(text: string) {
-  return /(className|style=|color:|background|bg-|text-|border-|#[0-9a-f]{3,8}|rgb\()/i.test(text)
-}
-
-function recolorUiLine(line: string, color: string) {
-  if (!hasUiColorSignal(line)) return line
-  return line
-    .replace(/\b(bg|text|border|from|to|via|ring|outline)-(red|blue|green|yellow|orange|purple|pink|gray|grey|slate|zinc|neutral|stone|teal|cyan|indigo)-(\d{2,3})\b/g, (_match, prefix) => `${prefix}-${color}-600`)
-    .replace(/#[0-9a-f]{3,8}\b/gi, color)
-    .replace(/\brgba?\([^)]+\)/gi, color)
-    .replace(/(\b(?:color|background(?:-color)?|border-color|accent-color|fill|stroke)\s*:\s*)([^;"}]+)/gi, `$1${color}`)
-}
-
-function isCodeReviewArtifact(artifact: BlueprintArtifact) {
-  const kind = artifact.kind.toLowerCase()
-  const title = artifact.title.toLowerCase()
-  return kind.includes('code') || kind.includes('developer') || title.includes('code') || title.includes('change')
-}
-
-function extractArtifactPaths(artifact: BlueprintArtifact) {
-  const content = artifact.content ?? ''
-  const payloadPath = typeof artifact.payload?.path === 'string' ? artifact.payload.path : undefined
-  const payloadPaths = Array.isArray(artifact.payload?.paths)
-    ? artifact.payload.paths.filter((item): item is string => typeof item === 'string')
-    : []
-  const fromContent = content
-    .split('\n')
-    .map(line => line.trim())
-    .map(line => {
-      const clean = line.replace(/^[-*]\s+/, '').replace(/^path:\s*/i, '').replace(/^expected_paths:\s*/i, '').trim()
-      return /\.(tsx?|jsx?|py|java|go|rs|css|scss|html|json|ya?ml|md)$/i.test(clean) ? clean : undefined
-    })
-    .filter((item): item is string => Boolean(item))
-  const paths = uniqueStrings([payloadPath, ...payloadPaths, ...fromContent])
-  return paths.length > 0 ? paths : [artifact.title]
-}
-
 function parseDiffLines(body: string): ReviewDiffLine[] {
   const lines = body.split('\n')
   if (lines.length === 0) return [{ kind: 'context', text: 'No diff body captured.' }]
@@ -1428,48 +1450,6 @@ function parseDiffLines(body: string): ReviewDiffLine[] {
     const kind = diffLineKind(line)
     if (kind === 'add' || kind === 'context') displayLine += 1
     return { kind, text: line, lineNo: kind === 'meta' ? undefined : displayLine }
-  })
-}
-
-function parseArtifactEvidence(content: string, path: string, artifact: BlueprintArtifact): ReviewDiffLine[] {
-  const header = [
-    '@@ Workbench developer evidence @@',
-    `+ Artifact: ${artifact.title}`,
-    `+ Review path: ${path}`,
-    artifact.consumableStatus ? `+ Consumable status: ${artifact.consumableStatus}` : '',
-    '',
-  ].filter(Boolean)
-  return parseDiffLines([...header, ...content.split('\n').slice(0, 180)].join('\n'))
-}
-
-function extractDiffFromText(content: string) {
-  const block = content.match(/```(?:diff|patch)\s*([\s\S]*?)```/i)?.[1]?.trim()
-  if (block && (block.includes('diff --git') || block.includes('--- ') || block.includes('@@'))) return block
-  const yamlBlock = content.match(/\ndiff:\s*\|\s*\n([\s\S]*)$/i)?.[1]
-  if (yamlBlock) {
-    const lines = yamlBlock
-      .split('\n')
-      .map(line => line.startsWith('  ') ? line.slice(2) : line)
-      .join('\n')
-      .trim()
-    if (lines.includes('diff --git') || lines.includes('@@')) return lines
-  }
-  const start = content.indexOf('diff --git ')
-  return start >= 0 ? content.slice(start).trim() : undefined
-}
-
-function splitDiffByFile(diff: string): Array<{ path: string; body: string }> {
-  const starts = Array.from(diff.matchAll(/^diff --git\s+a\/\S+\s+b\/([^\n]+)$/gm))
-  if (starts.length === 0) {
-    return [{ path: pathFromDiff(diff) ?? 'developer.patch', body: diff }]
-  }
-  return starts.map((match, index) => {
-    const start = match.index ?? 0
-    const end = index + 1 < starts.length ? starts[index + 1].index ?? diff.length : diff.length
-    return {
-      path: match[1]?.trim() || pathFromDiff(diff.slice(start, end)) || `change-${index + 1}.patch`,
-      body: diff.slice(start, end).trim(),
-    }
   })
 }
 
@@ -1492,10 +1472,6 @@ function fallbackDiffBody(paths: string[], change: CodeChangeRecord) {
     change.tool_name ? `+ Tool: ${change.tool_name}` : '',
     change.commit_sha ? `+ Commit: ${change.commit_sha}` : '',
   ].filter(Boolean).join('\n')
-}
-
-function countLinesByPrefix(content: string, prefix: '+' | '-') {
-  return content.split('\n').filter(line => line.startsWith(prefix) && !line.startsWith(`${prefix}${prefix}${prefix}`)).length
 }
 
 function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintSession; activeStageKey?: string; onSession: (session: BlueprintSession) => void }) {
@@ -1755,10 +1731,6 @@ function capLabel(cap: LookupCapability) {
 
 function csv(value: string) {
   return value.split(',').map(item => item.trim()).filter(Boolean)
-}
-
-function uniqueStrings(values: Array<string | null | undefined>) {
-  return Array.from(new Set(values.map(value => value?.trim()).filter((value): value is string => Boolean(value))))
 }
 
 function hasLoopAgentTemplates(loopDefinition: unknown) {

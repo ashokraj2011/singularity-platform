@@ -38,6 +38,7 @@ import {
   branchNameForWork, finishWorkBranch, prepareWorkBranch, restoreWorkBranch, WorkBranchInfo,
 } from "../workspace/git-workspace";
 import { indexWorkspace, lastAstStats } from "../workspace/ast-index";
+import { ensureWorkspaceSource, WorkspaceSourceStatus } from "../workspace/source-materializer";
 
 const ToolDescSchema = z.object({
   name: z.string(),
@@ -80,6 +81,9 @@ const InvokeSchema = z.object({
     nodeId: z.string().optional(),
     branchBase: z.string().optional(),
     branchName: z.string().optional(),
+    sourceType: z.string().optional(),
+    sourceUri: z.string().optional(),
+    sourceRef: z.string().optional(),
   }).default({}),
   limits: z.object({
     maxSteps: z.number().int().positive().optional(),
@@ -136,6 +140,7 @@ interface LoopState {
     astIndexStatus?: string;
     astIndexedFiles?: number;
     astIndexedSymbols?: number;
+    source?: WorkspaceSourceStatus | null;
   };
   governanceMode: GovernanceMode;
   contextPlanHash?: string;
@@ -676,6 +681,7 @@ async function buildResponseBody(
       astIndexStatus: state.workspace?.astIndexStatus ?? lastAstStats()?.status,
       astIndexedFiles: state.workspace?.astIndexedFiles ?? lastAstStats()?.indexedFiles,
       astIndexedSymbols: state.workspace?.astIndexedSymbols ?? lastAstStats()?.indexedSymbols,
+      source: state.workspace?.source,
     },
   };
 
@@ -721,6 +727,12 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     workItemId: body.runContext.workItemId,
     mcpInvocationId: uuidv4(),
   };
+
+  const source = await ensureWorkspaceSource({
+    sourceType: body.runContext.sourceType,
+    sourceUri: body.runContext.sourceUri,
+    sourceRef: body.runContext.sourceRef,
+  }, correlation);
 
   const branchRequest = {
     workflowInstanceId: body.runContext.workflowInstanceId ?? body.runContext.runId,
@@ -808,6 +820,7 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     toolCallHistory: [],
     workspace: {
       branch,
+      source,
       astIndexStatus: astStats.status,
       astIndexedFiles: astStats.indexedFiles,
       astIndexedSymbols: astStats.indexedSymbols,

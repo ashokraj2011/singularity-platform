@@ -15,6 +15,16 @@ import {
 
 export const workItemsRouter: Router = Router()
 
+const WORK_ITEM_TARGET_STATUSES = [
+  'QUEUED',
+  'CLAIMED',
+  'IN_PROGRESS',
+  'SUBMITTED',
+  'APPROVED',
+  'REWORK_REQUESTED',
+  'CANCELLED',
+] as const
+
 const targetSchema = z.object({
   targetCapabilityId: z.string().min(1),
   childWorkflowTemplateId: z.string().uuid().optional(),
@@ -49,26 +59,43 @@ workItemsRouter.post('/', validate(createSchema), async (req, res, next) => {
 
 workItemsRouter.get('/', async (req, res, next) => {
   try {
-    const { targetCapabilityId, status, mine } = req.query as Record<string, string | undefined>
+    const { targetCapabilityId, status, mine, cursor } = req.query as Record<string, string | undefined>
+    const limit = Math.min(Math.max(Number(req.query.limit ?? 50) || 50, 1), 100)
     const targetWhere: Record<string, unknown> = {}
     if (targetCapabilityId) targetWhere.targetCapabilityId = targetCapabilityId
-    if (status) targetWhere.status = status
+    if (status) {
+      const normalized = status.toUpperCase()
+      if (!WORK_ITEM_TARGET_STATUSES.includes(normalized as (typeof WORK_ITEM_TARGET_STATUSES)[number])) {
+        res.status(400).json({ error: 'INVALID_WORK_ITEM_STATUS', message: `Unknown WorkItem target status: ${status}` })
+        return
+      }
+      targetWhere.status = normalized
+    }
     if (mine === '1' || mine === 'true') targetWhere.claimedById = req.user!.userId
 
-    const items = await prisma.workItem.findMany({
-      where: Object.keys(targetWhere).length > 0 ? { targets: { some: targetWhere } } : undefined,
-      include: {
-        targets: Object.keys(targetWhere).length > 0 ? { where: targetWhere, orderBy: { createdAt: 'asc' } } : { orderBy: { createdAt: 'asc' } },
-        events: { orderBy: { createdAt: 'desc' }, take: 5 },
-      },
-      orderBy: { updatedAt: 'desc' },
-      take: 200,
-    })
     const visible = []
-    for (const item of items) {
-      if (await canViewWorkItem(req.user!.userId, item)) visible.push(item)
+    let nextCursor: string | null = cursor ?? null
+    let exhausted = false
+    while (visible.length < limit && !exhausted) {
+      const items = await prisma.workItem.findMany({
+        where: Object.keys(targetWhere).length > 0 ? { targets: { some: targetWhere } } : undefined,
+        include: {
+          targets: Object.keys(targetWhere).length > 0 ? { where: targetWhere, orderBy: { createdAt: 'asc' } } : { orderBy: { createdAt: 'asc' } },
+          events: { orderBy: { createdAt: 'desc' }, take: 5 },
+        },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        ...(nextCursor ? { cursor: { id: nextCursor }, skip: 1 } : {}),
+        take: Math.min(100, Math.max(limit * 2, 25)),
+      })
+      exhausted = items.length === 0
+      for (const item of items) {
+        nextCursor = item.id
+        if (await canViewWorkItem(req.user!.userId, item)) visible.push(item)
+        if (visible.length >= limit) break
+      }
+      if (items.length < Math.min(100, Math.max(limit * 2, 25))) exhausted = true
     }
-    res.json({ items: visible })
+    res.json({ items: visible, nextCursor: exhausted ? null : nextCursor })
   } catch (err) {
     next(err)
   }

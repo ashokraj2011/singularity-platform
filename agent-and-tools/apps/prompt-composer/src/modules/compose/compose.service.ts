@@ -2,7 +2,7 @@
 // `runtimeReader` reads agent-runtime models on `singularity`.
 import { prisma, runtimeReader } from "../../config/prisma";
 import { logger } from "../../config/logger";
-import { NotFoundError } from "../../shared/errors";
+import { NotFoundError, ValidationError } from "../../shared/errors";
 import { sha256, estimateTokens } from "../../shared/hash";
 import { render as renderMustache } from "../../shared/mustache";
 import { toolServiceClient, DiscoveredTool } from "../../clients/tool-service.client";
@@ -367,6 +367,9 @@ export const composeService = {
       // 3 unrelated artifacts" is very different from "the agent saw 3
       // semantically-matched artifacts".
       recencyFallback: false as boolean,
+      // True when the exact prompt stack was reused from PromptAssembly cache.
+      // This is informational and should not count as an execution warning.
+      promptAssemblyCacheHit: false as boolean,
     };
 
     // Build the substitution context once.
@@ -654,7 +657,7 @@ export const composeService = {
 
     // 6. Artifact context (workgraph passes consumables)
     for (const art of input.artifacts) {
-      const rendered = await this.renderArtifact(art);
+      const rendered = await this.renderArtifact(art, warnings);
       if (!rendered) continue;
       const trimmed = trimText(rendered, budget.maxLayerChars * 2);
       const r = renderMustache(trimmed, ctx); warnings.push(...r.warnings);
@@ -706,11 +709,25 @@ export const composeService = {
     });
     const evidenceRefs = [contextPlanEvidence(contextPlan), ...evidenceChunks];
 
-    // 10. Persist PromptAssembly, reusing an unchanged stack when possible.
-    // The final prompt hash already includes task text, rendered artifacts,
-    // layer content, runtime overrides, and retrieved context.
+    // M28 spine-2 — traceId is the run-evidence spine. Prefer the explicit
+    // value from the caller; fall back to instanceId so legacy callers keep
+    // working until they pass it explicitly.
+    const resolvedTraceId =
+      (input.workflowContext as { traceId?: string }).traceId ??
+      input.workflowContext.instanceId ??
+      null;
+    // 10. Persist PromptAssembly. Workflow-backed calls get their own row
+    // even when the finalPromptHash matches a prior run: evidenceRefs,
+    // traceId, workflowExecutionId, and node correlation are receipt data,
+    // not cacheable content. Preview-only synthetic calls may reuse a row
+    // only when they are clearly not attached to a real workflow trace.
     const requestedModelAlias = input.modelOverrides.modelAlias ?? null;
-    const cachedAssembly = await prisma.promptAssembly.findFirst({
+    const canReusePromptAssembly =
+      input.previewOnly === true &&
+      !resolvedTraceId &&
+      !input.workflowContext.instanceId &&
+      !input.workflowContext.nodeId;
+    const cachedAssembly = canReusePromptAssembly ? await prisma.promptAssembly.findFirst({
       where: {
         agentTemplateId: input.agentTemplateId,
         agentBindingId: input.agentBindingId ?? null,
@@ -720,14 +737,7 @@ export const composeService = {
         modelName: requestedModelAlias,
       },
       orderBy: { createdAt: "desc" },
-    });
-    // M28 spine-2 — traceId is the run-evidence spine. Prefer the explicit
-    // value from the caller; fall back to instanceId so legacy callers keep
-    // working until they pass it explicitly.
-    const resolvedTraceId =
-      (input.workflowContext as { traceId?: string }).traceId ??
-      input.workflowContext.instanceId ??
-      null;
+    }) : null;
 
     const assembly = cachedAssembly ?? await prisma.promptAssembly.create({
       data: {
@@ -756,14 +766,7 @@ export const composeService = {
       },
     });
     if (cachedAssembly) {
-      budgetWarnings.push(`Prompt assembly reused from cache: ${cachedAssembly.id}.`);
-      // Older cached assemblies may predate ContextPlan. Refresh the small
-      // evidenceRefs payload so Run Insights can still show the governance
-      // contract used for this invocation without creating duplicate rows.
-      await prisma.promptAssembly.update({
-        where: { id: cachedAssembly.id },
-        data: { evidenceRefs: evidenceRefs as never },
-      }).catch((err) => logger.warn({ err, promptAssemblyId: cachedAssembly.id }, "failed to refresh cached context plan evidence"));
+      retrievalStats.promptAssemblyCacheHit = true;
     }
 
     const layersUsed = layers.map(l => ({ layerType: l.layerType, priority: l.priority, layerHash: l.layerHash, inclusionReason: l.inclusionReason }));
@@ -773,7 +776,7 @@ export const composeService = {
     // ledger. Fire-and-forget; failures are logged at warn but don't block
     // composition.
     emitAuditEvent({
-      trace_id:       input.workflowContext.instanceId,
+      trace_id:       resolvedTraceId ?? input.workflowContext.instanceId,
       source_service: "prompt-composer",
       kind:           "prompt.assembly.created",
       subject_type:   "PromptAssembly",
@@ -804,6 +807,7 @@ export const composeService = {
     if (input.previewOnly) {
       return {
         promptAssemblyId: assembly.id,
+        traceId: resolvedTraceId ?? input.workflowContext.instanceId,
         promptHash: finalPromptHash,
         estimatedInputTokens: assembly.estimatedInputTokens,
         layersUsed,
@@ -822,7 +826,7 @@ export const composeService = {
     // bypassed so every real LLM-backed agent call uses the governed MCP path.
     const sessionId = `wf:${input.workflowContext.instanceId}:${input.workflowContext.nodeId}`;
     const cfResp = await contextFabricClient.executeRespond({
-      trace_id: input.workflowContext.instanceId,
+      trace_id: resolvedTraceId ?? input.workflowContext.instanceId,
       run_context: {
         workflow_instance_id: input.workflowContext.instanceId || sessionId,
         workflow_node_id: input.workflowContext.nodeId || "compose-and-respond",
@@ -855,6 +859,7 @@ export const composeService = {
 
     return {
       promptAssemblyId: assembly.id,
+      traceId: resolvedTraceId ?? input.workflowContext.instanceId,
       promptHash: finalPromptHash,
       estimatedInputTokens: assembly.estimatedInputTokens,
       layersUsed,
@@ -986,7 +991,7 @@ export const composeService = {
           tool_name: t.tool_name,
           natural_language: t.description,
           risk_level: t.risk_level,
-          requires_approval: false,
+          requires_approval: this.requiresApprovalForDiscoveredTool(t),
         }));
         if (retrievalStats) retrievalStats.toolContractsIncluded += 1;
       }
@@ -1008,14 +1013,25 @@ Risk: ${t.risk_level}${t.requires_approval ? " (requires approval)" : ""}
 Input contract: available to the execution layer; ask for only the fields needed.`;
   },
 
-  async renderArtifact(art: ArtifactInput): Promise<string | null> {
+  requiresApprovalForDiscoveredTool(t: DiscoveredTool): boolean {
+    const explicit = t.requires_approval ?? t.requiresApproval;
+    if (typeof explicit === "boolean") return explicit;
+    const risk = String(t.risk_level ?? "").toLowerCase();
+    return !["low", "medium"].includes(risk);
+  },
+
+  async renderArtifact(art: ArtifactInput, warnings: string[] = []): Promise<string | null> {
     let body: string | null = null;
     if (art.content) body = art.content;
     else if (art.excerpt) body = art.excerpt;
     else if (art.minioRef) {
-      // M4.1: implement MinIO fetch + media-type extraction. For now, log + skip.
-      logger.warn({ minioRef: art.minioRef, label: art.label }, "minioRef fetch not yet implemented; skipping artifact body");
-      body = `[artifact ${art.label}: stored at ${art.minioRef} — fetch not implemented]`;
+      const warning = `Artifact "${art.label}" is stored at ${art.minioRef}, but MinIO fetch is not implemented; artifact body was not injected.`;
+      logger.warn({ minioRef: art.minioRef, label: art.label, role: art.role }, "minioRef fetch not implemented; omitting artifact body");
+      warnings.push(warning);
+      if (art.role === "INPUT") {
+        throw new ValidationError(`Required input artifact "${art.label}" is unavailable from MinIO; pass content/excerpt or enable artifact fetch.`);
+      }
+      return null;
     }
     if (!body) return null;
     const header = `## Artifact: ${art.label} (${art.role}${art.consumableType ? `, ${art.consumableType}` : ""})`;

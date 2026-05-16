@@ -75,6 +75,35 @@ enum EdgeType {
   ERROR_BOUNDARY
 }
 
+enum WorkItemStatus {
+  QUEUED
+  IN_PROGRESS
+  AWAITING_PARENT_APPROVAL
+  COMPLETED
+  CANCELLED
+}
+
+enum WorkItemTargetStatus {
+  QUEUED
+  CLAIMED
+  IN_PROGRESS
+  SUBMITTED
+  APPROVED
+  REWORK_REQUESTED
+  CANCELLED
+}
+
+enum WorkItemEventType {
+  CREATED
+  CLAIMED
+  STARTED
+  SUBMITTED
+  APPROVAL_REQUESTED
+  APPROVED
+  REWORK_REQUESTED
+  CANCELLED
+}
+
 enum NodeStatus {
   PENDING
   ACTIVE
@@ -856,7 +885,7 @@ model WorkItem {
   parentCapabilityId      String?
   sourceWorkflowInstanceId String?
   sourceWorkflowNodeId    String?
-  status                  String           @default("QUEUED")
+  status                  WorkItemStatus   @default(QUEUED)
   input                   Json             @default("{}")
   finalOutput             Json?
   priority                Int              @default(50)
@@ -885,7 +914,7 @@ model WorkItemTarget {
   childWorkflowTemplateId String?
   childWorkflowInstanceId String?
   roleKey                 String?
-  status                  String            @default("QUEUED")
+  status                  WorkItemTargetStatus @default(QUEUED)
   claimedById             String?
   output                  Json?
   claimedAt               DateTime?
@@ -910,7 +939,7 @@ model WorkItemEvent {
   id         String          @id @default(uuid())
   workItemId String
   targetId   String?
-  eventType  String
+  eventType  WorkItemEventType
   actorId    String?
   payload    Json?
   workItem   WorkItem        @relation(fields: [workItemId], references: [id], onDelete: Cascade)

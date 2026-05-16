@@ -13,7 +13,19 @@ export const executionController = {
     return ok(res, await executionService.get(req.params.id));
   },
   async start(req: Request, res: Response) {
-    return ok(res, await executionService.start(req.params.id, req.body));
+    return res.status(410).json({
+      success: false,
+      data: null,
+      error: {
+        code: "DIRECT_RUNTIME_RETIRED",
+        message: "Direct agent-runtime execution is retired. Start agent work through Workgraph AGENT_TASK so Prompt Composer, Context Fabric, MCP, budgets, approvals, and receipts are enforced.",
+        details: {
+          executionId: req.params.id,
+          successor: "Workgraph workflow execution",
+        },
+      },
+      requestId: res.locals.requestId ?? null,
+    });
   },
   async getReceipt(req: Request, res: Response) {
     return ok(res, await executionService.getReceipt(req.params.id));

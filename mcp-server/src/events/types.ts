@@ -22,6 +22,7 @@ export type EventKind =
   | "approval.wait.resolved"
   | "code_change.detected"
   | "workspace.branch.created"
+  | "workspace.source.checked_out"
   | "workspace.ast.indexed"
   | "workspace.ast.updated"
   | "git.session.updated"

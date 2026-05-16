@@ -21,9 +21,19 @@ const EXECUTE_MANIFEST_MAX_FILES = 120
 const EXECUTE_EXCERPT_MAX_FILES = 8
 const EXECUTE_EXCERPT_MAX_CHARS = 4_000
 const EXECUTE_EXCERPT_BUDGET_CHARS = 18_000
+const COMPOSER_ARTIFACT_CONTENT_MAX_CHARS = 11_500
 const WORKBENCH_DEFAULT_MODEL_ALIAS = process.env.WORKBENCH_DEFAULT_MODEL_ALIAS?.trim() || undefined
 const GOVERNANCE_MODES = ['fail_open', 'fail_closed', 'degraded', 'human_approval_required'] as const
 type GovernanceMode = typeof GOVERNANCE_MODES[number]
+const DEFAULT_WORKBENCH_EXECUTION_CONFIG = {
+  snapshotMode: 'relevant_excerpts' as const,
+  excerptBudgetChars: EXECUTE_EXCERPT_BUDGET_CHARS,
+  reuseUnchangedAttempt: true,
+  maxContextTokens: 6_000,
+  maxOutputTokens: 1_200,
+  maxPromptChars: 24_000,
+  maxLayerChars: 2_000,
+}
 
 const DEFAULT_EXCLUDES = new Set([
   '.git', 'node_modules', 'dist', 'build', '.next', '.turbo', '.cache',
@@ -34,6 +44,23 @@ const optionalUuid = z.preprocess(
   value => value === '' || value === null ? undefined : value,
   z.string().uuid().optional(),
 )
+
+const executionSettingsSchema = z.object({
+  maxLoopsPerStage: z.number().int().min(1).max(50).optional(),
+  maxTotalSendBacks: z.number().int().min(0).max(200).optional(),
+  snapshotMode: z.enum(['summary', 'relevant_excerpts', 'full_debug']).optional(),
+  excerptBudgetChars: z.number().int().min(2_000).max(120_000).optional(),
+  reuseUnchangedAttempt: z.boolean().optional(),
+  governanceMode: z.enum(GOVERNANCE_MODES).optional(),
+  modelAlias: z.preprocess(
+    value => value === '' || value === null ? null : value,
+    z.string().trim().min(1).max(80).nullable().optional(),
+  ),
+  maxContextTokens: z.number().int().min(1_000).max(200_000).optional(),
+  maxOutputTokens: z.number().int().min(128).max(32_000).optional(),
+  maxPromptChars: z.number().int().min(2_000).max(500_000).optional(),
+  maxLayerChars: z.number().int().min(500).max(100_000).optional(),
+})
 
 const createSessionSchema = z.object({
   goal: z.string().min(8),
@@ -51,11 +78,14 @@ const createSessionSchema = z.object({
   phaseId: z.string().optional(),
   loopDefinition: z.unknown().optional(),
   gateMode: z.enum(['manual', 'auto']).default('manual'),
-  snapshotMode: z.enum(['summary', 'relevant_excerpts', 'full_debug']).default('relevant_excerpts'),
-  excerptBudgetChars: z.number().int().min(2_000).max(120_000).optional(),
-  reuseUnchangedAttempt: z.boolean().default(true),
-  governanceMode: z.enum(GOVERNANCE_MODES).optional(),
-  modelAlias: z.string().min(1).max(80).optional(),
+}).merge(executionSettingsSchema).transform(input => ({
+  ...input,
+  snapshotMode: input.snapshotMode ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.snapshotMode,
+  reuseUnchangedAttempt: input.reuseUnchangedAttempt ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.reuseUnchangedAttempt,
+}))
+
+const updateSessionSettingsSchema = executionSettingsSchema.refine(input => Object.keys(input).length > 0, {
+  message: 'At least one setting is required',
 })
 
 const decisionAnswerSchema = z.object({
@@ -94,6 +124,7 @@ const sendBackSchema = z.object({
 })
 
 type CreateSessionInput = z.infer<typeof createSessionSchema>
+type UpdateSessionSettingsInput = z.infer<typeof updateSessionSettingsSchema>
 type DecisionAnswer = z.infer<typeof decisionAnswerSchema> & { updatedAt?: string; updatedById?: string }
 type LoopAgentRole = string
 type LoopVerdict = 'PASS' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_RISK'
@@ -184,10 +215,11 @@ type WorkbenchConsumableRef = {
 }
 
 type WorkflowLinkWarning = {
-  reason: 'workflow_instance_not_found' | 'workflow_node_not_found'
+  reason: 'workflow_instance_not_found' | 'workflow_node_not_found' | 'workflow_link_repaired'
   message: string
   workflowInstanceId?: string
   workflowNodeId?: string
+  originalWorkflowInstanceId?: string
   suggestedFix: string
 }
 
@@ -239,6 +271,10 @@ type LoopState = {
     reuseUnchangedAttempt?: boolean
     modelAlias?: string
     governanceMode?: 'fail_open' | 'fail_closed' | 'degraded' | 'human_approval_required'
+    maxContextTokens?: number
+    maxOutputTokens?: number
+    maxPromptChars?: number
+    maxLayerChars?: number
   }
 }
 
@@ -279,9 +315,11 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
   try {
     const body = req.body as CreateSessionInput
     const workflowLink = await resolveWorkflowLink(body.workflowInstanceId, body.workflowNodeId)
-    const initialLoopDefinition = normalizeLoopDefinition(body.loopDefinition, body)
+    const initialLoopDefinition = applyLoopLimitSettings(normalizeLoopDefinition(body.loopDefinition, body), body)
+    const resolvedWorkflowInstanceId = workflowLink.workflowInstanceId ?? null
+    const resolvedWorkflowNodeId = resolvedWorkflowInstanceId ? workflowLink.workflowNodeId : undefined
     const governanceMode = body.governanceMode
-      ?? await resolveWorkbenchGovernanceMode(workflowLink.workflowInstanceId ?? body.workflowInstanceId)
+      ?? await resolveWorkbenchGovernanceMode(resolvedWorkflowInstanceId)
     const agentTemplateIds = resolveSessionAgentTemplateIds(body, initialLoopDefinition)
     const loopDefinition = hydrateLoopAgentTemplates(initialLoopDefinition, agentTemplateIds)
     const now = new Date().toISOString()
@@ -292,7 +330,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
       message: `Workbench session created with ${loopDefinition.stages.length} loop stages.`,
       actorId: req.user!.userId,
       createdAt: now,
-      payload: { gateMode: body.gateMode, workflowNodeId: workflowLink.workflowNodeId ?? body.workflowNodeId },
+      payload: { gateMode: body.gateMode, workflowNodeId: resolvedWorkflowNodeId },
     }]
     if (workflowLink.warning) {
       reviewEvents.push({
@@ -306,7 +344,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
       })
     }
     const initialLoopState: LoopState = {
-      workflowNodeId: workflowLink.workflowNodeId ?? body.workflowNodeId,
+      workflowNodeId: resolvedWorkflowNodeId,
       gateMode: body.gateMode,
       loopDefinition,
       currentStageKey: loopDefinition.stages[0]?.key ?? null,
@@ -315,10 +353,14 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
       reviewEvents,
       executionConfig: {
         snapshotMode: body.snapshotMode,
-        excerptBudgetChars: body.excerptBudgetChars ?? EXECUTE_EXCERPT_BUDGET_CHARS,
+        excerptBudgetChars: body.excerptBudgetChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.excerptBudgetChars,
         reuseUnchangedAttempt: body.reuseUnchangedAttempt,
         governanceMode,
         modelAlias: body.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS,
+        maxContextTokens: body.maxContextTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxContextTokens,
+        maxOutputTokens: body.maxOutputTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxOutputTokens,
+        maxPromptChars: body.maxPromptChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxPromptChars,
+        maxLayerChars: body.maxLayerChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxLayerChars,
       },
     }
     const session = await prisma.blueprintSession.create({
@@ -333,7 +375,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         architectAgentTemplateId: agentTemplateIds.architectAgentTemplateId,
         developerAgentTemplateId: agentTemplateIds.developerAgentTemplateId,
         qaAgentTemplateId: agentTemplateIds.qaAgentTemplateId,
-        workflowInstanceId: body.workflowInstanceId ?? null,
+        workflowInstanceId: resolvedWorkflowInstanceId,
         phaseId: body.phaseId ?? null,
         metadata: initialLoopState as unknown as Prisma.InputJsonValue,
         createdById: req.user!.userId,
@@ -343,7 +385,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
       capabilityId: session.capabilityId,
       sourceType: session.sourceType,
       workflowInstanceId: session.workflowInstanceId,
-      workflowNodeId: workflowLink.workflowNodeId ?? body.workflowNodeId,
+      workflowNodeId: resolvedWorkflowNodeId,
       workflowLinkWarning: workflowLink.warning,
     })
     res.status(201).json(await loadSession(session.id, req.user!.userId))
@@ -353,6 +395,66 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
 blueprintRouter.get('/sessions/:id', async (req, res, next) => {
   try {
     res.json(await loadSession(req.params.id, req.user!.userId))
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.patch('/sessions/:id/settings', validate(updateSessionSettingsSchema), async (req, res, next) => {
+  try {
+    const body = req.body as UpdateSessionSettingsInput
+    const sessionId = String(req.params.id)
+    const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
+    if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+    assertBlueprintAccess(session, req.user!.userId)
+
+    const state = readLoopState(session)
+    const nextLoopDefinition = applyLoopLimitSettings(state.loopDefinition, body)
+    const nextExecutionConfig: LoopState['executionConfig'] = {
+      ...(state.executionConfig ?? {}),
+      ...(body.snapshotMode !== undefined ? { snapshotMode: body.snapshotMode } : {}),
+      ...(body.excerptBudgetChars !== undefined ? { excerptBudgetChars: body.excerptBudgetChars } : {}),
+      ...(body.reuseUnchangedAttempt !== undefined ? { reuseUnchangedAttempt: body.reuseUnchangedAttempt } : {}),
+      ...(body.governanceMode !== undefined ? { governanceMode: body.governanceMode } : {}),
+      ...(body.maxContextTokens !== undefined ? { maxContextTokens: body.maxContextTokens } : {}),
+      ...(body.maxOutputTokens !== undefined ? { maxOutputTokens: body.maxOutputTokens } : {}),
+      ...(body.maxPromptChars !== undefined ? { maxPromptChars: body.maxPromptChars } : {}),
+      ...(body.maxLayerChars !== undefined ? { maxLayerChars: body.maxLayerChars } : {}),
+    }
+    if (body.modelAlias !== undefined) {
+      if (body.modelAlias === null) delete nextExecutionConfig.modelAlias
+      else nextExecutionConfig.modelAlias = body.modelAlias
+    }
+    const nextState: LoopState = {
+      ...state,
+      loopDefinition: nextLoopDefinition,
+      executionConfig: nextExecutionConfig,
+      reviewEvents: [
+        ...state.reviewEvents,
+        {
+          id: crypto.randomUUID(),
+          type: 'SETTINGS_UPDATED',
+          stageKey: state.currentStageKey ?? undefined,
+          message: 'Workbench runtime settings were updated.',
+          actorId: req.user!.userId,
+          payload: {
+            maxLoopsPerStage: nextLoopDefinition.maxLoopsPerStage,
+            maxTotalSendBacks: nextLoopDefinition.maxTotalSendBacks,
+            executionConfig: nextExecutionConfig,
+          },
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    }
+    await prisma.blueprintSession.update({
+      where: { id: session.id },
+      data: { metadata: stateToMetadata(session, nextState) },
+    })
+    await recordBlueprintAudit(session.id, 'BlueprintSessionSettingsUpdated', req.user!.userId, {
+      capabilityId: session.capabilityId,
+      maxLoopsPerStage: nextLoopDefinition.maxLoopsPerStage,
+      maxTotalSendBacks: nextLoopDefinition.maxTotalSendBacks,
+      executionConfig: nextExecutionConfig,
+    })
+    res.json(await loadSession(session.id, req.user!.userId))
   } catch (err) { next(err) }
 })
 
@@ -798,6 +900,26 @@ async function resolveWorkflowLink(
       : { id: true },
   })
   if (!instance) {
+    if (nodeId) {
+      const node = await prisma.workflowNode.findUnique({
+        where: { id: nodeId },
+        select: { id: true, instanceId: true },
+      })
+      if (node) {
+        return {
+          workflowInstanceId: node.instanceId,
+          workflowNodeId: node.id,
+          warning: {
+            reason: 'workflow_link_repaired',
+            message: `Workflow run ${instanceId} was not found, but node ${nodeId} belongs to active run ${node.instanceId}. Workbench relinked to that run so workflow consumables can still be published.`,
+            workflowInstanceId: node.instanceId,
+            workflowNodeId: node.id,
+            originalWorkflowInstanceId: instanceId,
+            suggestedFix: 'Refresh the Workbench URL from the active workflow run to remove the stale workflowInstanceId.',
+          },
+        }
+      }
+    }
     return {
       workflowNodeId: undefined,
       warning: {
@@ -915,6 +1037,30 @@ function readExecutionConfig(value: unknown): LoopState['executionConfig'] {
     governanceMode: ['fail_open', 'fail_closed', 'degraded', 'human_approval_required'].includes(String(value.governanceMode))
       ? value.governanceMode as NonNullable<LoopState['executionConfig']>['governanceMode']
       : 'fail_open',
+    maxContextTokens: typeof value.maxContextTokens === 'number' ? value.maxContextTokens : undefined,
+    maxOutputTokens: typeof value.maxOutputTokens === 'number' ? value.maxOutputTokens : undefined,
+    maxPromptChars: typeof value.maxPromptChars === 'number' ? value.maxPromptChars : undefined,
+    maxLayerChars: typeof value.maxLayerChars === 'number' ? value.maxLayerChars : undefined,
+  }
+}
+
+function workbenchExecutionLimits(executionConfig: LoopState['executionConfig']) {
+  return {
+    maxContextTokens: executionConfig?.maxContextTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxContextTokens,
+    maxOutputTokens: executionConfig?.maxOutputTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxOutputTokens,
+    maxPromptChars: executionConfig?.maxPromptChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxPromptChars,
+    maxLayerChars: executionConfig?.maxLayerChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxLayerChars,
+  }
+}
+
+function applyLoopLimitSettings(
+  loopDefinition: LoopDefinition,
+  input: { maxLoopsPerStage?: number; maxTotalSendBacks?: number },
+): LoopDefinition {
+  return {
+    ...loopDefinition,
+    maxLoopsPerStage: input.maxLoopsPerStage ?? loopDefinition.maxLoopsPerStage,
+    maxTotalSendBacks: input.maxTotalSendBacks ?? loopDefinition.maxTotalSendBacks,
   }
 }
 
@@ -1210,6 +1356,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
       attempt.inputSignature === inputSignature &&
       attempt.status !== 'RUNNING' &&
       attempt.status !== 'FAILED' &&
+      (!normalizeAgentRole(stage.agentRole).includes('DEV') || ((attempt.correlation?.codeChangeIds as unknown[])?.length ?? 0) > 0) &&
       (attempt.artifactIds?.length ?? 0) > 0,
     )
   if (reusable) {
@@ -1280,7 +1427,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   })
 
   try {
-    const result = await runLoopStageExecute(session, snapshot, stage, attempt.agentTemplateId, task)
+    const result = await runLoopStageExecute(session, snapshot, stage, attempt, task)
     await recordBlueprintBudgetUsage(session, result, stage.key, readLoopState(session).workflowNodeId)
     const completedAt = new Date().toISOString()
     const gateRecommendation = buildGateRecommendation(result, stage)
@@ -1642,12 +1789,15 @@ async function runLoopStageExecute(
   session: Awaited<ReturnType<typeof prisma.blueprintSession.findUnique>> & { id: string },
   snapshot: { id?: string; summary: Prisma.JsonValue; manifest: Prisma.JsonValue; rootHash: string | null },
   stage: LoopStageDefinition,
-  agentTemplateId: string,
+  attempt: StageAttempt,
   task: string,
 ): Promise<ExecuteResponse> {
   const traceId = `blueprint-${session.id}-${stage.key}`
   const executionConfig = readLoopState(session).executionConfig
   const modelAlias = executionConfig?.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS
+  const limits = workbenchExecutionLimits(executionConfig)
+  const isDeveloperStage = normalizeAgentRole(stage.agentRole).includes('DEV')
+  const agentTemplateId = attempt.agentTemplateId
   const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
     stageKey: stage.key,
     stageLabel: stage.label,
@@ -1661,10 +1811,16 @@ async function runLoopStageExecute(
     run_context: {
       workflow_instance_id: session.workflowInstanceId ?? `blueprint-${session.id}`,
       workflow_node_id: readLoopState(session).workflowNodeId ?? session.phaseId ?? `blueprint-${stage.key}`,
+      agent_run_id: isDeveloperStage ? attempt.id : undefined,
       capability_id: session.capabilityId,
       agent_template_id: agentTemplateId,
       user_id: session.createdById ?? undefined,
       trace_id: traceId,
+      branch_base: isDeveloperStage ? session.sourceRef ?? undefined : undefined,
+      branch_name: isDeveloperStage ? workbenchBranchName(session, stage, attempt) : undefined,
+      source_type: isDeveloperStage ? session.sourceType.toLowerCase() : undefined,
+      source_uri: isDeveloperStage ? session.sourceUri : undefined,
+      source_ref: isDeveloperStage ? session.sourceRef ?? undefined : undefined,
     },
     task,
     vars: {
@@ -1681,39 +1837,63 @@ async function runLoopStageExecute(
         label: 'Source snapshot',
         role: 'CONTEXT',
         mediaType: 'application/json',
-        content: JSON.stringify(snapshotArtifact, null, 2),
+        content: encodeComposerArtifactContent(snapshotArtifact),
       },
     ],
     overrides: {
       systemPromptAppend: loopStageSystemPrompt(stage),
-      extraContext: 'This workbench is read-only. Produce implementation guidance, QA proof, and reviewable artifacts without mutating source files.',
+      extraContext: isDeveloperStage
+        ? [
+            'Developer stage execution policy:',
+            '- Prefer actual MCP local code tools over narrative-only output.',
+            '- First verify the writable MCP workspace matches the requested source/repository before mutating files.',
+            '- Use AST/search/read tools to locate the correct Java/source files, then use write_file/apply_patch/git_commit/finish_work_branch to create a real captured diff.',
+            '- Do not fabricate changed files or patch text. If the writable workspace is missing or does not match the source, say that no actual code change was captured.',
+            `Requested source: ${session.sourceType} ${session.sourceUri}${session.sourceRef ? ` @ ${session.sourceRef}` : ''}`,
+          ].join('\n')
+        : 'Produce governed workbench artifacts and evidence. Do not mutate source files unless this is the Developer stage with a verified writable MCP workspace.',
     },
     model_overrides: {
       ...(modelAlias ? { modelAlias } : {}),
       temperature: 0.2,
-      maxOutputTokens: 1200,
+      maxOutputTokens: limits.maxOutputTokens,
     },
     context_policy: {
       optimizationMode: 'code_aware',
-      maxContextTokens: 6000,
+      maxContextTokens: limits.maxContextTokens,
       compareWithRaw: false,
       knowledgeTopK: 4,
       memoryTopK: 2,
       codeTopK: 5,
-      maxLayerChars: 2000,
-      maxPromptChars: 24_000,
+      maxLayerChars: limits.maxLayerChars,
+      maxPromptChars: limits.maxPromptChars,
     },
     limits: {
       maxSteps: 8,
       timeoutSec: 180,
-      inputTokenBudget: 6000,
-      outputTokenBudget: 1200,
+      inputTokenBudget: limits.maxContextTokens,
+      outputTokenBudget: limits.maxOutputTokens,
       maxHistoryMessages: 4,
       maxToolResultChars: 8000,
-      maxPromptChars: 24_000,
+      maxPromptChars: limits.maxPromptChars,
     },
+    allow_autonomous_mutation: isDeveloperStage,
     governance_mode: executionConfig?.governanceMode ?? 'fail_open',
   })
+}
+
+function workbenchBranchName(
+  session: { id: string; workflowInstanceId?: string | null },
+  stage: { key: string },
+  attempt: { id: string; attemptNumber: number },
+) {
+  const base = session.workflowInstanceId ?? `blueprint-${session.id}`
+  const raw = `sg/${base}/${stage.key}/${attempt.attemptNumber}-${attempt.id.slice(0, 8)}`
+  return raw
+    .replace(/[^a-zA-Z0-9._/-]+/g, '-')
+    .replace(/\/+/g, '/')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 180)
 }
 
 async function createLoopStageArtifacts(
@@ -1727,6 +1907,7 @@ async function createLoopStageArtifacts(
 ): Promise<string[]> {
   const ctx = buildSnapshotContext(snapshot)
   const response = isUsefulModelResponse(result.finalResponse) ? result.finalResponse ?? '' : ''
+  const executionFallback = buildExecutionFallbackMarkdown(result)
   const commonPayload = {
     workflowInstanceId: session.workflowInstanceId ?? undefined,
     workflowNodeId: readLoopState(session).workflowNodeId ?? undefined,
@@ -1748,7 +1929,7 @@ async function createLoopStageArtifacts(
     metrics: result.metrics ?? {},
     warnings: result.warnings ?? [],
   }
-  const baseContent = buildLoopStageMarkdown(session, ctx, stage, attempt, response, gateRecommendation)
+  const baseContent = buildLoopStageMarkdown(session, ctx, stage, attempt, response, gateRecommendation, executionFallback)
   const specs: Array<{ kind: string; title: string; content: string; payload?: Record<string, unknown> }> = [
     {
       kind: `loop_${stage.key}_attempt`,
@@ -1760,7 +1941,7 @@ async function createLoopStageArtifacts(
     specs.push(...(stage.expectedArtifacts ?? []).map(artifact => ({
       kind: artifact.kind,
       title: `${artifact.title} v${attempt.attemptNumber}`,
-      content: buildConfiguredArtifactMarkdown(session, ctx, stage, attempt, response, gateRecommendation, artifact),
+      content: buildConfiguredArtifactMarkdown(session, ctx, stage, attempt, response, executionFallback, gateRecommendation, artifact),
       payload: {
         expectedArtifact: artifact,
         artifactRequired: artifact.required !== false,
@@ -1831,12 +2012,49 @@ async function createLoopStageArtifacts(
   return artifactIds
 }
 
+function buildExecutionFallbackMarkdown(result: ExecuteResponse) {
+  const warnings = (result.warnings ?? []).filter(Boolean)
+  const modelAlias = result.modelUsage?.modelAlias ?? result.usage?.modelAlias ?? result.correlation.modelAlias
+  const provider = result.modelUsage?.provider ?? result.usage?.provider
+  const model = result.modelUsage?.model ?? result.usage?.model
+  const estimatedCost = result.modelUsage?.estimatedCost ?? result.usage?.estimatedCost
+  const inputTokens = result.tokensUsed?.input ?? result.modelUsage?.inputTokens ?? result.usage?.inputTokens
+  const outputTokens = result.tokensUsed?.output ?? result.modelUsage?.outputTokens ?? result.usage?.outputTokens
+  const totalTokens = result.tokensUsed?.total ?? result.modelUsage?.totalTokens ?? result.usage?.totalTokens
+  const lines = [
+    'No model-authored narrative was returned for this stage. The artifact was generated from the source snapshot, gate evidence, and execution receipt below.',
+    '',
+    '### Execution receipt',
+    `- Status: ${result.status || 'unknown'}`,
+    result.finishReason ? `- Finish reason: ${result.finishReason}` : undefined,
+    result.blockedReason ? `- Blocked reason: ${result.blockedReason}` : undefined,
+    result.governanceMode || result.executionPosture
+      ? `- Governance: ${[result.governanceMode, result.executionPosture].filter(Boolean).join(' / ')}`
+      : undefined,
+    modelAlias ? `- Model alias: ${modelAlias}` : undefined,
+    provider || model ? `- Resolved model: ${[provider, model].filter(Boolean).join(' / ')}` : undefined,
+    totalTokens != null ? `- Tokens: input=${inputTokens ?? 0}, output=${outputTokens ?? 0}, total=${totalTokens ?? 0}` : undefined,
+    estimatedCost != null ? `- Estimated cost: ${estimatedCost}` : undefined,
+    '',
+    '### Correlation',
+    result.correlation.cfCallId ? `- Context Fabric call: ${result.correlation.cfCallId}` : undefined,
+    result.correlation.promptAssemblyId ? `- Prompt assembly: ${result.correlation.promptAssemblyId}` : undefined,
+    result.correlation.mcpInvocationId ? `- MCP invocation: ${result.correlation.mcpInvocationId}` : undefined,
+    result.correlation.contextPlanHash ? `- Context plan hash: ${result.correlation.contextPlanHash}` : result.contextPlanHash ? `- Context plan hash: ${result.contextPlanHash}` : undefined,
+    '',
+    warnings.length ? '### Warnings' : undefined,
+    ...warnings.map(warning => `- ${warning}`),
+  ].filter(Boolean)
+  return lines.join('\n')
+}
+
 function buildConfiguredArtifactMarkdown(
   session: ArtifactSession,
   ctx: SnapshotContext,
   stage: LoopStageDefinition,
   attempt: StageAttempt,
   response: string,
+  executionFallback: string,
   gate: GateRecommendation,
   artifact: LoopExpectedArtifact,
 ) {
@@ -1851,7 +2069,7 @@ function buildConfiguredArtifactMarkdown(
     '',
     artifact.description ? `## Artifact intent\n${artifact.description}` : undefined,
     '## Workbench output',
-    response || 'The execution layer did not return a detailed response; use the generated snapshot context and gate evidence below.',
+    response || executionFallback,
     '',
     '## Gate recommendation',
     `- Verdict: ${gate.verdict}`,
@@ -1918,7 +2136,7 @@ function loopStageSystemPrompt(stage: LoopStageDefinition): string {
       : 'This stage may proceed without human approval if policy allows.',
     'When uncertain, ask targeted questions and preserve traceability to files, requirements, and tests.',
     normalizeAgentRole(stage.agentRole).includes('DEV')
-      ? 'Do not write source files. Produce a proposed implementation pack and simulated code-change evidence.'
+      ? 'When a writable MCP workspace is available and matches the requested source, make the implementation with MCP code tools and commit locally so the approval view receives an actual diff. If no writable workspace is available, state that no actual code change was captured; do not fabricate a diff.'
       : normalizeAgentRole(stage.agentRole).includes('QA') || normalizeAgentRole(stage.agentRole).includes('TEST') || normalizeAgentRole(stage.agentRole).includes('VERIFY')
         ? 'Focus on verification, regressions, acceptance criteria, and certification proof.'
         : 'Focus on architecture, planning, constraints, and design decisions.',
@@ -1956,6 +2174,7 @@ function buildStageInputSignature(
     taskHash: sha256(task),
     accepted,
     answers,
+    executionConfig: state.executionConfig,
   }))
 }
 
@@ -2003,6 +2222,68 @@ function buildSnapshotExecuteArtifact(
     estimatedChars: JSON.stringify({ compactSummary, compactManifest, relevantExcerpts }).length,
     guidance: 'Use the snapshotId/rootHash as the stable source reference. Ask for more context only when these excerpts are insufficient.',
   }
+}
+
+function encodeComposerArtifactContent(snapshotArtifact: Record<string, unknown>): string {
+  const compact = JSON.stringify(snapshotArtifact)
+  if (compact.length <= COMPOSER_ARTIFACT_CONTENT_MAX_CHARS) return compact
+
+  const clone = JSON.parse(compact) as Record<string, unknown>
+  const excerpts = Array.isArray(clone.relevantExcerpts)
+    ? clone.relevantExcerpts.filter((item): item is Record<string, unknown> => isRecord(item))
+    : []
+
+  if (excerpts.length > 0) {
+    let excerptChars = Math.max(180, Math.floor(7_000 / excerpts.length))
+    while (excerptChars >= 120) {
+      clone.relevantExcerpts = excerpts.map(item => ({
+        path: item.path,
+        score: item.score,
+        excerpt: String(item.excerpt ?? '').slice(0, excerptChars),
+      }))
+      const encoded = JSON.stringify({
+        ...clone,
+        artifactEncoding: {
+          compactedForPromptComposer: true,
+          maxChars: COMPOSER_ARTIFACT_CONTENT_MAX_CHARS,
+          excerptCharsPerFile: excerptChars,
+        },
+      })
+      if (encoded.length <= COMPOSER_ARTIFACT_CONTENT_MAX_CHARS) return encoded
+      excerptChars = Math.floor(excerptChars * 0.7)
+    }
+  }
+
+  const manifest = Array.isArray(clone.compactManifest) ? clone.compactManifest : []
+  const encoded = JSON.stringify({
+    snapshotId: clone.snapshotId,
+    rootHash: clone.rootHash,
+    snapshotMode: clone.snapshotMode,
+    compactSummary: clone.compactSummary,
+    compactManifest: manifest.slice(0, 40),
+    manifestTruncated: true,
+    relevantExcerpts: [],
+    artifactEncoding: {
+      compactedForPromptComposer: true,
+      maxChars: COMPOSER_ARTIFACT_CONTENT_MAX_CHARS,
+      reason: 'Snapshot exceeded Prompt Composer artifact.content limit.',
+    },
+    guidance: clone.guidance,
+  })
+  return encoded.length <= COMPOSER_ARTIFACT_CONTENT_MAX_CHARS
+    ? encoded
+    : JSON.stringify({
+        snapshotId: clone.snapshotId,
+        rootHash: clone.rootHash,
+        snapshotMode: clone.snapshotMode,
+        compactManifest: manifest.slice(0, 20),
+        relevantExcerpts: [],
+        artifactEncoding: {
+          compactedForPromptComposer: true,
+          maxChars: COMPOSER_ARTIFACT_CONTENT_MAX_CHARS,
+          reason: 'Snapshot metadata was compacted to satisfy Prompt Composer validation.',
+        },
+      })
 }
 
 function selectRelevantSnapshotExcerpts(
@@ -2060,6 +2341,14 @@ function buildGateRecommendation(result: ExecuteResponse, stage: LoopStageDefini
       targetStageKey: stage.allowedSendBackTo?.[0],
     }
   }
+  if (normalizeAgentRole(stage.agentRole).includes('DEV') && (result.correlation?.codeChangeIds ?? []).length === 0) {
+    return {
+      verdict: 'NEEDS_REWORK',
+      confidence: 0.92,
+      reason: 'Developer stage did not capture an actual MCP/git code change. Use a tool-capable model and a writable MCP workspace that matches the requested repo, then rerun the stage.',
+      targetStageKey: stage.allowedSendBackTo?.[0],
+    }
+  }
   const warningCount = result.warnings?.length ?? 0
   if (warningCount > 1) {
     return {
@@ -2108,6 +2397,7 @@ function buildLoopStageMarkdown(
   attempt: StageAttempt,
   response: string,
   gateRecommendation: GateRecommendation,
+  executionFallback: string,
 ) {
   return [
     `# ${stage.label} Attempt ${attempt.attemptNumber}`,
@@ -2129,7 +2419,7 @@ function buildLoopStageMarkdown(
     '',
     '## Model Notes',
     '',
-    response || 'No model notes returned.',
+    response || executionFallback,
   ].join('\n')
 }
 
@@ -2348,6 +2638,7 @@ async function runStage(
   const traceId = `blueprint-${session.id}-${stage.toLowerCase()}`
   const executionConfig = readLoopState(session).executionConfig
   const modelAlias = executionConfig?.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS
+  const limits = workbenchExecutionLimits(executionConfig)
   const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
     stageKey: stage.toLowerCase(),
     stageLabel: humanStage(stage),
@@ -2379,7 +2670,7 @@ async function runStage(
         label: 'Source snapshot',
         role: 'CONTEXT',
         mediaType: 'application/json',
-        content: JSON.stringify(snapshotArtifact, null, 2),
+        content: encodeComposerArtifactContent(snapshotArtifact),
       },
     ],
     overrides: {
@@ -2389,26 +2680,26 @@ async function runStage(
     model_overrides: {
       ...(modelAlias ? { modelAlias } : {}),
       temperature: 0.2,
-      maxOutputTokens: 1200,
+      maxOutputTokens: limits.maxOutputTokens,
     },
     context_policy: {
       optimizationMode: 'code_aware',
-      maxContextTokens: 6000,
+      maxContextTokens: limits.maxContextTokens,
       compareWithRaw: false,
       knowledgeTopK: 4,
       memoryTopK: 2,
       codeTopK: 5,
-      maxLayerChars: 2000,
-      maxPromptChars: 24_000,
+      maxLayerChars: limits.maxLayerChars,
+      maxPromptChars: limits.maxPromptChars,
     },
     limits: {
       maxSteps: 8,
       timeoutSec: 180,
-      inputTokenBudget: 6000,
-      outputTokenBudget: 1200,
+      inputTokenBudget: limits.maxContextTokens,
+      outputTokenBudget: limits.maxOutputTokens,
       maxHistoryMessages: 4,
       maxToolResultChars: 8000,
-      maxPromptChars: 24_000,
+      maxPromptChars: limits.maxPromptChars,
     },
     governance_mode: executionConfig?.governanceMode ?? 'fail_open',
   })
@@ -3254,18 +3545,34 @@ function synthesizeCodeDiff(session: ArtifactSession, ctx: SnapshotContext, resp
     }
   }
 
-  const color = requestedColor(session.goal) ?? 'red'
-  const sampled = preferredChangeFiles(ctx)
-  const sections = sampled.flatMap(file => synthesizeFilePatch(file.path, file.excerpt, color))
-  const fallbackPath = sampled[0]?.path ?? ctx.files.find(file => isLikelyEditableUiFile(file.path))?.path ?? 'src/App.tsx'
-  const fallback = sections.length ? [] : [fallbackPatch(fallbackPath, color)]
-  const diff = [...sections, ...fallback].join('\n')
+  const color = requestedColor(session.goal)
+  if (color) {
+    const sampled = preferredChangeFiles(ctx)
+    const sections = sampled.flatMap(file => synthesizeFilePatch(file.path, file.excerpt, color))
+    if (sections.length > 0) {
+      const diff = sections.join('\n')
+      return {
+        paths: uniqueStrings(sections.map(section => pathFromPatchSection(section))),
+        diff,
+        linesAdded: countDiffLines(diff, '+'),
+        linesRemoved: countDiffLines(diff, '-'),
+        summary: `Proposed UI color update to ${color} from actual source snapshot excerpts.`,
+      }
+    }
+  }
+
+  const paths = inferChangePaths(ctx, session.goal)
+  const diff = [
+    '# No patch-style diff was returned by the execution layer.',
+    '# Workbench will show this as evidence-only instead of inventing source edits.',
+    ...paths.map(path => `# Candidate path: ${path}`),
+  ].join('\n')
   return {
-    paths: uniqueStrings([...sections.map(section => pathFromPatchSection(section)), fallback.length ? fallbackPath : undefined]),
+    paths,
     diff,
-    linesAdded: countDiffLines(diff, '+'),
-    linesRemoved: countDiffLines(diff, '-'),
-    summary: `Proposed UI color update to ${color} based on the source snapshot and stage goal.`,
+    linesAdded: 0,
+    linesRemoved: 0,
+    summary: 'No patch-style diff was returned; review the developer artifact and snapshot evidence before approval.',
   }
 }
 
@@ -3311,6 +3618,26 @@ function isLikelyEditableUiFile(path: string) {
     !/(node_modules|dist|build|coverage|\.min\.)/i.test(path)
 }
 
+function inferChangePaths(ctx: SnapshotContext, goal: string) {
+  const lower = goal.toLowerCase()
+  const javaProject = (ctx.languages.Java ?? ctx.languages.java ?? 0) > 0 || ctx.files.some(file => file.path.endsWith('.java'))
+  if (javaProject) {
+    const goalTerms = lower.split(/[^a-z0-9]+/).filter(term => term.length >= 4)
+    const scored = ctx.files
+      .filter(file => file.path.endsWith('.java'))
+      .map(file => {
+        const path = file.path.toLowerCase()
+        const score = goalTerms.reduce((acc, term) => acc + (path.includes(term) ? 2 : 0), 0)
+          + (/operator|rule|engine|service|controller|test/.test(path) ? 1 : 0)
+        return { path: file.path, score }
+      })
+      .sort((a, b) => b.score - a.score)
+      .map(item => item.path)
+    return uniqueStrings([...ctx.keyFiles, ...scored]).slice(0, 6)
+  }
+  return uniqueStrings([...ctx.keyFiles, ...ctx.files.map(file => file.path).filter(path => isLikelyEditableUiFile(path))]).slice(0, 6)
+}
+
 function synthesizeFilePatch(path: string, excerpt: string, color: string) {
   const lines = excerpt.split('\n')
   const patches: string[] = []
@@ -3345,21 +3672,6 @@ function recolorLine(line: string, color: string) {
   next = next.replace(/\brgba?\([^)]+\)/gi, color)
   next = next.replace(/(\b(?:color|background(?:-color)?|border-color|accent-color|fill|stroke)\s*:\s*)([^;"}]+)/gi, `$1${color}`)
   return next
-}
-
-function fallbackPatch(path: string, color: string) {
-  const safePath = path || 'src/App.tsx'
-  return [
-    `diff --git a/${safePath} b/${safePath}`,
-    `--- a/${safePath}`,
-    `+++ b/${safePath}`,
-    '@@ -1,3 +1,7 @@',
-    ' /* existing UI styles */',
-    `+/* Workbench proposed change for: change color to ${color} */`,
-    '+:root {',
-    `+  --singularity-requested-color: ${color};`,
-    '+}',
-  ].join('\n')
 }
 
 function pathFromPatchSection(section: string) {

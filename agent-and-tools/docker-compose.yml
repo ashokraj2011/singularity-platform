@@ -26,6 +26,7 @@ services:
       - "3001:3001"
     environment:
       NODE_ENV: development
+      AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
       PORT: 3001
       DATABASE_URL: postgresql://postgres:singularity@postgres:5432/singularity
       IAM_SERVICE_URL: ${IAM_SERVICE_URL:-http://host.docker.internal:8100}
@@ -51,6 +52,7 @@ services:
       - "3002:3002"
     environment:
       NODE_ENV: development
+      AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
       PORT: 3002
       DATABASE_URL: postgresql://postgres:singularity@postgres:5432/singularity
       IAM_SERVICE_URL: ${IAM_SERVICE_URL:-http://host.docker.internal:8100}
@@ -80,6 +82,7 @@ services:
       - "3003:3003"
     environment:
       NODE_ENV: development
+      AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
       PORT: 3003
       DATABASE_URL: postgresql://postgres:singularity@postgres:5432/singularity
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
@@ -115,6 +118,7 @@ services:
       - "3004:3004"
     environment:
       NODE_ENV: development
+      AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
       PORT: 3004
       DATABASE_URL: postgresql://postgres:singularity@postgres:5432/singularity
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
@@ -163,6 +167,8 @@ services:
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
+      LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://host.docker.internal:8001}
+      LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
       CONTEXT_FABRIC_URL: ${CONTEXT_FABRIC_URL:-http://host.docker.internal:8000}
       EVENT_HORIZON_PROVIDER: ${EVENT_HORIZON_PROVIDER:-}
       EVENT_HORIZON_MODEL: ${EVENT_HORIZON_MODEL:-}

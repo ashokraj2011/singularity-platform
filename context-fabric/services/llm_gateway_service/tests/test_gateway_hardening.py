@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -103,3 +104,37 @@ def test_mock_alias_succeeds(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "mock-fast",
         "mock",
     )
+
+
+def test_non_mock_embeddings_response_uses_resolved_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    providers = {
+        "defaultProvider": "openai",
+        "allowedProviders": ["openai"],
+        "providers": {
+            "openai": {
+                "enabled": True,
+                "baseUrl": "https://gateway.example.test/v1",
+                "credentialEnv": "OPENAI_API_KEY",
+                "defaultModel": "text-embedding-test",
+            }
+        },
+    }
+    catalog = [{"id": "embed-test", "provider": "openai", "model": "text-embedding-test", "default": True}]
+    _, _, router = load_modules(monkeypatch, tmp_path, providers, catalog)
+    router.settings.openai_api_key = "test-key"
+
+    async def fake_embed(input_texts, *, provider, resolved_model, api_key):
+        assert provider == "openai"
+        assert resolved_model == "text-embedding-test"
+        assert api_key == "test-key"
+        return [[0.1, 0.2, 0.3] for _ in input_texts], 7
+
+    monkeypatch.setattr(router.openai_provider, "embed", fake_embed)
+    req = router.EmbeddingsRequest(model_alias="embed-test", input=["hello"])
+
+    resp = asyncio.run(router.embeddings(req, authorization=None))
+
+    assert resp.model == "text-embedding-test"
+    assert resp.provider == "openai"
+    assert resp.model_alias == "embed-test"
+    assert resp.input_tokens == 7

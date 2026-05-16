@@ -13,6 +13,7 @@ import { runnerRoutes } from "./routes/runners";
 import { internalToolsRoutes } from "./routes/internal-tools";
 import { connectorToolsRoutes } from "./routes/connector-tools";
 import { errorHandler } from "./middleware/errorHandler";
+import { optionalAuth, requireAuth } from "./middleware/auth";
 import { startSelfRegistration } from "./lib/platform-registry/register";
 import { startEventDispatcher } from "./lib/eventbus/dispatcher";
 import { eventSubscriptionsRouter } from "./lib/eventbus/routes";
@@ -22,6 +23,10 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT ?? 3002;
+
+function authOptional(): boolean {
+  return process.env.AUTH_OPTIONAL === "true";
+}
 
 app.use(helmet());
 app.use(cors());
@@ -42,6 +47,8 @@ app.get("/healthz/strict", async (_req, res) => {
     checks: result.checks,
   });
 });
+
+app.use(authOptional() ? optionalAuth : requireAuth);
 
 app.use("/api/v1/tools", toolRoutes);
 app.use("/api/v1/tools", discoveryRoutes);

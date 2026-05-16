@@ -8,6 +8,10 @@ const schema = z.object({
   PORT: z.coerce.number().default(3004),
   DATABASE_URL: z.string().url(),
   JWT_SECRET: z.string().min(8).default("dev-secret-change-in-prod"),
+  AUTH_OPTIONAL: z.preprocess(
+    (v) => v === undefined ? undefined : String(v).toLowerCase() === "true",
+    z.boolean(),
+  ).default(process.env.NODE_ENV !== "production"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   TOOL_SERVICE_URL: z.string().url().default("http://localhost:3002"),
   AGENT_RUNTIME_URL: z.string().url().default("http://localhost:3003"),

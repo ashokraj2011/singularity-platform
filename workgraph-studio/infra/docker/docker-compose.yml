@@ -95,8 +95,9 @@ services:
       AUDIT_GOV_SERVICE_TOKEN:     ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     volumes:
       # Local Blueprint Workbench scans are read-only. This lets paths like
-      # /Users/ashokraj/Downloads/... resolve inside the API container.
-      - ${HOST_DOWNLOADS_DIR:-/Users/ashokraj/Downloads}:/Users/ashokraj/Downloads:ro
+      # Host downloads/source drops are mounted in a repo-local path by default
+      # so non-Ashok machines do not inherit a personal absolute path.
+      - ${HOST_DOWNLOADS_DIR:-../../../.singularity/downloads}:/workspace/downloads:ro
     depends_on:
       postgres:
         condition: service_healthy

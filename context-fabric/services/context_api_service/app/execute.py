@@ -132,6 +132,9 @@ class RunContext(BaseModel):
     trace_id: Optional[str] = None
     branch_base: Optional[str] = None
     branch_name: Optional[str] = None
+    source_type: Optional[str] = None
+    source_uri: Optional[str] = None
+    source_ref: Optional[str] = None
 
 
 class ExecuteRequest(BaseModel):
@@ -149,6 +152,7 @@ class ExecuteRequest(BaseModel):
     context_policy: dict[str, Any] = Field(default_factory=dict)
     limits: dict[str, Any] = Field(default_factory=dict)
     preview_only: bool = False
+    allow_autonomous_mutation: bool = False
     # M26 — route the /mcp/invoke to the user's laptop-resident mcp-server via
     # the WebSocket bridge instead of the shared HTTP mcp-server. Requires
     # run_context.user_id. Fails fast with MCP_NOT_CONNECTED if no live
@@ -280,6 +284,13 @@ async def _resolve_mcp_record(capability_id: str) -> tuple[dict[str, Any], list[
         )
     except httpx.HTTPError as exc:
         if default_record:
+            # A capability-bound MCP registry is optional: the common local /
+            # office-laptop mode uses one default MCP runtime for file paths,
+            # tools, and model routing. Treat IAM 404 / empty registry as an
+            # expected fallback, not an execution warning that would make
+            # Workbench gates request rework.
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+                return default_record, warnings
             warnings.append(f"IAM MCP lookup failed; using default MCP runtime: {exc!s}")
             return default_record, warnings
         raise
@@ -287,7 +298,6 @@ async def _resolve_mcp_record(capability_id: str) -> tuple[dict[str, Any], list[
     servers = servers_resp if isinstance(servers_resp, list) else servers_resp.get("servers", [])
     if not servers:
         if default_record:
-            warnings.append("No capability-specific MCP server registered; using default MCP runtime.")
             return default_record, warnings
         raise HTTPException(status_code=409, detail="no MCP runtime configured")
 
@@ -837,6 +847,9 @@ async def execute(req: ExecuteRequest):
             "workItemId": req.run_context.agent_run_id,
             "branchBase": req.run_context.branch_base,
             "branchName": req.run_context.branch_name,
+            "sourceType": req.run_context.source_type,
+            "sourceUri": req.run_context.source_uri,
+            "sourceRef": req.run_context.source_ref,
             "traceId": trace_id,
         }),
         "limits": _strip_nones({
@@ -844,6 +857,7 @@ async def execute(req: ExecuteRequest):
             "timeoutSec": req.limits.get("timeoutSec") or req.limits.get("timeout_sec") or 240,
             "maxToolResultChars": req.limits.get("maxToolResultChars") or req.limits.get("max_tool_result_chars"),
         }),
+        "allowAutonomousMutation": req.allow_autonomous_mutation,
     }
     if context_plan_hash is None:
         invoke_payload.pop("contextPlanHash", None)

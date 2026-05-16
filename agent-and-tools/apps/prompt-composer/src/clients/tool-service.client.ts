@@ -7,6 +7,8 @@ export interface DiscoveredTool {
   description: string;
   input_schema: Record<string, unknown>;
   risk_level: string;
+  requires_approval?: boolean;
+  requiresApproval?: boolean;
   execution_location: string;
   runtime_type: string;
 }

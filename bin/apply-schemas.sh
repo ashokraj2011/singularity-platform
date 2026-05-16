@@ -34,9 +34,10 @@ done
 # Ensure singularity_composer DB exists (init.sql creates it on virgin
 # volumes, but existing volumes from pre-M30 won't have it).
 info "ensuring singularity_composer DB exists…"
-docker exec singularity-at-postgres psql -U postgres -d postgres -c \
-  "SELECT 'CREATE DATABASE singularity_composer' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_composer')\gexec" \
-  2>&1 | grep -v "NOTICE" | tail -3 || true
+if ! docker exec singularity-at-postgres psql -U postgres -d postgres -tAc \
+  "SELECT 1 FROM pg_database WHERE datname='singularity_composer'" | grep -qx "1"; then
+  docker exec singularity-at-postgres createdb -U postgres singularity_composer
+fi
 docker exec singularity-at-postgres psql -U postgres -d singularity_composer -c \
   "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgcrypto;" \
   2>&1 | grep -v "NOTICE" | tail -3 || true
@@ -53,6 +54,11 @@ info "applying prompt-composer OWNED schema (DB: singularity_composer)…"
 docker exec singularity-prompt-composer sh -c \
   "cd /app/apps/prompt-composer && DATABASE_URL=postgresql://postgres:singularity@at-postgres:5432/singularity_composer npx prisma db push --schema=prisma/schema.prisma --skip-generate --accept-data-loss" \
   2>&1 | tail -3
+
+info "seeding prompt-composer base prompt profiles…"
+docker exec singularity-prompt-composer sh -c \
+  "cd /app/apps/prompt-composer && DATABASE_URL=postgresql://postgres:singularity@at-postgres:5432/singularity_composer npm run seed" \
+  2>&1 | tail -6
 
 # Verify
 info "verifying both DBs have their respective tables…"

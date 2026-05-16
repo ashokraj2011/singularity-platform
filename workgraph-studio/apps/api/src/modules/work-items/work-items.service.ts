@@ -145,7 +145,7 @@ export async function createWorkItem(input: CreateWorkItemInput, actorId?: strin
   await prisma.workItemEvent.create({
     data: {
       workItemId: workItem.id,
-      eventType: 'created',
+      eventType: 'CREATED',
       actorId: actorId ?? undefined,
       payload: { targetCount: workItem.targets.length } as Prisma.InputJsonValue,
     },
@@ -267,7 +267,7 @@ export async function claimWorkItemTarget(workItemId: string, targetId: string, 
   })
   await prisma.workItem.update({ where: { id: workItemId }, data: { status: 'IN_PROGRESS' } })
   await prisma.workItemEvent.create({
-    data: { workItemId, targetId, eventType: 'claimed', actorId: userId },
+    data: { workItemId, targetId, eventType: 'CLAIMED', actorId: userId },
   })
   await logEvent('WorkItemTargetClaimed', 'WorkItemTarget', targetId, userId, { workItemId })
   await publishOutbox('WorkItemTarget', targetId, 'WorkItemTargetClaimed', { workItemId, targetId })
@@ -327,7 +327,7 @@ export async function startWorkItemTarget(workItemId: string, targetId: string, 
     data: {
       workItemId,
       targetId,
-      eventType: 'started',
+      eventType: 'STARTED',
       actorId: userId,
       payload: { childWorkflowInstanceId: result.instance.id } as Prisma.InputJsonValue,
     },
@@ -387,7 +387,7 @@ export async function handleWorkItemChildCompletion(instance: WorkflowInstance, 
     data: {
       workItemId: target.workItemId,
       targetId: target.id,
-      eventType: 'submitted',
+      eventType: 'SUBMITTED',
       actorId,
       payload: output as Prisma.InputJsonValue,
     },
@@ -434,7 +434,7 @@ async function maybeRequestParentApproval(workItemId: string, actorId?: string):
   await prisma.workItemEvent.create({
     data: {
       workItemId: workItem.id,
-      eventType: 'approval_requested',
+      eventType: 'APPROVAL_REQUESTED',
       actorId,
       payload: { approvalRequestId: approval.id } as Prisma.InputJsonValue,
     },
@@ -491,7 +491,7 @@ export async function approveWorkItem(workItemId: string, userId: string, approv
     prisma.workItemEvent.create({
       data: {
         workItemId,
-        eventType: 'approved',
+        eventType: 'APPROVED',
         actorId: userId,
         payload: { approvalDecision } as Prisma.InputJsonValue,
       },
@@ -540,7 +540,7 @@ export async function requestWorkItemRework(workItemId: string, userId: string, 
     prisma.workItemEvent.create({
       data: {
         workItemId,
-        eventType: 'rework_requested',
+        eventType: 'REWORK_REQUESTED',
         actorId: userId,
         payload: { targetIds: selected, reason } as Prisma.InputJsonValue,
       },

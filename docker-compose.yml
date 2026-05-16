@@ -107,6 +107,7 @@ services:
     container_name: singularity-agent-service
     environment:
       NODE_ENV: development
+      AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
       PORT: 3001
       DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
       IAM_SERVICE_URL: http://iam-service:8100
@@ -127,6 +128,7 @@ services:
     container_name: singularity-tool-service
     environment:
       NODE_ENV: development
+      AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
       PORT: 3002
       DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
       IAM_SERVICE_URL: http://iam-service:8100
@@ -147,6 +149,7 @@ services:
     container_name: singularity-agent-runtime
     environment:
       NODE_ENV: development
+      AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
       PORT: 3003
       DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
@@ -183,6 +186,7 @@ services:
     container_name: singularity-prompt-composer
     environment:
       NODE_ENV: development
+      AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
       PORT: 3004
       # M30 — composer owns `singularity_composer` (PromptAssembly etc.) and
       # reads agent-runtime models from `singularity` via runtime-reader.
@@ -224,6 +228,8 @@ services:
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
+      LLM_GATEWAY_URL: http://llm-gateway:8001
+      LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
       IAM_BASE_URL: http://iam-service:8100/api/v1
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
@@ -284,6 +290,7 @@ services:
     environment:
       CONTEXT_MEMORY_URL: http://context-memory:8002
       METRICS_LEDGER_URL: http://metrics-ledger:8003
+      COMPOSER_URL: http://prompt-composer:3004
       IAM_BASE_URL: http://iam-service:8100/api/v1
       IAM_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
       IAM_BOOTSTRAP_USERNAME: ${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
@@ -424,7 +431,7 @@ services:
       LLM_GATEWAY_BEARER:     ${LLM_GATEWAY_BEARER:-}
       LLM_GATEWAY_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-240}
     volumes:
-      - ${HOST_DOWNLOADS_DIR:-/Users/ashokraj/Downloads}:/Users/ashokraj/Downloads:ro
+      - ${HOST_DOWNLOADS_DIR:-./.singularity/downloads}:/workspace/downloads:ro
     ports:
       - "8080:8080"
     depends_on:

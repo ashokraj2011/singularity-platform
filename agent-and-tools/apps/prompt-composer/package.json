@@ -7,7 +7,10 @@
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
-    "prisma:dev": "prisma migrate dev"
+    "prisma:dev": "prisma migrate dev",
+    "prisma:seed": "ts-node --transpile-only prisma/seed.ts",
+    "seed": "ts-node --transpile-only prisma/seed.ts",
+    "test:contracts": "ts-node --transpile-only src/modules/compose/compose-hardening.contract.test.ts"
   },
   "dependencies": {
     "@agentandtools/shared": "*",

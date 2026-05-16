@@ -11,6 +11,7 @@ import { versionRoutes } from "./routes/versions";
 import { learningRoutes } from "./routes/learning";
 import { runtimeRoutes } from "./routes/runtime";
 import { errorHandler } from "./middleware/errorHandler";
+import { optionalAuth, requireAuth } from "./middleware/auth";
 import { startSelfRegistration } from "./lib/platform-registry/register";
 import { startEventDispatcher } from "./lib/eventbus/dispatcher";
 import { eventSubscriptionsRouter } from "./lib/eventbus/routes";
@@ -20,6 +21,10 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 
+function authOptional(): boolean {
+  return process.env.AUTH_OPTIONAL === "true";
+}
+
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
@@ -27,6 +32,8 @@ app.use(express.json());
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "singularity-agent-service", timestamp: new Date().toISOString() });
 });
+
+app.use(authOptional() ? optionalAuth : requireAuth);
 
 app.use("/api/v1/agents", agentRoutes);
 app.use("/api/v1/agents", versionRoutes);
