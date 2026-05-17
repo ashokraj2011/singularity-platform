@@ -351,6 +351,141 @@ Respond ONLY in valid JSON matching this schema:
   },
 ];
 
+// ─────────────────────────────────────────────────────────────
+// M36.5 — EventHorizonAction catalog. Was duplicated across 3 SPA
+// EventHorizonChat.tsx files with identical shape but different action
+// sets per surface. Centralised here; each SPA fetches its slice from
+// GET /api/v1/event-horizon-actions?surface=<key>.
+// ─────────────────────────────────────────────────────────────
+
+const EVENT_HORIZON_ACTIONS: Array<{
+  id: string;
+  surface: string;
+  intent: string;
+  label: string;
+  prompt: string;
+  displayOrder: number;
+  description: string;
+}> = [
+  // workflow-manager (workgraph-studio/apps/web/EventHorizonChat.tsx:106-112)
+  {
+    id: "00000000-0000-0000-0000-000000001001",
+    surface: "workflow-manager",
+    intent: "summarize_run",
+    label: "Summarize run",
+    prompt: "Summarize this run, including current status, active waits, budget risk, and next operator action.",
+    displayOrder: 10,
+    description: "Quick run summary for the Workflow Manager.",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000001002",
+    surface: "workflow-manager",
+    intent: "explain_stuck_nodes",
+    label: "Explain stuck nodes",
+    prompt: "Find any stuck, failed, paused, or waiting nodes and explain likely causes and what to inspect next.",
+    displayOrder: 20,
+    description: "Diagnose stuck/failed/waiting nodes.",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000001003",
+    surface: "workflow-manager",
+    intent: "find_evidence",
+    label: "Find evidence",
+    prompt: "Tell me where to inspect prompt assemblies, model receipts, citations, artifacts, code changes, and audit evidence for this run.",
+    displayOrder: 30,
+    description: "Point at evidence surfaces (prompts, receipts, artifacts).",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000001004",
+    surface: "workflow-manager",
+    intent: "draft_approval_note",
+    label: "Draft approval note",
+    prompt: "Draft a concise approval note for the current pending approval or artifact promotion, including risks to check before approving.",
+    displayOrder: 40,
+    description: "Compose an approval note with risk callouts.",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000001005",
+    surface: "workflow-manager",
+    intent: "recommend_budget_model",
+    label: "Budget/model advice",
+    prompt: "Review token budget and model choice for this context and recommend safer or cheaper settings if needed.",
+    displayOrder: 50,
+    description: "Recommend token-budget + model alias tuning.",
+  },
+  // capability-admin (agent-and-tools/web/components/EventHorizonChat.tsx:95-101)
+  {
+    id: "00000000-0000-0000-0000-000000001011",
+    surface: "capability-admin",
+    intent: "explain_capability",
+    label: "Explain capability",
+    prompt: "Explain this capability setup, including agents, bindings, learning review, and what still needs approval.",
+    displayOrder: 10,
+    description: "Walk through the active capability's agents/bindings/gates.",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000001012",
+    surface: "capability-admin",
+    intent: "find_runtime_evidence",
+    label: "Find evidence",
+    prompt: "Tell me where to inspect runtime receipts, workflow evidence, prompt assemblies, artifacts, and audit receipts for this capability.",
+    displayOrder: 20,
+    description: "Point at runtime evidence surfaces.",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000001013",
+    surface: "capability-admin",
+    intent: "draft_review_note",
+    label: "Draft review note",
+    prompt: "Draft a concise human review note for activating generated agents or materializing learned knowledge.",
+    displayOrder: 30,
+    description: "Compose a review note for agent activation / knowledge promotion.",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000001014",
+    surface: "capability-admin",
+    intent: "recommend_agent_team",
+    label: "Agent team advice",
+    prompt: "Recommend the right agent team, roles, tools, and artifact gates for this capability.",
+    displayOrder: 40,
+    description: "Suggest the agent team composition.",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000001015",
+    surface: "capability-admin",
+    intent: "explain_prompt_stack",
+    label: "Prompt stack",
+    prompt: "Explain the prompt profile/layer stack for this screen in user-friendly terms and call out what is editable.",
+    displayOrder: 50,
+    description: "Explain the prompt profile/layer stack for the current screen.",
+  },
+];
+
+async function upsertEventHorizonAction(input: typeof EVENT_HORIZON_ACTIONS[number]) {
+  await prisma.eventHorizonAction.upsert({
+    where: { id: input.id },
+    update: {
+      surface: input.surface,
+      intent: input.intent,
+      label: input.label,
+      prompt: input.prompt,
+      displayOrder: input.displayOrder,
+      isActive: true,
+      description: input.description,
+    },
+    create: {
+      id: input.id,
+      surface: input.surface,
+      intent: input.intent,
+      label: input.label,
+      prompt: input.prompt,
+      displayOrder: input.displayOrder,
+      isActive: true,
+      description: input.description,
+    },
+  });
+}
+
 async function upsertSystemPrompt(input: {
   id: string;
   key: string;
@@ -698,6 +833,11 @@ async function main() {
   // prompt-composer itself).
   for (const prompt of SYSTEM_PROMPTS) {
     await upsertSystemPrompt(prompt);
+  }
+
+  // M36.5 — seed the EventHorizonAction catalog (was duplicated across 3 SPAs).
+  for (const action of EVENT_HORIZON_ACTIONS) {
+    await upsertEventHorizonAction(action);
   }
 
   console.log("[prompt-composer seed] done");

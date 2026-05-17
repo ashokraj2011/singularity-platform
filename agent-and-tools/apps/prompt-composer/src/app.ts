@@ -10,6 +10,7 @@ import { composeRoutes, composeDebugRoutes } from "./modules/compose/compose.rou
 import { compiledContextRoutes } from "./modules/compose/compiled-context.routes";
 import { stagePromptsRoutes } from "./modules/stage-prompts/stage-prompts.routes";
 import { systemPromptsRoutes } from "./modules/system-prompts/system-prompts.routes";
+import { eventHorizonActionsRoutes } from "./modules/event-horizon-actions/event-horizon-actions.routes";
 import { runInvariantChecks } from "./healthz-strict";
 import { env } from "./config/env";
 
@@ -58,5 +59,9 @@ app.use("/api/v1/stage-prompts", stagePromptsRoutes);
 // named prompt (event-horizon, distillation, summarisation, capsule
 // compiler, audit-gov diagnose), not a layered agent assembly.
 app.use("/api/v1/system-prompts", systemPromptsRoutes);
+// M36.5 — EventHorizon action catalog. The "quick action" buttons in the
+// floating assistant chip on every SPA come from this endpoint, scoped by
+// surface (workflow-manager / capability-admin / uac / portal).
+app.use("/api/v1/event-horizon-actions", eventHorizonActionsRoutes);
 
 app.use(errorMiddleware);

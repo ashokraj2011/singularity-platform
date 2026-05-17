@@ -104,6 +104,26 @@ async function platformSnapshot() {
   }
 }
 
+// M36.5 — quick-action catalog proxy. SPAs hit this instead of hardcoding
+// ACTIONS arrays; backend fetches from prompt-composer (singularity_composer
+// DB) so a prompt engineer can edit a row and the SPA picks it up without
+// a rebuild. `surface` defaults to "workflow-manager" (workgraph-web).
+eventHorizonRouter.get('/actions', async (req, res) => {
+  const surface = String(req.query.surface ?? 'workflow-manager').trim()
+  try {
+    const url = `${config.PROMPT_COMPOSER_URL.replace(/\/$/, '')}/api/v1/event-horizon-actions?surface=${encodeURIComponent(surface)}`
+    const r = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+    if (!r.ok) {
+      const text = await r.text().catch(() => '')
+      return res.status(r.status).json({ error: 'composer fetch failed', detail: text.slice(0, 300) })
+    }
+    const json = await r.json() as { success?: boolean; data?: unknown }
+    res.json(json.data ?? [])
+  } catch (err) {
+    res.status(502).json({ error: 'event-horizon actions fetch failed', detail: (err as Error).message })
+  }
+})
+
 eventHorizonRouter.post('/chat', async (req, res) => {
   const body = bodySchema.parse(req.body)
   const capabilityId = nonBlank(body.capabilityId) || defaultCapabilityId()

@@ -125,6 +125,20 @@ DATA_ACCESS_POLICY DATA_ACCESS_POLICY
     }
   
 
+  "EventHorizonAction" {
+    String id "🗝️"
+    String surface 
+    String intent 
+    String label 
+    String prompt 
+    Int displayOrder 
+    Boolean isActive 
+    String description "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
   "SystemPrompt" {
     String id "🗝️"
     String key 

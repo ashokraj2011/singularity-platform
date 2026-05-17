@@ -195,6 +195,38 @@ model CapabilityCompiledContext {
   @@index([expiresAt])
 }
 
+// M36.5 — EventHorizonAction is the catalog of "quick actions" shown by the
+// in-app assistant chip in every Singularity SPA (workgraph-web, agent-and-
+// tools/web, UAC, portal). Each row is one button on the floating UI: when
+// clicked, the SPA fires `prompt` as the user message + tags the call with
+// `intent`. Surface filters scope which actions appear on which app.
+//
+// Was duplicated across 3 SPA components (workgraph-web/EventHorizonChat.tsx,
+// agent-and-tools/web/EventHorizonChat.tsx, UAC). Edit a row here + re-seed
+// instead of editing 3 React files.
+model EventHorizonAction {
+  id           String   @id @default(uuid())
+  // App scope — e.g. "workflow-manager" (workgraph-web), "capability-admin"
+  // (agent-and-tools/web), "portal", "uac".
+  surface      String
+  // Semantic intent name — matches the SPA's local ActionIntent union.
+  // The composing service uses this to tag audit events ("user clicked X").
+  intent       String
+  // Button label shown in the SPA (e.g. "Summarize run").
+  label        String
+  // The literal LLM user message fired when the button is clicked.
+  prompt       String
+  // UI sort order (ascending). Defaults to 100.
+  displayOrder Int      @default(100)
+  isActive     Boolean  @default(true)
+  description  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([surface, intent])
+  @@index([surface, isActive, displayOrder])
+}
+
 // M36.4 — SystemPrompt is a flat key/value store for single-shot LLM prompts
 // used by services that aren't running the full stage/agent assembly path
 // (e.g. event-horizon, distillation, summarisation, capsule compiler,

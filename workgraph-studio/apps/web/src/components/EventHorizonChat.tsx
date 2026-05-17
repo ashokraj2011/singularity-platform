@@ -103,13 +103,20 @@ function answer(question: string, ctx: ContextSnapshot) {
   return `For this ${ctx.surface} screen: ${ctx.hints.join(' ')} ${summarizeInsights(ctx.insights)} Ask about run status, budgets, approvals, workflow nodes, capability context, or where to inspect execution evidence.`
 }
 
-const ACTIONS: Array<{ intent: ActionIntent; label: string; prompt: string }> = [
-  { intent: 'summarize_run', label: 'Summarize run', prompt: 'Summarize this run, including current status, active waits, budget risk, and next operator action.' },
-  { intent: 'explain_stuck_nodes', label: 'Explain stuck nodes', prompt: 'Find any stuck, failed, paused, or waiting nodes and explain likely causes and what to inspect next.' },
-  { intent: 'find_evidence', label: 'Find evidence', prompt: 'Tell me where to inspect prompt assemblies, model receipts, citations, artifacts, code changes, and audit evidence for this run.' },
-  { intent: 'draft_approval_note', label: 'Draft approval note', prompt: 'Draft a concise approval note for the current pending approval or artifact promotion, including risks to check before approving.' },
-  { intent: 'recommend_budget_model', label: 'Budget/model advice', prompt: 'Review token budget and model choice for this context and recommend safer or cheaper settings if needed.' },
-]
+// M36.5 — Quick-action buttons used to be a hardcoded ACTIONS array here
+// (duplicated across 3 SPA components). They now come from
+// GET /api/event-horizon/actions?surface=workflow-manager
+// which proxies to prompt-composer's event-horizon-actions endpoint.
+// Edit a row in singularity_composer DB + re-seed; the SPA picks it up on
+// the next mount with no rebuild.
+type EventHorizonActionRow = {
+  id: string
+  surface: string
+  intent: string
+  label: string
+  prompt: string
+  displayOrder: number
+}
 
 export function EventHorizonChat() {
   const token = useAuthStore(s => s.token)
@@ -120,6 +127,8 @@ export function EventHorizonChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sessionId, setSessionId] = useState('')
   const [thinking, setThinking] = useState(false)
+  // M36.5 — quick-action buttons fetched from the backend (was hardcoded ACTIONS array)
+  const [actions, setActions] = useState<EventHorizonActionRow[]>([])
   const [ctx, setCtx] = useState<ContextSnapshot>({
     app: 'Workflow Manager',
     path,
@@ -136,6 +145,15 @@ export function EventHorizonChat() {
     setSessionId(fresh)
     return fresh
   }
+
+  // M36.5 — fetch the action catalog once on first mount. If the backend
+  // is unavailable, the UI just renders no quick-action buttons (graceful
+  // degradation); the chat box still works.
+  useEffect(() => {
+    api.get('/event-horizon/actions?surface=workflow-manager')
+      .then(r => setActions(Array.isArray(r.data) ? r.data : []))
+      .catch((err) => console.warn('[EventHorizonChat] failed to load action catalog:', err))
+  }, [])
 
   useEffect(() => {
     const existingSession = localStorage.getItem(SESSION_ID_KEY)
@@ -306,11 +324,11 @@ export function EventHorizonChat() {
           </div>
           <div className="max-h-[420px] space-y-3 overflow-y-auto bg-slate-50 p-4">
             <div className="flex flex-wrap gap-1.5">
-              {ACTIONS.map(action => (
+              {actions.map(action => (
                 <button
                   key={action.intent}
                   type="button"
-                  onClick={() => void sendAction(action.intent, action.prompt)}
+                  onClick={() => void sendAction(action.intent as ActionIntent, action.prompt)}
                   disabled={thinking}
                   className="rounded-full border border-emerald-200 bg-white px-2 py-1 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
                 >
