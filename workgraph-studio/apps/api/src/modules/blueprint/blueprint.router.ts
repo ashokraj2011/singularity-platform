@@ -9,6 +9,10 @@ import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { createReceipt, logEvent, publishOutbox } from '../../lib/audit'
 import { contextFabricClient, ContextFabricError, type ExecuteResponse } from '../../lib/context-fabric/client'
+// M36.2 — stage prompts (architect/developer/qa task + system prompts and the
+// loop-stage prompt) live in prompt-composer DB (StagePromptBinding rows).
+// We resolve them at call time instead of hardcoding them in this file.
+import { promptComposerClient } from '../../lib/prompt-composer/client'
 import { recordWorkflowLlmUsage } from '../workflow/runtime/budget'
 
 export const blueprintRouter: Router = Router()
@@ -712,21 +716,49 @@ blueprintRouter.post('/sessions/:id/run', async (req, res, next) => {
 
     await prisma.blueprintSession.update({ where: { id: session.id }, data: { status: BlueprintSessionStatus.RUNNING } })
 
-    const stages: Array<{ stage: BlueprintStage; agentTemplateId: string; task: string }> = [
+    // M36.2 — Resolve each stage's task body + system-prompt fragment from
+    // prompt-composer (StagePromptBinding). Replaces the inline architectTask
+    // / developerTask / qaTask / stageSystemPrompt functions. Prompt text now
+    // lives in singularity_composer DB; edit via seed.ts and re-seed to roll
+    // forward without redeploying workgraph-api.
+    const resolved = await Promise.all([
+      promptComposerClient.resolveStage({
+        stageKey: 'blueprint.architect',
+        vars: { goal: session.goal },
+      }),
+      promptComposerClient.resolveStage({
+        stageKey: 'blueprint.developer',
+        vars: { goal: session.goal },
+      }),
+      promptComposerClient.resolveStage({
+        stageKey: 'blueprint.qa',
+        vars: { goal: session.goal },
+      }),
+    ])
+
+    const stages: Array<{
+      stage: BlueprintStage;
+      agentTemplateId: string;
+      task: string;
+      systemPromptAppend: string;
+    }> = [
       {
         stage: BlueprintStage.ARCHITECT,
         agentTemplateId: session.architectAgentTemplateId,
-        task: architectTask(session.goal),
+        task: resolved[0].task,
+        systemPromptAppend: resolved[0].systemPromptAppend,
       },
       {
         stage: BlueprintStage.DEVELOPER,
         agentTemplateId: session.developerAgentTemplateId,
-        task: developerTask(session.goal),
+        task: resolved[1].task,
+        systemPromptAppend: resolved[1].systemPromptAppend,
       },
       {
         stage: BlueprintStage.QA,
         agentTemplateId: session.qaAgentTemplateId,
-        task: qaTask(session.goal),
+        task: resolved[2].task,
+        systemPromptAppend: resolved[2].systemPromptAppend,
       },
     ]
 
@@ -752,7 +784,7 @@ blueprintRouter.post('/sessions/:id/run', async (req, res, next) => {
         data: { status: BlueprintStageStatus.RUNNING, startedAt: new Date() },
       })
       try {
-        const result = await runStage(session, snapshot, stage.stage, stage.agentTemplateId, stage.task)
+        const result = await runStage(session, snapshot, stage.stage, stage.agentTemplateId, stage.task, stage.systemPromptAppend)
         await recordBlueprintBudgetUsage(session, result, stage.stage.toLowerCase())
         await prisma.blueprintStageRun.update({
           where: { id: runId },
@@ -1549,7 +1581,18 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   if (!agentTemplateId) {
     throw new ValidationError(`Stage ${stage.label} needs an agent template before it can run`)
   }
-  const task = loopStageTask(session, stage, state)
+  // M36.2 — Resolve the loop-stage task body + system-prompt fragment from
+  // prompt-composer. Replaces inline loopStageTask + loopStageSystemPrompt.
+  // The Mustache template lives in StagePromptBinding (stageKey="loop.stage",
+  // optionally narrowed by agentRole). Edit via seed.ts, re-seed — no redeploy.
+  const stageVars = buildLoopStageVars(session, stage, state)
+  const resolvedStage = await promptComposerClient.resolveStage({
+    stageKey: 'loop.stage',
+    agentRole: stage.agentRole ? normalizeAgentRole(stage.agentRole) : undefined,
+    vars: stageVars,
+  })
+  const task = resolvedStage.task
+  const stageSystemPromptAppend = resolvedStage.systemPromptAppend
   const inputSignature = buildStageInputSignature(snapshot, stage, agentTemplateId, task, state)
   const reusable = state.executionConfig?.reuseUnchangedAttempt === false ? undefined : [...priorAttempts].reverse().find(attempt =>
       attempt.inputSignature === inputSignature &&
@@ -1626,7 +1669,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   })
 
   try {
-    const result = await runLoopStageExecute(session, snapshot, stage, attempt, task)
+    const result = await runLoopStageExecute(session, snapshot, stage, attempt, task, stageSystemPromptAppend)
     await recordBlueprintBudgetUsage(session, result, stage.key, readLoopState(session).workflowNodeId)
     const completedAt = new Date().toISOString()
     const gateRecommendation = buildGateRecommendation(result, stage)
@@ -2019,6 +2062,8 @@ async function runLoopStageExecute(
   stage: LoopStageDefinition,
   attempt: StageAttempt,
   task: string,
+  // M36.2 — resolved by caller from prompt-composer (was: loopStageSystemPrompt(stage))
+  systemPromptAppend: string,
 ): Promise<ExecuteResponse> {
   const traceId = `blueprint-${session.id}-${stage.key}`
   const executionConfig = readLoopState(session).executionConfig
@@ -2069,7 +2114,11 @@ async function runLoopStageExecute(
       },
     ],
     overrides: {
-      systemPromptAppend: loopStageSystemPrompt(stage),
+      // M36.2 — systemPromptAppend resolved by caller via prompt-composer
+      // /api/v1/stage-prompts/resolve. extraContext below is per-execution
+      // dynamic (session.sourceUri etc.) and stays as-is for now; if a future
+      // milestone wants this in DB too, it becomes a separate template.
+      systemPromptAppend,
       extraContext: isDeveloperStage
         ? [
             'Developer stage execution policy:',
@@ -2317,78 +2366,48 @@ function buildConfiguredArtifactMarkdown(
   ].filter(Boolean).join('\n')
 }
 
-function loopStageTask(session: ArtifactSession, stage: LoopStageDefinition, state: LoopState): string {
+// M36.2 — was: loopStageTask() + loopStageSystemPrompt() inline functions.
+// Now: build the Mustache var dict that prompt-composer's `loop.stage`
+// StagePromptBinding templates consume. The text content lives in
+// prompt-composer/prisma/seed.ts (loopDefaultTask, loopDeveloperTask,
+// loopQaTask). Edit there + re-seed to roll forward — no redeploy here.
+function buildLoopStageVars(
+  session: ArtifactSession,
+  stage: LoopStageDefinition,
+  state: LoopState,
+): Record<string, string> {
   const latestAccepted = state.stageAttempts
     .filter(attempt => attempt.verdict === 'PASS' || attempt.verdict === 'ACCEPTED_WITH_RISK')
     .map(attempt => `${attempt.stageLabel}#${attempt.attemptNumber}: ${attempt.verdict}`)
     .join('\n') || 'No accepted stages yet.'
-  const questions = (stage.questions ?? []).map(question => `- ${question.id}: ${question.question}${question.required ? ' (required)' : ''}`).join('\n') || '- No configured questions.'
+  const questions = (stage.questions ?? []).map(question =>
+    `- ${question.id}: ${question.question}${question.required ? ' (required)' : ''}`,
+  ).join('\n') || '- No configured questions.'
   const artifacts = (stage.expectedArtifacts ?? []).map(artifact =>
     `- ${artifact.title} (${artifact.kind})${artifact.required !== false ? ' [required]' : ''}${artifact.description ? `: ${artifact.description}` : ''}`,
   ).join('\n') || '- No explicit artifact contract; produce the stage default artifact pack.'
-  const sendBacks = state.reviewEvents.filter(event => event.type === 'SEND_BACK' || event.type === 'AUTO_SEND_BACK').slice(-5)
+  const sendBacks = state.reviewEvents
+    .filter(event => event.type === 'SEND_BACK' || event.type === 'AUTO_SEND_BACK')
+    .slice(-5)
     .map(event => `- ${event.message}`)
     .join('\n') || '- No send-backs yet.'
   const capturedDecisions = state.decisionAnswers.length
-    ? state.decisionAnswers.map(answer => `- ${answer.questionText ?? answer.questionId}: ${decisionAnswerText(answer) ?? answer.notes ?? 'answered'}${answer.notes ? ` | notes: ${answer.notes}` : ''}`).join('\n')
+    ? state.decisionAnswers.map(answer =>
+        `- ${answer.questionText ?? answer.questionId}: ${decisionAnswerText(answer) ?? answer.notes ?? 'answered'}${answer.notes ? ` | notes: ${answer.notes}` : ''}`,
+      ).join('\n')
     : '- No stakeholder decisions captured yet.'
-  const developerExecutionContract = normalizeAgentRole(stage.agentRole).includes('DEV')
-    ? [
-        'Developer execution contract:',
-        '- Treat captured stakeholder decisions and prior approved artifacts as implementation requirements.',
-        '- Produce an actual MCP/git code change when a writable workspace is available; do not stop at design or planning text.',
-        '- Inspect with AST/search/read tools, then mutate files with write_file/apply_patch and finish with git_commit or finish_work_branch so Code Review receives a captured diff.',
-        '- If the requested behavior already exists, add or update tests/docs that prove it and commit those changes.',
-        '- Only ask new open questions when the captured decisions are insufficient to safely implement.',
-      ].join('\n')
-    : ''
-  return [
-    `Run Blueprint loop stage: ${stage.label}`,
-    '',
-    `Goal: ${session.goal}`,
-    `Stage key: ${stage.key}`,
-    `Agent role: ${stage.agentRole}`,
-    '',
-    'Stage description:',
-    stage.description ?? 'No description supplied.',
-    '',
-    'Expected artifacts:',
+  return {
+    goal: session.goal,
+    stageKey: stage.key,
+    stageLabel: stage.label,
+    agentRole: stage.agentRole ?? '',
+    stageDescription: stage.description ?? 'No description supplied.',
     artifacts,
-    '',
-    'Configured questions:',
     questions,
-    '',
-    'Latest accepted stage decisions:',
     latestAccepted,
-    '',
-    'Captured stakeholder decisions and clarifications:',
     capturedDecisions,
-    '',
-    developerExecutionContract,
-    developerExecutionContract ? '' : undefined,
-    'Recent feedback loops:',
     sendBacks,
-    '',
-    'Do not ask an open question if the captured stakeholder decisions already answer the same intent. Reuse those answers as constraints for this stage.',
-    '',
-    'Return concise, structured workbench output with: decisions, risks, artifact updates for every expected artifact, only genuinely new open questions, and a gate recommendation of PASS, NEEDS_REWORK, or BLOCKED.',
-  ].join('\n')
-}
-
-function loopStageSystemPrompt(stage: LoopStageDefinition): string {
-  return [
-    `You are the ${stage.label} stage agent in a governed agentic delivery loop.`,
-    'Be explicit about what should pass, what should go back, and why.',
-    stage.approvalRequired !== false
-      ? 'Human approval is required after artifact production; prepare the artifact evidence for review.'
-      : 'This stage may proceed without human approval if policy allows.',
-    'When uncertain, ask targeted questions and preserve traceability to files, requirements, and tests.',
-    normalizeAgentRole(stage.agentRole).includes('DEV')
-      ? 'When a writable MCP workspace is available and matches the requested source, make the implementation with MCP code tools and commit locally so the approval view receives an actual diff. If no writable workspace is available, state that no actual code change was captured; do not fabricate a diff.'
-      : normalizeAgentRole(stage.agentRole).includes('QA') || normalizeAgentRole(stage.agentRole).includes('TEST') || normalizeAgentRole(stage.agentRole).includes('VERIFY')
-        ? 'Focus on verification, regressions, acceptance criteria, and certification proof.'
-        : 'Focus on architecture, planning, constraints, and design decisions.',
-  ].join(' ')
+  }
 }
 
 function buildStageInputSignature(
@@ -3234,6 +3253,8 @@ async function runStage(
   stage: BlueprintStage,
   agentTemplateId: string,
   task: string,
+  // M36.2 — resolved by caller from prompt-composer (was: stageSystemPrompt(stage))
+  systemPromptAppend: string,
 ): Promise<ExecuteResponse> {
   const traceId = `blueprint-${session.id}-${stage.toLowerCase()}`
   const executionConfig = readLoopState(session).executionConfig
@@ -3274,7 +3295,11 @@ async function runStage(
       },
     ],
     overrides: {
-      systemPromptAppend: stageSystemPrompt(stage),
+      // M36.2 — systemPromptAppend resolved by caller via prompt-composer
+      // /api/v1/stage-prompts/resolve. The literal "no source mutation" rule
+      // is a Blueprint-runner invariant (MVP scope), not a per-stage prompt,
+      // so it stays inline as a wrapper constraint.
+      systemPromptAppend,
       extraContext: 'This MVP must not mutate source code. Coding output is a simulated, reviewable proposal with evidence.',
     },
     model_overrides: {
@@ -4641,39 +4666,13 @@ function isUsefulModelResponse(value: string | undefined) {
   return Boolean(value && value.trim() && !value.includes('[mock]'))
 }
 
-function architectTask(goal: string) {
-  return [
-    `Create a solution architecture blueprint for: ${goal}`,
-    'Produce a mental model, user-visible gaps, architecture decisions, risks, and a contract-pack outline.',
-    'Keep the output structured with headings that can be reviewed by a human approver.',
-  ].join('\n')
-}
-
-function developerTask(goal: string) {
-  return [
-    `Create a simulated developer implementation plan for: ${goal}`,
-    'Do not mutate the repository. Produce expected file changes, task breakdown, code-level approach, and handoff notes.',
-    'For MCP evidence, write simulated developer code change summary to blueprint-proposed-change.md if a demo write tool is available.',
-  ].join('\n')
-}
-
-function qaTask(goal: string) {
-  return [
-    `Create QA and verification coverage for: ${goal}`,
-    'Produce QA tasks, verifier rules, acceptance criteria coverage, risk checks, and a certification recommendation.',
-    'Identify whether any spec gaps should send the work back to the Architect stage.',
-  ].join('\n')
-}
-
-function stageSystemPrompt(stage: BlueprintStage) {
-  if (stage === BlueprintStage.ARCHITECT) {
-    return 'You are the Architect agent. Build governed solution architecture from the approved source snapshot and call out gaps plainly.'
-  }
-  if (stage === BlueprintStage.DEVELOPER) {
-    return 'You are the Developer agent. Produce simulated implementation artifacts only; do not claim real files were changed.'
-  }
-  return 'You are the QA agent. Validate requirements, acceptance criteria, architecture decisions, and test strategy against the blueprint.'
-}
+// M36.2 — architectTask / developerTask / qaTask / stageSystemPrompt deleted.
+// Stage prompts now live in prompt-composer's StagePromptBinding rows
+// (seeded by agent-and-tools/apps/prompt-composer/prisma/seed.ts) and are
+// resolved at runtime via promptComposerClient.resolveStage({stageKey, vars}).
+// To change prompt text: edit seed.ts, re-seed singularity_composer DB.
+// To change the (stage → profile) mapping: edit a StagePromptBinding row
+// directly (or via the future admin UI) — no workgraph-api redeploy.
 
 function humanStage(stage: BlueprintStage) {
   return stage === BlueprintStage.ARCHITECT ? 'Architect'

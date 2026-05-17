@@ -29,6 +29,27 @@ const IDS = {
     DEVOPS: "00000000-0000-0000-0000-0000000000b6",
     PRODUCT_OWNER: "00000000-0000-0000-0000-0000000000b7",
   },
+  // M36.1 — Stage-bound profile UUIDs. These carry taskTemplate values and
+  // are kept separate from the role-base profiles (b1-b7) so a single role
+  // can be bound to multiple stage templates without overwriting each other.
+  stageProfiles: {
+    BLUEPRINT_ARCHITECT: "00000000-0000-0000-0000-0000000000f1",
+    BLUEPRINT_DEVELOPER: "00000000-0000-0000-0000-0000000000f2",
+    BLUEPRINT_QA:        "00000000-0000-0000-0000-0000000000f3",
+    LOOP_DEFAULT:        "00000000-0000-0000-0000-0000000000f4",
+    LOOP_DEVELOPER:      "00000000-0000-0000-0000-0000000000f5",
+    LOOP_QA:             "00000000-0000-0000-0000-0000000000f6",
+  },
+  // M36.1 — StagePromptBinding rows. Stable UUIDs so re-seed is idempotent.
+  // Convention: e1xx = blueprint.*, e2xx = loop.*
+  stageBindings: {
+    BLUEPRINT_ARCHITECT: "00000000-0000-0000-0000-0000000000e1",
+    BLUEPRINT_DEVELOPER: "00000000-0000-0000-0000-0000000000e2",
+    BLUEPRINT_QA:        "00000000-0000-0000-0000-0000000000e3",
+    LOOP_DEFAULT:        "00000000-0000-0000-0000-0000000000e4",
+    LOOP_DEVELOPER:      "00000000-0000-0000-0000-0000000000e5",
+    LOOP_QA:             "00000000-0000-0000-0000-0000000000e6",
+  },
 } as const;
 
 const platformConstitution = [
@@ -87,8 +108,160 @@ const roleContracts: Array<{
   },
 ];
 
+// ─────────────────────────────────────────────────────────────
+// M36.1 — Task templates moved out of workgraph-api/blueprint.router.ts.
+// These replace the hardcoded architectTask/developerTask/qaTask
+// + stageSystemPrompt + loopStageTask/loopStageSystemPrompt functions.
+// Edit here, re-seed, and the workbench picks up the new text on its
+// next /stage-prompts/resolve call — no workgraph-api redeploy.
+// ─────────────────────────────────────────────────────────────
+
+const blueprintArchitectTask = [
+  "Create a solution architecture blueprint for: {{goal}}",
+  "Produce a mental model, user-visible gaps, architecture decisions, risks, and a contract-pack outline.",
+  "Keep the output structured with headings that can be reviewed by a human approver.",
+].join("\n");
+
+const blueprintDeveloperTask = [
+  "Create a simulated developer implementation plan for: {{goal}}",
+  "Do not mutate the repository. Produce expected file changes, task breakdown, code-level approach, and handoff notes.",
+  "For MCP evidence, write simulated developer code change summary to blueprint-proposed-change.md if a demo write tool is available.",
+].join("\n");
+
+const blueprintQaTask = [
+  "Create QA and verification coverage for: {{goal}}",
+  "Produce QA tasks, verifier rules, acceptance criteria coverage, risk checks, and a certification recommendation.",
+  "Identify whether any spec gaps should send the work back to the Architect stage.",
+].join("\n");
+
+// Loop-stage task template — used by the loop runner. Reuses the
+// {{capturedDecisions}} / {{sendBacks}} / {{questions}} / {{artifacts}}
+// values that the caller passes in `vars`.
+const loopDefaultTask = [
+  "Run Blueprint loop stage: {{stageLabel}}",
+  "",
+  "Goal: {{goal}}",
+  "Stage key: {{stageKey}}",
+  "Agent role: {{agentRole}}",
+  "",
+  "Stage description:",
+  "{{stageDescription}}",
+  "",
+  "Expected artifacts:",
+  "{{artifacts}}",
+  "",
+  "Configured questions:",
+  "{{questions}}",
+  "",
+  "Latest accepted stage decisions:",
+  "{{latestAccepted}}",
+  "",
+  "Captured stakeholder decisions and clarifications:",
+  "{{capturedDecisions}}",
+  "",
+  "Recent feedback loops:",
+  "{{sendBacks}}",
+  "",
+  "Do not ask an open question if the captured stakeholder decisions already answer the same intent. Reuse those answers as constraints for this stage.",
+  "",
+  "Return concise, structured workbench output with: decisions, risks, artifact updates for every expected artifact, only genuinely new open questions, and a gate recommendation of PASS, NEEDS_REWORK, or BLOCKED.",
+].join("\n");
+
+// Developer-specific extension to the loop task. Encodes the "you must
+// actually mutate files" execution contract that was hardcoded in
+// blueprint.router.ts:2335-2343.
+const loopDeveloperTask = [
+  loopDefaultTask,
+  "",
+  "Developer execution contract:",
+  "- Treat captured stakeholder decisions and prior approved artifacts as implementation requirements.",
+  "- Produce an actual MCP/git code change when a writable workspace is available; do not stop at design or planning text.",
+  "- Inspect with AST/search/read tools, then mutate files with write_file/apply_patch and finish with git_commit or finish_work_branch so Code Review receives a captured diff.",
+  "- If the requested behavior already exists, add or update tests/docs that prove it and commit those changes.",
+  "- Only ask new open questions when the captured decisions are insufficient to safely implement.",
+].join("\n");
+
+// QA/test/verify-specific extension to the loop task — preserves the focus
+// guidance previously in loopStageSystemPrompt's ternary branch.
+const loopQaTask = [
+  loopDefaultTask,
+  "",
+  "QA / verification focus:",
+  "- Focus on verification, regressions, acceptance criteria, and certification proof.",
+  "- Cite evidence references for every certification claim.",
+].join("\n");
+
 function sha256(value: string): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+async function upsertBinding(input: {
+  id: string;
+  stageKey: string;
+  agentRole: string | null;
+  promptProfileId: string;
+  description?: string;
+}) {
+  await prisma.stagePromptBinding.upsert({
+    where: { id: input.id },
+    update: {
+      stageKey: input.stageKey,
+      agentRole: input.agentRole,
+      promptProfileId: input.promptProfileId,
+      isActive: true,
+      description: input.description ?? null,
+    },
+    create: {
+      id: input.id,
+      stageKey: input.stageKey,
+      agentRole: input.agentRole,
+      promptProfileId: input.promptProfileId,
+      isActive: true,
+      description: input.description ?? null,
+    },
+  });
+}
+
+async function upsertStageProfile(input: {
+  id: string;
+  name: string;
+  description: string;
+  stageKey: string;
+  roleGate: string | null;
+  taskTemplate: string;
+  // Layers to link: at minimum the platform constitution + output contract.
+  // Optionally a role-specific AGENT_ROLE layer.
+  roleLayerId?: string;
+}) {
+  await prisma.promptProfile.upsert({
+    where: { id: input.id },
+    update: {
+      name: input.name,
+      description: input.description,
+      ownerScopeType: "PLATFORM",
+      ownerScopeId: null,
+      status: "ACTIVE",
+      stageKey: input.stageKey,
+      roleGate: input.roleGate,
+      taskTemplate: input.taskTemplate,
+    },
+    create: {
+      id: input.id,
+      name: input.name,
+      description: input.description,
+      ownerScopeType: "PLATFORM",
+      ownerScopeId: null,
+      status: "ACTIVE",
+      stageKey: input.stageKey,
+      roleGate: input.roleGate,
+      taskTemplate: input.taskTemplate,
+    },
+  });
+  await linkLayer(input.id, IDS.layers.platformConstitution, 10);
+  if (input.roleLayerId) {
+    await linkLayer(input.id, input.roleLayerId, 100);
+  }
+  await linkLayer(input.id, IDS.layers.outputContract, 900);
 }
 
 async function upsertLayer(input: {
@@ -188,6 +361,111 @@ async function main() {
     await linkLayer(profileId, roleLayerId, 100);
     await linkLayer(profileId, IDS.layers.outputContract, 900);
   }
+
+  // ─────────────────────────────────────────────────────────────
+  // M36.1 — Stage-bound profiles + StagePromptBinding rows.
+  // These move the prompt text out of workgraph-api/blueprint.router.ts.
+  // After seeding, the workbench resolves stage prompts at runtime via
+  // POST /api/v1/stage-prompts/resolve — no inline TS strings.
+  // ─────────────────────────────────────────────────────────────
+
+  await upsertStageProfile({
+    id: IDS.stageProfiles.BLUEPRINT_ARCHITECT,
+    name: "Blueprint Architect Stage Profile",
+    description: "Drives the Architect stage of the Blueprint Workbench (3-stage architect/dev/qa run).",
+    stageKey: "blueprint.architect",
+    roleGate: "ARCHITECT",
+    taskTemplate: blueprintArchitectTask,
+    roleLayerId: IDS.layers.role.ARCHITECT,
+  });
+  await upsertStageProfile({
+    id: IDS.stageProfiles.BLUEPRINT_DEVELOPER,
+    name: "Blueprint Developer Stage Profile",
+    description: "Drives the Developer stage of the Blueprint Workbench. Simulated implementation only.",
+    stageKey: "blueprint.developer",
+    roleGate: "DEVELOPER",
+    taskTemplate: blueprintDeveloperTask,
+    roleLayerId: IDS.layers.role.DEVELOPER,
+  });
+  await upsertStageProfile({
+    id: IDS.stageProfiles.BLUEPRINT_QA,
+    name: "Blueprint QA Stage Profile",
+    description: "Drives the QA stage of the Blueprint Workbench.",
+    stageKey: "blueprint.qa",
+    roleGate: "QA",
+    taskTemplate: blueprintQaTask,
+    roleLayerId: IDS.layers.role.QA,
+  });
+  await upsertStageProfile({
+    id: IDS.stageProfiles.LOOP_DEFAULT,
+    name: "Blueprint Loop Default Stage Profile",
+    description: "Default per-stage prompt for the Blueprint Loop runner when no role-specific binding matches.",
+    stageKey: "loop.stage",
+    roleGate: null,
+    taskTemplate: loopDefaultTask,
+  });
+  await upsertStageProfile({
+    id: IDS.stageProfiles.LOOP_DEVELOPER,
+    name: "Blueprint Loop Developer Stage Profile",
+    description: "Developer-role override for the Blueprint Loop runner. Encodes the actual-code-change execution contract.",
+    stageKey: "loop.stage",
+    roleGate: "DEVELOPER",
+    taskTemplate: loopDeveloperTask,
+    roleLayerId: IDS.layers.role.DEVELOPER,
+  });
+  await upsertStageProfile({
+    id: IDS.stageProfiles.LOOP_QA,
+    name: "Blueprint Loop QA Stage Profile",
+    description: "QA/test/verify-role override for the Blueprint Loop runner.",
+    stageKey: "loop.stage",
+    roleGate: "QA",
+    taskTemplate: loopQaTask,
+    roleLayerId: IDS.layers.role.QA,
+  });
+
+  // Bindings: (stageKey, agentRole?) → stageProfile.id
+  await upsertBinding({
+    id: IDS.stageBindings.BLUEPRINT_ARCHITECT,
+    stageKey: "blueprint.architect",
+    agentRole: null,
+    promptProfileId: IDS.stageProfiles.BLUEPRINT_ARCHITECT,
+    description: "Blueprint Architect stage — single binding (role implied by stage).",
+  });
+  await upsertBinding({
+    id: IDS.stageBindings.BLUEPRINT_DEVELOPER,
+    stageKey: "blueprint.developer",
+    agentRole: null,
+    promptProfileId: IDS.stageProfiles.BLUEPRINT_DEVELOPER,
+    description: "Blueprint Developer stage.",
+  });
+  await upsertBinding({
+    id: IDS.stageBindings.BLUEPRINT_QA,
+    stageKey: "blueprint.qa",
+    agentRole: null,
+    promptProfileId: IDS.stageProfiles.BLUEPRINT_QA,
+    description: "Blueprint QA stage.",
+  });
+  await upsertBinding({
+    id: IDS.stageBindings.LOOP_DEFAULT,
+    stageKey: "loop.stage",
+    agentRole: null,
+    promptProfileId: IDS.stageProfiles.LOOP_DEFAULT,
+    description: "Loop stage default — fallback when no role-specific binding matches.",
+  });
+  await upsertBinding({
+    id: IDS.stageBindings.LOOP_DEVELOPER,
+    stageKey: "loop.stage",
+    agentRole: "DEVELOPER",
+    promptProfileId: IDS.stageProfiles.LOOP_DEVELOPER,
+    description: "Loop stage — DEVELOPER role override (must mutate files).",
+  });
+  await upsertBinding({
+    id: IDS.stageBindings.LOOP_QA,
+    stageKey: "loop.stage",
+    agentRole: "QA",
+    promptProfileId: IDS.stageProfiles.LOOP_QA,
+    description: "Loop stage — QA/test/verify role override.",
+  });
 
   console.log("[prompt-composer seed] done");
 }

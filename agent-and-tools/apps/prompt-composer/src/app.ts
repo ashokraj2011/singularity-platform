@@ -8,6 +8,7 @@ import { optionalAuth, requireAuth } from "./middleware/auth.middleware";
 import { promptProfileRoutes, promptLayerRoutes, promptAssemblyRoutes } from "./modules/prompts/prompt.routes";
 import { composeRoutes, composeDebugRoutes } from "./modules/compose/compose.routes";
 import { compiledContextRoutes } from "./modules/compose/compiled-context.routes";
+import { stagePromptsRoutes } from "./modules/stage-prompts/stage-prompts.routes";
 import { runInvariantChecks } from "./healthz-strict";
 import { env } from "./config/env";
 
@@ -49,5 +50,8 @@ app.use("/api/v1/compose-and-respond", composeRoutes);
 app.use("/api/v1/compose-and-respond/debug-retrieval", composeDebugRoutes);
 // M25.5 C8 — operator audit hatch for compiled-context capsules.
 app.use("/api/v1/compiled-contexts", compiledContextRoutes);
+// M36.1 — stage-prompt resolver. workgraph-api blueprint runner POSTs to
+// /api/v1/stage-prompts/resolve so prompt text no longer lives in TS source.
+app.use("/api/v1/stage-prompts", stagePromptsRoutes);
 
 app.use(errorMiddleware);

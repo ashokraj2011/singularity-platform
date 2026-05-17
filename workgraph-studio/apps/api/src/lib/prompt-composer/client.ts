@@ -107,6 +107,26 @@ export class PromptComposerError extends Error {
   }
 }
 
+// M36.1 — Stage-prompt resolution. Callers stop hardcoding prompt strings
+// in TS source and instead pass {stageKey, agentRole?, vars} here. Composer
+// reads StagePromptBinding → PromptProfile, renders the taskTemplate
+// (Mustache `{{var}}` substitution), and returns the ready-to-use task body
+// plus a system-prompt fragment to splice into the /compose-and-respond call.
+export interface ResolveStageRequest {
+  stageKey: string
+  agentRole?: string
+  vars?: Record<string, unknown>
+}
+
+export interface ResolveStageResponse {
+  task: string
+  systemPromptAppend: string
+  promptProfileId: string
+  bindingId: string
+  stageKey: string
+  agentRole: string | null
+}
+
 export const promptComposerClient = {
   async composeAndRespond(input: ComposeRequest): Promise<ComposeResponse> {
     const url = `${config.PROMPT_COMPOSER_URL}/api/v1/compose-and-respond`
@@ -126,6 +146,33 @@ export const promptComposerClient = {
     const json = await res.json() as { success: boolean; data: ComposeResponse; error?: unknown }
     if (!json.success) {
       throw new PromptComposerError('prompt-composer returned success=false', 502, json.error)
+    }
+    return json.data
+  },
+
+  // M36.1 — Resolve a (stageKey, agentRole) tuple to a rendered task + system
+  // prompt. Replaces inline architectTask/developerTask/qaTask/stageSystemPrompt
+  // /loopStageTask/loopStageSystemPrompt in workgraph-api source. Edit the
+  // prompts via prompt-composer's seed.ts (or live via a future admin UI);
+  // workgraph-api carries no prompt text after M36.2.
+  async resolveStage(input: ResolveStageRequest): Promise<ResolveStageResponse> {
+    const url = `${config.PROMPT_COMPOSER_URL}/api/v1/stage-prompts/resolve`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new PromptComposerError(
+        `prompt-composer /stage-prompts/resolve returned ${res.status}: ${text.slice(0, 500)}`,
+        res.status,
+      )
+    }
+    const json = await res.json() as { success: boolean; data: ResolveStageResponse; error?: unknown }
+    if (!json.success) {
+      throw new PromptComposerError('prompt-composer stage resolve returned success=false', 502, json.error)
     }
     return json.data
   },

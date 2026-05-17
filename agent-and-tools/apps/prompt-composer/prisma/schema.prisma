@@ -92,7 +92,18 @@ model PromptProfile {
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
-  layers PromptProfileLayer[]
+  // M36.1 — optional Mustache-style task template (`{{varName}}` substitution).
+  // When set, callers can resolve a stage prompt through StagePromptBinding and
+  // receive a rendered task body without composing the string themselves.
+  taskTemplate   String?
+  // M36.1 — optional canonical stage key bound to this profile (informational;
+  // the real binding lives in StagePromptBinding for the (stage, role) tuple).
+  stageKey       String?
+  // M36.1 — optional role narrowing for this profile when selected by stage.
+  roleGate       String?
+
+  layers   PromptProfileLayer[]
+  bindings StagePromptBinding[]
 }
 
 model PromptLayer {
@@ -177,6 +188,37 @@ model CapabilityCompiledContext {
   @@index([capabilityId, agentTemplateId])
   @@index([taskSignature])
   @@index([expiresAt])
+}
+
+// M36.1 — StagePromptBinding maps a `(stageKey, agentRole)` tuple to a
+// PromptProfile + task template. Callers (workgraph-api blueprint runner,
+// loop runner, etc.) resolve a stage to its prompt at call time instead of
+// hardcoding role-branched strings in TS source.
+//
+// Lookup precedence (most specific wins):
+//   1. Exact (stageKey, agentRole) match
+//   2. (stageKey, NULL) — stage-only default
+// Inactive bindings are skipped.
+model StagePromptBinding {
+  id              String   @id @default(uuid())
+  // Canonical stage key. Convention: <surface>.<key> e.g.
+  // "blueprint.architect", "blueprint.developer", "blueprint.qa",
+  // "loop.develop", "loop.qa", "loop.review", etc.
+  stageKey        String
+  // Optional role narrowing (e.g. "DEVELOPER", "QA", "ARCHITECT").
+  // NULL means "any role at this stage".
+  agentRole       String?
+  promptProfileId String
+  isActive        Boolean  @default(true)
+  // Notes for the prompt engineer.
+  description     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  promptProfile   PromptProfile @relation(fields: [promptProfileId], references: [id])
+
+  @@unique([stageKey, agentRole])
+  @@index([stageKey])
 }
 
 model PromptAssemblyLayer {

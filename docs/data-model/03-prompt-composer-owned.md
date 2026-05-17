@@ -54,6 +54,9 @@ DATA_ACCESS_POLICY DATA_ACCESS_POLICY
     EntityStatus status 
     DateTime createdAt 
     DateTime updatedAt 
+    String taskTemplate "❓"
+    String stageKey "❓"
+    String roleGate "❓"
     }
   
 
@@ -121,6 +124,17 @@ DATA_ACCESS_POLICY DATA_ACCESS_POLICY
     }
   
 
+  "StagePromptBinding" {
+    String id "🗝️"
+    String stageKey 
+    String agentRole "❓"
+    Boolean isActive 
+    String description "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
   "PromptAssemblyLayer" {
     String id "🗝️"
     String promptLayerId "❓"
@@ -139,5 +153,6 @@ DATA_ACCESS_POLICY DATA_ACCESS_POLICY
     "PromptLayer" |o--|| "EntityStatus" : "enum:status"
     "PromptProfileLayer" }o--|| "PromptProfile" : "promptProfile"
     "PromptProfileLayer" }o--|| "PromptLayer" : "promptLayer"
+    "StagePromptBinding" }o--|| "PromptProfile" : "promptProfile"
     "PromptAssemblyLayer" }o--|| "PromptAssembly" : "promptAssembly"
 ```
