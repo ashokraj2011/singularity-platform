@@ -60,7 +60,12 @@ const app = express();
 const PORT = Number(process.env.PORT ?? 8500);
 
 app.use(helmet());
-app.use(cors());
+// M35.3 — tighten CORS: restrict to configured origins and enable credentials
+const corsOrigins = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://localhost:3000").split(",").map(o => o.trim());
+app.use(cors({
+  origin: corsOrigins,
+  credentials: true,
+}));
 app.use(express.json({ limit: "5mb" }));
 
 app.get("/health", (_req, res) => {

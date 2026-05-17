@@ -33,7 +33,12 @@ function authOptional(): boolean {
 }
 
 app.use(helmet());
-app.use(cors());
+// M35.3 — tighten CORS: restrict to configured origins and enable credentials
+const corsOrigins = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://localhost:3000").split(",").map(o => o.trim());
+app.use(cors({
+  origin: corsOrigins,
+  credentials: true,
+}));
 app.use(express.json());
 
 app.get("/health", (_req, res) => {
