@@ -45,12 +45,16 @@ async function findBinding(stageKey: string, agentRole?: string): Promise<Bindin
 
 /**
  * Assemble the system-prompt fragment from a profile's AGENT_ROLE +
- * OUTPUT_CONTRACT layers (the bits the workbench previously concatenated
- * inline as `stageSystemPrompt` / `loopStageSystemPrompt`).
+ * TOOL_CONTRACT + OUTPUT_CONTRACT layers (the bits the workbench previously
+ * concatenated inline as `stageSystemPrompt` / `loopStageSystemPrompt`, plus
+ * M36.3's tool-policy layers that replace mcp-server's inline system messages).
  *
  * We deliberately keep PLATFORM_CONSTITUTION OUT of this fragment — that
  * layer is already injected by the main compose.service path; including
  * it here would double-prompt the model.
+ *
+ * Layers are joined with newlines so tool-policy guidance reads as its own
+ * paragraph rather than a run-on with the role contract.
  */
 async function loadSystemPromptFragment(profileId: string): Promise<string> {
   const links = await prisma.promptProfileLayer.findMany({
@@ -62,11 +66,15 @@ async function loadSystemPromptFragment(profileId: string): Promise<string> {
   for (const link of links) {
     const layer = link.promptLayer;
     if (!layer || layer.status !== "ACTIVE") continue;
-    if (layer.layerType === "AGENT_ROLE" || layer.layerType === "OUTPUT_CONTRACT") {
+    if (
+      layer.layerType === "AGENT_ROLE" ||
+      layer.layerType === "TOOL_CONTRACT" ||
+      layer.layerType === "OUTPUT_CONTRACT"
+    ) {
       parts.push(layer.content);
     }
   }
-  return parts.join(" ").trim();
+  return parts.join("\n\n").trim();
 }
 
 export const stagePromptsService = {

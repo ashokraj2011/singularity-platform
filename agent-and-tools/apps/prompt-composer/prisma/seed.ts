@@ -10,6 +10,11 @@ const IDS = {
   layers: {
     platformConstitution: "00000000-0000-0000-0000-0000000000c1",
     outputContract: "00000000-0000-0000-0000-0000000000c2",
+    // M36.3 — tool-policy layers (TOOL_CONTRACT). These replace mcp-server's
+    // inline `invoke.ts:854-880` system-message injection. Composer attaches
+    // them to the right profiles; mcp-server runs as a dumb tool runner.
+    localCodeIntelligence:  "00000000-0000-0000-0000-0000000000c3",
+    developerCodeMutation:  "00000000-0000-0000-0000-0000000000c4",
     role: {
       ARCHITECT: "00000000-0000-0000-0000-0000000000a1",
       DEVELOPER: "00000000-0000-0000-0000-0000000000a2",
@@ -64,6 +69,26 @@ const outputContract = [
   "Return concise, reviewable work products.",
   "When the stage expects artifacts, organize the response under clear headings that can be converted into durable Workgraph consumables.",
   "Include assumptions, risks, evidence references, and next-step recommendations when relevant.",
+].join("\n");
+
+// M36.3 — tool-policy layer content. Previously hardcoded in
+// mcp-server/src/mcp/invoke.ts:854-880 and conditionally injected as system
+// messages. Now lives here as TOOL_CONTRACT layers that composer attaches to
+// the right profiles before the assembled prompt ever reaches mcp-server.
+const localCodeIntelligencePolicy = [
+  "Local code intelligence policy:",
+  "- For code inspection or edits, use AST tools before full-file reads.",
+  "- Start with find_symbol or get_dependencies, then get_symbol for signatures and summaries.",
+  "- Use get_ast_slice for exact source ranges. Use read_file only when a full file is explicitly needed.",
+  "- Keep private workspace code local; report summaries, slices, changed paths, branch, commit SHA, and receipts.",
+].join("\n");
+
+const developerCodeMutationPolicy = [
+  "Developer code-mutation policy:",
+  "- This run is expected to produce real MCP/git code-change evidence.",
+  "- Do not provide only a narrative implementation plan.",
+  "- Inspect the workspace with MCP code tools, modify files with apply_patch or write_file, and finish with git_commit or finish_work_branch.",
+  "- If no source change is needed, commit test or documentation evidence that proves the requested behavior.",
 ].join("\n");
 
 const roleContracts: Array<{
@@ -349,6 +374,27 @@ async function main() {
     isRequired: false,
   });
 
+  // M36.3 — tool-policy layers. Composer attaches these to profiles whose
+  // agents are expected to inspect code (localCodeIntelligencePolicy) or
+  // make real code mutations (developerCodeMutationPolicy). Replaces
+  // mcp-server/src/mcp/invoke.ts:854-880 inline system-message injection.
+  await upsertLayer({
+    id: IDS.layers.localCodeIntelligence,
+    name: "Local Code Intelligence Tool Policy",
+    layerType: "TOOL_CONTRACT",
+    content: localCodeIntelligencePolicy,
+    priority: 200,
+    isRequired: false,
+  });
+  await upsertLayer({
+    id: IDS.layers.developerCodeMutation,
+    name: "Developer Code-Mutation Tool Policy",
+    layerType: "TOOL_CONTRACT",
+    content: developerCodeMutationPolicy,
+    priority: 210,
+    isRequired: false,
+  });
+
   for (const rc of roleContracts) {
     const profileId = IDS.profiles[rc.role];
     const roleLayerId = IDS.layers.role[rc.role];
@@ -446,6 +492,19 @@ async function main() {
     extraContextTemplate: loopDefaultExtraContext,
     roleLayerId: IDS.layers.role.QA,
   });
+
+  // M36.3 — attach tool-policy layers to the stage profiles that need them.
+  // The blueprint developer is SIMULATED (no real mutation), so it gets
+  // localCodeIntelligence but NOT developerCodeMutation. Only LOOP_DEVELOPER
+  // gets the mutation policy because that's the real-code-edit path.
+  await linkLayer(IDS.stageProfiles.BLUEPRINT_ARCHITECT,  IDS.layers.localCodeIntelligence, 200);
+  await linkLayer(IDS.stageProfiles.BLUEPRINT_DEVELOPER,  IDS.layers.localCodeIntelligence, 200);
+  await linkLayer(IDS.stageProfiles.BLUEPRINT_QA,         IDS.layers.localCodeIntelligence, 200);
+  await linkLayer(IDS.stageProfiles.LOOP_DEFAULT,         IDS.layers.localCodeIntelligence, 200);
+  await linkLayer(IDS.stageProfiles.LOOP_DEVELOPER,       IDS.layers.localCodeIntelligence, 200);
+  await linkLayer(IDS.stageProfiles.LOOP_QA,              IDS.layers.localCodeIntelligence, 200);
+  // Only the real-mutation path gets the mutation policy.
+  await linkLayer(IDS.stageProfiles.LOOP_DEVELOPER,       IDS.layers.developerCodeMutation, 210);
 
   // Bindings: (stageKey, agentRole?) → stageProfile.id
   await upsertBinding({

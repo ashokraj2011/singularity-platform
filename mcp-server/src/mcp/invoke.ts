@@ -851,33 +851,14 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
 
   const messages: ChatMessage[] = [];
   if (body.systemPrompt) messages.push({ role: "system", content: body.systemPrompt });
-  if (toolList.some((tool) => ["find_symbol", "get_symbol", "get_ast_slice", "get_dependencies"].includes(tool.name))) {
-    messages.push({
-      role: "system",
-      content: [
-        "Local code intelligence policy:",
-        "- For code inspection or edits, use AST tools before full-file reads.",
-        "- Start with find_symbol or get_dependencies, then get_symbol for signatures and summaries.",
-        "- Use get_ast_slice for exact source ranges. Use read_file only when a full file is explicitly needed.",
-        "- Keep private workspace code local; report summaries, slices, changed paths, branch, commit SHA, and receipts.",
-      ].join("\n"),
-    });
-  }
-  if (
-    body.allowAutonomousMutation === true &&
-    toolList.some((tool) => ["apply_patch", "write_file", "git_commit", "finish_work_branch"].includes(tool.name))
-  ) {
-    messages.push({
-      role: "system",
-      content: [
-        "Developer stage tool policy:",
-        "- This run is expected to produce real MCP/git code-change evidence.",
-        "- Do not provide only a narrative implementation plan.",
-        "- Inspect the workspace with MCP code tools, modify files with apply_patch or write_file, and finish with git_commit or finish_work_branch.",
-        "- If no source change is needed, commit test or documentation evidence that proves the requested behavior.",
-      ].join("\n"),
-    });
-  }
+  // M36.3 — the "Local code intelligence policy" and "Developer stage tool
+  // policy" system messages used to be injected here, gated by tool-name
+  // pattern matching. They now live in prompt-composer as TOOL_CONTRACT
+  // layers (Local Code Intelligence Tool Policy, Developer Code-Mutation
+  // Tool Policy) attached to the right stage profiles. mcp-server is now
+  // a pure tool runner: it does not decorate the prompt with policy text.
+  // The caller (context-fabric, via composer) is the single source of
+  // truth for the system prompt content.
   for (const h of body.history) messages.push({ ...h });
   messages.push({ role: "user", content: body.message });
 
