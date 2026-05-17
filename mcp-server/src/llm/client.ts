@@ -127,6 +127,12 @@ export type ConfiguredProviderInfo = {
 
 let cachedGatewayStatus: Record<string, { ready: boolean; warnings: string[] }> = {};
 
+// Bug-fix (M-fix) — TTL-guarded lazy refresh. Before this, the cache was
+// only ever populated by /healthz/strict, so the Operations Portal's
+// /llm/models query always saw an empty cache → openai showed "Missing key"
+// even when llm-gateway had the key and reported ready:true.
+let lastRefreshedAt = 0;
+
 
 export async function refreshGatewayProviderStatus(): Promise<void> {
   const url = gatewayUrl();
@@ -151,10 +157,27 @@ export async function refreshGatewayProviderStatus(): Promise<void> {
     for (const p of body.providers ?? []) {
       cachedGatewayStatus[p.name] = { ready: p.ready, warnings: p.warnings ?? [] };
     }
+    // Mark the cache as fresh ONLY when the probe succeeded — failures keep
+    // the old timestamp so the next request retries instead of waiting out the TTL.
+    lastRefreshedAt = Date.now();
   } catch (err) {
     log.warn(`[llm] gateway probe failed: ${err instanceof Error ? err.message : String(err)}`);
     cachedGatewayStatus = {};
   }
+}
+
+/**
+ * Bug-fix (M-fix) — Ensure the gateway-provider cache is no older than
+ * `maxAgeMs`, re-probing if necessary. Called by /llm/models + /llm/providers
+ * route handlers so a UI page-load reflects current key state without
+ * waiting for /healthz/strict to be hit.
+ *
+ * TTL default 10s — short enough that a flipped env var becomes visible
+ * fast, long enough that a hot UI doesn't hammer the gateway.
+ */
+export async function ensureFreshGatewayStatus(maxAgeMs = 10_000): Promise<void> {
+  if (Date.now() - lastRefreshedAt < maxAgeMs) return;
+  await refreshGatewayProviderStatus();
 }
 
 

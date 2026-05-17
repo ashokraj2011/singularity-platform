@@ -10,7 +10,7 @@ import { toolsRouter } from "./mcp/tools";
 import { workRouter } from "./mcp/work";
 import { resourcesRouter } from "./mcp/resources";
 import { eventsRouter } from "./mcp/events";
-import { listConfiguredProviders } from "./llm/client";
+import { listConfiguredProviders, ensureFreshGatewayStatus } from "./llm/client";
 import { modelCatalogResponse } from "./llm/model-catalog";
 import { configuredDefaultModel, configuredDefaultProvider, providerConfigSummary } from "./llm/provider-config";
 import { runInvariantChecks } from "./healthz-strict";
@@ -58,7 +58,10 @@ app.get("/healthz/strict", async (_req, res) => {
 // M11 follow-up — operators can verify which providers are configured
 // (without any key material being returned). Protected because model/provider
 // posture is operational metadata; keep only health endpoints public.
-app.get("/llm/providers", bearerAuth, (_req, res) => {
+app.get("/llm/providers", bearerAuth, async (_req, res) => {
+  // Bug-fix (M-fix) — refresh the gateway-provider cache before responding
+  // so the Operations Portal sees current key state, not boot-time empty cache.
+  await ensureFreshGatewayStatus();
   res.json({
     success: true,
     data: {
@@ -71,7 +74,10 @@ app.get("/llm/providers", bearerAuth, (_req, res) => {
   });
 });
 
-app.get("/llm/models", bearerAuth, (_req, res) => {
+app.get("/llm/models", bearerAuth, async (_req, res) => {
+  // Bug-fix (M-fix) — same refresh path as /llm/providers; the model
+  // catalog's `ready` per row reads from the same cachedGatewayStatus.
+  await ensureFreshGatewayStatus();
   res.json({
     success: true,
     data: modelCatalogResponse(),

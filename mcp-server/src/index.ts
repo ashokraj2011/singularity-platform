@@ -8,6 +8,9 @@ import { startSelfRegistration } from "./lib/platform-registry/register";
 import { LaptopRelayClient, ensureDeviceId } from "./laptop/relay-client";
 import { indexWorkspace } from "./workspace/ast-index";
 import { configuredDefaultModel, configuredDefaultProvider } from "./llm/provider-config";
+// Bug-fix (M-fix) — warm the gateway-provider cache on boot so the first
+// Operations Portal page-load after restart shows accurate readiness.
+import { refreshGatewayProviderStatus } from "./llm/client";
 
 // M26 — laptop mode. When LAPTOP_MODE=true, skip the inbound HTTP server
 // (laptops can't open ports behind NAT) and open an outbound WSS to the
@@ -89,6 +92,13 @@ function bootServerMode(): void {
       },
       "[mcp-server] listening",
     );
+    // Bug-fix (M-fix) — fire-and-forget cache warm. Without this, the
+    // first /llm/models call after boot would synchronously probe the
+    // gateway (adding 100-2000ms latency). With this, the cache is warm
+    // by the time the Portal renders the readiness panel.
+    void refreshGatewayProviderStatus().catch((err) => {
+      log.warn({ err: (err as Error).message }, "[mcp-server] initial gateway probe failed (cache will refresh lazily on first /llm/* request)");
+    });
   });
 }
 
