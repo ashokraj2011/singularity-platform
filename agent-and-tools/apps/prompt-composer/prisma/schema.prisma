@@ -75,6 +75,9 @@ enum PromptLayerType {
   OUTPUT_CONTRACT
   APPROVAL_POLICY
   DATA_ACCESS_POLICY
+  // M38 — Cross-workflow lessons learned. EngineLessons are surfaced as
+  // assembly-time layers when an active rule semantically matches the task.
+  GLOBAL_LESSON
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -225,6 +228,39 @@ model EventHorizonAction {
 
   @@unique([surface, intent])
   @@index([surface, isActive, displayOrder])
+}
+
+// M38 — Cross-workflow lessons learned. When audit-gov's Singularity Engine
+// confirms a failure cluster as resolved (no new failures in a 1h window after
+// last-seen), an LLM extracts a 2-sentence rule from the failure pattern + the
+// successful retry trace. The rule is embedded and stored here scoped to the
+// failing (capability, optional tool). At assembly time, compose.service.ts
+// pulls the top-K semantically-similar active lessons in as a GLOBAL_LESSON
+// prompt layer so future agents on that capability inherit the platform's
+// learnings without anyone manually authoring them.
+//
+// supersededBy lets a higher-confidence newer lesson on the same scope replace
+// an older one without losing history (audit trail intact).
+model EngineLesson {
+  id              String   @id @default(uuid())
+  capabilityId    String
+  toolName        String?
+  ruleText        String
+  // pgvector — written via raw SQL UPDATE (Prisma can't bind unsupported types).
+  // Read via raw SELECT with cosine `<=>` operator.
+  embedding       Unsupported("vector(1536)")?
+  sourceIssueId   String?
+  sourceTraceIds  Json     @default("[]")
+  confidence      Float    @default(0.5)
+  isActive        Boolean  @default(true)
+  supersededBy    String?
+  extractedBy     String?  // e.g. "audit-gov:engine:sweep" or operator user id
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([capabilityId, isActive])
+  @@index([capabilityId, toolName, isActive])
+  @@index([sourceIssueId])
 }
 
 // M36.4 — SystemPrompt is a flat key/value store for single-shot LLM prompts

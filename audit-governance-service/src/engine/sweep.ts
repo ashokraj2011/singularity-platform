@@ -19,6 +19,8 @@ import {
   clusterFailures, countTracesInWindow,
   type FailureSignal, type FailureCategory,
 } from "./cluster";
+// M38 — confirmed-resolved issues drive the lesson extraction tail of each sweep.
+import { confirmStableResolutions, extractPendingLessons } from "./extract-lesson";
 
 const SWEEP_INTERVAL_MS = Number(process.env.ENGINE_SWEEP_INTERVAL_MS ?? 5 * 60_000);
 const SWEEP_WINDOW_MIN  = Number(process.env.ENGINE_SWEEP_WINDOW_MIN ?? 10);
@@ -225,6 +227,28 @@ async function runSweep(): Promise<void> {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[engine] sweep error:", (err as Error).message);
+  }
+
+  // M38 — Lesson extraction tail.
+  //   Phase A: promote stably-resolved issues (no re-open after the cooldown).
+  //   Phase B: extract + POST a 2-sentence rule per confirmed issue, up to a
+  //            small batch so a backlog doesn't starve the next sweep cycle.
+  // Wrapped in its own try/catch so any extraction error doesn't poison the
+  // main failure-detection loop.
+  try {
+    const confirmed = await confirmStableResolutions();
+    if (confirmed > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`[engine] confirmed ${confirmed} issue(s) as stably-resolved`);
+    }
+    const extracted = await extractPendingLessons();
+    if (extracted > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`[engine] extracted ${extracted} lesson(s) from confirmed-resolved issues`);
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[engine] lesson-extract tail error:", (err as Error).message);
   }
 }
 

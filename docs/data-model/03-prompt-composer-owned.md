@@ -42,6 +42,7 @@ CODE_CONTEXT CODE_CONTEXT
 OUTPUT_CONTRACT OUTPUT_CONTRACT
 APPROVAL_POLICY APPROVAL_POLICY
 DATA_ACCESS_POLICY DATA_ACCESS_POLICY
+GLOBAL_LESSON GLOBAL_LESSON
         }
     
   "PromptProfile" {
@@ -134,6 +135,22 @@ DATA_ACCESS_POLICY DATA_ACCESS_POLICY
     Int displayOrder 
     Boolean isActive 
     String description "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "EngineLesson" {
+    String id "🗝️"
+    String capabilityId 
+    String toolName "❓"
+    String ruleText 
+    String sourceIssueId "❓"
+    Json sourceTraceIds 
+    Float confidence 
+    Boolean isActive 
+    String supersededBy "❓"
+    String extractedBy "❓"
     DateTime createdAt 
     DateTime updatedAt 
     }

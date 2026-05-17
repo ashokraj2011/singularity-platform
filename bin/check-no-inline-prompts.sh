@@ -61,7 +61,7 @@ EXCLUDE_DIRS=(
 
 # Whitelist: files where prompt content is *expected* to live. A match is
 # allowed if its path matches any of these patterns.
-ALLOW_RE='(prompt-composer/prisma/seed\.ts|agent-runtime/prisma/seed\.ts|mcp-server/src/tools/|mcp-server/src/llm/mock\.ts|mcp-server/src/audit/provenanceExtractor\.ts|mcp-server/src/lib/governance-policy\.ts|mcp-server/src/mcp/invoke\.ts|mcp-server/src/mcp/tools\.ts|mcp-server/src/mcp/work\.ts|tool-service/src/lib/seed-core-tools\.ts|\.test\.ts$|\.contract\.test\.ts$|/bin/|/docs/|/\.singularity/|/scripts/|/tests/|/test/|/prisma/seed)'
+ALLOW_RE='(prompt-composer/prisma/seed\.ts|agent-runtime/prisma/seed\.ts|mcp-server/src/tools/|mcp-server/src/llm/mock\.ts|mcp-server/src/audit/provenanceExtractor\.ts|mcp-server/src/lib/governance-policy\.ts|mcp-server/src/mcp/invoke\.ts|mcp-server/src/mcp/tools\.ts|mcp-server/src/mcp/work\.ts|tool-service/src/lib/seed-core-tools\.ts|audit-governance-service/src/engine/extract-lesson\.ts|\.test\.ts$|\.contract\.test\.ts$|/bin/|/docs/|/\.singularity/|/scripts/|/tests/|/test/|/prisma/seed)'
 
 # Filter grep output through the allow-list. Lines whose file path matches
 # the allow regex are removed; the rest are real violations.

@@ -11,6 +11,7 @@ import { compiledContextRoutes } from "./modules/compose/compiled-context.routes
 import { stagePromptsRoutes } from "./modules/stage-prompts/stage-prompts.routes";
 import { systemPromptsRoutes } from "./modules/system-prompts/system-prompts.routes";
 import { eventHorizonActionsRoutes } from "./modules/event-horizon-actions/event-horizon-actions.routes";
+import { lessonsRoutes } from "./modules/lessons/lessons.routes";
 import { runInvariantChecks } from "./healthz-strict";
 import { env } from "./config/env";
 
@@ -63,5 +64,10 @@ app.use("/api/v1/system-prompts", systemPromptsRoutes);
 // floating assistant chip on every SPA come from this endpoint, scoped by
 // surface (workflow-manager / capability-admin / uac / portal).
 app.use("/api/v1/event-horizon-actions", eventHorizonActionsRoutes);
+// M38 — Lessons-learned catalog. audit-gov's Singularity Engine POSTs here
+// when a confirmed-resolved failure cluster yields a 2-sentence rule, and
+// compose.service pulls top-K similar lessons in as GLOBAL_LESSON layers
+// at assembly time.
+app.use("/api/v1/lessons", lessonsRoutes);
 
 app.use(errorMiddleware);

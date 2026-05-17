@@ -162,6 +162,10 @@ const PRIORITY = {
   AGENT_ROLE: 100,
   CAPABILITY_CONTEXT: 200,
   RUNTIME_EVIDENCE: 250,
+  // M38 — Cross-workflow lessons learned. Slot between MEMORY_CONTEXT and
+  // CODE_CONTEXT so platform-wide rules carry slightly less weight than
+  // capability-scoped memory but more than raw code excerpts.
+  GLOBAL_LESSON: 280,
   MEMORY_CONTEXT: 300,
   CODE_CONTEXT: 320, // M14 — between MEMORY_CONTEXT and WORKFLOW_PHASE_BASE
   WORKFLOW_PHASE_BASE: 350,
@@ -362,6 +366,8 @@ export const composeService = {
       knowledgeIncluded: 0,
       memoryIncluded: 0,
       codeIncluded: 0,
+      // M38 — count of GLOBAL_LESSON layers added this assembly.
+      lessonsIncluded: 0,
       toolContractsIncluded: 0,
       trimmedLayers: 0,
       // M25.7 — true when PROMPT_INCLUDE_CODE_CONTEXT=false (default post-M27).
@@ -559,6 +565,48 @@ export const composeService = {
             layerHash: sha256(r3.rendered),
           });
           retrievalStats.memoryIncluded += 1;
+        }
+
+        // ── Cross-workflow lessons learned → GLOBAL_LESSON (M38) ──────────
+        // Pull top-K active lessons (extracted by audit-gov's Singularity
+        // Engine from confirmed-resolved failure clusters) that semantically
+        // match the task. Each lesson is a 2-sentence rule scoped to the
+        // capability. Disabled when taskVec is null (no embedding, no match).
+        if (taskVec && process.env.LESSONS_LEARNED_ENABLED !== "false") {
+          try {
+            const { lessonsService } = await import("../lessons/lessons.service");
+            const lessonTake = Number(process.env.LESSONS_TOPK ?? 3);
+            const lessons = await lessonsService.semanticLessons(capabilityId, taskVec, { take: lessonTake });
+            for (const l of lessons) {
+              const citation = makeCitationKey("lesson", l.toolName ? `${l.toolName}-rule` : "rule", l.id);
+              const body = trimText(l.ruleText, budget.maxLayerChars);
+              const renderedBlock = `${formatCiteMarker(citation)}\n[lesson${l.toolName ? `:${l.toolName}` : ""}] (confidence=${l.confidence.toFixed(2)})\n${body}`;
+              const r = renderMustache(renderedBlock, ctx);
+              warnings.push(...r.warnings);
+              evidenceChunks.push({
+                source_kind: "lesson",
+                source_id: l.id,
+                citation_key: citation,
+                excerpt: toExcerpt(body),
+                confidence: clampConfidence(l.confidence),
+                cosine_similarity: l.cosineSimilarity,
+                metadata: {
+                  capabilityId,
+                  ...(l.toolName ? { toolName: l.toolName } : {}),
+                },
+              });
+              layers.push({
+                layerType: "GLOBAL_LESSON",
+                priority: PRIORITY.GLOBAL_LESSON,
+                inclusionReason: `lesson learned (cos=${l.cosineSimilarity.toFixed(3)}, conf=${l.confidence.toFixed(2)})`,
+                contentSnapshot: r.rendered,
+                layerHash: sha256(r.rendered),
+              });
+              retrievalStats.lessonsIncluded = (retrievalStats.lessonsIncluded ?? 0) + 1;
+            }
+          } catch (err) {
+            warnings.push(`lessons retrieval failed: ${(err as Error).message}`);
+          }
         }
 
         // ── Code symbols → CODE_CONTEXT ────────────────────────────────────

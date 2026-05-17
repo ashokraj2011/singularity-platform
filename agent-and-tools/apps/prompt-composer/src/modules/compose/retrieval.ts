@@ -17,7 +17,8 @@ import { createHash } from "node:crypto";
 // human-readable handle the LLM can preserve in its output via cite markers.
 // excerpt is content.slice(0, 500) so PromptAssembly.evidenceRefs stays small
 // even when the underlying artifact body is multi-MB.
-export type SourceKind = "knowledge" | "memory" | "symbol" | "artifact";
+// M38 — "lesson" added for EngineLesson rows surfaced as GLOBAL_LESSON layers.
+export type SourceKind = "knowledge" | "memory" | "symbol" | "artifact" | "lesson";
 
 export interface RetrievedChunk {
   source_kind:        SourceKind;
@@ -43,6 +44,7 @@ function kindPrefix(k: SourceKind): string {
   if (k === "knowledge") return "KA";
   if (k === "memory")    return "DM";
   if (k === "symbol")    return "CS";
+  if (k === "lesson")    return "LL"; // M38 — Lessons Learned
   return "AR";
 }
 

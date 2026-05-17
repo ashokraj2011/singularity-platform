@@ -1,4 +1,6 @@
-export type RetrievedSourceKind = "knowledge" | "memory" | "symbol" | "artifact";
+// M38 — "lesson" added for cross-workflow lessons learned (EngineLesson rows
+// surfaced as GLOBAL_LESSON prompt layers at assembly time).
+export type RetrievedSourceKind = "knowledge" | "memory" | "symbol" | "artifact" | "lesson";
 
 export interface RetrievedChunk {
   source_kind: RetrievedSourceKind;

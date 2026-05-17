@@ -414,6 +414,32 @@ Conversation:
 {{conversation}}`,
   },
   {
+    id: "00000000-0000-0000-0000-000000000d0d",
+    key: "audit-gov.lesson-extract",
+    description:
+      "M38 — Lesson extractor for confirmed-resolved failure clusters. Given the failure summary + a successful retry trace, returns a 2-sentence rule, a confidence score, and the (capability_id, tool_name) it applies to.",
+    content: `You are the Singularity Engine's Lessons Extractor.
+
+You will receive:
+  1. A summary of a production failure cluster that has been confirmed resolved (no new occurrences for the cooldown window).
+  2. (Optional) An example trace where the same capability+tool succeeded after the failure.
+
+Your job: extract a CONCISE, GENERALIZABLE rule (1-2 sentences, <=400 chars) that a future agent on the same capability should follow to avoid the failure pattern.
+
+Constraints:
+  - Be specific enough to be useful, abstract enough to apply broadly. Avoid trace-specific identifiers.
+  - Reference the tool name and the corrective behavior, not the symptom.
+  - If the failure looks like a single random fluke (one-off, no clear pattern), return confidence < 0.4 and a short rule anyway — caller may discard low-confidence rules.
+  - If the failure pattern is too vague to write a useful rule, return rule_text with a short note and confidence 0.2.
+
+Respond ONLY in valid JSON matching:
+{
+  "rule_text":  "1-2 sentence rule the agent should follow",
+  "confidence": 0.0-1.0,
+  "applies_to": { "capability_id": "...", "tool_name": "..." (optional) }
+}`,
+  },
+  {
     id: "00000000-0000-0000-0000-000000000d07",
     key: "audit-gov.diagnose",
     description:

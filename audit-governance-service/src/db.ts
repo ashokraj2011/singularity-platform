@@ -133,6 +133,19 @@ export async function ensureEngineEvalTables(): Promise<void> {
       created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
+    -- M38 — track resolution evidence so the lesson extractor can find the
+    -- successful retry traces that closed an issue. ADD COLUMN IF NOT EXISTS
+    -- means existing deployments upgrade non-destructively on next boot.
+    ALTER TABLE audit_governance.engine_issues
+      ADD COLUMN IF NOT EXISTS resolved_trace_ids   TEXT[]      DEFAULT '{}',
+      ADD COLUMN IF NOT EXISTS resolution_confirmed_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS lesson_extracted_at  TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS lesson_id            UUID;
+
+    CREATE INDEX IF NOT EXISTS idx_engine_issues_lesson_pending
+      ON audit_governance.engine_issues(resolution_confirmed_at)
+      WHERE lesson_extracted_at IS NULL AND resolution_confirmed_at IS NOT NULL;
+
     CREATE INDEX IF NOT EXISTS idx_engine_eval_runs_trace
       ON audit_governance.engine_eval_runs(trace_id);
     CREATE INDEX IF NOT EXISTS idx_engine_eval_runs_dataset
