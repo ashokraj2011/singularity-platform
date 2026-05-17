@@ -104,6 +104,27 @@ jobs:
         working-directory: ${{ matrix.service.dir }}
         run: npm run test:contracts --if-present
 
+      # M35.5 — run vitest where it's been scaffolded. `--if-present` makes
+      # this a no-op for services that haven't been onboarded yet, so the
+      # matrix doesn't fail until every service has at least a smoke test.
+      - name: unit tests (vitest)
+        working-directory: ${{ matrix.service.dir }}
+        run: npm test --if-present
+
+  # ─── M35.3 — monorepo dependency version consistency ────────────────────────
+  # Fails CI when Zod or Express major versions diverge across the 9 TS
+  # workspaces. See bin/check-monorepo-versions.sh for the target versions.
+  monorepo-version-consistency:
+    name: M35.3 monorepo version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: bin/check-monorepo-versions.sh
+        run: bash bin/check-monorepo-versions.sh
+
   # ─── Python service (context-fabric) ────────────────────────────────────────
   python-syntax:
     name: python syntax (context-fabric)

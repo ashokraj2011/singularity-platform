@@ -12,7 +12,10 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
-    "test:contracts": "MCP_BEARER_TOKEN=test-bearer-token-12345 LLM_GATEWAY_URL=mock ts-node --transpile-only src/lib/governance-policy.contract.test.ts && MCP_BEARER_TOKEN=test-bearer-token-12345 LLM_GATEWAY_URL=mock ts-node --transpile-only src/lib/http-auth.contract.test.ts"
+    "test:contracts": "MCP_BEARER_TOKEN=test-bearer-token-12345 LLM_GATEWAY_URL=mock ts-node --transpile-only src/lib/governance-policy.contract.test.ts && MCP_BEARER_TOKEN=test-bearer-token-12345 LLM_GATEWAY_URL=mock ts-node --transpile-only src/lib/http-auth.contract.test.ts",
+    "test": "MCP_BEARER_TOKEN=test-bearer-token-12345-min-16-chars LLM_GATEWAY_URL=mock vitest run",
+    "test:watch": "MCP_BEARER_TOKEN=test-bearer-token-12345-min-16-chars LLM_GATEWAY_URL=mock vitest",
+    "test:coverage": "MCP_BEARER_TOKEN=test-bearer-token-12345-min-16-chars LLM_GATEWAY_URL=mock vitest run --coverage"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -36,8 +39,10 @@
     "@types/sql.js": "^1.4.11",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.13",
+    "@vitest/coverage-v8": "^2.1.8",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
   }
 }

@@ -10,7 +10,10 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "ts-node prisma/seed.ts",
     "prisma:generate": "prisma generate",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "test": "JWT_SECRET=test-jwt-secret-min-32-chars-long! DATABASE_URL=postgresql://test:test@localhost:5434/test vitest run",
+    "test:watch": "JWT_SECRET=test-jwt-secret-min-32-chars-long! DATABASE_URL=postgresql://test:test@localhost:5434/test vitest",
+    "test:coverage": "JWT_SECRET=test-jwt-secret-min-32-chars-long! DATABASE_URL=postgresql://test:test@localhost:5434/test vitest run --coverage"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
@@ -52,8 +55,10 @@
     "@types/node-cron": "^3.0.11",
     "prisma": "^5.22.0",
     "prisma-erd-generator": "2.4.2",
+    "@vitest/coverage-v8": "^2.1.8",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
   }
 }
