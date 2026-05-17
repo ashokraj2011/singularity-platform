@@ -1,14 +1,57 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 from context_fabric_shared.token_counter import count_message_tokens, count_text_tokens
 from context_fabric_shared.hash_utils import sha256_json
 from context_fabric_shared.costs import estimate_input_cost
+from context_fabric_shared import get_system_prompt
 from .repository import get_messages, get_latest_summary, list_memory_items, insert_context_package
 from .memory_search import rank_memory_items
 from .summarizer import summary_to_text
 
-DEFAULT_SYSTEM_PROMPT = """You are a helpful assistant using Context Fabric. Use the supplied optimized context carefully. If information is missing, say what is missing instead of inventing details."""
+_logger = logging.getLogger(__name__)
+
+# M37.2 — Was a module-level DEFAULT_SYSTEM_PROMPT string literal. Now fetched
+# from prompt-composer (SystemPrompt key=context-fabric.context-compiler.default-system).
+# Cached at first use; falls back to the legacy literal if composer is
+# unreachable so context-fabric still serves traffic.
+_FALLBACK_DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful assistant using Context Fabric. Use the supplied optimized "
+    "context carefully. If information is missing, say what is missing instead of "
+    "inventing details."
+)
+_DEFAULT_SYSTEM_PROMPT_CACHE: dict[str, str] = {}
+
+
+async def _get_default_system_prompt_async() -> str:
+    if "value" in _DEFAULT_SYSTEM_PROMPT_CACHE:
+        return _DEFAULT_SYSTEM_PROMPT_CACHE["value"]
+    try:
+        result = await get_system_prompt("context-fabric.context-compiler.default-system")
+        _DEFAULT_SYSTEM_PROMPT_CACHE["value"] = result.content
+        return result.content
+    except Exception as err:
+        _logger.warning("[context_compiler] could not fetch default system prompt from composer: %s; falling back", err)
+        _DEFAULT_SYSTEM_PROMPT_CACHE["value"] = _FALLBACK_DEFAULT_SYSTEM_PROMPT
+        return _FALLBACK_DEFAULT_SYSTEM_PROMPT
+
+
+def _get_default_system_prompt_sync() -> str:
+    """Sync wrapper for callers that aren't async — uses the cache once warmed
+    by the async path; otherwise returns the fallback."""
+    return _DEFAULT_SYSTEM_PROMPT_CACHE.get("value", _FALLBACK_DEFAULT_SYSTEM_PROMPT)
+
+
+# Back-compat shim — kept so external imports of DEFAULT_SYSTEM_PROMPT
+# don't break. New code should call _get_default_system_prompt_sync().
+DEFAULT_SYSTEM_PROMPT = _FALLBACK_DEFAULT_SYSTEM_PROMPT
+
+
+async def warm_default_system_prompt() -> None:
+    """Call this from app startup so the first request hits a warm cache."""
+    await _get_default_system_prompt_async()
 
 MODE_SETTINGS = {
     "none": {"recent": 999999, "memory": 999999, "summary": False},
@@ -26,7 +69,7 @@ def _to_chat_messages(rows: list[dict]) -> list[dict]:
 
 
 def build_raw_context(session_id: str, user_message: str | None = None, system_prompt: str | None = None) -> list[dict]:
-    messages = [{"role": "system", "content": system_prompt or DEFAULT_SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": system_prompt or _get_default_system_prompt_sync()}]
     messages.extend(_to_chat_messages(get_messages(session_id, ascending=True)))
     if user_message:
         messages.append({"role": "user", "content": user_message})
@@ -95,11 +138,11 @@ Optimization mode: {mode}
 """.strip()
 
     reserve = max(1000, int(max_context_tokens * 0.15))
-    usable = max(1000, max_context_tokens - reserve - count_text_tokens(system_prompt or DEFAULT_SYSTEM_PROMPT))
+    usable = max(1000, max_context_tokens - reserve - count_text_tokens(system_prompt or _get_default_system_prompt_sync()))
     context_block = _fit_text_to_budget(context_block, usable)
 
     return [
-        {"role": "system", "content": system_prompt or DEFAULT_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt or _get_default_system_prompt_sync()},
         {"role": "user", "content": context_block},
     ], included_sections
 

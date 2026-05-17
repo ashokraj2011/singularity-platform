@@ -1,12 +1,33 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 import httpx
 
 from context_fabric_shared.token_counter import count_text_tokens
+from context_fabric_shared import get_system_prompt
 from .config import settings
+
+_logger = logging.getLogger(__name__)
+
+# M37.2 — Fallback values used only when prompt-composer is unreachable on
+# cold start. The seeded SystemPrompt content is identical, so behavior is
+# unchanged in steady state.
+_SUMMARIZER_SYSTEM_FALLBACK = "You are Context Fabric's summarization engine. Return only valid JSON."
+_SUMMARIZER_USER_FALLBACK = (
+    "You are Context Fabric's summarization engine.\n"
+    "Create a compact structured JSON summary of this session.\n"
+    "Return only valid JSON with these keys:\n"
+    "{{schemaKeys}}\n\n"
+    "Rules:\n"
+    "- Preserve decisions, requirements, constraints, open questions, and durable learning.\n"
+    "- Do not invent details.\n"
+    "- Keep each list concise.\n\n"
+    "Conversation:\n"
+    "{{conversation}}"
+)
 
 SUMMARY_SCHEMA_KEYS = [
     "current_goal",
@@ -79,27 +100,44 @@ def normalize_summary(data: dict) -> dict:
     return normalized
 
 
+async def _resolve_summarizer_prompts(schema_keys_text: str, compact: str) -> tuple[str, str]:
+    """M37.2 — Fetch system + user templates from prompt-composer with fallback
+    to the inline literals if composer is unreachable. The user template is
+    Mustache-substituted server-side; for the system message we just take the
+    static content."""
+    try:
+        sys_result = await get_system_prompt("context-fabric.summarizer.system")
+        system_msg = sys_result.content
+    except Exception as err:
+        _logger.warning("[summarizer] system prompt fetch failed: %s; using fallback", err)
+        system_msg = _SUMMARIZER_SYSTEM_FALLBACK
+    try:
+        user_result = await get_system_prompt(
+            "context-fabric.summarizer.user-template",
+            vars_payload={"schemaKeys": schema_keys_text, "conversation": compact},
+        )
+        user_msg = user_result.content
+    except Exception as err:
+        _logger.warning("[summarizer] user prompt fetch failed: %s; using fallback", err)
+        # Inline Mustache substitution against the fallback template.
+        user_msg = (
+            _SUMMARIZER_USER_FALLBACK
+            .replace("{{schemaKeys}}", schema_keys_text)
+            .replace("{{conversation}}", compact)
+        )
+    return system_msg, user_msg
+
+
 async def summarize_with_llm(messages: list[dict], agent_id: str | None = None) -> dict:
     """M33 — Routes through the central LLM gateway. The only fallback is the
-    deterministic in-process string-parsing summary (no provider fallback)."""
+    deterministic in-process string-parsing summary (no provider fallback).
+    M37.2 — Prompt strings (system + user template) sourced from prompt-composer."""
     compact = "\n".join([f"{m['role']}: {m['content']}" for m in messages[-40:]])
-    prompt = f"""
-You are Context Fabric's summarization engine.
-Create a compact structured JSON summary of this session.
-Return only valid JSON with these keys:
-{SUMMARY_SCHEMA_KEYS}
-
-Rules:
-- Preserve decisions, requirements, constraints, open questions, and durable learning.
-- Do not invent details.
-- Keep each list concise.
-
-Conversation:
-{compact}
-""".strip()
+    schema_keys_text = str(SUMMARY_SCHEMA_KEYS)
+    system_msg, prompt = await _resolve_summarizer_prompts(schema_keys_text, compact)
     payload = {
         "messages": [
-            {"role": "system", "content": "You are Context Fabric's summarization engine. Return only valid JSON."},
+            {"role": "system", "content": system_msg},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0,

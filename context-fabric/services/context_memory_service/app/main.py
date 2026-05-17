@@ -23,6 +23,18 @@ def _startup():
 
 
 @app.on_event("startup")
+async def _warm_system_prompts() -> None:
+    """M37.2 — Warm the SystemPrompt cache so the first /context/compile call
+    hits a populated cache. Silently no-ops if composer is unreachable."""
+    try:
+        from .context_compiler import warm_default_system_prompt
+        await warm_default_system_prompt()
+    except Exception as err:
+        import logging
+        logging.getLogger(__name__).warning("[startup] system-prompt warm failed: %s", err)
+
+
+@app.on_event("startup")
 async def _register_with_platform() -> None:
     import os as _os
     from .platform_registry import start_self_registration

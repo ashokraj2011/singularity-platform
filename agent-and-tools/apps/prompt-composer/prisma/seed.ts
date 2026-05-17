@@ -381,6 +381,39 @@ OUTPUT: just the paragraph. No headers, no JSON, no preamble.`,
     ].join("\n"),
   },
   {
+    id: "00000000-0000-0000-0000-000000000d0a",
+    key: "context-fabric.context-compiler.default-system",
+    description:
+      "Default system prompt used by context_memory_service when the caller doesn't supply one. Was DEFAULT_SYSTEM_PROMPT in context-fabric/services/context_memory_service/app/context_compiler.py:11.",
+    content:
+      "You are a helpful assistant using Context Fabric. Use the supplied optimized context carefully. If information is missing, say what is missing instead of inventing details.",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000000d0b",
+    key: "context-fabric.summarizer.system",
+    description:
+      "System message for Context Fabric's session-summary engine — forces JSON-only output. Was hardcoded at context-fabric/services/context_memory_service/app/summarizer.py:102.",
+    content: "You are Context Fabric's summarization engine. Return only valid JSON.",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000000d0c",
+    key: "context-fabric.summarizer.user-template",
+    description:
+      "Mustache template for the user message Context Fabric's summarizer sends to the LLM. Vars: {{schemaKeys}}, {{conversation}}. Was f-string-built at context-fabric/services/context_memory_service/app/summarizer.py:86-99.",
+    content: `You are Context Fabric's summarization engine.
+Create a compact structured JSON summary of this session.
+Return only valid JSON with these keys:
+{{schemaKeys}}
+
+Rules:
+- Preserve decisions, requirements, constraints, open questions, and durable learning.
+- Do not invent details.
+- Keep each list concise.
+
+Conversation:
+{{conversation}}`,
+  },
+  {
     id: "00000000-0000-0000-0000-000000000d07",
     key: "audit-gov.diagnose",
     description:
