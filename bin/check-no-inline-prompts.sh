@@ -17,18 +17,24 @@
 #
 # Allowed locations (whitelist):
 #   - agent-and-tools/apps/prompt-composer/prisma/seed.ts            (the source of truth)
+#   - agent-runtime/prisma/seed.ts                                   (role-contract seeds)
 #   - mcp-server/src/tools/                                          (tool descriptors)
 #   - mcp-server/src/llm/mock.ts                                     (test mock provider)
 #   - mcp-server/src/audit/provenanceExtractor.ts                    (parses tool names from invocations — needs to know the catalog)
 #   - mcp-server/src/lib/governance-policy.ts                        (risk-tier policy table — separate from prompts)
 #   - mcp-server/src/mcp/invoke.ts (hasTool helper)                  (governance detection, not prompt content)
-#   - mcp-server/src/mcp/tools.ts                                    (sync tool-call endpoint, documented bypass for M37)
+#   - mcp-server/src/mcp/tools.ts                                    (deprecated sync tool-call endpoint, env-gated in prod)
+#   - mcp-server/src/mcp/work.ts                                     (M37.1 purpose-built work-branch endpoint)
 #   - agent-and-tools/apps/tool-service/src/lib/seed-core-tools.ts   (tool catalog seed)
-#   - workgraph-studio/.../GitPushExecutor.ts                        (documented bypass for M37)
 #   - **/*.test.ts / **/*.contract.test.ts                           (tests)
 #   - bin/                                                            (scripts, incl. this guard)
 #   - docs/                                                           (docs)
 #   - .singularity/                                                   (operator config)
+#
+# M37.1 — GitPushExecutor.ts is no longer whitelisted: it uses the
+# purpose-built /mcp/work/finish-branch endpoint and carries no tool-name
+# literal in caller TS. If a regression re-introduces a hardcoded name,
+# the guard catches it.
 #
 # Exit 0 → clean. Exit non-zero → at least one new inline-prompt regression.
 
@@ -55,7 +61,7 @@ EXCLUDE_DIRS=(
 
 # Whitelist: files where prompt content is *expected* to live. A match is
 # allowed if its path matches any of these patterns.
-ALLOW_RE='(prompt-composer/prisma/seed\.ts|agent-runtime/prisma/seed\.ts|mcp-server/src/tools/|mcp-server/src/llm/mock\.ts|mcp-server/src/audit/provenanceExtractor\.ts|mcp-server/src/lib/governance-policy\.ts|mcp-server/src/mcp/invoke\.ts|mcp-server/src/mcp/tools\.ts|tool-service/src/lib/seed-core-tools\.ts|GitPushExecutor\.ts|\.test\.ts$|\.contract\.test\.ts$|/bin/|/docs/|/\.singularity/|/scripts/|/tests/|/test/|/prisma/seed)'
+ALLOW_RE='(prompt-composer/prisma/seed\.ts|agent-runtime/prisma/seed\.ts|mcp-server/src/tools/|mcp-server/src/llm/mock\.ts|mcp-server/src/audit/provenanceExtractor\.ts|mcp-server/src/lib/governance-policy\.ts|mcp-server/src/mcp/invoke\.ts|mcp-server/src/mcp/tools\.ts|mcp-server/src/mcp/work\.ts|tool-service/src/lib/seed-core-tools\.ts|\.test\.ts$|\.contract\.test\.ts$|/bin/|/docs/|/\.singularity/|/scripts/|/tests/|/test/|/prisma/seed)'
 
 # Filter grep output through the allow-list. Lines whose file path matches
 # the allow regex are removed; the rest are real violations.

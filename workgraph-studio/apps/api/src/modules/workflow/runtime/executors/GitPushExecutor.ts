@@ -184,6 +184,10 @@ async function blockNode(
   await publishOutbox('WorkflowNode', node.id, 'GitPushBlocked', { instanceId: instance.id, nodeId: node.id, output })
 }
 
+// M37.1 — Uses the purpose-built POST /mcp/work/finish-branch endpoint
+// instead of the generic /mcp/tools/call bypass with a hardcoded tool name.
+// The tool name now lives in mcp-server (as the implementation behind the
+// named endpoint); the executor just describes WHAT it wants done.
 async function callMcpFinishWorkBranch(args: {
   instance: WorkflowInstance
   node: WorkflowNode
@@ -193,19 +197,16 @@ async function callMcpFinishWorkBranch(args: {
   workItemCode?: string
   branchName?: string
 }): Promise<JsonObject> {
-  const response = await fetch(`${config.MCP_SERVER_URL.replace(/\/$/, '')}/mcp/tools/call`, {
+  const response = await fetch(`${config.MCP_SERVER_URL.replace(/\/$/, '')}/mcp/work/finish-branch`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       authorization: `Bearer ${config.MCP_BEARER_TOKEN}`,
     },
     body: JSON.stringify({
-      name: 'finish_work_branch',
-      arguments: {
-        message: args.message,
-        push: true,
-        remote: args.remote,
-      },
+      message: args.message,
+      push: true,
+      remote: args.remote,
       runContext: {
         traceId: `git-push-${args.instance.id}-${args.node.id}`,
         runId: args.instance.id,
@@ -225,7 +226,7 @@ async function callMcpFinishWorkBranch(args: {
     body = { raw: text }
   }
   if (!response.ok) {
-    throw new Error(`MCP finish_work_branch failed (${response.status}): ${text}`)
+    throw new Error(`MCP /work/finish-branch failed (${response.status}): ${text}`)
   }
   return body
 }

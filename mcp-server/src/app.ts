@@ -7,6 +7,7 @@ import { bearerAuth } from "./middleware/auth";
 import { errorMiddleware } from "./middleware/error";
 import { invokeRouter } from "./mcp/invoke";
 import { toolsRouter } from "./mcp/tools";
+import { workRouter } from "./mcp/work";
 import { resourcesRouter } from "./mcp/resources";
 import { eventsRouter } from "./mcp/events";
 import { listConfiguredProviders } from "./llm/client";
@@ -82,6 +83,10 @@ app.get("/llm/models", bearerAuth, (_req, res) => {
 app.use("/mcp", bearerAuth);
 app.use("/mcp", invokeRouter);
 app.use("/mcp", toolsRouter);
+// M37.1 — purpose-built workflow-branch operations. Replaces the bypass
+// path where GitPushExecutor used to POST a hardcoded tool name to the
+// generic /mcp/tools/call endpoint.
+app.use("/mcp", workRouter);
 app.use("/mcp", resourcesRouter);
 app.use("/mcp", eventsRouter);
 

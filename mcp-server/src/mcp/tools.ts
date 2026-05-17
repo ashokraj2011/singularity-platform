@@ -27,11 +27,30 @@ toolsRouter.get("/tools/list", (_req, res) => {
 /**
  * POST /mcp/tools/call
  *
- * Synchronous, single-shot tool invocation outside the agent loop. Useful
- * for testing and for clients that want to drive the LLM themselves.
+ * Synchronous, single-shot tool invocation outside the agent loop.
+ *
+ * M37.1 — This is a known bypass around the agent loop / governance /
+ * approval checks. Production-class environments refuse it by default;
+ * set `MCP_ALLOW_GENERIC_TOOLS_CALL=true` to opt in (e.g. tests, dev).
+ *
+ * For deterministic operational hooks (like the GIT_PUSH workflow node
+ * pushing a work branch), use purpose-built endpoints (POST /mcp/work/...)
+ * instead. Those don't require a tool-name string from the caller and
+ * are auditable as named operations.
  *
  * Body: { name: string, arguments: object, runContext?: { traceId, runId, ... } }
  */
+function isProdClass(): boolean {
+  const env = (process.env.NODE_ENV ?? "development").toLowerCase();
+  return ["production", "prod", "staging", "perf"].includes(env);
+}
+
+function genericToolsCallEnabled(): boolean {
+  // Dev/test: enabled by default. Prod-class: opt-in via env flag.
+  if (!isProdClass()) return true;
+  return (process.env.MCP_ALLOW_GENERIC_TOOLS_CALL ?? "").toLowerCase() === "true";
+}
+
 const CallSchema = z.object({
   name: z.string(),
   arguments: z.record(z.unknown()).default({}),
@@ -53,6 +72,18 @@ const CallSchema = z.object({
 });
 
 toolsRouter.post("/tools/call", async (req, res) => {
+  // M37.1 — Refuse generic tool-call in production-class envs unless
+  // explicitly opted in. Operational callers (e.g. workgraph-api's
+  // GIT_PUSH executor) should use purpose-built endpoints.
+  if (!genericToolsCallEnabled()) {
+    throw new AppError(
+      "POST /mcp/tools/call is disabled in production-class environments. " +
+        "Use a purpose-built endpoint (e.g. /mcp/work/finish-branch) or set " +
+        "MCP_ALLOW_GENERIC_TOOLS_CALL=true to opt in for testing.",
+      403,
+      "GENERIC_TOOLS_CALL_DISABLED",
+    );
+  }
   const parsed = CallSchema.safeParse(req.body);
   if (!parsed.success) {
     throw new AppError("invalid /mcp/tools/call payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
