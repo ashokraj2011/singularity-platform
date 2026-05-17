@@ -28,6 +28,8 @@ import { McpEventEnvelope, SubscriptionFilter } from "../events/types";
 interface ActiveSubscription {
   id: string;
   unsubscribe: () => void;
+  // M35.2 — Per-subscription event queue with backpressure
+  eventQueue: McpEventEnvelope[];
 }
 
 function authorise(req: IncomingMessage): boolean {
@@ -83,10 +85,34 @@ export function attachWsBridge(wss: WebSocketServer): void {
       if (type === "subscribe.events") {
         const filter = (msg.filter ?? msg.filters) as SubscriptionFilter | undefined;
         const subId = uuidv4();
+        const sub: ActiveSubscription = {
+          id: subId,
+          unsubscribe: () => {},
+          eventQueue: [],
+        };
+        // M35.2 — Subscription with queue cap 1000, warn at 75%, drop oldest at cap
         const off = events.subscribe(filter, (ev: McpEventEnvelope) => {
+          const QUEUE_CAP = 1000;
+          const WARN_THRESHOLD = 750; // 75%
+
+          sub.eventQueue.push(ev);
+          if (sub.eventQueue.length === WARN_THRESHOLD) {
+            send(ws, {
+              type: "backpressure.warning",
+              subscription_id: subId,
+              queue_size: sub.eventQueue.length,
+              message: "event queue approaching capacity",
+            });
+          }
+          if (sub.eventQueue.length > QUEUE_CAP) {
+            // Drop the oldest event
+            sub.eventQueue.shift();
+          }
+          // Send the event to the client
           send(ws, { type: "event", subscription_id: subId, event: ev });
         });
-        subs.set(subId, { id: subId, unsubscribe: off });
+        sub.unsubscribe = off;
+        subs.set(subId, sub);
         send(ws, { type: "subscribed", id: correlationId, subscription_id: subId });
         return;
       }
@@ -107,15 +133,34 @@ export function attachWsBridge(wss: WebSocketServer): void {
         const filter = (msg.filter ?? msg.filters) as SubscriptionFilter | undefined;
         const since_id = msg.since_id as string | undefined;
         const since_timestamp = msg.since_timestamp as string | undefined;
+        // M35.2 — Cap replay to 5000 events or 10 MB, whichever first
+        const MAX_REPLAY_EVENTS = 5000;
+        const MAX_REPLAY_BYTES = 10 * 1024 * 1024; // 10 MB
         const limit = (msg.limit as number | undefined) ?? 500;
-        const batch = events.replaySince({ since_id, since_timestamp, filter, limit });
+        const requestLimit = Math.min(limit, MAX_REPLAY_EVENTS);
+        const batch = events.replaySince({ since_id, since_timestamp, filter, limit: requestLimit });
+
+        // Calculate total size of batch and truncate if needed
+        let totalBytes = 0;
+        let truncatedBatch = batch;
+        for (let i = 0; i < batch.length; i++) {
+          const eventSize = JSON.stringify(batch[i]).length;
+          if (totalBytes + eventSize > MAX_REPLAY_BYTES) {
+            truncatedBatch = batch.slice(0, i);
+            break;
+          }
+          totalBytes += eventSize;
+        }
+
         send(ws, {
           type: "replay.batch",
           id: correlationId,
-          count: batch.length,
-          events: batch,
+          count: truncatedBatch.length,
+          events: truncatedBatch,
           // tail_id helps the client request the next replay window
-          tail_id: batch.length > 0 ? batch[batch.length - 1].id : null,
+          tail_id: truncatedBatch.length > 0 ? truncatedBatch[truncatedBatch.length - 1].id : null,
+          // M35.2 — Signal if the replay was truncated due to limits
+          replay_truncated: truncatedBatch.length < batch.length,
         });
         return;
       }

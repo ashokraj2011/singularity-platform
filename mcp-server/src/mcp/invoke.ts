@@ -881,11 +881,36 @@ invokeRouter.post("/resume", async (req, res) => {
   const body = parsed.data;
   const startedAt = Date.now();
 
+  // M35.2 — Verify continuation token signature and reject replays
+  const pendingResult = takePending(body.continuation_token);
+  if (!pendingResult.ok) {
+    // M35.2 — Emit audit event for replay attempts or other token failures
+    if (pendingResult.reason === "replay_attempt") {
+      emitAuditEvent({
+        trace_id: req.body.trace_id,
+        source_service: "mcp-server",
+        kind: "audit.replay_attempt_rejected",
+        severity: "warn",
+        payload: { continuation_token: body.continuation_token, reason: pendingResult.reason },
+      });
+    }
+    // Map token verification failures to HTTP status codes
+    const statusCode = pendingResult.reason === "replay_attempt" ? 410 // Gone
+                     : pendingResult.reason === "expired_token" ? 410   // Gone
+                     : pendingResult.reason === "invalid_signature" ? 401 // Unauthorized
+                     : 404; // not_found
+    throw new AppError(
+      `continuation_token verification failed: ${pendingResult.reason}`,
+      statusCode,
+      "CONTINUATION_TOKEN_INVALID",
+    );
+  }
+  let env = pendingResult.approval;
+
   // M21.5 — try in-memory first (hot path, same instance), fall through to
   // audit-gov on miss so a restarted mcp-server can still resume the run.
   // /consume is single-use atomic: the audit-gov row flips to 'consumed' on
   // first call, so concurrent resumers can't both succeed.
-  let env = takePending(body.continuation_token);
   if (!env) {
     const consumed = await consumeApproval(body.continuation_token);
     if (consumed && consumed.payload) {

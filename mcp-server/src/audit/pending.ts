@@ -18,9 +18,11 @@
  * drop pending approvals.
  */
 import { v4 as uuidv4 } from "uuid";
+import { createHmac } from "node:crypto";
 import { ChatMessage, ToolCall, ToolDescriptorForLlm } from "../llm/types";
 import { CorrelationIds } from "./store";
 import type { GovernanceMode } from "../lib/audit-gov-check";
+import { config } from "../config";
 
 export interface PendingApproval {
   continuation_token: string;
@@ -89,6 +91,7 @@ export interface PendingToolDescriptor {
 
 const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const store = new Map<string, PendingApproval>();
+const redeemed = new Set<string>(); // Track single-use tokens that have been consumed
 
 function purgeExpired(): void {
   const now = Date.now();
@@ -97,31 +100,110 @@ function purgeExpired(): void {
   }
 }
 
+/**
+ * M35.2 — Sign continuation token as:
+ * cnt-<base64url(HMAC-SHA256(uuid||expires_at_ms, MCP_BEARER_TOKEN))>.<uuid>.<expires_at_ms>
+ *
+ * This prevents same-process replay attacks and ensures only this server
+ * (with MCP_BEARER_TOKEN) can mint valid tokens.
+ */
+function signToken(uuid: string, expiresAtMs: number): string {
+  const message = `${uuid}||${expiresAtMs}`;
+  const hmac = createHmac("sha256", config.MCP_BEARER_TOKEN);
+  hmac.update(message);
+  const sig = hmac.digest("base64url");
+  return `cnt-${sig}.${uuid}.${expiresAtMs}`;
+}
+
+/**
+ * M35.2 — Verify continuation token signature and expiry.
+ * Returns { valid: true } or { valid: false, reason: string }
+ */
+function verifyToken(
+  token: string,
+): { valid: true } | { valid: false; reason: "invalid_signature" | "expired_token" | "malformed_token" } {
+  const parts = token.split(".");
+  if (parts.length !== 3 || !parts[0].startsWith("cnt-")) {
+    return { valid: false, reason: "malformed_token" };
+  }
+  const [prefixWithSig, uuid, expiresAtMsStr] = parts;
+  const sig = prefixWithSig.slice(4); // Remove "cnt-" prefix
+
+  const expiresAtMs = Number(expiresAtMsStr);
+  if (isNaN(expiresAtMs)) {
+    return { valid: false, reason: "malformed_token" }; // Invalid format → malformed
+  }
+
+  // Check expiry before verifying signature (fail fast)
+  const now = Date.now();
+  if (expiresAtMs < now) {
+    return { valid: false, reason: "expired_token" };
+  }
+
+  // Verify HMAC signature
+  const expected = signToken(uuid, expiresAtMs);
+  const expectedSig = expected.split(".")[0].slice(4); // Extract just the signature part
+  if (sig !== expectedSig) {
+    return { valid: false, reason: "invalid_signature" }; // Signature mismatch
+  }
+
+  return { valid: true };
+}
+
 export function savePending(
   input: Omit<PendingApproval, "continuation_token" | "created_at" | "expires_at">,
 ): PendingApproval {
   purgeExpired();
-  const continuation_token = `cnt-${uuidv4()}`;
+  const uuid = uuidv4();
   const now = new Date();
+  const expiresAtMs = now.getTime() + TTL_MS;
+  const continuation_token = signToken(uuid, expiresAtMs); // M35.2 — signed token
   const env: PendingApproval = {
     continuation_token,
     created_at: now.toISOString(),
-    expires_at: new Date(now.getTime() + TTL_MS).toISOString(),
+    expires_at: new Date(expiresAtMs).toISOString(),
     ...input,
   };
   store.set(continuation_token, env);
   return env;
 }
 
-export function takePending(token: string): PendingApproval | undefined {
+export type TakePendingResult =
+  | { ok: true; approval: PendingApproval }
+  | { ok: false; reason: "invalid_signature" | "expired_token" | "malformed_token" | "replay_attempt" | "not_found" };
+
+export function takePending(token: string): TakePendingResult {
   purgeExpired();
+
+  // M35.2 — Verify token signature and expiry
+  const verification = verifyToken(token);
+  if (!verification.valid) {
+    // Type-safe mapping from verification failure to TakePendingResult reason
+    const failureReason: "invalid_signature" | "expired_token" | "malformed_token" = verification.reason;
+    return { ok: false, reason: failureReason };
+  }
+
+  // M35.2 — Reject single-use tokens that have been redeemed
+  if (redeemed.has(token)) {
+    return { ok: false, reason: "replay_attempt" };
+  }
+
   const env = store.get(token);
-  if (env) store.delete(token); // single-use
-  return env;
+  if (!env) {
+    return { ok: false, reason: "not_found" };
+  }
+
+  // Mark as redeemed (single-use)
+  redeemed.add(token);
+  store.delete(token);
+  return { ok: true, approval: env };
 }
 
 export function peekPending(token: string): PendingApproval | undefined {
   purgeExpired();
+  // M35.2 — Verify signature before peeking
+  const verification = verifyToken(token);
+  if (!verification.valid) return undefined;
   return store.get(token);
 }
 
