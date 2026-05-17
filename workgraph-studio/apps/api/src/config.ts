@@ -59,12 +59,9 @@ const envSchema = z.object({
   WORKGRAPH_INTERNAL_TOKEN: z.string().default('dev-workgraph-internal-token'),
   EVENT_HORIZON_MODEL_ALIAS: z.string().optional(),
 
-  // ── M33 — Central LLM Gateway ───────────────────────────────────────────
-  // Direct one-shot LLM calls (legacy /:id/runs endpoint) go through the
-  // central gateway. There is no provider fallback chain; gateway errors
-  // propagate. LLM_GATEWAY_URL=mock enables an in-process mock for tests.
-  LLM_GATEWAY_URL: z.string().default('http://llm-gateway:8001'),
-  LLM_GATEWAY_BEARER: z.string().optional(),
+  // ── M34 — One-shot LLM calls now route through MCP_SERVER_URL above ──────
+  // LLM_GATEWAY_URL and LLM_GATEWAY_BEARER are retired; all LLM egress
+  // flows through the MCP Server. Timeout is kept for the /mcp/invoke call.
   LLM_GATEWAY_TIMEOUT_SEC: z.coerce.number().int().positive().default(240),
 })
 
