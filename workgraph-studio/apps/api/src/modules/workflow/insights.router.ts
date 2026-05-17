@@ -90,13 +90,33 @@ insightsRouter.get('/:id/events/stream', async (req: Request, res: Response, nex
         const url = new URL('/execute/events', config.CONTEXT_FABRIC_URL)
         url.searchParams.set('trace_id', traceId)
         url.searchParams.set('limit', '200')
+        // M35.4 — log fetch failures and non-2xx responses instead of silently
+        // swallowing them. SSE streams that show no events are otherwise
+        // indistinguishable from CF being down.
         const cf = await fetch(url, {
           headers: config.CONTEXT_FABRIC_SERVICE_TOKEN
             ? { 'X-Service-Token': config.CONTEXT_FABRIC_SERVICE_TOKEN }
             : undefined,
-        }).catch(() => null)
-        if (!cf?.ok) continue
-        const body = await cf.json().catch(() => ({})) as { events?: StreamEvent[] }
+        }).catch((err) => {
+          req.log?.warn?.({ url: url.toString(), traceId, err: (err as Error).message },
+            '[insights] context-fabric /execute/events fetch failed')
+          return null
+        })
+        if (!cf) continue
+        if (!cf.ok) {
+          const errBody = await cf.text().catch(() => '')
+          req.log?.warn?.({ url: url.toString(), traceId, status: cf.status, body: errBody.slice(0, 200) },
+            '[insights] context-fabric /execute/events returned non-2xx')
+          continue
+        }
+        let body: { events?: StreamEvent[] } = {}
+        try {
+          const raw = await cf.text()
+          body = raw ? JSON.parse(raw) : {}
+        } catch (parseErr) {
+          req.log?.warn?.({ url: url.toString(), traceId, parseErr: (parseErr as Error).message },
+            '[insights] context-fabric returned non-JSON body')
+        }
         for (const ev of body.events ?? []) {
           if (!ev.id || seen.has(ev.id)) continue
           seen.add(ev.id)

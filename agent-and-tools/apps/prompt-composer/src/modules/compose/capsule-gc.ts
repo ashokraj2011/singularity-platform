@@ -151,7 +151,11 @@ function maybeAlertFailureRate(): void {
   if (now - lastAlertAt < FAILURE_ALERT_INTERVAL_MS) return;
   lastAlertAt = now;
   logger.warn(snap, "[capsule] LLM compile failure rate exceeded threshold");
+  // M35.4 — background GC alert; no trace_id available (no per-run context).
+  // Passing undefined explicitly satisfies the mandatory trace_id contract and
+  // surfaces this gap in the runtime warning logged by emitAuditEvent.
   emitAuditEvent({
+    trace_id: undefined,
     source_service: "prompt-composer",
     kind: "compose.capsule.compile.alert",
     severity: "warn",

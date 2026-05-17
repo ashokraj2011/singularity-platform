@@ -200,7 +200,10 @@ function ConnectorCard({ connector, onEdit }: {
     try {
       const r = await api.get(`/connectors/${connector.id}/operations`)
       setOps(r.data); setShowOps(true)
-    } catch {}
+    } catch (err) {
+      // M35.4 — log instead of silent fail so SPA debug shows why the panel is empty
+      console.warn(`[ConnectorsPage] failed to load operations for connector ${connector.id}:`, err)
+    }
   }
 
   return (

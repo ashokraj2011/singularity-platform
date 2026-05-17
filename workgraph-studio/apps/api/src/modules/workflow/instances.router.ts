@@ -911,7 +911,13 @@ workflowInstancesRouter.get('/:id/events/stream', async (req, res, next) => {
     }
     const reader = upstream.body.getReader()
     const decoder = new TextDecoder()
-    req.on('close', () => { reader.cancel().catch(() => {}) })
+    // M35.4 — log SSE reader cancellation failures so stuck connections are visible
+    req.on('close', () => {
+      reader.cancel().catch((err) => {
+        req.log?.warn?.({ err: (err as Error).message },
+          '[instances] SSE reader.cancel() failed after client close')
+      })
+    })
     while (true) {
       const { done, value } = await reader.read()
       if (done) break

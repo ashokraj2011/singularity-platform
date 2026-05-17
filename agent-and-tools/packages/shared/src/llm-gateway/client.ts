@@ -10,13 +10,51 @@
  * Env contract (every consumer service):
  *   LLM_GATEWAY_URL     required — http://llm-gateway:8001  | mock
  *   LLM_GATEWAY_BEARER  optional — service token for gateway auth
+ *
+ * M35.4 — request shapes are Zod-validated before POST. A malformed request
+ * (no messages, wrong role, etc.) fails fast in the calling service with a
+ * clear error instead of bouncing off the gateway with a 422.
  */
+import { z } from "zod";
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
   EmbeddingsRequest,
   EmbeddingsResponse,
 } from "./types";
+
+// ── M35.4 — Zod schemas mirroring ./types.ts ────────────────────────────
+const ChatMessageSchema = z.object({
+  role: z.enum(["system", "user", "assistant", "tool"]),
+  content: z.string(),
+  tool_call_id: z.string().optional(),
+  tool_name: z.string().optional(),
+});
+
+const ToolDescriptorSchema = z.object({
+  name: z.string().min(1),
+  description: z.string(),
+  input_schema: z.record(z.unknown()),
+});
+
+const ChatCompletionRequestSchema = z.object({
+  model_alias: z.string().min(1).optional(),
+  messages: z.array(ChatMessageSchema).min(1, "messages cannot be empty"),
+  tools: z.array(ToolDescriptorSchema).optional(),
+  temperature: z.number().min(0).max(2).optional(),
+  max_output_tokens: z.number().int().positive().optional(),
+  stream: z.boolean().optional(),
+  trace_id: z.string().optional(),
+  run_id: z.string().optional(),
+  capability_id: z.string().optional(),
+});
+
+const EmbeddingsRequestSchema = z.object({
+  model_alias: z.string().min(1).optional(),
+  input: z.array(z.string()).min(1, "input cannot be empty"),
+  trace_id: z.string().optional(),
+  capability_id: z.string().optional(),
+});
 
 const MOCK_SENTINEL = "mock";
 
@@ -71,11 +109,32 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 
 /** One-shot chat completion call through the central gateway. */
 export async function llmRespond(req: ChatCompletionRequest): Promise<ChatCompletionResponse> {
+  // M35.4 — fail-fast validation before the wire call. Clear error from the
+  // calling service beats a generic 422 from the gateway with no context.
+  const validation = ChatCompletionRequestSchema.safeParse(req);
+  if (!validation.success) {
+    const issues = validation.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ");
+    throw new Error(`llm gateway request validation failed: ${issues}`);
+  }
+  // Additional sanity check: tools without a system or user message means
+  // the model has nothing to respond to. Easy to hit when callers compose
+  // the request lazily and forget to seed the conversation.
+  if (req.tools && req.tools.length > 0 && req.messages.length < 1) {
+    throw new Error(
+      `llm gateway request invalid: tools provided (${req.tools.length}) but messages is empty — the model has nothing to act on`,
+    );
+  }
   return post<ChatCompletionResponse>("/v1/chat/completions", req);
 }
 
 /** Batched embeddings call through the central gateway. */
 export async function llmEmbed(req: EmbeddingsRequest): Promise<EmbeddingsResponse> {
+  // M35.4 — fail-fast validation before the wire call.
+  const validation = EmbeddingsRequestSchema.safeParse(req);
+  if (!validation.success) {
+    const issues = validation.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ");
+    throw new Error(`llm gateway embeddings validation failed: ${issues}`);
+  }
   return post<EmbeddingsResponse>("/v1/embeddings", req);
 }
 

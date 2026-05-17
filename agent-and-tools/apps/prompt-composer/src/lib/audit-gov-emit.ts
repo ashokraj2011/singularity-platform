@@ -16,8 +16,13 @@ function auditHeaders(): Record<string, string> {
     : { "content-type": "application/json" };
 }
 
+/**
+ * M35.4 — trace_id is now mandatory (TypeScript-level required field).
+ * Pass `undefined` only when a trace genuinely cannot be derived. We log
+ * a warning at runtime so call sites that lose their trace_id surface.
+ */
 export interface EmitInput {
-  trace_id?:      string;
+  trace_id:       string | undefined;
   source_service: string;
   kind:           string;
   subject_type?:  string;
@@ -31,6 +36,9 @@ export interface EmitInput {
 
 export function emitAuditEvent(input: EmitInput): void {
   if (!AUDIT_GOV_URL) return;
+  if (!input.trace_id) {
+    logger.warn(`audit-gov emit ${input.source_service}/${input.kind} missing trace_id — event will not be joinable to a run`);
+  }
   void (async () => {
     try {
       const res = await fetch(`${AUDIT_GOV_URL.replace(/\/$/, "")}/api/v1/events`, {
@@ -40,11 +48,19 @@ export function emitAuditEvent(input: EmitInput): void {
         signal:  AbortSignal.timeout(TIMEOUT_MS),
       });
       if (!res.ok) {
-        const detail = (await res.text().catch(() => "")).slice(0, 200);
-        logger.warn(`audit-gov emit ${input.kind} → ${res.status}: ${detail}`);
+        // M35.4 — capture raw body for debug, include trace_id
+        let detail = "";
+        try {
+          detail = (await res.text()).slice(0, 500);
+        } catch (textErr) {
+          detail = `<body read failed: ${(textErr as Error).message}>`;
+        }
+        logger.warn({ kind: input.kind, status: res.status, detail, trace_id: input.trace_id },
+          `audit-gov emit ${input.kind} → ${res.status}`);
       }
     } catch (err) {
-      logger.warn(`audit-gov emit ${input.kind} failed: ${(err as Error).message}`);
+      logger.warn({ kind: input.kind, err: (err as Error).message, trace_id: input.trace_id },
+        `audit-gov emit ${input.kind} failed`);
     }
   })();
 }

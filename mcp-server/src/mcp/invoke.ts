@@ -1174,13 +1174,20 @@ async function dispatchToolCall(
         }),
         signal: AbortSignal.timeout((config.TIMEOUT_SEC ?? 240) * 1000),
       });
-      const body = await response.json().catch(() => ({})) as {
-        status?: string;
-        error?: unknown;
-        reason?: unknown;
-      };
+      // M35.4 — capture raw response body even when JSON parse fails so we
+      // can debug 5xx errors from context-fabric. Previously the silent
+      // .catch(() => ({})) made every parse failure look like an empty 200.
+      let body: { status?: string; error?: unknown; reason?: unknown } = {};
+      let rawBody = "";
+      try {
+        rawBody = await response.text();
+        body = rawBody ? JSON.parse(rawBody) : {};
+      } catch (parseErr) {
+        log.warn({ url, status: response.status, parseErr: (parseErr as Error).message, rawBody: rawBody.slice(0, 200) },
+          "context-fabric SERVER tool adapter returned non-JSON body");
+      }
       if (!response.ok) {
-        throw new Error(`context-fabric SERVER tool adapter returned ${response.status}: ${JSON.stringify(body).slice(0, 400)}`);
+        throw new Error(`context-fabric SERVER tool adapter returned ${response.status}: ${rawBody.slice(0, 400) || JSON.stringify(body).slice(0, 400)}`);
       }
       if (body.status === "waiting_approval") {
         const rec = recordToolInvocation({

@@ -81,7 +81,9 @@ export const agentController = {
       },
     }).catch((err) => console.warn("[eventbus] publishEvent failed:", (err as Error).message));
     // M22 — central audit ledger
+    // M35.4 — trace_id forwarded from request header when available
     emitAuditEvent({
+      trace_id:       (req.headers["x-trace-id"] as string | undefined),
       source_service: "agent-runtime",
       kind:           "agent.template.derived",
       subject_type:   "AgentTemplate",
@@ -112,7 +114,9 @@ export const agentController = {
       },
     }).catch((err) => console.warn("[eventbus] publishEvent failed:", (err as Error).message));
     // M22 — central audit ledger
+    // M35.4 — trace_id forwarded from request header when available
     emitAuditEvent({
+      trace_id:       (req.headers["x-trace-id"] as string | undefined),
       source_service: "agent-runtime",
       kind:           "agent.template.updated",
       subject_type:   "AgentTemplate",
@@ -144,7 +148,9 @@ export const agentController = {
         payload: { restored_from_version: version, current_version: (t as { version?: number }).version },
       },
     }).catch((err) => console.warn("[eventbus] publishEvent failed:", (err as Error).message));
+    // M35.4 — trace_id forwarded from request header when available
     emitAuditEvent({
+      trace_id:       (req.headers["x-trace-id"] as string | undefined),
       source_service: "agent-runtime",
       kind:           "agent.template.version.restored",
       subject_type:   "AgentTemplate",

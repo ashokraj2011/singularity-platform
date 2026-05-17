@@ -643,7 +643,10 @@ function DelegatePanel({
 
   // Fetch user list once
   useEffect(() => {
-    api.get('/users?size=200').then(r => setUsers(r.data?.content ?? [])).catch(() => {})
+    // M35.4 — log fetch failures instead of silently swallowing them
+    api.get('/users?size=200')
+      .then(r => setUsers(r.data?.content ?? []))
+      .catch((err) => console.warn('[NodeRunModal] failed to load user list:', err))
   }, [])
 
   const filtered = users.filter(u => {
@@ -794,7 +797,10 @@ function SubTaskPanel({
   const [users, setUsers]       = useState<Array<{ id: string; email: string; displayName?: string }>>([])
 
   useEffect(() => {
-    api.get('/users?size=200').then(r => setUsers(r.data?.content ?? [])).catch(() => {})
+    // M35.4 — log fetch failures instead of silently swallowing them
+    api.get('/users?size=200')
+      .then(r => setUsers(r.data?.content ?? []))
+      .catch((err) => console.warn('[NodeRunModal] failed to load user list (assignment picker):', err))
   }, [])
 
   const submit = () => {
