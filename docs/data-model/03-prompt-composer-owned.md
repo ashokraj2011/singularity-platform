@@ -105,6 +105,7 @@ GLOBAL_LESSON GLOBAL_LESSON
     String traceId "❓"
     Json evidenceRefs "❓"
     String compiledContextId "❓"
+    String immutableContractId "❓"
     }
   
 
@@ -137,6 +138,25 @@ GLOBAL_LESSON GLOBAL_LESSON
     String description "❓"
     DateTime createdAt 
     DateTime updatedAt 
+    }
+  
+
+  "ImmutableContract" {
+    String id "🗝️"
+    String bundleHash 
+    String agentTemplateId 
+    Int agentTemplateVersion 
+    String capabilityId "❓"
+    Json promptProfileVersions 
+    Json promptLayerVersions 
+    Json systemPromptVersions 
+    Json stageBindingVersions 
+    Json toolPins 
+    Json modelResolution 
+    DateTime capturedAt 
+    String capturedBy "❓"
+    String capturedFrom "❓"
+    String consumableId "❓"
     }
   
 

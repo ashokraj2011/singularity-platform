@@ -12,6 +12,7 @@ import { stagePromptsRoutes } from "./modules/stage-prompts/stage-prompts.routes
 import { systemPromptsRoutes } from "./modules/system-prompts/system-prompts.routes";
 import { eventHorizonActionsRoutes } from "./modules/event-horizon-actions/event-horizon-actions.routes";
 import { lessonsRoutes } from "./modules/lessons/lessons.routes";
+import { contractsRoutes } from "./modules/contracts/contracts.routes";
 import { runInvariantChecks } from "./healthz-strict";
 import { env } from "./config/env";
 
@@ -69,5 +70,11 @@ app.use("/api/v1/event-horizon-actions", eventHorizonActionsRoutes);
 // compose.service pulls top-K similar lessons in as GLOBAL_LESSON layers
 // at assembly time.
 app.use("/api/v1/lessons", lessonsRoutes);
+// M40 — ImmutableContract: a cryptographic snapshot of an agent's full
+// runtime configuration captured at publish time. The bundle's hash is
+// recorded on every PromptAssembly + on the published AgentTemplateVersion.
+// On replay, the agent runs with the frozen prompts + tool versions + model
+// resolution from the snapshot — not today's live rows.
+app.use("/api/v1/contracts", contractsRoutes);
 
 app.use(errorMiddleware);

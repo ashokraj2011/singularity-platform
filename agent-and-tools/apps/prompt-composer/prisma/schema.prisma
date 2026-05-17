@@ -170,10 +170,16 @@ model PromptAssembly {
   // M25.5 — capsule id when this assembly was served from a precompiled
   // task context cache.
   compiledContextId    String?
+  // M40 — when present, this assembly ran under an ImmutableContract.
+  // For replay, the assembly used the contract's frozen layer snapshots
+  // rather than the live PromptLayer rows. Recorded for audit + replay
+  // join queries.
+  immutableContractId  String?
 
   layers PromptAssemblyLayer[]
 
   @@index([traceId])
+  @@index([immutableContractId])
 }
 
 // M25.5 — Context Compiler: precompiled task contexts (capsules).
@@ -228,6 +234,43 @@ model EventHorizonAction {
 
   @@unique([surface, intent])
   @@index([surface, isActive, displayOrder])
+}
+
+// M40 — ImmutableContract: a cryptographic snapshot of an agent's full
+// runtime configuration (every prompt layer + version, every tool + version,
+// the resolved model alias→provider, every binding) taken at publish time.
+// The bundle is hashed (bundleHash); the hash is recorded on the published
+// AgentTemplateVersion and on every PromptAssembly that runs with this
+// contract. On replay, the system hydrates the prompt assembly from the
+// snapshot's layer contents — bypassing the live PromptLayer rows — so a
+// 6-month-old workflow execution sees the December prompts and December
+// model resolution, not today's.
+//
+// This is the regulatory compliance lever: a bank can prove to an auditor
+// exactly which prompts + tools + model approved a loan, even years later.
+model ImmutableContract {
+  id                      String   @id @default(uuid())
+  bundleHash              String   @unique
+  agentTemplateId         String
+  agentTemplateVersion    Int
+  capabilityId            String?
+  // Bundle contents — each Json field stores a stable canonical snapshot of
+  // the referenced rows. Replay reads these directly instead of joining to
+  // current PromptLayer/PromptProfile/etc. rows.
+  promptProfileVersions   Json     // [{profileId, version, name}]
+  promptLayerVersions     Json     // [{layerId, version, layerHash, contentSnapshot, layerType, priority}]
+  systemPromptVersions    Json     // [{key, version, content}]
+  stageBindingVersions    Json     // [{stageKey, agentRole, profileId, taskTemplate, extraContextTemplate}]
+  toolPins                Json     // [{toolNamespace, toolName, version, riskLevel, requires_approval}]
+  modelResolution         Json     // {alias, provider, model, version, resolvedAt}
+  // Provenance — who minted the contract and from what surface.
+  capturedAt              DateTime @default(now())
+  capturedBy              String?
+  capturedFrom            String?  // e.g. "workbench:finalize", "agent-service:publish"
+  consumableId            String?  // when minted from workbench, links to the published consumable
+
+  @@index([agentTemplateId, agentTemplateVersion])
+  @@index([capturedAt])
 }
 
 // M38 — Cross-workflow lessons learned. When audit-gov's Singularity Engine

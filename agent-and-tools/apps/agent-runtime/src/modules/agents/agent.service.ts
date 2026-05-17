@@ -92,6 +92,51 @@ async function ensureVersionSnapshot(
   });
 }
 
+/**
+ * M40 — Mint an ImmutableContract when a template transitions to ACTIVE.
+ *
+ * Called from updateTemplate() when the just-saved template version's
+ * status is ACTIVE and no contract has been recorded yet. Best-effort:
+ * composer outage doesn't block the publish — the version row just won't
+ * have a contractHash, and a future operator can backfill via
+ * `POST /api/v1/contracts` with the same agentTemplateId+version.
+ */
+async function maybeMintContract(template: TemplateSnapshotSource, actor?: AuthUser): Promise<void> {
+  if (template.status !== "ACTIVE") return;
+  const composerUrl = (process.env.PROMPT_COMPOSER_URL ?? "http://prompt-composer:3004").replace(/\/$/, "");
+  try {
+    const res = await fetch(`${composerUrl}/api/v1/contracts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agentTemplateId: template.id,
+        agentTemplateVersion: template.version,
+        capabilityId: template.capabilityId ?? undefined,
+        // Model alias not bound to template today; downstream can override
+        // via the same endpoint when minting for a specific run context.
+        capturedBy: actor?.user_id ?? null,
+        capturedFrom: "agent-service:publish",
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      // eslint-disable-next-line no-console
+      console.warn(`[agent-service] contract mint failed for ${template.id}@v${template.version}: ${res.status}`);
+      return;
+    }
+    const body = await res.json() as { success: boolean; data: { id: string; bundleHash: string } };
+    if (!body.success) return;
+    // Record the contract on the version row (best-effort — UPDATE outside tx).
+    await prisma.agentTemplateVersion.update({
+      where: { agentTemplateId_version: { agentTemplateId: template.id, version: template.version } },
+      data: { contractHash: body.data.bundleHash, contractId: body.data.id },
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[agent-service] contract mint error for ${template.id}@v${template.version}: ${(err as Error).message}`);
+  }
+}
+
 export const agentService = {
   async createTemplate(input: CreateAgentTemplateInput, actor?: AuthUser) {
     if (input.capabilityId) {
@@ -202,7 +247,7 @@ export const agentService = {
       requireCapabilityOwner(actor, existing.capabilityId, "Editing a capability agent template");
     }
     const { changeSummary, ...data } = patch;
-    return prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       await ensureVersionSnapshot(tx, existing, "Baseline before versioned edit", actor);
       const updated = await tx.agentTemplate.update({
         where: { id },
@@ -212,6 +257,11 @@ export const agentService = {
       await ensureVersionSnapshot(tx, updated, changeSummary ?? `Updated ${Object.keys(data).join(", ") || "metadata"}`, actor);
       return updated;
     });
+    // M40 — when the update transitions to ACTIVE, mint an ImmutableContract
+    // from the current prompts + tools + model resolution. Outside the tx
+    // since it does HTTP to composer; best-effort (publish doesn't block).
+    void maybeMintContract(result, actor);
+    return result;
   },
 
   async listTemplateVersions(id: string) {

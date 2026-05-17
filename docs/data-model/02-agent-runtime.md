@@ -89,6 +89,8 @@ PROMOTED PROMOTED
     Json snapshot 
     String createdBy "❓"
     DateTime createdAt 
+    String contractHash "❓"
+    String contractId "❓"
     }
   
 

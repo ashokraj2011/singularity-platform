@@ -128,10 +128,19 @@ model AgentTemplateVersion {
   createdBy       String?
   createdAt       DateTime @default(now())
 
+  // M40 — ImmutableContract pin. When a template version is published
+  // (DRAFT → ACTIVE), composer mints a contract from the current prompt
+  // layers + tool versions + model resolution, and we record its hash +
+  // id here. Replay queries `prompt-composer/api/v1/contracts/:id` to
+  // hydrate the original prompt/tool/model state.
+  contractHash    String?
+  contractId      String?
+
   agentTemplate AgentTemplate @relation(fields: [agentTemplateId], references: [id])
 
   @@unique([agentTemplateId, version])
   @@index([agentTemplateId, createdAt])
+  @@index([contractHash])
 }
 
 model AgentSkill {
