@@ -172,7 +172,7 @@ async function createCapabilityWorkbenchBridgeGraph({
   const workbenchGoal = goal || 'Produce an approved implementation contract pack.'
   const workbenchConfig = buildWorkbenchConfig(capabilityId, bindings, workbenchGoal)
 
-  const [startNode, workbenchNode, approvalNode, endNode] = await prisma.$transaction(async tx => {
+  const [startNode, workbenchNode, approvalNode, gitPushNode, endNode] = await prisma.$transaction(async tx => {
     const start = await tx.workflowDesignNode.create({
       data: {
         workflowId,
@@ -225,6 +225,34 @@ async function createCapabilityWorkbenchBridgeGraph({
         positionY: 220,
       },
     })
+    // M37.1 — GIT_PUSH after APPROVAL. The blueprint Developer stage may have
+    // produced commits on an isolated work-branch in mcp-server's per-WorkItem
+    // sandbox (e.g. `sg/<instance>/develop/<n>-<hash>`), but mcp-server commits
+    // locally and does NOT push by default. Without this node, the human-
+    // approved diff never reaches the upstream git remote — the operator has
+    // to push manually from the container. Adding a deterministic GIT_PUSH
+    // node closes that gap: the executor calls mcp-server's purpose-built
+    // /mcp/work/finish-branch endpoint with push:true, gated on the upstream
+    // APPROVAL node already firing (requireApproval defaults to true).
+    const gitPush = await tx.workflowDesignNode.create({
+      data: {
+        workflowId,
+        nodeType: 'GIT_PUSH' as any,
+        label: 'Push approved branch',
+        config: {
+          remote: 'origin',
+          requireApproval: true,
+          // branchName / workItemId / workItemCode are auto-detected at runtime
+          // by GitPushExecutor from the workspaceBranch evidence + workItem
+          // context; the executor falls back to `work/<workItemCode>` when no
+          // evidence is found. No explicit branchName here lets the runtime
+          // pick up the actual `sg/...` branch the agent created.
+        } as Prisma.InputJsonValue,
+        executionLocation: 'SERVER' as any,
+        positionX: 870,
+        positionY: 220,
+      },
+    })
     const end = await tx.workflowDesignNode.create({
       data: {
         workflowId,
@@ -232,18 +260,19 @@ async function createCapabilityWorkbenchBridgeGraph({
         label: 'Done',
         config: {},
         executionLocation: 'SERVER' as any,
-        positionX: 870,
+        positionX: 1130,
         positionY: 220,
       },
     })
     await tx.workflowDesignEdge.createMany({
       data: [
-        { workflowId, sourceNodeId: start.id, targetNodeId: workbench.id, edgeType: 'SEQUENTIAL' as any },
-        { workflowId, sourceNodeId: workbench.id, targetNodeId: approval.id, edgeType: 'SEQUENTIAL' as any },
-        { workflowId, sourceNodeId: approval.id, targetNodeId: end.id, edgeType: 'SEQUENTIAL' as any },
+        { workflowId, sourceNodeId: start.id,     targetNodeId: workbench.id, edgeType: 'SEQUENTIAL' as any },
+        { workflowId, sourceNodeId: workbench.id, targetNodeId: approval.id,  edgeType: 'SEQUENTIAL' as any },
+        { workflowId, sourceNodeId: approval.id,  targetNodeId: gitPush.id,   edgeType: 'SEQUENTIAL' as any },
+        { workflowId, sourceNodeId: gitPush.id,   targetNodeId: end.id,       edgeType: 'SEQUENTIAL' as any },
       ],
     })
-    return [start, workbench, approval, end] as const
+    return [start, workbench, approval, gitPush, end] as const
   })
 
   await logEvent('WorkflowStarterApplied', 'Workflow', workflowId, actorId, {
@@ -253,6 +282,7 @@ async function createCapabilityWorkbenchBridgeGraph({
       start: startNode.id,
       workbench: workbenchNode.id,
       approval: approvalNode.id,
+      gitPush: gitPushNode.id,
       end: endNode.id,
     },
     warnings,
