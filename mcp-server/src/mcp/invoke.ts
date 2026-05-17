@@ -213,7 +213,42 @@ function shouldNudgeForCodeToolUse(state: LoopState, llmResp: LlmResponse): bool
   return hasInspectionTools && hasMutationTools;
 }
 
-function appendCodeToolUseNudge(state: LoopState, llmResp: LlmResponse): void {
+// M36.7 — code-tool-use nudge prompt is fetched from prompt-composer
+// (SystemPrompt key "mcp.code-tool-use-nudge"). In-process cached so the
+// hot agent loop doesn't HTTP every step. mcp-server lives outside the
+// agent-and-tools workspace so we inline the cache helper.
+const NUDGE_PROMPT_KEY = "mcp.code-tool-use-nudge";
+let cachedNudgePrompt: string | null = null;
+let cachedNudgePromptAt = 0;
+const NUDGE_PROMPT_TTL_MS = Number(process.env.SYSTEM_PROMPT_CACHE_TTL_SEC ?? 300) * 1000;
+
+async function getNudgePrompt(): Promise<string> {
+  if (cachedNudgePrompt && Date.now() - cachedNudgePromptAt < NUDGE_PROMPT_TTL_MS) {
+    return cachedNudgePrompt;
+  }
+  const composerUrl = process.env.PROMPT_COMPOSER_URL?.trim();
+  if (!composerUrl) {
+    throw new Error(
+      "PROMPT_COMPOSER_URL is not set. mcp-server's code-tool-use nudge prompt is owned by prompt-composer (key mcp.code-tool-use-nudge).",
+    );
+  }
+  const url = `${composerUrl.replace(/\/$/, "")}/api/v1/system-prompts/${encodeURIComponent(NUDGE_PROMPT_KEY)}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+  if (!res.ok) {
+    if (cachedNudgePrompt) return cachedNudgePrompt; // stale-ok
+    throw new Error(`mcp-server nudge prompt fetch ${NUDGE_PROMPT_KEY} failed: ${res.status}`);
+  }
+  const body = await res.json() as { success: boolean; data: { content: string } };
+  if (!body.success) {
+    if (cachedNudgePrompt) return cachedNudgePrompt;
+    throw new Error(`mcp-server nudge prompt fetch returned success=false`);
+  }
+  cachedNudgePrompt = body.data.content;
+  cachedNudgePromptAt = Date.now();
+  return cachedNudgePrompt;
+}
+
+async function appendCodeToolUseNudge(state: LoopState, llmResp: LlmResponse): Promise<void> {
   if (llmResp.content) {
     state.messages.push({
       role: "assistant",
@@ -222,14 +257,7 @@ function appendCodeToolUseNudge(state: LoopState, llmResp: LlmResponse): void {
   }
   state.messages.push({
     role: "user",
-    content: [
-      "This is a Developer stage with a writable MCP workspace, but the previous answer did not call any tools.",
-      "Use MCP tools now before answering in prose.",
-      "Inspect the code with find_symbol, get_symbol, get_ast_slice, search_code, or read_file.",
-      "Apply the requested change with apply_patch or write_file, then create code-change evidence with git_commit or finish_work_branch.",
-      "Do not call prepare_work_branch; the workflow branch is already prepared.",
-      "If the behavior already exists, add or update tests/documentation and commit that evidence.",
-    ].join("\n"),
+    content: await getNudgePrompt(),
   });
   state.toolUseNudgeCount += 1;
 }
@@ -480,7 +508,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
     }
 
     if (shouldNudgeForCodeToolUse(state, llmResp)) {
-      appendCodeToolUseNudge(state, llmResp);
+      await appendCodeToolUseNudge(state, llmResp);
       state.stepIndex += 1;
       emitAuditEvent({
         trace_id: state.correlation.traceId,

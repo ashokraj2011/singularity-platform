@@ -399,6 +399,20 @@ jobs:
       - name: bin/check-llm-gateway-single-source.sh
         run: bash bin/check-llm-gateway-single-source.sh
 
+  # ─── M36.7 — No inline prompts lockdown ─────────────────────────────────────
+  # Enforces that LLM-bound prompt content lives in prompt-composer's DB
+  # (StagePromptBinding / SystemPrompt / EventHorizonAction rows), NOT inline
+  # in service TS source. Catches "You are the X agent" literals, multi-line
+  # system_prompt: [...] arrays, top-level SYSTEM_PROMPT constants, and
+  # hardcoded MCP tool-name literals in business logic.
+  no-inline-prompts:
+    name: M36.7 no inline prompts in TS source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bin/check-no-inline-prompts.sh
+        run: bash bin/check-no-inline-prompts.sh
+
   # ─── Container images — build on PR, publish on main ───────────────────────
   container-images:
     name: image ${{ matrix.image }}

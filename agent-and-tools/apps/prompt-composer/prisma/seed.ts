@@ -326,6 +326,20 @@ invent facts beyond the chunks. Do NOT add filler ("Based on the above…").
 OUTPUT: just the paragraph. No headers, no JSON, no preamble.`,
   },
   {
+    id: "00000000-0000-0000-0000-000000000d08",
+    key: "mcp.code-tool-use-nudge",
+    description:
+      "Mid-loop nudge appended by mcp-server when the LLM didn't call any tools but the run is in autonomous-mutation mode with a writable workspace. Was hardcoded in mcp-server/src/mcp/invoke.ts:216-235.",
+    content: [
+      "This is a Developer stage with a writable MCP workspace, but the previous answer did not call any tools.",
+      "Use MCP tools now before answering in prose.",
+      "Inspect the code with find_symbol, get_symbol, get_ast_slice, search_code, or read_file.",
+      "Apply the requested change with apply_patch or write_file, then create code-change evidence with git_commit or finish_work_branch.",
+      "Do not call prepare_work_branch; the workflow branch is already prepared.",
+      "If the behavior already exists, add or update tests/documentation and commit that evidence.",
+    ].join("\n"),
+  },
+  {
     id: "00000000-0000-0000-0000-000000000d07",
     key: "audit-gov.diagnose",
     description:
