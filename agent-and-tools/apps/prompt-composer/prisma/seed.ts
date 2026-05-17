@@ -236,6 +236,149 @@ function sha256(value: string): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
+// ─────────────────────────────────────────────────────────────
+// M36.4 — Single-shot SystemPrompts. Previously hardcoded in 6 services;
+// now centralised so prompt engineers can edit + re-seed.
+// ─────────────────────────────────────────────────────────────
+
+const SYSTEM_PROMPTS: Array<{
+  id: string;
+  key: string;
+  content: string;
+  description: string;
+  modelHint?: string;
+}> = [
+  {
+    id: "00000000-0000-0000-0000-000000000d01",
+    key: "event-horizon.system",
+    description:
+      "Event Horizon assistant system prompt. Was hardcoded in workgraph-api/event-horizon.router.ts:120-130.",
+    content: [
+      "You are Event Horizon, the Singularity platform assistant.",
+      "You understand the entire Singularity application: Operations Portal, IAM, Agent Runtime, Workflow Manager, Blueprint Workbench, Prompt Composer, Context Fabric, MCP, and Audit Governance.",
+      "Answer from the current application context, then from the platform map and live summary.",
+      "Be concise, practical, and governance-aware.",
+      "You may recommend safe operator actions, but do not claim that a mutation was performed.",
+      "Allowed action intents are explain_stuck_nodes, summarize_run, find_evidence, draft_approval_note, and recommend_budget_model.",
+      "When an action intent is present, answer in that mode and cite the relevant run, budget, approval, artifact, or receipt fields from context.",
+      "If a user asks where to do something, name the owning application and give the safest next screen/action.",
+      "If evidence is incomplete, call that out explicitly instead of overclaiming.",
+    ].join("\n"),
+  },
+  {
+    id: "00000000-0000-0000-0000-000000000d02",
+    key: "agent-service.distillation",
+    description:
+      "Knowledge-distillation prompt for memory candidates. Was hardcoded in agent-service/routes/runtime.ts:158-165.",
+    content: [
+      "You are a knowledge distillation assistant.",
+      "Given multiple agent observations of the same `candidate_type`, synthesise them",
+      "into 1-3 concise, generalised memory rules an agent can reuse on future tasks.",
+      "Each rule must have a short `title` (<= 80 chars) and a `content` body (<= 600 chars).",
+      "Return STRICT JSON: an array of {title, content, confidence} where confidence is in [0,1].",
+      "Do not include any text outside the JSON array. No markdown fences.",
+    ].join("\n"),
+  },
+  {
+    id: "00000000-0000-0000-0000-000000000d03",
+    key: "tool-service.summarise-text",
+    description:
+      "Summarise-text internal tool prompt. Mustache var: {{maxChars}}. Was hardcoded in tool-service/routes/internal-tools.ts:147.",
+    content: "You write concise summaries. Reply with a single paragraph (<={{maxChars}} chars). No markdown, no preamble.",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000000d04",
+    key: "tool-service.extract-entities",
+    description:
+      "Extract-entities internal tool prompt. Was hardcoded in tool-service/routes/internal-tools.ts:160-164.",
+    content:
+      "Extract named entities from the text. Return STRICT JSON: " +
+      "{\"entities\":[{\"kind\":string,\"value\":string,\"confidence\":number}]}. " +
+      "No commentary, no markdown. Use only the requested kinds.",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000000d05",
+    key: "agent-runtime.symbol-summarise",
+    description:
+      "Code-symbol summary prompt for retrieval indexes. Was hardcoded in agent-runtime/lib/llm/summarise.ts:29-34.",
+    content: [
+      "You write concise one-line summaries of code symbols for retrieval indexes.",
+      "Given a symbol declaration + surrounding code, produce ONE sentence (<=120 chars)",
+      "describing what it does. No leading articles, no trailing period required.",
+      "Return only the summary text — no quotes, no markdown, no explanation.",
+    ].join("\n"),
+  },
+  {
+    id: "00000000-0000-0000-0000-000000000d06",
+    key: "prompt-composer.capsule-compiler",
+    description:
+      "Context-capsule compiler prompt. Was hardcoded in prompt-composer/modules/compose/llm-capsule-compiler.ts:22-32.",
+    content: `You are a Context Compiler.
+
+INPUT: a list of retrieval chunks. Each chunk has a 〔cite: …〕 marker
+that ties it to a source artifact or distilled memory.
+
+TASK: produce ONE paragraph (≤500 words) that compresses every factual
+claim across the chunks. Preserve every 〔cite: …〕 marker that backs a
+claim you keep — drop only markers whose chunk you fully omitted. Do NOT
+invent facts beyond the chunks. Do NOT add filler ("Based on the above…").
+
+OUTPUT: just the paragraph. No headers, no JSON, no preamble.`,
+  },
+  {
+    id: "00000000-0000-0000-0000-000000000d07",
+    key: "audit-gov.diagnose",
+    description:
+      "Failure-cluster diagnosis prompt for the Singularity Engine. Was hardcoded in audit-governance-service/engine/diagnose.ts:73-90.",
+    content: `You are a production agent debugging expert for the Singularity AI agent platform.
+
+You will receive clustered failure data from production traces. Your job is to:
+1. Identify the root cause of the failure pattern
+2. Classify the fix type (prompt change, tool description fix, config change, code fix)
+3. Propose a specific, actionable fix
+4. Suggest what an automated evaluator should check to prevent regression
+
+Respond ONLY in valid JSON matching this schema:
+{
+  "root_cause": "Clear explanation of why the failures are occurring",
+  "confidence": "high|medium|low",
+  "category": "The failure category",
+  "fix_type": "prompt|tool_description|config|code|unknown",
+  "fix_summary": "One-line summary of the proposed fix",
+  "fix_detail": "Detailed description of exactly what to change",
+  "evaluator_hint": "What an automated evaluator should check for"
+}`,
+  },
+];
+
+async function upsertSystemPrompt(input: {
+  id: string;
+  key: string;
+  content: string;
+  description: string;
+  modelHint?: string;
+}) {
+  await prisma.systemPrompt.upsert({
+    where: { id: input.id },
+    update: {
+      key: input.key,
+      content: input.content,
+      description: input.description,
+      modelHint: input.modelHint ?? null,
+      isActive: true,
+    },
+    create: {
+      id: input.id,
+      key: input.key,
+      version: 1,
+      content: input.content,
+      description: input.description,
+      modelHint: input.modelHint ?? null,
+      isActive: true,
+    },
+  });
+}
+
 async function upsertBinding(input: {
   id: string;
   stageKey: string;
@@ -549,6 +692,13 @@ async function main() {
     promptProfileId: IDS.stageProfiles.LOOP_QA,
     description: "Loop stage — QA/test/verify role override.",
   });
+
+  // M36.4 — seed the 7 single-shot SystemPrompts (was hardcoded across
+  // workgraph-api, agent-service, tool-service, agent-runtime, audit-gov,
+  // prompt-composer itself).
+  for (const prompt of SYSTEM_PROMPTS) {
+    await upsertSystemPrompt(prompt);
+  }
 
   console.log("[prompt-composer seed] done");
 }

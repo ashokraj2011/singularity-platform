@@ -125,6 +125,20 @@ DATA_ACCESS_POLICY DATA_ACCESS_POLICY
     }
   
 
+  "SystemPrompt" {
+    String id "🗝️"
+    String key 
+    Int version 
+    String content 
+    Json jsonSchema "❓"
+    String modelHint "❓"
+    Boolean isActive 
+    String description "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
   "StagePromptBinding" {
     String id "🗝️"
     String stageKey 

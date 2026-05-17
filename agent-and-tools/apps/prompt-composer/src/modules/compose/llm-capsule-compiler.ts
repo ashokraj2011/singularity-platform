@@ -19,17 +19,36 @@ import type { RetrievedChunk } from "./retrieval";
 const TIMEOUT_MS = Number(process.env.CAPSULE_COMPILE_TIMEOUT_MS ?? 30_000);
 const MODEL_ALIAS = process.env.CAPSULE_COMPILE_MODEL_ALIAS?.trim();
 
-const SYSTEM_PROMPT = `You are a Context Compiler.
+// M36.4 — capsule-compiler system prompt now lives in the SystemPrompt table
+// (key "prompt-composer.capsule-compiler"). Since this file IS inside
+// prompt-composer, we read directly from Prisma instead of going through the
+// HTTP shared client. Cached in-process for the lifetime of the worker so we
+// don't query the DB on every compile.
+import { prisma } from "../../config/prisma";
 
-INPUT: a list of retrieval chunks. Each chunk has a 〔cite: …〕 marker
-that ties it to a source artifact or distilled memory.
+const SYSTEM_PROMPT_KEY = "prompt-composer.capsule-compiler";
+let cachedSystemPrompt: string | null = null;
+let cachedAt = 0;
+const SYSTEM_PROMPT_TTL_MS = Number(process.env.SYSTEM_PROMPT_CACHE_TTL_SEC ?? 300) * 1000;
 
-TASK: produce ONE paragraph (≤500 words) that compresses every factual
-claim across the chunks. Preserve every 〔cite: …〕 marker that backs a
-claim you keep — drop only markers whose chunk you fully omitted. Do NOT
-invent facts beyond the chunks. Do NOT add filler ("Based on the above…").
-
-OUTPUT: just the paragraph. No headers, no JSON, no preamble.`;
+async function loadSystemPrompt(): Promise<string> {
+  if (cachedSystemPrompt && Date.now() - cachedAt < SYSTEM_PROMPT_TTL_MS) {
+    return cachedSystemPrompt;
+  }
+  const row = await prisma.systemPrompt.findFirst({
+    where: { key: SYSTEM_PROMPT_KEY, isActive: true },
+    orderBy: { version: "desc" },
+  });
+  if (!row) {
+    throw new Error(
+      `Capsule compiler missing required SystemPrompt key "${SYSTEM_PROMPT_KEY}" — ` +
+        `re-run \`npm run prisma:seed\` against singularity_composer.`,
+    );
+  }
+  cachedSystemPrompt = row.content;
+  cachedAt = Date.now();
+  return cachedSystemPrompt;
+}
 
 export interface CapsuleCompileResult {
   paragraph: string;
@@ -50,11 +69,12 @@ export async function compileCapsuleViaLlm(
   const message = `Intent: ${intent.trim().slice(0, 4000)}\n\n${body}`;
 
   try {
+    const systemPrompt = await loadSystemPrompt();
     const result = await Promise.race([
       llmRespond({
         ...(MODEL_ALIAS ? { model_alias: MODEL_ALIAS } : {}),
         messages: [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: systemPrompt },
           { role: "user", content: message },
         ],
         temperature: 0,

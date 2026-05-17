@@ -155,14 +155,10 @@ async function synthesiseCandidates(args: {
   candidates: Array<{ id: string; content: string; confidence?: number }>;
   traceId: string;
 }): Promise<DistilledMemoryEntry[]> {
-  const systemPrompt = [
-    "You are a knowledge distillation assistant.",
-    "Given multiple agent observations of the same `candidate_type`, synthesise them",
-    "into 1-3 concise, generalised memory rules an agent can reuse on future tasks.",
-    "Each rule must have a short `title` (<= 80 chars) and a `content` body (<= 600 chars).",
-    "Return STRICT JSON: an array of {title, content, confidence} where confidence is in [0,1].",
-    "Do not include any text outside the JSON array. No markdown fences.",
-  ].join("\n");
+  // M36.4 — distillation system prompt now lives in prompt-composer
+  // (SystemPrompt key "agent-service.distillation"). Edit + re-seed to change.
+  const { getSystemPrompt } = await import("@agentandtools/shared");
+  const { content: systemPrompt } = await getSystemPrompt("agent-service.distillation");
   const userMessage = [
     `capability_id: ${args.capabilityId}`,
     `agent_uid: ${args.agentUid}`,

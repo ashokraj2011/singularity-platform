@@ -5,3 +5,4 @@ export * from "./types/trace";
 export * from "./embeddings";
 export * from "./llm-gateway";
 export * from "./security";
+export * from "./system-prompts";

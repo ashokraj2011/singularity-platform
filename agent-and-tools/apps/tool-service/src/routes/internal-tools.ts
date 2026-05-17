@@ -143,8 +143,12 @@ internalToolsRoutes.post("/summarise_text", async (req: Request, res: Response) 
   const { text, max_chars } = req.body ?? {};
   if (typeof text !== "string" || text.length === 0) return res.status(400).json({ error: "text required" });
   const cap = Math.min(Math.max(Number(max_chars ?? 280), 80), 800);
+  // M36.4 — system prompt now in prompt-composer (SystemPrompt key
+  // "tool-service.summarise-text") with {{maxChars}} substitution.
+  const { getSystemPrompt } = await import("@agentandtools/shared");
+  const { content: systemPrompt } = await getSystemPrompt("tool-service.summarise-text", { maxChars: cap });
   const r = await callMcp({
-    systemPrompt: `You write concise summaries. Reply with a single paragraph (<=${cap} chars). No markdown, no preamble.`,
+    systemPrompt,
     message: `Summarise:\n${String(text).slice(0, 12_000)}`,
   });
   res.json({ summary: r.slice(0, cap) });
@@ -156,11 +160,12 @@ internalToolsRoutes.post("/extract_entities", async (req: Request, res: Response
   const { text, kinds } = req.body ?? {};
   if (typeof text !== "string" || text.length === 0) return res.status(400).json({ error: "text required" });
   const wanted = Array.isArray(kinds) && kinds.length > 0 ? kinds.join(", ") : "person, org, location, date, amount, identifier";
+  // M36.4 — system prompt now in prompt-composer (SystemPrompt key
+  // "tool-service.extract-entities").
+  const { getSystemPrompt } = await import("@agentandtools/shared");
+  const { content: extractSystemPrompt } = await getSystemPrompt("tool-service.extract-entities");
   const r = await callMcp({
-    systemPrompt:
-      "Extract named entities from the text. Return STRICT JSON: " +
-      "{\"entities\":[{\"kind\":string,\"value\":string,\"confidence\":number}]}. " +
-      "No commentary, no markdown. Use only the requested kinds.",
+    systemPrompt: extractSystemPrompt,
     message: `Kinds: ${wanted}\n\nText:\n${String(text).slice(0, 12_000)}`,
   });
   // Best-effort JSON parse with synthetic empty fallback (mock provider noise).

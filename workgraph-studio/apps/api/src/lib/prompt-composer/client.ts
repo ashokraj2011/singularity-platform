@@ -131,6 +131,57 @@ export interface ResolveStageResponse {
   agentRole: string | null
 }
 
+// M36.4 — SystemPrompt in-process cache. Workgraph-api lives outside the
+// agent-and-tools workspace so it can't import @agentandtools/shared; mirrors
+// that helper inline. Same shape, same TTL default.
+interface SysPromptCacheEntry {
+  fetchedAt: number
+  content: string
+  version: number
+}
+const sysPromptCache = new Map<string, SysPromptCacheEntry>()
+const sysPromptInflight = new Map<string, Promise<{ content: string; version: number }>>()
+
+async function getSystemPromptCached(key: string, vars?: Record<string, unknown>): Promise<{ content: string; version: number }> {
+  const ttlMs = Number(process.env.SYSTEM_PROMPT_CACHE_TTL_SEC ?? 300) * 1000
+  const cacheKey = vars ? `${key}::${JSON.stringify(vars, Object.keys(vars).sort())}` : key
+  const hit = sysPromptCache.get(cacheKey)
+  if (hit && Date.now() - hit.fetchedAt < ttlMs) return { content: hit.content, version: hit.version }
+
+  const existing = sysPromptInflight.get(cacheKey)
+  if (existing) return existing
+
+  const promise = (async () => {
+    const url = vars
+      ? `${config.PROMPT_COMPOSER_URL}/api/v1/system-prompts/${encodeURIComponent(key)}/render`
+      : `${config.PROMPT_COMPOSER_URL}/api/v1/system-prompts/${encodeURIComponent(key)}`
+    try {
+      const res = await fetch(url, {
+        method: vars ? 'POST' : 'GET',
+        headers: { 'content-type': 'application/json' },
+        body: vars ? JSON.stringify({ vars }) : undefined,
+        signal: AbortSignal.timeout(10_000),
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        if (hit) return { content: hit.content, version: hit.version }
+        throw new PromptComposerError(`SystemPrompt fetch ${key} → ${res.status}: ${text.slice(0, 300)}`, res.status)
+      }
+      const json = await res.json() as { success: boolean; data: { content: string; version: number } }
+      if (!json.success) {
+        if (hit) return { content: hit.content, version: hit.version }
+        throw new PromptComposerError(`SystemPrompt fetch ${key} returned success=false`, 502)
+      }
+      sysPromptCache.set(cacheKey, { fetchedAt: Date.now(), content: json.data.content, version: json.data.version })
+      return { content: json.data.content, version: json.data.version }
+    } finally {
+      sysPromptInflight.delete(cacheKey)
+    }
+  })()
+  sysPromptInflight.set(cacheKey, promise)
+  return promise
+}
+
 export const promptComposerClient = {
   async composeAndRespond(input: ComposeRequest): Promise<ComposeResponse> {
     const url = `${config.PROMPT_COMPOSER_URL}/api/v1/compose-and-respond`
@@ -152,6 +203,13 @@ export const promptComposerClient = {
       throw new PromptComposerError('prompt-composer returned success=false', 502, json.error)
     }
     return json.data
+  },
+
+  // M36.4 — Fetch a single-shot SystemPrompt by key. Used by event-horizon
+  // and any other path that needs ONE named prompt (not a layered profile).
+  // In-process cached for 5 minutes (configurable via SYSTEM_PROMPT_CACHE_TTL_SEC).
+  async getSystemPrompt(key: string, vars?: Record<string, unknown>): Promise<{ content: string; version: number }> {
+    return getSystemPromptCached(key, vars)
   },
 
   // M36.1 — Resolve a (stageKey, agentRole) tuple to a rendered task + system

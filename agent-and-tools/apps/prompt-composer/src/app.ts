@@ -9,6 +9,7 @@ import { promptProfileRoutes, promptLayerRoutes, promptAssemblyRoutes } from "./
 import { composeRoutes, composeDebugRoutes } from "./modules/compose/compose.routes";
 import { compiledContextRoutes } from "./modules/compose/compiled-context.routes";
 import { stagePromptsRoutes } from "./modules/stage-prompts/stage-prompts.routes";
+import { systemPromptsRoutes } from "./modules/system-prompts/system-prompts.routes";
 import { runInvariantChecks } from "./healthz-strict";
 import { env } from "./config/env";
 
@@ -53,5 +54,9 @@ app.use("/api/v1/compiled-contexts", compiledContextRoutes);
 // M36.1 — stage-prompt resolver. workgraph-api blueprint runner POSTs to
 // /api/v1/stage-prompts/resolve so prompt text no longer lives in TS source.
 app.use("/api/v1/stage-prompts", stagePromptsRoutes);
+// M36.4 — single-shot SystemPrompt store. For services that need a single
+// named prompt (event-horizon, distillation, summarisation, capsule
+// compiler, audit-gov diagnose), not a layered agent assembly.
+app.use("/api/v1/system-prompts", systemPromptsRoutes);
 
 app.use(errorMiddleware);

@@ -26,12 +26,10 @@ export interface SummariseInput {
 }
 
 export async function summariseSymbol(input: SummariseInput): Promise<string | null> {
-  const systemPrompt = [
-    "You write concise one-line summaries of code symbols for retrieval indexes.",
-    "Given a symbol declaration + surrounding code, produce ONE sentence (<=120 chars)",
-    "describing what it does. No leading articles, no trailing period required.",
-    "Return only the summary text — no quotes, no markdown, no explanation.",
-  ].join("\n");
+  // M36.4 — system prompt now in prompt-composer
+  // (SystemPrompt key "agent-runtime.symbol-summarise").
+  const { getSystemPrompt } = await import("@agentandtools/shared");
+  const { content: systemPrompt } = await getSystemPrompt("agent-runtime.symbol-summarise");
   const userMessage = [
     `Symbol: ${input.symbolType} ${input.symbolName}`,
     `Language: ${input.language}`,

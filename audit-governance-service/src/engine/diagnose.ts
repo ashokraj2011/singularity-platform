@@ -70,24 +70,38 @@ interface DiagnosisResult {
   evaluator_hint: string;
 }
 
-const DIAGNOSIS_SYSTEM_PROMPT = `You are a production agent debugging expert for the Singularity AI agent platform.
+// M36.4 — diagnosis system prompt was hardcoded here; now lives in
+// prompt-composer SystemPrompt table under key "audit-gov.diagnose". Fetched
+// once on first use, cached in-process. Audit-gov lives outside the
+// agent-and-tools workspace so we inline the cache helper (~30 lines).
+const PROMPT_COMPOSER_URL = process.env.PROMPT_COMPOSER_URL?.trim() ?? "http://prompt-composer:3004";
+const DIAGNOSIS_PROMPT_KEY = "audit-gov.diagnose";
+let cachedDiagnosisPrompt: string | null = null;
+let cachedDiagnosisPromptAt = 0;
+const DIAGNOSIS_PROMPT_TTL_MS = Number(process.env.SYSTEM_PROMPT_CACHE_TTL_SEC ?? 300) * 1000;
 
-You will receive clustered failure data from production traces. Your job is to:
-1. Identify the root cause of the failure pattern
-2. Classify the fix type (prompt change, tool description fix, config change, code fix)
-3. Propose a specific, actionable fix
-4. Suggest what an automated evaluator should check to prevent regression
-
-Respond ONLY in valid JSON matching this schema:
-{
-  "root_cause": "Clear explanation of why the failures are occurring",
-  "confidence": "high|medium|low",
-  "category": "The failure category",
-  "fix_type": "prompt|tool_description|config|code|unknown",
-  "fix_summary": "One-line summary of the proposed fix",
-  "fix_detail": "Detailed description of exactly what to change",
-  "evaluator_hint": "What an automated evaluator should check for"
-}`;
+async function getDiagnosisSystemPrompt(): Promise<string> {
+  if (cachedDiagnosisPrompt && Date.now() - cachedDiagnosisPromptAt < DIAGNOSIS_PROMPT_TTL_MS) {
+    return cachedDiagnosisPrompt;
+  }
+  const res = await fetch(
+    `${PROMPT_COMPOSER_URL.replace(/\/$/, "")}/api/v1/system-prompts/${encodeURIComponent(DIAGNOSIS_PROMPT_KEY)}`,
+    { signal: AbortSignal.timeout(10_000) },
+  );
+  if (!res.ok) {
+    if (cachedDiagnosisPrompt) return cachedDiagnosisPrompt; // stale-ok
+    const text = await res.text().catch(() => "");
+    throw new Error(`audit-gov diagnose system prompt fetch failed: ${res.status} ${text.slice(0, 200)}`);
+  }
+  const body = await res.json() as { success: boolean; data: { content: string } };
+  if (!body.success) {
+    if (cachedDiagnosisPrompt) return cachedDiagnosisPrompt;
+    throw new Error(`audit-gov diagnose system prompt fetch returned success=false`);
+  }
+  cachedDiagnosisPrompt = body.data.content;
+  cachedDiagnosisPromptAt = Date.now();
+  return cachedDiagnosisPrompt;
+}
 
 async function callLlmForDiagnosis(prompt: string): Promise<DiagnosisResult> {
   // M33 — LLM call goes through the central llm-gateway. If the gateway
@@ -102,7 +116,7 @@ async function callLlmForDiagnosis(prompt: string): Promise<DiagnosisResult> {
       body: JSON.stringify({
         ...(ENGINE_MODEL_ALIAS ? { model_alias: ENGINE_MODEL_ALIAS } : {}),
         messages: [
-          { role: "system", content: DIAGNOSIS_SYSTEM_PROMPT },
+          { role: "system", content: await getDiagnosisSystemPrompt() },
           { role: "user",   content: prompt },
         ],
         temperature: 0,

@@ -2,6 +2,8 @@ import { Router, type Router as ExpressRouter } from 'express'
 import { z } from 'zod'
 import { config } from '../../config'
 import { contextFabricClient } from '../../lib/context-fabric/client'
+// M36.4 — system_prompt now resolved from prompt-composer SystemPrompt table
+import { promptComposerClient } from '../../lib/prompt-composer/client'
 import { prisma } from '../../lib/prisma'
 
 export const eventHorizonRouter: ExpressRouter = Router()
@@ -117,17 +119,9 @@ eventHorizonRouter.post('/chat', async (req, res) => {
       user_id: req.user?.userId,
       trace_id: `event-horizon:${body.sessionId}`,
     },
-    system_prompt: [
-      'You are Event Horizon, the Singularity platform assistant.',
-      'You understand the entire Singularity application: Operations Portal, IAM, Agent Runtime, Workflow Manager, Blueprint Workbench, Prompt Composer, Context Fabric, MCP, and Audit Governance.',
-      'Answer from the current application context, then from the platform map and live summary.',
-      'Be concise, practical, and governance-aware.',
-      'You may recommend safe operator actions, but do not claim that a mutation was performed.',
-      'Allowed action intents are explain_stuck_nodes, summarize_run, find_evidence, draft_approval_note, and recommend_budget_model.',
-      'When an action intent is present, answer in that mode and cite the relevant run, budget, approval, artifact, or receipt fields from context.',
-      'If a user asks where to do something, name the owning application and give the safest next screen/action.',
-      'If evidence is incomplete, call that out explicitly instead of overclaiming.',
-    ].join('\n'),
+    // M36.4 — system prompt now lives in prompt-composer's SystemPrompt table
+    // under the key "event-horizon.system". Edit + re-seed to change behavior.
+    system_prompt: (await promptComposerClient.getSystemPrompt('event-horizon.system')).content,
     task: [
       `User question: ${body.message}`,
       `Current app: ${body.app}`,

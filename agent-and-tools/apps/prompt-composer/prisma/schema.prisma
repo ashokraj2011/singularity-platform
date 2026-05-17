@@ -195,6 +195,38 @@ model CapabilityCompiledContext {
   @@index([expiresAt])
 }
 
+// M36.4 — SystemPrompt is a flat key/value store for single-shot LLM prompts
+// used by services that aren't running the full stage/agent assembly path
+// (e.g. event-horizon, distillation, summarisation, capsule compiler,
+// audit-gov diagnose). Each row is one named prompt; callers fetch by `key`.
+//
+// Unlike PromptProfile / PromptLayer, this is NOT layered or assembled —
+// it's a literal string with optional Mustache substitution. Use when the
+// prompt is a one-shot system message, not a multi-layer agent contract.
+//
+// Versioning: monotonic int; the active version is the one with isActive=true.
+// Re-seed bumps the version when content changes.
+model SystemPrompt {
+  id          String   @id @default(uuid())
+  // Stable key — e.g. "event-horizon.system", "agent-service.distillation",
+  // "tool-service.summarise-text", "audit-gov.diagnose".
+  key         String
+  version     Int      @default(1)
+  // The prompt text (may contain {{var}} Mustache tokens).
+  content     String
+  // Optional JSON schema the caller can reference for response validation.
+  jsonSchema  Json?
+  // Optional default model alias hint for this prompt (informational).
+  modelHint   String?
+  isActive    Boolean  @default(true)
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([key, version])
+  @@index([key, isActive])
+}
+
 // M36.1 — StagePromptBinding maps a `(stageKey, agentRole)` tuple to a
 // PromptProfile + task template. Callers (workgraph-api blueprint runner,
 // loop runner, etc.) resolve a stage to its prompt at call time instead of
