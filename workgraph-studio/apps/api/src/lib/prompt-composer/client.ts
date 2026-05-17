@@ -121,6 +121,10 @@ export interface ResolveStageRequest {
 export interface ResolveStageResponse {
   task: string
   systemPromptAppend: string
+  // M36.6 — rendered extraContext (empty string if the bound profile has no
+  // extraContextTemplate). Workbench loop runner uses this so the
+  // per-execution policy block is also DB-owned.
+  extraContext: string
   promptProfileId: string
   bindingId: string
   stageKey: string

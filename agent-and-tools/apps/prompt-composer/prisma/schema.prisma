@@ -95,12 +95,17 @@ model PromptProfile {
   // M36.1 — optional Mustache-style task template (`{{varName}}` substitution).
   // When set, callers can resolve a stage prompt through StagePromptBinding and
   // receive a rendered task body without composing the string themselves.
-  taskTemplate   String?
+  taskTemplate         String?
+  // M36.6 — optional Mustache-style extraContext template, rendered with the
+  // same vars as taskTemplate. Used by the workbench loop runner so the
+  // per-execution "execution policy" block (which mixes static guidance with
+  // dynamic session.sourceUri etc.) is also DB-owned.
+  extraContextTemplate String?
   // M36.1 — optional canonical stage key bound to this profile (informational;
   // the real binding lives in StagePromptBinding for the (stage, role) tuple).
-  stageKey       String?
+  stageKey             String?
   // M36.1 — optional role narrowing for this profile when selected by stage.
-  roleGate       String?
+  roleGate             String?
 
   layers   PromptProfileLayer[]
   bindings StagePromptBinding[]

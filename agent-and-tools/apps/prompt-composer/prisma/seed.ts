@@ -191,6 +191,22 @@ const loopQaTask = [
   "- Cite evidence references for every certification claim.",
 ].join("\n");
 
+// M36.6 — extraContext templates. These replace the inline `extraContext`
+// blocks in workgraph-api/blueprint.router.ts:2122-2131. Rendered with the
+// same {{vars}} as taskTemplate, so {{sourceType}}/{{sourceUri}}/{{sourceRef}}
+// substitute from the per-session values the caller passes.
+const loopDeveloperExtraContext = [
+  "Developer stage execution policy:",
+  "- Prefer actual MCP local code tools over narrative-only output.",
+  "- First verify the writable MCP workspace matches the requested source/repository before mutating files.",
+  "- Use AST/search/read tools to locate the correct source files, then use write_file/apply_patch/git_commit/finish_work_branch to create a real captured diff.",
+  "- Do not fabricate changed files or patch text. If the writable workspace is missing or does not match the source, say that no actual code change was captured.",
+  "Requested source: {{sourceType}} {{sourceUri}}{{sourceRefSuffix}}",
+].join("\n");
+
+const loopDefaultExtraContext =
+  "Produce governed workbench artifacts and evidence. Do not mutate source files unless this is the Developer stage with a verified writable MCP workspace.";
+
 function sha256(value: string): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
@@ -229,6 +245,9 @@ async function upsertStageProfile(input: {
   stageKey: string;
   roleGate: string | null;
   taskTemplate: string;
+  // M36.6 — optional per-execution context block, also Mustache-rendered
+  // with the same vars as taskTemplate.
+  extraContextTemplate?: string;
   // Layers to link: at minimum the platform constitution + output contract.
   // Optionally a role-specific AGENT_ROLE layer.
   roleLayerId?: string;
@@ -244,6 +263,7 @@ async function upsertStageProfile(input: {
       stageKey: input.stageKey,
       roleGate: input.roleGate,
       taskTemplate: input.taskTemplate,
+      extraContextTemplate: input.extraContextTemplate ?? null,
     },
     create: {
       id: input.id,
@@ -255,6 +275,7 @@ async function upsertStageProfile(input: {
       stageKey: input.stageKey,
       roleGate: input.roleGate,
       taskTemplate: input.taskTemplate,
+      extraContextTemplate: input.extraContextTemplate ?? null,
     },
   });
   await linkLayer(input.id, IDS.layers.platformConstitution, 10);
@@ -403,6 +424,7 @@ async function main() {
     stageKey: "loop.stage",
     roleGate: null,
     taskTemplate: loopDefaultTask,
+    extraContextTemplate: loopDefaultExtraContext,
   });
   await upsertStageProfile({
     id: IDS.stageProfiles.LOOP_DEVELOPER,
@@ -411,6 +433,7 @@ async function main() {
     stageKey: "loop.stage",
     roleGate: "DEVELOPER",
     taskTemplate: loopDeveloperTask,
+    extraContextTemplate: loopDeveloperExtraContext,
     roleLayerId: IDS.layers.role.DEVELOPER,
   });
   await upsertStageProfile({
@@ -420,6 +443,7 @@ async function main() {
     stageKey: "loop.stage",
     roleGate: "QA",
     taskTemplate: loopQaTask,
+    extraContextTemplate: loopDefaultExtraContext,
     roleLayerId: IDS.layers.role.QA,
   });
 

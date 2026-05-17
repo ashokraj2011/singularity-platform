@@ -104,12 +104,27 @@ export const stagePromptsService = {
       task = rendered.rendered;
     }
 
-    // 2. Assemble the system-prompt fragment.
+    // 2. M36.6 — Render the extraContext template too (used by the workbench
+    //    loop runner so the per-execution policy block is also DB-owned).
+    let extraContext = "";
+    if (profile.extraContextTemplate && profile.extraContextTemplate.trim().length > 0) {
+      const rendered = renderMustache(profile.extraContextTemplate, ctx);
+      if (rendered.warnings.length > 0) {
+        logger.debug(
+          { stageKey: input.stageKey, agentRole: input.agentRole, unresolved: rendered.warnings },
+          "[stage-prompts] extraContext template has unresolved Mustache vars",
+        );
+      }
+      extraContext = rendered.rendered;
+    }
+
+    // 3. Assemble the system-prompt fragment.
     const systemPromptAppend = await loadSystemPromptFragment(binding.promptProfileId);
 
     return {
       task,
       systemPromptAppend,
+      extraContext,
       promptProfileId: binding.promptProfileId,
       bindingId: binding.id,
       stageKey: binding.stageKey,

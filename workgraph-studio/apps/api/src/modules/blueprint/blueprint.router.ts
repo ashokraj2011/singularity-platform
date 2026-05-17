@@ -1581,10 +1581,10 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   if (!agentTemplateId) {
     throw new ValidationError(`Stage ${stage.label} needs an agent template before it can run`)
   }
-  // M36.2 — Resolve the loop-stage task body + system-prompt fragment from
-  // prompt-composer. Replaces inline loopStageTask + loopStageSystemPrompt.
-  // The Mustache template lives in StagePromptBinding (stageKey="loop.stage",
-  // optionally narrowed by agentRole). Edit via seed.ts, re-seed — no redeploy.
+  // M36.2 / M36.6 — Resolve the loop-stage task body, system-prompt fragment,
+  // AND per-execution extraContext from prompt-composer. Replaces inline
+  // loopStageTask + loopStageSystemPrompt + the developer/non-developer
+  // extraContext block. All three live in StagePromptBinding now.
   const stageVars = buildLoopStageVars(session, stage, state)
   const resolvedStage = await promptComposerClient.resolveStage({
     stageKey: 'loop.stage',
@@ -1593,6 +1593,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   })
   const task = resolvedStage.task
   const stageSystemPromptAppend = resolvedStage.systemPromptAppend
+  const stageExtraContext = resolvedStage.extraContext
   const inputSignature = buildStageInputSignature(snapshot, stage, agentTemplateId, task, state)
   const reusable = state.executionConfig?.reuseUnchangedAttempt === false ? undefined : [...priorAttempts].reverse().find(attempt =>
       attempt.inputSignature === inputSignature &&
@@ -1669,7 +1670,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   })
 
   try {
-    const result = await runLoopStageExecute(session, snapshot, stage, attempt, task, stageSystemPromptAppend)
+    const result = await runLoopStageExecute(session, snapshot, stage, attempt, task, stageSystemPromptAppend, stageExtraContext)
     await recordBlueprintBudgetUsage(session, result, stage.key, readLoopState(session).workflowNodeId)
     const completedAt = new Date().toISOString()
     const gateRecommendation = buildGateRecommendation(result, stage)
@@ -2064,6 +2065,8 @@ async function runLoopStageExecute(
   task: string,
   // M36.2 — resolved by caller from prompt-composer (was: loopStageSystemPrompt(stage))
   systemPromptAppend: string,
+  // M36.6 — resolved by caller from prompt-composer (was: inline isDeveloperStage ternary)
+  extraContext: string,
 ): Promise<ExecuteResponse> {
   const traceId = `blueprint-${session.id}-${stage.key}`
   const executionConfig = readLoopState(session).executionConfig
@@ -2114,21 +2117,12 @@ async function runLoopStageExecute(
       },
     ],
     overrides: {
-      // M36.2 — systemPromptAppend resolved by caller via prompt-composer
-      // /api/v1/stage-prompts/resolve. extraContext below is per-execution
-      // dynamic (session.sourceUri etc.) and stays as-is for now; if a future
-      // milestone wants this in DB too, it becomes a separate template.
+      // M36.2 / M36.6 — both systemPromptAppend AND extraContext now resolved
+      // by the caller via prompt-composer /api/v1/stage-prompts/resolve.
+      // Edit the templates in prompt-composer/prisma/seed.ts (loopDeveloperTask,
+      // loopDeveloperExtraContext, etc.) and re-seed — no workgraph-api redeploy.
       systemPromptAppend,
-      extraContext: isDeveloperStage
-        ? [
-            'Developer stage execution policy:',
-            '- Prefer actual MCP local code tools over narrative-only output.',
-            '- First verify the writable MCP workspace matches the requested source/repository before mutating files.',
-            '- Use AST/search/read tools to locate the correct Java/source files, then use write_file/apply_patch/git_commit/finish_work_branch to create a real captured diff.',
-            '- Do not fabricate changed files or patch text. If the writable workspace is missing or does not match the source, say that no actual code change was captured.',
-            `Requested source: ${session.sourceType} ${session.sourceUri}${session.sourceRef ? ` @ ${session.sourceRef}` : ''}`,
-          ].join('\n')
-        : 'Produce governed workbench artifacts and evidence. Do not mutate source files unless this is the Developer stage with a verified writable MCP workspace.',
+      extraContext,
     },
     model_overrides: {
       ...(modelAlias ? { modelAlias } : {}),
@@ -2407,6 +2401,12 @@ function buildLoopStageVars(
     latestAccepted,
     capturedDecisions,
     sendBacks,
+    // M36.6 — source context vars consumed by loopDeveloperExtraContext template.
+    sourceType: session.sourceType,
+    sourceUri: session.sourceUri,
+    sourceRef: session.sourceRef ?? '',
+    // Helper for the "X @ Y" suffix without forcing the template to do conditionals.
+    sourceRefSuffix: session.sourceRef ? ` @ ${session.sourceRef}` : '',
   }
 }
 

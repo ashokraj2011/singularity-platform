@@ -55,6 +55,7 @@ DATA_ACCESS_POLICY DATA_ACCESS_POLICY
     DateTime createdAt 
     DateTime updatedAt 
     String taskTemplate "❓"
+    String extraContextTemplate "❓"
     String stageKey "❓"
     String roleGate "❓"
     }

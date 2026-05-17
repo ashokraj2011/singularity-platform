@@ -28,6 +28,13 @@ export interface ResolveStageResult {
   task: string;
   /** Pre-assembled system-prompt fragment — pass as `overrides.systemPromptAppend`. */
   systemPromptAppend: string;
+  /**
+   * M36.6 — Rendered extraContext (Mustache-substituted from
+   * PromptProfile.extraContextTemplate). Empty string when the bound profile
+   * has no template. Pass as `overrides.extraContext` to /compose so the
+   * per-execution dynamic policy block stays DB-owned.
+   */
+  extraContext: string;
   /** The resolved PromptProfile id, for traceability + downstream audit. */
   promptProfileId: string;
   /** The binding row that matched, for debugging. */
