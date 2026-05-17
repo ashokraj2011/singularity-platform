@@ -54,6 +54,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    # M35.3 — resource limits (postgres: 4G memory / 2 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
 
   iam-service:
     build:
@@ -78,6 +84,12 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
+    # M35.3 — resource limits (IAM service: 2G memory / 1 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
 
   # ─────────────────────────────────────────────────────────────────────
   # agent-and-tools
@@ -99,6 +111,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    # M35.3 — resource limits (postgres: 4G memory / 2 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
 
   agent-service:
     build:
@@ -113,6 +131,7 @@ services:
       IAM_SERVICE_URL: http://iam-service:8100
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5180}
     ports:
       - "3001:3001"
     depends_on:
@@ -120,6 +139,19 @@ services:
         condition: service_healthy
     volumes:
       - ./agent-and-tools/apps/agent-service/src:/app/apps/agent-service/src
+    # M35.3 — healthcheck so dependent services can use condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3001/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    # M35.3 — resource limits (app services default: 2G memory / 1 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
 
   tool-service:
     build:
@@ -133,6 +165,7 @@ services:
       DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
       IAM_SERVICE_URL: http://iam-service:8100
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5180}
     ports:
       - "3002:3002"
     depends_on:
@@ -140,6 +173,19 @@ services:
         condition: service_healthy
     volumes:
       - ./agent-and-tools/apps/tool-service/src:/app/apps/tool-service/src
+    # M35.3 — healthcheck so dependent services can use condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3002/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    # M35.3 — resource limits (app services default: 2G memory / 1 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
 
   agent-runtime:
     build:
@@ -177,6 +223,19 @@ services:
       - ./agent-and-tools/apps/agent-runtime/prisma:/app/apps/agent-runtime/prisma
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # M35.3 — healthcheck so dependent services can use condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3003/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    # M35.3 — resource limits (app services default: 2G memory / 1 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
 
   prompt-composer:
     build:
@@ -215,6 +274,19 @@ services:
     volumes:
       - ./agent-and-tools/apps/prompt-composer/src:/app/apps/prompt-composer/src
       - ./agent-and-tools/apps/prompt-composer/prisma:/app/apps/prompt-composer/prisma
+    # M35.3 — healthcheck so dependent services can use condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3004/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    # M35.3 — resource limits (app services default: 2G memory / 1 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
 
   agent-web:
     build:
@@ -237,11 +309,22 @@ services:
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     ports:
       - "3000:3000"
+    # M35.3 — long-form depends_on with condition: service_healthy
     depends_on:
-      - agent-service
-      - tool-service
-      - agent-runtime
-      - prompt-composer
+      agent-service:
+        condition: service_healthy
+      tool-service:
+        condition: service_healthy
+      agent-runtime:
+        condition: service_healthy
+      prompt-composer:
+        condition: service_healthy
+    # M35.3 — resource limits (frontend SPA: 1G memory / 1 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
 
   # ─────────────────────────────────────────────────────────────────────
   # context-fabric
@@ -267,6 +350,12 @@ services:
     depends_on:
       llm-gateway:
         condition: service_healthy
+    # M35.3 — resource limits (memory service: 2G memory / 1 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
 
   metrics-ledger:
     build:
@@ -281,6 +370,12 @@ services:
       - "8003:8003"
     volumes:
       - ./context-fabric/data/metrics_ledger:/data
+    # M35.3 — resource limits (metrics persistence: 1G memory / 0.5 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
 
   context-api:
     build:
@@ -318,6 +413,12 @@ services:
         condition: service_started
       mcp-server-demo:
         condition: service_started
+    # M35.3 — resource limits (orchestrator: 2G memory / 1 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
 
   # ─────────────────────────────────────────────────────────────────────
   # M33 — LLM Gateway (the ONLY service that holds provider keys)
@@ -359,6 +460,12 @@ services:
       timeout: 5s
       retries: 20
       start_period: 10s
+    # M35.3 — resource limits (LLM gateway: 2G memory / 1 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
 
   # ─────────────────────────────────────────────────────────────────────
   # workgraph-studio
@@ -379,6 +486,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    # M35.3 — resource limits (postgres: 4G memory / 2 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
 
   wg-minio:
     image: minio/minio:latest
@@ -397,6 +510,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    # M35.3 — resource limits (object storage: 1G memory / 1 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
 
   workgraph-api:
     build:
@@ -443,6 +562,19 @@ services:
         condition: service_healthy
       llm-gateway:
         condition: service_healthy
+    # M35.3 — healthcheck so dependent services can use condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:8080/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # M35.3 — resource limits (workgraph-api carries heavier load: 2G memory / 1 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
 
   workgraph-web:
     build:
@@ -451,8 +583,16 @@ services:
     container_name: singularity-workgraph-web
     ports:
       - "5174:80"
+    # M35.3 — long-form depends_on with condition: service_healthy
     depends_on:
-      - workgraph-api
+      workgraph-api:
+        condition: service_healthy
+    # M35.3 — resource limits (frontend SPA: 512M memory / 0.5 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
 
   blueprint-workbench:
     build:
@@ -461,8 +601,16 @@ services:
     container_name: singularity-blueprint-workbench
     ports:
       - "5176:80"
+    # M35.3 — long-form depends_on with condition: service_healthy
     depends_on:
-      - workgraph-api
+      workgraph-api:
+        condition: service_healthy
+    # M35.3 — resource limits (frontend SPA: 512M memory / 0.5 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
 
   # ─────────────────────────────────────────────────────────────────────
   # User and Capability admin SPA
@@ -477,6 +625,12 @@ services:
     depends_on:
       iam-service:
         condition: service_healthy
+    # M35.3 — resource limits (frontend SPA: 512M memory / 0.5 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
 
   # ─────────────────────────────────────────────────────────────────────
   # MCP Server (reference / demo)
@@ -543,6 +697,12 @@ services:
       # Override MCP_SANDBOX_HOST_PATH=$HOME/my-repo when you want to
       # iterate on real code.
       - ${MCP_SANDBOX_HOST_PATH:-./mcp-server/.docker-sandbox}:/workspace
+    # M35.3 — resource limits (MCP demo: 2G memory / 1 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
 
   # ─────────────────────────────────────────────────────────────────────
   # Singularity Portal (the wrapper SPA)
@@ -554,11 +714,24 @@ services:
     container_name: singularity-portal
     ports:
       - "5180:80"
+    # M35.3 — long-form depends_on with condition: service_healthy.
+    # context-api uses service_started because it has no formal healthcheck;
+    # the others use service_healthy.
     depends_on:
-      - iam-service
-      - workgraph-api
-      - prompt-composer
-      - context-api
+      iam-service:
+        condition: service_healthy
+      workgraph-api:
+        condition: service_healthy
+      prompt-composer:
+        condition: service_healthy
+      context-api:
+        condition: service_started
+    # M35.3 — resource limits (frontend SPA: 512M memory / 0.5 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
 
 volumes:
   iam_postgres_data:
