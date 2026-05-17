@@ -326,6 +326,47 @@ invent facts beyond the chunks. Do NOT add filler ("Based on the above…").
 OUTPUT: just the paragraph. No headers, no JSON, no preamble.`,
   },
   {
+    id: "00000000-0000-0000-0000-000000000d09",
+    key: "platform.context.singularity",
+    description:
+      "Structured platform-context document used by Event Horizon to ground answers about which app owns what. JSON-encoded (caller JSON.parse()'s content). Was hardcoded as the PLATFORM_CONTEXT object in workgraph-api/event-horizon.router.ts:28-62.",
+    content: JSON.stringify({
+      name: "Singularity",
+      promise: "A governed agent operating system for capability-scoped work: workflows, agents, prompt context, MCP local execution, budgets, approvals, artifacts, and audit receipts.",
+      primaryMentalModel: "Capability + Workflow + Budget Preset + Model Alias + MCP Workspace",
+      apps: [
+        { name: "Operations Portal", url: "http://localhost:5180", owns: "setup center, health, run audit, WorkItems, architecture diagrams, AI causality proof" },
+        { name: "Identity & Access", url: "http://localhost:5175", owns: "users, teams, roles, permissions, IAM capabilities, memberships" },
+        { name: "Agent Runtime", url: "http://localhost:3000", owns: "runtime capabilities, agent templates, agent studio, tools, prompt profiles, knowledge, learning review" },
+        { name: "Workflow Manager", url: "http://localhost:5174", owns: "workflow design, workflow runs, runtime inbox, approvals, run insights, budgets, WorkItems, consumables" },
+        { name: "Blueprint Workbench", url: "http://localhost:5176", owns: "staged agent work, human gates, artifact refinement, consumable final packs" },
+      ],
+      ownership: {
+        IAM: "users, teams, roles, capability identity, membership and access decisions",
+        Workgraph: "workflow templates/runs, WorkItems, approvals, consumables, run budgets and evidence",
+        AgentRuntime: "agent templates, capability runtime assets, tools, prompt profile references, knowledge and learning candidates",
+        PromptComposer: "prompt layers, context plans, citations and prompt assembly receipts",
+        ContextFabric: "execution orchestration, token governor, memory, Context Fabric receipts",
+        MCP: "local/private files, AST index, local tools, branches and commits; LLM calls go through the central gateway",
+        AuditGovernance: "audit events, policy/rate/budget receipts and governance reports",
+      },
+      operatorWorkflows: [
+        "Create/onboard a capability, optionally from GitHub or local repo.",
+        "Activate a predefined capability agent team with locked governance/verifier/security gates.",
+        "Design a governed workflow or delegate work through cross-capability WorkItems.",
+        "Run workflow, inspect Mission Control/Run Insights, approve pauses and artifacts.",
+        "Use Workbench for staged artifacts that become Workgraph consumables.",
+        "Use Operations for audit reports, architecture diagrams and AI causality proof.",
+      ],
+      answerRules: [
+        "Use the current page context first, then platform context.",
+        "Explain where data lives and which app owns the next action.",
+        "When evidence is missing, say what is missing and where to verify it.",
+        "Do not claim a mutation happened unless the context includes a receipt or explicit result.",
+      ],
+    }, null, 2),
+  },
+  {
     id: "00000000-0000-0000-0000-000000000d08",
     key: "mcp.code-tool-use-nudge",
     description:

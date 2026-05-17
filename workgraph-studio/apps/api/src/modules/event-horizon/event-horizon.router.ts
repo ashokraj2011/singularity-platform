@@ -25,40 +25,20 @@ const bodySchema = z.object({
   context: z.record(z.unknown()).default({}),
 })
 
-const PLATFORM_CONTEXT = {
-  name: 'Singularity',
-  promise: 'A governed agent operating system for capability-scoped work: workflows, agents, prompt context, MCP local execution, budgets, approvals, artifacts, and audit receipts.',
-  primaryMentalModel: 'Capability + Workflow + Budget Preset + Model Alias + MCP Workspace',
-  apps: [
-    { name: 'Operations Portal', url: 'http://localhost:5180', owns: 'setup center, health, run audit, WorkItems, architecture diagrams, AI causality proof' },
-    { name: 'Identity & Access', url: 'http://localhost:5175', owns: 'users, teams, roles, permissions, IAM capabilities, memberships' },
-    { name: 'Agent Runtime', url: 'http://localhost:3000', owns: 'runtime capabilities, agent templates, agent studio, tools, prompt profiles, knowledge, learning review' },
-    { name: 'Workflow Manager', url: 'http://localhost:5174', owns: 'workflow design, workflow runs, runtime inbox, approvals, run insights, budgets, WorkItems, consumables' },
-    { name: 'Blueprint Workbench', url: 'http://localhost:5176', owns: 'staged agent work, human gates, artifact refinement, consumable final packs' },
-  ],
-  ownership: {
-    IAM: 'users, teams, roles, capability identity, membership and access decisions',
-    Workgraph: 'workflow templates/runs, WorkItems, approvals, consumables, run budgets and evidence',
-    AgentRuntime: 'agent templates, capability runtime assets, tools, prompt profile references, knowledge and learning candidates',
-    PromptComposer: 'prompt layers, context plans, citations and prompt assembly receipts',
-    ContextFabric: 'execution orchestration, token governor, memory, Context Fabric receipts',
-    MCP: 'local/private files, AST index, local tools, branches and commits; LLM calls go through the central gateway',
-    AuditGovernance: 'audit events, policy/rate/budget receipts and governance reports',
-  },
-  operatorWorkflows: [
-    'Create/onboard a capability, optionally from GitHub or local repo.',
-    'Activate a predefined capability agent team with locked governance/verifier/security gates.',
-    'Design a governed workflow or delegate work through cross-capability WorkItems.',
-    'Run workflow, inspect Mission Control/Run Insights, approve pauses and artifacts.',
-    'Use Workbench for staged artifacts that become Workgraph consumables.',
-    'Use Operations for audit reports, architecture diagrams and AI causality proof.',
-  ],
-  answerRules: [
-    'Use the current page context first, then platform context.',
-    'Explain where data lives and which app owns the next action.',
-    'When evidence is missing, say what is missing and where to verify it.',
-    'Do not claim a mutation happened unless the context includes a receipt or explicit result.',
-  ],
+// M37.3 — PLATFORM_CONTEXT was a 35-line hardcoded object literal here.
+// Now it lives as a JSON blob in prompt-composer's SystemPrompt table
+// (key=platform.context.singularity). Fetched once per request through
+// the cached getSystemPrompt() helper. Edit + re-seed to change which
+// apps/owners/rules are surfaced to Event Horizon.
+async function loadPlatformContext(): Promise<unknown> {
+  try {
+    const { content } = await promptComposerClient.getSystemPrompt('platform.context.singularity')
+    return JSON.parse(content)
+  } catch (err) {
+    // If composer is unreachable on cold start, return a minimal stub so
+    // Event Horizon still answers (it just loses the platform overview).
+    return { name: 'Singularity', warning: `platform.context.singularity unavailable: ${(err as Error).message}` }
+  }
 }
 
 function nonBlank(value: unknown): string | undefined {
@@ -127,7 +107,8 @@ eventHorizonRouter.get('/actions', async (req, res) => {
 eventHorizonRouter.post('/chat', async (req, res) => {
   const body = bodySchema.parse(req.body)
   const capabilityId = nonBlank(body.capabilityId) || defaultCapabilityId()
-  const snapshot = await platformSnapshot()
+  // M37.3 — load PLATFORM_CONTEXT + snapshot in parallel.
+  const [snapshot, platformContext] = await Promise.all([platformSnapshot(), loadPlatformContext()])
   const result = await contextFabricClient.execute({
     trace_id: `event-horizon:${body.sessionId}:${Date.now()}`,
     idempotency_key: `event-horizon:${body.sessionId}:${Date.now()}`,
@@ -149,7 +130,7 @@ eventHorizonRouter.post('/chat', async (req, res) => {
       `Current path: ${body.path ?? 'unknown'}`,
       `Requested safe action intent: ${body.actionIntent ?? 'answer_context_question'}`,
       `Current page context JSON: ${JSON.stringify(body.context).slice(0, 6000)}`,
-      `Singularity platform map JSON: ${JSON.stringify(PLATFORM_CONTEXT).slice(0, 6000)}`,
+      `Singularity platform map JSON: ${JSON.stringify(platformContext).slice(0, 6000)}`,
       `Live platform summary JSON: ${JSON.stringify(snapshot).slice(0, 2000)}`,
     ].join('\n\n'),
     model_overrides: {

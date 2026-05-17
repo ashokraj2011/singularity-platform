@@ -92,13 +92,18 @@ function answer(question: string, ctx: ContextSnapshot): string {
   return `For this ${ctx.surface} screen: ${ctx.hints.join(" ")} Ask me about capability setup, agent versions, tool creation, prompt layers, runtime receipts, or where to inspect workflow status.`;
 }
 
-const ACTIONS: Array<{ intent: ActionIntent; label: string; prompt: string }> = [
-  { intent: "explain_capability", label: "Explain capability", prompt: "Explain this capability setup, including agents, bindings, learning review, and what still needs approval." },
-  { intent: "find_runtime_evidence", label: "Find evidence", prompt: "Tell me where to inspect runtime receipts, workflow evidence, prompt assemblies, artifacts, and audit receipts for this capability." },
-  { intent: "draft_review_note", label: "Draft review note", prompt: "Draft a concise human review note for activating generated agents or materializing learned knowledge." },
-  { intent: "recommend_agent_team", label: "Agent team advice", prompt: "Recommend the right agent team, roles, tools, and artifact gates for this capability." },
-  { intent: "explain_prompt_stack", label: "Prompt stack", prompt: "Explain the prompt profile/layer stack for this screen in user-friendly terms and call out what is editable." },
-];
+// M37.4 — Quick-action buttons used to be a hardcoded ACTIONS array here.
+// Now fetched from /api/event-horizon/actions?surface=capability-admin which
+// proxies to prompt-composer (singularity_composer DB, EventHorizonAction
+// table). Edit a row + re-seed; SPA picks it up on next mount, no rebuild.
+type EventHorizonActionRow = {
+  id: string;
+  surface: string;
+  intent: string;
+  label: string;
+  prompt: string;
+  displayOrder: number;
+};
 
 function mapActionIntent(intent: ActionIntent | null): "find_evidence" | "draft_approval_note" | "recommend_budget_model" | undefined {
   if (intent === "find_runtime_evidence") return "find_evidence";
@@ -114,6 +119,10 @@ export function EventHorizonChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionId, setSessionId] = useState("");
   const [thinking, setThinking] = useState(false);
+  // M37.4 — quick-action buttons fetched from /api/event-horizon/actions
+  // (was hardcoded ACTIONS array). Empty array on cold start; populated on
+  // first mount. If the fetch fails, the chat still works without buttons.
+  const [actions, setActions] = useState<EventHorizonActionRow[]>([]);
   const [ctx, setCtx] = useState<ContextSnapshot>(() => ({
     app: "Agent Runtime",
     path: pathname,
@@ -130,6 +139,14 @@ export function EventHorizonChat() {
     setSessionId(fresh);
     return fresh;
   }
+
+  // M37.4 — fetch the EventHorizonAction catalog once on first mount.
+  useEffect(() => {
+    fetch("/api/event-horizon/actions?surface=capability-admin")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => setActions(Array.isArray(data) ? data : []))
+      .catch((err) => console.warn("[EventHorizonChat] failed to load action catalog:", err));
+  }, []);
 
   useEffect(() => {
     const existingSession = localStorage.getItem(SESSION_ID_KEY);
@@ -288,11 +305,11 @@ export function EventHorizonChat() {
           </div>
           <div className="max-h-[420px] space-y-3 overflow-y-auto bg-slate-50 p-4">
             <div className="flex flex-wrap gap-1.5">
-              {ACTIONS.map((action) => (
+              {actions.map((action) => (
                 <button
                   key={action.intent}
                   type="button"
-                  onClick={() => void sendAction(action.intent, action.prompt)}
+                  onClick={() => void sendAction(action.intent as ActionIntent, action.prompt)}
                   disabled={thinking}
                   className="rounded-full border border-emerald-200 bg-white px-2 py-1 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
                 >
