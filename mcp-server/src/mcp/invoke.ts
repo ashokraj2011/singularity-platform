@@ -50,6 +50,10 @@ const ToolDescSchema = z.object({
   natural_language: z.string().optional(),
   risk_level: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).optional(),
   requires_approval: z.boolean().optional(),
+  // M39 — When true, mcp-server masks PII in this tool's output before the
+  // LLM sees it. See src/security/mask.ts. Default false (no change to
+  // existing tools). Toolset opt-in by tool-service / context-fabric.
+  pii_sensitive: z.boolean().optional(),
 });
 
 const InvokeSchema = z.object({
@@ -150,6 +154,13 @@ interface LoopState {
   contextPlanHash?: string;
   degradedActionsAllowed: string[];
   allowAutonomousMutation: boolean;
+  // M39 — PII token map. Carried across the loop and (when serialized
+  // into PendingApproval) across human-approval pauses. Map shape:
+  //   { "[EMAIL_1]": "alice@example.com", "[SSN_1]": "123-45-6789" }
+  // The LLM sees masked tokens; mcp-server un-masks args before tool
+  // dispatch so downstream enterprise APIs receive real values.
+  // Empty map by default; populated lazily on the first masked output.
+  piiTokenMap: Record<string, string>;
 }
 
 type LoopOutcome =
@@ -461,8 +472,12 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         }
 
         // Normal dispatch path.
+        // M39 — un-mask any PII tokens in args before the tool runs. tc.args
+        // came from the LLM which only saw masked tokens; the downstream
+        // enterprise API needs the real values back.
+        const unmaskedTc = { ...tc, args: applyArgsUnmaskIfNeeded(state, tc.args ?? {}) };
         const result = await dispatchToolCall(
-          tc,
+          unmaskedTc,
           state.fullToolDescriptors,
           state.correlation,
           undefined,
@@ -473,9 +488,16 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         if (result.approvalRequired) {
           return await pauseForApproval(state, tc, desc, result.approvalRequired.reason, result.record.id);
         }
+        // M39 — mask PII in the tool output before the LLM sees it, but ONLY
+        // when this tool's descriptor opts in via pii_sensitive=true (or the
+        // env default MCP_PII_MASK_DEFAULT=true is set). Token allocation is
+        // accumulated into state.piiTokenMap so subsequent tool args that
+        // reference tokens get un-masked before dispatch.
+        const rawOutput = trimToolResult(JSON.stringify(result.record.output), state.maxToolResultChars);
+        const maskedOutput = applyOutputMaskIfNeeded(state, desc, rawOutput);
         state.messages.push({
           role: "tool",
-          content: trimToolResult(JSON.stringify(result.record.output), state.maxToolResultChars),
+          content: maskedOutput,
           tool_call_id: tc.id,
           tool_name: tc.name,
         });
@@ -577,6 +599,9 @@ async function pauseForApproval(
     degraded_actions_allowed: state.degradedActionsAllowed,
     allow_autonomous_mutation: state.allowAutonomousMutation,
     tool_use_nudge_count: state.toolUseNudgeCount,
+    // M39 — persist PII token map across the approval pause. Only included
+    // when the run has accumulated tokens (avoids serializing empty maps).
+    pii_token_map: Object.keys(state.piiTokenMap).length > 0 ? state.piiTokenMap : undefined,
   });
   const payload = {
     continuation_token: env.continuation_token,
@@ -873,6 +898,8 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
       natural_language: tool.natural_language,
       risk_level: tool.risk_level,
       requires_approval: tool.requires_approval,
+      // M39 — local-registry tools opt-in to PII masking via their descriptor.
+      pii_sensitive: (tool as { pii_sensitive?: boolean }).pii_sensitive,
     });
   }
   const toolList = Array.from(mergedTools.values());
@@ -903,6 +930,9 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     natural_language: t.natural_language,
     risk_level: t.risk_level,
     requires_approval: t.requires_approval,
+    // M39 — carry pii_sensitive into the loop state so the splice points
+    // can decide whether to mask this tool's output.
+    pii_sensitive: (t as { pii_sensitive?: boolean }).pii_sensitive,
   }));
 
   const resolvedModel = resolveModelConfig({
@@ -942,6 +972,8 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     contextPlanHash: body.contextPlanHash,
     degradedActionsAllowed: body.degradedActionsAllowed ?? [],
     allowAutonomousMutation: body.allowAutonomousMutation === true,
+    // M39 — fresh PII token map per run (populated lazily on first masked output)
+    piiTokenMap: {},
   };
 
   const outcome = await runLoop(state);
@@ -1046,6 +1078,10 @@ invokeRouter.post("/resume", async (req, res) => {
     contextPlanHash: env.context_plan_hash,
     degradedActionsAllowed: env.degraded_actions_allowed ?? [],
     allowAutonomousMutation: env.allow_autonomous_mutation === true,
+    // M39 — restore the run's PII token map across the approval pause.
+    // The HMAC-signed PendingApproval envelope (M35.2) guarantees the map
+    // hasn't been tampered with between save + resume.
+    piiTokenMap: env.pii_token_map ?? {},
   };
   state.workspace = {
     ...(state.workspace ?? {}),
@@ -1072,7 +1108,11 @@ invokeRouter.post("/resume", async (req, res) => {
   }
 
   const tc = env.pending_tool_call;
-  const args = body.args_override ?? tc.args;
+  // M39 — un-mask any PII tokens in the args before dispatch so the
+  // downstream enterprise API receives real values. tc.args + args_override
+  // come from the LLM's tool_call (which only sees masked tokens).
+  const rawArgs = body.args_override ?? tc.args;
+  const args = applyArgsUnmaskIfNeeded(state, rawArgs);
 
   events.publish({
     kind: "approval.wait.resolved",
@@ -1113,9 +1153,12 @@ invokeRouter.post("/resume", async (req, res) => {
     );
     state.toolInvocationIds.push(result.record.id);
     if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
+    // M39 — mask resumed-tool output the same way as initial dispatch.
+    const resumeDesc = env.full_tool_descriptors.find((d) => d.name === tc.name);
+    const rawOutput = trimToolResult(JSON.stringify(result.record.output), state.maxToolResultChars);
     state.messages.push({
       role: "tool",
-      content: trimToolResult(JSON.stringify(result.record.output), state.maxToolResultChars),
+      content: applyOutputMaskIfNeeded(state, resumeDesc, rawOutput),
       tool_call_id: tc.id,
       tool_name: tc.name,
     });
@@ -1147,6 +1190,65 @@ function estimateLoopInputTokens(state: LoopState): number {
 function trimToolResult(content: string, maxChars?: number): string {
   if (!maxChars || content.length <= maxChars) return content;
   return `${content.slice(0, Math.max(0, maxChars - 80))}\n...[tool result trimmed to ${maxChars} chars]`;
+}
+
+// ── M39 — PII masking splice helpers ─────────────────────────────────────
+//
+// All tool-output → message paths funnel through applyOutputMaskIfNeeded().
+// All tool-args → dispatch paths funnel through applyArgsUnmaskIfNeeded().
+// Both are no-ops when masking is disabled (the default for tools without
+// pii_sensitive=true unless the env opt-in is set).
+
+function piiMaskingEnabled(_state: LoopState, desc?: PendingToolDescriptor): boolean {
+  if (process.env.MCP_PII_MASK_ENABLED === "false") return false; // kill switch
+  if (desc?.pii_sensitive === true) return true;
+  return process.env.MCP_PII_MASK_DEFAULT === "true";
+}
+
+function applyOutputMaskIfNeeded(
+  state: LoopState,
+  desc: PendingToolDescriptor | undefined,
+  output: string,
+): string {
+  if (!piiMaskingEnabled(state, desc)) return output;
+  // Lazy-require to keep cold-start fast for runs that never touch PII.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { maskPii } = require("../security/mask") as typeof import("../security/mask");
+  const r = maskPii(output, state.piiTokenMap);
+  state.piiTokenMap = r.tokenMap;
+  if (r.applied.length > 0) {
+    emitAuditEvent({
+      trace_id: state.correlation.traceId,
+      source_service: "mcp-server",
+      kind: "pii.masked",
+      capability_id: state.correlation.capabilityId,
+      severity: "info",
+      payload: {
+        tool: desc?.name,
+        kinds: r.applied.map((a) => ({ kind: a.kind, count: a.count })),
+        // DO NOT include actual PII values in audit payload — just counts.
+      },
+    });
+  }
+  return r.masked;
+}
+
+function applyArgsUnmaskIfNeeded<T>(state: LoopState, args: T): T {
+  if (process.env.MCP_PII_MASK_ENABLED === "false") return args;
+  if (Object.keys(state.piiTokenMap).length === 0) return args;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { unmaskPiiInArgs } = require("../security/mask") as typeof import("../security/mask");
+  const out = unmaskPiiInArgs(args, state.piiTokenMap);
+  // Audit emit happens via the tool invocation itself; we just emit a marker.
+  emitAuditEvent({
+    trace_id: state.correlation.traceId,
+    source_service: "mcp-server",
+    kind: "pii.unmasked",
+    capability_id: state.correlation.capabilityId,
+    severity: "info",
+    payload: { token_count: Object.keys(state.piiTokenMap).length },
+  });
+  return out;
 }
 
 // ── GET /mcp/pending — operator visibility ───────────────────────────────

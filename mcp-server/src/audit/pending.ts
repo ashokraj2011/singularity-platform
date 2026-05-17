@@ -77,6 +77,11 @@ export interface PendingApproval {
   degraded_actions_allowed?: string[];
   allow_autonomous_mutation?: boolean;
   tool_use_nudge_count?: number;
+  // M39 — PII token map persisted across approval pauses so the resumed run
+  // can un-mask args the same way the paused run did. The map only contains
+  // tokens (e.g. "[EMAIL_1]") → real values. Tampering protection comes from
+  // M35.2's HMAC-signed continuation token (which binds this envelope).
+  pii_token_map?: Record<string, string>;
 }
 
 export interface PendingToolDescriptor {
@@ -88,6 +93,11 @@ export interface PendingToolDescriptor {
   natural_language?: string;
   risk_level?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
   requires_approval?: boolean;
+  // M39 — when true, mcp-server masks PII in this tool's output before
+  // the LLM sees it (and un-masks tokens in subsequent tool args). When
+  // false/omitted, the output is passed through unchanged. Opt-in by design
+  // so the existing tool catalog has zero behavior change.
+  pii_sensitive?: boolean;
 }
 
 const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
