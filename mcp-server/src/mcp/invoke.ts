@@ -37,6 +37,8 @@ import {
 import {
   branchNameForWork, finishWorkBranch, prepareWorkBranch, restoreWorkBranch, WorkBranchInfo,
 } from "../workspace/git-workspace";
+// M39 — PII masking helpers. Both sync (regex baseline) and async (regex+NER).
+import { maskPii, maskPiiAsync, unmaskPiiInArgs } from "../security/mask";
 import { indexWorkspace, lastAstStats } from "../workspace/ast-index";
 import { ensureWorkspaceSource, WorkspaceSourceStatus } from "../workspace/source-materializer";
 import { sandboxRoot, withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbox";
@@ -488,13 +490,11 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         if (result.approvalRequired) {
           return await pauseForApproval(state, tc, desc, result.approvalRequired.reason, result.record.id);
         }
-        // M39 — mask PII in the tool output before the LLM sees it, but ONLY
-        // when this tool's descriptor opts in via pii_sensitive=true (or the
-        // env default MCP_PII_MASK_DEFAULT=true is set). Token allocation is
-        // accumulated into state.piiTokenMap so subsequent tool args that
-        // reference tokens get un-masked before dispatch.
+        // M39 — mask PII in the tool output before the LLM sees it. M39.B
+        // upgrades the path to async so the NER detector (loaded lazily under
+        // MCP_PII_NER_ENABLED) can run alongside the regex baseline.
         const rawOutput = trimToolResult(JSON.stringify(result.record.output), state.maxToolResultChars);
-        const maskedOutput = applyOutputMaskIfNeeded(state, desc, rawOutput);
+        const maskedOutput = await applyOutputMaskIfNeededAsync(state, desc, rawOutput);
         state.messages.push({
           role: "tool",
           content: maskedOutput,
@@ -1153,12 +1153,12 @@ invokeRouter.post("/resume", async (req, res) => {
     );
     state.toolInvocationIds.push(result.record.id);
     if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
-    // M39 — mask resumed-tool output the same way as initial dispatch.
+    // M39 / M39.B — mask resumed-tool output (async path for NER support).
     const resumeDesc = env.full_tool_descriptors.find((d) => d.name === tc.name);
     const rawOutput = trimToolResult(JSON.stringify(result.record.output), state.maxToolResultChars);
     state.messages.push({
       role: "tool",
-      content: applyOutputMaskIfNeeded(state, resumeDesc, rawOutput),
+      content: await applyOutputMaskIfNeededAsync(state, resumeDesc, rawOutput),
       tool_call_id: tc.id,
       tool_name: tc.name,
     });
@@ -1211,9 +1211,7 @@ function applyOutputMaskIfNeeded(
   output: string,
 ): string {
   if (!piiMaskingEnabled(state, desc)) return output;
-  // Lazy-require to keep cold-start fast for runs that never touch PII.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { maskPii } = require("../security/mask") as typeof import("../security/mask");
+  // Sync path — regex baseline only. Used when caller can't await.
   const r = maskPii(output, state.piiTokenMap);
   state.piiTokenMap = r.tokenMap;
   if (r.applied.length > 0) {
@@ -1226,7 +1224,41 @@ function applyOutputMaskIfNeeded(
       payload: {
         tool: desc?.name,
         kinds: r.applied.map((a) => ({ kind: a.kind, count: a.count })),
+        ner_active: process.env.MCP_PII_NER_ENABLED === "true",
         // DO NOT include actual PII values in audit payload — just counts.
+      },
+    });
+  }
+  return r.masked;
+}
+
+/**
+ * M39.B — async variant of applyOutputMaskIfNeeded that includes NER detections
+ * when MCP_PII_NER_ENABLED=true. Use this from async splice points; falls
+ * through to the regex-only sync path when NER is disabled.
+ */
+async function applyOutputMaskIfNeededAsync(
+  state: LoopState,
+  desc: PendingToolDescriptor | undefined,
+  output: string,
+): Promise<string> {
+  if (!piiMaskingEnabled(state, desc)) return output;
+  if (process.env.MCP_PII_NER_ENABLED !== "true") {
+    return applyOutputMaskIfNeeded(state, desc, output);
+  }
+  const r = await maskPiiAsync(output, state.piiTokenMap);
+  state.piiTokenMap = r.tokenMap;
+  if (r.applied.length > 0) {
+    emitAuditEvent({
+      trace_id: state.correlation.traceId,
+      source_service: "mcp-server",
+      kind: "pii.masked",
+      capability_id: state.correlation.capabilityId,
+      severity: "info",
+      payload: {
+        tool: desc?.name,
+        kinds: r.applied.map((a) => ({ kind: a.kind, count: a.count })),
+        ner_active: true,
       },
     });
   }
@@ -1236,8 +1268,6 @@ function applyOutputMaskIfNeeded(
 function applyArgsUnmaskIfNeeded<T>(state: LoopState, args: T): T {
   if (process.env.MCP_PII_MASK_ENABLED === "false") return args;
   if (Object.keys(state.piiTokenMap).length === 0) return args;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { unmaskPiiInArgs } = require("../security/mask") as typeof import("../security/mask");
   const out = unmaskPiiInArgs(args, state.piiTokenMap);
   // Audit emit happens via the tool invocation itself; we just emit a marker.
   emitAuditEvent({

@@ -24,6 +24,10 @@
 import type { PiiKind } from "./pii-detector";
 import { detectPii } from "./pii-detector";
 
+// M39.B — optional NER detector. Loaded lazily; no-op when MCP_PII_NER_ENABLED
+// is unset (the default). When enabled, maskPiiAsync() should be used in
+// preference to maskPii() so the NER detector can run alongside regex.
+
 export interface MaskResult {
   /** Text with PII spans replaced by tokens. */
   masked: string;
@@ -94,6 +98,61 @@ export function maskPii(text: string, tokenMap: Record<string, string> = {}): Ma
   //                     [EMAIL_1] is always the first email in the text.
   //   Pass 2 (reverse): splice replacements right-to-left so earlier
   //                     string indexes stay valid as we mutate.
+  const tokens: string[] = [];
+  for (const m of matches) {
+    let token = findExistingToken(newMap, m.kind, m.value);
+    if (!token) {
+      token = nextToken(newMap, m.kind);
+      newMap[token] = m.value;
+    }
+    tokens.push(token);
+  }
+  let out = text;
+  const tally = new Map<PiiKind, { token: string; count: number }>();
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const m = matches[i];
+    const token = tokens[i];
+    out = out.slice(0, m.start) + token + out.slice(m.end);
+    const entry = tally.get(m.kind);
+    if (entry) entry.count += 1;
+    else tally.set(m.kind, { token, count: 1 });
+  }
+  const applied = Array.from(tally.entries()).map(([kind, v]) => ({ kind, token: v.token, count: v.count }));
+  return { masked: out, tokenMap: newMap, applied };
+}
+
+/**
+ * M39.B — Async version of maskPii that includes NER detections when
+ * MCP_PII_NER_ENABLED=true. Same return shape; the only difference is the
+ * detector pipeline runs through the combined regex + NER path.
+ *
+ * Callers in async contexts (the agent loop) should prefer this over the sync
+ * maskPii() when NER might be enabled. The sync maskPii() remains as the
+ * regex-only fast path for cold-start / non-async contexts.
+ */
+export async function maskPiiAsync(text: string, tokenMap: Record<string, string> = {}): Promise<MaskResult> {
+  if (!text) return { masked: text, tokenMap, applied: [] };
+  // Static dynamic import — vitest + production both resolve cleanly.
+  // The pii-ner module's NER model load is itself lazy + gated.
+  const { detectAllPii, isNerEnabled } = await import("./pii-ner");
+  // When NER is off, fall through to the sync detector (same result, no async cost).
+  if (!isNerEnabled()) return maskPii(text, tokenMap);
+  const matches = await detectAllPii(text);
+  if (matches.length === 0) return { masked: text, tokenMap, applied: [] };
+  return maskFromMatches(text, matches, tokenMap);
+}
+
+/**
+ * Shared splice + token-allocation logic, factored so both maskPii (sync,
+ * regex-only) and maskPiiAsync (async, regex+NER) can reuse it. Takes
+ * pre-resolved non-overlapping matches.
+ */
+function maskFromMatches(
+  text: string,
+  matches: import("./pii-detector").PiiMatch[],
+  tokenMap: Record<string, string>,
+): MaskResult {
+  const newMap: Record<string, string> = { ...tokenMap };
   const tokens: string[] = [];
   for (const m of matches) {
     let token = findExistingToken(newMap, m.kind, m.value);
