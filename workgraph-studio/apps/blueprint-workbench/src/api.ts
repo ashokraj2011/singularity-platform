@@ -22,6 +22,19 @@ export type LookupCapability = {
   name: string
   capability_type?: string
   source?: string
+  sourceType?: SourceType
+  sourceUri?: string
+  repoUrl?: string
+  defaultBranch?: string
+  repositories?: Array<{
+    id?: string
+    repoName?: string
+    repoUrl?: string
+    repositoryType?: string
+    defaultBranch?: string
+    status?: string
+  }>
+  metadata?: Record<string, unknown>
 }
 
 export type LookupAgent = {
@@ -318,6 +331,26 @@ export type CreateSessionRequest = {
   phaseId?: string
   loopDefinition?: LoopDefinition
   gateMode?: GateMode
+  intakeDefaults?: {
+    goal?: string
+    sourceType?: SourceType
+    sourceUri?: string
+    sourceRef?: string
+    sourceProvenance?: string
+  }
+  intakeOverrides?: {
+    goalEdited?: boolean
+    sourceEdited?: boolean
+    originalGoal?: string
+    editedGoal?: string
+    originalSourceType?: SourceType
+    editedSourceType?: SourceType
+    originalSourceUri?: string
+    editedSourceUri?: string
+    originalSourceRef?: string
+    editedSourceRef?: string
+    sourceProvenance?: string
+  }
 } & WorkbenchExecutionConfig & {
   maxLoopsPerStage?: number
   maxTotalSendBacks?: number
@@ -401,6 +434,8 @@ export const api = {
   createSession: (body: CreateSessionRequest) => request<BlueprintSession>('/blueprint/sessions', { method: 'POST', body: JSON.stringify(body) }),
   updateSettings: (id: string, body: WorkbenchExecutionConfig & { maxLoopsPerStage?: number; maxTotalSendBacks?: number }) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/settings`, { method: 'PATCH', body: JSON.stringify(body) }),
+  resetStageAttempts: (id: string, stageKey: string) =>
+    request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/reset-attempts`, { method: 'POST' }),
   snapshot: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/snapshot`, { method: 'POST' }),
   run: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/run`, { method: 'POST' }),
   runStage: (id: string, stageKey: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/run`, { method: 'POST' }),

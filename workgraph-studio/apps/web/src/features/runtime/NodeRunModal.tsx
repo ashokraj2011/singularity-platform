@@ -561,19 +561,23 @@ function buildWorkbenchUrl(
   url.searchParams.set('browserRunId', browserRunId)
   url.searchParams.set('workflowNodeId', workflowNodeId)
   url.searchParams.set('ui', uiMode)
-  if (typeof renderedConfig.phaseId === 'string') url.searchParams.set('phaseId', renderedConfig.phaseId)
-  if (typeof renderedConfig.goal === 'string') url.searchParams.set('goal', renderedConfig.goal)
-  else if (typeof renderedConfig.task === 'string') url.searchParams.set('goal', renderedConfig.task)
+  const phaseId = cleanLaunchString(renderedConfig.phaseId)
+  const goal = cleanLaunchString(renderedConfig.goal) || cleanLaunchString(renderedConfig.task)
+  const sourceUri = cleanLaunchString(renderedConfig.sourceUri)
+  const sourceRef = cleanLaunchString(renderedConfig.sourceRef)
+  const capabilityId = cleanLaunchString(renderedConfig.capabilityId)
+  if (phaseId) url.searchParams.set('phaseId', phaseId)
+  if (goal) url.searchParams.set('goal', goal)
   if (renderedConfig.sourceType === 'github' || renderedConfig.sourceType === 'localdir') url.searchParams.set('sourceType', renderedConfig.sourceType)
-  if (typeof renderedConfig.sourceUri === 'string') url.searchParams.set('sourceUri', renderedConfig.sourceUri)
-  if (typeof renderedConfig.sourceRef === 'string') url.searchParams.set('sourceRef', renderedConfig.sourceRef)
-  if (typeof renderedConfig.capabilityId === 'string') url.searchParams.set('capabilityId', renderedConfig.capabilityId)
-  if (typeof bindings.architectAgentTemplateId === 'string') url.searchParams.set('architectAgentTemplateId', bindings.architectAgentTemplateId)
-  if (typeof bindings.developerAgentTemplateId === 'string') url.searchParams.set('developerAgentTemplateId', bindings.developerAgentTemplateId)
-  if (typeof bindings.qaAgentTemplateId === 'string') url.searchParams.set('qaAgentTemplateId', bindings.qaAgentTemplateId)
-  if (typeof bindings.productOwnerAgentTemplateId === 'string') url.searchParams.set('productOwnerAgentTemplateId', bindings.productOwnerAgentTemplateId)
-  if (typeof bindings.securityAgentTemplateId === 'string') url.searchParams.set('securityAgentTemplateId', bindings.securityAgentTemplateId)
-  if (typeof bindings.devopsAgentTemplateId === 'string') url.searchParams.set('devopsAgentTemplateId', bindings.devopsAgentTemplateId)
+  if (sourceUri) url.searchParams.set('sourceUri', sourceUri)
+  if (sourceRef) url.searchParams.set('sourceRef', sourceRef)
+  if (capabilityId) url.searchParams.set('capabilityId', capabilityId)
+  setCleanParam(url, 'architectAgentTemplateId', bindings.architectAgentTemplateId)
+  setCleanParam(url, 'developerAgentTemplateId', bindings.developerAgentTemplateId)
+  setCleanParam(url, 'qaAgentTemplateId', bindings.qaAgentTemplateId)
+  setCleanParam(url, 'productOwnerAgentTemplateId', bindings.productOwnerAgentTemplateId)
+  setCleanParam(url, 'securityAgentTemplateId', bindings.securityAgentTemplateId)
+  setCleanParam(url, 'devopsAgentTemplateId', bindings.devopsAgentTemplateId)
   if (renderedConfig.gateMode === 'auto' || renderedConfig.gateMode === 'manual') url.searchParams.set('gateMode', renderedConfig.gateMode)
   if (renderedConfig.loopDefinition && typeof window !== 'undefined') {
     try {
@@ -583,6 +587,18 @@ function buildWorkbenchUrl(
     }
   }
   return url.toString()
+}
+
+function setCleanParam(url: URL, key: string, value: unknown) {
+  const text = cleanLaunchString(value)
+  if (text) url.searchParams.set(key, text)
+}
+
+function cleanLaunchString(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const text = value.trim()
+  if (!text || /\{\{[^}]+}}/.test(text)) return ''
+  return text
 }
 
 function renderWorkbenchConfig(config: Record<string, unknown>, runtimeContext: Record<string, unknown>): Record<string, unknown> {

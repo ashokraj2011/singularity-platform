@@ -45,6 +45,7 @@ function surfaceFor(path: string): string {
   if (path.startsWith("/capabilities")) return "Capabilities";
   if (path.startsWith("/agent-studio")) return "Agent Studio";
   if (path.startsWith("/tools")) return "Tools";
+  if (path.startsWith("/prompt-workbench")) return "Prompt Workbench";
   if (path.startsWith("/prompt-profiles")) return "Agent Behavior Profiles";
   if (path.startsWith("/prompt-layers")) return "Prompt Layers";
   if (path.startsWith("/runtime-executions")) return "Runtime Receipts";
@@ -178,6 +179,7 @@ export function EventHorizonChat() {
       }
       if (pathname.startsWith("/agent-studio")) next.hints.push("This is where agent lineage, editability, and version history are maintained.");
       if (pathname.startsWith("/tools")) next.hints.push("This is where tools are registered, activated, risk-classified, and approval-gated.");
+      if (pathname.startsWith("/prompt-workbench")) next.hints.push("This is where prompt drafts, model aliases, token budgets, and Composer context plans are compared before execution.");
       if (pathname.startsWith("/prompt")) next.hints.push("Prompt surfaces control behavior presets, layer content, and auditability.");
       if (!cancelled) setCtx(next);
     }

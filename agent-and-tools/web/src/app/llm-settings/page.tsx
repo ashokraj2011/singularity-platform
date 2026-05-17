@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Cpu, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cpu, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
 
 type GatewayResult = {
   ok: boolean;
@@ -108,10 +109,16 @@ export default function LlmSettingsPage() {
             The central gateway is the only allowed provider-calling surface. This page shows the live gateway, provider readiness, and approved model aliases.
           </p>
         </div>
-        <button className="btn-secondary" onClick={() => void load()} disabled={loading}>
-          <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
-          Refresh
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <Link className="btn-primary" href="/prompt-workbench">
+            <WandSparkles size={15} />
+            Test model in Prompt Workbench
+          </Link>
+          <button className="btn-secondary" onClick={() => void load()} disabled={loading}>
+            <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error && (

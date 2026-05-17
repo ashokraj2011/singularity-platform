@@ -6,6 +6,7 @@ import { api } from '../../lib/api'
 import { RuntimeWidgetForm, type RuntimeFormSubmitTarget } from '../forms/widgets/RuntimeWidgetForm'
 import type { FormWidget } from '../forms/widgets/types'
 import type { UploadedDocument } from '../../lib/uploadAttachment'
+import { useCapabilityLabels } from './useCapabilityLabels'
 
 const BLUEPRINT_WORKBENCH_URL = import.meta.env.VITE_BLUEPRINT_WORKBENCH_URL
   ?? `${window.location.protocol}//${window.location.hostname}:5176/`
@@ -52,6 +53,7 @@ function WorkItemDetail({ id }: { id: string }) {
   const targetId = params.get('targetId')
   const [selectedWorkflowByTarget, setSelectedWorkflowByTarget] = useState<Record<string, string>>({})
   const [clarificationByTarget, setClarificationByTarget] = useState<Record<string, string>>({})
+  const { labelForCapability } = useCapabilityLabels()
 
   const { data: workItem, isLoading, refetch } = useQuery<WorkItemRow>({
     queryKey: ['runtime-workitem', id],
@@ -87,15 +89,16 @@ function WorkItemDetail({ id }: { id: string }) {
   const workflowsQuery = useQuery<WorkflowTemplateRow[]>({
     queryKey: ['runtime-workitem-workflows', activeTarget?.targetCapabilityId],
     enabled: Boolean(activeTarget?.targetCapabilityId),
-    queryFn: () => api.get('/workflows', { params: { capabilityId: activeTarget?.targetCapabilityId } }).then(r => unwrapItems<WorkflowTemplateRow>(r.data)),
+    queryFn: () => api.get('/workflows', { params: { capabilityId: activeTarget?.targetCapabilityId, size: 100 } }).then(r => unwrapItems<WorkflowTemplateRow>(r.data)),
   })
   const allWorkflowsQuery = useQuery<WorkflowTemplateRow[]>({
     queryKey: ['runtime-workitem-workflows-all'],
-    enabled: Boolean(activeTarget?.targetCapabilityId && workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0),
-    queryFn: () => api.get('/workflows', { params: { limit: 200 } }).then(r => unwrapItems<WorkflowTemplateRow>(r.data)),
+    enabled: Boolean(activeTarget?.targetCapabilityId && ((workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0) || workflowsQuery.isError)),
+    queryFn: () => api.get('/workflows', { params: { size: 100 } }).then(r => unwrapItems<WorkflowTemplateRow>(r.data)),
   })
   const workflowOptions = workflowsQuery.data?.length ? workflowsQuery.data : allWorkflowsQuery.data ?? []
-  const usingFallbackWorkflows = Boolean(activeTarget?.targetCapabilityId && workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0 && workflowOptions.length > 0)
+  const missingCapabilityWorkflows = workflowsQuery.isError || (workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0)
+  const usingFallbackWorkflows = Boolean(activeTarget?.targetCapabilityId && missingCapabilityWorkflows && workflowOptions.length > 0)
 
   if (isLoading) return <p style={{ fontSize: 13, color: 'var(--color-outline)' }}>Loading WorkItem…</p>
   if (!workItem) return <ErrorState message="WorkItem not found" onBack={() => navigate('/runtime')} />
@@ -136,7 +139,9 @@ function WorkItemDetail({ id }: { id: string }) {
             <Network size={16} style={{ color: '#8b5cf6' }} />
             <div style={{ flex: 1 }}>
               <h3 style={{ margin: 0, fontSize: 15, color: 'var(--color-on-surface)' }}>Child capability target</h3>
-              <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--color-outline)' }}>{activeTarget.targetCapabilityId}</p>
+              <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--color-outline)' }}>
+                {labelForCapability(activeTarget.targetCapabilityId)}
+              </p>
             </div>
             <StatusPill status={activeTarget.status} />
           </div>
@@ -185,7 +190,7 @@ function WorkItemDetail({ id }: { id: string }) {
                 </option>
                 {workflowOptions.map(w => (
                   <option key={w.id} value={w.id}>
-                    {w.name}{w.capabilityId && w.capabilityId !== activeTarget.targetCapabilityId ? ' · other capability' : ''}
+                    {w.name}{w.capabilityId && w.capabilityId !== activeTarget.targetCapabilityId ? ` · ${labelForCapability(w.capabilityId)}` : ''}
                   </option>
                 ))}
               </select>
@@ -240,7 +245,7 @@ function WorkItemDetail({ id }: { id: string }) {
                 background: target.id === activeTarget?.id ? 'rgba(139,92,246,0.08)' : '#fff',
               }}
             >
-              <span>{target.targetCapabilityId}</span>
+              <span>{labelForCapability(target.targetCapabilityId)}</span>
               <StatusPill status={target.status} />
             </button>
           ))}
@@ -1082,16 +1087,23 @@ function buildWorkbenchUrl(workflowInstanceId: string, workflowNodeId: string, c
   url.searchParams.set('workflowInstanceId', workflowInstanceId)
   url.searchParams.set('workflowNodeId', workflowNodeId)
   url.searchParams.set('ui', uiMode)
-  if (typeof config?.phaseId === 'string') url.searchParams.set('phaseId', config.phaseId)
-  if (typeof config?.goal === 'string') url.searchParams.set('goal', config.goal)
-  else if (typeof config?.task === 'string') url.searchParams.set('goal', config.task)
+  const phaseId = cleanLaunchString(config?.phaseId)
+  const goal = cleanLaunchString(config?.goal) || cleanLaunchString(config?.task)
+  const sourceUri = cleanLaunchString(config?.sourceUri)
+  const sourceRef = cleanLaunchString(config?.sourceRef)
+  const capabilityId = cleanLaunchString(config?.capabilityId)
+  if (phaseId) url.searchParams.set('phaseId', phaseId)
+  if (goal) url.searchParams.set('goal', goal)
   if (config?.sourceType === 'github' || config?.sourceType === 'localdir') url.searchParams.set('sourceType', config.sourceType)
-  if (typeof config?.sourceUri === 'string') url.searchParams.set('sourceUri', config.sourceUri)
-  if (typeof config?.sourceRef === 'string') url.searchParams.set('sourceRef', config.sourceRef)
-  if (typeof config?.capabilityId === 'string') url.searchParams.set('capabilityId', config.capabilityId)
-  if (typeof bindings.architectAgentTemplateId === 'string') url.searchParams.set('architectAgentTemplateId', bindings.architectAgentTemplateId)
-  if (typeof bindings.developerAgentTemplateId === 'string') url.searchParams.set('developerAgentTemplateId', bindings.developerAgentTemplateId)
-  if (typeof bindings.qaAgentTemplateId === 'string') url.searchParams.set('qaAgentTemplateId', bindings.qaAgentTemplateId)
+  if (sourceUri) url.searchParams.set('sourceUri', sourceUri)
+  if (sourceRef) url.searchParams.set('sourceRef', sourceRef)
+  if (capabilityId) url.searchParams.set('capabilityId', capabilityId)
+  setCleanParam(url, 'architectAgentTemplateId', bindings.architectAgentTemplateId)
+  setCleanParam(url, 'developerAgentTemplateId', bindings.developerAgentTemplateId)
+  setCleanParam(url, 'qaAgentTemplateId', bindings.qaAgentTemplateId)
+  setCleanParam(url, 'productOwnerAgentTemplateId', bindings.productOwnerAgentTemplateId)
+  setCleanParam(url, 'securityAgentTemplateId', bindings.securityAgentTemplateId)
+  setCleanParam(url, 'devopsAgentTemplateId', bindings.devopsAgentTemplateId)
   if (config?.gateMode === 'auto' || config?.gateMode === 'manual') url.searchParams.set('gateMode', config.gateMode)
   if (config?.loopDefinition && typeof window !== 'undefined') {
     try {
@@ -1101,6 +1113,18 @@ function buildWorkbenchUrl(workflowInstanceId: string, workflowNodeId: string, c
     }
   }
   return url.toString()
+}
+
+function setCleanParam(url: URL, key: string, value: unknown) {
+  const text = cleanLaunchString(value)
+  if (text) url.searchParams.set(key, text)
+}
+
+function cleanLaunchString(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const text = value.trim()
+  if (!text || /\{\{[^}]+}}/.test(text)) return ''
+  return text
 }
 
 function readWorkgraphToken(): string {
@@ -1209,6 +1233,7 @@ function unwrapItems<T>(data: unknown): T[] {
   if (Array.isArray(data)) return data as T[]
   if (data && typeof data === 'object') {
     const obj = data as Record<string, unknown>
+    if (Array.isArray(obj.content)) return obj.content as T[]
     if (Array.isArray(obj.items)) return obj.items as T[]
     if (Array.isArray(obj.data)) return obj.data as T[]
   }

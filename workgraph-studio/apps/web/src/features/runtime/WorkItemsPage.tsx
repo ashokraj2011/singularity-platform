@@ -16,6 +16,7 @@ import {
 import { api } from '../../lib/api'
 import { CapabilityPicker } from '../../components/lookup/EntityPickers'
 import { useActiveContextStore } from '../../store/activeContext.store'
+import { useCapabilityLabels } from './useCapabilityLabels'
 
 const TARGET_STATUSES = ['ALL', 'QUEUED', 'CLAIMED', 'IN_PROGRESS', 'SUBMITTED', 'APPROVED', 'REWORK_REQUESTED'] as const
 
@@ -58,22 +59,29 @@ export function WorkItemsPage() {
   const selectedTarget = selected?.targets[0] ?? null
   const selectedWorkflow = selectedTarget ? selectedWorkflowByTarget[selectedTarget.id] ?? '' : ''
   const effectiveWorkflow = selectedTarget?.childWorkflowTemplateId || selectedWorkflow
+  const { labelForCapability } = useCapabilityLabels()
+  const selectedTargetCapability = labelForCapability(selectedTarget?.targetCapabilityId)
 
   const workflowsQuery = useQuery<WorkflowOption[]>({
     queryKey: ['workitems-board-workflows', selectedTarget?.targetCapabilityId],
     enabled: Boolean(selectedTarget?.targetCapabilityId && !selectedTarget?.childWorkflowInstanceId),
-    queryFn: () => api.get('/workflows', { params: { capabilityId: selectedTarget?.targetCapabilityId } })
+    queryFn: () => api.get('/workflows', { params: { capabilityId: selectedTarget?.targetCapabilityId, size: 100 } })
       .then(r => unwrapItems<WorkflowOption>(r.data)),
   })
   const allWorkflowsQuery = useQuery<WorkflowOption[]>({
     queryKey: ['workitems-board-workflows-all'],
-    enabled: Boolean(selectedTarget?.targetCapabilityId && !selectedTarget?.childWorkflowInstanceId && workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0),
-    queryFn: () => api.get('/workflows', { params: { limit: 200 } }).then(r => unwrapItems<WorkflowOption>(r.data)),
+    enabled: Boolean(
+      selectedTarget?.targetCapabilityId &&
+      !selectedTarget?.childWorkflowInstanceId &&
+      ((workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0) || workflowsQuery.isError),
+    ),
+    queryFn: () => api.get('/workflows', { params: { size: 100 } }).then(r => unwrapItems<WorkflowOption>(r.data)),
   })
   const workflowOptions = workflowsQuery.data?.length
     ? workflowsQuery.data
     : allWorkflowsQuery.data ?? []
-  const usingFallbackWorkflows = Boolean(selectedTarget?.targetCapabilityId && workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0 && workflowOptions.length > 0)
+  const missingCapabilityWorkflows = workflowsQuery.isError || (workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0)
+  const usingFallbackWorkflows = Boolean(selectedTarget?.targetCapabilityId && missingCapabilityWorkflows && workflowOptions.length > 0)
 
   const claimMut = useMutation({
     mutationFn: ({ workItemId, targetId }: { workItemId: string; targetId: string }) =>
@@ -183,6 +191,12 @@ export function WorkItemsPage() {
                     </div>
                     <p style={{ margin: '5px 0 3px', color: '#111827', fontSize: 13, fontWeight: 800 }}>{item.title}</p>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 11, color: '#475569' }}>
+                      {target?.targetCapabilityId && (
+                        <>
+                          <span>{labelForCapability(target.targetCapabilityId)}</span>
+                          <span>·</span>
+                        </>
+                      )}
                       <span>{item.originType === 'PARENT_DELEGATED' ? 'Parent delegated' : 'Local work'}</span>
                       <span>·</span>
                       <span>{item.urgency ?? 'NORMAL'}</span>
@@ -220,7 +234,7 @@ export function WorkItemsPage() {
               </div>
 
               <div style={metricGridStyle}>
-                <Metric label="Target capability" value={selectedTarget?.targetCapabilityId ?? 'No target'} />
+                <Metric label="Target capability" value={selectedTargetCapability} />
                 <Metric label="Urgency" value={selected.urgency ?? 'NORMAL'} />
                 <Metric label="Required by" value={selected.requiredBy ? new Date(selected.requiredBy).toLocaleString() : 'Not set'} />
                 <Metric label="Details" value={selected.detailsLocked ? 'Locked packet' : 'Editable'} />
@@ -244,21 +258,21 @@ export function WorkItemsPage() {
                       style={inputStyle}
                     >
                       <option value="">
-                        {workflowsQuery.isLoading ? 'Loading workflow templates...'
-                          : workflowOptions.length === 0 ? 'No workflow templates found for this capability'
+                          {workflowsQuery.isLoading ? 'Loading workflow templates...'
+                          : workflowOptions.length === 0 ? `No workflow templates found for ${selectedTargetCapability}`
                           : usingFallbackWorkflows ? 'Select workflow template (showing all; none matched capability)'
                             : 'Select workflow template for this capability'}
                       </option>
                       {workflowOptions.map(workflow => (
                         <option key={workflow.id} value={workflow.id}>
-                          {workflow.name}{workflow.capabilityId && workflow.capabilityId !== selectedTarget.targetCapabilityId ? ' · other capability' : ''}
+                          {workflow.name}{workflow.capabilityId && workflow.capabilityId !== selectedTarget.targetCapabilityId ? ` · ${labelForCapability(workflow.capabilityId)}` : ''}
                         </option>
                       ))}
                     </select>
                   )}
                   {usingFallbackWorkflows && (
                     <p style={{ margin: '8px 0 0', color: '#92400e', fontSize: 12 }}>
-                      No workflow template came back for target capability {selectedTarget.targetCapabilityId}. Showing all templates so you can still attach one.
+                      No workflow template is currently linked to {selectedTargetCapability}. Showing all templates so you can still attach one.
                     </p>
                   )}
                   {!workflowsQuery.isLoading && !allWorkflowsQuery.isLoading && workflowOptions.length === 0 && (
@@ -308,7 +322,7 @@ export function WorkItemsPage() {
                   <div style={{ display: 'grid', gap: 8 }}>
                     {selected.targets.map(target => (
                       <button key={target.id} style={targetRowStyle} onClick={() => setSelectedId(selected.id)}>
-                        <span>{target.targetCapabilityId}</span>
+                        <span>{labelForCapability(target.targetCapabilityId)}</span>
                         <StatusPill status={target.status} />
                         <ArrowRight size={13} />
                       </button>
@@ -514,6 +528,7 @@ function unwrapItems<T>(data: unknown): T[] {
   if (Array.isArray(data)) return data as T[]
   if (data && typeof data === 'object') {
     const obj = data as Record<string, unknown>
+    if (Array.isArray(obj.content)) return obj.content as T[]
     if (Array.isArray(obj.items)) return obj.items as T[]
     if (Array.isArray(obj.data)) return obj.data as T[]
   }

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import {
@@ -305,14 +306,20 @@ export default function PromptProfileDetailPage({ params }: { params: { id: stri
                 {(p.description as string | undefined) || "Reusable human-authored behavior that can be attached to agent templates or runtime bindings."}
               </p>
             </div>
-            <button
-              type="button"
-              className={advancedAudit ? "btn-primary" : "btn-secondary bg-white"}
-              onClick={() => setAdvancedAudit(v => !v)}
-            >
-              <SlidersHorizontal size={15} />
-              {advancedAudit ? "Hide Advanced Audit" : "Advanced Audit View"}
-            </button>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <Link className="btn-primary" href={`/prompt-workbench?profileId=${encodeURIComponent(id)}`}>
+                <Sparkles size={15} />
+                Open in Prompt Workbench
+              </Link>
+              <button
+                type="button"
+                className={advancedAudit ? "btn-primary" : "btn-secondary bg-white"}
+                onClick={() => setAdvancedAudit(v => !v)}
+              >
+                <SlidersHorizontal size={15} />
+                {advancedAudit ? "Hide Advanced Audit" : "Advanced Audit View"}
+              </button>
+            </div>
           </div>
         </div>
 

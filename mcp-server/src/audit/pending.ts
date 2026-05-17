@@ -76,6 +76,7 @@ export interface PendingApproval {
   context_plan_hash?: string;
   degraded_actions_allowed?: string[];
   allow_autonomous_mutation?: boolean;
+  tool_use_nudge_count?: number;
 }
 
 export interface PendingToolDescriptor {

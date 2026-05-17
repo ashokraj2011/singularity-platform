@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
@@ -136,8 +137,13 @@ workflowInstancesRouter.post('/', validate(createInstanceSchema), async (req, re
 workflowInstancesRouter.get('/', async (req, res, next) => {
   try {
     const pg = parsePagination(req.query as Record<string, unknown>)
-    const { initiativeId } = req.query
-    const where = initiativeId ? { initiativeId: String(initiativeId) } : {}
+    const { initiativeId, capabilityId } = req.query
+    const where: Prisma.WorkflowInstanceWhereInput = {
+      ...(initiativeId ? { initiativeId: String(initiativeId) } : {}),
+      ...(typeof capabilityId === 'string' && capabilityId.trim()
+        ? { template: { capabilityId: capabilityId.trim() } }
+        : {}),
+    }
     const [instances, total] = await Promise.all([
       prisma.workflowInstance.findMany({ where, skip: pg.skip, take: pg.take, orderBy: { createdAt: 'desc' } }),
       prisma.workflowInstance.count({ where }),

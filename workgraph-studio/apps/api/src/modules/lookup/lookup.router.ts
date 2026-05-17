@@ -109,6 +109,17 @@ function clientFilter<T>(items: T[], q: string | undefined, fields: (item: T) =>
 }
 
 function normalizeRuntimeCapability(cap: RuntimeCapability): Record<string, unknown> {
+  const repositories = Array.isArray(cap.repositories)
+    ? cap.repositories.filter((repo): repo is Record<string, unknown> => Boolean(repo && typeof repo === 'object' && !Array.isArray(repo)))
+    : []
+  const primaryRepo = repositories.find(repo => String(repo.status ?? '').toUpperCase() === 'ACTIVE')
+    ?? repositories[0]
+  const repoUrl = typeof primaryRepo?.repoUrl === 'string' ? primaryRepo.repoUrl
+    : typeof primaryRepo?.url === 'string' ? primaryRepo.url
+    : undefined
+  const repositoryType = typeof primaryRepo?.repositoryType === 'string' ? primaryRepo.repositoryType
+    : typeof primaryRepo?.type === 'string' ? primaryRepo.type
+    : undefined
   return {
     id:              cap.id,
     capability_id:   cap.id,
@@ -117,6 +128,11 @@ function normalizeRuntimeCapability(cap: RuntimeCapability): Record<string, unkn
     status:          typeof cap.status === 'string' ? cap.status.toLowerCase() : cap.status,
     description:     cap.description,
     criticality:     cap.criticality,
+    repositories,
+    repoUrl,
+    sourceUri:       repoUrl,
+    sourceType:      repoUrl ? (repositoryType === 'LOCAL' || repoUrl.startsWith('local://') ? 'localdir' : 'github') : undefined,
+    defaultBranch:   typeof primaryRepo?.defaultBranch === 'string' ? primaryRepo.defaultBranch : undefined,
     source:          'agent-runtime',
   }
 }
@@ -216,6 +232,76 @@ lookupRouter.get('/capabilities', async (req, res) => {
     let items = Array.from(itemsById.values())
     items = clientFilter(items, req.query.q as string | undefined, (c) => [c.name, c.description, c.capability_type, c.capabilityType, c.id, c.capability_id])
     return res.json(paginate(items, page, size))
+  } catch (err) { handleError(err, res) }
+})
+
+lookupRouter.get('/me/memberships', async (req, res) => {
+  try {
+    const token = authToken(req)
+    const userId = (req as Request & { user?: { userId?: string } }).user?.userId
+    const candidates = [
+      '/me/memberships',
+      userId ? `/users/${encodeURIComponent(userId)}/memberships` : '',
+      userId ? `/users/${encodeURIComponent(userId)}/teams` : '',
+    ].filter(Boolean)
+
+    for (const path of candidates) {
+      const body = await iamProxyGet(path, {}, token)
+      let arr: unknown[] | null = null
+      if (Array.isArray(body)) {
+        arr = body
+      } else if (body && typeof body === 'object') {
+        const obj = body as Record<string, unknown>
+        if (Array.isArray(obj.items)) arr = obj.items
+        else if (Array.isArray(obj.data)) arr = obj.data
+      }
+      if (arr && arr.length > 0) return res.json({ items: arr, total: arr.length, page: 1, size: arr.length })
+    }
+
+    if ((req as Request & { iamUser?: { is_super_admin?: boolean } }).iamUser?.is_super_admin) {
+      const byCapability = new Map<string, Record<string, unknown>>()
+      try {
+        const body = await iamProxyGet('/capabilities', { size: 200 }, token)
+        const iamPage = unwrapIamPage(body, 1, 200)
+        for (const item of iamPage.items as Array<Record<string, unknown>>) {
+          const id = String(item.id ?? item.capability_id ?? '')
+          if (!id) continue
+          byCapability.set(id, {
+            capability_id: id,
+            capability_name: String(item.name ?? id),
+            team_id: '',
+            team_name: 'All teams',
+            role_key: 'capability_admin',
+            role_name: 'Capability Admin',
+            is_capability_owner: true,
+          })
+        }
+      } catch {
+        // Keep going: agent-runtime may still have capability references.
+      }
+      try {
+        const runtimeCaps = await listRuntimeCapabilities(authHeader(req))
+        for (const cap of runtimeCaps) {
+          const id = String(cap.id ?? '')
+          if (!id || byCapability.has(id)) continue
+          byCapability.set(id, {
+            capability_id: id,
+            capability_name: String(cap.name ?? id),
+            team_id: '',
+            team_name: 'Agent Studio',
+            role_key: 'capability_admin',
+            role_name: 'Capability Admin',
+            is_capability_owner: true,
+          })
+        }
+      } catch {
+        // The picker can still operate with IAM-only capabilities.
+      }
+      const items = Array.from(byCapability.values())
+      if (items.length > 0) return res.json({ items, total: items.length, page: 1, size: items.length })
+    }
+
+    return res.json({ items: [], total: 0, page: 1, size: 0 })
   } catch (err) { handleError(err, res) }
 })
 

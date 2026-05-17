@@ -12,6 +12,7 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
+  Sparkles,
 } from "lucide-react";
 import { runtimeApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -77,10 +78,16 @@ export default function PromptProfilesPage() {
                 tools, memory, task context, and evidence at runtime so every execution stays explainable.
               </p>
             </div>
-            <button className="btn-primary shrink-0" onClick={() => setShowCreate(true)}>
-              <Plus size={16} />
-              New Behavior Profile
-            </button>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <Link className="btn-secondary bg-white" href="/prompt-workbench">
+                <Sparkles size={16} />
+                Open in Prompt Workbench
+              </Link>
+              <button className="btn-primary" onClick={() => setShowCreate(true)}>
+                <Plus size={16} />
+                New Behavior Profile
+              </button>
+            </div>
           </div>
         </div>
 

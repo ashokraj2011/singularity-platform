@@ -35,20 +35,38 @@ function ActiveContextChip() {
   const navigate = useNavigate()
   const active = useActiveContextStore(s => s.active)
   const memberships = useActiveContextStore(s => s.memberships)
+  if (!active && memberships.length > 0) {
+    return (
+      <button
+        onClick={() => navigate('/context-picker')}
+        title="Choose the capability you want to focus on"
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          padding: '4px 10px', borderRadius: 20,
+          border: '1px solid rgba(0,132,61,0.22)',
+          background: 'rgba(0,132,61,0.08)',
+          fontSize: 11, fontWeight: 700, color: 'var(--color-primary)',
+          cursor: 'pointer',
+        }}
+      >
+        <Building2 size={11} />
+        Choose capability
+      </button>
+    )
+  }
   if (!active) return null
-  const switchable = memberships.length > 1
+  const switchable = memberships.length > 0
   return (
     <button
-      onClick={() => switchable && navigate('/context-picker')}
-      title={switchable ? 'Switch capability or role' : `Single capability — ${active.capabilityName}`}
-      disabled={!switchable}
+      onClick={() => navigate('/context-picker')}
+      title={switchable ? 'Switch capability or role' : `Active capability — ${active.capabilityName}`}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 6,
         padding: '4px 10px', borderRadius: 20,
         border: '1px solid var(--color-outline-variant)',
         background: 'var(--color-surface-container-low, rgba(0,0,0,0.02))',
         fontSize: 11, fontWeight: 600, color: 'var(--color-on-surface)',
-        cursor: switchable ? 'pointer' : 'default',
+        cursor: 'pointer',
       }}
     >
       <Building2 size={11} style={{ opacity: 0.6 }} />

@@ -27,9 +27,17 @@ export interface WorkspaceSourceStatus {
 }
 
 async function git(args: string[], opts?: { cwd?: string; allowFail?: boolean; maxBuffer?: number }): Promise<string> {
+  const cwd = opts?.cwd ?? sandboxRoot();
   try {
     const { stdout } = await execFileP("git", args, {
-      cwd: opts?.cwd ?? sandboxRoot(),
+      cwd,
+      env: {
+        ...process.env,
+        // Work-item workspaces live underneath the main sandbox. Without a
+        // ceiling, git commands in an uninitialized work-item folder can walk
+        // upward and accidentally operate on the parent sandbox repository.
+        GIT_CEILING_DIRECTORIES: path.dirname(path.resolve(cwd)),
+      },
       maxBuffer: opts?.maxBuffer ?? 20 * 1024 * 1024,
     });
     return stdout.trim();
@@ -187,9 +195,10 @@ export async function ensureWorkspaceSource(
       };
     }
     if (fs.existsSync(path.join(localPath, ".git"))) {
-      const existingRemote = normalizeRemote(await currentRemote());
+      const workspaceHasGit = fs.existsSync(path.join(sandboxRoot(), ".git"));
+      const existingRemote = workspaceHasGit ? normalizeRemote(await currentRemote()) : "";
       const expected = normalizeRemote(localPath);
-      const dirty = await dirtyPaths();
+      const dirty = workspaceHasGit ? await dirtyPaths() : [];
       if (existingRemote && existingRemote !== expected && dirty.length > 0) {
         throw new Error(`MCP workspace has dirty changes for a different repo (${existingRemote}); refusing to replace it with ${expected}`);
       }
@@ -236,8 +245,9 @@ export async function ensureWorkspaceSource(
   }
 
   const expected = normalizeRemote(cloneUrl);
-  const existingRemote = normalizeRemote(await currentRemote());
-  const dirty = await dirtyPaths();
+  const workspaceHasGit = fs.existsSync(path.join(sandboxRoot(), ".git"));
+  const existingRemote = workspaceHasGit ? normalizeRemote(await currentRemote()) : "";
+  const dirty = workspaceHasGit ? await dirtyPaths() : [];
   if (existingRemote && existingRemote !== expected && dirty.length > 0) {
     throw new Error(`MCP workspace has dirty changes for a different repo (${existingRemote}); refusing to replace it with ${expected}`);
   }

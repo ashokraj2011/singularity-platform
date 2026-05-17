@@ -7,11 +7,14 @@
  * browser-runtime player, skipping any design / archive / metadata UI.
  */
 
-import { useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Network, Play, Search, X, Workflow as WorkflowIcon } from 'lucide-react'
 import { api } from '../../lib/api'
+import { useActiveContextStore } from '../../store/activeContext.store'
+import { CapabilityPicker } from '../../components/lookup/EntityPickers'
+import { useCapabilityLabels } from './useCapabilityLabels'
 
 type Workflow = {
   id:             string
@@ -27,10 +30,21 @@ export function RunWorkflowPage() {
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null)
+  const activeContext = useActiveContextStore(s => s.active)
+  const [capabilityFilter, setCapabilityFilter] = useState(activeContext?.capabilityId ?? '')
+
+  useEffect(() => {
+    setCapabilityFilter(activeContext?.capabilityId ?? '')
+  }, [activeContext?.capabilityId])
 
   const { data: workflowsData, isLoading } = useQuery({
-    queryKey: ['run-workflows'],
-    queryFn:  () => api.get('/workflow-templates').then(r => r.data),
+    queryKey: ['run-workflows', capabilityFilter],
+    queryFn:  () => api.get('/workflow-templates', {
+      params: {
+        size: 100,
+        ...(capabilityFilter ? { capabilityId: capabilityFilter } : {}),
+      },
+    }).then(r => r.data),
     staleTime: 30_000,
   })
   const workflows: Workflow[] = useMemo(() => {
@@ -82,6 +96,68 @@ export function RunWorkflowPage() {
             fontSize: 13, outline: 'none',
           }}
         />
+      </div>
+
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(260px, 1fr) auto auto',
+        gap: 10,
+        alignItems: 'end',
+        padding: 12,
+        borderRadius: 14,
+        border: '1px solid var(--color-outline-variant)',
+        background: '#fff',
+        marginBottom: 18,
+      }}>
+        <div>
+          <p style={{ margin: '0 0 6px', fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#516179' }}>
+            Capability focus
+          </p>
+          <CapabilityPicker
+            value={capabilityFilter}
+            onChange={setCapabilityFilter}
+            placeholder="All capabilities"
+            filterToMemberships={false}
+            autoDefault={false}
+            hint={activeContext
+              ? `Active capability: ${activeContext.capabilityName}. Start Workflow defaults to this focus.`
+              : 'Choose a capability to show matching workflow templates.'}
+          />
+        </div>
+        {activeContext && capabilityFilter !== activeContext.capabilityId && (
+          <button
+            onClick={() => setCapabilityFilter(activeContext.capabilityId)}
+            style={{
+              padding: '9px 12px',
+              borderRadius: 9,
+              border: '1px solid rgba(0,132,61,0.25)',
+              background: 'rgba(0,132,61,0.08)',
+              color: 'var(--color-primary)',
+              cursor: 'pointer',
+              fontSize: 12,
+              fontWeight: 800,
+            }}
+          >
+            Use active
+          </button>
+        )}
+        {capabilityFilter && (
+          <button
+            onClick={() => setCapabilityFilter('')}
+            style={{
+              padding: '9px 12px',
+              borderRadius: 9,
+              border: '1px solid var(--color-outline-variant)',
+              background: '#fff',
+              color: '#475569',
+              cursor: 'pointer',
+              fontSize: 12,
+              fontWeight: 800,
+            }}
+          >
+            Show all
+          </button>
+        )}
       </div>
 
       {isLoading ? (
@@ -263,6 +339,7 @@ function StartWorkflowDialog({
 }
 
 function WorkflowCard({ workflow, onRun }: { workflow: Workflow; onRun: () => void }) {
+  const { labelForCapability } = useCapabilityLabels()
   return (
     <div style={{
       padding: '14px 16px', borderRadius: 12,
@@ -292,6 +369,11 @@ function WorkflowCard({ workflow, onRun }: { workflow: Workflow; onRun: () => vo
               display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
             }}>
               {workflow.description}
+            </p>
+          )}
+          {workflow.capabilityId && (
+            <p style={{ fontSize: 10, color: 'var(--color-primary)', margin: '5px 0 0', fontWeight: 800 }}>
+              {labelForCapability(workflow.capabilityId)}
             </p>
           )}
         </div>

@@ -20,14 +20,28 @@ const PSEUDO_LOGIN_EMAIL = import.meta.env.VITE_PSEUDO_LOGIN_EMAIL ?? 'admin@pse
 
 async function fetchMemberships(token: string): Promise<Membership[]> {
   try {
-    const res = await fetch(`${PSEUDO_IAM_URL.replace(/\/$/, '')}/me/memberships`, {
-      headers: { authorization: `Bearer ${token}` },
+    const res = await api.get('/lookup/me/memberships', {
+      headers: { Authorization: `Bearer ${token}` },
     })
-    if (!res.ok) return []
-    return await res.json() as Membership[]
+    const data = res.data as unknown
+    if (Array.isArray(data)) return data as Membership[]
+    if (data && typeof data === 'object' && Array.isArray((data as { items?: unknown[] }).items)) {
+      return (data as { items: Membership[] }).items
+    }
   } catch {
-    return []
+    // Fall back to pseudo IAM for local smoke tests where the Workgraph proxy
+    // may not be pointed at pseudo mode yet.
+    try {
+      const res = await fetch(`${PSEUDO_IAM_URL.replace(/\/$/, '')}/me/memberships`, {
+        headers: { authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return []
+      return await res.json() as Membership[]
+    } catch {
+      return []
+    }
   }
+  return []
 }
 
 async function verifyWorkgraphToken(token: string) {
@@ -45,7 +59,7 @@ export function LoginPage() {
   const navigate = useNavigate()
   const setAuth = useAuthStore(s => s.setAuth)
   const setMemberships = useActiveContextStore(s => s.setMemberships)
-  const setActive = useActiveContextStore(s => s.setActive)
+  const clearContext = useActiveContextStore(s => s.clear)
 
   // Local-mode form state
   const [email, setEmail]       = useState('admin@workgraph.local')
@@ -59,6 +73,14 @@ export function LoginPage() {
 
   // Tab UI: 'local' (legacy) vs 'iam'.  Default to whichever the env says.
   const [tab, setTab] = useState<'local' | 'iam'>(AUTH_PROVIDER)
+
+  async function completeLogin(token: string, user: Awaited<ReturnType<typeof verifyWorkgraphToken>>) {
+    setAuth(token, user)
+    clearContext()
+    const ms = await fetchMemberships(token)
+    setMemberships(ms)
+    navigate(ms.length > 0 ? '/context-picker' : '/dashboard')
+  }
 
   // M12 — one-click sign in via pseudo-IAM. Talks directly to pseudo-IAM
   // (default :8101) which accepts ANY credentials and returns a JWT signed
@@ -76,19 +98,7 @@ export function LoginPage() {
       }
       const body = await res.json() as { access_token: string; user: { id: string; email: string; display_name?: string; is_super_admin?: boolean } }
       const verifiedUser = await verifyWorkgraphToken(body.access_token)
-      setAuth(body.access_token, verifiedUser)
-      // Multi-tenant model: fetch memberships, then either auto-pick (1 option)
-      // or send the user to the picker page (>1).
-      const ms = await fetchMemberships(body.access_token)
-      setMemberships(ms)
-      if (ms.length === 1) {
-        setActive(ms[0])
-        navigate('/dashboard')
-      } else if (ms.length > 1) {
-        navigate('/context-picker')
-      } else {
-        navigate('/dashboard')
-      }
+      await completeLogin(body.access_token, verifiedUser)
     } catch (err) {
       const msg = (err as { response?: { data?: { message?: string } }; message?: string })?.response?.data?.message
         ?? (err as Error).message
@@ -115,8 +125,7 @@ export function LoginPage() {
     try {
       const res = await api.post('/auth/login', { email, password })
       const verifiedUser = await verifyWorkgraphToken(res.data.token)
-      setAuth(res.data.token, verifiedUser)
-      navigate('/dashboard')
+      await completeLogin(res.data.token, verifiedUser)
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Authentication failed'
       setError(msg)
@@ -132,8 +141,7 @@ export function LoginPage() {
       const login = await api.post('/auth/iam-login', { email: iamEmail, password: iamPassword })
       const token = login.data.access_token as string
       const user = await verifyWorkgraphToken(token)
-      setAuth(token, user)
-      navigate('/dashboard')
+      await completeLogin(token, user)
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
                   ?? 'IAM token rejected. Make sure the token is current and IAM is reachable.'

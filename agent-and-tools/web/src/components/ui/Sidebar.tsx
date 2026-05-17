@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import {
   LayoutDashboard, Bot, Wrench, Play, Users, BookOpen,
   GitBranch, Layers, ScrollText, ShieldCheck, Activity, Brain,
-  ChevronLeft, ChevronRight, DollarSign, Cpu,
+  ChevronLeft, ChevronRight, DollarSign, Cpu, WandSparkles,
 } from "lucide-react";
 
 const registry = [
@@ -21,6 +21,7 @@ const registry = [
 const runtime = [
   { label: "Capabilities",        href: "/capabilities",        icon: GitBranch },
   { label: "Behavior Profiles",   href: "/prompt-profiles",     icon: Layers },
+  { label: "Prompt Workbench",    href: "/prompt-workbench",    icon: WandSparkles },
   { label: "Instruction Blocks",  href: "/prompt-layers",       icon: ScrollText },
   { label: "Tool Grants",         href: "/tool-grants",         icon: ShieldCheck },
   { label: "Runtime Receipts",    href: "/runtime-executions",  icon: Activity },
@@ -74,10 +75,20 @@ function NavItem({
 export function Sidebar() {
   const path = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const [narrowViewport, setNarrowViewport] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("sidebar-collapsed");
     if (stored !== null) setCollapsed(stored === "true");
+  }, []);
+
+  useEffect(() => {
+    function syncViewport() {
+      setNarrowViewport(window.innerWidth < 1440);
+    }
+    syncViewport();
+    window.addEventListener("resize", syncViewport);
+    return () => window.removeEventListener("resize", syncViewport);
   }, []);
 
   function toggle() {
@@ -90,18 +101,20 @@ export function Sidebar() {
 
   const isActive = (href: string) =>
     href === "/" ? path === "/" : path.startsWith(href);
+  const canvasRoute = path.startsWith("/prompt-workbench");
+  const effectiveCollapsed = collapsed || narrowViewport || canvasRoute;
 
   return (
-    <aside className="shell-sidebar" style={{ width: collapsed ? 80 : 280 }}>
+    <aside className="shell-sidebar" style={{ width: effectiveCollapsed ? 64 : 236 }}>
 
       {/* ── Brand header ── */}
       <div
         style={{
           display: "flex",
           alignItems: "center",
-          justifyContent: collapsed ? "space-around" : "space-between",
-          gap: collapsed ? 0 : 12,
-          padding: "18px 16px 14px",
+          justifyContent: effectiveCollapsed ? "center" : "space-between",
+          gap: effectiveCollapsed ? 0 : 12,
+          padding: effectiveCollapsed ? "14px 10px" : "16px 14px 12px",
           borderBottom: "1px solid rgba(245,242,234,0.08)",
           flexShrink: 0,
         }}
@@ -113,9 +126,11 @@ export function Sidebar() {
             alignItems: "center",
             gap: 12,
             minWidth: 0,
-            opacity: collapsed ? 0 : 1,
+            opacity: effectiveCollapsed ? 0 : 1,
             transition: "opacity 0.2s",
-            pointerEvents: collapsed ? "none" : "auto",
+            pointerEvents: effectiveCollapsed ? "none" : "auto",
+            width: effectiveCollapsed ? 0 : "auto",
+            overflow: "hidden",
           }}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -165,18 +180,20 @@ export function Sidebar() {
         {/* Collapse toggle */}
         <button
           onClick={toggle}
-          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={effectiveCollapsed ? (canvasRoute ? "Prompt Workbench uses compact navigation" : narrowViewport ? "Sidebar is compact for this window" : "Expand sidebar") : "Collapse sidebar"}
+          disabled={canvasRoute}
           style={{
             width: 32, height: 32, borderRadius: 8, border: "none",
-            background: "rgba(245,242,234,0.08)", cursor: "pointer",
+            background: "rgba(245,242,234,0.08)", cursor: canvasRoute ? "default" : "pointer",
             display: "flex", alignItems: "center", justifyContent: "center",
             color: "var(--brand-green-accent)", transition: "all 0.15s",
+            opacity: canvasRoute ? 0.55 : 1,
             flexShrink: 0,
           }}
           onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(245,242,234,0.14)"; }}
           onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(245,242,234,0.08)"; }}
         >
-          {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+          {effectiveCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
         </button>
       </div>
 
@@ -184,18 +201,18 @@ export function Sidebar() {
       <nav style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "12px 8px" }}>
 
         {/* Registry section */}
-        {!collapsed && (
+        {!effectiveCollapsed && (
           <p className="label-xs" style={{ padding: "0 12px", marginBottom: 6 }}>Registry</p>
         )}
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           {registry.map(item => (
-            <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={collapsed} />
+            <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={effectiveCollapsed} />
           ))}
         </div>
 
         {/* Runtime section */}
-        {!collapsed ? (
-          <div style={{ marginTop: 20 }}>
+        {!effectiveCollapsed ? (
+          <div style={{ marginTop: 16 }}>
             <p className="label-xs" style={{ padding: "0 12px", marginBottom: 6 }}>Runtime</p>
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
               {runtime.map(item => (
@@ -212,8 +229,8 @@ export function Sidebar() {
         )}
 
         {/* Governance section (M21) */}
-        {!collapsed ? (
-          <div style={{ marginTop: 20 }}>
+        {!effectiveCollapsed ? (
+          <div style={{ marginTop: 16 }}>
             <p className="label-xs" style={{ padding: "0 12px", marginBottom: 6 }}>Governance</p>
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
               {governance.map(item => (
@@ -231,7 +248,7 @@ export function Sidebar() {
       </nav>
 
       {/* ── Footer ── */}
-      {!collapsed && (
+      {!effectiveCollapsed && (
         <div
           style={{
             padding: "8px 16px 16px",

@@ -62,6 +62,28 @@ const executionSettingsSchema = z.object({
   maxLayerChars: z.number().int().min(500).max(100_000).optional(),
 })
 
+const intakeDefaultsSchema = z.object({
+  goal: z.string().optional(),
+  sourceType: z.enum(['github', 'localdir']).optional(),
+  sourceUri: z.string().optional(),
+  sourceRef: z.string().optional(),
+  sourceProvenance: z.string().optional(),
+}).optional()
+
+const intakeOverridesSchema = z.object({
+  goalEdited: z.boolean().optional(),
+  sourceEdited: z.boolean().optional(),
+  originalGoal: z.string().optional(),
+  editedGoal: z.string().optional(),
+  originalSourceType: z.enum(['github', 'localdir']).optional(),
+  editedSourceType: z.enum(['github', 'localdir']).optional(),
+  originalSourceUri: z.string().optional(),
+  editedSourceUri: z.string().optional(),
+  originalSourceRef: z.string().optional(),
+  editedSourceRef: z.string().optional(),
+  sourceProvenance: z.string().optional(),
+}).optional()
+
 const createSessionSchema = z.object({
   goal: z.string().min(8),
   sourceType: z.enum(['github', 'localdir']),
@@ -79,6 +101,8 @@ const createSessionSchema = z.object({
   phaseId: z.string().optional(),
   loopDefinition: z.unknown().optional(),
   gateMode: z.enum(['manual', 'auto']).default('manual'),
+  intakeDefaults: intakeDefaultsSchema,
+  intakeOverrides: intakeOverridesSchema,
 }).merge(executionSettingsSchema).transform(input => ({
   ...input,
   snapshotMode: input.snapshotMode ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.snapshotMode,
@@ -295,6 +319,8 @@ type LoopState = {
   reviewEvents: ReviewEvent[]
   decisionAnswers: DecisionAnswer[]
   finalPack?: FinalPack
+  intakeDefaults?: z.infer<typeof intakeDefaultsSchema>
+  intakeOverrides?: z.infer<typeof intakeOverridesSchema>
   executionConfig?: {
     snapshotMode?: 'summary' | 'relevant_excerpts' | 'full_debug'
     excerptBudgetChars?: number
@@ -380,6 +406,20 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         payload: workflowLink.warning as unknown as Record<string, unknown>,
       })
     }
+    if (body.intakeOverrides?.goalEdited || body.intakeOverrides?.sourceEdited) {
+      reviewEvents.push({
+        id: crypto.randomUUID(),
+        type: 'INTAKE_OVERRIDE_RECORDED',
+        stageKey: loopDefinition.stages[0]?.key,
+        message: 'Workbench intake goal/source was edited from the resolved workflow defaults before session creation.',
+        actorId: req.user!.userId,
+        createdAt: now,
+        payload: {
+          intakeDefaults: body.intakeDefaults,
+          intakeOverrides: body.intakeOverrides,
+        } as Record<string, unknown>,
+      })
+    }
     const initialLoopState: LoopState = {
       workflowNodeId: resolvedWorkflowNodeId,
       browserRunId: resolvedBrowserRunId,
@@ -389,6 +429,8 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
       stageAttempts: [],
       decisionAnswers: [],
       reviewEvents,
+      intakeDefaults: body.intakeDefaults,
+      intakeOverrides: body.intakeOverrides,
       executionConfig: {
         snapshotMode: body.snapshotMode,
         excerptBudgetChars: body.excerptBudgetChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.excerptBudgetChars,
@@ -425,7 +467,17 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
       workflowInstanceId: session.workflowInstanceId,
       workflowNodeId: resolvedWorkflowNodeId,
       workflowLinkWarning: workflowLink.warning,
+      intakeDefaults: body.intakeDefaults,
+      intakeOverrides: body.intakeOverrides,
     })
+    if (body.intakeOverrides?.goalEdited || body.intakeOverrides?.sourceEdited) {
+      await recordBlueprintAudit(session.id, 'BlueprintIntakeOverrideRecorded', req.user!.userId, {
+        workflowInstanceId: session.workflowInstanceId,
+        workflowNodeId: resolvedWorkflowNodeId,
+        intakeDefaults: body.intakeDefaults,
+        intakeOverrides: body.intakeOverrides,
+      })
+    }
     res.status(201).json(await loadSession(session.id, req.user!.userId))
   } catch (err) { next(err) }
 })
@@ -491,6 +543,65 @@ blueprintRouter.patch('/sessions/:id/settings', validate(updateSessionSettingsSc
       maxLoopsPerStage: nextLoopDefinition.maxLoopsPerStage,
       maxTotalSendBacks: nextLoopDefinition.maxTotalSendBacks,
       executionConfig: nextExecutionConfig,
+    })
+    res.json(await loadSession(session.id, req.user!.userId))
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.post('/sessions/:id/stages/:stageKey/reset-attempts', async (req, res, next) => {
+  try {
+    const sessionId = String(req.params.id)
+    const requestedStageKey = String(req.params.stageKey)
+    const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
+    if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+    assertBlueprintAccess(session, req.user!.userId)
+
+    const state = readLoopState(session)
+    const stage = state.loopDefinition.stages.find(item => item.key === requestedStageKey || item.key === slug(requestedStageKey))
+    if (!stage) throw new ValidationError(`Unknown Workbench stage: ${requestedStageKey}`)
+    const removedAttempts = state.stageAttempts.filter(attempt => attempt.stageKey === stage.key)
+    if (removedAttempts.length === 0) {
+      res.json(await loadSession(session.id, req.user!.userId))
+      return
+    }
+
+    const nextState: LoopState = {
+      ...state,
+      currentStageKey: stage.key,
+      stageAttempts: state.stageAttempts.filter(attempt => attempt.stageKey !== stage.key),
+      reviewEvents: [
+        ...state.reviewEvents,
+        {
+          id: crypto.randomUUID(),
+          type: 'STAGE_ATTEMPTS_RESET',
+          stageKey: stage.key,
+          message: `Reset ${removedAttempts.length} attempt${removedAttempts.length === 1 ? '' : 's'} for ${stage.label}.`,
+          actorId: req.user!.userId,
+          payload: {
+            stageKey: stage.key,
+            stageLabel: stage.label,
+            removedAttemptIds: removedAttempts.map(attempt => attempt.id),
+            removedAttemptCount: removedAttempts.length,
+          },
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    }
+    await prisma.blueprintSession.update({
+      where: { id: session.id },
+      data: {
+        status: session.status === 'COMPLETED' || session.status === 'APPROVED' ? 'RUNNING' : session.status,
+        metadata: stateToMetadata(session, nextState),
+      },
+    })
+    await recordBlueprintAudit(session.id, 'BlueprintStageAttemptsReset', req.user!.userId, {
+      capabilityId: session.capabilityId,
+      workflowInstanceId: session.workflowInstanceId,
+      workflowNodeId: state.workflowNodeId,
+      stageKey: stage.key,
+      stageLabel: stage.label,
+      removedAttemptCount: removedAttempts.length,
+      removedAttemptIds: removedAttempts.map(attempt => attempt.id),
     })
     res.json(await loadSession(session.id, req.user!.userId))
   } catch (err) { next(err) }
@@ -2221,6 +2332,16 @@ function loopStageTask(session: ArtifactSession, stage: LoopStageDefinition, sta
   const capturedDecisions = state.decisionAnswers.length
     ? state.decisionAnswers.map(answer => `- ${answer.questionText ?? answer.questionId}: ${decisionAnswerText(answer) ?? answer.notes ?? 'answered'}${answer.notes ? ` | notes: ${answer.notes}` : ''}`).join('\n')
     : '- No stakeholder decisions captured yet.'
+  const developerExecutionContract = normalizeAgentRole(stage.agentRole).includes('DEV')
+    ? [
+        'Developer execution contract:',
+        '- Treat captured stakeholder decisions and prior approved artifacts as implementation requirements.',
+        '- Produce an actual MCP/git code change when a writable workspace is available; do not stop at design or planning text.',
+        '- Inspect with AST/search/read tools, then mutate files with write_file/apply_patch and finish with git_commit or finish_work_branch so Code Review receives a captured diff.',
+        '- If the requested behavior already exists, add or update tests/docs that prove it and commit those changes.',
+        '- Only ask new open questions when the captured decisions are insufficient to safely implement.',
+      ].join('\n')
+    : ''
   return [
     `Run Blueprint loop stage: ${stage.label}`,
     '',
@@ -2243,6 +2364,8 @@ function loopStageTask(session: ArtifactSession, stage: LoopStageDefinition, sta
     'Captured stakeholder decisions and clarifications:',
     capturedDecisions,
     '',
+    developerExecutionContract,
+    developerExecutionContract ? '' : undefined,
     'Recent feedback loops:',
     sendBacks,
     '',

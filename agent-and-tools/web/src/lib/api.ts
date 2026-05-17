@@ -294,6 +294,13 @@ export const runtimeApi = {
   assemble: (body: Row) =>
     reqEnv<Row>(`${COMPOSER_BASE}/prompt-assemblies`, { method: "POST", body: JSON.stringify(body) }),
   getAssembly: (id: string) => reqEnv<Row>(`${COMPOSER_BASE}/prompt-assemblies/${id}`),
+  composePreview: (body: Row) =>
+    req<Row>("/api/prompt-workbench/preview", { method: "POST", body: JSON.stringify(body) }),
+  composeRespond: (body: Row) =>
+    req<Row>("/api/prompt-workbench/respond", { method: "POST", body: JSON.stringify(body) }),
+  comparePromptModels: (body: { compose: Row; modelAliases: string[] }) =>
+    req<Row>("/api/prompt-workbench/compare", { method: "POST", body: JSON.stringify(body) }),
+  llmSettings: () => req<Row>("/api/llm-settings"),
 
   // Tools
   listToolDefs: () => reqEnv<Row[]>(`${RUNTIME_BASE}/tools`),

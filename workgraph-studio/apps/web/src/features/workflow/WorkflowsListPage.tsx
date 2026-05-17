@@ -11,6 +11,7 @@ import {
 import { api } from '../../lib/api'
 import { useActiveContextStore } from '../../store/activeContext.store'
 import { UserPicker, TeamPicker, CapabilityPicker } from '../../components/lookup/EntityPickers'
+import { useCapabilityLabels } from '../runtime/useCapabilityLabels'
 
 type WorkflowInstance = {
   id: string
@@ -56,6 +57,7 @@ type WorkflowTemplate = {
   name: string
   description?: string
   status?: string
+  capabilityId?: string | null
   metadata?: TemplateMetadata
   createdAt: string
   archivedAt?: string
@@ -349,6 +351,7 @@ export function WorkflowsListPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [createName, setCreateName] = useState('')
   const activeContext = useActiveContextStore(s => s.active)
+  const [capabilityFilter, setCapabilityFilter] = useState<string>(activeContext?.capabilityId ?? '')
   const [createCapabilityId, setCreateCapabilityId] = useState<string>(activeContext?.capabilityId ?? '')
   const [createTeamId, setCreateTeamId] = useState<string>(activeContext?.teamId ?? '')
   const [createStarter, setCreateStarter] = useState<WorkflowStarter>('EMPTY')
@@ -362,15 +365,30 @@ export function WorkflowsListPage() {
   const [importJsonText, setImportJsonText] = useState('')
   const importJsonFileRef = useRef<HTMLInputElement>(null)
 
+  useEffect(() => {
+    setCapabilityFilter(activeContext?.capabilityId ?? '')
+  }, [activeContext?.capabilityId])
+
   const { data: instancesData, isLoading: instancesLoading } = useQuery({
-    queryKey: ['workflow-instances'],
-    queryFn: () => api.get('/workflow-instances').then(r => r.data),
+    queryKey: ['workflow-instances', capabilityFilter],
+    queryFn: () => api.get('/workflow-instances', {
+      params: {
+        size: 100,
+        ...(capabilityFilter ? { capabilityId: capabilityFilter } : {}),
+      },
+    }).then(r => r.data),
     refetchInterval: 10_000,
   })
 
   const { data: templatesData, isLoading: templatesLoading } = useQuery({
-    queryKey: ['workflow-templates', showArchived],
-    queryFn: () => api.get(showArchived ? '/workflow-templates?archived=true' : '/workflow-templates').then(r => r.data),
+    queryKey: ['workflow-templates', showArchived, capabilityFilter],
+    queryFn: () => api.get('/workflow-templates', {
+      params: {
+        size: 100,
+        ...(showArchived ? { archived: 'true' } : {}),
+        ...(capabilityFilter ? { capabilityId: capabilityFilter } : {}),
+      },
+    }).then(r => r.data),
   })
 
   const deleteMut = useMutation({
@@ -490,8 +508,15 @@ export function WorkflowsListPage() {
     if (inst.templateId) runCountByTemplate[inst.templateId] = (runCountByTemplate[inst.templateId] ?? 0) + 1
   }
   const templates: WorkflowTemplate[] = Array.isArray(templatesData) ? templatesData : (templatesData?.content ?? [])
+  const { labelForCapability } = useCapabilityLabels()
   const starterRequiresCapability = createStarter === 'CAPABILITY_WORKBENCH_BRIDGE' && !createCapabilityId
   const canAdvanceCreateIdentity = createName.trim().length > 0 && !starterRequiresCapability
+
+  function openCreateModal() {
+    setCreateCapabilityId(activeContext?.capabilityId ?? capabilityFilter)
+    setCreateTeamId(activeContext?.teamId ?? '')
+    setCreateOpen(true)
+  }
 
   // ?run=:workflowId — open the Run modal automatically (deep-link from the
   // design studio's "Start Run" button).
@@ -597,7 +622,7 @@ export function WorkflowsListPage() {
             <button
               className="btn-primary"
               style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
-              onClick={() => setCreateOpen(true)}
+              onClick={openCreateModal}
             >
               <Plus size={14} />
               New workflow
@@ -613,6 +638,67 @@ export function WorkflowsListPage() {
         }}>
           <TabBtn id="templates" label="Workflows" />
           <TabBtn id="instances" label="Runs" />
+        </div>
+
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(260px, 1fr) auto auto',
+          gap: 10,
+          alignItems: 'end',
+          padding: 12,
+          borderRadius: 14,
+          border: '1px solid var(--color-outline-variant)',
+          background: '#fff',
+          marginBottom: 16,
+          boxShadow: '0 2px 8px rgba(12,23,39,0.035)',
+        }}>
+          <div>
+            <p style={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#516179', margin: '0 0 6px' }}>
+              Capability focus
+            </p>
+            <CapabilityPicker
+              value={capabilityFilter}
+              onChange={setCapabilityFilter}
+              placeholder="All capabilities"
+              filterToMemberships={false}
+              autoDefault={false}
+              hint={activeContext
+                ? `Active capability: ${activeContext.capabilityName}. Workflows and runs default to this focus.`
+                : 'Choose a capability to focus this page, or show all workflows.'}
+            />
+          </div>
+          {activeContext && capabilityFilter !== activeContext.capabilityId && (
+            <button
+              onClick={() => setCapabilityFilter(activeContext.capabilityId)}
+              style={{
+                padding: '9px 12px', borderRadius: 9,
+                border: '1px solid rgba(0,132,61,0.25)',
+                background: 'rgba(0,132,61,0.08)',
+                color: 'var(--color-primary)',
+                cursor: 'pointer',
+                fontSize: 12,
+                fontWeight: 800,
+              }}
+            >
+              Use active
+            </button>
+          )}
+          {capabilityFilter && (
+            <button
+              onClick={() => setCapabilityFilter('')}
+              style={{
+                padding: '9px 12px', borderRadius: 9,
+                border: '1px solid var(--color-outline-variant)',
+                background: '#fff',
+                color: '#475569',
+                cursor: 'pointer',
+                fontSize: 12,
+                fontWeight: 800,
+              }}
+            >
+              Show all
+            </button>
+          )}
         </div>
       </motion.div>
 
@@ -633,7 +719,7 @@ export function WorkflowsListPage() {
             <p style={{ fontSize: 12, color: 'var(--color-outline)', marginBottom: 16 }}>
               Create a workflow to start designing and running automated processes.
             </p>
-            <button className="btn-primary" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }} onClick={() => setCreateOpen(true)}>
+            <button className="btn-primary" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }} onClick={openCreateModal}>
               <Plus size={14} /> New workflow
             </button>
           </div>
@@ -728,7 +814,7 @@ export function WorkflowsListPage() {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
             <p style={{ fontSize: 11, color: 'var(--color-outline)' }}>
-              {templates.length} workflow{templates.length !== 1 ? 's' : ''} · designs your team can run
+              {templates.length} workflow{templates.length !== 1 ? 's' : ''} · {capabilityFilter ? labelForCapability(capabilityFilter) : 'all capabilities'}
             </p>
             <button
               onClick={() => setShowArchived(a => !a)}
@@ -839,6 +925,9 @@ export function WorkflowsListPage() {
                         )}
                         {tmpl.metadata.requiresApprovalToRun && (
                           <MetaBadge color="#f59e0b">Approval req.</MetaBadge>
+                        )}
+                        {tmpl.capabilityId && (
+                          <MetaBadge color="#00843D">{labelForCapability(tmpl.capabilityId)}</MetaBadge>
                         )}
                         {tmpl.metadata.slaHours && (
                           <MetaBadge color="#94a3b8">SLA {tmpl.metadata.slaHours}h</MetaBadge>

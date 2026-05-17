@@ -79,9 +79,11 @@ const WORKBENCH_ORIGIN = normalizeOrigin(import.meta.env.VITE_BLUEPRINT_WORKBENC
 type WorkbenchHydratedDefaults = {
   browserRunId?: string
   goal?: string
+  goalProvenance?: string
   sourceType?: SourceType
   sourceUri?: string
   sourceRef?: string
+  sourceProvenance?: string
   capabilityId?: string
   architectAgentTemplateId?: string
   developerAgentTemplateId?: string
@@ -460,6 +462,13 @@ function WorkbenchSetup({
   const [sourceUri, setSourceUri] = useState(workflowDefaults.sourceUri ?? '')
   const [sourceRef, setSourceRef] = useState(workflowDefaults.sourceRef ?? '')
   const [goal, setGoal] = useState(workflowDefaults.goal ?? defaultWorkbenchGoal)
+  const [goalDefault, setGoalDefault] = useState(workflowDefaults.goal ?? '')
+  const [goalDefaultSource, setGoalDefaultSource] = useState(workflowDefaults.goal ? 'workflow launch URL' : '')
+  const [sourceDefaultType, setSourceDefaultType] = useState<SourceType | undefined>(workflowDefaults.sourceType)
+  const [sourceDefaultUri, setSourceDefaultUri] = useState(workflowDefaults.sourceUri ?? '')
+  const [sourceDefaultRef, setSourceDefaultRef] = useState(workflowDefaults.sourceRef ?? '')
+  const [sourceDefaultSource, setSourceDefaultSource] = useState(workflowDefaults.sourceUri ? 'workflow launch URL' : '')
+  const [intakeTouched, setIntakeTouched] = useState({ goal: false, sourceType: false, sourceUri: false, sourceRef: false })
   const [gateMode, setGateMode] = useState<GateMode>(workflowDefaults.gateMode ?? 'manual')
   const [capabilityId, setCapabilityId] = useState(workflowDefaults.capabilityId ?? '')
   const [architectAgentTemplateId, setArchitectAgentTemplateId] = useState(workflowDefaults.architectAgentTemplateId ?? '')
@@ -493,6 +502,7 @@ function WorkbenchSetup({
   })
   const capabilitiesQuery = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities })
   const capabilities = capabilitiesQuery.data ?? []
+  const selectedCapability = capabilities.find(capability => capability.id === capabilityId || capability.capability_id === capabilityId)
   const agentsQuery = useQuery({
     queryKey: ['agents', capabilityId],
     queryFn: () => api.agents(capabilityId),
@@ -504,14 +514,32 @@ function WorkbenchSetup({
     && !capabilities.some(capability => capability.id === workflowDefaults.capabilityId)
       ? { id: workflowDefaults.capabilityId, name: 'Workflow capability' } as LookupCapability
       : null
+  const capabilitySourceDefault = useMemo(
+    () => defaultSourceFromCapability(selectedCapability ?? fallbackCapability ?? undefined),
+    [selectedCapability, fallbackCapability],
+  )
 
   useEffect(() => {
     const hydrated = hydrateDefaultsFromWorkflow(workflowInstanceQuery.data, workflowDefaults.workflowNodeId) ?? workflowFallbackQuery.data
     if (!hydrated) return
-    if (hydrated.goal) setGoal(current => current === defaultWorkbenchGoal || !current.trim() ? hydrated.goal! : current)
-    if (hydrated.sourceUri) setSourceUri(current => current || hydrated.sourceUri!)
-    if (hydrated.sourceType === 'github' || hydrated.sourceType === 'localdir') setSourceType(hydrated.sourceType)
-    if (hydrated.sourceRef) setSourceRef(current => current || hydrated.sourceRef!)
+    if (hydrated.goal) {
+      setGoalDefault(hydrated.goal)
+      setGoalDefaultSource(hydrated.goalProvenance ?? 'workflow/work item context')
+      if (!intakeTouched.goal) setGoal(hydrated.goal)
+    }
+    if (hydrated.sourceUri) {
+      setSourceDefaultUri(hydrated.sourceUri)
+      setSourceDefaultSource(hydrated.sourceProvenance ?? 'workflow source context')
+      if (!intakeTouched.sourceUri) setSourceUri(hydrated.sourceUri)
+    }
+    if (hydrated.sourceType === 'github' || hydrated.sourceType === 'localdir') {
+      setSourceDefaultType(hydrated.sourceType)
+      if (!intakeTouched.sourceType) setSourceType(hydrated.sourceType)
+    }
+    if (hydrated.sourceRef) {
+      setSourceDefaultRef(hydrated.sourceRef)
+      if (!intakeTouched.sourceRef) setSourceRef(hydrated.sourceRef)
+    }
     if (hydrated.capabilityId) setCapabilityId(current => current || hydrated.capabilityId!)
     if (hydrated.gateMode === 'auto' || hydrated.gateMode === 'manual') setGateMode(hydrated.gateMode)
     if (hydrated.architectAgentTemplateId) setArchitectAgentTemplateId(current => current || hydrated.architectAgentTemplateId!)
@@ -522,7 +550,26 @@ function WorkbenchSetup({
       if (typeof hydrated.loopDefinition.maxLoopsPerStage === 'number') setMaxLoopsPerStage(hydrated.loopDefinition.maxLoopsPerStage)
       if (typeof hydrated.loopDefinition.maxTotalSendBacks === 'number') setMaxTotalSendBacks(hydrated.loopDefinition.maxTotalSendBacks)
     }
-  }, [workflowFallbackQuery.data, workflowInstanceQuery.data, workflowDefaults.workflowNodeId])
+  }, [intakeTouched.goal, intakeTouched.sourceRef, intakeTouched.sourceType, intakeTouched.sourceUri, workflowFallbackQuery.data, workflowInstanceQuery.data, workflowDefaults.workflowNodeId])
+
+  useEffect(() => {
+    if (!capabilitySourceDefault) return
+    setSourceDefaultUri(capabilitySourceDefault.sourceUri)
+    setSourceDefaultType(capabilitySourceDefault.sourceType)
+    setSourceDefaultRef(capabilitySourceDefault.sourceRef ?? '')
+    setSourceDefaultSource(capabilitySourceDefault.provenance)
+    if (!intakeTouched.sourceUri) setSourceUri(capabilitySourceDefault.sourceUri)
+    if (!intakeTouched.sourceType) setSourceType(capabilitySourceDefault.sourceType)
+    if (!intakeTouched.sourceRef && capabilitySourceDefault.sourceRef) setSourceRef(capabilitySourceDefault.sourceRef)
+  }, [
+    capabilitySourceDefault?.provenance,
+    capabilitySourceDefault?.sourceRef,
+    capabilitySourceDefault?.sourceType,
+    capabilitySourceDefault?.sourceUri,
+    intakeTouched.sourceRef,
+    intakeTouched.sourceType,
+    intakeTouched.sourceUri,
+  ])
 
   useEffect(() => {
     if (!activeSession) return
@@ -568,6 +615,13 @@ function WorkbenchSetup({
     },
     onSuccess: onCreated,
   })
+  const resetActiveStageMutation = useMutation({
+    mutationFn: () => {
+      if (!activeSession?.currentStageKey) throw new Error('Select a session with an active stage before resetting attempts.')
+      return api.resetStageAttempts(activeSession.id, activeSession.currentStageKey)
+    },
+    onSuccess: onCreated,
+  })
 
   const runtimeSettings = (): WorkbenchExecutionConfig & { maxLoopsPerStage: number; maxTotalSendBacks: number } => ({
     maxLoopsPerStage,
@@ -588,6 +642,34 @@ function WorkbenchSetup({
     && sourceUri.trim()
     && capabilityId
     && (loopAgentReady || architectAgentTemplateId || developerAgentTemplateId || qaAgentTemplateId)
+  const goalEdited = Boolean(goalDefault.trim() && goal.trim() !== goalDefault.trim())
+  const sourceEdited = Boolean(
+    (sourceDefaultUri.trim() && sourceUri.trim() !== sourceDefaultUri.trim())
+      || (sourceDefaultType && sourceType !== sourceDefaultType)
+      || (sourceDefaultRef.trim() && sourceRef.trim() !== sourceDefaultRef.trim()),
+  )
+  const intakeDefaults = {
+    goal: goalDefault.trim() || undefined,
+    sourceType: sourceDefaultType,
+    sourceUri: sourceDefaultUri.trim() || undefined,
+    sourceRef: sourceDefaultRef.trim() || undefined,
+    sourceProvenance: sourceDefaultSource || undefined,
+  }
+  const intakeOverrides = goalEdited || sourceEdited
+    ? {
+      goalEdited,
+      sourceEdited,
+      originalGoal: goalDefault.trim() || undefined,
+      editedGoal: goalEdited ? goal.trim() : undefined,
+      originalSourceType: sourceDefaultType,
+      editedSourceType: sourceEdited ? sourceType : undefined,
+      originalSourceUri: sourceDefaultUri.trim() || undefined,
+      editedSourceUri: sourceEdited ? sourceUri.trim() : undefined,
+      originalSourceRef: sourceDefaultRef.trim() || undefined,
+      editedSourceRef: sourceEdited ? sourceRef.trim() || undefined : undefined,
+      sourceProvenance: sourceDefaultSource || undefined,
+    }
+    : undefined
 
   return (
     <aside className="panel setup-panel">
@@ -632,14 +714,42 @@ function WorkbenchSetup({
 
       <label>
         <span>Goal</span>
-        <textarea value={goal} onChange={event => setGoal(event.target.value)} rows={4} />
+        <textarea
+          value={goal}
+          onChange={event => {
+            setIntakeTouched(current => ({ ...current, goal: true }))
+            setGoal(event.target.value)
+          }}
+          rows={4}
+        />
+        {goalDefault && (
+          <p className={goalEdited ? 'warning-text compact-note' : 'muted-hint'}>
+            {goalEdited
+              ? `Edited from ${goalDefaultSource || 'the WorkItem/workflow default'}; this override will be audited.`
+              : `Defaulted from ${goalDefaultSource || 'the WorkItem/workflow default'}.`}
+          </p>
+        )}
       </label>
 
       <div className="segmented">
-        <button className={sourceType === 'localdir' ? 'active' : ''} onClick={() => setSourceType('localdir')} type="button">
+        <button
+          className={sourceType === 'localdir' ? 'active' : ''}
+          onClick={() => {
+            setIntakeTouched(current => ({ ...current, sourceType: true }))
+            setSourceType('localdir')
+          }}
+          type="button"
+        >
           <HardDrive size={14} /> Local dir
         </button>
-        <button className={sourceType === 'github' ? 'active' : ''} onClick={() => setSourceType('github')} type="button">
+        <button
+          className={sourceType === 'github' ? 'active' : ''}
+          onClick={() => {
+            setIntakeTouched(current => ({ ...current, sourceType: true }))
+            setSourceType('github')
+          }}
+          type="button"
+        >
           <GitBranch size={14} /> GitHub
         </button>
       </div>
@@ -648,15 +758,32 @@ function WorkbenchSetup({
         <span>{sourceType === 'github' ? 'GitHub URL' : 'Local directory'}</span>
         <input
           value={sourceUri}
-          onChange={event => setSourceUri(event.target.value)}
+          onChange={event => {
+            setIntakeTouched(current => ({ ...current, sourceUri: true }))
+            setSourceUri(event.target.value)
+          }}
           placeholder={sourceType === 'github' ? 'https://github.com/org/repo' : '/path/visible/to/workgraph-api'}
         />
+        {sourceDefaultUri && (
+          <p className={sourceEdited ? 'warning-text compact-note' : 'muted-hint'}>
+            {sourceEdited
+              ? `Edited from ${sourceDefaultSource || 'the capability/workflow default'}; this source override will be audited.`
+              : `Defaulted from ${sourceDefaultSource || 'the capability/workflow default'}.`}
+          </p>
+        )}
       </label>
 
       <div className="two-col">
         <label>
           <span>Branch / ref</span>
-          <input value={sourceRef} onChange={event => setSourceRef(event.target.value)} placeholder="optional" />
+          <input
+            value={sourceRef}
+            onChange={event => {
+              setIntakeTouched(current => ({ ...current, sourceRef: true }))
+              setSourceRef(event.target.value)
+            }}
+            placeholder="optional"
+          />
         </label>
         <label>
           <span>Gate mode</span>
@@ -767,6 +894,8 @@ function WorkbenchSetup({
         <p className="muted-hint">Increase “Max loops / stage” when a stage needs more than three review/rework cycles. Lower prompt limits to force smaller, cheaper prompts.</p>
         {settingsMutation.isError && <p className="error-text">{settingsMutation.error.message}</p>}
         {settingsMutation.isSuccess && <p className="success-text">Runtime settings saved for this session.</p>}
+        {resetActiveStageMutation.isError && <p className="error-text">{resetActiveStageMutation.error.message}</p>}
+        {resetActiveStageMutation.isSuccess && <p className="success-text">Active stage attempt counter reset.</p>}
         <button
           className="secondary-action full-width"
           type="button"
@@ -775,6 +904,15 @@ function WorkbenchSetup({
         >
           {settingsMutation.isPending ? <Loader2 className="spin" size={16} /> : <Settings size={16} />}
           Save settings for current session
+        </button>
+        <button
+          className="secondary-action full-width danger"
+          type="button"
+          disabled={!activeSession?.currentStageKey || resetActiveStageMutation.isPending}
+          onClick={() => resetActiveStageMutation.mutate()}
+        >
+          {resetActiveStageMutation.isPending ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+          Reset active stage attempts
         </button>
       </section>
 
@@ -798,6 +936,8 @@ function WorkbenchSetup({
           browserRunId: workflowDefaults.browserRunId,
           workflowNodeId: workflowDefaults.workflowNodeId,
           phaseId: workflowDefaults.phaseId,
+          intakeDefaults,
+          intakeOverrides,
           loopDefinition: loopDefinition
             ? { ...loopDefinition, maxLoopsPerStage, maxTotalSendBacks }
             : undefined,
@@ -1452,12 +1592,21 @@ function StageDetailsPanel({
     },
     onSuccess: onSession,
   })
+  const resetAttemptsMutation = useMutation({
+    mutationFn: () => {
+      if (!stage) throw new Error('No stage selected')
+      return api.resetStageAttempts(session.id, stage.key)
+    },
+    onSuccess: onSession,
+  })
 
   if (!stage) {
     return <section className="control-card stage-details-panel"><p className="empty">No stage selected.</p></section>
   }
 
   const latest = attemptsFor(session, stage.key).at(-1)
+  const stageAttemptCount = attemptsFor(session, stage.key).length
+  const maxLoopsForStage = session.loopDefinition?.maxLoopsPerStage ?? 3
   const canRun = latest?.status !== 'RUNNING'
   const stageCompleted = latest?.verdict === 'PASS' || latest?.verdict === 'ACCEPTED_WITH_RISK'
   const requiredMissing = (stage.questions ?? [])
@@ -1490,8 +1639,8 @@ function StageDetailsPanel({
       </div>
 
       {!session.snapshots[0] && <p className="warning-text">No snapshot yet. Running this stage will snapshot the source first.</p>}
-      {(runMutation.error || verdictMutation.error || sendBackMutation.error) && (
-        <p className="error-text">{(runMutation.error ?? verdictMutation.error ?? sendBackMutation.error)?.message}</p>
+      {(runMutation.error || verdictMutation.error || sendBackMutation.error || resetAttemptsMutation.error) && (
+        <p className="error-text">{(runMutation.error ?? verdictMutation.error ?? sendBackMutation.error ?? resetAttemptsMutation.error)?.message}</p>
       )}
 
       <div className="metric-grid">
@@ -1502,10 +1651,21 @@ function StageDetailsPanel({
         </div>
         <div className="metric-card">
           <span>Iterations</span>
-          <strong>#{attemptsFor(session, stage.key).length}</strong>
-          <div className="meter amber"><i style={{ width: `${Math.min(attemptsFor(session, stage.key).length * 22, 100)}%` }} /></div>
+          <strong>#{stageAttemptCount}</strong>
+          <div className="meter amber"><i style={{ width: `${Math.min(stageAttemptCount * 22, 100)}%` }} /></div>
         </div>
       </div>
+
+      {stageAttemptCount >= maxLoopsForStage && (
+        <div className="attempt-card warning-card">
+          <strong>Loop limit reached</strong>
+          <p>This stage has used {stageAttemptCount}/{maxLoopsForStage} attempts. Increase the limit in Setup or reset this stage to run it again.</p>
+          <button className="secondary-action full-width" disabled={resetAttemptsMutation.isPending} onClick={() => resetAttemptsMutation.mutate()}>
+            {resetAttemptsMutation.isPending ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+            Reset this stage
+          </button>
+        </div>
+      )}
 
       <div className="attempt-card">
         <strong>Latest attempt</strong>
@@ -2291,6 +2451,28 @@ function capLabel(cap: LookupCapability) {
   return `${cap.name}${cap.capability_type ? ` · ${cap.capability_type}` : ''}`
 }
 
+function defaultSourceFromCapability(capability?: LookupCapability): { sourceType: SourceType; sourceUri: string; sourceRef?: string; provenance: string } | undefined {
+  if (!capability) return undefined
+  const repositories = Array.isArray(capability.repositories) ? capability.repositories : []
+  const primaryRepo = repositories.find(repo => String(repo.status ?? '').toUpperCase() === 'ACTIVE')
+    ?? repositories[0]
+  const sourceUri = cleanText(primaryRepo?.repoUrl)
+    ?? cleanText(capability.repoUrl)
+    ?? cleanText(capability.sourceUri)
+    ?? cleanText(asRecord(capability.metadata)?.repoUrl)
+    ?? cleanText(asRecord(capability.metadata)?.githubUrl)
+    ?? cleanText(asRecord(capability.metadata)?.sourceUri)
+  if (!sourceUri) return undefined
+  const repoType = cleanText(primaryRepo?.repositoryType) ?? cleanText(capability.sourceType)
+  const sourceType: SourceType = repoType?.toUpperCase() === 'LOCAL' || sourceUri.startsWith('local://') ? 'localdir' : 'github'
+  return {
+    sourceType,
+    sourceUri,
+    sourceRef: cleanText(primaryRepo?.defaultBranch) ?? cleanText(capability.defaultBranch),
+    provenance: `capability repository (${capability.name})`,
+  }
+}
+
 function csv(value: string) {
   return value.split(',').map(item => item.trim()).filter(Boolean)
 }
@@ -2355,11 +2537,14 @@ function hydrateDefaultsFromWorkflow(instance: WorkflowInstanceDetail | undefine
   const bindings = asRecord(rendered.agentBindings) ?? {}
   const sourceType = rendered.sourceType === 'github' || rendered.sourceType === 'localdir' ? rendered.sourceType : undefined
   const gateMode = rendered.gateMode === 'auto' || rendered.gateMode === 'manual' ? rendered.gateMode : undefined
+  const resolvedGoal = goalFromWorkflowContext(context, rendered)
   return {
-    goal: cleanText(typeof rendered.goal === 'string' ? rendered.goal : typeof rendered.task === 'string' ? rendered.task : undefined),
+    goal: resolvedGoal.goal,
+    goalProvenance: resolvedGoal.provenance,
     sourceType,
     sourceUri: cleanText(rendered.sourceUri),
     sourceRef: cleanText(rendered.sourceRef),
+    sourceProvenance: cleanText(rendered.sourceUri) ? 'workflow source mapping' : undefined,
     capabilityId: cleanText(rendered.capabilityId),
     architectAgentTemplateId: cleanText(bindings.architectAgentTemplateId),
     developerAgentTemplateId: cleanText(bindings.developerAgentTemplateId),
@@ -2369,6 +2554,55 @@ function hydrateDefaultsFromWorkflow(instance: WorkflowInstanceDetail | undefine
       ? rendered.loopDefinition as LoopDefinition
       : undefined,
   }
+}
+
+function goalFromWorkflowContext(context: Record<string, unknown>, rendered: Record<string, unknown>): { goal?: string; provenance?: string } {
+  const vars = asRecord(context._vars) ?? {}
+  const workItem = asRecord(context._workItem)
+    ?? asRecord(context.workItem)
+    ?? asRecord(vars.workItem)
+    ?? undefined
+  const details = asRecord(workItem?.details) ?? asRecord(vars.workItemDetails) ?? {}
+  const input = asRecord(workItem?.input) ?? asRecord(details.input) ?? {}
+  const fromWorkItem = firstCleanText(
+    joinedTitleDescription(workItem?.title, workItem?.description),
+    joinedTitleDescription(details.title, details.description),
+    details.request,
+    details.story,
+    details.goal,
+    details.description,
+    input.story,
+    input.goal,
+    input.description,
+    vars.story,
+    vars.goal,
+  )
+  if (fromWorkItem) return { goal: fromWorkItem, provenance: 'WorkItem packet' }
+  const fromWorkflow = firstCleanText(
+    vars.story,
+    vars.goal,
+    context.story,
+    context.goal,
+    rendered.goal,
+    rendered.task,
+  )
+  if (fromWorkflow) return { goal: fromWorkflow, provenance: 'workflow context' }
+  return {}
+}
+
+function joinedTitleDescription(title: unknown, description: unknown): string | undefined {
+  const cleanTitle = cleanText(title)
+  const cleanDescription = cleanText(description)
+  if (cleanTitle && cleanDescription && cleanTitle !== cleanDescription) return `${cleanTitle}\n\n${cleanDescription}`
+  return cleanDescription ?? cleanTitle
+}
+
+function firstCleanText(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const text = cleanText(value)
+    if (text) return text
+  }
+  return undefined
 }
 
 function renderWorkflowValue(value: unknown, context: Record<string, unknown>): unknown {

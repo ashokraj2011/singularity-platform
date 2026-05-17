@@ -1390,6 +1390,19 @@ code, pre, .console-top code, .terminal-log {
   background: rgba(223, 116, 18, 0.09);
 }
 
+.warning-card {
+  border-color: rgba(255, 183, 134, 0.45);
+  background: rgba(255, 183, 134, 0.08);
+}
+
+.warning-card strong {
+  color: var(--tertiary);
+}
+
+.warning-card .secondary-action {
+  margin-top: 10px;
+}
+
 .anomaly-card h3 {
   margin: 6px 0;
   color: var(--tertiary);
@@ -2767,6 +2780,13 @@ pre {
   color: var(--tertiary);
   padding: 9px 10px;
   font-weight: 800;
+}
+
+.compact-note {
+  margin: 6px 0 0;
+  padding: 7px 9px;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .success-text {

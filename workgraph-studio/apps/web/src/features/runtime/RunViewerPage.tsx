@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'motion/react'
@@ -12,6 +12,11 @@ import type { FormWidget } from '../forms/widgets/types'
 import { LiveEventsPanel } from './LiveEventsPanel'
 import { CodeChangesPanel } from './CodeChangesPanel'
 import { CapabilityPicker } from '../../components/lookup/EntityPickers'
+import { useCapabilityLabels } from './useCapabilityLabels'
+
+const BLUEPRINT_WORKBENCH_URL = import.meta.env.VITE_BLUEPRINT_WORKBENCH_URL
+  ?? `${window.location.protocol}//${window.location.hostname}:5176/`
+const BLUEPRINT_WORKBENCH_ORIGIN = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href).origin
 
 /**
  * Step-by-step run viewer.  Lays out the run as a vertical timeline of steps;
@@ -25,10 +30,25 @@ export function RunViewerPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
 
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (event.origin !== BLUEPRINT_WORKBENCH_ORIGIN) return
+      const data = event.data
+      if (!data || typeof data !== 'object' || data.type !== 'blueprintWorkbench.auth.request') return
+      const token = readWorkgraphToken()
+      if (token && event.source && 'postMessage' in event.source) {
+        ;(event.source as Window).postMessage({ type: 'blueprintWorkbench.auth', token }, event.origin)
+      }
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
+  }, [])
+
   const { data: instance, isLoading } = useQuery<{
     id: string; name: string; status: string;
     templateId?: string; templateVersion?: number | null;
     createdAt: string; startedAt?: string;
+    context?: Record<string, unknown>;
   }>({
     queryKey: ['run-instance', id],
     queryFn:  () => api.get(`/workflow-instances/${id}`).then(r => r.data),
@@ -145,6 +165,7 @@ export function RunViewerPage() {
             node={node}
             instanceId={id}
             instanceName={instance.name}
+            instanceContext={asRecord(instance.context)}
             position={i + 1}
             isLast={i === ordered.length - 1}
           />
@@ -163,11 +184,12 @@ export function RunViewerPage() {
 // ── Per-step card ───────────────────────────────────────────────────────────
 
 function StepCard({
-  node, instanceId, instanceName, position, isLast,
+  node, instanceId, instanceName, instanceContext, position, isLast,
 }: {
   node: RunNode
   instanceId: string
   instanceName: string
+  instanceContext: Record<string, unknown>
   position: number
   isLast: boolean
 }) {
@@ -258,8 +280,12 @@ function StepCard({
             <WorkItemInlinePanel node={node} instanceId={instanceId} />
           )}
 
+          {isActive && node.nodeType === 'WORKBENCH_TASK' && (
+            <WorkbenchTaskInlinePanel node={node} instanceId={instanceId} instanceContext={instanceContext} />
+          )}
+
           {/* Active step without form: simple "Mark complete" prompt */}
-          {isActive && node.nodeType !== 'WORK_ITEM' && (!fillKind || !formWidgets || formWidgets.length === 0) && (
+          {isActive && node.nodeType !== 'WORK_ITEM' && node.nodeType !== 'WORKBENCH_TASK' && (!fillKind || !formWidgets || formWidgets.length === 0) && (
             <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.20)' }}>
               <p style={{ fontSize: 11, color: '#0c4a6e' }}>
                 Waiting for the runtime to advance.  HUMAN_TASK / APPROVAL nodes show a form-fill here when they're claimable;
@@ -277,6 +303,53 @@ function StepCard({
             <CompletedStepSummary node={node} instanceId={instanceId} kind={fillKind} widgets={formWidgets} />
           )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+function WorkbenchTaskInlinePanel({
+  node,
+  instanceId,
+  instanceContext,
+}: {
+  node: RunNode
+  instanceId: string
+  instanceContext: Record<string, unknown>
+}) {
+  const workbenchConfig = asRecord(node.config?.workbench)
+  const neoUrl = buildWorkbenchLaunchUrl(instanceId, node.id, workbenchConfig, 'neo', instanceContext)
+  const classicUrl = buildWorkbenchLaunchUrl(instanceId, node.id, workbenchConfig, 'classic', instanceContext)
+
+  return (
+    <div style={{
+      marginTop: 10,
+      padding: 12,
+      borderRadius: 10,
+      background: 'rgba(14,165,233,0.06)',
+      border: '1px solid rgba(14,165,233,0.22)',
+      display: 'grid',
+      gap: 10,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
+        <WorkflowIcon size={16} style={{ color: '#0284c7', marginTop: 2 }} />
+        <div>
+          <strong style={{ display: 'block', fontSize: 12, color: 'var(--color-on-surface)' }}>
+            Approve inside Blueprint Workbench first
+          </strong>
+          <p style={{ margin: '3px 0 0', fontSize: 11, lineHeight: 1.45, color: '#0c4a6e' }}>
+            This workflow is waiting for the Workbench final pack. Open WorkbenchNeo, approve or send back the stage artifacts,
+            then finalize the pack. After that, this run advances to “Human final sign-off,” where the normal approval form appears here and in Runtime Inbox.
+          </p>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <a href={neoUrl} target="_blank" rel="opener" style={smallPrimaryButton}>
+          <ExternalLink size={13} /> Open WorkbenchNeo
+        </a>
+        <a href={classicUrl} target="_blank" rel="opener" style={smallSecondaryButton}>
+          <ExternalLink size={13} /> Open Classic
+        </a>
       </div>
     </div>
   )
@@ -306,6 +379,7 @@ function WorkItemInlinePanel({
     budget: '',
     details: '',
   })
+  const { labelForCapability } = useCapabilityLabels()
 
   const { data: workItem, isLoading, error, refetch } = useQuery<RunWorkItemRow | null>({
     queryKey: ['run-workitem-inline', instanceId, node.id, configuredWorkItemId],
@@ -331,19 +405,20 @@ function WorkItemInlinePanel({
   const workflowsQuery = useQuery<WorkflowTemplateOption[]>({
     queryKey: ['run-workitem-workflows', workflowCapabilityId],
     enabled: Boolean(workflowCapabilityId && (!activeTarget || !activeTarget.childWorkflowInstanceId)),
-    queryFn: () => api.get('/workflows', { params: { capabilityId: workflowCapabilityId } })
+    queryFn: () => api.get('/workflows', { params: { capabilityId: workflowCapabilityId, size: 100 } })
       .then(r => unwrapItems<WorkflowTemplateOption>(r.data)),
   })
   const allWorkflowsQuery = useQuery<WorkflowTemplateOption[]>({
     queryKey: ['run-workitem-workflows-all'],
-    enabled: Boolean(workflowCapabilityId && workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0),
-    queryFn: () => api.get('/workflows', { params: { limit: 200 } })
+    enabled: Boolean(workflowCapabilityId && ((workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0) || workflowsQuery.isError)),
+    queryFn: () => api.get('/workflows', { params: { size: 100 } })
       .then(r => unwrapItems<WorkflowTemplateOption>(r.data)),
   })
   const workflowOptions = workflowsQuery.data?.length
     ? workflowsQuery.data
     : allWorkflowsQuery.data ?? []
-  const usingFallbackWorkflows = Boolean(workflowCapabilityId && workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0 && workflowOptions.length > 0)
+  const missingCapabilityWorkflows = workflowsQuery.isError || (workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0)
+  const usingFallbackWorkflows = Boolean(workflowCapabilityId && missingCapabilityWorkflows && workflowOptions.length > 0)
   const createMut = useMutation({
     mutationFn: () => {
       const trimmedBudget = createDraft.budget.trim()
@@ -456,7 +531,7 @@ function WorkItemInlinePanel({
               disabled={!createDraft.targetCapabilityId}
             >
               <option value="">{createDraft.targetCapabilityId ? 'Attach later or select workflow' : 'Select capability first'}</option>
-              {workflowOptions.map(workflow => <option key={workflow.id} value={workflow.id}>{workflow.name}{workflow.capabilityId && workflow.capabilityId !== createDraft.targetCapabilityId ? ' · other capability' : ''}</option>)}
+              {workflowOptions.map(workflow => <option key={workflow.id} value={workflow.id}>{workflow.name}{workflow.capabilityId && workflow.capabilityId !== createDraft.targetCapabilityId ? ` · ${labelForCapability(workflow.capabilityId)}` : ''}</option>)}
             </select>
             {usingFallbackWorkflows && <span style={{ color: '#92400e', fontSize: 10, textTransform: 'none', letterSpacing: 0 }}>No capability-specific workflows returned; showing all templates.</span>}
           </label>
@@ -562,7 +637,7 @@ function WorkItemInlinePanel({
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between', marginBottom: 8 }}>
             <div>
               <strong style={{ fontSize: 12, color: 'var(--color-on-surface)' }}>Child capability target</strong>
-              <div style={{ fontSize: 10, color: 'var(--color-outline)', fontFamily: 'monospace' }}>{activeTarget.targetCapabilityId}</div>
+              <div style={{ fontSize: 10, color: 'var(--color-outline)' }}>{labelForCapability(activeTarget.targetCapabilityId)}</div>
             </div>
             <StatusChip status={activeTarget.status} />
           </div>
@@ -586,7 +661,7 @@ function WorkItemInlinePanel({
                       : usingFallbackWorkflows ? 'Attach workflow (showing all templates)'
                         : 'Attach workflow before start'}
                 </option>
-                {workflowOptions.map(workflow => <option key={workflow.id} value={workflow.id}>{workflow.name}{workflow.capabilityId && workflow.capabilityId !== activeTarget.targetCapabilityId ? ' · other capability' : ''}</option>)}
+                {workflowOptions.map(workflow => <option key={workflow.id} value={workflow.id}>{workflow.name}{workflow.capabilityId && workflow.capabilityId !== activeTarget.targetCapabilityId ? ` · ${labelForCapability(workflow.capabilityId)}` : ''}</option>)}
               </select>
             )}
             {usingFallbackWorkflows && (
@@ -763,6 +838,7 @@ function unwrapItems<T>(data: unknown): T[] {
   if (Array.isArray(data)) return data as T[]
   if (data && typeof data === 'object') {
     const obj = data as Record<string, unknown>
+    if (Array.isArray(obj.content)) return obj.content as T[]
     if (Array.isArray(obj.items)) return obj.items as T[]
     if (Array.isArray(obj.data)) return obj.data as T[]
   }
@@ -771,6 +847,109 @@ function unwrapItems<T>(data: unknown): T[] {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function readWorkgraphToken(): string {
+  try {
+    const raw = window.localStorage.getItem('workgraph-auth')
+    if (!raw) return ''
+    const parsed = JSON.parse(raw) as { state?: { token?: string | null } }
+    return parsed.state?.token ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function buildWorkbenchLaunchUrl(
+  workflowInstanceId: string,
+  workflowNodeId: string,
+  config: Record<string, unknown>,
+  uiMode: 'neo' | 'classic',
+  runtimeContext: Record<string, unknown> = {},
+) {
+  const url = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href)
+  const renderedConfig = renderWorkbenchConfig(config, runtimeContext)
+  const bindings = asRecord(renderedConfig.agentBindings)
+  url.searchParams.set('workflowInstanceId', workflowInstanceId)
+  url.searchParams.set('workflowNodeId', workflowNodeId)
+  url.searchParams.set('ui', uiMode)
+  const phaseId = cleanLaunchString(renderedConfig.phaseId)
+  const goal = cleanLaunchString(renderedConfig.goal) || cleanLaunchString(renderedConfig.task)
+  const sourceUri = cleanLaunchString(renderedConfig.sourceUri)
+  const sourceRef = cleanLaunchString(renderedConfig.sourceRef)
+  const capabilityId = cleanLaunchString(renderedConfig.capabilityId)
+  if (phaseId) url.searchParams.set('phaseId', phaseId)
+  if (goal) url.searchParams.set('goal', goal)
+  if (renderedConfig.sourceType === 'github' || renderedConfig.sourceType === 'localdir') url.searchParams.set('sourceType', renderedConfig.sourceType)
+  if (sourceUri) url.searchParams.set('sourceUri', sourceUri)
+  if (sourceRef) url.searchParams.set('sourceRef', sourceRef)
+  if (capabilityId) url.searchParams.set('capabilityId', capabilityId)
+  setCleanParam(url, 'architectAgentTemplateId', bindings.architectAgentTemplateId)
+  setCleanParam(url, 'developerAgentTemplateId', bindings.developerAgentTemplateId)
+  setCleanParam(url, 'qaAgentTemplateId', bindings.qaAgentTemplateId)
+  setCleanParam(url, 'productOwnerAgentTemplateId', bindings.productOwnerAgentTemplateId)
+  setCleanParam(url, 'securityAgentTemplateId', bindings.securityAgentTemplateId)
+  setCleanParam(url, 'devopsAgentTemplateId', bindings.devopsAgentTemplateId)
+  if (renderedConfig.gateMode === 'auto' || renderedConfig.gateMode === 'manual') url.searchParams.set('gateMode', renderedConfig.gateMode)
+  if (renderedConfig.loopDefinition && typeof window !== 'undefined') {
+    try {
+      url.searchParams.set('loopDefinition', window.btoa(JSON.stringify(renderedConfig.loopDefinition)))
+    } catch {
+      // Keep run approval usable if a malformed Workbench config sneaks in.
+    }
+  }
+  return url.toString()
+}
+
+function setCleanParam(url: URL, key: string, value: unknown) {
+  const text = cleanLaunchString(value)
+  if (text) url.searchParams.set(key, text)
+}
+
+function cleanLaunchString(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const text = value.trim()
+  if (!text || /\{\{[^}]+}}/.test(text)) return ''
+  return text
+}
+
+function renderWorkbenchConfig(config: Record<string, unknown>, runtimeContext: Record<string, unknown>): Record<string, unknown> {
+  return renderWorkbenchValue(config, {
+    context: runtimeContext,
+    instance: {
+      vars: asRecord(runtimeContext._vars),
+      globals: asRecord(runtimeContext._globals),
+      params: asRecord(runtimeContext._params),
+    },
+    vars: asRecord(runtimeContext._vars),
+    globals: asRecord(runtimeContext._globals),
+    params: asRecord(runtimeContext._params),
+  }) as Record<string, unknown>
+}
+
+function renderWorkbenchValue(value: unknown, context: Record<string, unknown>): unknown {
+  if (typeof value === 'string') return renderWorkbenchTemplate(value, context)
+  if (Array.isArray(value)) return value.map(item => renderWorkbenchValue(item, context))
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [key, renderWorkbenchValue(child, context)]))
+  }
+  return value
+}
+
+function renderWorkbenchTemplate(template: string, context: Record<string, unknown>): string {
+  return template.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_match, rawPath: string) => {
+    const value = lookupWorkbenchPath(context, rawPath.trim())
+    return value === undefined || value === null ? '' : String(value)
+  })
+}
+
+function lookupWorkbenchPath(root: Record<string, unknown>, path: string): unknown {
+  const direct = root[path]
+  if (direct !== undefined) return direct
+  return path.split('.').reduce<unknown>((cursor, segment) => {
+    const object = cursor && typeof cursor === 'object' && !Array.isArray(cursor) ? cursor as Record<string, unknown> : null
+    return object ? object[segment] : undefined
+  }, root)
 }
 
 function formatDateValue(value?: string | null) {

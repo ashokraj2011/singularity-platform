@@ -18,7 +18,7 @@ import { config } from "../config";
 import { log } from "../shared/log";
 import { AppError, NotFoundError } from "../shared/errors";
 import { llmRespond } from "../llm/client";
-import { ChatMessage, ToolCall, ToolDescriptorForLlm } from "../llm/types";
+import { ChatMessage, LlmResponse, ToolCall, ToolDescriptorForLlm } from "../llm/types";
 import { resolveModelConfig } from "../llm/model-catalog";
 import { getLocalTool, listLocalTools } from "../tools/registry";
 import {
@@ -135,6 +135,7 @@ interface LoopState {
   // same tool call without progressing). Trims to last LOOP_REPETITION_WINDOW
   // entries — we only care about consecutive repetitions, not lifetime.
   toolCallHistory: Array<{ name: string; argsHash: string; stepIndex: number }>;
+  toolUseNudgeCount: number;
   workspace?: {
     branch?: WorkBranchInfo | null;
     workspaceRoot?: string;
@@ -196,6 +197,41 @@ function detectRepetition(history: LoopState["toolCallHistory"]): { name: string
     else break;
   }
   return count >= LOOP_REPETITION_THRESHOLD ? { name: tail.name, count } : null;
+}
+
+function hasTool(state: LoopState, names: string[]): boolean {
+  const available = new Set(state.fullToolDescriptors.map((tool) => tool.name));
+  return names.some((name) => available.has(name));
+}
+
+function shouldNudgeForCodeToolUse(state: LoopState, llmResp: LlmResponse): boolean {
+  if (!state.allowAutonomousMutation || state.toolUseNudgeCount >= 1) return false;
+  if (llmResp.finish_reason === "tool_call" && llmResp.tool_calls?.length) return false;
+  if (!state.workspace?.workspaceRoot) return false;
+  const hasInspectionTools = hasTool(state, ["find_symbol", "get_symbol", "get_ast_slice", "get_dependencies", "search_code", "read_file"]);
+  const hasMutationTools = hasTool(state, ["apply_patch", "write_file", "git_commit", "finish_work_branch"]);
+  return hasInspectionTools && hasMutationTools;
+}
+
+function appendCodeToolUseNudge(state: LoopState, llmResp: LlmResponse): void {
+  if (llmResp.content) {
+    state.messages.push({
+      role: "assistant",
+      content: llmResp.content,
+    });
+  }
+  state.messages.push({
+    role: "user",
+    content: [
+      "This is a Developer stage with a writable MCP workspace, but the previous answer did not call any tools.",
+      "Use MCP tools now before answering in prose.",
+      "Inspect the code with find_symbol, get_symbol, get_ast_slice, search_code, or read_file.",
+      "Apply the requested change with apply_patch or write_file, then create code-change evidence with git_commit or finish_work_branch.",
+      "Do not call prepare_work_branch; the workflow branch is already prepared.",
+      "If the behavior already exists, add or update tests/documentation and commit that evidence.",
+    ].join("\n"),
+  });
+  state.toolUseNudgeCount += 1;
 }
 
 function isDegradedToolAllowed(state: LoopState, name: string, desc?: PendingToolDescriptor): boolean {
@@ -397,7 +433,13 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         }
 
         // Normal dispatch path.
-        const result = await dispatchToolCall(tc, state.fullToolDescriptors, state.correlation);
+        const result = await dispatchToolCall(
+          tc,
+          state.fullToolDescriptors,
+          state.correlation,
+          undefined,
+          state.workspace?.workspaceRoot,
+        );
         state.toolInvocationIds.push(result.record.id);
         if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
         if (result.approvalRequired) {
@@ -434,6 +476,25 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         }
       }
       state.stepIndex += 1;
+      continue;
+    }
+
+    if (shouldNudgeForCodeToolUse(state, llmResp)) {
+      appendCodeToolUseNudge(state, llmResp);
+      state.stepIndex += 1;
+      emitAuditEvent({
+        trace_id: state.correlation.traceId,
+        source_service: "mcp-server",
+        kind: "agent_loop.code_tool_use_required",
+        capability_id: state.correlation.capabilityId,
+        severity: "warn",
+        payload: {
+          reason: "Developer stage returned a narrative response without tool calls; retrying with mandatory MCP tool-use instructions.",
+          stepIndex: state.stepIndex,
+          modelAlias: state.modelConfig.modelAlias,
+          workspaceRoot: state.workspace?.workspaceRoot,
+        },
+      });
       continue;
     }
 
@@ -487,6 +548,7 @@ async function pauseForApproval(
     context_plan_hash: state.contextPlanHash,
     degraded_actions_allowed: state.degradedActionsAllowed,
     allow_autonomous_mutation: state.allowAutonomousMutation,
+    tool_use_nudge_count: state.toolUseNudgeCount,
   });
   const payload = {
     continuation_token: env.continuation_token,
@@ -801,6 +863,21 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
       ].join("\n"),
     });
   }
+  if (
+    body.allowAutonomousMutation === true &&
+    toolList.some((tool) => ["apply_patch", "write_file", "git_commit", "finish_work_branch"].includes(tool.name))
+  ) {
+    messages.push({
+      role: "system",
+      content: [
+        "Developer stage tool policy:",
+        "- This run is expected to produce real MCP/git code-change evidence.",
+        "- Do not provide only a narrative implementation plan.",
+        "- Inspect the workspace with MCP code tools, modify files with apply_patch or write_file, and finish with git_commit or finish_work_branch.",
+        "- If no source change is needed, commit test or documentation evidence that proves the requested behavior.",
+      ].join("\n"),
+    });
+  }
   for (const h of body.history) messages.push({ ...h });
   messages.push({ role: "user", content: body.message });
 
@@ -843,6 +920,7 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     totalInputTokens: 0,
     totalOutputTokens: 0,
     toolCallHistory: [],
+    toolUseNudgeCount: 0,
     workspace: {
       branch,
       workspaceRoot: sandboxRoot(),
@@ -951,6 +1029,7 @@ invokeRouter.post("/resume", async (req, res) => {
     // only meaningfully fires on consecutive identical calls within a single
     // invocation, not across approval pauses.
     toolCallHistory: [],
+    toolUseNudgeCount: env.tool_use_nudge_count ?? 0,
     workspace: env.workspace,
     totalInputTokens: env.total_input_tokens,
     totalOutputTokens: env.total_output_tokens,
@@ -1021,6 +1100,7 @@ invokeRouter.post("/resume", async (req, res) => {
       })) as never,
       state.correlation,
       body.continuation_token,
+      state.workspace?.workspaceRoot,
     );
     state.toolInvocationIds.push(result.record.id);
     if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
@@ -1099,6 +1179,7 @@ async function dispatchToolCall(
   available: PendingToolDescriptor[],
   correlation: CorrelationIds,
   approvedContinuationToken?: string,
+  workspaceRoot?: string,
 ): Promise<DispatchToolResult> {
   const start = Date.now();
   events.publish({
@@ -1246,7 +1327,9 @@ async function dispatchToolCall(
   }
 
   try {
-    const r = await handler.execute(tc.args);
+    const r = workspaceRoot
+      ? await withSandboxRoot(workspaceRoot, () => handler.execute(tc.args))
+      : await handler.execute(tc.args);
     const rec = recordToolInvocation({
       correlation, tool_name: tc.name, args: tc.args,
       output: r.output, success: r.success, error: r.error,

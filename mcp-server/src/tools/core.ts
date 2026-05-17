@@ -9,27 +9,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { config } from "../config";
+import { resolveSandboxedPath, sandboxRoot } from "../workspace/sandbox";
 import type { ToolHandler } from "./registry";
 
 const execFileP = promisify(execFile);
-
-// ── Sandbox helpers (shared with fs-git.ts) ────────────────────────────────
-
-function resolveSandboxedPath(relPath: string): string {
-  if (typeof relPath !== "string" || relPath.length === 0) {
-    throw new Error("path is required");
-  }
-  if (relPath.startsWith("/") || relPath.startsWith("\\")) {
-    throw new Error("absolute paths are not allowed");
-  }
-  const root = path.resolve(config.MCP_SANDBOX_ROOT);
-  const joined = path.resolve(root, relPath);
-  if (joined !== root && !joined.startsWith(root + path.sep)) {
-    throw new Error("path escapes the sandbox root");
-  }
-  return joined;
-}
 
 const SKIP_DIRS = new Set([
   "node_modules", ".git", "dist", "build", "out", "__pycache__", ".venv", "venv",
@@ -109,7 +92,7 @@ export const listDirectoryTool: ToolHandler = {
       const rel = String(args.path ?? ".");
       const recursive = Boolean(args.recursive);
       const maxEntries = typeof args.max_entries === "number" && args.max_entries > 0 ? args.max_entries : 200;
-      const root = path.resolve(config.MCP_SANDBOX_ROOT);
+      const root = sandboxRoot();
       const start = rel === "." ? root : resolveSandboxedPath(rel);
       const entries: Array<{ path: string; type: "file" | "dir"; size?: number }> = [];
 
@@ -171,7 +154,19 @@ export const searchCodeTool: ToolHandler = {
       const q = String(args.query ?? "");
       if (!q) throw new Error("query is required");
       const max = typeof args.max_results === "number" && args.max_results > 0 ? Math.min(args.max_results, 200) : 50;
-      const cwd = args.path ? resolveSandboxedPath(String(args.path)) : path.resolve(config.MCP_SANDBOX_ROOT);
+      const root = sandboxRoot();
+      let cwd = root;
+      let target = ".";
+      if (args.path) {
+        const scopedPath = resolveSandboxedPath(String(args.path));
+        const scopedStat = await fs.promises.stat(scopedPath).catch(() => null);
+        if (scopedStat?.isFile()) {
+          cwd = path.dirname(scopedPath);
+          target = path.basename(scopedPath);
+        } else {
+          cwd = scopedPath;
+        }
+      }
       const argv: string[] = [
         "--no-heading", "--with-filename", "--line-number",
         "--max-count", "5", "--max-columns", "200",
@@ -179,7 +174,7 @@ export const searchCodeTool: ToolHandler = {
       ];
       if (!args.regex) argv.push("--fixed-strings");
       if (args.glob) argv.push("-g", String(args.glob));
-      argv.push("--", q, ".");
+      argv.push("--", q, target);
       const { stdout } = await execFileP("rg", argv, { cwd, maxBuffer: 5 * 1024 * 1024 }).catch((err) => {
         // rg exits 1 when no matches — that's fine.
         const e = err as { code?: number; stdout?: string };
@@ -189,7 +184,9 @@ export const searchCodeTool: ToolHandler = {
       const lines = stdout.split("\n").filter(Boolean).slice(0, max);
       const matches = lines.map((line) => {
         const m = line.match(/^(.*?):(\d+):(.*)$/);
-        return m ? { file: m[1], line: Number(m[2]), text: m[3] } : { file: "", line: 0, text: line };
+        if (!m) return { file: "", line: 0, text: line };
+        const absPath = path.resolve(cwd, m[1]);
+        return { file: path.relative(root, absPath) || m[1], line: Number(m[2]), text: m[3] };
       });
       return {
         success: true,

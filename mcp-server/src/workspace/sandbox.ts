@@ -61,7 +61,13 @@ export function workspaceRootForRunContext(req: WorkspaceRootRequest): string {
 export async function withSandboxRoot<T>(root: string, fn: () => Promise<T>): Promise<T> {
   const resolved = path.resolve(root);
   await fs.promises.mkdir(resolved, { recursive: true });
-  return sandboxContext.run(resolved, fn);
+  return await new Promise<T>((resolve, reject) => {
+    sandboxContext.run(resolved, () => {
+      Promise.resolve()
+        .then(fn)
+        .then(resolve, reject);
+    });
+  });
 }
 
 export function sandboxRoot(): string {

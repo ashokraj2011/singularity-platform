@@ -1,6 +1,7 @@
 import { Prisma, type WorkflowInstance, type WorkflowNode } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
+import { listRuntimeCapabilities, type RuntimeCapability } from '../../../../lib/agent-and-tools/client'
 import { activateHumanTask } from './HumanTaskExecutor'
 
 type JsonObject = Record<string, unknown>
@@ -12,7 +13,22 @@ export async function activateWorkbenchTask(
   const currentConfig = asObject(node.config)
   const workbench = asObject(currentConfig.workbench)
   const context = asObject(instance.context)
-  const runtimeInputs = deriveRuntimeInputs(context, workbench)
+  let runtimeInputs = deriveRuntimeInputs(context, workbench)
+  if (!runtimeInputs.repoUrl) {
+    const capabilitySource = await resolveCapabilitySource(firstString(
+      workbench.capabilityId,
+      asObject(context._vars).targetCapabilityId,
+      asObject(context._vars).parentCapabilityId,
+      asObject(context._vars).capabilityId,
+      context.capabilityId,
+    ))
+    if (capabilitySource?.repoUrl) {
+      runtimeInputs = {
+        ...runtimeInputs,
+        ...capabilitySource,
+      }
+    }
+  }
   const renderedWorkbench = renderValue(workbench, {
     instance: {
       vars: asObject(context._vars),
@@ -27,6 +43,8 @@ export async function activateWorkbenchTask(
     story: runtimeInputs.story,
     acceptanceCriteria: runtimeInputs.acceptanceCriteria,
     repoUrl: runtimeInputs.repoUrl,
+    sourceUri: runtimeInputs.repoUrl,
+    sourceRef: runtimeInputs.sourceRef,
   }) as JsonObject
 
   const nextWorkbench = normalizeWorkbenchDefaults(renderedWorkbench, runtimeInputs)
@@ -62,6 +80,7 @@ function normalizeWorkbenchDefaults(workbench: JsonObject, inputs: RuntimeInputs
   const story = inputs.story || stringValue(next.fallbackGoal) || stringValue(next.goal)
   const acceptanceCriteria = inputs.acceptanceCriteria
   const repoUrl = inputs.repoUrl || stringValue(next.sourceUri)
+  const sourceRef = inputs.sourceRef || stringValue(next.sourceRef)
 
   if (story) {
     next.goal = acceptanceCriteria
@@ -74,6 +93,12 @@ function normalizeWorkbenchDefaults(workbench: JsonObject, inputs: RuntimeInputs
       next.sourceType = 'github'
     }
   }
+  if (sourceRef) {
+    next.sourceRef = sourceRef
+  }
+  if (inputs.sourceType === 'github' || inputs.sourceType === 'localdir') {
+    next.sourceType = inputs.sourceType
+  }
   if (next.sourceType !== 'github' && next.sourceType !== 'localdir') {
     next.sourceType = isGithubUrl(repoUrl) ? 'github' : 'localdir'
   }
@@ -81,6 +106,9 @@ function normalizeWorkbenchDefaults(workbench: JsonObject, inputs: RuntimeInputs
     story: inputs.story,
     acceptanceCriteria: inputs.acceptanceCriteria,
     repoUrl: inputs.repoUrl,
+    sourceType: inputs.sourceType,
+    sourceRef: inputs.sourceRef,
+    sourceProvenance: inputs.sourceProvenance,
   }
   return next
 }
@@ -89,6 +117,9 @@ type RuntimeInputs = {
   story: string
   acceptanceCriteria: string
   repoUrl: string
+  sourceType?: 'github' | 'localdir'
+  sourceRef?: string
+  sourceProvenance?: string
 }
 
 function deriveRuntimeInputs(context: JsonObject, workbench: JsonObject): RuntimeInputs {
@@ -111,6 +142,35 @@ function deriveRuntimeInputs(context: JsonObject, workbench: JsonObject): Runtim
       workbench.sourceUri,
     ),
   }
+}
+
+async function resolveCapabilitySource(capabilityId: string): Promise<Partial<RuntimeInputs> | null> {
+  if (!capabilityId) return null
+  try {
+    const capabilities = await listRuntimeCapabilities()
+    const capability = capabilities.find(item => item.id === capabilityId)
+    if (!capability) return null
+    const repo = primaryRepository(capability)
+    const repoUrl = stringValue(repo?.repoUrl)
+    if (!repoUrl) return null
+    return {
+      repoUrl,
+      sourceType: isGithubUrl(repoUrl) ? 'github' : 'localdir',
+      sourceRef: stringValue(repo?.defaultBranch) || 'main',
+      sourceProvenance: 'capability.repository',
+    }
+  } catch (err) {
+    console.warn(`Unable to resolve Workbench source from capability ${capabilityId}: ${(err as Error).message}`)
+    return null
+  }
+}
+
+function primaryRepository(capability: RuntimeCapability): JsonObject | null {
+  const repositories = Array.isArray(capability.repositories)
+    ? capability.repositories.filter((repo): repo is JsonObject => Boolean(repo && typeof repo === 'object' && !Array.isArray(repo)))
+    : []
+  if (repositories.length === 0) return null
+  return repositories.find(repo => String(repo.status ?? '').toUpperCase() === 'ACTIVE') ?? repositories[0]
 }
 
 function renderValue(value: unknown, context: JsonObject): unknown {
@@ -157,7 +217,10 @@ function firstString(...values: unknown[]): string {
 }
 
 function stringValue(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : ''
+  if (typeof value !== 'string') return ''
+  const text = value.trim()
+  if (!text || /\{\{[^}]+}}/.test(text)) return ''
+  return text
 }
 
 function isGithubUrl(value: string): boolean {

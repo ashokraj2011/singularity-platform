@@ -91,12 +91,6 @@ async function pushBranch(branch: string, remote?: string): Promise<{ pushed: bo
   }
 }
 
-async function changedPathsForCommit(commitSha?: string): Promise<string[]> {
-  if (!commitSha) return [];
-  const names = await git(["show", "--format=", "--name-only", commitSha], { allowFail: true, maxBuffer: 1024 * 1024 });
-  return names.split("\n").map((line) => line.trim()).filter(Boolean);
-}
-
 export async function ensureGitRepo(): Promise<void> {
   await git(["init", "-q"]);
   await git(["config", "user.email", "mcp@local"]);
@@ -250,7 +244,7 @@ export async function finishWorkBranch(
       branch,
       workspaceRoot: sandboxRoot(),
       commitSha,
-      changedPaths: await changedPathsForCommit(commitSha),
+      changedPaths: [],
       committed: false,
       pushed: push?.pushed,
       pushError: push?.pushError,
