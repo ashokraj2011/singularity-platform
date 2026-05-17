@@ -684,6 +684,14 @@ services:
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       CONTEXT_FABRIC_URL: http://context-api:8000
       CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
+      # M36.7 — mcp-server fetches the "code-tool-use nudge" SystemPrompt
+      # (key=mcp.code-tool-use-nudge) from prompt-composer at run time so
+      # there are no inline prompts in mcp-server source. Required when
+      # allowAutonomousMutation runs trigger the nudge path. Hardcoded
+      # (not ${PROMPT_COMPOSER_URL:-…}) so a host-side env var like
+      # "http://localhost:3004" can't leak in and resolve to mcp-server's
+      # own loopback inside the container.
+      PROMPT_COMPOSER_URL: http://prompt-composer:3004
     ports:
       - "7100:7100"
     volumes:
