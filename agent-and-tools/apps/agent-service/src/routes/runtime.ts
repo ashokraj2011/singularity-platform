@@ -1,14 +1,17 @@
 import { Router, Request, Response } from "express";
 import { createHash } from "crypto";
 import { query, queryOne } from "../database";
-import { optionalAuth } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
 import {
   getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral,
 } from "@agentandtools/shared";
 
 export const runtimeRoutes = Router();
-runtimeRoutes.use(optionalAuth);
+// M35.1 — hard flip: every runtime route (distill, candidate review) now
+// requires a valid JWT. Previously `optionalAuth` silently passed unauth'd
+// requests through, which let any caller drive the learning pipeline.
+runtimeRoutes.use(requireAuth);
 
 // GET /api/v1/agents/runtime-profile?capability_id=&agent_id=
 runtimeRoutes.get("/agents/runtime-profile", async (req: Request, res: Response) => {

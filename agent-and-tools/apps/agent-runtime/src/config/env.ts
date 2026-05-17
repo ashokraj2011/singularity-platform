@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
 import { z } from "zod";
+import { assertProductionSecret } from "@agentandtools/shared";
 
 dotenv.config();
 
@@ -29,5 +30,8 @@ if (!parsed.success) {
   console.error("[env] Invalid environment:", parsed.error.flatten().fieldErrors);
   process.exit(1);
 }
+
+// M35.1 — refuse to start in prod-class envs with a default JWT_SECRET.
+assertProductionSecret({ name: "JWT_SECRET", value: parsed.data.JWT_SECRET });
 
 export const env = parsed.data;

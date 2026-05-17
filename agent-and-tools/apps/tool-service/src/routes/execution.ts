@@ -1,11 +1,14 @@
 import { Router, Request, Response } from "express";
 import { query, queryOne } from "../database";
-import { optionalAuth } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
 import { emitAuditEvent } from "../lib/audit-gov-emit";
 
 export const executionRoutes = Router();
-executionRoutes.use(optionalAuth);
+// M35.1 — tool execution is an action; every route here mutates state and
+// requires a valid JWT. Previously `optionalAuth` silently permitted
+// anonymous tool runs.
+executionRoutes.use(requireAuth);
 
 // M22 — central audit-governance ledger. One call per terminal status
 // transition on tool.tool_executions. Fire-and-forget; never blocks.

@@ -1,10 +1,11 @@
 import { Router, Request, Response } from "express";
 import { query, queryOne } from "../database";
-import { optionalAuth } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
 
 export const runnerRoutes = Router();
-runnerRoutes.use(optionalAuth);
+// M35.1 — client-runner registration/heartbeat is a mutation; require auth.
+runnerRoutes.use(requireAuth);
 
 // POST /api/v1/client-runners/register
 runnerRoutes.post("/client-runners/register", async (req: Request, res: Response) => {

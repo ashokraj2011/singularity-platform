@@ -1,14 +1,17 @@
 import { Router, Request, Response } from "express";
 import { query, queryOne } from "../database";
-import { optionalAuth } from "../middleware/auth";
+import { optionalAuth, requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
 import { publishEvent } from "../lib/eventbus/publisher";
 
 export const toolRoutes = Router();
+// M35.1 — tools.ts is a CRUD router: GETs (browse the catalog) tolerate
+// anonymous access; POST/PATCH mutations require a valid JWT. Per-route
+// `requireAuth` is applied to mutations below.
 toolRoutes.use(optionalAuth);
 
-// POST /api/v1/tools — register tool
-toolRoutes.post("/", async (req: Request, res: Response) => {
+// POST /api/v1/tools — register tool (M35.1 — requires JWT)
+toolRoutes.post("/", requireAuth, async (req: Request, res: Response) => {
   const {
     tool_name, version, display_name, description, risk_level,
     requires_approval, input_schema, output_schema, runtime,
@@ -107,7 +110,7 @@ toolRoutes.get("/:name/versions/:version", async (req: Request, res: Response) =
 // PATCH /api/v1/tools/:name/versions/:version — partial update of editable
 // fields. M20 ships requires_approval / status / risk_level; the rest stay
 // register-time concerns.
-toolRoutes.patch("/:name/versions/:version", async (req: Request, res: Response) => {
+toolRoutes.patch("/:name/versions/:version", requireAuth, async (req: Request, res: Response) => {
   const { name, version } = req.params;
   const ALLOWED: Record<string, "boolean" | "string"> = {
     requires_approval: "boolean",
@@ -142,8 +145,8 @@ toolRoutes.patch("/:name/versions/:version", async (req: Request, res: Response)
   res.json(updated);
 });
 
-// POST /api/v1/tools/:name/versions/:version/activate
-toolRoutes.post("/:name/versions/:version/activate", async (req: Request, res: Response) => {
+// POST /api/v1/tools/:name/versions/:version/activate (M35.1 — requires JWT)
+toolRoutes.post("/:name/versions/:version/activate", requireAuth, async (req: Request, res: Response) => {
   const { name, version } = req.params;
   const tool = await queryOne(
     "SELECT * FROM tool.tools WHERE tool_name=$1 AND version=$2",

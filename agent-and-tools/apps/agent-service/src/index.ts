@@ -6,6 +6,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import dotenv from "dotenv";
+import { assertProductionSecret } from "@agentandtools/shared";
 import { agentRoutes } from "./routes/agents";
 import { versionRoutes } from "./routes/versions";
 import { learningRoutes } from "./routes/learning";
@@ -17,6 +18,9 @@ import { startEventDispatcher } from "./lib/eventbus/dispatcher";
 import { eventSubscriptionsRouter } from "./lib/eventbus/routes";
 
 dotenv.config();
+
+// M35.1 — refuse to start in prod-class envs with a default JWT_SECRET.
+assertProductionSecret({ name: "JWT_SECRET", value: process.env.JWT_SECRET });
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;

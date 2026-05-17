@@ -10,6 +10,7 @@
  * worker runs per-event sequentially — fine at the volumes we're targeting.
  */
 import { Router, NextFunction, Request, Response } from "express";
+import { timingSafeEqual } from "node:crypto";
 import { query } from "./db";
 import { eventSchema, authzDecisionSchema } from "./types";
 import { denormaliseLlmCall } from "./cost-worker";
@@ -17,11 +18,23 @@ import { denormaliseLlmCall } from "./cost-worker";
 export const eventsRouter = Router();
 
 const SERVICE_TOKEN = process.env.AUDIT_GOV_SERVICE_TOKEN ?? "";
-const ALLOW_ANON_DEV = process.env.AUDIT_GOV_ALLOW_ANONYMOUS_DEV === "1"
-  || (!SERVICE_TOKEN && process.env.NODE_ENV !== "production");
+// M35.1 — anonymous mode is OPT-IN only. Previously it auto-enabled when
+// SERVICE_TOKEN was unset in non-production NODE_ENV; that silently allowed
+// unauthenticated event ingest whenever someone forgot to set the env var.
+// Now you MUST explicitly set AUDIT_GOV_ALLOW_ANONYMOUS_DEV=1 to allow it.
+const ALLOW_ANON_DEV = process.env.AUDIT_GOV_ALLOW_ANONYMOUS_DEV === "1";
 const RATE_LIMIT_WINDOW_MS = Number(process.env.AUDIT_GOV_EVENT_RATE_WINDOW_MS ?? 60_000);
 const RATE_LIMIT_MAX = Number(process.env.AUDIT_GOV_EVENT_RATE_MAX ?? 2_000);
 const buckets = new Map<string, { resetAt: number; count: number }>();
+
+// M35.1 — known source services. Events with `source_service` outside this
+// allowlist are rejected so a compromised service can't claim a different
+// identity. Empty list (default) disables the check (backwards compat); set
+// AUDIT_GOV_ALLOWED_SOURCE_SERVICES to lock it down per environment.
+const ALLOWED_SOURCE_SERVICES = (process.env.AUDIT_GOV_ALLOWED_SOURCE_SERVICES ?? "")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
 
 function actorKey(req: Request): string {
   const source = typeof req.body?.source_service === "string"
@@ -37,16 +50,27 @@ function actorKey(req: Request): string {
   return `${req.ip}:${source}:${tenant}`;
 }
 
-function requireServiceAuth(req: Request, res: Response, next: NextFunction): void {
+// M35.1 — exported so the engine router (engine/routes.ts) can apply the same
+// auth contract to its mutation endpoints.
+export function requireServiceAuth(req: Request, res: Response, next: NextFunction): void {
   const header = req.headers.authorization;
   const token = typeof header === "string" && header.startsWith("Bearer ")
     ? header.slice(7)
     : String(req.headers["x-service-token"] ?? "");
-  if (SERVICE_TOKEN && token !== SERVICE_TOKEN) {
-    res.status(401).json({ error: "invalid service token" });
+  if (SERVICE_TOKEN) {
+    // Constant-time compare to close a timing side-channel on the token.
+    const a = Buffer.from(token, "utf8");
+    const b = Buffer.from(SERVICE_TOKEN, "utf8");
+    const lenOk = a.length === b.length;
+    const eq = lenOk ? timingSafeEqual(a, b) : (timingSafeEqual(b, Buffer.alloc(b.length)), false);
+    if (!eq) {
+      res.status(401).json({ error: "invalid service token" });
+      return;
+    }
+    next();
     return;
   }
-  if (!SERVICE_TOKEN && !ALLOW_ANON_DEV) {
+  if (!ALLOW_ANON_DEV) {
     res.status(503).json({ error: "AUDIT_GOV_SERVICE_TOKEN is required" });
     return;
   }
@@ -80,6 +104,15 @@ eventsRouter.use(requireServiceAuth, rateLimit);
 
 async function ingestOne(input: unknown): Promise<{ id: string }> {
   const parsed = eventSchema.parse(input);
+
+  // M35.1 — source_service allowlist. When configured, reject events that
+  // claim an identity outside the allowlist. Empty allowlist = no check.
+  // Per-service tokens (so different services can't impersonate each other
+  // even when both pass the gate) are out of scope for M35.1; tracked in M36.
+  if (ALLOWED_SOURCE_SERVICES.length > 0 && !ALLOWED_SOURCE_SERVICES.includes(parsed.source_service)) {
+    throw Object.assign(new Error(`source_service '${parsed.source_service}' is not in AUDIT_GOV_ALLOWED_SOURCE_SERVICES`), { status: 403 });
+  }
+
   const rows = await query<{ id: string }>(
     `INSERT INTO audit_governance.audit_events
        (trace_id, source_service, kind, subject_type, subject_id,

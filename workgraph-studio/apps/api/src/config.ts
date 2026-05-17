@@ -68,12 +68,40 @@ const envSchema = z.object({
   LLM_GATEWAY_TIMEOUT_SEC: z.coerce.number().int().positive().default(240),
 })
 
+// M35.1 — production-class envs refuse to start with weak secrets.
+// Mirrors the @agentandtools/shared assertProductionSecret helper.
+// Inlined here because workgraph-api lives outside the agent-and-tools
+// workspace and can't import that package.
+function assertProductionSecretLocal(name: string, value: string | undefined, minLength = 32): void {
+  const env = (process.env.NODE_ENV ?? 'development').toLowerCase()
+  if (!['production', 'prod', 'staging', 'perf'].includes(env)) return
+  const KNOWN_BAD = new Set([
+    'dev-secret-change-in-prod',
+    'dev-secret-change-in-prod-min-32-chars!!',
+    'changeme_dev_only_min_32_chars_long!!',
+    'demo-bearer-token-must-be-min-16-chars',
+    'dev-audit-gov-service-token',
+    'changeme',
+    'test-secret',
+  ])
+  const v = value ?? ''
+  const reasons: string[] = []
+  if (v.length === 0) reasons.push('unset')
+  else if (v.length < minLength) reasons.push(`shorter than ${minLength} chars (got ${v.length})`)
+  if (KNOWN_BAD.has(v)) reasons.push('matches a known development default')
+  if (reasons.length > 0) {
+    console.error(`FATAL: ${name} is unsafe for NODE_ENV=${env}: ${reasons.join('; ')}. Set ${name} to a strong random value (${minLength}+ chars) and restart.`)
+    process.exit(1)
+  }
+}
+
 function loadConfig() {
   const result = envSchema.safeParse(process.env)
   if (!result.success) {
     console.error('Invalid environment variables:', result.error.flatten().fieldErrors)
     process.exit(1)
   }
+  assertProductionSecretLocal('JWT_SECRET', result.data.JWT_SECRET)
   return result.data
 }
 

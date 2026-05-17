@@ -35,8 +35,14 @@ import {
 } from "./evaluator-factory";
 import { createDataset, addExamples, buildDatasetFromIssue } from "./dataset-builder";
 import { runSweep } from "./sweep";
+import { requireServiceAuth } from "../routes-events";
 
 export const engineRouter = Router();
+
+// M35.1 — every engine route (read AND mutation) requires the audit-gov
+// service token. Previously these were unauthenticated, letting any caller
+// resolve/dismiss issues, mutate evaluators, or fabricate datasets.
+engineRouter.use(requireServiceAuth);
 
 // ── Issues ─────────────────────────────────────────────────────────────
 

@@ -29,6 +29,33 @@ import { engineRouter } from "./engine/routes";
 import { startEngineSweep, stopEngineSweep } from "./engine/sweep";
 import { ensureEngineEvalTables } from "./db";
 
+// M35.1 — production-class envs refuse to start with weak secrets.
+// Mirrors @agentandtools/shared assertProductionSecret (inlined here
+// because audit-governance-service is outside that workspace).
+function assertProductionSecretLocal(name: string, value: string | undefined, minLength = 32): void {
+  const env = (process.env.NODE_ENV ?? "development").toLowerCase();
+  if (!["production", "prod", "staging", "perf"].includes(env)) return;
+  const KNOWN_BAD = new Set([
+    "dev-secret-change-in-prod",
+    "dev-secret-change-in-prod-min-32-chars!!",
+    "changeme_dev_only_min_32_chars_long!!",
+    "demo-bearer-token-must-be-min-16-chars",
+    "dev-audit-gov-service-token",
+    "changeme",
+    "test-secret",
+  ]);
+  const v = value ?? "";
+  const reasons: string[] = [];
+  if (v.length === 0) reasons.push("unset");
+  else if (v.length < minLength) reasons.push(`shorter than ${minLength} chars (got ${v.length})`);
+  if (KNOWN_BAD.has(v)) reasons.push("matches a known development default");
+  if (reasons.length > 0) {
+    console.error(`FATAL: ${name} is unsafe for NODE_ENV=${env}: ${reasons.join("; ")}. Set ${name} to a strong random value (${minLength}+ chars) and restart.`);
+    process.exit(1);
+  }
+}
+assertProductionSecretLocal("AUDIT_GOV_SERVICE_TOKEN", process.env.AUDIT_GOV_SERVICE_TOKEN, 32);
+
 const app = express();
 const PORT = Number(process.env.PORT ?? 8500);
 
