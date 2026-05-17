@@ -1151,7 +1151,7 @@ workflowTemplatesRouter.post('/import-bpmn', async (req, res, next) => {
 
 const BPMN_NODE_MAP: Record<string, string> = {
   HUMAN_TASK: 'userTask', AGENT_TASK: 'serviceTask', WORKBENCH_TASK: 'serviceTask', APPROVAL: 'userTask',
-  TOOL_REQUEST: 'serviceTask', POLICY_CHECK: 'serviceTask', DATA_SINK: 'serviceTask',
+  TOOL_REQUEST: 'serviceTask', GIT_PUSH: 'serviceTask', POLICY_CHECK: 'serviceTask', EVAL_GATE: 'serviceTask', DATA_SINK: 'serviceTask',
   CONSUMABLE_CREATION: 'serviceTask', CALL_WORKFLOW: 'callActivity', WORK_ITEM: 'serviceTask',
   FOREACH: 'subProcess', TIMER: 'intermediateCatchEvent',
   SIGNAL_WAIT: 'intermediateCatchEvent', DECISION_GATE: 'exclusiveGateway',

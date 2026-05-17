@@ -11,7 +11,9 @@ import { activateApproval } from './executors/ApprovalExecutor'
 import { activateDecisionGate } from './executors/DecisionGateExecutor'
 import { activateConsumableCreation } from './executors/ConsumableCreationExecutor'
 import { activateToolRequest } from './executors/ToolRequestExecutor'
+import { activateGitPush } from './executors/GitPushExecutor'
 import { activatePolicyCheck } from './executors/PolicyCheckExecutor'
+import { activateEvalGate } from './executors/EvalGateExecutor'
 import { activateTimer } from './executors/TimerExecutor'
 import { activateSignalWait } from './executors/SignalWaitExecutor'
 import { activateCallWorkflow } from './executors/CallWorkflowExecutor'
@@ -292,10 +294,20 @@ async function activateDownstream(
       case 'TOOL_REQUEST':
         await activateToolRequest(nextNode, instance)
         break
+      case 'GIT_PUSH': {
+        const result = await activateGitPush(nextNode, instance, actorId)
+        if (result.pushed) await advance(instance.id, nextNode.id, result.output, actorId)
+        break
+      }
       case 'POLICY_CHECK':
         await activatePolicyCheck(nextNode, instance)
         await advance(instance.id, nextNode.id, context, actorId)
         break
+      case 'EVAL_GATE': {
+        const result = await activateEvalGate(nextNode, instance, actorId)
+        if (result.passed) await advance(instance.id, nextNode.id, result.output, actorId)
+        break
+      }
       case 'TIMER':
         await activateTimer(nextNode, instance)
         break
@@ -353,10 +365,20 @@ async function activateDownstream(
           case 'APPROVAL': await activateApproval(nextNode, instance, actorId); break
           case 'CONSUMABLE_CREATION': await activateConsumableCreation(nextNode, instance); break
           case 'TOOL_REQUEST': await activateToolRequest(nextNode, instance); break
+          case 'GIT_PUSH': {
+            const result = await activateGitPush(nextNode, instance, actorId)
+            if (result.pushed) await advance(instance.id, nextNode.id, result.output, actorId)
+            break
+          }
           case 'POLICY_CHECK':
             await activatePolicyCheck(nextNode, instance)
             await advance(instance.id, nextNode.id, context, actorId)
             break
+          case 'EVAL_GATE': {
+            const result = await activateEvalGate(nextNode, instance, actorId)
+            if (result.passed) await advance(instance.id, nextNode.id, result.output, actorId)
+            break
+          }
           case 'TIMER': await activateTimer(nextNode, instance); break
           case 'SIGNAL_WAIT': await activateSignalWait(nextNode, instance); break
           case 'CALL_WORKFLOW': await activateCallWorkflow(nextNode, instance); break
@@ -567,10 +589,20 @@ export async function failNode(
         case 'TOOL_REQUEST':
           await activateToolRequest(target, instance)
           break
+        case 'GIT_PUSH': {
+          const result = await activateGitPush(target, instance, actorId)
+          if (result.pushed) await advance(instanceId, target.id, result.output, actorId)
+          break
+        }
         case 'POLICY_CHECK':
           await activatePolicyCheck(target, instance)
           await advance(instanceId, target.id, errorContext, actorId)
           break
+        case 'EVAL_GATE': {
+          const result = await activateEvalGate(target, instance, actorId)
+          if (result.passed) await advance(instanceId, target.id, result.output, actorId)
+          break
+        }
         case 'TIMER':
           await activateTimer(target, instance)
           break
@@ -607,6 +639,11 @@ export async function failNode(
           switch (bt) {
             case 'HUMAN_TASK': await activateHumanTask(target, instance); break
             case 'TOOL_REQUEST': await activateToolRequest(target, instance); break
+            case 'GIT_PUSH': {
+              const result = await activateGitPush(target, instance, actorId)
+              if (result.pushed) await advance(instanceId, target.id, result.output, actorId)
+              break
+            }
             default: await activateHumanTask(target, instance); break
           }
           break

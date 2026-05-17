@@ -26,6 +26,27 @@ async function getJson<T>(path: string, query: Record<string, string | undefined
   }
 }
 
+export async function postJson<T>(path: string, body: unknown): Promise<T | null> {
+  const url = new URL(path, config.AUDIT_GOV_URL.replace(/\/?$/, '/'))
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      console.warn(`audit-gov ${path} → ${res.status} ${text.slice(0, 200)}`)
+      return null
+    }
+    return (await res.json()) as T
+  } catch (err) {
+    console.warn(`audit-gov ${path} failed: ${(err as Error).message}`)
+    return null
+  }
+}
+
 export interface AuditEvent {
   id: string
   trace_id: string | null
@@ -57,6 +78,14 @@ export async function fetchEventsForInstance(instanceId: string, limit = 200): P
   }
   out.sort((a, b) => a.created_at.localeCompare(b.created_at))
   return out
+}
+
+export async function fetchEventsForTrace(traceId: string, limit = 200): Promise<AuditEvent[]> {
+  const body = await getJson<{ items: AuditEvent[] }>('api/v1/audit/timeline', {
+    trace_id: traceId,
+    limit: String(limit),
+  })
+  return body?.items ?? []
 }
 
 export interface CostTotals {

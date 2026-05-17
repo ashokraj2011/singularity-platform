@@ -13,6 +13,9 @@
  *   GET    /evaluators/:id            — evaluator detail
  *   PATCH  /evaluators/:id            — toggle enabled / update config
  *   POST   /evaluators/run            — run evaluators against recent traces
+ *   POST   /evaluators/run-trace      — run evaluators against one trace and persist results
+ *   POST   /evaluators/run-dataset    — run evaluators against a dataset and persist results
+ *   GET    /eval-runs/:id             — eval run detail
  *   GET    /datasets                  — list datasets
  *   POST   /datasets                  — create dataset
  *   GET    /datasets/:id/examples     — list examples
@@ -23,7 +26,13 @@
 import { Router, Request, Response } from "express";
 import { query, queryOne } from "../db";
 import { diagnoseIssue } from "./diagnose";
-import { createEvaluatorFromIssue, runEvaluatorsForRecentTraces } from "./evaluator-factory";
+import {
+  createEvaluatorFromIssue,
+  getEvalRun,
+  runDatasetEvaluatorsPersisted,
+  runEvaluatorsForRecentTraces,
+  runTraceEvaluatorsPersisted,
+} from "./evaluator-factory";
 import { createDataset, addExamples, buildDatasetFromIssue } from "./dataset-builder";
 import { runSweep } from "./sweep";
 
@@ -206,6 +215,61 @@ engineRouter.post("/evaluators/run", async (req: Request, res: Response) => {
   const windowMinutes = Number(req.body?.window_minutes ?? 60);
   const limit = Math.min(Number(req.body?.limit ?? 100), 500);
   const result = await runEvaluatorsForRecentTraces(windowMinutes, limit);
+  res.json(result);
+});
+
+engineRouter.post("/evaluators/run-trace", async (req: Request, res: Response) => {
+  const traceId = typeof req.body?.trace_id === "string"
+    ? req.body.trace_id
+    : typeof req.body?.traceId === "string"
+      ? req.body.traceId
+      : "";
+  if (!traceId.trim()) return res.status(400).json({ error: "trace_id is required" });
+  const evaluatorIds = Array.isArray(req.body?.evaluator_ids)
+    ? req.body.evaluator_ids.map(String).filter(Boolean)
+    : Array.isArray(req.body?.evaluatorIds)
+      ? req.body.evaluatorIds.map(String).filter(Boolean)
+      : undefined;
+  const result = await runTraceEvaluatorsPersisted({
+    traceId: traceId.trim(),
+    evaluatorIds,
+    capabilityId: typeof req.body?.capability_id === "string"
+      ? req.body.capability_id
+      : typeof req.body?.capabilityId === "string"
+        ? req.body.capabilityId
+        : undefined,
+    metadata: req.body?.metadata && typeof req.body.metadata === "object" ? req.body.metadata : {},
+  });
+  res.status(201).json(result);
+});
+
+engineRouter.post("/evaluators/run-dataset", async (req: Request, res: Response) => {
+  const datasetId = typeof req.body?.dataset_id === "string"
+    ? req.body.dataset_id
+    : typeof req.body?.datasetId === "string"
+      ? req.body.datasetId
+      : "";
+  if (!datasetId.trim()) return res.status(400).json({ error: "dataset_id is required" });
+  const evaluatorIds = Array.isArray(req.body?.evaluator_ids)
+    ? req.body.evaluator_ids.map(String).filter(Boolean)
+    : Array.isArray(req.body?.evaluatorIds)
+      ? req.body.evaluatorIds.map(String).filter(Boolean)
+      : undefined;
+  const result = await runDatasetEvaluatorsPersisted({
+    datasetId: datasetId.trim(),
+    evaluatorIds,
+    capabilityId: typeof req.body?.capability_id === "string"
+      ? req.body.capability_id
+      : typeof req.body?.capabilityId === "string"
+        ? req.body.capabilityId
+        : undefined,
+    metadata: req.body?.metadata && typeof req.body.metadata === "object" ? req.body.metadata : {},
+  });
+  res.status(201).json(result);
+});
+
+engineRouter.get("/eval-runs/:id", async (req: Request, res: Response) => {
+  const result = await getEvalRun(req.params.id);
   res.json(result);
 });
 

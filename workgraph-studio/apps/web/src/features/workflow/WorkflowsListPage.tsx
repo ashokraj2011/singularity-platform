@@ -117,15 +117,17 @@ const STARTER_OPTIONS: Array<{
 
 const inputStyle: React.CSSProperties = {
   width: '100%', boxSizing: 'border-box', padding: '8px 11px',
-  borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13,
+  borderRadius: 8, border: '1px solid #dbe4ec', fontSize: 14,
   outline: 'none', fontFamily: 'inherit', color: '#0f172a',
+  background: '#ffffff',
+  minHeight: 38,
   transition: 'border-color 0.12s',
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', marginBottom: 5 }}>
+      <p style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#516179', marginBottom: 6 }}>
         {label}
       </p>
       {children}
@@ -1012,7 +1014,7 @@ export function WorkflowsListPage() {
                   </div>
                   <div>
                     <p style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: 0 }}>New Workflow</p>
-                    <p style={{ fontSize: 12, color: '#64748b', margin: '2px 0 0' }}>Configure metadata before designing the flow</p>
+                    <p style={{ fontSize: 13, color: '#475569', margin: '2px 0 0' }}>Configure metadata before designing the flow</p>
                   </div>
                 </div>
                 <button onClick={() => { setCreateOpen(false); setCreateStep('identity') }}
@@ -1030,12 +1032,12 @@ export function WorkflowsListPage() {
                     <button key={s} onClick={() => setCreateStep(s)} style={{
                       padding: '8px 16px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer',
                       background: 'none', borderBottom: active ? '2px solid #00843D' : '2px solid transparent',
-                      color: active ? '#00843D' : '#94a3b8', transition: 'all 0.12s',
+                      color: active ? '#00843D' : '#64748b', transition: 'all 0.12s',
                     }}>
                       <span style={{
                         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                         width: 18, height: 18, borderRadius: '50%', fontSize: 10, fontWeight: 800,
-                        background: active ? '#00843D' : '#e2e8f0', color: active ? '#fff' : '#64748b',
+                        background: active ? '#00843D' : '#e2e8f0', color: active ? '#fff' : '#475569',
                         marginRight: 6,
                       }}>{i + 1}</span>
                       {labels[i]}
@@ -1068,7 +1070,7 @@ export function WorkflowsListPage() {
                       placeholder="Select a capability…"
                       hint="Federated from Identity & Access and Agent Studio. Membership capabilities are filtered to your access."
                     />
-                    <p style={{ fontSize: 11, color: '#64748b', marginTop: 4, lineHeight: 1.4 }}>
+                    <p style={{ fontSize: 12, color: '#42526a', marginTop: 6, lineHeight: 1.45 }}>
                       Capability is the authorization boundary for view / edit / start.
                       Leave empty to fall back to team-based permissions.
                     </p>

@@ -15,7 +15,13 @@ import { Router, type Request, type Response } from 'express'
 import { prisma } from '../../lib/prisma'
 import { config } from '../../config'
 import { assertInstancePermission } from '../../lib/permissions/workflowTemplate'
-import { fetchEventsForInstance, rollupFromEvents, type AuditEvent } from '../../lib/audit-gov/client'
+import {
+  fetchEventsForInstance,
+  fetchEventsForTrace,
+  postJson,
+  rollupFromEvents,
+  type AuditEvent,
+} from '../../lib/audit-gov/client'
 
 export const insightsRouter: Router = Router()
 
@@ -1511,6 +1517,315 @@ function buildEvidencePack(insights: InsightsResponse) {
   }
   return { ...pack, markdown: renderEvidenceMarkdown(pack) }
 }
+
+async function traceIdsByNodeForInstance(instanceId: string): Promise<Map<string, string[]>> {
+  const runs = await prisma.agentRun.findMany({
+    where: { instanceId },
+    select: {
+      nodeId: true,
+      outputs: {
+        where: { outputType: { in: ['EXECUTION_TRACE', 'LLM_RESPONSE', 'APPROVAL_REQUIRED'] } },
+        select: { structuredPayload: true, rawContent: true },
+      },
+    },
+  })
+  const byNode = new Map<string, Set<string>>()
+  for (const run of runs) {
+    if (!run.nodeId) continue
+    const ids = byNode.get(run.nodeId) ?? new Set<string>()
+    for (const output of run.outputs) {
+      const payload = payloadOf(output.structuredPayload)
+      const traceId = str(payload.traceId)
+        ?? str(payload.trace_id)
+        ?? (output.rawContent?.startsWith('wf-') ? output.rawContent : undefined)
+      if (traceId) ids.add(traceId)
+    }
+    byNode.set(run.nodeId, ids)
+  }
+  return new Map(Array.from(byNode.entries()).map(([nodeId, ids]) => [nodeId, Array.from(ids)]))
+}
+
+function buildTrustTraceResponse(
+  insights: InsightsResponse,
+  traceIdsByNode: Map<string, string[]>,
+  traceEvents: Map<string, AuditEvent[]>,
+) {
+  const allTraceIds = uniqueStrings([
+    ...Array.from(traceIdsByNode.values()).flat(),
+    ...insights.events.map(event => event.payload ? str(payloadOf(event.payload).traceId) ?? str(payloadOf(event.payload).trace_id) : undefined),
+  ])
+  const timeline = insights.nodes.map(node => {
+    const traceIds = traceIdsByNode.get(node.id) ?? []
+    const auditEvents = [
+      ...insights.events.filter(event => {
+        const payload = payloadOf(event.payload)
+        return str(payload.nodeId) === node.id || str(payload.workflowNodeId) === node.id || str(payload.workflow_node_id) === node.id
+      }),
+      ...traceIds.flatMap(traceId => traceEvents.get(traceId) ?? []).map(event => ({
+        id: event.id,
+        source_service: event.source_service,
+        kind: event.kind,
+        severity: event.severity,
+        subject_type: event.subject_type,
+        subject_id: event.subject_id,
+        created_at: event.created_at,
+        payload: event.payload,
+      })),
+    ]
+    const seen = new Set<string>()
+    const events = auditEvents
+      .filter(event => {
+        if (seen.has(event.id)) return false
+        seen.add(event.id)
+        return true
+      })
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+    return {
+      node: {
+        id: node.id,
+        label: node.label,
+        nodeType: node.nodeType,
+        status: node.status,
+        startedAt: node.startedAt,
+        completedAt: node.completedAt,
+        durationMs: node.durationMs,
+      },
+      traceIds,
+      promptAssemblyIds: uniqueStrings(node.receipts.map(receipt => receipt.promptAssemblyId)),
+      cfCallIds: uniqueStrings(node.receipts.map(receipt => receipt.cfCallId)),
+      mcpInvocationIds: uniqueStrings(node.receipts.map(receipt => receipt.mcpInvocationId)),
+      agentRuns: node.receipts.map(receipt => ({
+        agentRunId: receipt.agentRunId,
+        status: receipt.status,
+        modelAlias: receipt.modelAlias,
+        provider: receipt.provider,
+        model: receipt.model,
+        inputTokens: receipt.inputTokens,
+        outputTokens: receipt.outputTokens,
+        totalTokens: receipt.totalTokens,
+        estimatedCost: receipt.estimatedCost,
+        governanceMode: receipt.governanceMode,
+        executionPosture: receipt.executionPosture,
+        blockedReason: receipt.blockedReason,
+      })),
+      toolsAndCode: {
+        toolInvocationIds: uniqueStrings(node.receipts.flatMap(receipt => receipt.toolInvocationIds)),
+        workspace: node.workspace,
+      },
+      approvals: insights.auditReport.stages
+        .filter(stage => stage.nodeId === node.id && stage.approvalCount > 0)
+        .map(stage => ({ count: stage.approvalCount, status: stage.status })),
+      consumables: node.consumables,
+      citations: node.citations,
+      budgetEvents: insights.auditReport.ledger.filter(event => event.nodeId === node.id),
+      auditEvents: events,
+    }
+  })
+  return {
+    run: insights.run,
+    generatedAt: new Date().toISOString(),
+    traceIds: allTraceIds,
+    timeline,
+    totals: {
+      nodes: insights.totals.nodes,
+      tokens: insights.auditReport.totals.totalTokens,
+      estimatedCost: insights.auditReport.totals.estimatedCost,
+      approvals: insights.auditReport.totals.approvals,
+      consumables: insights.auditReport.totals.consumables,
+      auditEvents: insights.auditReport.coverage.auditEvents,
+      traceEvents: Array.from(traceEvents.values()).reduce((sum, events) => sum + events.length, 0),
+    },
+    gaps: buildEvidenceWarnings(insights),
+  }
+}
+
+function renderDeliveryReceiptMarkdown(pack: ReturnType<typeof buildEvidencePack>, evalGates: Array<Record<string, unknown>>): string {
+  const header = [
+    `# AI Delivery Receipt`,
+    ``,
+    `Run: ${pack.summary.name} (${pack.summary.id})`,
+    `Status: ${pack.summary.status}`,
+    `Generated: ${pack.manifest.generatedAt}`,
+    ``,
+    `## Trust Summary`,
+    `- Tokens: ${pack.summary.tokens.total}`,
+    `- Estimated cost: ${money(pack.summary.estimatedCost as number | null)}`,
+    `- Approvals: ${pack.summary.approvals}`,
+    `- Artifacts: ${pack.summary.artifacts}`,
+    `- Consumables: ${pack.summary.consumables}`,
+    `- Eval gates: ${evalGates.length}`,
+    ``,
+  ].join('\n')
+  return `${header}${pack.markdown.replace(/^# Workflow Run Evidence Pack\s*/u, '')}`
+}
+
+function buildDeliveryReceipt(insights: InsightsResponse) {
+  const pack = buildEvidencePack(insights)
+  const evalGates = insights.nodes
+    .filter(node => node.nodeType === 'EVAL_GATE')
+    .map(node => ({
+      nodeId: node.id,
+      label: node.label,
+      status: node.status,
+      receipts: node.receipts,
+      events: insights.events.filter(event => {
+        const payload = payloadOf(event.payload)
+        return str(payload.nodeId) === node.id || str(payload.workflowNodeId) === node.id
+      }),
+    }))
+  return {
+    ...pack,
+    manifest: {
+      ...pack.manifest,
+      deliveryReceiptVersion: 1,
+      source: 'workgraph.delivery_receipt',
+    },
+    summary: {
+      ...pack.summary,
+      evalStatus: evalGates.length === 0
+        ? 'NO_EVAL_GATE'
+        : evalGates.every(gate => gate.status === 'COMPLETED') ? 'PASSED' : 'BLOCKED_OR_PENDING',
+    },
+    sections: {
+      ...pack.sections,
+      evalGates,
+    },
+    markdown: renderDeliveryReceiptMarkdown(pack, evalGates),
+  }
+}
+
+insightsRouter.get('/:id/trust-trace', async (req: Request, res: Response, next) => {
+  try {
+    const id = String(req.params.id)
+    await assertInstancePermission(req.user!.userId, id, 'view')
+    const insights = await buildInsightsResponse(id)
+    if (!insights) return res.status(404).json({ code: 'NOT_FOUND' })
+    const traceMap = await traceIdsByNodeForInstance(id)
+    const traceIds = uniqueStrings(Array.from(traceMap.values()).flat())
+    const traceEvents = new Map<string, AuditEvent[]>()
+    await Promise.all(traceIds.map(async (traceId) => {
+      traceEvents.set(traceId, await fetchEventsForTrace(traceId, 500))
+    }))
+    res.json(buildTrustTraceResponse(insights, traceMap, traceEvents))
+  } catch (err) {
+    next(err)
+  }
+})
+
+insightsRouter.get('/:id/delivery-receipt', async (req: Request, res: Response, next) => {
+  try {
+    const id = String(req.params.id)
+    await assertInstancePermission(req.user!.userId, id, 'view')
+    const insights = await buildInsightsResponse(id)
+    if (!insights) return res.status(404).json({ code: 'NOT_FOUND' })
+    const receipt = buildDeliveryReceipt(insights)
+    if (req.query.format === 'markdown') {
+      res.type('text/markdown').send(receipt.markdown)
+      return
+    }
+    res.json(receipt)
+  } catch (err) {
+    next(err)
+  }
+})
+
+insightsRouter.post('/:id/eval-examples', async (req: Request, res: Response, next) => {
+  try {
+    const id = String(req.params.id)
+    await assertInstancePermission(req.user!.userId, id, 'view')
+    const instance = await prisma.workflowInstance.findUnique({
+      where: { id },
+      select: { id: true, name: true, status: true, templateId: true, context: true, createdAt: true },
+    })
+    if (!instance) return res.status(404).json({ code: 'NOT_FOUND' })
+
+    const nodeId = typeof req.body?.nodeId === 'string' ? req.body.nodeId
+      : typeof req.body?.node_id === 'string' ? req.body.node_id
+      : undefined
+    const requestedTraceId = typeof req.body?.traceId === 'string' ? req.body.traceId
+      : typeof req.body?.trace_id === 'string' ? req.body.trace_id
+      : undefined
+    const node = nodeId
+      ? await prisma.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } })
+      : null
+    const run = await prisma.agentRun.findFirst({
+      where: { instanceId: id, ...(nodeId ? { nodeId } : {}) },
+      orderBy: { createdAt: 'desc' },
+      include: { outputs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+    })
+    const output = run?.outputs.find(item => item.outputType === 'LLM_RESPONSE') ?? run?.outputs[0]
+    const traceId = requestedTraceId
+      ?? str(payloadOf(output?.structuredPayload).traceId)
+      ?? str(payloadOf(output?.structuredPayload).trace_id)
+      ?? id
+    const datasetId = typeof req.body?.datasetId === 'string' ? req.body.datasetId
+      : typeof req.body?.dataset_id === 'string' ? req.body.dataset_id
+      : undefined
+    let resolvedDatasetId = datasetId
+    if (!resolvedDatasetId) {
+      const dataset = await postJson<{ id: string; name: string }>('api/v1/engine/datasets', {
+        name: String(req.body?.datasetName ?? req.body?.dataset_name ?? `Run ${instance.name} eval dataset`).slice(0, 180),
+        description: `Created from workflow run ${instance.id}`,
+        capability_id: typeof req.body?.capabilityId === 'string' ? req.body.capabilityId : undefined,
+      })
+      if (!dataset?.id) return res.status(502).json({ code: 'AUDIT_GOV_UNAVAILABLE', message: 'Could not create eval dataset' })
+      resolvedDatasetId = dataset.id
+    }
+
+    const expectedOutput = typeof req.body?.expectedOutput === 'string'
+      ? { text: req.body.expectedOutput }
+      : isRecord(req.body?.expectedOutput) ? req.body.expectedOutput : undefined
+    const criteria = isRecord(req.body?.criteria)
+      ? req.body.criteria
+      : typeof req.body?.criteria === 'string'
+        ? { text: req.body.criteria }
+        : {}
+    const addResult = await postJson<{ added: number }>(`api/v1/engine/datasets/${encodeURIComponent(resolvedDatasetId)}/examples`, {
+      examples: [{
+        trace_id: traceId,
+        input: {
+          workflowInstanceId: instance.id,
+          workflowName: instance.name,
+          nodeId: node?.id ?? null,
+          nodeLabel: node?.label ?? null,
+          context: instance.context,
+        },
+        expected_output: expectedOutput,
+        actual_output: output ? {
+          outputType: output.outputType,
+          rawContent: output.rawContent,
+          structuredPayload: output.structuredPayload,
+        } : { status: 'missing_output' },
+        criteria,
+        metadata: {
+          source: 'workgraph.workflow_run',
+          workflowInstanceId: instance.id,
+          nodeId: node?.id ?? null,
+          traceId,
+          tags: Array.isArray(req.body?.tags) ? req.body.tags.map(String) : [],
+          sourceLinks: {
+            runInsights: `/runs/${instance.id}/insights`,
+            trustTrace: `/api/workflow-instances/${instance.id}/trust-trace`,
+            deliveryReceipt: `/api/workflow-instances/${instance.id}/delivery-receipt`,
+          },
+        },
+      }],
+    })
+    if (!addResult) return res.status(502).json({ code: 'AUDIT_GOV_UNAVAILABLE', message: 'Could not create eval example' })
+    res.status(201).json({
+      datasetId: resolvedDatasetId,
+      added: addResult.added,
+      traceId,
+      nodeId: node?.id ?? null,
+      sourceLinks: {
+        datasetExamples: `/api/v1/engine/datasets/${resolvedDatasetId}/examples`,
+        runInsights: `/runs/${instance.id}/insights`,
+      },
+    })
+  } catch (err) {
+    next(err)
+  }
+})
 
 insightsRouter.get('/:id/evidence-pack', async (req: Request, res: Response, next) => {
   try {

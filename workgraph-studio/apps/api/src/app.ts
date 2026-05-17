@@ -91,6 +91,10 @@ export function createApp(): Express {
   app.use('/api/permissions', authMiddleware, permissionsRouter)
   // app.use('/api/initiatives', authMiddleware, initiativesRouter) — out of scope
   app.use('/api/workflow-templates', authMiddleware, workflowTemplatesRouter)
+  // Compatibility/BFF alias used by WorkItem and readiness flows.
+  // Workflow templates remain the source of truth; this path keeps the
+  // operator-facing wording short without creating a second resource model.
+  app.use('/api/workflows', authMiddleware, workflowTemplatesRouter)
   app.use('/api/workflow-instances', authMiddleware, workflowInstancesRouter)
   // M24 — run insights composite (sub-router; same /api/workflow-instances prefix)
   app.use('/api/workflow-instances', authMiddleware, insightsRouter)

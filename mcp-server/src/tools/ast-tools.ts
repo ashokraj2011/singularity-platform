@@ -219,6 +219,7 @@ export const finishWorkBranchTool: ToolHandler = {
         patch: result.patch,
         branch: result.branch,
         committed: result.committed,
+        workspaceRoot: result.workspaceRoot,
         message: result.message,
         pushed: result.pushed,
         push_error: result.pushError,

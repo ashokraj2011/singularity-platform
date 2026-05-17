@@ -25,6 +25,7 @@ export const env = {
 
   // Deep-link targets (always absolute — they open external apps)
   links: {
+    operationsPortal:   import.meta.env.VITE_LINK_OPERATIONS_PORTAL   ?? 'http://localhost:5180',
     agentAdmin:        import.meta.env.VITE_LINK_AGENT_ADMIN        ?? 'http://localhost:3000',
     iamAdmin:          import.meta.env.VITE_LINK_IAM_ADMIN          ?? 'http://localhost:5175',
     workgraphDesigner: import.meta.env.VITE_LINK_WORKGRAPH_DESIGNER ?? 'http://localhost:5174',

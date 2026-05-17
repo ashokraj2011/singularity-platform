@@ -75,6 +75,82 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   gap: 10px;
 }
 
+.app-switcher {
+  position: relative;
+}
+
+.app-switcher-menu {
+  position: absolute;
+  right: 0;
+  top: 42px;
+  z-index: 90;
+  width: 300px;
+  border: 1px solid var(--outline-variant);
+  border-radius: 14px;
+  background: var(--surface-container);
+  box-shadow: 0 18px 50px var(--shadow);
+  padding: 8px;
+}
+
+.app-switcher-menu p {
+  margin: 0;
+  padding: 8px 10px 10px;
+  color: var(--muted-low);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.app-switcher-menu a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: 10px;
+  padding: 10px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.app-switcher-menu a:hover,
+.app-switcher-menu a.active {
+  background: rgba(173, 198, 255, 0.10);
+}
+
+.app-switcher-menu a > svg:first-child {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.app-switcher-menu a > svg:last-child {
+  color: var(--muted-low);
+  flex-shrink: 0;
+}
+
+.app-switcher-menu span {
+  min-width: 0;
+  flex: 1;
+}
+
+.app-switcher-menu strong,
+.app-switcher-menu small {
+  display: block;
+}
+
+.app-switcher-menu strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.app-switcher-menu small {
+  margin-top: 1px;
+  color: var(--muted-low);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mode-switch {
   display: inline-flex;
   align-items: center;

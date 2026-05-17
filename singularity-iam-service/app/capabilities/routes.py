@@ -176,7 +176,7 @@ async def upsert_capability_reference(
             visibility=body.visibility,
             metadata_=body.metadata or {},
             tags=body.tags or [],
-            created_by=current_user.id,
+            created_by=_audit_actor_user_id(current_user),
         )
         db.add(cap)
         await db.flush()
@@ -200,7 +200,10 @@ async def upsert_capability_reference(
         event_name=f"capability.reference.{action}",
         subject_kind="capability",
         subject_id=cap.id,
-        actor={"kind": "user", "id": current_user.id},
+        actor={
+            "kind": "service" if hasattr(current_user, "service_name") else "user",
+            "id": getattr(current_user, "id", None),
+        },
         correlation={"capability_id": cap.capability_id, "capability_type": cap.capability_type},
         payload={"name": cap.name, "description": cap.description, "metadata": cap.metadata_},
         db=db,

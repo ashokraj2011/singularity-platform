@@ -3,15 +3,17 @@ import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'motion/react'
 import {
   LayoutDashboard, FileText, GitBranch, ScrollText, Globe, Inbox,
-  LogOut, Bell, Settings, ChevronLeft, ChevronRight, Puzzle, Link2, Activity, Play,
+  LogOut, Bell, Settings, ChevronLeft, ChevronRight, Puzzle, Link2, Activity, Play, Network,
   Building2,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth.store'
 import { useActiveContextStore } from '../store/activeContext.store'
+import { AppSwitcher } from './AppSwitcher'
 
 // Top-level (everyday) navigation — no design / authoring access required.
 const navItems = [
   { to: '/runtime',         label: 'Inbox',              icon: Inbox },
+  { to: '/work-items',      label: 'WorkItems',          icon: Network },
   { to: '/run',             label: 'Start Workflow',     icon: Play },
   { to: '/runs',            label: 'Runs',               icon: Activity },
   { to: '/dashboard',       label: 'Dashboard',          icon: LayoutDashboard },
@@ -300,6 +302,7 @@ export function AppLayout() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <AppSwitcher currentApp="workflow" />
             <button
               style={{
                 width: 32, height: 32, borderRadius: 10, border: '1px solid var(--color-outline-variant)',

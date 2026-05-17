@@ -17,6 +17,8 @@ type CapabilityEditForm = {
   description: string;
 };
 
+type ArchitectureLayer = { key: string; label: string; items: string[] };
+
 export default function CapabilityDetailPage({ params }: { params: { id: string } }) {
   const id = decodeURIComponent(params.id);
   const searchParams = useSearchParams();
@@ -808,6 +810,7 @@ function CapabilityArchitecturePanel({
   compact?: boolean;
 }) {
   const layers = asObjectArray(diagram.layers);
+  const highlights = asObjectArray(diagram.highlights);
   const togaf = String(diagram.view ?? diagram.kind ?? "").toLowerCase().includes("togaf");
   const title = String(diagram.title ?? (togaf ? "TOGAF capability map" : "Capability architecture"));
   const description = String(diagram.description ?? "");
@@ -826,6 +829,18 @@ function CapabilityArchitecturePanel({
           {togaf ? "TOGAF view" : "Application view"}
         </span>
       </div>
+
+      {!togaf && highlights.length > 0 && (
+        <div className="mb-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
+          {highlights.slice(0, 4).map((highlight, index) => (
+            <div key={String(highlight.key ?? index)} className="rounded-xl border border-slate-200 bg-white p-3">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500">{String(highlight.label ?? "Signal")}</div>
+              <div className="mt-1 text-sm font-semibold text-slate-900">{String(highlight.value ?? "--")}</div>
+              {!!highlight.detail && <div className="mt-1 text-[11px] text-slate-500">{String(highlight.detail)}</div>}
+            </div>
+          ))}
+        </div>
+      )}
 
       {togaf ? (
         <div className="space-y-2">
@@ -847,20 +862,17 @@ function CapabilityArchitecturePanel({
           ))}
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
           {layers.map((layer, index) => (
-            <div key={String(layer.key ?? index)} className="relative rounded-xl border border-slate-200 bg-slate-50 p-3 min-h-[132px]">
+            <div key={String(layer.key ?? index)} className="rounded-xl border border-slate-200 bg-slate-50 p-3 min-h-[132px]">
               <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-2">{String(layer.label ?? `Layer ${index + 1}`)}</div>
               <div className="space-y-1.5">
-                {asStringArray(layer.items).slice(0, 5).map(item => (
+                {asStringArray(layer.items).slice(0, 7).map(item => (
                   <div key={item} className="rounded-md bg-white border border-slate-200 px-2 py-1 text-xs text-slate-700">
                     {item}
                   </div>
                 ))}
               </div>
-              {index < layers.length - 1 && (
-                <div className="hidden md:block absolute -right-2 top-1/2 h-px w-4 bg-slate-300" />
-              )}
             </div>
           ))}
         </div>
@@ -871,6 +883,15 @@ function CapabilityArchitecturePanel({
           <summary className="cursor-pointer text-xs font-semibold text-singularity-700">Mermaid source</summary>
           <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">
             {diagram.mermaid}
+          </pre>
+        </details>
+      )}
+
+      {typeof diagram.codeGraphMermaid === "string" && diagram.codeGraphMermaid.trim() && (
+        <details className="mt-3" open={!compact}>
+          <summary className="cursor-pointer text-xs font-semibold text-singularity-700">Application/code graph source</summary>
+          <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">
+            {diagram.codeGraphMermaid}
           </pre>
         </details>
       )}
@@ -1352,9 +1373,6 @@ function getArchitectureDiagram(
 ): Record<string, unknown> | null {
   const operatingModel = run ? getOperatingModel(run) : null;
   const fromBootstrap = operatingModel?.architectureDiagram;
-  if (fromBootstrap && typeof fromBootstrap === "object" && !Array.isArray(fromBootstrap)) {
-    return fromBootstrap as Record<string, unknown>;
-  }
 
   const name = String(capability.name ?? "Capability");
   const appId = capabilityString(capability.appId);
@@ -1395,35 +1413,207 @@ function getArchitectureDiagram(
     };
   }
 
-  return {
-    kind: "APPLICATION_CAPABILITY_ARCHITECTURE",
-    view: "application",
-    title: `${name} application capability architecture`,
-    description: "This generated view links workflow stories, capability agents, grounding sources, execution runtime, and produced evidence.",
-    layers: [
-      { key: "entry", label: "Entry Points", items: ["Workflow stories", "Workbench stages", "Human approvals"] },
-      { key: "agents", label: "Capability Agent Team", items: bindings.length ? bindings : ["Draft agent team pending activation"] },
-      { key: "knowledge", label: "Grounding Sources", items: [...(repos.length ? repos : ["Repository pending"]), `${knowledge} knowledge artifacts`] },
-      { key: "execution", label: "Execution Runtime", items: ["Prompt Composer", "Context Fabric", "MCP model/tools/AST"] },
-      { key: "evidence", label: "Evidence Outputs", items: ["Stage artifacts", "Citations", "Budget receipts", "Audit trail"] },
-    ],
-    mermaid: [
-      "flowchart LR",
-      "  S[Story / Workflow Input]",
-      `  C[Capability<br/>${name}${appId ? `<br/>App ID: ${appId}` : ""}]`,
-      "  A[Agent Team]",
-      "  K[Grounding Sources]",
-      "  X[Context Fabric + MCP]",
-      "  E[Artifacts / Receipts]",
-      "  S --> C --> A",
-      "  K --> A",
-      "  A --> X --> E",
-    ].join("\n"),
-  };
+  const stored = fromBootstrap && typeof fromBootstrap === "object" && !Array.isArray(fromBootstrap)
+    ? fromBootstrap as Record<string, unknown>
+    : undefined;
+  return buildRelevantApplicationArchitecture(capability, {
+    title: stored?.title ? String(stored.title) : `${name} application architecture`,
+    mermaid: stored?.mermaid ? String(stored.mermaid) : undefined,
+  });
 }
 
 function isCollectionCapability(value: string): boolean {
   return ["COLLECTION", "CAPABILITY_COLLECTION", "PORTFOLIO", "DOMAIN_COLLECTION"].includes(value.trim().toUpperCase());
+}
+
+function buildRelevantApplicationArchitecture(
+  capability: Record<string, unknown>,
+  stored?: { title?: string; mermaid?: string },
+): Record<string, unknown> {
+  const name = String(capability.name ?? "Capability");
+  const appId = capabilityString(capability.appId);
+  const criticality = capabilityString(capability.criticality) || "MEDIUM";
+  const repos = asObjectArray(capability.repositories);
+  const artifacts = asObjectArray(capability.knowledgeArtifacts);
+  const bindings = asObjectArray(capability.bindings);
+  const corpus = artifacts
+    .map(artifact => `${String(artifact.title ?? "")}\n${String(artifact.content ?? "")}`)
+    .join("\n")
+    .slice(0, 120_000);
+  const repoLabels = repos
+    .map(repo => String(repo.repoName ?? repo.repoUrl ?? "Repository"))
+    .filter(Boolean);
+  const endpointItems = inferEndpointItems(corpus);
+  const stackItems = inferStackItems(corpus, repos);
+  const domainItems = inferDomainItems(corpus, name);
+  const requestResponseItems = inferContractItems(corpus);
+  const agentItems = bindings
+    .map(binding => {
+      const template = binding.agentTemplate as Record<string, unknown> | undefined;
+      return capabilityRoleLabel(binding.roleInCapability ?? template?.roleType ?? template?.name ?? binding.bindingName ?? "Agent");
+    })
+    .filter(Boolean);
+  const branchItems = repos.flatMap(repo => {
+    const branch = String(repo.defaultBranch ?? "").trim();
+    const sha = String(repo.lastPolledSha ?? "").trim();
+    const label = String(repo.repoName ?? repo.repoUrl ?? "Repository");
+    return [
+      label,
+      ...(branch ? [`Branch: ${branch}`] : []),
+      ...(sha ? [`Indexed SHA: ${sha.slice(0, 12)}`] : []),
+    ];
+  });
+  const repoCount = repoLabels.length;
+  const endpointCount = endpointItems.filter(item => /^(GET|POST|PUT|DELETE|PATCH|ANY)\s+\//i.test(item)).length || endpointItems.length;
+  const operatorCount = countDomainOperators(corpus);
+  const primaryStack = stackItems.find(item => !/pending/i.test(item)) ?? "Stack pending";
+
+  const layers: ArchitectureLayer[] = [
+    {
+      key: "product_api",
+      label: "Product / API",
+      items: [
+        `${name}${appId ? ` (${appId})` : ""}`,
+        `Criticality: ${criticality}`,
+        ...endpointItems.slice(0, 4),
+      ].filter(Boolean),
+    },
+    {
+      key: "runtime_stack",
+      label: "Runtime Stack",
+      items: stackItems,
+    },
+    {
+      key: "domain_model",
+      label: "Domain Model",
+      items: domainItems,
+    },
+    {
+      key: "contract",
+      label: "Request / Response Contract",
+      items: requestResponseItems,
+    },
+    {
+      key: "codebase",
+      label: "Repository Intelligence",
+      items: branchItems.length ? [...branchItems, `${artifacts.length} knowledge artifacts`] : [`${artifacts.length} knowledge artifacts`, "Repository pending"],
+    },
+    {
+      key: "delivery",
+      label: "Governed Delivery",
+      items: [
+        ...(agentItems.length ? agentItems.slice(0, 6) : ["Product Owner", "Architect", "Developer", "QA", "Governance"]),
+        "Workbench stage artifacts",
+        "Approvals, budgets, receipts, audit trail",
+      ],
+    },
+  ];
+
+  return {
+    kind: "APPLICATION_CAPABILITY_ARCHITECTURE",
+    view: "application",
+    title: stored?.title ?? `${name} application architecture`,
+    description: buildApplicationDescription(name, stackItems, endpointItems, domainItems),
+    highlights: [
+      { key: "stack", label: "Primary stack", value: primaryStack, detail: stackItems.slice(1, 3).join(" / ") },
+      { key: "api", label: "API surface", value: endpointCount ? `${endpointCount} endpoint${endpointCount === 1 ? "" : "s"}` : "Pending", detail: endpointItems[0] ?? "No endpoint signal yet" },
+      { key: "rules", label: "Domain rules", value: operatorCount ? `${operatorCount} operators` : "Detected model", detail: domainItems[0] },
+      { key: "repo", label: "Source", value: repoCount ? `${repoCount} repo${repoCount === 1 ? "" : "s"}` : "No repo", detail: repoLabels[0] ?? "Attach a repository to ground the graph" },
+    ],
+    layers,
+    mermaid: buildApplicationMermaid(name, endpointItems, stackItems, domainItems),
+    codeGraphMermaid: buildApplicationMermaid(name, endpointItems, stackItems, domainItems),
+  };
+}
+
+function buildApplicationDescription(name: string, stackItems: string[], endpointItems: string[], domainItems: string[]): string {
+  const stack = stackItems.find(item => !/pending/i.test(item));
+  const endpoint = endpointItems.find(item => /\//.test(item));
+  const domain = domainItems[0];
+  return [
+    `${name} is shown as an application system, not just a delivery workflow.`,
+    stack ? `Detected stack: ${stack}.` : "",
+    endpoint ? `Primary API signal: ${endpoint}.` : "",
+    domain ? `Domain signal: ${domain}.` : "",
+  ].filter(Boolean).join(" ");
+}
+
+function inferStackItems(corpus: string, repos: Array<Record<string, unknown>>): string[] {
+  const items = new Set<string>();
+  const repoText = repos.map(repo => `${repo.repoName ?? ""} ${repo.repoUrl ?? ""}`).join(" ");
+  const text = `${corpus}\n${repoText}`;
+  if (/java\s*17|Java 17\+?/i.test(text)) items.add("Java 17+");
+  else if (/\bjava\b|\.java|spring/i.test(text)) items.add("Java");
+  if (/spring boot|spring-boot|org\.springframework|@RestController/i.test(text)) items.add("Spring Boot");
+  if (/\bmaven\b|pom\.xml|mvn\s/i.test(text)) items.add("Maven");
+  if (/\bgradle\b|build\.gradle/i.test(text)) items.add("Gradle");
+  if (/localhost:8080|port\s+8080/i.test(text)) items.add("Default port 8080");
+  if (/content-type.*application\/json|application\/json/i.test(text)) items.add("REST JSON API");
+  return Array.from(items).length ? Array.from(items) : ["Runtime stack discovery pending"];
+}
+
+function inferEndpointItems(corpus: string): string[] {
+  const items = new Set<string>();
+  const basePath = corpus.match(/Base path:\s*`?([^`\n]+)`?/i)?.[1]?.trim();
+  for (const match of corpus.matchAll(/\b(GET|POST|PUT|DELETE|PATCH|ANY)\s+`?(\/[^\s`),.;]+)`?/gi)) {
+    const method = match[1].toUpperCase();
+    let path = match[2].replace(/[),.;]+$/, "");
+    if (basePath && !path.startsWith(basePath) && path !== "/" && path.split("/").length <= 2) {
+      path = `${basePath.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
+    }
+    items.add(`${method} ${path}`);
+  }
+  if (basePath && items.size === 0) items.add(`Base path: ${basePath}`);
+  return Array.from(items).slice(0, 8);
+}
+
+function inferContractItems(corpus: string): string[] {
+  const items = new Set<string>();
+  if (/"data"\s*:|Request Schema[\s\S]{0,500}\bdata\b/i.test(corpus)) items.add("Request body includes data object");
+  if (/"rule"\s*:|Request Schema[\s\S]{0,500}\brule\b/i.test(corpus)) items.add("Request body includes rule definition");
+  if (/"result"\s*:|Response Schema[\s\S]{0,300}\bresult\b/i.test(corpus)) items.add("Response returns result boolean");
+  if (/400 Bad Request/i.test(corpus)) items.add("400 for structurally invalid rules");
+  if (/422 Unprocessable Entity/i.test(corpus)) items.add("422 for invalid request fields");
+  return Array.from(items).length ? Array.from(items) : ["Request/response contract pending"];
+}
+
+function inferDomainItems(corpus: string, capabilityName: string): string[] {
+  const lowerName = capabilityName.toLowerCase();
+  const items = new Set<string>();
+  if (/evaluates JSON rules|rule language|rule engine/i.test(corpus) || lowerName.includes("rule")) {
+    items.add("Evaluates JSON rules against arbitrary input data");
+  }
+  const groupOps = ["all", "any", "not"].filter(op => new RegExp(`\`${op}\`|\\b${op}\\b`, "i").test(corpus));
+  if (groupOps.length) items.add(`Group operators: ${groupOps.join(", ")}`);
+  const conditionOps = ["eq", "ne", "lt", "lte", "gt", "gte", "between", "in", "contains", "regex", "exists", "not_exists", "isNull", "isNotNull"]
+    .filter(op => new RegExp(`\`${op}\`|\\b${op}\\b`, "i").test(corpus));
+  if (conditionOps.length) items.add(`Condition operators: ${conditionOps.slice(0, 12).join(", ")}${conditionOps.length > 12 ? "..." : ""}`);
+  if (/dot[\s-]?separated path|field.*a\.b\.c|field path/i.test(corpus)) items.add("Dot-path field lookup into data payloads");
+  if (/numeric comparisons|date\/time comparisons|ISO.?8601/i.test(corpus)) items.add("Numeric and ISO-8601 date/time comparisons");
+  return Array.from(items).length ? Array.from(items) : ["Domain model discovery pending"];
+}
+
+function countDomainOperators(corpus: string): number {
+  return ["all", "any", "not", "eq", "ne", "lt", "lte", "gt", "gte", "between", "in", "contains", "regex", "exists", "not_exists", "isNull", "isNotNull"]
+    .filter(op => new RegExp(`\`${op}\`|\\b${op}\\b`, "i").test(corpus)).length;
+}
+
+function buildApplicationMermaid(name: string, endpointItems: string[], stackItems: string[], domainItems: string[]): string {
+  const endpoint = endpointItems.find(item => /^(GET|POST|PUT|DELETE|PATCH|ANY)\s+\//i.test(item)) ?? "API endpoint";
+  const stack = stackItems.slice(0, 3).join(" / ") || "Runtime";
+  const domain = domainItems[0] ?? "Domain logic";
+  return [
+    "flowchart LR",
+    `  Story["Story / WorkItem"] --> API["${escapeMermaidLabel(endpoint)}"]`,
+    `  API --> App["${escapeMermaidLabel(name)}"]`,
+    `  App --> Runtime["${escapeMermaidLabel(stack)}"]`,
+    `  Runtime --> Domain["${escapeMermaidLabel(domain)}"]`,
+    "  Domain --> Evidence[\"Stage artifacts / receipts / approvals\"]",
+  ].join("\n");
+}
+
+function escapeMermaidLabel(value: string): string {
+  return value.replace(/[<>{}[\]|"]/g, " ").replace(/\s+/g, " ").trim().slice(0, 90);
 }
 
 function asStringArray(value: unknown): string[] {

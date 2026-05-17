@@ -122,7 +122,7 @@ async function scanLatencySpikes(since: string): Promise<FailureSignal[]> {
      WHERE created_at > now() - interval '7 days'
        AND latency_ms IS NOT NULL`,
   );
-  const threshold = Math.max(Number(avg?.avg_ms ?? 5000) * 2, 10_000);
+  const threshold = Math.max(Math.ceil(Number(avg?.avg_ms ?? 5000) * 2), 10_000);
 
   const rows = await query<Record<string, unknown>>(
     `SELECT e.trace_id, e.source_service, e.capability_id, e.tenant_id,
@@ -157,7 +157,7 @@ async function scanTokenBlowouts(since: string): Promise<FailureSignal[]> {
      WHERE created_at > now() - interval '7 days'
        AND total_tokens > 0`,
   );
-  const threshold = Math.max(Number(avg?.avg_tokens ?? 2000) * 3, 10_000);
+  const threshold = Math.max(Math.ceil(Number(avg?.avg_tokens ?? 2000) * 3), 10_000);
 
   const rows = await query<Record<string, unknown>>(
     `SELECT e.trace_id, e.source_service, e.capability_id, e.tenant_id,

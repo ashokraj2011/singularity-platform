@@ -7,9 +7,11 @@ interface ImportMetaEnv {
   readonly VITE_COMPOSER_BASE_URL?: string
   readonly VITE_CONTEXT_FABRIC_BASE_URL?: string
   readonly VITE_MCP_BASE_URL?: string
+  readonly VITE_LINK_OPERATIONS_PORTAL?: string
   readonly VITE_LINK_AGENT_ADMIN?: string
   readonly VITE_LINK_IAM_ADMIN?: string
   readonly VITE_LINK_WORKGRAPH_DESIGNER?: string
+  readonly VITE_LINK_BLUEPRINT_WORKBENCH?: string
   readonly VITE_EVENT_HORIZON_CAPABILITY_ID?: string
   readonly VITE_EVENT_HORIZON_PROVIDER?: string
   readonly VITE_EVENT_HORIZON_MODEL?: string

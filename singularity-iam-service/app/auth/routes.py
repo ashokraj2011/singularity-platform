@@ -5,7 +5,7 @@ from sqlalchemy import select
 from app.database import get_db
 from app.models import User, LocalCredential
 from app.auth.password import verify_password
-from app.auth.jwt import create_access_token, create_service_token
+from app.auth.jwt import create_access_token, create_service_token, decode_token
 from app.auth.schemas import LoginRequest, LoginResponse, TokenUserOut
 from app.auth.deps import get_current_user
 from app.audit.service import record_event
@@ -75,6 +75,16 @@ class ServiceTokenResponse(BaseModel):
     expires_in_hours: int
 
 
+class VerifyRequest(BaseModel):
+    token: str | None = None
+
+
+class VerifyResponse(BaseModel):
+    valid: bool
+    user: TokenUserOut | None = None
+    reason: str | None = None
+
+
 @router.post("/service-token", response_model=ServiceTokenResponse, status_code=201)
 async def mint_service_token(
     body: ServiceTokenRequest,
@@ -107,4 +117,48 @@ async def mint_service_token(
         expires_in_hours=body.ttl_hours,
     )
 
+
+@router.post("/verify", response_model=VerifyResponse)
+async def verify_token(body: VerifyRequest, db: AsyncSession = Depends(get_db)):
+    """Validate a bearer token for services that use IAM introspection.
+
+    Pseudo-IAM has exposed this route for a while, and Workgraph prefers it
+    before falling back to /me. Real IAM should offer the same contract so
+    callers do not depend on pseudo-only behavior.
+    """
+    if not body.token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
+
+    try:
+        payload = decode_token(body.token)
+    except ValueError as exc:
+        return VerifyResponse(valid=False, reason=str(exc))
+
+    sub = str(payload.get("sub") or "")
+    if payload.get("kind") == "service" and sub.startswith("service:"):
+        service_name = str(payload.get("service_name") or sub.removeprefix("service:"))
+        return VerifyResponse(
+            valid=True,
+            user=TokenUserOut(
+                id=sub,
+                email=f"{service_name}@service.local",
+                display_name=service_name,
+                is_super_admin=bool(payload.get("is_super_admin", True)),
+            ),
+        )
+
+    result = await db.execute(select(User).where(User.id == sub))
+    user = result.scalar_one_or_none()
+    if not user or user.status != "active":
+        return VerifyResponse(valid=False, reason="User not found or inactive")
+
+    return VerifyResponse(
+        valid=True,
+        user=TokenUserOut(
+            id=user.id,
+            email=user.email,
+            display_name=user.display_name,
+            is_super_admin=user.is_super_admin,
+        ),
+    )
 

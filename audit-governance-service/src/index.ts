@@ -27,6 +27,7 @@ import { governanceRouter } from "./routes-governance";
 import { queryRouter } from "./routes-query";
 import { engineRouter } from "./engine/routes";
 import { startEngineSweep, stopEngineSweep } from "./engine/sweep";
+import { ensureEngineEvalTables } from "./db";
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 8500);
@@ -73,6 +74,11 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 const server = app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`[audit-gov] listening on port ${PORT}`);
+
+  void ensureEngineEvalTables().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("[audit-gov] failed to ensure eval tables", err);
+  });
 
   // Start the Singularity Engine sweep worker.
   startEngineSweep();

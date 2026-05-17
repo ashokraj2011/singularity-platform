@@ -393,12 +393,36 @@ const NODE_META: Record<string, {
       { key: 'riskLevel',  label: 'Risk level',   placeholder: 'LOW | MEDIUM | HIGH | CRITICAL' },
     ],
   },
+  GIT_PUSH: {
+    label: 'Git Push', color: '#22c55e', Icon: GitBranch,
+    description: 'Pushes the approved MCP WorkItem branch to the configured git remote. Place this after a human approval gate.',
+    standardFields: [
+      { key: 'remote', label: 'Remote', placeholder: 'origin' },
+      { key: 'branchName', label: 'Branch name', placeholder: 'optional; defaults to work/{{workItemCode}}' },
+      { key: 'message', label: 'Commit / push message', placeholder: 'optional commit message' },
+      { key: 'requireApproval', label: 'Require prior approval', placeholder: 'true' },
+      { key: 'workItemCode', label: 'WorkItem code override', placeholder: 'optional WRK-XXXXX' },
+    ],
+  },
   POLICY_CHECK: {
     label: 'Policy Check', color: '#94a3b8', Icon: Shield,
     description: 'Evaluates a named policy before continuing. Blocks the workflow if the policy denies.',
     standardFields: [
       { key: 'policyName', label: 'Policy name',  placeholder: 'risk-threshold' },
       { key: 'failAction', label: 'On failure',   placeholder: 'BLOCK | WARN | LOG' },
+    ],
+  },
+  EVAL_GATE: {
+    label: 'Eval Gate', color: '#c0c1ff', Icon: Activity,
+    description: 'Runs deterministic trust evaluators against the current run, a trace, or a dataset. Blocks the workflow when evidence is missing or the pass-rate threshold is not met.',
+    standardFields: [
+      { key: 'scope', label: 'Scope', placeholder: 'CURRENT_RUN | TRACE | DATASET' },
+      { key: 'evaluatorIds', label: 'Evaluator ids', placeholder: 'comma-separated, optional' },
+      { key: 'datasetId', label: 'Dataset id', placeholder: 'required for DATASET scope' },
+      { key: 'traceId', label: 'Trace id', placeholder: 'required for TRACE scope' },
+      { key: 'capabilityId', label: 'Capability', placeholder: 'optional capability filter' },
+      { key: 'minPassRate', label: 'Min pass rate', placeholder: '1.0' },
+      { key: 'blockOnMissingEvidence', label: 'Block on missing evidence', placeholder: 'true' },
     ],
   },
   TIMER: {
@@ -3717,6 +3741,9 @@ export function NodeInspector({
                         const isPriority         = f.key === 'priority'
                         const isModelAlias       = f.key === 'modelAlias'
                         const isGovernanceMode   = f.key === 'governanceMode'
+                        const isEvalScope        = node.data.nodeType === 'EVAL_GATE' && f.key === 'scope'
+                        const isBooleanFlag      = (node.data.nodeType === 'EVAL_GATE' && f.key === 'blockOnMissingEvidence')
+                          || (node.data.nodeType === 'GIT_PUSH' && f.key === 'requireApproval')
                         const isVariableAwareNumber = f.key === 'maxConcurrency' || f.key === 'expectedBranches'
                         const cfgCapabilityId    = (config.standard.capabilityId as string | undefined) ?? null
                         return (
@@ -3782,6 +3809,47 @@ export function NodeInspector({
                                 ].map(([value, label]) => (
                                   <option key={value} value={value} style={{ background: '#0f172a' }}>{label}</option>
                                 ))}
+                              </select>
+                            ) : isEvalScope ? (
+                              <select
+                                value={config.standard[f.key] ?? 'CURRENT_RUN'}
+                                onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
+                                style={{
+                                  width: '100%', boxSizing: 'border-box',
+                                  background: 'rgba(255,255,255,0.05)',
+                                  border: '1px solid rgba(255,255,255,0.10)',
+                                  borderRadius: 8, padding: '7px 10px',
+                                  fontSize: 11, color: '#e2e8f0',
+                                  outline: 'none', cursor: 'pointer',
+                                }}
+                              >
+                                {[
+                                  ['CURRENT_RUN', 'Current run traces'],
+                                  ['TRACE', 'Specific trace id'],
+                                  ['DATASET', 'Eval dataset'],
+                                ].map(([value, label]) => (
+                                  <option key={value} value={value} style={{ background: '#0f172a' }}>{label}</option>
+                                ))}
+                              </select>
+                            ) : isBooleanFlag ? (
+                              <select
+                                value={String(config.standard[f.key] ?? 'true')}
+                                onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
+                                style={{
+                                  width: '100%', boxSizing: 'border-box',
+                                  background: 'rgba(255,255,255,0.05)',
+                                  border: '1px solid rgba(255,255,255,0.10)',
+                                  borderRadius: 8, padding: '7px 10px',
+                                  fontSize: 11, color: '#e2e8f0',
+                                  outline: 'none', cursor: 'pointer',
+                                }}
+                              >
+                                <option value="true" style={{ background: '#0f172a' }}>
+                                  {node.data.nodeType === 'GIT_PUSH' ? 'Require approved gate' : 'Block when evidence is missing'}
+                                </option>
+                                <option value="false" style={{ background: '#0f172a' }}>
+                                  {node.data.nodeType === 'GIT_PUSH' ? 'Allow autonomous push' : 'Allow missing evidence'}
+                                </option>
                               </select>
                             ) : isTemplatePicker ? (
                               <TemplatePicker

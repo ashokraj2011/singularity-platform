@@ -56,6 +56,7 @@ import {
   type WorkflowInstanceDetail,
   type WorkflowInstanceListItem,
 } from './api'
+import { AppSwitcher } from './components/AppSwitcher'
 
 const knownRoleMeta: Record<string, { label: string; icon: typeof Brain }> = {
   ARCHITECT: { label: 'Architect', icon: Brain },
@@ -314,6 +315,7 @@ function WorkbenchCommandHeader({
         <MetricPill label="Loops" value={String(sendBacks)} tone={sendBacks > 0 ? 'warning' : 'default'} />
       </div>
       <div className="topbar-actions">
+        <AppSwitcher currentApp="workbench" />
         <button className="secondary-action compact-action" onClick={onSetup}><Settings size={15} /> Setup</button>
         <button className="icon-button" onClick={onRefresh} title="Refresh sessions"><RefreshCw size={16} /></button>
         <button className="icon-button" onClick={onSignOut} title="Sign out"><LogOut size={16} /></button>

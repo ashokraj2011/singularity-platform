@@ -23,15 +23,17 @@ import { useActiveContextStore } from '../../store/activeContext.store'
 
 const pickerStyle: CSSProperties = {
   width: '100%', boxSizing: 'border-box',
-  background: 'rgba(255,255,255,0.05)',
-  border: '1px solid rgba(255,255,255,0.10)',
-  borderRadius: 8, padding: '6px 10px',
-  fontSize: 11, color: '#e2e8f0',
+  background: '#ffffff',
+  border: '1px solid #dbe4ec',
+  borderRadius: 8, padding: '8px 11px',
+  fontSize: 13, color: '#0f172a',
   outline: 'none', appearance: 'none', cursor: 'pointer',
+  minHeight: 36,
+  boxShadow: '0 1px 0 rgba(15,23,42,0.02)',
 }
 
-const optionStyle: CSSProperties = { background: '#0f172a' }
-const hintStyle:   CSSProperties = { fontSize: 9, color: '#475569', marginTop: 4 }
+const optionStyle: CSSProperties = { background: '#ffffff', color: '#0f172a' }
+const hintStyle:   CSSProperties = { fontSize: 11, color: '#42526a', marginTop: 5, lineHeight: 1.45 }
 
 interface BaseProps {
   value: string

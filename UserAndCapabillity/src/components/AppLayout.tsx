@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { useAuthStore } from '@/store/auth.store'
 import { cn } from '@/lib/utils'
+import { AppSwitcher } from './AppSwitcher'
 
 interface NavItem {
   to: string
@@ -95,6 +96,8 @@ export function AppLayout() {
             </div>
           </div>
         </div>
+
+        <AppSwitcher currentApp="iam" />
 
         {/* Nav */}
         <nav className="flex-1 overflow-y-auto py-4 px-3">

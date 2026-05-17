@@ -1,16 +1,17 @@
-import { useMemo } from 'react'
+import { useMemo, useState, type CSSProperties } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'motion/react'
 import {
   ArrowLeft, CheckCircle2, Circle, Clock, AlertCircle, Workflow as WorkflowIcon,
-  Pause, Play as PlayIcon, RotateCw, GitFork,
+  Pause, Play as PlayIcon, RotateCw, GitFork, Network, ExternalLink,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { RuntimeWidgetForm, type RuntimeFormSubmitTarget } from '../forms/widgets/RuntimeWidgetForm'
 import type { FormWidget } from '../forms/widgets/types'
 import { LiveEventsPanel } from './LiveEventsPanel'
 import { CodeChangesPanel } from './CodeChangesPanel'
+import { CapabilityPicker } from '../../components/lookup/EntityPickers'
 
 /**
  * Step-by-step run viewer.  Lays out the run as a vertical timeline of steps;
@@ -176,7 +177,8 @@ function StepCard({
   const isFailed    = node.status === 'FAILED'
 
   // The inline form-fill panel is only useful for HUMAN_TASK / APPROVAL /
-  // CONSUMABLE_CREATION nodes that have a defined widget form.
+  // CONSUMABLE_CREATION nodes that have a defined widget form. WORK_ITEM
+  // has its own packet/target panel below.
   const fillKind: 'task' | 'approval' | 'consumable' | null = (() => {
     const t = node.nodeType
     if (t === 'HUMAN_TASK')          return 'task'
@@ -252,8 +254,12 @@ function StepCard({
             )}
           </AnimatePresence>
 
+          {isActive && node.nodeType === 'WORK_ITEM' && (
+            <WorkItemInlinePanel node={node} instanceId={instanceId} />
+          )}
+
           {/* Active step without form: simple "Mark complete" prompt */}
-          {isActive && (!fillKind || !formWidgets || formWidgets.length === 0) && (
+          {isActive && node.nodeType !== 'WORK_ITEM' && (!fillKind || !formWidgets || formWidgets.length === 0) && (
             <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.20)' }}>
               <p style={{ fontSize: 11, color: '#0c4a6e' }}>
                 Waiting for the runtime to advance.  HUMAN_TASK / APPROVAL nodes show a form-fill here when they're claimable;
@@ -262,12 +268,382 @@ function StepCard({
             </div>
           )}
 
+          {isCompleted && node.nodeType === 'WORK_ITEM' && (
+            <WorkItemInlinePanel node={node} instanceId={instanceId} compact />
+          )}
+
           {/* Completed: any submitted form data shows below */}
           {isCompleted && fillKind && formWidgets && formWidgets.length > 0 && (
             <CompletedStepSummary node={node} instanceId={instanceId} kind={fillKind} widgets={formWidgets} />
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+function WorkItemInlinePanel({
+  node, instanceId, compact = false,
+}: {
+  node: RunNode
+  instanceId: string
+  compact?: boolean
+}) {
+  const navigate = useNavigate()
+  const standard = asRecord(node.config?.standard)
+  const plannedTitle = String(standard.title ?? node.config?.title ?? node.label ?? 'Delegated work item')
+  const plannedDescription = String(standard.description ?? node.config?.description ?? '')
+  const configuredWorkItemId = typeof node.config?._workItemId === 'string' ? node.config._workItemId : ''
+  const [selectedWorkflowByTarget, setSelectedWorkflowByTarget] = useState<Record<string, string>>({})
+  const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({})
+  const [createDraft, setCreateDraft] = useState({
+    title: plannedTitle,
+    description: plannedDescription,
+    targetCapabilityId: '',
+    childWorkflowTemplateId: '',
+    urgency: 'NORMAL',
+    requiredBy: '',
+    budget: '',
+    details: '',
+  })
+
+  const { data: workItem, isLoading, error, refetch } = useQuery<RunWorkItemRow | null>({
+    queryKey: ['run-workitem-inline', instanceId, node.id, configuredWorkItemId],
+    queryFn: async () => {
+      if (configuredWorkItemId) {
+        return api.get(`/work-items/${configuredWorkItemId}`).then(r => r.data as RunWorkItemRow)
+      }
+      const res = await api.get('/work-items', {
+        params: { sourceWorkflowInstanceId: instanceId, sourceWorkflowNodeId: node.id, limit: 1 },
+      })
+      return unwrapItems<RunWorkItemRow>(res.data)[0] ?? null
+    },
+    enabled: Boolean(instanceId && node.id),
+    refetchInterval: compact ? false : 5_000,
+  })
+
+  const activeTarget = workItem?.targets[0]
+  const selectedTemplate = activeTarget ? selectedWorkflowByTarget[activeTarget.id] ?? '' : ''
+  const effectiveTemplate = activeTarget?.childWorkflowTemplateId || selectedTemplate
+  const openClarifications = (workItem?.clarifications ?? []).filter(item => item.status === 'OPEN')
+  const workflowCapabilityId = activeTarget?.targetCapabilityId ?? createDraft.targetCapabilityId
+
+  const workflowsQuery = useQuery<WorkflowTemplateOption[]>({
+    queryKey: ['run-workitem-workflows', workflowCapabilityId],
+    enabled: Boolean(workflowCapabilityId && (!activeTarget || !activeTarget.childWorkflowInstanceId)),
+    queryFn: () => api.get('/workflows', { params: { capabilityId: workflowCapabilityId } })
+      .then(r => unwrapItems<WorkflowTemplateOption>(r.data)),
+  })
+  const allWorkflowsQuery = useQuery<WorkflowTemplateOption[]>({
+    queryKey: ['run-workitem-workflows-all'],
+    enabled: Boolean(workflowCapabilityId && workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0),
+    queryFn: () => api.get('/workflows', { params: { limit: 200 } })
+      .then(r => unwrapItems<WorkflowTemplateOption>(r.data)),
+  })
+  const workflowOptions = workflowsQuery.data?.length
+    ? workflowsQuery.data
+    : allWorkflowsQuery.data ?? []
+  const usingFallbackWorkflows = Boolean(workflowCapabilityId && workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0 && workflowOptions.length > 0)
+  const createMut = useMutation({
+    mutationFn: () => {
+      const trimmedBudget = createDraft.budget.trim()
+      const trimmedDetails = createDraft.details.trim()
+      return api.post('/work-items', {
+        title: createDraft.title.trim() || plannedTitle,
+        description: createDraft.description.trim() || undefined,
+        originType: 'PARENT_DELEGATED',
+        sourceWorkflowInstanceId: instanceId,
+        sourceWorkflowNodeId: node.id,
+        input: {
+          source: 'workflow-run-inline',
+          workflowInstanceId: instanceId,
+          workflowNodeId: node.id,
+          title: createDraft.title.trim() || plannedTitle,
+          description: createDraft.description.trim() || undefined,
+          details: trimmedDetails || undefined,
+        },
+        details: {
+          source: 'workflow-run-inline',
+          workflowInstanceId: instanceId,
+          workflowNodeId: node.id,
+          requestDetails: trimmedDetails || null,
+          title: createDraft.title.trim() || plannedTitle,
+          description: createDraft.description.trim() || null,
+        },
+        budget: trimmedBudget ? { operatorNote: trimmedBudget } : {},
+        urgency: createDraft.urgency,
+        requiredBy: createDraft.requiredBy ? new Date(createDraft.requiredBy).toISOString() : undefined,
+        targets: [{
+          targetCapabilityId: createDraft.targetCapabilityId,
+          childWorkflowTemplateId: createDraft.childWorkflowTemplateId || undefined,
+        }],
+      }).then(r => r.data)
+    },
+    onSuccess: () => refetch(),
+  })
+  const claimMut = useMutation({
+    mutationFn: (targetId: string) => api.post(`/work-items/${workItem?.id}/targets/${targetId}/claim`).then(r => r.data),
+    onSuccess: () => refetch(),
+  })
+  const startMut = useMutation({
+    mutationFn: ({ targetId, childWorkflowTemplateId }: { targetId: string; childWorkflowTemplateId?: string }) =>
+      api.post(`/work-items/${workItem?.id}/targets/${targetId}/start`, childWorkflowTemplateId ? { childWorkflowTemplateId } : {}).then(r => r.data),
+    onSuccess: () => refetch(),
+  })
+  const answerMut = useMutation({
+    mutationFn: ({ clarificationId, answer }: { clarificationId: string; answer: string }) =>
+      api.post(`/work-items/${workItem?.id}/clarifications/${clarificationId}/answer`, { answer }).then(r => r.data),
+    onSuccess: (_data, vars) => {
+      setClarificationAnswers(prev => ({ ...prev, [vars.clarificationId]: '' }))
+      refetch()
+    },
+  })
+
+  if (isLoading) {
+    return (
+      <div style={workItemPanelStyle}>
+        <p style={mutedTextStyle}>Creating or loading the WorkItem request packet...</p>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div style={{ ...workItemPanelStyle, borderColor: 'rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.04)' }}>
+        <p style={{ ...mutedTextStyle, color: '#991b1b' }}>Unable to load the WorkItem: {(error as Error).message}</p>
+      </div>
+    )
+  }
+
+  if (!workItem) {
+    const canCreate = createDraft.targetCapabilityId.trim().length > 0 && createDraft.title.trim().length > 0
+    return (
+      <div style={workItemPanelStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <Network size={14} style={{ color: '#7c3aed' }} />
+          <strong style={{ fontSize: 12, color: 'var(--color-on-surface)' }}>Create WorkItem request packet</strong>
+        </div>
+        <p style={{ ...mutedTextStyle, marginBottom: 10 }}>
+          This run has reached a WorkItem node, but no request packet exists yet. Capture the details here, choose the
+          child capability, and the run will have a durable WorkItem to claim, attach, start, clarify, and audit.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+          <label style={smallLabelStyle}>
+            Title
+            <input
+              value={createDraft.title}
+              onChange={event => setCreateDraft(prev => ({ ...prev, title: event.target.value }))}
+              style={inlineInputStyle}
+              placeholder="Short WorkItem title"
+            />
+          </label>
+          <label style={smallLabelStyle}>
+            Target child capability
+            <CapabilityPicker
+              value={createDraft.targetCapabilityId}
+              onChange={value => setCreateDraft(prev => ({ ...prev, targetCapabilityId: value, childWorkflowTemplateId: '' }))}
+              placeholder="Select child capability..."
+              filterToMemberships={false}
+              autoDefault={false}
+            />
+          </label>
+          <label style={smallLabelStyle}>
+            Workflow to attach
+            <select
+              value={createDraft.childWorkflowTemplateId}
+              onChange={event => setCreateDraft(prev => ({ ...prev, childWorkflowTemplateId: event.target.value }))}
+              style={smallSelectStyle}
+              disabled={!createDraft.targetCapabilityId}
+            >
+              <option value="">{createDraft.targetCapabilityId ? 'Attach later or select workflow' : 'Select capability first'}</option>
+              {workflowOptions.map(workflow => <option key={workflow.id} value={workflow.id}>{workflow.name}{workflow.capabilityId && workflow.capabilityId !== createDraft.targetCapabilityId ? ' · other capability' : ''}</option>)}
+            </select>
+            {usingFallbackWorkflows && <span style={{ color: '#92400e', fontSize: 10, textTransform: 'none', letterSpacing: 0 }}>No capability-specific workflows returned; showing all templates.</span>}
+          </label>
+          <label style={smallLabelStyle}>
+            Urgency
+            <select
+              value={createDraft.urgency}
+              onChange={event => setCreateDraft(prev => ({ ...prev, urgency: event.target.value }))}
+              style={smallSelectStyle}
+            >
+              <option value="LOW">Low</option>
+              <option value="NORMAL">Normal</option>
+              <option value="HIGH">High</option>
+              <option value="CRITICAL">Critical</option>
+            </select>
+          </label>
+          <label style={smallLabelStyle}>
+            Required by
+            <input
+              type="datetime-local"
+              value={createDraft.requiredBy}
+              onChange={event => setCreateDraft(prev => ({ ...prev, requiredBy: event.target.value }))}
+              style={inlineInputStyle}
+            />
+          </label>
+          <label style={smallLabelStyle}>
+            Budget / constraint note
+            <input
+              value={createDraft.budget}
+              onChange={event => setCreateDraft(prev => ({ ...prev, budget: event.target.value }))}
+              style={inlineInputStyle}
+              placeholder="e.g. 2 days, 40k tokens, no schema change"
+            />
+          </label>
+        </div>
+        <label style={{ ...smallLabelStyle, marginTop: 10 }}>
+          WorkItem details
+          <textarea
+            rows={5}
+            value={createDraft.details}
+            onChange={event => setCreateDraft(prev => ({ ...prev, details: event.target.value }))}
+            style={inlineTextareaStyle}
+            placeholder="Describe the requested outcome, acceptance criteria, constraints, repo/path hints, and what the child capability should return."
+          />
+        </label>
+        {createMut.isError && (
+          <p style={{ margin: '8px 0 0', fontSize: 11, color: '#991b1b' }}>
+            {(createMut.error as Error).message}
+          </p>
+        )}
+        <button
+          type="button"
+          style={{ ...smallPrimaryButton, marginTop: 10, opacity: canCreate ? 1 : 0.55 }}
+          disabled={!canCreate || createMut.isPending}
+          onClick={() => createMut.mutate()}
+        >
+          {createMut.isPending ? 'Creating WorkItem...' : 'Create WorkItem packet'}
+        </button>
+        <p style={{ ...mutedTextStyle, marginTop: 8 }}>
+          After creation, this same panel will show claim/start actions, clarification answers, child run links, and the immutable details packet.
+        </p>
+      </div>
+    )
+  }
+
+  const canClaim = activeTarget && ['QUEUED', 'REWORK_REQUESTED'].includes(activeTarget.status) && !activeTarget.claimedById
+  const canStart = activeTarget && activeTarget.status === 'CLAIMED' && !!activeTarget.claimedById && !!effectiveTemplate && !activeTarget.childWorkflowInstanceId
+
+  return (
+    <div style={workItemPanelStyle}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Network size={14} style={{ color: '#7c3aed' }} />
+            <strong style={{ fontSize: 13, color: 'var(--color-on-surface)' }}>
+              {workItem.workCode ?? workItem.id.slice(0, 8)} · {workItem.title}
+            </strong>
+            <StatusChip status={workItem.status} />
+          </div>
+          {workItem.description && <p style={{ ...mutedTextStyle, marginTop: 4 }}>{workItem.description}</p>}
+        </div>
+        <button type="button" onClick={() => navigate(`/runtime/work/workitem/${workItem.id}`)} style={smallSecondaryButton}>
+          <ExternalLink size={12} /> Open WorkItem
+        </button>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8, marginBottom: 10 }}>
+        <KeyValueBox label="Type" value={workItem.originType === 'PARENT_DELEGATED' ? 'Parent delegated' : 'Local capability'} />
+        <KeyValueBox label="Urgency" value={workItem.urgency ?? 'NORMAL'} />
+        <KeyValueBox label="Required by" value={formatDateValue(workItem.requiredBy ?? workItem.dueAt)} />
+        <KeyValueBox label="Details" value={workItem.detailsLocked ? 'Locked packet' : 'Editable'} />
+      </div>
+
+      {!compact && workItem.details && Object.keys(workItem.details).length > 0 && (
+        <details style={{ marginBottom: 10 }}>
+          <summary style={summaryStyle}>Request details</summary>
+          <pre style={inlinePreStyle}>{JSON.stringify(workItem.details, null, 2)}</pre>
+        </details>
+      )}
+
+      {activeTarget && (
+        <div style={{ padding: 10, borderRadius: 9, border: '1px solid rgba(124,58,237,0.18)', background: '#fff' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between', marginBottom: 8 }}>
+            <div>
+              <strong style={{ fontSize: 12, color: 'var(--color-on-surface)' }}>Child capability target</strong>
+              <div style={{ fontSize: 10, color: 'var(--color-outline)', fontFamily: 'monospace' }}>{activeTarget.targetCapabilityId}</div>
+            </div>
+            <StatusChip status={activeTarget.status} />
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+            {canClaim && (
+              <button type="button" style={smallPrimaryButton} disabled={claimMut.isPending} onClick={() => claimMut.mutate(activeTarget.id)}>
+                {claimMut.isPending ? 'Claiming...' : 'Claim WorkItem'}
+              </button>
+            )}
+            {activeTarget.status === 'CLAIMED' && !activeTarget.childWorkflowInstanceId && (
+              <select
+                value={activeTarget.childWorkflowTemplateId ?? selectedTemplate}
+                disabled={Boolean(activeTarget.childWorkflowTemplateId)}
+                onChange={event => setSelectedWorkflowByTarget(prev => ({ ...prev, [activeTarget.id]: event.target.value }))}
+                style={smallSelectStyle}
+              >
+                <option value="">
+                  {workflowsQuery.isLoading ? 'Loading workflow templates...'
+                    : workflowOptions.length === 0 ? 'No workflow templates found'
+                      : usingFallbackWorkflows ? 'Attach workflow (showing all templates)'
+                        : 'Attach workflow before start'}
+                </option>
+                {workflowOptions.map(workflow => <option key={workflow.id} value={workflow.id}>{workflow.name}{workflow.capabilityId && workflow.capabilityId !== activeTarget.targetCapabilityId ? ' · other capability' : ''}</option>)}
+              </select>
+            )}
+            {usingFallbackWorkflows && (
+              <span style={{ alignSelf: 'center', color: '#92400e', fontSize: 10 }}>
+                No capability-specific workflows returned; showing all templates.
+              </span>
+            )}
+            {canStart && (
+              <button
+                type="button"
+                style={smallPrimaryButton}
+                disabled={startMut.isPending}
+                onClick={() => startMut.mutate({ targetId: activeTarget.id, childWorkflowTemplateId: selectedTemplate || undefined })}
+              >
+                {startMut.isPending ? 'Starting...' : 'Start child workflow'}
+              </button>
+            )}
+            {activeTarget.childWorkflowInstanceId && (
+              <button type="button" style={smallSecondaryButton} onClick={() => navigate(`/runs/${activeTarget.childWorkflowInstanceId}`)}>
+                <ExternalLink size={12} /> Open child run
+              </button>
+            )}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 }}>
+            <KeyValueBox label="Workflow" value={activeTarget.childWorkflowTemplateId || selectedTemplate || 'Not attached'} />
+            <KeyValueBox label="Claimed by" value={activeTarget.claimedById ?? 'Unclaimed'} />
+            <KeyValueBox label="Role" value={activeTarget.roleKey ?? 'Any eligible member'} />
+          </div>
+        </div>
+      )}
+
+      {openClarifications.length > 0 && (
+        <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+          <strong style={{ fontSize: 12, color: 'var(--color-on-surface)' }}>Parent clarification needed</strong>
+          {openClarifications.map(item => (
+            <div key={item.id} style={{ padding: 10, borderRadius: 9, border: '1px solid rgba(245,158,11,0.25)', background: 'rgba(245,158,11,0.05)' }}>
+              <p style={{ margin: '0 0 8px', fontSize: 12, color: '#78350f' }}>{item.question}</p>
+              <textarea
+                rows={3}
+                value={clarificationAnswers[item.id] ?? ''}
+                onChange={event => setClarificationAnswers(prev => ({ ...prev, [item.id]: event.target.value }))}
+                placeholder="Give the missing WorkItem details or decision..."
+                style={inlineTextareaStyle}
+              />
+              <button
+                type="button"
+                style={{ ...smallPrimaryButton, marginTop: 8 }}
+                disabled={answerMut.isPending || !(clarificationAnswers[item.id] ?? '').trim()}
+                onClick={() => answerMut.mutate({ clarificationId: item.id, answer: clarificationAnswers[item.id] ?? '' })}
+              >
+                Save answer for child capability
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -374,6 +750,143 @@ function CompletedStepSummary({
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+function KeyValueBox({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ padding: 8, borderRadius: 8, border: '1px solid var(--color-outline-variant)', background: '#fff' }}>
+      <div style={{ fontSize: 9, color: 'var(--color-outline)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{label}</div>
+      <div style={{ marginTop: 3, fontSize: 11, color: 'var(--color-on-surface)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+    </div>
+  )
+}
+
+function unwrapItems<T>(data: unknown): T[] {
+  if (Array.isArray(data)) return data as T[]
+  if (data && typeof data === 'object') {
+    const obj = data as Record<string, unknown>
+    if (Array.isArray(obj.items)) return obj.items as T[]
+    if (Array.isArray(obj.data)) return obj.data as T[]
+  }
+  return []
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function formatDateValue(value?: string | null) {
+  return value ? new Date(value).toLocaleString() : 'Not set'
+}
+
+const workItemPanelStyle: CSSProperties = {
+  marginTop: 10,
+  padding: 12,
+  borderRadius: 10,
+  background: 'rgba(139,92,246,0.05)',
+  border: '1px solid rgba(139,92,246,0.22)',
+}
+
+const mutedTextStyle: CSSProperties = {
+  margin: 0,
+  fontSize: 11,
+  color: 'var(--color-outline)',
+}
+
+const smallPrimaryButton: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '7px 10px',
+  borderRadius: 8,
+  border: 'none',
+  background: '#7c3aed',
+  color: '#fff',
+  fontSize: 11,
+  fontWeight: 800,
+  cursor: 'pointer',
+}
+
+const smallSecondaryButton: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '7px 10px',
+  borderRadius: 8,
+  border: '1px solid var(--color-outline-variant)',
+  background: '#fff',
+  color: 'var(--color-on-surface)',
+  fontSize: 11,
+  fontWeight: 800,
+  cursor: 'pointer',
+}
+
+const smallSelectStyle: CSSProperties = {
+  minWidth: 220,
+  width: '100%',
+  padding: '7px 10px',
+  borderRadius: 8,
+  border: '1px solid var(--color-outline-variant)',
+  background: '#fff',
+  color: 'var(--color-on-surface)',
+  fontSize: 11,
+  fontWeight: 700,
+}
+
+const smallLabelStyle: CSSProperties = {
+  display: 'grid',
+  gap: 5,
+  fontSize: 10,
+  color: 'var(--color-outline)',
+  fontWeight: 800,
+  textTransform: 'uppercase',
+  letterSpacing: '0.08em',
+}
+
+const inlineInputStyle: CSSProperties = {
+  width: '100%',
+  boxSizing: 'border-box',
+  padding: 9,
+  borderRadius: 8,
+  border: '1px solid var(--color-outline-variant)',
+  background: '#fff',
+  color: 'var(--color-on-surface)',
+  fontSize: 12,
+  textTransform: 'none',
+  letterSpacing: 0,
+  fontWeight: 600,
+}
+
+const inlinePreStyle: CSSProperties = {
+  marginTop: 6,
+  maxHeight: 180,
+  overflow: 'auto',
+  padding: 9,
+  borderRadius: 8,
+  background: '#f8fafc',
+  border: '1px solid var(--color-outline-variant)',
+  fontSize: 10,
+  fontFamily: 'monospace',
+  color: '#334155',
+}
+
+const inlineTextareaStyle: CSSProperties = {
+  width: '100%',
+  boxSizing: 'border-box',
+  padding: 9,
+  borderRadius: 8,
+  border: '1px solid var(--color-outline-variant)',
+  background: '#fff',
+  color: 'var(--color-on-surface)',
+  fontSize: 12,
+  resize: 'vertical',
+}
+
+const summaryStyle: CSSProperties = {
+  cursor: 'pointer',
+  color: '#5b21b6',
+  fontSize: 11,
+  fontWeight: 800,
+}
+
 function StatusChip({ status }: { status: string }) {
   const v = STATUS_VISUAL[status] ?? STATUS_VISUAL.PENDING
   return (
@@ -413,6 +926,49 @@ type RunNode = {
   createdAt?: string;
 }
 type RunEdge = { id: string; sourceNodeId: string; targetNodeId: string; edgeType: string }
+
+type RunWorkItemTarget = {
+  id: string
+  targetCapabilityId: string
+  childWorkflowTemplateId?: string | null
+  childWorkflowInstanceId?: string | null
+  roleKey?: string | null
+  status: string
+  claimedById?: string | null
+  output?: Record<string, unknown> | null
+}
+
+type RunWorkItemClarification = {
+  id: string
+  targetId?: string | null
+  question: string
+  answer?: string | null
+  status: string
+  createdAt: string
+}
+
+type RunWorkItemRow = {
+  id: string
+  workCode?: string | null
+  title: string
+  description?: string | null
+  originType: string
+  status: string
+  details?: Record<string, unknown> | null
+  budget?: Record<string, unknown> | null
+  urgency?: string | null
+  requiredBy?: string | null
+  dueAt?: string | null
+  detailsLocked: boolean
+  targets: RunWorkItemTarget[]
+  clarifications?: RunWorkItemClarification[]
+}
+
+type WorkflowTemplateOption = {
+  id: string
+  name: string
+  capabilityId?: string | null
+}
 
 function topologicalOrder(nodes: RunNode[], edges: RunEdge[]): RunNode[] {
   if (nodes.length === 0) return []

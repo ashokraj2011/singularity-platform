@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { EventHorizonChat } from "@/components/EventHorizonChat";
+import { AppSwitcher } from "@/components/AppSwitcher";
 import { Bell, Settings } from "lucide-react";
 
 export const metadata: Metadata = {
@@ -66,6 +67,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
               {/* Actions */}
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <AppSwitcher currentApp="agent-studio" />
                 <button
                   style={{
                     width: 32, height: 32, borderRadius: 10,

@@ -78,9 +78,12 @@ workItemsRouter.post('/', validate(createSchema), async (req, res, next) => {
 
 workItemsRouter.get('/', async (req, res, next) => {
   try {
-    const { targetCapabilityId, status, mine, cursor } = req.query as Record<string, string | undefined>
+    const { targetCapabilityId, status, mine, cursor, sourceWorkflowInstanceId, sourceWorkflowNodeId } = req.query as Record<string, string | undefined>
     const limit = Math.min(Math.max(Number(req.query.limit ?? 50) || 50, 1), 100)
     const targetWhere: Record<string, unknown> = {}
+    const itemWhere: Record<string, unknown> = {}
+    if (sourceWorkflowInstanceId) itemWhere.sourceWorkflowInstanceId = sourceWorkflowInstanceId
+    if (sourceWorkflowNodeId) itemWhere.sourceWorkflowNodeId = sourceWorkflowNodeId
     if (targetCapabilityId) targetWhere.targetCapabilityId = targetCapabilityId
     if (status) {
       const normalized = status.toUpperCase()
@@ -97,12 +100,15 @@ workItemsRouter.get('/', async (req, res, next) => {
     let exhausted = false
     while (visible.length < limit && !exhausted) {
       const items = await prisma.workItem.findMany({
-        where: Object.keys(targetWhere).length > 0 ? { targets: { some: targetWhere } } : undefined,
-      include: {
-        targets: Object.keys(targetWhere).length > 0 ? { where: targetWhere, orderBy: { createdAt: 'asc' } } : { orderBy: { createdAt: 'asc' } },
-        events: { orderBy: { createdAt: 'desc' }, take: 5 },
-        clarifications: { orderBy: { createdAt: 'desc' }, take: 5 },
-      },
+        where: {
+          ...itemWhere,
+          ...(Object.keys(targetWhere).length > 0 ? { targets: { some: targetWhere } } : {}),
+        },
+        include: {
+          targets: Object.keys(targetWhere).length > 0 ? { where: targetWhere, orderBy: { createdAt: 'asc' } } : { orderBy: { createdAt: 'asc' } },
+          events: { orderBy: { createdAt: 'desc' }, take: 5 },
+          clarifications: { orderBy: { createdAt: 'desc' }, take: 5 },
+        },
         orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
         ...(nextCursor ? { cursor: { id: nextCursor }, skip: 1 } : {}),
         take: Math.min(100, Math.max(limit * 2, 25)),

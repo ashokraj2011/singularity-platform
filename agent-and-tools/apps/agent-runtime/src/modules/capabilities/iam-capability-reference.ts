@@ -25,11 +25,11 @@ export async function syncIamCapabilityReference(
   }
 
   const ownerTeam = capability.ownerTeamId
-    ? await fetchIamTeam(baseUrl, capability.ownerTeamId, headers)
+    ? await resolveIamTeam(baseUrl, capability.ownerTeamId, headers)
     : null;
-  if (capability.ownerTeamId && ownerTeam === false) {
-    return `IAM capability reference sync skipped: ownerTeamId ${capability.ownerTeamId} was not found in IAM`;
-  }
+  const ownerTeamWarning = capability.ownerTeamId && ownerTeam === false
+    ? `ownerTeamId ${capability.ownerTeamId} was not found in IAM; stored as unresolved metadata`
+    : undefined;
   const ownerTeamRecord = ownerTeam || null;
 
   const body = {
@@ -49,6 +49,7 @@ export async function syncIamCapabilityReference(
       appId: capability.appId ?? undefined,
       businessUnitId: capability.businessUnitId ?? undefined,
       ownerTeamId: ownerTeamRecord?.id ?? capability.ownerTeamId ?? undefined,
+      ownerTeamResolutionWarning: ownerTeamWarning,
       ownerTeamKey: ownerTeamRecord?.team_key ?? undefined,
       ownerTeamName: ownerTeamRecord?.name ?? undefined,
       criticality: capability.criticality ?? undefined,
@@ -75,7 +76,7 @@ export async function syncIamCapabilityReference(
       const text = await res.text().catch(() => "");
       return `IAM capability reference sync skipped (${res.status}): ${text.slice(0, 180) || res.statusText}`;
     }
-    return null;
+    return ownerTeamWarning ? `IAM capability reference synced with warning: ${ownerTeamWarning}` : null;
   } catch (err) {
     return `IAM capability reference sync skipped: ${(err as Error).message}`;
   }
@@ -105,6 +106,36 @@ function iamApiBase(): string {
   return raw.endsWith("/api/v1") ? raw : `${raw}/api/v1`;
 }
 
+async function resolveIamTeam(
+  baseUrl: string,
+  teamRef: string,
+  headers: Record<string, string>,
+): Promise<{ id: string; team_key?: string; name?: string } | false | null> {
+  if (looksLikeUuid(teamRef)) {
+    const direct = await fetchIamTeam(baseUrl, teamRef, headers);
+    if (direct !== false) return direct;
+  }
+
+  try {
+    const res = await fetch(`${baseUrl}/teams?size=200`, { headers });
+    if (!res.ok) return false;
+    const body = await res.json() as {
+      items?: Array<{ id?: string; team_key?: string; name?: string }>;
+    };
+    const normalized = normalizeTeamRef(teamRef);
+    const match = (body.items ?? []).find((team) =>
+      normalizeTeamRef(team.team_key) === normalized ||
+      normalizeTeamRef(team.name) === normalized ||
+      normalizeTeamRef(team.id) === normalized
+    );
+    return match?.id
+      ? { id: match.id, team_key: match.team_key, name: match.name }
+      : false;
+  } catch {
+    return false;
+  }
+}
+
 async function fetchIamTeam(
   baseUrl: string,
   teamId: string,
@@ -119,6 +150,14 @@ async function fetchIamTeam(
   } catch {
     return null;
   }
+}
+
+function normalizeTeamRef(value?: string | null): string {
+  return (value ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function looksLikeUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function toIamCapabilityType(value?: string | null): string {

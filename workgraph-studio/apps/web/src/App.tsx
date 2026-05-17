@@ -14,6 +14,7 @@ import { ArtifactEditorPage } from './features/artifact/ArtifactEditorPage'
 import { TeamVariablesPage } from './features/identity/TeamVariablesPage'
 import { InboxPage } from './features/runtime/InboxPage'
 import { WorkDetailPage } from './features/runtime/WorkDetailPage'
+import { WorkItemsPage } from './features/runtime/WorkItemsPage'
 import { HistoryPage } from './features/runtime/HistoryPage'
 import { RunViewerPage } from './features/runtime/RunViewerPage'
 import { RunInsightsPage } from './features/runtime/RunInsightsPage'
@@ -55,6 +56,7 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard"          element={<DashboardPage />} />
           <Route path="runtime"            element={<InboxPage />} />
+          <Route path="work-items"         element={<WorkItemsPage />} />
           <Route path="runtime/history"    element={<HistoryPage />} />
           <Route path="runtime/work/:kind/:id" element={<WorkDetailPage />} />
           <Route path="run"                element={<RunWorkflowPage />} />

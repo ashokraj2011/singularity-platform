@@ -21,7 +21,7 @@ const createSchema = z.object({
   icon: z.string().default('Box'),
   baseType: z.enum([
     'HUMAN_TASK', 'AGENT_TASK', 'APPROVAL', 'DECISION_GATE',
-    'CONSUMABLE_CREATION', 'TOOL_REQUEST', 'POLICY_CHECK',
+    'CONSUMABLE_CREATION', 'TOOL_REQUEST', 'GIT_PUSH', 'POLICY_CHECK', 'EVAL_GATE',
     'TIMER', 'SIGNAL_WAIT', 'CALL_WORKFLOW', 'WORK_ITEM', 'FOREACH',
   ]).default('HUMAN_TASK'),
   fields: z.array(fieldDefSchema).default([]),

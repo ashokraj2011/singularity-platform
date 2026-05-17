@@ -155,6 +155,8 @@ type BootstrapInput = {
   agentPreset?: "minimal" | "engineering_core" | "governed_delivery";
   includeAgentKeys?: string[];
   excludeAgentKeys?: string[];
+  childCapabilityIds?: string[];
+  sharedApplications?: string[];
   repositories?: BootstrapRepositoryInput[];
   documentLinks?: BootstrapDocumentInput[];
   localFiles?: InputFile[];
@@ -166,6 +168,22 @@ type DiscoveryDoc = {
   sourceType: string;
   sourceRef: string;
   path?: string;
+  metadata?: Record<string, unknown>;
+};
+
+type RepositoryProfile = {
+  repoName: string;
+  repoUrl: string;
+  branch: string;
+  fileCount: number;
+  totalBytes: number;
+  languages: Array<{ language: string; files: number }>;
+  frameworks: string[];
+  buildTools: string[];
+  endpointCount: number;
+  endpoints: Array<{ method: string; path: string; file: string }>;
+  keyFiles: string[];
+  graphMermaid: string;
 };
 
 type CapabilityArchitectureDiagram = {
@@ -174,6 +192,9 @@ type CapabilityArchitectureDiagram = {
   view: "application" | "togaf";
   description: string;
   mermaid: string;
+  codeGraphMermaid?: string;
+  repositoryProfiles?: RepositoryProfile[];
+  highlights?: Array<{ key: string; label: string; value: string; detail?: string }>;
   layers: Array<{ key: string; label: string; items: string[] }>;
 };
 
@@ -224,6 +245,7 @@ export const capabilityService = {
   async bootstrap(input: BootstrapInput, userId?: string, authHeader?: string) {
     const warnings: string[] = [];
     const errors: string[] = [];
+    const requestedChildCapabilityIds = Array.from(new Set(input.childCapabilityIds ?? []));
     const capability = await prisma.capability.create({
       data: {
         name: input.name,
@@ -239,7 +261,11 @@ export const capabilityService = {
     });
     const iamWarning = await syncIamCapabilityReference(capability, {
       authHeader,
-      metadata: { bootstrapRunPending: true },
+      metadata: {
+        bootstrapRunPending: true,
+        childCapabilityIds: requestedChildCapabilityIds,
+        sharedApplications: input.sharedApplications ?? [],
+      },
     });
     if (iamWarning) warnings.push(iamWarning);
     const governanceWarning = await ensureDefaultGovernanceLimits(capability.id);
@@ -273,6 +299,7 @@ export const capabilityService = {
       grounding: string;
     }> = [];
     const discovered: DiscoveryDoc[] = [];
+    const repositoryProfiles: RepositoryProfile[] = [];
 
     try {
       const common = await prisma.agentTemplate.findMany({
@@ -338,10 +365,21 @@ export const capabilityService = {
           },
         });
         try {
-          discovered.push(...await discoverGitHubRepo(repo.repoUrl, repo.defaultBranch ?? "main"));
+          const discovery = await discoverGitHubRepoWithProfile(repo.repoUrl, repo.defaultBranch ?? "main");
+          discovered.push(...discovery.docs);
+          repositoryProfiles.push(discovery.profile);
         } catch (err) {
           warnings.push(`Repository discovery skipped for ${repo.repoName}: ${(err as Error).message}`);
         }
+      }
+
+      const requestedChildren = requestedChildCapabilityIds
+        .filter(id => id && id !== capability.id);
+      if (isCollectionCapabilityType(capability.capabilityType) && requestedChildren.length > 0) {
+        await prisma.capability.updateMany({
+          where: { id: { in: requestedChildren } },
+          data: { parentCapabilityId: capability.id },
+        });
       }
 
       for (const doc of input.documentLinks ?? []) {
@@ -377,9 +415,10 @@ export const capabilityService = {
         discovered.push(...discoverLocalSignals(input.localFiles ?? []));
       }
 
-      const architectureDiagram = buildCapabilityArchitectureDiagram(capability, input, generatedAgents, discovered);
+      const architectureDiagram = buildCapabilityArchitectureDiagram(capability, input, generatedAgents, discovered, repositoryProfiles);
       const candidates = [
         buildArchitectureDiagramCandidate(capability.name, architectureDiagram),
+        ...buildPlatformInventoryCandidates(repositoryProfiles),
         ...buildLearningCandidates(discovered),
         ...buildAgentGroundingCandidates(capability.name, selectedAgents, discovered),
       ];
@@ -415,8 +454,14 @@ export const capabilityService = {
             localFiles: input.localFiles?.length ?? 0,
             discoveredSignals: discovered.length,
             candidateGroups: candidates.length,
+            childCapabilityIds: requestedChildren,
+            sharedApplications: input.sharedApplications ?? [],
+            repositoryProfiles,
             agentPreset: input.agentPreset ?? "governed_delivery",
-            operatingModel: buildOperatingModel(capability, input.targetWorkflowPattern, generatedAgents, candidates.length, architectureDiagram),
+            operatingModel: buildOperatingModel(capability, input.targetWorkflowPattern, generatedAgents, candidates.length, architectureDiagram, repositoryProfiles, {
+              childCapabilityIds: requestedChildren,
+              sharedApplications: input.sharedApplications ?? [],
+            }),
           },
         },
         include: { candidates: true, capability: { include: { bindings: { include: { agentTemplate: true } }, repositories: true, knowledgeSources: true } } },
@@ -942,6 +987,7 @@ export const capabilityService = {
       include: {
         repositories: { where: { status: "ACTIVE" }, orderBy: { createdAt: "asc" } },
         knowledgeSources: { where: { status: "ACTIVE" }, orderBy: { createdAt: "asc" } },
+        knowledgeArtifacts: { where: { status: "ACTIVE" }, orderBy: { createdAt: "desc" }, take: 20 },
         bindings: { where: { status: "ACTIVE" }, include: { agentTemplate: true }, orderBy: { createdAt: "asc" } },
         bootstrapRuns: { orderBy: { createdAt: "desc" }, take: 1 },
       },
@@ -952,7 +998,10 @@ export const capabilityService = {
     const summary = jsonRecord(bootstrap?.sourceSummary);
     const operatingModel = jsonRecord(summary.operatingModel);
     const stored = normalizeArchitectureDiagram(operatingModel.architectureDiagram);
-    if (stored) {
+    const storedHasApplicationFacts = Boolean(stored?.codeGraphMermaid)
+      || Boolean(stored?.repositoryProfiles?.length)
+      || Boolean(stored?.layers.some(layer => /platform|api|domain|stack|contract|repository/i.test(`${layer.key} ${layer.label}`)));
+    if (stored && storedHasApplicationFacts) {
       return {
         capabilityId: cap.id,
         generatedAt: (bootstrap.completedAt ?? bootstrap.updatedAt ?? bootstrap.createdAt).toISOString(),
@@ -994,12 +1043,17 @@ export const capabilityService = {
       content: source.url,
       sourceType: "DOCUMENT_LINK",
       sourceRef: source.url,
-    }));
-    const diagram = buildCapabilityArchitectureDiagram(cap, input, generatedAgents, docs);
+    })).concat(cap.knowledgeArtifacts.map(artifact => ({
+      title: artifact.title,
+      content: artifact.content,
+      sourceType: "LOCAL_FILE",
+      sourceRef: artifact.sourceRef ?? `knowledge-artifact:${artifact.id}`,
+    })));
+    const diagram = buildCapabilityArchitectureDiagram(cap, input, generatedAgents, docs, stored?.repositoryProfiles ?? []);
     return {
       capabilityId: cap.id,
       generatedAt: new Date().toISOString(),
-      source: "live",
+      source: stored ? "live_enriched_from_bootstrap" : "live",
       ...diagram,
     };
   },
@@ -1562,28 +1616,239 @@ function parseGitHub(url: string): { owner: string; repo: string } {
   return { owner, repo: repoRaw.replace(/\.git$/, "") };
 }
 
-async function discoverGitHubRepo(repoUrl: string, branch: string): Promise<DiscoveryDoc[]> {
+async function discoverGitHubRepoWithProfile(repoUrl: string, branch: string): Promise<{ docs: DiscoveryDoc[]; profile: RepositoryProfile }> {
   const { owner, repo } = parseGitHub(repoUrl);
   const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
   const treeResp = await fetch(treeUrl, { headers: { accept: "application/vnd.github+json" } });
   if (!treeResp.ok) throw new Error(`GitHub tree lookup failed (${treeResp.status})`);
   const tree = await treeResp.json() as { tree?: Array<{ path?: string; type?: string; size?: number }> };
-  const candidates = (tree.tree ?? [])
+  const blobs = (tree.tree ?? [])
+    .filter(item => item.type === "blob" && item.path);
+  const candidates = blobs
     .filter(item => item.type === "blob" && item.path && isDiscoveryPath(item.path) && (item.size ?? 0) <= 250_000)
     .slice(0, DISCOVERY_FILE_CAP);
   const docs: DiscoveryDoc[] = [];
   let total = 0;
+  const sourceByPath = new Map<string, string>();
   for (const item of candidates) {
     const itemPath = item.path!;
-    const raw = `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(branch)}/${itemPath.split("/").map(encodeURIComponent).join("/")}`;
-    const res = await fetch(raw);
-    if (!res.ok) continue;
-    const content = (await res.text()).slice(0, DISCOVERY_SOURCE_CHAR_CAP);
+    const content = (await fetchGitHubRaw(owner, repo, branch, itemPath)).slice(0, DISCOVERY_SOURCE_CHAR_CAP);
+    if (!content) continue;
+    sourceByPath.set(itemPath, content);
     total += content.length;
     if (total > DISCOVERY_TOTAL_CHAR_CAP) break;
     docs.push({ title: itemPath, content, path: itemPath, sourceType: "GITHUB_REPO", sourceRef: repoUrl });
   }
-  return docs;
+  const profile = await buildRepositoryProfileFromTree({
+    owner,
+    repo,
+    repoUrl,
+    branch,
+    blobs,
+    sourceByPath,
+  });
+  return { docs, profile };
+}
+
+async function fetchGitHubRaw(owner: string, repo: string, branch: string, itemPath: string): Promise<string> {
+  const raw = `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(branch)}/${itemPath.split("/").map(encodeURIComponent).join("/")}`;
+  const res = await fetch(raw);
+  if (!res.ok) return "";
+  return res.text();
+}
+
+async function buildRepositoryProfileFromTree(input: {
+  owner: string;
+  repo: string;
+  repoUrl: string;
+  branch: string;
+  blobs: Array<{ path?: string; type?: string; size?: number }>;
+  sourceByPath: Map<string, string>;
+}): Promise<RepositoryProfile> {
+  const languageCounts = new Map<string, number>();
+  let totalBytes = 0;
+  for (const blob of input.blobs) {
+    const path = blob.path ?? "";
+    totalBytes += blob.size ?? 0;
+    const language = languageFromPath(path);
+    if (language) languageCounts.set(language, (languageCounts.get(language) ?? 0) + 1);
+  }
+
+  const keyFiles = input.blobs
+    .map(blob => blob.path ?? "")
+    .filter(path => isPlatformKeyFile(path))
+    .slice(0, 40);
+  const sourceFiles = input.blobs
+    .map(blob => blob.path ?? "")
+    .filter(path => shouldProfileSourceFile(path))
+    .slice(0, 80);
+
+  const sourceByPath = new Map(input.sourceByPath);
+  for (const path of [...keyFiles, ...sourceFiles]) {
+    if (sourceByPath.has(path)) continue;
+    const blob = input.blobs.find(item => item.path === path);
+    if ((blob?.size ?? 0) > 250_000) continue;
+    const content = await fetchGitHubRaw(input.owner, input.repo, input.branch, path);
+    if (content) sourceByPath.set(path, content.slice(0, DISCOVERY_SOURCE_CHAR_CAP));
+  }
+
+  const textCorpus = Array.from(sourceByPath.entries())
+    .filter(([path]) => isPlatformKeyFile(path) || /(^|\/)README/i.test(path))
+    .map(([path, content]) => `\n# ${path}\n${content}`)
+    .join("\n")
+    .slice(0, 200_000);
+  const frameworks = detectFrameworks(textCorpus, Array.from(sourceByPath.keys()));
+  const buildTools = detectBuildTools(Array.from(sourceByPath.keys()), textCorpus);
+  const endpoints = Array.from(sourceByPath.entries())
+    .filter(([path]) => /\.java$/i.test(path))
+    .flatMap(([path, content]) => extractJavaEndpoints(path, content))
+    .slice(0, 100);
+
+  const languages = Array.from(languageCounts.entries())
+    .map(([language, files]) => ({ language, files }))
+    .sort((a, b) => b.files - a.files)
+    .slice(0, 10);
+  const repoName = `${input.owner}/${input.repo}`;
+  return {
+    repoName,
+    repoUrl: input.repoUrl,
+    branch: input.branch,
+    fileCount: input.blobs.length,
+    totalBytes,
+    languages,
+    frameworks,
+    buildTools,
+    endpointCount: endpoints.length,
+    endpoints,
+    keyFiles,
+    graphMermaid: buildCodeGraphMermaid(repoName, languages, frameworks, buildTools, endpoints),
+  };
+}
+
+function languageFromPath(path: string): string | null {
+  const ext = path.split(".").pop()?.toLowerCase();
+  const map: Record<string, string> = {
+    java: "Java",
+    kt: "Kotlin",
+    kts: "Kotlin",
+    scala: "Scala",
+    ts: "TypeScript",
+    tsx: "TypeScript",
+    js: "JavaScript",
+    jsx: "JavaScript",
+    py: "Python",
+    go: "Go",
+    rb: "Ruby",
+    cs: "C#",
+    sql: "SQL",
+    yaml: "YAML",
+    yml: "YAML",
+    xml: "XML",
+    json: "JSON",
+    md: "Markdown",
+  };
+  return ext ? map[ext] ?? null : null;
+}
+
+function isPlatformKeyFile(path: string): boolean {
+  return /(^|\/)(pom\.xml|build\.gradle|build\.gradle\.kts|settings\.gradle|settings\.gradle\.kts|package\.json|requirements\.txt|pyproject\.toml|go\.mod|Dockerfile|docker-compose\.ya?ml|application\.(ya?ml|properties)|README(\..*)?)$/i.test(path);
+}
+
+function shouldProfileSourceFile(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  if (/\/(target|build|dist|node_modules|vendor|\.git)\//i.test(`/${normalized}`)) return false;
+  if (/Controller\.java$|Resource\.java$|Endpoint\.java$|Application\.java$/i.test(normalized)) return true;
+  if (/src\/main\/java\/.+\.java$/i.test(normalized) && /api|controller|resource|endpoint/i.test(normalized)) return true;
+  return false;
+}
+
+function detectBuildTools(paths: string[], corpus: string): string[] {
+  const tools = new Set<string>();
+  if (paths.some(path => /(^|\/)pom\.xml$/i.test(path))) tools.add("Maven");
+  if (paths.some(path => /(^|\/)build\.gradle(\.kts)?$/i.test(path))) tools.add("Gradle");
+  if (paths.some(path => /(^|\/)package\.json$/i.test(path))) tools.add("npm");
+  if (paths.some(path => /(^|\/)Dockerfile$/i.test(path))) tools.add("Docker");
+  if (/\bMaven\b|\bmvn\s|pom\.xml/i.test(corpus)) tools.add("Maven");
+  if (/\bGradle\b|build\.gradle/i.test(corpus)) tools.add("Gradle");
+  if (/spring-boot-maven-plugin|org\.springframework\.boot/i.test(corpus)) tools.add("Spring Boot");
+  return Array.from(tools);
+}
+
+function detectFrameworks(corpus: string, paths: string[]): string[] {
+  const frameworks = new Set<string>();
+  if (/spring-boot|org\.springframework\.boot|@SpringBootApplication|@RestController|@Controller/i.test(corpus)) frameworks.add("Spring Boot");
+  if (/jakarta\.ws\.rs|javax\.ws\.rs|@Path\(/i.test(corpus)) frameworks.add("JAX-RS");
+  if (/react|next|vite/i.test(corpus) || paths.some(path => /\.(tsx|jsx)$/i.test(path))) frameworks.add("React/Vite");
+  if (/express|fastify|nestjs/i.test(corpus)) frameworks.add("Node API");
+  if (/fastapi|flask|django/i.test(corpus)) frameworks.add("Python web");
+  return Array.from(frameworks);
+}
+
+function extractJavaEndpoints(path: string, content: string): Array<{ method: string; path: string; file: string }> {
+  const out: Array<{ method: string; path: string; file: string }> = [];
+  const lines = content.split(/\r?\n/);
+  let classPrefix = "";
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!classPrefix && /@RequestMapping\b/.test(line) && lines.slice(index, index + 4).some(next => /\bclass\b/.test(next))) {
+      classPrefix = extractAnnotationPath(line);
+    }
+    const match = line.match(/@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\b(.*)$/);
+    if (!match) continue;
+    const annotation = match[1];
+    const args = match[2] ?? "";
+    if (annotation === "RequestMapping" && lines.slice(index, index + 4).some(next => /\bclass\b/.test(next))) continue;
+    const method = annotation === "RequestMapping"
+      ? (args.match(/RequestMethod\.(GET|POST|PUT|DELETE|PATCH)/i)?.[1]?.toUpperCase() ?? "ANY")
+      : annotation.replace("Mapping", "").toUpperCase();
+    const suffix = extractAnnotationPath(line) || "/";
+    out.push({ method, path: joinEndpointPath(classPrefix, suffix), file: path });
+  }
+  return out;
+}
+
+function extractAnnotationPath(line: string): string {
+  const quoted = line.match(/["']([^"']+)["']/)?.[1];
+  if (quoted) return quoted;
+  const value = line.match(/\bpath\s*=\s*\{?\s*["']([^"']+)["']/)?.[1]
+    ?? line.match(/\bvalue\s*=\s*\{?\s*["']([^"']+)["']/)?.[1];
+  return value ?? "";
+}
+
+function joinEndpointPath(prefix: string, suffix: string): string {
+  const joined = `/${[prefix, suffix].filter(Boolean).join("/")}`.replace(/\/+/g, "/");
+  return joined === "/" ? "/" : joined.replace(/\/$/, "");
+}
+
+function buildCodeGraphMermaid(
+  repoName: string,
+  languages: Array<{ language: string; files: number }>,
+  frameworks: string[],
+  buildTools: string[],
+  endpoints: Array<{ method: string; path: string; file: string }>,
+): string {
+  const topLanguages = languages.slice(0, 4).map(item => `${item.language} ${item.files}`).join(" / ") || "No source files detected";
+  const frameworkLabel = frameworks.slice(0, 4).join(" / ") || "Framework pending";
+  const buildLabel = buildTools.slice(0, 4).join(" / ") || "Build tool pending";
+  const endpointLabel = endpoints.length ? `${endpoints.length} endpoint(s)` : "No endpoints detected";
+  const endpointNodes = endpoints.slice(0, 6).map((endpoint, index) =>
+    `  E${index + 1}["${escapeMermaid(`${endpoint.method} ${endpoint.path}`)}"]`,
+  );
+  const endpointEdges = endpoints.slice(0, 6).map((_, index) => `  API --> E${index + 1}`);
+  return [
+    "flowchart LR",
+    `  R["${escapeMermaid(repoName)}"]`,
+    `  L["Languages<br/>${escapeMermaid(topLanguages)}"]`,
+    `  F["Frameworks<br/>${escapeMermaid(frameworkLabel)}"]`,
+    `  B["Build<br/>${escapeMermaid(buildLabel)}"]`,
+    `  API["API Surface<br/>${escapeMermaid(endpointLabel)}"]`,
+    "  R --> L",
+    "  R --> F",
+    "  R --> B",
+    "  F --> API",
+    ...endpointNodes,
+    ...endpointEdges,
+  ].join("\n");
 }
 
 async function fetchDocumentLink(doc: BootstrapDocumentInput): Promise<DiscoveryDoc> {
@@ -1753,6 +2018,13 @@ function buildArchitectureDiagramCandidate(
       "```mermaid",
       diagram.mermaid,
       "```",
+      ...(diagram.codeGraphMermaid ? [
+        "",
+        "## Code graph",
+        "```mermaid",
+        diagram.codeGraphMermaid,
+        "```",
+      ] : []),
       "",
       "## Layers",
       ...diagram.layers.flatMap(layer => [
@@ -1765,6 +2037,44 @@ function buildArchitectureDiagramCandidate(
     sourceRef: "capability-bootstrap:architecture-diagram",
     confidence: 0.9,
   };
+}
+
+function buildPlatformInventoryCandidates(profiles: RepositoryProfile[]): Array<{
+  groupKey: string; groupTitle: string; artifactType: string; title: string; content: string;
+  sourceType: string; sourceRef: string; confidence: number;
+}> {
+  if (profiles.length === 0) return [];
+  const lines = ["# Repository platform inventory"];
+  for (const profile of profiles) {
+    lines.push(
+      "",
+      `## ${profile.repoName}`,
+      `- Branch: ${profile.branch}`,
+      `- Files: ${profile.fileCount}`,
+      `- Approx bytes: ${profile.totalBytes}`,
+      `- Languages: ${profile.languages.map(item => `${item.language} (${item.files})`).join(", ") || "none detected"}`,
+      `- Frameworks: ${profile.frameworks.join(", ") || "none detected"}`,
+      `- Build tools: ${profile.buildTools.join(", ") || "none detected"}`,
+      `- Endpoints detected: ${profile.endpointCount}`,
+    );
+    if (profile.endpoints.length > 0) {
+      lines.push("", "### Endpoint sample");
+      for (const endpoint of profile.endpoints.slice(0, 30)) {
+        lines.push(`- ${endpoint.method} ${endpoint.path} (${endpoint.file})`);
+      }
+    }
+    lines.push("", "### Code graph", "```mermaid", profile.graphMermaid, "```");
+  }
+  return [{
+    groupKey: "platform_inventory",
+    groupTitle: "Platform, endpoint, and code graph inventory",
+    artifactType: "PLATFORM_INVENTORY",
+    title: "Repository platform inventory",
+    content: lines.join("\n"),
+    sourceType: "GITHUB_REPO_PROFILE",
+    sourceRef: profiles.map(profile => profile.repoUrl).join(","),
+    confidence: 0.86,
+  }];
 }
 
 function jsonRecord(value: unknown): Record<string, unknown> {
@@ -1798,6 +2108,19 @@ function normalizeArchitectureDiagram(value: unknown): CapabilityArchitectureDia
     title: raw.title,
     description: raw.description,
     mermaid: raw.mermaid,
+    codeGraphMermaid: typeof raw.codeGraphMermaid === "string" ? raw.codeGraphMermaid : undefined,
+    repositoryProfiles: Array.isArray(raw.repositoryProfiles) ? raw.repositoryProfiles as RepositoryProfile[] : undefined,
+    highlights: Array.isArray(raw.highlights)
+      ? raw.highlights.map(item => {
+        const row = jsonRecord(item);
+        return {
+          key: typeof row.key === "string" ? row.key : "signal",
+          label: typeof row.label === "string" ? row.label : "Signal",
+          value: typeof row.value === "string" ? row.value : String(row.value ?? "--"),
+          detail: typeof row.detail === "string" ? row.detail : undefined,
+        };
+      })
+      : undefined,
     layers,
   };
 }
@@ -1807,6 +2130,7 @@ function buildCapabilityArchitectureDiagram(
   input: BootstrapInput,
   generatedAgents: Array<{ label: string; roleType: string; locked: boolean; learnsFromGit: boolean }>,
   docs: DiscoveryDoc[],
+  repositoryProfiles: RepositoryProfile[] = [],
 ): CapabilityArchitectureDiagram {
   const capabilityName = capability.name;
   const collection = isCollectionCapabilityType(capability.capabilityType);
@@ -1815,13 +2139,40 @@ function buildCapabilityArchitectureDiagram(
   const localCount = input.localFiles?.length ?? 0;
   const agents = generatedAgents.map(agent => agent.label || agent.roleType);
   const appSuffix = capability.appId ? ` (${capability.appId})` : "";
+  const sharedApplications = input.sharedApplications ?? [];
+  const docCorpus = docs.map(doc => `${doc.title}\n${doc.content}`).join("\n").slice(0, 200_000);
+  const docPaths = docs.map(doc => doc.path ?? doc.title);
+  const profileEndpoints = repositoryProfiles.flatMap(profile =>
+    profile.endpoints.map(endpoint => `${endpoint.method} ${endpoint.path}`),
+  );
+  const endpointItems = unique([...profileEndpoints, ...extractEndpointMentions(docCorpus)]).slice(0, 8);
+  const endpointTotal = endpointItems.length || repositoryProfiles.reduce((sum, profile) => sum + profile.endpointCount, 0);
+  const languageSummary = unique([
+    ...repositoryProfiles.flatMap(profile => profile.languages.slice(0, 4).map(lang => `${lang.language} (${lang.files})`)),
+    ...inferLanguagesFromCorpus(docCorpus),
+  ]).slice(0, 6);
+  const frameworkSummary = unique([
+    ...repositoryProfiles.flatMap(profile => profile.frameworks),
+    ...detectFrameworks(docCorpus, docPaths),
+  ]).slice(0, 6);
+  const buildToolSummary = unique([
+    ...repositoryProfiles.flatMap(profile => profile.buildTools),
+    ...detectBuildTools(docPaths, docCorpus),
+  ]).slice(0, 6);
+  const domainSummary = inferDomainArchitectureItems(docCorpus, capabilityName);
+  const contractSummary = inferContractArchitectureItems(docCorpus);
+  const codeGraphMermaid = repositoryProfiles.length === 1
+    ? repositoryProfiles[0].graphMermaid
+    : repositoryProfiles.length > 1
+      ? buildPortfolioCodeGraphMermaid(capabilityName, repositoryProfiles)
+      : buildInferredApplicationGraphMermaid(capabilityName, endpointItems, frameworkSummary, domainSummary);
 
   if (collection) {
     const layers = [
       { key: "business", label: "Business Architecture", items: [`${capabilityName}${appSuffix}`, "Outcomes, value streams, policies, owners"] },
-      { key: "application", label: "Application Architecture", items: repos.length > 0 ? repos : ["Child applications / bounded contexts"] },
+      { key: "application", label: "Application Architecture", items: [...(sharedApplications.length ? sharedApplications : []), ...(repos.length > 0 ? repos : ["Child applications / bounded contexts"])] },
       { key: "data", label: "Data Architecture", items: [`${docCount || docs.length || 0} doc/source signals`, "Approved knowledge, memory, citations, artifacts"] },
-      { key: "technology", label: "Technology Architecture", items: ["MCP workspaces, branches, AST index, local tools", "Context Fabric, Prompt Composer, Workgraph runtime"] },
+      { key: "technology", label: "Technology Architecture", items: [...(frameworkSummary.length ? frameworkSummary : ["Framework discovery pending"]), ...(buildToolSummary.length ? buildToolSummary : ["Build tooling pending"]), "MCP workspaces, branches, AST index, local tools"] },
       { key: "governance", label: "Governance", items: ["Locked governance/verifier/security agents", "Budgets, approvals, receipts, audit ledger"] },
     ];
     return {
@@ -1830,6 +2181,8 @@ function buildCapabilityArchitectureDiagram(
       view: "togaf",
       description: "Collection capabilities are shown as TOGAF-style business, application, data, technology, and governance layers so portfolio owners can see how child capabilities are governed.",
       layers,
+      codeGraphMermaid,
+      repositoryProfiles,
       mermaid: [
         "flowchart TB",
         `  B[Business Architecture<br/>${escapeMermaid(capabilityName)}${capability.appId ? `<br/>App ID: ${escapeMermaid(capability.appId)}` : ""}]`,
@@ -1844,31 +2197,157 @@ function buildCapabilityArchitectureDiagram(
 
   const agentItems = agents.length > 0 ? agents : ["Product Owner", "Architect", "Developer", "QA", "Governance"];
   const layers = [
-    { key: "entry", label: "Entry Points", items: ["Workflow stories, workbench stages, human approvals"] },
-    { key: "agents", label: "Capability Agent Team", items: agentItems },
-    { key: "knowledge", label: "Grounding Sources", items: [...(repos.length ? repos : ["Repository pending"]), `${docCount || docs.length || 0} document/source signals`, `${localCount} local files`] },
-    { key: "execution", label: "Execution Runtime", items: ["Prompt Composer context plan", "Context Fabric token governor", "MCP model/tools/workspace"] },
-    { key: "evidence", label: "Evidence Outputs", items: ["Stage artifacts", "Citations", "Budget receipts", "Audit trail"] },
+    {
+      key: "product_api",
+      label: "Product / API",
+      items: [
+        `${capabilityName}${appSuffix}`,
+        `Criticality: ${capability.criticality ?? input.criticality ?? "MEDIUM"}`,
+        ...(endpointItems.length ? endpointItems.slice(0, 4) : ["API surface pending discovery"]),
+      ],
+    },
+    { key: "runtime_stack", label: "Runtime Stack", items: [...(languageSummary.length ? languageSummary : ["Language discovery pending"]), ...(frameworkSummary.length ? frameworkSummary : ["Framework discovery pending"]), ...(buildToolSummary.length ? buildToolSummary : ["Build tooling pending"])] },
+    { key: "domain_model", label: "Domain Model", items: domainSummary.length ? domainSummary : ["Domain model pending source review"] },
+    { key: "contract", label: "Request / Response Contract", items: contractSummary.length ? contractSummary : ["Request/response contract pending"] },
+    { key: "codebase", label: "Repository Intelligence", items: [...(repos.length ? repos : ["Repository pending"]), `${docCount || docs.length || 0} document/source signals`, `${localCount} local files`, `${endpointTotal} endpoints detected`] },
+    { key: "delivery", label: "Governed Delivery", items: [...agentItems.slice(0, 6), "Workbench stage artifacts", "Approvals, budgets, receipts, audit trail"] },
   ];
   return {
     kind: "APPLICATION_CAPABILITY_ARCHITECTURE",
     title: `${capabilityName} application capability architecture`,
     view: "application",
-    description: "Application capabilities are shown as a governed delivery architecture: stories enter Workgraph, agents work through Composer and Context Fabric, MCP supplies local code intelligence, and outputs become reviewable artifacts.",
+    description: buildApplicationArchitectureDescription(capabilityName, frameworkSummary, endpointItems, domainSummary),
+    highlights: [
+      { key: "stack", label: "Primary stack", value: frameworkSummary[0] ?? languageSummary[0] ?? "Pending", detail: buildToolSummary.slice(0, 2).join(" / ") },
+      { key: "api", label: "API surface", value: endpointTotal ? `${endpointTotal} endpoint${endpointTotal === 1 ? "" : "s"}` : "Pending", detail: endpointItems[0] ?? "No endpoint signal yet" },
+      { key: "domain", label: "Domain rules", value: countDomainOperators(docCorpus) ? `${countDomainOperators(docCorpus)} operators` : "Detected model", detail: domainSummary[0] ?? "Domain discovery pending" },
+      { key: "source", label: "Source", value: repos.length ? `${repos.length} repo${repos.length === 1 ? "" : "s"}` : "No repo", detail: repos[0] ?? "Attach a repo to ground the graph" },
+    ],
     layers,
+    codeGraphMermaid,
+    repositoryProfiles,
     mermaid: [
       "flowchart LR",
       "  S[Story / Workflow Input]",
       `  C[Capability<br/>${escapeMermaid(capabilityName)}${capability.appId ? `<br/>App ID: ${escapeMermaid(capability.appId)}` : ""}]`,
       "  A[Agent Team<br/>PO / Architect / Developer / QA / Governance]",
       "  K[Grounding<br/>Repos / Docs / Memory / Code Symbols]",
+      `  P[Platform Inventory<br/>${endpointTotal} endpoints / ${escapeMermaid(frameworkSummary[0] ?? languageSummary[0] ?? "pending")}]`,
       "  X[Context Fabric + MCP<br/>Budget / Model / Tools / AST]",
       "  E[Evidence<br/>Artifacts / Citations / Receipts]",
       "  S --> C --> A",
       "  K --> A",
+      "  P --> A",
       "  A --> X --> E",
     ].join("\n"),
   };
+}
+
+function buildApplicationArchitectureDescription(
+  capabilityName: string,
+  frameworks: string[],
+  endpoints: string[],
+  domainItems: string[],
+): string {
+  const bits = [
+    `${capabilityName} is shown as an application system, not only as agent delivery plumbing.`,
+    frameworks[0] ? `Detected stack: ${frameworks[0]}.` : "",
+    endpoints[0] ? `Primary API signal: ${endpoints[0]}.` : "",
+    domainItems[0] ? `Domain signal: ${domainItems[0]}.` : "",
+  ];
+  return bits.filter(Boolean).join(" ");
+}
+
+function inferLanguagesFromCorpus(corpus: string): string[] {
+  const languages = new Set<string>();
+  if (/java\s*17|\.java|spring boot|maven|pom\.xml|\bJava\b/i.test(corpus)) languages.add(/java\s*17/i.test(corpus) ? "Java 17+" : "Java");
+  if (/\bTypeScript\b|\.tsx?\b|React|Vite/i.test(corpus)) languages.add("TypeScript");
+  if (/\bPython\b|FastAPI|Flask|Django/i.test(corpus)) languages.add("Python");
+  if (/\bSQL\b|\.sql\b/i.test(corpus)) languages.add("SQL");
+  return Array.from(languages);
+}
+
+function extractEndpointMentions(corpus: string): string[] {
+  const endpoints = new Set<string>();
+  const basePath = corpus.match(/Base path:\s*`?([^`\n]+)`?/i)?.[1]?.trim();
+  for (const match of corpus.matchAll(/\b(GET|POST|PUT|DELETE|PATCH|ANY)\s+`?(\/[^\s`),.;]+)`?/gi)) {
+    const method = match[1].toUpperCase();
+    let path = match[2].replace(/[),.;]+$/, "");
+    if (basePath && !path.startsWith(basePath) && path !== "/" && path.split("/").length <= 2) {
+      path = `${basePath.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
+    }
+    endpoints.add(`${method} ${path}`);
+  }
+  if (basePath && endpoints.size === 0) endpoints.add(`Base path: ${basePath}`);
+  return Array.from(endpoints);
+}
+
+function inferDomainArchitectureItems(corpus: string, capabilityName: string): string[] {
+  const items = new Set<string>();
+  if (/evaluates JSON rules|rule language|rule engine/i.test(corpus) || /rule/i.test(capabilityName)) {
+    items.add("Evaluates JSON rules against arbitrary input data");
+  }
+  const groupOps = ["all", "any", "not"].filter(op => new RegExp(`\`${op}\`|\\b${op}\\b`, "i").test(corpus));
+  if (groupOps.length) items.add(`Group operators: ${groupOps.join(", ")}`);
+  const conditionOps = RULE_OPERATOR_NAMES.filter(op => new RegExp(`\`${op}\`|\\b${op}\\b`, "i").test(corpus));
+  if (conditionOps.length) items.add(`Condition operators: ${conditionOps.slice(0, 12).join(", ")}${conditionOps.length > 12 ? "..." : ""}`);
+  if (/dot[\s-]?separated path|field.*a\.b\.c|field path/i.test(corpus)) items.add("Dot-path field lookup into data payloads");
+  if (/numeric comparisons|date\/time comparisons|ISO.?8601/i.test(corpus)) items.add("Numeric and ISO-8601 date/time comparisons");
+  return Array.from(items);
+}
+
+function inferContractArchitectureItems(corpus: string): string[] {
+  const items = new Set<string>();
+  if (/"data"\s*:|Request Schema[\s\S]{0,500}\bdata\b/i.test(corpus)) items.add("Request body includes data object");
+  if (/"rule"\s*:|Request Schema[\s\S]{0,500}\brule\b/i.test(corpus)) items.add("Request body includes rule definition");
+  if (/"result"\s*:|Response Schema[\s\S]{0,300}\bresult\b/i.test(corpus)) items.add("Response returns result boolean");
+  if (/400 Bad Request/i.test(corpus)) items.add("400 for structurally invalid rules");
+  if (/422 Unprocessable Entity/i.test(corpus)) items.add("422 for invalid request fields");
+  return Array.from(items);
+}
+
+const RULE_OPERATOR_NAMES = ["eq", "ne", "lt", "lte", "gt", "gte", "between", "in", "contains", "regex", "exists", "not_exists", "isNull", "isNotNull"];
+
+function countDomainOperators(corpus: string): number {
+  return ["all", "any", "not", ...RULE_OPERATOR_NAMES]
+    .filter(op => new RegExp(`\`${op}\`|\\b${op}\\b`, "i").test(corpus)).length;
+}
+
+function buildInferredApplicationGraphMermaid(
+  capabilityName: string,
+  endpoints: string[],
+  frameworks: string[],
+  domainItems: string[],
+): string {
+  const endpoint = endpoints.find(item => /^(GET|POST|PUT|DELETE|PATCH|ANY)\s+\//i.test(item)) ?? "API endpoint";
+  const stack = frameworks.slice(0, 3).join(" / ") || "Runtime";
+  const domain = domainItems[0] ?? "Domain logic";
+  return [
+    "flowchart LR",
+    `  Story["Story / WorkItem"] --> API["${escapeMermaid(endpoint)}"]`,
+    `  API --> App["${escapeMermaid(capabilityName)}"]`,
+    `  App --> Runtime["${escapeMermaid(stack)}"]`,
+    `  Runtime --> Domain["${escapeMermaid(domain)}"]`,
+    "  Domain --> Evidence[\"Stage artifacts / receipts / approvals\"]",
+  ].join("\n");
+}
+
+function unique<T>(items: T[]): T[] {
+  return Array.from(new Set(items));
+}
+
+function buildPortfolioCodeGraphMermaid(capabilityName: string, profiles: RepositoryProfile[]): string {
+  const nodes = profiles.slice(0, 8).map((profile, index) => {
+    const tech = profile.frameworks[0] ?? profile.languages[0]?.language ?? "unknown";
+    return `  R${index + 1}["${escapeMermaid(`${profile.repoName} / ${tech} / ${profile.endpointCount} endpoints`)}"]`;
+  });
+  const edges = profiles.slice(0, 8).map((_, index) => `  C --> R${index + 1}`);
+  return [
+    "flowchart TB",
+    `  C["${escapeMermaid(capabilityName)} collection"]`,
+    ...nodes,
+    ...edges,
+  ].join("\n");
 }
 
 function isCollectionCapabilityType(value?: string | null): boolean {
@@ -1950,6 +2429,8 @@ function buildOperatingModel(
   }>,
   candidateGroups: number,
   architectureDiagram?: CapabilityArchitectureDiagram,
+  repositoryProfiles: RepositoryProfile[] = [],
+  collectionModel: { childCapabilityIds?: string[]; sharedApplications?: string[] } = {},
 ) {
   const capabilityName = capability.name;
   const pattern = (targetWorkflowPattern?.trim() || "governed_delivery").toLowerCase();
@@ -1965,6 +2446,9 @@ function buildOperatingModel(
     targetWorkflowPattern: pattern,
     starterWorkflow,
     architectureDiagram,
+    repositoryProfiles,
+    childCapabilityIds: collectionModel.childCapabilityIds ?? [],
+    sharedApplications: collectionModel.sharedApplications ?? [],
     draftAgents: generatedAgents.map(agent => ({
       id: agent.id,
       key: agent.key,

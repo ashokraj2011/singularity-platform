@@ -65,7 +65,10 @@ function WorkItemDetail({ id }: { id: string }) {
   const startMut = useMutation({
     mutationFn: ({ tid, childWorkflowTemplateId }: { tid: string; childWorkflowTemplateId?: string }) =>
       api.post(`/work-items/${id}/targets/${tid}/start`, childWorkflowTemplateId ? { childWorkflowTemplateId } : {}).then(r => r.data),
-    onSuccess: () => refetch(),
+    onSuccess: (data) => {
+      if (data?.childWorkflowInstanceId) navigate(`/runs/${data.childWorkflowInstanceId}`)
+      else refetch()
+    },
   })
   const clarificationMut = useMutation({
     mutationFn: ({ tid, question }: { tid: string; question: string }) =>
@@ -86,6 +89,13 @@ function WorkItemDetail({ id }: { id: string }) {
     enabled: Boolean(activeTarget?.targetCapabilityId),
     queryFn: () => api.get('/workflows', { params: { capabilityId: activeTarget?.targetCapabilityId } }).then(r => unwrapItems<WorkflowTemplateRow>(r.data)),
   })
+  const allWorkflowsQuery = useQuery<WorkflowTemplateRow[]>({
+    queryKey: ['runtime-workitem-workflows-all'],
+    enabled: Boolean(activeTarget?.targetCapabilityId && workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0),
+    queryFn: () => api.get('/workflows', { params: { limit: 200 } }).then(r => unwrapItems<WorkflowTemplateRow>(r.data)),
+  })
+  const workflowOptions = workflowsQuery.data?.length ? workflowsQuery.data : allWorkflowsQuery.data ?? []
+  const usingFallbackWorkflows = Boolean(activeTarget?.targetCapabilityId && workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0 && workflowOptions.length > 0)
 
   if (isLoading) return <p style={{ fontSize: 13, color: 'var(--color-outline)' }}>Loading WorkItem…</p>
   if (!workItem) return <ErrorState message="WorkItem not found" onBack={() => navigate('/runtime')} />
@@ -167,9 +177,23 @@ function WorkItemDetail({ id }: { id: string }) {
                   fontSize: 13, outline: 'none',
                 }}
               >
-                <option value="">Select workflow template</option>
-                {(workflowsQuery.data ?? []).map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                <option value="">
+                  {workflowsQuery.isLoading ? 'Loading workflow templates...'
+                    : workflowOptions.length === 0 ? 'No workflow templates found'
+                      : usingFallbackWorkflows ? 'Select workflow template (showing all)'
+                        : 'Select workflow template'}
+                </option>
+                {workflowOptions.map(w => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}{w.capabilityId && w.capabilityId !== activeTarget.targetCapabilityId ? ' · other capability' : ''}
+                  </option>
+                ))}
               </select>
+              {usingFallbackWorkflows && (
+                <p style={{ margin: '6px 0 0', fontSize: 12, color: '#92400e' }}>
+                  No capability-specific workflows came back for this target. Showing all templates so you can still attach one.
+                </p>
+              )}
             </div>
           )}
 

@@ -39,6 +39,7 @@ const BASE_TYPES = [
   { value: 'AGENT_TASK',           label: 'Agent Task',       hint: 'Delegates to an AI agent' },
   { value: 'APPROVAL',             label: 'Approval',         hint: 'Requires an explicit approval decision' },
   { value: 'TOOL_REQUEST',         label: 'Tool Request',     hint: 'Calls an external tool/API' },
+  { value: 'GIT_PUSH',             label: 'Git Push',         hint: 'Pushes approved WorkItem branches through MCP' },
   { value: 'CONSUMABLE_CREATION',  label: 'Create Artifact',  hint: 'Produces a typed versioned artifact' },
   { value: 'POLICY_CHECK',         label: 'Policy Check',     hint: 'Evaluates a rule and auto-advances' },
   { value: 'TIMER',                label: 'Timer',            hint: 'Waits for a duration or datetime' },

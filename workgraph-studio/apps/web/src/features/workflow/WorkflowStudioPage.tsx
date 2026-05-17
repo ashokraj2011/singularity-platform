@@ -40,7 +40,9 @@ const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType }> = 
   DECISION_GATE:       { color: '#c084fc', Icon: GitMerge },
   CONSUMABLE_CREATION: { color: '#34d399', Icon: Package },
   TOOL_REQUEST:        { color: '#fb923c', Icon: Wrench },
+  GIT_PUSH:            { color: '#22c55e', Icon: GitBranch },
   POLICY_CHECK:        { color: '#94a3b8', Icon: Shield },
+  EVAL_GATE:           { color: '#c0c1ff', Icon: Activity },
   TIMER:               { color: '#facc15', Icon: Clock },
   SIGNAL_WAIT:         { color: '#06b6d4', Icon: Radio },
   SIGNAL_EMIT:         { color: '#0891b2', Icon: RadioTower },
@@ -60,7 +62,7 @@ const NODE_LABELS: Record<string, string> = {
   START: 'Start', END: 'End',
   HUMAN_TASK: 'Human Task', AGENT_TASK: 'Agent Task', WORKBENCH_TASK: 'Workbench Task', APPROVAL: 'Approval',
   DECISION_GATE: 'Decision Gate', CONSUMABLE_CREATION: 'Create Artifact',
-  TOOL_REQUEST: 'Tool Request', POLICY_CHECK: 'Policy Check',
+  TOOL_REQUEST: 'Tool Request', GIT_PUSH: 'Git Push', POLICY_CHECK: 'Policy Check', EVAL_GATE: 'Eval Gate',
   TIMER: 'Timer', SIGNAL_WAIT: 'Signal Wait', SIGNAL_EMIT: 'Signal Emit',
   CALL_WORKFLOW: 'Sub-workflow', WORK_ITEM: 'Work Item',
   FOREACH: 'For Each', PARALLEL_FORK: 'Parallel Fork', PARALLEL_JOIN: 'Parallel Join',
@@ -170,15 +172,31 @@ const WORKBENCH_TASK_NODE_CONFIG = {
   ],
 }
 
+const EVAL_GATE_NODE_CONFIG = {
+  scope: 'CURRENT_RUN',
+  evaluatorIds: [],
+  datasetId: '',
+  capabilityId: '',
+  minPassRate: 1,
+  blockOnMissingEvidence: true,
+}
+
+const GIT_PUSH_NODE_CONFIG = {
+  remote: 'origin',
+  requireApproval: true,
+  branchName: '',
+  message: '',
+}
+
 const NODE_GROUPS: Array<{ label: string; types: string[] }> = [
   { label: 'Boundary', types: ['START', 'END'] },
-  { label: 'Tasks', types: ['HUMAN_TASK', 'AGENT_TASK', 'APPROVAL', 'TOOL_REQUEST'] },
+  { label: 'Tasks', types: ['HUMAN_TASK', 'AGENT_TASK', 'APPROVAL', 'TOOL_REQUEST', 'GIT_PUSH'] },
   { label: 'Agentic Workbench', types: ['WORKBENCH_TASK'] },
   { label: 'Artifacts', types: ['CONSUMABLE_CREATION', 'DATA_SINK'] },
   { label: 'Control Flow', types: ['DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY'] },
   { label: 'Data', types: ['SET_CONTEXT'] },
   { label: 'Async & Timing', types: ['TIMER', 'SIGNAL_WAIT', 'SIGNAL_EMIT'] },
-  { label: 'Advanced', types: ['WORK_ITEM', 'CALL_WORKFLOW', 'FOREACH', 'POLICY_CHECK', 'ERROR_CATCH'] },
+  { label: 'Advanced', types: ['WORK_ITEM', 'CALL_WORKFLOW', 'FOREACH', 'POLICY_CHECK', 'EVAL_GATE', 'ERROR_CATCH'] },
 ]
 
 // ─── Validation constants ──────────────────────────────────────────────────────
@@ -410,7 +428,9 @@ const NODE_DESCRIPTIONS: Record<string, string> = {
   DECISION_GATE: 'XOR gateway — evaluates conditions to branch the workflow along one path.',
   CONSUMABLE_CREATION: 'Produces a typed versioned artifact. Must be reviewed before downstream use.',
   TOOL_REQUEST: 'Routes a tool execution request through the Tool Gateway with policy enforcement.',
+  GIT_PUSH: 'Pushes the approved WorkItem branch to git after a human approval gate.',
   POLICY_CHECK: 'Evaluates a named policy before continuing. Blocks the workflow if denied.',
+  EVAL_GATE: 'Runs deterministic evaluators against run traces or datasets and blocks when trust criteria fail.',
   TIMER: 'Pauses the flow for a fixed duration or until a specific instant.',
   SIGNAL_WAIT: 'Pauses execution until an external signal with a matching name arrives.',
   SIGNAL_EMIT: 'Broadcasts a named signal, waking any SIGNAL_WAIT node listening for it.',
@@ -915,7 +935,7 @@ const NODE_HELP_SECTIONS = [
   },
   {
     title: 'Task & Execution',
-    types: ['FOREACH', 'WORK_ITEM', 'CALL_WORKFLOW', 'TOOL_REQUEST', 'POLICY_CHECK', 'CREATE_ARTIFACT'],
+    types: ['FOREACH', 'WORK_ITEM', 'CALL_WORKFLOW', 'TOOL_REQUEST', 'GIT_PUSH', 'POLICY_CHECK', 'EVAL_GATE', 'CREATE_ARTIFACT'],
   },
 ]
 
@@ -939,7 +959,9 @@ const NODE_USAGE_TIPS: Record<string, string> = {
   WORK_ITEM:         'Creates a child capability queue item. Parent waits for child outputs and approval.',
   CALL_WORKFLOW:     'Parent workflow pauses until child completes. Child result is in context.',
   TOOL_REQUEST:      'High-risk tools may auto-pause for approval before execution.',
+  GIT_PUSH:          'Place after an Approval node. It pushes the WorkItem branch through MCP and records branch/commit evidence.',
   POLICY_CHECK:      'Use WARN mode during testing — it logs failures without blocking the workflow.',
+  EVAL_GATE:         'Default is strict: current run traces must pass all selected evaluators.',
   CREATE_ARTIFACT:   'If Requires Approval is true, workflow pauses until a human reviews and approves.',
 }
 
@@ -2775,6 +2797,36 @@ export function WorkflowStudioPage() {
                           dragPayload={JSON.stringify({
                             label: 'Workbench Task',
                             config: WORKBENCH_TASK_NODE_CONFIG,
+                          })}
+                        />
+                      )
+                    }
+                    if (type === 'EVAL_GATE') {
+                      return (
+                        <PaletteIcon
+                          key={type}
+                          nodeType={type}
+                          color={color}
+                          Icon={Icon}
+                          label={NODE_LABELS[type] ?? type}
+                          dragPayload={JSON.stringify({
+                            label: 'Eval Gate',
+                            config: EVAL_GATE_NODE_CONFIG,
+                          })}
+                        />
+                      )
+                    }
+                    if (type === 'GIT_PUSH') {
+                      return (
+                        <PaletteIcon
+                          key={type}
+                          nodeType={type}
+                          color={color}
+                          Icon={Icon}
+                          label={NODE_LABELS[type] ?? type}
+                          dragPayload={JSON.stringify({
+                            label: 'Git Push',
+                            config: GIT_PUSH_NODE_CONFIG,
                           })}
                         />
                       )

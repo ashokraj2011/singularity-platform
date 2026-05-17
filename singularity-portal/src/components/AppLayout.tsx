@@ -8,6 +8,7 @@ import { useAuthStore } from '@/store/auth.store'
 import { env } from '@/lib/env'
 import { cn } from '@/lib/cn'
 import { BrandLockup } from './BrandLockup'
+import { AppSwitcher } from './AppSwitcher'
 
 const internalNav = [
   { to: '/', label: 'Dashboard', icon: Home, end: true },
@@ -47,6 +48,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
         <div className="px-5 py-5" style={{ borderBottom: '1px solid rgba(245,242,234,0.08)' }}>
           <BrandLockup variant="compact" />
         </div>
+
+        <AppSwitcher currentApp="operations" />
 
         {/* Nav */}
         <nav className="flex-1 overflow-y-auto py-4 px-3">

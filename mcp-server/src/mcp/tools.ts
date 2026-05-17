@@ -4,6 +4,8 @@ import { v4 as uuidv4 } from "uuid";
 import { AppError, NotFoundError } from "../shared/errors";
 import { getLocalTool, listLocalTools } from "../tools/registry";
 import { recordToolInvocation } from "../audit/store";
+import { branchNameForWork, prepareWorkBranch } from "../workspace/git-workspace";
+import { withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbox";
 
 export const toolsRouter = Router();
 
@@ -37,6 +39,13 @@ const CallSchema = z.object({
     .object({
       traceId: z.string().optional(),
       runId: z.string().optional(),
+      workflowInstanceId: z.string().optional(),
+      nodeId: z.string().optional(),
+      runStepId: z.string().optional(),
+      workItemId: z.string().optional(),
+      workItemCode: z.string().optional(),
+      branchBase: z.string().optional(),
+      branchName: z.string().optional(),
       capabilityId: z.string().optional(),
       agentId: z.string().optional(),
     })
@@ -53,9 +62,27 @@ toolsRouter.post("/tools/call", async (req, res) => {
   if (!handler) throw new NotFoundError(`tool '${body.name}' not in local registry`);
 
   const correlation = { ...body.runContext, mcpInvocationId: uuidv4() };
+  const workspaceRoot = workspaceRootForRunContext({
+    workItemId: body.runContext.workItemId,
+    workItemCode: body.runContext.workItemCode,
+    branchName: body.runContext.branchName,
+  });
   const start = Date.now();
   try {
-    const r = await handler.execute(body.arguments);
+    const r = await withSandboxRoot(workspaceRoot, async () => {
+      const branchRequest = {
+        workflowInstanceId: body.runContext.workflowInstanceId ?? body.runContext.runId,
+        nodeId: body.runContext.nodeId ?? body.runContext.runStepId,
+        workItemId: body.runContext.workItemId,
+        workItemCode: body.runContext.workItemCode,
+        branchBase: body.runContext.branchBase,
+        branchName: body.runContext.branchName,
+      };
+      if (body.name === "finish_work_branch" && branchNameForWork(branchRequest)) {
+        await prepareWorkBranch(branchRequest, correlation);
+      }
+      return handler.execute(body.arguments);
+    });
     const rec = recordToolInvocation({
       correlation, tool_name: body.name, args: body.arguments,
       output: r.output, success: r.success, error: r.error,

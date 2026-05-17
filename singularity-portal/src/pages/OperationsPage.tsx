@@ -8,7 +8,7 @@ import {
   WifiOff, Zap,
 } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
-import { runtimeApi, workgraphApi } from '@/lib/api'
+import { auditGovApi, runtimeApi, workgraphApi } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { env } from '@/lib/env'
 
@@ -30,7 +30,7 @@ interface DoctorSummary {
   checks?: Array<{ status: 'OK' | 'WARN' | 'FAIL'; message: string; fix?: string }>
 }
 
-type OpsTab = 'setup' | 'readiness' | 'audit' | 'workitems' | 'architecture' | 'causality'
+type OpsTab = 'setup' | 'readiness' | 'trust' | 'audit' | 'workitems' | 'architecture' | 'causality'
 
 interface WorkflowRunRow {
   id: string
@@ -169,6 +169,7 @@ const commandGroups = [
 const opsTabs: Array<{ key: OpsTab; label: string; icon: typeof SlidersHorizontal; description: string }> = [
   { key: 'setup', label: 'Setup Center', icon: ServerCog, description: 'Health, config, models' },
   { key: 'readiness', label: 'Readiness', icon: Gauge, description: 'Capability launch score' },
+  { key: 'trust', label: 'Trust & Eval', icon: ShieldCheck, description: 'Trace, receipts, evals' },
   { key: 'audit', label: 'Run Audit', icon: FileText, description: 'Timing, cost, receipts' },
   { key: 'workitems', label: 'WorkItems', icon: ClipboardList, description: 'Cross-capability queue' },
   { key: 'architecture', label: 'Architecture', icon: GitBranch, description: 'Capability diagrams' },
@@ -314,7 +315,7 @@ export function OperationsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-7">
         {opsTabs.map((tab) => (
           <button
             key={tab.key}
@@ -529,6 +530,8 @@ export function OperationsPage() {
         </>
       ) : activeTab === 'readiness' ? (
         <ReadinessPanel />
+      ) : activeTab === 'trust' ? (
+        <TrustEvalPanel />
       ) : activeTab === 'audit' ? (
         <RunAuditPanel />
       ) : activeTab === 'workitems' ? (
@@ -776,6 +779,226 @@ function ReadinessPanel() {
           )}
         </CardBody>
       </Card>
+    </div>
+  )
+}
+
+function TrustEvalPanel() {
+  const [runId, setRunId] = useState('')
+  const [selectedTraceId, setSelectedTraceId] = useState('')
+  const [selectedNodeId, setSelectedNodeId] = useState('')
+  const [datasetName, setDatasetName] = useState('Production run examples')
+  const [expectedOutput, setExpectedOutput] = useState('')
+  const [criteria, setCriteria] = useState('Actual output should satisfy the expected delivery outcome.')
+  const [selectedEvaluatorId, setSelectedEvaluatorId] = useState('')
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionResult, setActionResult] = useState<any | null>(null)
+  const recentRuns = useQuery({
+    queryKey: ['ops', 'trust-runs'],
+    queryFn: async () => unwrapItems<WorkflowRunRow>(await workgraphApi.get('/workflow-instances')),
+    retry: 1,
+  })
+  const trace = useQuery({
+    queryKey: ['ops', 'trust-trace', runId],
+    queryFn: async () => unwrapEnvelope<any>(await workgraphApi.get(`/workflow-instances/${runId}/trust-trace`)),
+    enabled: Boolean(runId.trim()),
+    retry: 1,
+  })
+  const receipt = useQuery({
+    queryKey: ['ops', 'delivery-receipt', runId],
+    queryFn: async () => unwrapEnvelope<any>(await workgraphApi.get(`/workflow-instances/${runId}/delivery-receipt`)),
+    enabled: Boolean(runId.trim()),
+    retry: 1,
+  })
+  const evaluators = useQuery({
+    queryKey: ['ops', 'engine-evaluators'],
+    queryFn: async () => unwrapItems<any>(await auditGovApi.get('/engine/evaluators', { params: { enabled: 'true' } })),
+    retry: 1,
+  })
+  const traceIds: string[] = Array.isArray(trace.data?.traceIds) ? trace.data.traceIds : []
+  const timeline: any[] = Array.isArray(trace.data?.timeline) ? trace.data.timeline : []
+  const markdown = typeof receipt.data?.markdown === 'string' ? receipt.data.markdown : ''
+
+  async function createExample() {
+    if (!runId.trim()) return
+    setActionError(null)
+    setActionResult(null)
+    try {
+      const res = await workgraphApi.post(`/workflow-instances/${runId}/eval-examples`, {
+        datasetName,
+        nodeId: selectedNodeId || undefined,
+        traceId: selectedTraceId || undefined,
+        expectedOutput,
+        criteria: { text: criteria },
+        tags: ['ops-portal', 'run-derived'],
+      })
+      setActionResult({ kind: 'eval-example', payload: unwrapEnvelope<any>(res) })
+    } catch (err) {
+      setActionError(errorMessage(err))
+    }
+  }
+
+  async function runEvaluator() {
+    const traceId = selectedTraceId || traceIds[0]
+    if (!traceId) return
+    setActionError(null)
+    setActionResult(null)
+    try {
+      const res = await auditGovApi.post('/engine/evaluators/run-trace', {
+        traceId,
+        evaluatorIds: selectedEvaluatorId ? [selectedEvaluatorId] : undefined,
+        metadata: { source: 'operations_portal', workflowInstanceId: runId },
+      })
+      setActionResult({ kind: 'eval-run', payload: unwrapEnvelope<any>(res) })
+    } catch (err) {
+      setActionError(errorMessage(err))
+    }
+  }
+
+  return (
+    <div className="grid grid-cols-1 gap-5 xl:grid-cols-[0.85fr_1.35fr]">
+      <Card>
+        <CardHeader title="Trust & Eval" subtitle="Inspect a trace spine, export the delivery receipt, and create eval examples from real runs." />
+        <CardBody className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-widest text-slate-500">Workflow run id</label>
+            <input
+              value={runId}
+              onChange={(event) => {
+                setRunId(event.target.value)
+                setSelectedTraceId('')
+                setSelectedNodeId('')
+              }}
+              placeholder="Paste workflowInstanceId"
+              className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-emerald-400"
+            />
+          </div>
+          <div className="space-y-2">
+            <div className="text-xs font-semibold uppercase tracking-widest text-slate-500">Recent runs</div>
+            {(recentRuns.data ?? []).slice(0, 6).map(run => (
+              <button
+                key={run.id}
+                type="button"
+                onClick={() => {
+                  setRunId(run.id)
+                  setSelectedTraceId('')
+                  setSelectedNodeId('')
+                }}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left hover:bg-slate-50"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-sm font-semibold text-slate-900">{run.name}</span>
+                  <Badge tone={run.status === 'COMPLETED' ? 'ok' : run.status === 'FAILED' ? 'danger' : 'neutral'}>{run.status}</Badge>
+                </div>
+                <div className="mt-1 truncate font-mono text-[11px] text-slate-500">{run.id}</div>
+              </button>
+            ))}
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <div className="text-sm font-semibold text-slate-900">Create eval example from run</div>
+            <div className="mt-3 space-y-2">
+              <input value={datasetName} onChange={e => setDatasetName(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="Dataset name" />
+              <select value={selectedNodeId} onChange={e => setSelectedNodeId(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                <option value="">Any node</option>
+                {timeline.map(row => <option key={row.node?.id} value={row.node?.id}>{row.node?.label ?? row.node?.id}</option>)}
+              </select>
+              <select value={selectedTraceId} onChange={e => setSelectedTraceId(e.target.value)} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                <option value="">Use first available trace</option>
+                {traceIds.map(id => <option key={id} value={id}>{id}</option>)}
+              </select>
+              <textarea value={expectedOutput} onChange={e => setExpectedOutput(e.target.value)} className="min-h-[80px] w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="Expected output or acceptance text" />
+              <textarea value={criteria} onChange={e => setCriteria(e.target.value)} className="min-h-[70px] w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="Evaluation criteria" />
+              <button className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50" disabled={!runId.trim()} onClick={createExample}>Create eval example</button>
+            </div>
+          </div>
+        </CardBody>
+      </Card>
+
+      <div className="space-y-5">
+        <Card>
+          <CardHeader
+            title="Trace Explorer"
+            subtitle="Workflow node, prompt, Context Fabric, MCP, tool/code, approval, budget, and audit evidence grouped by trace id."
+            action={trace.isFetching ? <RefreshCw className="h-4 w-4 animate-spin text-slate-400" /> : undefined}
+          />
+          <CardBody className="space-y-4">
+            {trace.isError ? (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">Trace Explorer could not load this run.</div>
+            ) : !runId ? (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">Choose a run to inspect its trust trace.</div>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <Metric title="Trace ids" value={String(traceIds.length)} />
+                  <Metric title="Nodes" value={String(trace.data?.totals?.nodes ?? 0)} />
+                  <Metric title="Tokens" value={String(trace.data?.totals?.tokens ?? 0)} />
+                  <Metric title="Audit events" value={String(trace.data?.totals?.auditEvents ?? 0)} />
+                </div>
+                {(trace.data?.gaps ?? []).length > 0 && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                    <div className="font-semibold">Evidence gaps</div>
+                    <ul className="mt-1 space-y-1">{trace.data.gaps.map((gap: string) => <li key={gap}>- {gap}</li>)}</ul>
+                  </div>
+                )}
+                <div className="space-y-3">
+                  {timeline.map(row => (
+                    <details key={row.node?.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                      <summary className="cursor-pointer list-none">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-900">{row.node?.label}</div>
+                            <div className="mt-1 text-xs text-slate-500">{row.node?.nodeType} · {row.traceIds?.length ?? 0} traces · {row.auditEvents?.length ?? 0} events</div>
+                          </div>
+                          <Badge tone={row.node?.status === 'COMPLETED' ? 'ok' : row.node?.status === 'BLOCKED' || row.node?.status === 'FAILED' ? 'danger' : 'neutral'}>{row.node?.status}</Badge>
+                        </div>
+                      </summary>
+                      <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                        <MiniEvidence title="Prompts" rows={row.promptAssemblyIds?.map((id: string) => ({ id }))} />
+                        <MiniEvidence title="Context Fabric / MCP" rows={[...(row.cfCallIds ?? []).map((id: string) => ({ cfCallId: id })), ...(row.mcpInvocationIds ?? []).map((id: string) => ({ mcpInvocationId: id }))]} />
+                        <MiniEvidence title="Budget" rows={row.budgetEvents} />
+                        <MiniEvidence title="Audit Events" rows={row.auditEvents} />
+                      </div>
+                    </details>
+                  ))}
+                </div>
+              </>
+            )}
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader title="Delivery Receipt & Evaluators" subtitle="Export an audit-grade receipt or run deterministic evaluators against a trace." />
+          <CardBody className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <Metric title="Receipt status" value={receipt.data?.summary?.status ?? 'n/a'} />
+              <Metric title="Eval status" value={receipt.data?.summary?.evalStatus ?? 'n/a'} />
+              <Metric title="Cost" value={receipt.data?.summary?.estimatedCost == null ? 'UNPRICED' : `$${Number(receipt.data.summary.estimatedCost).toFixed(4)}`} />
+              <Metric title="Artifacts" value={String(receipt.data?.summary?.artifacts ?? 0)} />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => copyText(markdown)} disabled={!markdown}>Copy Receipt Markdown</button>
+              <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => downloadText(`${runId}-delivery-receipt.md`, markdown, 'text/markdown')} disabled={!markdown}>Download Markdown</button>
+              <button className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50" onClick={() => downloadText(`${runId}-delivery-receipt.json`, JSON.stringify(receipt.data ?? {}, null, 2), 'application/json')} disabled={!receipt.data}>Download JSON</button>
+              {runId && <a className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700" href={`${env.links.workgraphDesigner}/runs/${runId}/insights`} target="_blank" rel="noreferrer">Open Run Insights</a>}
+            </div>
+            <div className="grid grid-cols-1 gap-2 lg:grid-cols-[1fr_auto]">
+              <select value={selectedEvaluatorId} onChange={e => setSelectedEvaluatorId(e.target.value)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                <option value="">All enabled evaluators</option>
+                {(evaluators.data ?? []).map(ev => <option key={ev.id} value={ev.id}>{ev.name ?? ev.id} · {ev.evaluator_type}</option>)}
+              </select>
+              <button className="rounded-lg bg-slate-950 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50" disabled={!runId || traceIds.length === 0} onClick={runEvaluator}>Run evaluator</button>
+            </div>
+            {actionError && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{actionError}</div>}
+            {actionResult && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">{actionResult.kind}</div>
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-3 text-[11px] text-slate-100">{JSON.stringify(actionResult.payload, null, 2)}</pre>
+              </div>
+            )}
+          </CardBody>
+        </Card>
+      </div>
     </div>
   )
 }
@@ -1240,6 +1463,26 @@ function EvidenceList({ title, rows }: { title: string; rows?: any[] }) {
         </div>
       ) : (
         <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-500">No evidence rows.</div>
+      )}
+    </div>
+  )
+}
+
+function MiniEvidence({ title, rows }: { title: string; rows?: any[] }) {
+  const items = Array.isArray(rows) ? rows.filter(Boolean).slice(0, 6) : []
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-slate-500">{title}</div>
+      {items.length === 0 ? (
+        <div className="text-xs text-slate-400">No evidence captured.</div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((row, idx) => (
+            <pre key={row.id ?? row.cfCallId ?? row.mcpInvocationId ?? idx} className="max-h-28 overflow-auto whitespace-pre-wrap rounded-md bg-white p-2 text-[10px] text-slate-600">
+              {JSON.stringify(row, null, 2)}
+            </pre>
+          ))}
+        </div>
       )}
     </div>
   )

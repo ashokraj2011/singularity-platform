@@ -77,6 +77,26 @@ async function git(args: string[], opts?: { allowFail?: boolean; maxBuffer?: num
   }
 }
 
+async function pushBranch(branch: string, remote?: string): Promise<{ pushed: boolean; pushError?: string; remote: string }> {
+  const resolvedRemote = remote?.trim() || "origin";
+  try {
+    const hasRemote = Boolean(await git(["remote", "get-url", resolvedRemote], { allowFail: true }));
+    if (!hasRemote) {
+      return { pushed: false, pushError: `remote '${resolvedRemote}' is not configured`, remote: resolvedRemote };
+    }
+    await git(["push", "-u", resolvedRemote, branch], { maxBuffer: 10 * 1024 * 1024 });
+    return { pushed: true, remote: resolvedRemote };
+  } catch (err) {
+    return { pushed: false, pushError: (err as Error).message, remote: resolvedRemote };
+  }
+}
+
+async function changedPathsForCommit(commitSha?: string): Promise<string[]> {
+  if (!commitSha) return [];
+  const names = await git(["show", "--format=", "--name-only", commitSha], { allowFail: true, maxBuffer: 1024 * 1024 });
+  return names.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
 export async function ensureGitRepo(): Promise<void> {
   await git(["init", "-q"]);
   await git(["config", "user.email", "mcp@local"]);
@@ -224,12 +244,21 @@ export async function finishWorkBranch(
   const branch = await currentBranch() ?? getActiveBranch()?.branch ?? "main";
   const changedPaths = await dirtyPaths();
   if (changedPaths.length === 0) {
+    const commitSha = await currentHeadSha();
+    const push = options?.push ? await pushBranch(branch, options.remote) : undefined;
     return {
       branch,
       workspaceRoot: sandboxRoot(),
-      changedPaths: [],
+      commitSha,
+      changedPaths: await changedPathsForCommit(commitSha),
       committed: false,
-      message: "no changes to commit",
+      pushed: push?.pushed,
+      pushError: push?.pushError,
+      message: options?.push
+        ? push?.pushed
+          ? "no changes to commit; pushed existing branch"
+          : "no changes to commit; push failed"
+        : "no changes to commit",
     };
   }
   const patch = await git(["diff", "--binary"], { allowFail: true, maxBuffer: 20 * 1024 * 1024 });
@@ -248,18 +277,9 @@ export async function finishWorkBranch(
   let pushed = false;
   let pushError: string | undefined;
   if (options?.push && commitSha) {
-    const remote = options.remote?.trim() || "origin";
-    try {
-      const hasRemote = Boolean(await git(["remote", "get-url", remote], { allowFail: true }));
-      if (!hasRemote) {
-        pushError = `remote '${remote}' is not configured`;
-      } else {
-        await git(["push", "-u", remote, branch], { maxBuffer: 10 * 1024 * 1024 });
-        pushed = true;
-      }
-    } catch (err) {
-      pushError = (err as Error).message;
-    }
+    const push = await pushBranch(branch, options.remote);
+    pushed = push.pushed;
+    pushError = push.pushError;
   }
 
   return {

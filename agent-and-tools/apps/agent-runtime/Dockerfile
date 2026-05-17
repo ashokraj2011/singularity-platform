@@ -51,7 +51,7 @@ EXPOSE 3003
 # agent-runtime tables are still created by composer's first push because
 # composer reads them (Capability, AgentTemplate, etc.) — composer's schema
 # carries the full superset of read-models too.
-CMD ["sh", "-c", "psql \"$DATABASE_URL\" -f prisma/post-push.sql && npx prisma db seed && npm run dev"]
+CMD ["sh", "-c", "until pg_isready -d \"$DATABASE_URL\" >/dev/null 2>&1; do echo '[agent-runtime] waiting for database...'; sleep 2; done; psql \"$DATABASE_URL\" -f prisma/post-push.sql && npx prisma db seed && npm run dev"]
 
 # ── builder ───────────────────────────────────────────────────────────────
 FROM base AS builder
@@ -72,4 +72,4 @@ COPY --from=builder /app/apps/agent-runtime/package.json ./package.json
 COPY --from=builder /app/node_modules ../../node_modules
 COPY --from=builder /app/packages ../../packages
 EXPOSE 3003
-CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && psql \"$DATABASE_URL\" -f prisma/post-push.sql && node dist/server.js"]
+CMD ["sh", "-c", "until pg_isready -d \"$DATABASE_URL\" >/dev/null 2>&1; do echo '[agent-runtime] waiting for database...'; sleep 2; done; npx prisma db push --skip-generate --accept-data-loss && psql \"$DATABASE_URL\" -f prisma/post-push.sql && node dist/server.js"]

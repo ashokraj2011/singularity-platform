@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -49,12 +49,15 @@ type BootstrapForm = {
   documentLinks: string;
   targetWorkflowPattern: string;
   agentPreset: string;
+  parentCapabilityId: string;
+  childCapabilityIds: string[];
+  sharedApplications: string;
 };
 
 const DEFAULT_FORM: BootstrapForm = {
   name: "",
   appId: "",
-  capabilityType: "APPLICATION",
+  capabilityType: "DELIVERY",
   criticality: "MEDIUM",
   description: "",
   businessUnitId: "",
@@ -64,6 +67,9 @@ const DEFAULT_FORM: BootstrapForm = {
   documentLinks: "",
   targetWorkflowPattern: "governed_delivery",
   agentPreset: "governed_delivery",
+  parentCapabilityId: "",
+  childCapabilityIds: [],
+  sharedApplications: "",
 };
 
 const BOOTSTRAP_AGENT_PREVIEW = [
@@ -103,6 +109,10 @@ const LOCAL_DISCOVERY_CAP = 500;
 const LOCAL_FILE_SIZE_CAP = 250_000;
 const LOCAL_PAYLOAD_CAP = 24_000_000;
 const FIELD_CLASS = "w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-singularity-200";
+const CAPABILITY_TYPE_OPTIONS = [
+  { value: "DELIVERY", label: "Delivery" },
+  { value: "COLLECTION", label: "Collection" },
+] as const;
 
 export default function CapabilitiesPage() {
   const router = useRouter();
@@ -122,6 +132,16 @@ export default function CapabilitiesPage() {
   const lockedAgentCount = selectedAgents.filter(agent => agent.locked).length;
   const gitGroundedAgentCount = selectedAgents.filter(agent => agent.learnsFromGit).length;
   const requiredAgentCount = selectedAgents.filter(agent => agent.activationRequired).length;
+  const items = (data ?? []) as Record<string, unknown>[];
+  const collectionCapabilities = useMemo(
+    () => items.filter(cap => isCollectionType(String(cap.capabilityType ?? ""))),
+    [items],
+  );
+  const childCapabilityOptions = useMemo(
+    () => items.filter(cap => !isCollectionType(String(cap.capabilityType ?? ""))),
+    [items],
+  );
+  const isCollection = isCollectionType(form.capabilityType);
 
   async function handleLocalDirectory(files: FileList) {
     setError(null);
@@ -169,6 +189,10 @@ export default function CapabilitiesPage() {
         .map((url) => url.trim())
         .filter(Boolean)
         .map((url) => ({ url, artifactType: "DOC" }));
+      const sharedApplications = form.sharedApplications
+        .split(/\n|,/)
+        .map((item) => item.trim())
+        .filter(Boolean);
       const body = {
         name: form.name.trim(),
         appId: form.appId.trim() || undefined,
@@ -177,6 +201,9 @@ export default function CapabilitiesPage() {
         description: form.description.trim() || undefined,
         businessUnitId: form.businessUnitId.trim() || undefined,
         ownerTeamId: form.ownerTeamId.trim() || undefined,
+        parentCapabilityId: !isCollection && form.parentCapabilityId ? form.parentCapabilityId : undefined,
+        childCapabilityIds: isCollection ? form.childCapabilityIds : [],
+        sharedApplications: isCollection ? sharedApplications : [],
         targetWorkflowPattern: form.targetWorkflowPattern.trim() || undefined,
         agentPreset: form.agentPreset,
         repositories: form.githubUrl.trim()
@@ -206,8 +233,6 @@ export default function CapabilitiesPage() {
       setCreating(false);
     }
   }
-
-  const items = (data ?? []) as Record<string, unknown>[];
 
   return (
     <div>
@@ -281,9 +306,18 @@ export default function CapabilitiesPage() {
                     placeholder="app-ccre, CMDB id, or portfolio id" />
                 </Field>
                 <Field label="Type">
-                  <input className={FIELD_CLASS} value={form.capabilityType}
-                    onChange={e => setForm(f => ({ ...f, capabilityType: e.target.value }))}
-                    placeholder="APPLICATION" />
+                  <select className={FIELD_CLASS} value={form.capabilityType}
+                    onChange={e => setForm(f => ({
+                      ...f,
+                      capabilityType: e.target.value,
+                      parentCapabilityId: e.target.value === "COLLECTION" ? "" : f.parentCapabilityId,
+                      childCapabilityIds: e.target.value === "COLLECTION" ? f.childCapabilityIds : [],
+                      sharedApplications: e.target.value === "COLLECTION" ? f.sharedApplications : "",
+                    }))}>
+                    {CAPABILITY_TYPE_OPTIONS.map(option => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
                 </Field>
               </div>
               <div className="grid grid-cols-3 gap-4">
@@ -294,32 +328,61 @@ export default function CapabilitiesPage() {
                   </select>
                 </Field>
                 <Field label="Owner team">
-                  {iamTeams.length > 0 ? (
-                    <select className={FIELD_CLASS} value={form.ownerTeamId}
-                      onChange={e => setForm(f => ({ ...f, ownerTeamId: e.target.value }))}>
-                      <option value="">Select IAM team…</option>
-                      {iamTeams.map(team => <option key={team.id} value={team.id}>{team.name}</option>)}
-                    </select>
-                  ) : (
-                    <input className={FIELD_CLASS} value={form.ownerTeamId}
-                      onChange={e => setForm(f => ({ ...f, ownerTeamId: e.target.value }))}
-                      placeholder="IAM team id" />
-                  )}
+                  <SearchableSelect
+                    placeholder={iamTeams.length > 0 ? "Search IAM team..." : "IAM team id"}
+                    value={form.ownerTeamId}
+                    options={iamTeams.map(team => ({
+                      value: team.id,
+                      label: team.name,
+                      description: team.team_key ? `key: ${team.team_key}` : undefined,
+                    }))}
+                    fallbackFreeText={iamTeams.length === 0}
+                    onChange={value => setForm(f => ({ ...f, ownerTeamId: value }))}
+                  />
                 </Field>
                 <Field label="Business unit">
-                  {iamBusinessUnits.length > 0 ? (
-                    <select className={FIELD_CLASS} value={form.businessUnitId}
-                      onChange={e => setForm(f => ({ ...f, businessUnitId: e.target.value }))}>
-                      <option value="">Select IAM business unit…</option>
-                      {iamBusinessUnits.map(bu => <option key={bu.id} value={bu.id}>{bu.name}</option>)}
-                    </select>
-                  ) : (
-                    <input className={FIELD_CLASS} value={form.businessUnitId}
-                      onChange={e => setForm(f => ({ ...f, businessUnitId: e.target.value }))}
-                      placeholder="IAM business unit id" />
-                  )}
+                  <SearchableSelect
+                    placeholder={iamBusinessUnits.length > 0 ? "Search business unit..." : "IAM business unit id"}
+                    value={form.businessUnitId}
+                    options={iamBusinessUnits.map(bu => ({
+                      value: bu.id,
+                      label: bu.name,
+                      description: bu.bu_key ? `key: ${bu.bu_key}` : undefined,
+                    }))}
+                    fallbackFreeText={iamBusinessUnits.length === 0}
+                    onChange={value => setForm(f => ({ ...f, businessUnitId: value }))}
+                  />
                 </Field>
               </div>
+              {isCollection ? (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <Field label="Child capabilities">
+                    <CapabilityMultiSelect
+                      capabilities={childCapabilityOptions}
+                      selectedIds={form.childCapabilityIds}
+                      onChange={childCapabilityIds => setForm(f => ({ ...f, childCapabilityIds }))}
+                    />
+                  </Field>
+                  <Field label="Shared applications">
+                    <textarea rows={4} className={FIELD_CLASS} value={form.sharedApplications}
+                      onChange={e => setForm(f => ({ ...f, sharedApplications: e.target.value }))}
+                      placeholder={"One shared application per line, e.g. app-rule-engine, CMDB id, portfolio id"} />
+                  </Field>
+                </div>
+              ) : (
+                <Field label="Parent collection (optional)">
+                  <SearchableSelect
+                    placeholder={collectionCapabilities.length > 0 ? "Search parent collection..." : "No collection capability yet"}
+                    value={form.parentCapabilityId}
+                    options={collectionCapabilities.map(cap => ({
+                      value: String(cap.id),
+                      label: String(cap.name ?? cap.id),
+                      description: String(cap.appId ?? cap.capabilityType ?? ""),
+                    }))}
+                    onChange={value => setForm(f => ({ ...f, parentCapabilityId: value }))}
+                  />
+                </Field>
+              )}
               <Field label="Target workflow pattern">
                 <select className={FIELD_CLASS} value={form.targetWorkflowPattern}
                   onChange={e => setForm(f => ({ ...f, targetWorkflowPattern: e.target.value }))}>
@@ -448,6 +511,7 @@ export default function CapabilitiesPage() {
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 text-sm">
                   <ChecklistItem ok={Boolean(form.name.trim())} label="Capability identity captured" />
                   <ChecklistItem ok={Boolean(form.ownerTeamId || iamTeams.length === 0)} label="Owner team selected or dev fallback allowed" />
+                  <ChecklistItem ok={form.capabilityType === "DELIVERY" || form.childCapabilityIds.length > 0 || Boolean(form.sharedApplications.trim())} label="Collection links child capabilities or shared applications" />
                   <ChecklistItem ok={sourceCount(form, localFiles) > 0} label="At least one learning source attached" />
                   <ChecklistItem ok={lockedAgentCount > 0} label="Locked governance gates included" />
                   <ChecklistItem ok={requiredAgentCount > 0} label="Required verifier/security/governance activation planned" />
@@ -517,6 +581,148 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+type SelectOption = { value: string; label: string; description?: string };
+
+function SearchableSelect({
+  value,
+  options,
+  placeholder,
+  fallbackFreeText = false,
+  onChange,
+}: {
+  value: string;
+  options: SelectOption[];
+  placeholder: string;
+  fallbackFreeText?: boolean;
+  onChange: (value: string) => void;
+}) {
+  const selected = options.find(option => option.value === value);
+  const [query, setQuery] = useState(selected?.label ?? value);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const next = options.find(option => option.value === value);
+    setQuery(next?.label ?? value);
+  }, [options, value]);
+
+  const filtered = options
+    .filter(option => `${option.label} ${option.description ?? ""}`.toLowerCase().includes(query.toLowerCase()))
+    .slice(0, 8);
+
+  if (fallbackFreeText) {
+    return (
+      <input className={FIELD_CLASS} value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder} />
+    );
+  }
+
+  return (
+    <div className="relative">
+      <input
+        className={FIELD_CLASS}
+        value={query}
+        placeholder={placeholder}
+        onFocus={() => setOpen(true)}
+        onChange={e => {
+          setQuery(e.target.value);
+          setOpen(true);
+          if (!e.target.value) onChange("");
+        }}
+      />
+      {value && (
+        <button
+          type="button"
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400 hover:text-slate-700"
+          onClick={() => {
+            onChange("");
+            setQuery("");
+            setOpen(false);
+          }}
+        >
+          Clear
+        </button>
+      )}
+      {open && (
+        <div className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+          {filtered.length > 0 ? filtered.map(option => (
+            <button
+              key={option.value}
+              type="button"
+              className="block w-full px-3 py-2 text-left text-sm hover:bg-slate-50"
+              onMouseDown={event => event.preventDefault()}
+              onClick={() => {
+                onChange(option.value);
+                setQuery(option.label);
+                setOpen(false);
+              }}
+            >
+              <span className="block font-medium text-slate-800">{option.label}</span>
+              {option.description && <span className="block text-xs text-slate-500">{option.description}</span>}
+            </button>
+          )) : (
+            <div className="px-3 py-2 text-sm text-slate-400">No matches</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CapabilityMultiSelect({
+  capabilities,
+  selectedIds,
+  onChange,
+}: {
+  capabilities: Record<string, unknown>[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const selected = new Set(selectedIds);
+  const filtered = capabilities
+    .filter(cap => capabilityLabel(cap).toLowerCase().includes(query.toLowerCase()))
+    .slice(0, 8);
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3">
+      <input
+        className="mb-2 w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-singularity-200"
+        value={query}
+        onChange={event => setQuery(event.target.value)}
+        placeholder="Search existing application/delivery capabilities..."
+      />
+      <div className="max-h-44 space-y-1 overflow-auto">
+        {filtered.length > 0 ? filtered.map(cap => {
+          const id = String(cap.id);
+          const checked = selected.has(id);
+          return (
+            <button
+              key={id}
+              type="button"
+              className={`flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm ${checked ? "bg-singularity-50 text-singularity-800" : "hover:bg-slate-50 text-slate-700"}`}
+              onClick={() => {
+                const next = new Set(selected);
+                if (checked) next.delete(id);
+                else next.add(id);
+                onChange(Array.from(next));
+              }}
+            >
+              <span>
+                <span className="block font-medium">{capabilityLabel(cap)}</span>
+                <span className="block text-xs text-slate-500">{String(cap.capabilityType ?? "capability")}</span>
+              </span>
+              <span className="text-xs font-semibold">{checked ? "Selected" : "Add"}</span>
+            </button>
+          );
+        }) : (
+          <div className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-400">No capabilities found.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SummaryCard({ icon, label, value, note }: { icon: React.ReactNode; label: string; value: string; note: string }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -542,6 +748,16 @@ function ChecklistItem({ ok, label }: { ok: boolean; label: string }) {
 function sourceCount(form: BootstrapForm, localFiles: LocalBootstrapFile[]): number {
   const docs = form.documentLinks.split(/\n|,/).map(s => s.trim()).filter(Boolean).length;
   return (form.githubUrl.trim() ? 1 : 0) + docs + (localFiles.length ? 1 : 0);
+}
+
+function isCollectionType(value: string): boolean {
+  return value.trim().toUpperCase().includes("COLLECTION");
+}
+
+function capabilityLabel(cap: Record<string, unknown>): string {
+  const name = String(cap.name ?? cap.id ?? "Capability");
+  const appId = cap.appId ? ` (${String(cap.appId)})` : "";
+  return `${name}${appId}`;
 }
 
 function isBootstrapDiscoveryPath(path: string): boolean {
