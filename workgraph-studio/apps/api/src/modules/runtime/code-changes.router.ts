@@ -39,39 +39,95 @@ codeChangesRouter.get('/:runId/code-changes', async (req: Request, res: Response
     return res.status(403).json({ error: (err as Error).message })
   }
 
-  // Resolve cfCallIds. Caller can pass one explicitly; otherwise we derive
-  // every cfCallId stored on AgentRunOutput.structuredPayload for this run's
-  // AgentRuns. That payload is written by AgentTaskExecutor on completion.
-  let cfCallIds: string[] = []
+  // Resolve cfCallIds + per-cfCallId lookup hints (codeChangeIds + mcpServerId).
+  // Two sources, fanned in together so the run-insights page sees code changes
+  // regardless of who recorded them:
+  //   (a) AgentRunOutput.structuredPayload.cfCallId   (server-driven runs)
+  //   (b) BlueprintSession.metadata.stageAttempts[].correlation.{cfCallId,
+  //       codeChangeIds, mcpServerId} + blueprint_artifacts.payload
+  //       (Workbench-driven runs that pause at the bridge node)
+  //
+  // Before this M41.1.2 fix, (b) was invisible to /api/runs/:runId/code-changes
+  // so a workflow paused at the Workbench bridge would render
+  // "This run did not touch any source files." even though the workbench
+  // itself was showing diffs from the same execution.
+  type Lookup = { cfCallId: string; codeChangeIds: Set<string>; mcpServerId?: string }
+  const lookups = new Map<string, Lookup>()
+  const addLookup = (source: Record<string, unknown> | null | undefined) => {
+    if (!source) return
+    const cfCallId = source.cfCallId
+    if (typeof cfCallId !== 'string' || !cfCallId) return
+    const current = lookups.get(cfCallId) ?? { cfCallId, codeChangeIds: new Set<string>() }
+    const rawIds = source.codeChangeIds
+    if (Array.isArray(rawIds)) {
+      for (const rawId of rawIds) {
+        if (typeof rawId === 'string' && rawId.trim()) current.codeChangeIds.add(rawId.trim())
+      }
+    }
+    const mcpServerId = source.mcpServerId
+    if (typeof mcpServerId === 'string' && mcpServerId.trim()) current.mcpServerId = mcpServerId.trim()
+    lookups.set(cfCallId, current)
+  }
+  const isRecord = (v: unknown): v is Record<string, unknown> =>
+    Boolean(v) && typeof v === 'object' && !Array.isArray(v)
+
   if (explicit) {
-    cfCallIds = [explicit]
+    addLookup({ cfCallId: explicit })
   } else {
+    // (a) AgentRun outputs
     const runs = await prisma.agentRun.findMany({
       where: { instanceId: runId },
       select: { outputs: { select: { structuredPayload: true } } },
     })
-    const seen = new Set<string>()
     for (const r of runs) for (const o of r.outputs) {
-      const id = (o.structuredPayload as { cfCallId?: string } | null)?.cfCallId
-      if (id && !seen.has(id)) { seen.add(id); cfCallIds.push(id) }
+      addLookup(isRecord(o.structuredPayload) ? o.structuredPayload : null)
+    }
+
+    // (b) Blueprint stage attempts + artifacts on any sessions linked to
+    // this workflow run. Same shape buildLoopStageVars + the workbench
+    // code-changes endpoint use, so a session paused at the Workbench
+    // bridge still surfaces its diffs on the workflow run page.
+    const sessions = await prisma.blueprintSession.findMany({
+      where: { workflowInstanceId: runId },
+      select: { id: true, metadata: true, artifacts: { select: { payload: true } } },
+    })
+    for (const s of sessions) {
+      const meta = isRecord(s.metadata) ? s.metadata : {}
+      const attempts = Array.isArray(meta.stageAttempts) ? meta.stageAttempts : []
+      for (const attempt of attempts) {
+        if (!isRecord(attempt)) continue
+        addLookup(isRecord(attempt.correlation) ? attempt.correlation : null)
+      }
+      for (const artifact of s.artifacts) {
+        addLookup(isRecord(artifact.payload) ? artifact.payload : null)
+      }
     }
   }
 
-  if (cfCallIds.length === 0) {
+  if (lookups.size === 0) {
     return res.json({ runId, cfCallIds: [], items: [], stale: false })
   }
 
   // Fan out — context-fabric returns one response per cfCallId; flatten.
+  // Per-cfCallId codeChangeIds + mcpServerId narrow the lookup so the
+  // bridge-relayed Workbench changes resolve under the right MCP server.
+  const lookupList = [...lookups.values()]
   try {
-    const responses = await Promise.all(cfCallIds.map(id => contextFabricClient.listCodeChanges(id)))
-    const items = responses.flatMap(r => r.items)
-    const stale = responses.some(r => r.stale)
+    const settled = await Promise.allSettled(lookupList.map(lookup =>
+      contextFabricClient.listCodeChanges(lookup.cfCallId, {
+        codeChangeIds: lookup.codeChangeIds.size > 0 ? [...lookup.codeChangeIds] : undefined,
+        mcpServerId: lookup.mcpServerId,
+      }),
+    ))
+    const items = settled.flatMap(r => r.status === 'fulfilled' ? r.value.items : [])
+    const stale = settled.some(r => r.status === 'fulfilled' && r.value.stale)
+    const errors = settled.flatMap(r => r.status === 'rejected' ? [(r.reason as Error).message] : [])
 
     // M16 — mirror to Consumable so the existing artifact UI surfaces these
     // alongside contracts/deliverables. Best-effort: failures don't fail the
     // proxy response. Idempotent on (runId, code-change id) via name match.
     const consumableIds = await mirrorToConsumables(runId, items, userId)
-    return res.json({ runId, cfCallIds, items, stale, consumableIds })
+    return res.json({ runId, cfCallIds: lookupList.map(l => l.cfCallId), items, stale, consumableIds, errors })
   } catch (err) {
     const e = err as { status?: number; message?: string }
     return res.status(e.status ?? 502).json({ error: e.message ?? 'context-fabric error' })
