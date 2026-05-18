@@ -14,8 +14,12 @@
  *   ↻  = running (spins)
  *   ⌛ = awaiting human verdict (animated pulse)
  *   ⏪ = sent back
+ *
+ * M41.4 — Renders the NeoThemePicker swatch row at the bottom so the
+ * theme control is always reachable without taking center-pane real
+ * estate. Optional — pass null/undefined as theme/onTheme to suppress.
  */
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import type { BlueprintSession, StageAttempt } from '../api'
 
 type StageStatus = 'pending' | 'running' | 'awaiting' | 'pass' | 'risk_accepted' | 'failed' | 'sent_back'
@@ -48,10 +52,14 @@ export function LoopRail({
   session,
   activeStageKey,
   onStage,
+  footer,
 }: {
   session: BlueprintSession
   activeStageKey: string | null
   onStage: (stageKey: string) => void
+  /** Optional footer slot — used by WorkbenchNeo to dock the
+   *  NeoThemePicker so it's always reachable from the rail. */
+  footer?: ReactNode
 }) {
   const stages = session.loopDefinition?.stages ?? []
   const items = useMemo(() => stages.map(stage => {
@@ -90,6 +98,7 @@ export function LoopRail({
           )
         })}
       </ol>
+      {footer}
     </aside>
   )
 }

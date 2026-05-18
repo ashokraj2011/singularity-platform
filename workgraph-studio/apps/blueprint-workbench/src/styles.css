@@ -2996,6 +2996,116 @@ pre {
 }
 
 /* ============================================================
+ * M41.4 — Workbench Neo theme tokens
+ *
+ * Seven semantic colors drive every cockpit accent. Each has a paired
+ * `*-rgb` triple so rgba() backgrounds and glows compose at the use
+ * site without per-theme duplication:
+ *
+ *   --neo-primary     CTA, "run" intent, primary chip
+ *   --neo-ok          PASS verdict, streaming dot, code-change event
+ *   --neo-attention   awaiting verdict, answer needed, approval event,
+ *                     system chat, risk-accepted
+ *   --neo-danger      FAILED, send back, rework, error
+ *   --neo-info        running, polling, "now" badge, agent chat
+ *   --neo-accent      sent back, governance event
+ *   --neo-tool        tool invocation in cockpit-row
+ *
+ * .neo-cockpit-root carries one of four theme classes. Apply at the
+ * shell level so the StageChat docked below the cockpit picks up the
+ * same theme as the cockpit itself.
+ * ============================================================ */
+
+.neo-cockpit-root {
+  /* Default theme is Indigo. Same colors as the original M41.1 ship,
+     so existing screenshots remain consistent. */
+  --neo-primary: #6366f1;    --neo-primary-rgb: 99, 102, 241;
+  --neo-ok: #22c55e;         --neo-ok-rgb: 34, 197, 94;
+  --neo-attention: #f59e0b;  --neo-attention-rgb: 245, 158, 11;
+  --neo-danger: #ef4444;     --neo-danger-rgb: 239, 68, 68;
+  --neo-info: #38bdf8;       --neo-info-rgb: 56, 189, 248;
+  --neo-accent: #f472b6;     --neo-accent-rgb: 244, 114, 182;
+  --neo-tool: #a855f7;       --neo-tool-rgb: 168, 85, 247;
+}
+
+.neo-cockpit-root.neo-theme-nightshade {
+  /* High-energy purple → magenta. Good for late-night incident rooms. */
+  --neo-primary: #a855f7;    --neo-primary-rgb: 168, 85, 247;
+  --neo-ok: #d946ef;         --neo-ok-rgb: 217, 70, 239;
+  --neo-attention: #fb923c;  --neo-attention-rgb: 251, 146, 60;
+  --neo-danger: #f43f5e;     --neo-danger-rgb: 244, 63, 94;
+  --neo-info: #8b5cf6;       --neo-info-rgb: 139, 92, 246;
+  --neo-accent: #ec4899;     --neo-accent-rgb: 236, 72, 153;
+  --neo-tool: #c084fc;       --neo-tool-rgb: 192, 132, 252;
+}
+
+.neo-cockpit-root.neo-theme-ocean {
+  /* Calm blue / teal. Reads as professional + neutral. */
+  --neo-primary: #0ea5e9;    --neo-primary-rgb: 14, 165, 233;
+  --neo-ok: #14b8a6;         --neo-ok-rgb: 20, 184, 166;
+  --neo-attention: #eab308;  --neo-attention-rgb: 234, 179, 8;
+  --neo-danger: #ef4444;     --neo-danger-rgb: 239, 68, 68;
+  --neo-info: #06b6d4;       --neo-info-rgb: 6, 182, 212;
+  --neo-accent: #6366f1;     --neo-accent-rgb: 99, 102, 241;
+  --neo-tool: #8b5cf6;       --neo-tool-rgb: 139, 92, 246;
+}
+
+.neo-cockpit-root.neo-theme-forest {
+  /* Warm natural greens + ambers. Reads as low-stress, deliberate. */
+  --neo-primary: #16a34a;    --neo-primary-rgb: 22, 163, 74;
+  --neo-ok: #84cc16;         --neo-ok-rgb: 132, 204, 22;
+  --neo-attention: #d97706;  --neo-attention-rgb: 217, 119, 6;
+  --neo-danger: #b91c1c;     --neo-danger-rgb: 185, 28, 28;
+  --neo-info: #0d9488;       --neo-info-rgb: 13, 148, 136;
+  --neo-accent: #a16207;     --neo-accent-rgb: 161, 98, 7;
+  --neo-tool: #9333ea;       --neo-tool-rgb: 147, 51, 234;
+}
+
+/* Theme picker swatch row (lives in the LoopRail footer). */
+.neo-theme-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 6px 4px;
+  margin-top: auto;
+  border-top: 1px solid var(--outline-variant);
+}
+
+.neo-theme-picker-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted-low);
+  flex-shrink: 0;
+}
+
+.neo-theme-picker-swatches {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.neo-theme-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  position: relative;
+  transition: transform 0.1s, border-color 0.15s;
+}
+
+.neo-theme-swatch:hover {
+  transform: scale(1.12);
+}
+
+.neo-theme-swatch.active {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--surface-container), 0 0 0 3px var(--text);
+}
+
+/* ============================================================
  * M41.1 — Workbench Neo Cockpit
  * Three-column shell: LoopRail · FocusPane · LiveCockpit
  * ============================================================ */
@@ -3117,12 +3227,12 @@ pre {
   font-weight: 700;
 }
 
-.rail-row.pass .rail-pip { background: rgba(34, 197, 94, 0.15); border-color: rgba(34, 197, 94, 0.6); color: #22c55e; }
-.rail-row.risk_accepted .rail-pip { background: rgba(234, 179, 8, 0.12); border-color: rgba(234, 179, 8, 0.6); color: #eab308; }
-.rail-row.failed .rail-pip { background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.6); color: #ef4444; }
-.rail-row.awaiting .rail-pip { background: rgba(99, 102, 241, 0.15); border-color: rgba(99, 102, 241, 0.6); color: #a5b4fc; animation: pulse-soft 1.6s ease-in-out infinite; }
-.rail-row.running .rail-pip { background: rgba(56, 189, 248, 0.15); border-color: rgba(56, 189, 248, 0.6); color: #38bdf8; animation: spin 1.2s linear infinite; }
-.rail-row.sent_back .rail-pip { background: rgba(244, 114, 182, 0.12); border-color: rgba(244, 114, 182, 0.6); color: #f472b6; }
+.rail-row.pass .rail-pip          { background: rgba(var(--neo-ok-rgb), 0.15);        border-color: rgba(var(--neo-ok-rgb), 0.6);        color: var(--neo-ok); }
+.rail-row.risk_accepted .rail-pip { background: rgba(var(--neo-attention-rgb), 0.12); border-color: rgba(var(--neo-attention-rgb), 0.6); color: var(--neo-attention); }
+.rail-row.failed .rail-pip        { background: rgba(var(--neo-danger-rgb), 0.12);    border-color: rgba(var(--neo-danger-rgb), 0.6);    color: var(--neo-danger); }
+.rail-row.awaiting .rail-pip      { background: rgba(var(--neo-primary-rgb), 0.15);   border-color: rgba(var(--neo-primary-rgb), 0.6);   color: var(--neo-primary); animation: pulse-soft 1.6s ease-in-out infinite; }
+.rail-row.running .rail-pip       { background: rgba(var(--neo-info-rgb), 0.15);      border-color: rgba(var(--neo-info-rgb), 0.6);      color: var(--neo-info);   animation: spin 1.2s linear infinite; }
+.rail-row.sent_back .rail-pip     { background: rgba(var(--neo-accent-rgb), 0.12);    border-color: rgba(var(--neo-accent-rgb), 0.6);    color: var(--neo-accent); }
 
 .rail-label {
   display: flex;
@@ -3149,8 +3259,8 @@ pre {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #f59e0b;
-  box-shadow: 0 0 8px rgba(245, 158, 11, 0.7);
+  background: var(--neo-attention);
+  box-shadow: 0 0 8px rgba(var(--neo-attention-rgb), 0.7);
   animation: pulse-soft 1.4s ease-in-out infinite;
 }
 
@@ -3196,12 +3306,12 @@ pre {
   opacity: 0.7;
 }
 
-.neo-focus.intent-answer::before    { background: linear-gradient(90deg, #f59e0b, #ef4444); opacity: 1; }
-.neo-focus.intent-approve::before   { background: linear-gradient(90deg, #6366f1, #22c55e); opacity: 1; }
-.neo-focus.intent-rework::before    { background: linear-gradient(90deg, #ef4444, #f59e0b); opacity: 1; }
-.neo-focus.intent-running::before   { background: linear-gradient(90deg, #38bdf8, #6366f1); opacity: 1; }
-.neo-focus.intent-completed::before { background: #22c55e; opacity: 0.8; }
-.neo-focus.intent-run::before       { background: var(--primary); opacity: 0.8; }
+.neo-focus.intent-answer::before    { background: linear-gradient(90deg, var(--neo-attention), var(--neo-danger)); opacity: 1; }
+.neo-focus.intent-approve::before   { background: linear-gradient(90deg, var(--neo-primary), var(--neo-ok)); opacity: 1; }
+.neo-focus.intent-rework::before    { background: linear-gradient(90deg, var(--neo-danger), var(--neo-attention)); opacity: 1; }
+.neo-focus.intent-running::before   { background: linear-gradient(90deg, var(--neo-info), var(--neo-primary)); opacity: 1; }
+.neo-focus.intent-completed::before { background: var(--neo-ok); opacity: 0.8; }
+.neo-focus.intent-run::before       { background: var(--neo-primary); opacity: 0.8; }
 
 .neo-focus-empty {
   align-items: center;
@@ -3266,14 +3376,14 @@ pre {
   font-weight: 500;
 }
 
-.focus-badge.confidence.ok { color: #22c55e; border-color: rgba(34, 197, 94, 0.4); }
-.focus-badge.confidence.mid { color: #f59e0b; border-color: rgba(245, 158, 11, 0.4); }
+.focus-badge.confidence.ok { color: var(--neo-ok); border-color: rgba(var(--neo-ok-rgb), 0.4); }
+.focus-badge.confidence.mid { color: var(--neo-attention); border-color: rgba(var(--neo-attention-rgb), 0.4); }
 
 button.focus-badge.link {
   cursor: pointer;
   background: transparent;
   border-style: dashed;
-  color: var(--primary);
+  color: var(--neo-primary);
 }
 
 button.focus-badge.link:hover {
@@ -3291,12 +3401,12 @@ button.focus-badge.link:hover {
   line-height: 1.5;
 }
 
-.focus-banner.banner-answer   { background: rgba(245, 158, 11, 0.08); border-color: rgba(245, 158, 11, 0.4); }
-.focus-banner.banner-approve  { background: rgba(99, 102, 241, 0.08); border-color: rgba(99, 102, 241, 0.4); }
-.focus-banner.banner-rework   { background: rgba(239, 68, 68, 0.08); border-color: rgba(239, 68, 68, 0.4); }
-.focus-banner.banner-running  { background: rgba(56, 189, 248, 0.08); border-color: rgba(56, 189, 248, 0.4); }
-.focus-banner.banner-completed { background: rgba(34, 197, 94, 0.08); border-color: rgba(34, 197, 94, 0.4); }
-.focus-banner.banner-run      { background: rgba(99, 102, 241, 0.06); border-color: rgba(99, 102, 241, 0.3); }
+.focus-banner.banner-answer   { background: rgba(var(--neo-attention-rgb), 0.08); border-color: rgba(var(--neo-attention-rgb), 0.4); }
+.focus-banner.banner-approve  { background: rgba(var(--neo-primary-rgb), 0.08);   border-color: rgba(var(--neo-primary-rgb), 0.4); }
+.focus-banner.banner-rework   { background: rgba(var(--neo-danger-rgb), 0.08);    border-color: rgba(var(--neo-danger-rgb), 0.4); }
+.focus-banner.banner-running  { background: rgba(var(--neo-info-rgb), 0.08);      border-color: rgba(var(--neo-info-rgb), 0.4); }
+.focus-banner.banner-completed { background: rgba(var(--neo-ok-rgb), 0.08);       border-color: rgba(var(--neo-ok-rgb), 0.4); }
+.focus-banner.banner-run      { background: rgba(var(--neo-primary-rgb), 0.06);   border-color: rgba(var(--neo-primary-rgb), 0.3); }
 
 .focus-body {
   display: flex;
@@ -3392,8 +3502,8 @@ button.focus-badge.link:hover {
   gap: 8px;
   align-items: flex-start;
   padding: 8px 10px;
-  border: 1px dashed rgba(245, 158, 11, 0.5);
-  background: rgba(245, 158, 11, 0.06);
+  border: 1px dashed rgba(var(--neo-attention-rgb), 0.5);
+  background: rgba(var(--neo-attention-rgb), 0.06);
   border-radius: 8px;
   font-size: 12px;
   color: var(--text);
@@ -3401,7 +3511,7 @@ button.focus-badge.link:hover {
 
 .focus-sendback {
   background: var(--surface-low);
-  border: 1px solid rgba(239, 68, 68, 0.4);
+  border: 1px solid rgba(var(--neo-danger-rgb), 0.4);
   border-radius: 10px;
   padding: 12px;
   display: flex;
@@ -3416,7 +3526,7 @@ button.focus-badge.link:hover {
 }
 
 .focus-sendback header strong {
-  color: #ef4444;
+  color: var(--neo-danger);
   font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -3464,7 +3574,7 @@ button.focus-badge.link:hover {
 }
 
 .focus-sendback-submit {
-  background: #ef4444;
+  background: var(--neo-danger);
   color: #fff;
   border: none;
   border-radius: 8px;
@@ -3480,8 +3590,8 @@ button.focus-badge.link:hover {
 }
 
 .focus-loop-warning {
-  border: 1px solid rgba(245, 158, 11, 0.4);
-  background: rgba(245, 158, 11, 0.06);
+  border: 1px solid rgba(var(--neo-attention-rgb), 0.4);
+  background: rgba(var(--neo-attention-rgb), 0.06);
   border-radius: 10px;
   padding: 10px 12px;
   display: flex;
@@ -3490,7 +3600,7 @@ button.focus-badge.link:hover {
 }
 
 .focus-loop-warning strong {
-  color: #f59e0b;
+  color: var(--neo-attention);
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -3506,9 +3616,9 @@ button.focus-badge.link:hover {
   margin: 0;
   padding: 8px 12px;
   border-radius: 8px;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.4);
-  color: #fecaca;
+  background: rgba(var(--neo-danger-rgb), 0.1);
+  border: 1px solid rgba(var(--neo-danger-rgb), 0.4);
+  color: rgb(var(--neo-danger-rgb));
   font-size: 12px;
 }
 
@@ -3524,7 +3634,7 @@ button.focus-badge.link:hover {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  background: var(--primary);
+  background: var(--neo-primary);
   color: #fff;
   border: none;
   border-radius: 12px;
@@ -3532,13 +3642,13 @@ button.focus-badge.link:hover {
   font-size: 15px;
   font-weight: 700;
   cursor: pointer;
-  box-shadow: 0 6px 24px rgba(99, 102, 241, 0.35);
+  box-shadow: 0 6px 24px rgba(var(--neo-primary-rgb), 0.35);
   transition: transform 0.1s, box-shadow 0.15s, opacity 0.15s;
 }
 
 .focus-primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 10px 32px rgba(99, 102, 241, 0.45);
+  box-shadow: 0 10px 32px rgba(var(--neo-primary-rgb), 0.45);
 }
 
 .focus-primary:disabled {
@@ -3547,9 +3657,9 @@ button.focus-badge.link:hover {
   box-shadow: none;
 }
 
-.intent-answer .focus-primary    { background: #f59e0b; box-shadow: 0 6px 24px rgba(245, 158, 11, 0.35); }
-.intent-approve .focus-primary   { background: #22c55e; box-shadow: 0 6px 24px rgba(34, 197, 94, 0.35); }
-.intent-rework .focus-primary    { background: #6366f1; }
+.intent-answer .focus-primary    { background: var(--neo-attention); box-shadow: 0 6px 24px rgba(var(--neo-attention-rgb), 0.35); }
+.intent-approve .focus-primary   { background: var(--neo-ok);        box-shadow: 0 6px 24px rgba(var(--neo-ok-rgb), 0.35); }
+.intent-rework .focus-primary    { background: var(--neo-primary); }
 .intent-completed .focus-primary { background: var(--surface-low); color: var(--text); box-shadow: none; border: 1px solid var(--outline-variant); }
 
 .focus-helper {
@@ -3602,7 +3712,7 @@ button.focus-badge.link:hover {
 }
 
 .focus-footer-link:hover {
-  color: #ef4444;
+  color: var(--neo-danger);
   text-decoration: underline;
 }
 
@@ -3649,11 +3759,11 @@ button.focus-badge.link:hover {
   line-height: 1.6;
 }
 
-.cockpit-status.streaming { color: #22c55e; border-color: rgba(34, 197, 94, 0.4); }
-.cockpit-status.polling   { color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); }
-.cockpit-status.connecting { color: #a5b4fc; border-color: rgba(99, 102, 241, 0.4); }
-.cockpit-status.idle      { color: var(--muted-low); }
-.cockpit-status.error     { color: #ef4444; border-color: rgba(239, 68, 68, 0.4); }
+.cockpit-status.streaming  { color: var(--neo-ok);        border-color: rgba(var(--neo-ok-rgb), 0.4); }
+.cockpit-status.polling    { color: var(--neo-info);      border-color: rgba(var(--neo-info-rgb), 0.4); }
+.cockpit-status.connecting { color: var(--neo-primary);   border-color: rgba(var(--neo-primary-rgb), 0.4); }
+.cockpit-status.idle       { color: var(--muted-low); }
+.cockpit-status.error      { color: var(--neo-danger);    border-color: rgba(var(--neo-danger-rgb), 0.4); }
 
 .cockpit-now {
   display: grid;
@@ -3661,8 +3771,8 @@ button.focus-badge.link:hover {
   gap: 10px;
   align-items: center;
   padding: 10px 12px;
-  border: 1px solid rgba(56, 189, 248, 0.4);
-  background: rgba(56, 189, 248, 0.06);
+  border: 1px solid rgba(var(--neo-info-rgb), 0.4);
+  background: rgba(var(--neo-info-rgb), 0.06);
   border-radius: 10px;
 }
 
@@ -3683,7 +3793,7 @@ button.focus-badge.link:hover {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #22c55e;
+  background: var(--neo-ok);
   animation: pulse-soft 1.2s ease-in-out infinite;
 }
 
@@ -3740,11 +3850,11 @@ button.focus-badge.link:hover {
   background: transparent;
 }
 
-.cockpit-row.tool       { background: rgba(168, 85, 247, 0.08); }
-.cockpit-row.llm        { background: rgba(99, 102, 241, 0.08); }
-.cockpit-row.code       { background: rgba(34, 197, 94, 0.08); }
-.cockpit-row.approval   { background: rgba(245, 158, 11, 0.08); }
-.cockpit-row.governance { background: rgba(244, 114, 182, 0.08); }
+.cockpit-row.tool       { background: rgba(var(--neo-tool-rgb), 0.08); }
+.cockpit-row.llm        { background: rgba(var(--neo-primary-rgb), 0.08); }
+.cockpit-row.code       { background: rgba(var(--neo-ok-rgb), 0.08); }
+.cockpit-row.approval   { background: rgba(var(--neo-attention-rgb), 0.08); }
+.cockpit-row.governance { background: rgba(var(--neo-accent-rgb), 0.08); }
 
 .cockpit-row .row-glyph { font-size: 13px; }
 
@@ -3770,7 +3880,7 @@ button.focus-badge.link:hover {
 .cockpit-error {
   margin: 0;
   font-size: 11px;
-  color: #fca5a5;
+  color: var(--neo-danger);
   text-align: center;
 }
 
@@ -3849,7 +3959,7 @@ button.focus-badge.link:hover {
   gap: 16px;
   padding: 14px 18px;
   background: var(--surface-container);
-  border: 1px solid var(--primary);
+  border: 1px solid var(--neo-primary);
   border-radius: 14px;
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
   max-width: 460px;
@@ -3875,7 +3985,7 @@ button.focus-badge.link:hover {
 }
 
 .neo-notify-allow {
-  background: var(--primary);
+  background: var(--neo-primary);
   color: #fff;
 }
 
@@ -4026,20 +4136,20 @@ button.focus-badge.link:hover {
 }
 
 .chat-msg.role-operator {
-  border-color: rgba(99, 102, 241, 0.4);
-  background: rgba(99, 102, 241, 0.06);
+  border-color: rgba(var(--neo-primary-rgb), 0.4);
+  background: rgba(var(--neo-primary-rgb), 0.06);
   margin-left: 24px;
 }
 
 .chat-msg.role-agent {
-  border-color: rgba(56, 189, 248, 0.4);
-  background: rgba(56, 189, 248, 0.06);
+  border-color: rgba(var(--neo-info-rgb), 0.4);
+  background: rgba(var(--neo-info-rgb), 0.06);
   margin-right: 24px;
 }
 
 .chat-msg.role-system {
-  border-color: rgba(245, 158, 11, 0.4);
-  background: rgba(245, 158, 11, 0.06);
+  border-color: rgba(var(--neo-attention-rgb), 0.4);
+  background: rgba(var(--neo-attention-rgb), 0.06);
   font-style: italic;
   text-align: center;
 }
@@ -4096,8 +4206,8 @@ button.focus-badge.link:hover {
 
 .chat-compose textarea:focus {
   outline: none;
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+  border-color: var(--neo-primary);
+  box-shadow: 0 0 0 3px rgba(var(--neo-primary-rgb), 0.18);
 }
 
 .chat-compose-actions {
@@ -4113,11 +4223,11 @@ button.focus-badge.link:hover {
 }
 
 .chat-error {
-  color: #fca5a5;
+  color: var(--neo-danger);
 }
 
 .chat-compose button {
-  background: var(--primary);
+  background: var(--neo-primary);
   color: #fff;
   border: none;
   border-radius: 8px;
