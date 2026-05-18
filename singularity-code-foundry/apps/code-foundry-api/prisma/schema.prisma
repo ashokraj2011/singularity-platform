@@ -106,6 +106,8 @@ model CodegenRun {
   spec              CodegenSpec    @relation(fields: [specId], references: [id], onDelete: Cascade)
   receipt           CodegenReceipt?
   artifacts         CodegenArtifact[]
+  gaps              CodegenGap[]
+  verifications     CodegenVerification[]
 
   @@index([specId, startedAt])
   @@index([status])
@@ -131,6 +133,78 @@ model CodegenArtifact {
   @@unique([runId, path])
   @@index([runId])
   @@map("codegen_artifacts")
+}
+
+// ─── CODEGEN GAPS (M42.3) ──────────────────────────────────────────────────
+// One row per finding produced by the Gap Detector. Patches in M42.4
+// reference rows here via gapId; the M42.6 UI surfaces them in the
+// approval flow. `resolved` flips to true once a patch lands and
+// verification re-runs green.
+
+enum GapType {
+  MISSING_BUSINESS_LOGIC
+  MISSING_DATASOURCE_CLIENT
+  MISSING_IMPORT
+  COMPILE_ERROR
+  TEST_FAILURE
+  POLICY_VIOLATION
+  MISSING_TEST_CASE
+  UNRESOLVED_TODO
+  UNRESOLVED_TEMPLATE_VAR
+  UNSUPPORTED_SPEC_FEATURE
+}
+
+enum GapSeverity {
+  low
+  medium
+  high
+  critical
+}
+
+model CodegenGap {
+  id            String       @id @default(uuid())
+  runId         String
+  gapType       GapType
+  severity      GapSeverity  @default(medium)
+  filePath      String?
+  className     String?
+  methodName    String?
+  // Region marker id (e.g. 'business-logic') when the gap is anchored
+  // to an llm-editable region.
+  regionId      String?
+  description   String
+  // Free-form recommendation surfaced to the operator or LLM.
+  recommendedResolution String?
+  llmEligible   Boolean      @default(false)
+  resolved      Boolean      @default(false)
+  createdAt     DateTime     @default(now())
+  resolvedAt    DateTime?
+
+  run           CodegenRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, resolved])
+  @@index([gapType])
+  @@map("codegen_gaps")
+}
+
+// ─── VERIFICATION RESULT (M42.3) ───────────────────────────────────────────
+// Captures the output of running the per-stack toolchain against a
+// generated tree. Multiple results per run are allowed (initial run +
+// post-patch re-verify in M42.4); the latest by createdAt is the
+// effective state. JSON body matches src/verify/types.ts so the M42.6
+// UI can render it without a model translation.
+
+model CodegenVerification {
+  id            String     @id @default(uuid())
+  runId         String
+  status        String     // PASSED | FAILED | SKIPPED | PARTIAL
+  result        Json       // VerificationResult shape
+  createdAt     DateTime   @default(now())
+
+  run           CodegenRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, createdAt])
+  @@map("codegen_verifications")
 }
 
 // ─── CODEGEN RECEIPT ───────────────────────────────────────────────────────

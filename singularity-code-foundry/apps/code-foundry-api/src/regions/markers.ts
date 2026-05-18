@@ -57,7 +57,11 @@ export function fence(opts: FenceOptions): string {
     throw new Error(`Region '${opts.regionId}' is llm-editable; cannot emit it as protected.`)
   }
   const c = commentPrefix(opts.language)
-  return `${c} ${openTag(opts.marker, opts.regionId)}\n${opts.body}\n${c} ${closeTag(opts.marker)}`
+  // Trailing newline ensures the close marker stays on its own line
+  // even when Handlebars' block-helper whitespace control would
+  // otherwise collapse the following template content onto the same
+  // physical line (which would break the region parse regex).
+  return `${c} ${openTag(opts.marker, opts.regionId)}\n${opts.body}\n${c} ${closeTag(opts.marker)}\n`
 }
 
 /**

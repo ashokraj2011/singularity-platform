@@ -19,6 +19,8 @@ import { validateCommand } from './commands/validate.js'
 import { freezeCommand } from './commands/freeze.js'
 import { historyCommand } from './commands/history.js'
 import { generateCommand } from './commands/generate.js'
+import { verifyCommand } from './commands/verify.js'
+import { detectGapsCommand } from './commands/detectGaps.js'
 
 const program = new Command()
 program
@@ -65,6 +67,20 @@ program
   .option('--api <url>', 'code-foundry-api base url', process.env.CODE_FOUNDRY_API_URL ?? 'http://localhost:3005')
   .option('--actor <id>', 'actor user id stamped on the run', process.env.USER ?? 'cli')
   .action(generateCommand)
+
+program
+  .command('verify')
+  .description('Run the per-stack verifier against a generated project (mvn / pytest / npm test)')
+  .requiredOption('-r, --run-id <runId>', 'codegen_runs.id')
+  .option('--api <url>', 'code-foundry-api base url', process.env.CODE_FOUNDRY_API_URL ?? 'http://localhost:3005')
+  .action(verifyCommand)
+
+program
+  .command('detect-gaps')
+  .description('Scan the generated project for placeholders, unresolved templates, TODOs, and build findings')
+  .requiredOption('-r, --run-id <runId>', 'codegen_runs.id')
+  .option('--api <url>', 'code-foundry-api base url', process.env.CODE_FOUNDRY_API_URL ?? 'http://localhost:3005')
+  .action(detectGapsCommand)
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(err.message ?? err)
