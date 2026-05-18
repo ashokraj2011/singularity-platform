@@ -210,6 +210,58 @@ ON CONFLICT ON CONSTRAINT uq_mcp_servers_capability_name DO UPDATE SET
   tags = EXCLUDED.tags,
   updated_at = now();
 
+-- M41.1.3 — defensive backfill: every active capability gets a Local-MCP
+-- binding so context-fabric's _resolve_mcp_record(capability_id) returns
+-- an IAM UUID instead of falling through to the env-var
+-- MCP_DEFAULT_SERVER_ID='local-default-mcp' shortcut.
+--
+-- Background: Workbench sessions (BlueprintSession.capabilityId) issued
+-- against UI-created capabilities used to stamp 'local-default-mcp' on
+-- context-fabric's call_log because no capability_id → mcp_server mapping
+-- existed for them. The runtime code-changes endpoint then needed special
+-- fan-in logic to re-resolve those records (see M41.1.2). With this
+-- backfill, every capability has exactly one IAM-registered MCP server
+-- so the two code paths agree on the id.
+--
+-- Idempotent on (capability_id, name) via uq_mcp_servers_capability_name.
+-- Skips capabilities that already have ANY active MCP server registered
+-- so a hand-curated multi-MCP capability isn't disturbed.
+INSERT INTO mcp_servers
+  (id, capability_id, name, description, base_url, auth_method, bearer_token,
+   protocol, protocol_version, status, metadata, tags, created_by, created_at, updated_at)
+SELECT
+  gen_random_uuid(),
+  c.id,
+  'Local MCP Server',
+  'Auto-registered by seed/00-iam.sql so context-fabric resolves an IAM MCP for every capability instead of falling through to the local-default-mcp env-var alias.',
+  -- Inside the docker network this is the right base_url; on bare-metal
+  -- the existing CCRE block above uses localhost. Use the docker hostname
+  -- here because every other auto-registered capability is created via
+  -- the SPA which runs inside the compose network.
+  'http://mcp-server-demo:7100/',
+  'BEARER_TOKEN',
+  'demo-bearer-token-must-be-min-16-chars',
+  'MCP_HTTP',
+  '2025-03-26',
+  'active',
+  '{"seed":"singularity","autoBoundBy":"00-iam.sql","mirrors":"70000000-0000-0000-0000-000000000001"}'::jsonb,
+  '["local","auto-bound"]'::jsonb,
+  (SELECT id FROM users WHERE email = 'admin@singularity.local' LIMIT 1),
+  now(), now()
+FROM capabilities c
+WHERE c.status = 'active'
+  AND NOT EXISTS (
+    SELECT 1 FROM mcp_servers m
+    WHERE m.capability_id = c.id AND m.status = 'active'
+  )
+ON CONFLICT ON CONSTRAINT uq_mcp_servers_capability_name DO UPDATE SET
+  base_url = EXCLUDED.base_url,
+  bearer_token = EXCLUDED.bearer_token,
+  status = EXCLUDED.status,
+  metadata = mcp_servers.metadata || EXCLUDED.metadata,
+  tags = EXCLUDED.tags,
+  updated_at = now();
+
 COMMIT;
 
 SELECT 'iam.business_units' AS table, COUNT(*) FROM business_units
