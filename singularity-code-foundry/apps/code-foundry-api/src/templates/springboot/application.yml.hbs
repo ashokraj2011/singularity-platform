@@ -1,0 +1,17 @@
+{{{header "yaml"}}}
+spring:
+  application:
+    name: {{application.artifactId}}
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true

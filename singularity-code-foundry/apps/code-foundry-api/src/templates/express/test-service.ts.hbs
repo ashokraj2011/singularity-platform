@@ -1,0 +1,12 @@
+{{{header "typescript"}}}
+{{#each endpoints}}
+// <llm-editable region="test-case">
+describe('{{this.operationId}}', () => {
+  it('returns the expected shape', () => {
+    // TODO(LLM-task): fill in assertions for {{this.operationId}}.
+    expect(true).toBe(true)
+  })
+})
+// </llm-editable>
+
+{{/each}}

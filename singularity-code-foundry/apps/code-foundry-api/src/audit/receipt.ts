@@ -25,6 +25,10 @@ export interface BuildReceiptInput {
   ir: ApplicationIr
   workItemId?: string | null
   actorId?: string
+  // M42.2 — when present, the receipt records every emitted file
+  // with its sha256, and the run status flips to GENERATED.
+  generatedArtifacts?: Array<{ path: string; contentHash: string; protected: boolean; fileType: string }>
+  outputPath?: string
 }
 
 export interface ReceiptBody {
@@ -70,7 +74,9 @@ export async function buildAndPersistReceipt(input: BuildReceiptInput): Promise<
       irHash: input.ir.meta.irHash,
       templateVersion: input.ir.meta.templateVersion,
       generatorVersion: input.ir.meta.generatorVersion,
-      status: 'STARTED',  // M42.2 will flip to GENERATED, etc.
+      // M42.2 — flip to GENERATED when files were actually written.
+      status: input.generatedArtifacts && input.generatedArtifacts.length > 0 ? 'GENERATED' : 'STARTED',
+      outputPath: input.outputPath ?? null,
     },
   })
 
@@ -98,6 +104,11 @@ export async function buildAndPersistReceipt(input: BuildReceiptInput): Promise<
       version: input.ir.meta.generatorVersion,
       templateVersion: input.ir.meta.templateVersion,
     },
+    generatedArtifacts: input.generatedArtifacts?.map(a => ({
+      path: a.path,
+      contentHash: a.contentHash,
+      protected: a.protected,
+    })),
     workItemId: input.workItemId ?? null,
   }
 
@@ -109,6 +120,23 @@ export async function buildAndPersistReceipt(input: BuildReceiptInput): Promise<
       receiptHash,
     },
   })
+
+  // M42.2 — denormalised artifact rows for fast lookup by the M42.4
+  // Patch Guard and the M42.6 UI tree view. The receipt JSON above is
+  // the audit anchor; these rows are the operational index.
+  if (input.generatedArtifacts && input.generatedArtifacts.length > 0) {
+    await prisma.codegenArtifact.createMany({
+      data: input.generatedArtifacts.map(a => ({
+        runId: run.id,
+        path: a.path,
+        contentHash: a.contentHash,
+        fileType: a.fileType,
+        generatedBy: 'generator',  // M42.3 will pass the template id through
+        protected: a.protected,
+      })),
+      skipDuplicates: true,
+    })
+  }
 
   // Best-effort audit fan-out so audit-gov has the spec→IR→run lineage
   // recorded in the canonical event timeline.

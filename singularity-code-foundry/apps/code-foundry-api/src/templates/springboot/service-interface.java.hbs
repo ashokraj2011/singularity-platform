@@ -1,0 +1,11 @@
+{{{header "java"}}}
+package {{application.packageName}}.service;
+
+import {{application.packageName}}.model.{{endpoint.responseType}};
+
+public interface {{endpoint.serviceName}} {
+    {{endpoint.responseType}} {{endpoint.operationId}}(
+{{#each endpoint.pathParams}}        {{this.javaType}} {{this.name}}{{#unless @last}},
+{{/unless}}{{/each}}
+    );
+}

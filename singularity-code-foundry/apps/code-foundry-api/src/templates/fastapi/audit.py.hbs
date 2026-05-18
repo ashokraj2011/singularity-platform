@@ -1,0 +1,20 @@
+{{{header "python"}}}
+"""Audit logger for {{application.name}}."""
+import logging
+
+# <generated:protected region="audit-logger">
+_AUDIT = logging.getLogger("AUDIT")
+_EVENT_NAME = "{{audit.eventName}}"
+
+
+class {{auditClassName}}:
+    def log_decision(self, customer_id: str, eligible: bool, reason: str) -> None:
+        _AUDIT.info(
+            "audit event recorded",
+            extra={
+                "auditEvent": _EVENT_NAME,
+                "eligible": str(eligible),
+                "reason": reason,
+            },
+        )
+# </generated:protected>

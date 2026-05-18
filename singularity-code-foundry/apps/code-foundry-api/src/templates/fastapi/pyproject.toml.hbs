@@ -1,0 +1,23 @@
+# {{{header "python"}}}
+[tool.poetry]
+name = "{{application.artifactId}}"
+version = "1.0.0"
+description = "{{metadata.description}}"
+authors = ["Singularity Code Foundry"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^{{application.pythonVersion}}"
+fastapi = "^0.115.0"
+uvicorn = "^0.32.0"
+pydantic = "^2.9.0"
+httpx = "^0.27.0"
+{{#if hasResilience}}tenacity = "^9.0.0"
+{{/if}}
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+httpx = "^0.27.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

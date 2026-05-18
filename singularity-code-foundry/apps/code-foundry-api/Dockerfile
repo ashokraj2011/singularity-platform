@@ -20,6 +20,8 @@ COPY package.json tsconfig.json ./
 COPY apps/code-foundry-api ./apps/code-foundry-api
 WORKDIR /app/apps/code-foundry-api
 RUN npx prisma generate
+# Workspace volume mount target — must exist before the bind mount lands.
+RUN mkdir -p /workspace
 EXPOSE 3005
 # Dev container hot-reloads via tsx watch + the src bind-mount from
 # docker-compose. Prisma client is regenerated above; the schema itself

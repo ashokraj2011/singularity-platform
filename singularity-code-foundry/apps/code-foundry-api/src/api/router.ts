@@ -13,11 +13,14 @@
 import { Router } from 'express'
 import { requireFlag } from '../lib/featureGate.js'
 import { specRouter } from './routes/spec.js'
+import { generateRouter } from './routes/generate.js'
 
 export const codegenRouter: Router = Router()
 
 // Master gate.
 codegenRouter.use(requireFlag('code_foundry.enabled'))
 
-// Greenfield spec spine (M42.1).
+// Greenfield surface (M42.1 + M42.2). Both the spec spine and the
+// generate route sit behind the greenfield sub-flag.
 codegenRouter.use(requireFlag('code_foundry.greenfield.enabled'), specRouter)
+codegenRouter.use(requireFlag('code_foundry.greenfield.enabled'), generateRouter)

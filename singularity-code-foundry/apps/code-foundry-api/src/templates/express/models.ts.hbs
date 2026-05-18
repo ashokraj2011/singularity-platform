@@ -1,0 +1,11 @@
+{{{header "typescript"}}}
+import { z } from 'zod'
+
+{{#each models}}
+export const {{this.name}}Schema = z.object({
+{{#each this.fields}}  {{this.name}}: {{zodFor this.jsonType}}{{#unless this.required}}.optional(){{/unless}},
+{{/each~}}
+})
+export type {{this.name}} = z.infer<typeof {{this.name}}Schema>
+
+{{/each}}

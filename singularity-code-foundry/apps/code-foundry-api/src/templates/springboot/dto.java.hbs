@@ -1,0 +1,11 @@
+{{{header "java"}}}
+package {{application.packageName}}.model;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+{{#if hasDateTime}}import java.time.OffsetDateTime;
+{{/if}}{{#if hasUuid}}import java.util.UUID;
+{{/if}}
+public record {{model.name}}(
+{{#each model.fields}}    @JsonProperty("{{this.name}}") {{this.javaType}} {{this.name}}{{#unless @last}},
+{{/unless}}{{/each}}
+) {}

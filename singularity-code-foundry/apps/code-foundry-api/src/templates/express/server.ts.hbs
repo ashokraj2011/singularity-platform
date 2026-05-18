@@ -1,0 +1,12 @@
+{{{header "typescript"}}}
+import express from 'express'
+import pino from 'pino'
+import { router } from './router.js'
+
+const log = pino({ name: '{{application.artifactId}}' })
+const app = express()
+app.use(express.json())
+app.use('{{api.basePath}}', router)
+
+const port = Number(process.env.PORT ?? 8080)
+app.listen(port, () => log.info({ port }, '{{application.name}} listening'))

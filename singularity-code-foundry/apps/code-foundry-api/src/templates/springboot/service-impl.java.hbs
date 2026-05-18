@@ -1,0 +1,47 @@
+{{{header "java"}}}
+package {{application.packageName}}.service;
+
+import {{application.packageName}}.model.{{endpoint.responseType}};
+{{#if audit}}import {{application.packageName}}.audit.{{auditClassName}};
+{{/if}}
+import java.time.OffsetDateTime;
+import org.springframework.stereotype.Service;
+
+{{#protectedRegion "service-impl" "java"}}
+@Service
+public class {{endpoint.serviceName}}Impl implements {{endpoint.serviceName}} {
+
+{{#if audit}}
+    private final {{auditClassName}} auditLogger;
+
+    public {{endpoint.serviceName}}Impl({{auditClassName}} auditLogger) {
+        this.auditLogger = auditLogger;
+    }
+{{/if}}
+
+    @Override
+    public {{endpoint.responseType}} {{endpoint.operationId}}(
+{{#each endpoint.pathParams}}        {{this.javaType}} {{this.name}}{{#unless @last}},
+{{/unless}}{{/each}}
+    ) {
+{{#if endpoint.deterministicBodyGeneration}}
+        // FULL coverage from rule DSL — deterministic body.
+        // (M42.2 emits a placeholder; M42.5 expands the rule expression
+        //  into a real evaluator. Full DSL → Java compilation is M42.5.)
+        boolean eligible = false;
+        String reason = "NOT_ELIGIBLE";
+        {{endpoint.responseType}} response = new {{endpoint.responseType}}(eligible, reason, OffsetDateTime.now());
+{{#if audit}}        auditLogger.logDecision({{#each endpoint.pathParams}}{{this.name}}{{#unless @last}}, {{/unless}}{{/each}}, eligible, reason);
+{{/if}}        return response;
+{{else}}
+{{#editableRegion "business-logic" "java"}}
+        // Coverage: {{endpoint.businessLogicCoverage}}. The Foundry could not
+        // derive a deterministic body for this operation. Replace this
+        // placeholder with the business logic; do not modify the surrounding
+        // protected scaffolding.
+        throw new UnsupportedOperationException("Generated placeholder: business logic not implemented");
+{{/editableRegion}}
+{{/if}}
+    }
+}
+{{/protectedRegion}}

@@ -103,12 +103,34 @@ model CodegenRun {
   startedAt         DateTime    @default(now())
   completedAt       DateTime?
 
-  spec              CodegenSpec @relation(fields: [specId], references: [id], onDelete: Cascade)
+  spec              CodegenSpec    @relation(fields: [specId], references: [id], onDelete: Cascade)
   receipt           CodegenReceipt?
+  artifacts         CodegenArtifact[]
 
   @@index([specId, startedAt])
   @@index([status])
   @@map("codegen_runs")
+}
+
+// M42.2 — One row per emitted file. Storing them denormalised here
+// makes it cheap for the M42.4 Patch Guard to look up "was this file
+// declared protected by the generator?" and for the UI to render the
+// file tree without re-parsing the receipt JSON.
+model CodegenArtifact {
+  id            String     @id @default(uuid())
+  runId         String
+  path          String
+  contentHash   String
+  fileType      String     // 'source' | 'test' | 'config' | 'doc' | 'contract' | 'manifest'
+  generatedBy   String     // template id
+  protected     Boolean    @default(false)
+  createdAt     DateTime   @default(now())
+
+  run           CodegenRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, path])
+  @@index([runId])
+  @@map("codegen_artifacts")
 }
 
 // ─── CODEGEN RECEIPT ───────────────────────────────────────────────────────

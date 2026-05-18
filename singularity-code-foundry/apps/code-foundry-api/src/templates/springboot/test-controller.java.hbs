@@ -1,0 +1,16 @@
+{{{header "java"}}}
+package {{application.packageName}}.controller;
+
+import org.junit.jupiter.api.Test;
+
+class {{endpoint.controllerName}}Test {
+
+{{#editableRegion "test-case" "java"}}
+    @Test
+    void {{endpoint.operationId}}_returnsExpectedShape() {
+        // TODO(LLM-task): fill in the assertions for {{endpoint.operationId}}.
+        // The generator writes one placeholder test per endpoint. The LLM
+        // patch task GENERATE_ADDITIONAL_TESTS may add more tests here.
+    }
+{{/editableRegion}}
+}

@@ -1,0 +1,31 @@
+openapi: 3.1.0
+info:
+  title: {{application.name}}
+  version: 1.0.0
+paths:
+{{#each endpoints}}
+  {{this.fullPath}}:
+    {{lowercaseMethod this.method}}:
+      operationId: {{this.operationId}}
+      parameters:
+{{#each this.pathParams}}        - in: path
+          name: {{this.name}}
+          required: {{this.required}}
+          schema: { type: string }
+{{/each}}      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/{{this.responseType}}'
+{{/each}}
+components:
+  schemas:
+{{#each models}}    {{this.name}}:
+      type: object
+      properties:
+{{#each this.fields}}        {{this.name}}:
+          type: {{this.jsonType}}
+{{#if this.format}}          format: {{this.format}}
+{{/if}}{{/each}}{{/each}}

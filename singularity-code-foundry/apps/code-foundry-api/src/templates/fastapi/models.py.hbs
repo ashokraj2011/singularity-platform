@@ -1,0 +1,15 @@
+{{{header "python"}}}
+"""Pydantic models for {{application.name}}."""
+from datetime import date, datetime
+from typing import Optional
+from uuid import UUID
+
+from pydantic import BaseModel, Field
+
+{{#each models}}
+class {{this.name}}(BaseModel):
+{{#each this.fields}}    {{snake this.name}}: {{#unless this.required}}Optional[{{/unless}}{{this.pythonType}}{{#unless this.required}}] = None{{/unless}} = Field(alias="{{this.name}}"{{#if this.description}}, description="{{this.description}}"{{/if}})
+{{/each}}
+    model_config = {"populate_by_name": True}
+
+{{/each}}

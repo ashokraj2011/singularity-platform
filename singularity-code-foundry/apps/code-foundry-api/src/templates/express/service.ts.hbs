@@ -1,0 +1,32 @@
+{{{header "typescript"}}}
+import type { {{#each models}}{{this.name}}{{#unless @last}}, {{/unless}}{{/each}} } from './models.js'
+{{#if audit}}import { {{auditClassName}} } from './audit.js'
+{{/if}}
+
+{{#each endpoints}}
+// <generated:protected region="service-impl">
+export class {{this.serviceName}}Service {
+{{#if ../audit}}  private audit = new {{../auditClassName}}()
+{{/if}}
+  {{this.operationId}}({{#each this.pathParams}}{{this.name}}: {{this.tsType}}{{#unless @last}}, {{/unless}}{{/each}}): {{this.responseType}} {
+{{#if this.deterministicBodyGeneration}}
+    // FULL coverage from rule DSL — deterministic body.
+    const eligible = false
+    const reason = 'NOT_ELIGIBLE'
+    const response: {{this.responseType}} = { eligible, reason, evaluatedAt: new Date().toISOString() } as unknown as {{this.responseType}}
+{{#if ../audit}}    this.audit.logDecision({{#each this.pathParams}}{{this.name}}{{#unless @last}}, {{/unless}}{{/each}}, eligible, reason)
+{{/if}}    return response
+{{else}}
+    // <llm-editable region="business-logic">
+    // Coverage: {{this.businessLogicCoverage}}. The Foundry could not
+    // derive a deterministic body for this operation. Replace this
+    // placeholder body with the business logic; do not modify the
+    // surrounding protected scaffolding.
+    throw new Error('Generated placeholder: business logic not implemented')
+    // </llm-editable>
+{{/if}}
+  }
+}
+// </generated:protected>
+
+{{/each}}

@@ -1,0 +1,13 @@
+{{{header "typescript"}}}
+import pino from 'pino'
+
+// <generated:protected region="audit-logger">
+const AUDIT = pino({ name: 'AUDIT' })
+const EVENT_NAME = '{{audit.eventName}}'
+
+export class {{auditClassName}} {
+  logDecision(customerId: string, eligible: boolean, reason: string): void {
+    AUDIT.info({ auditEvent: EVENT_NAME, eligible, reason }, 'audit event recorded')
+  }
+}
+// </generated:protected>

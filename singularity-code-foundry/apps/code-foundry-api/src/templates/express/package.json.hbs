@@ -1,0 +1,28 @@
+{
+  "name": "{{application.artifactId}}",
+  "version": "1.0.0",
+  "private": true,
+  "description": "{{metadata.description}}",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "test": "jest"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pino": "^9.5.0",
+    "zod": "^3.24.1"{{#if hasResilience}},
+    "opossum": "^8.0.0"{{/if}}
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/jest": "^29.5.13",
+    "@types/node": "^20.11.30",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4"
+  }
+}

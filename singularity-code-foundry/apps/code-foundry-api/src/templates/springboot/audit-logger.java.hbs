@@ -1,0 +1,29 @@
+{{{header "java"}}}
+package {{application.packageName}}.audit;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.stereotype.Component;
+
+{{#protectedRegion "audit-logger" "java"}}
+@Component
+public class {{auditClassName}} {
+
+    private static final Logger AUDIT = LoggerFactory.getLogger("AUDIT");
+    private static final String EVENT_NAME = "{{audit.eventName}}";
+
+    public void logDecision(String customerId, boolean eligible, String reason) {
+        MDC.put("auditEvent", EVENT_NAME);
+        MDC.put("eligible", String.valueOf(eligible));
+        MDC.put("reason", reason);
+        try {
+            AUDIT.info("audit event recorded");
+        } finally {
+            MDC.remove("auditEvent");
+            MDC.remove("eligible");
+            MDC.remove("reason");
+        }
+    }
+}
+{{/protectedRegion}}

@@ -18,6 +18,7 @@ import { initCommand } from './commands/init.js'
 import { validateCommand } from './commands/validate.js'
 import { freezeCommand } from './commands/freeze.js'
 import { historyCommand } from './commands/history.js'
+import { generateCommand } from './commands/generate.js'
 
 const program = new Command()
 program
@@ -55,6 +56,15 @@ spec
   .requiredOption('-i, --id <specId>', 'codegen_specs.id')
   .option('--api <url>', 'code-foundry-api base url', process.env.CODE_FOUNDRY_API_URL ?? 'http://localhost:3005')
   .action(historyCommand)
+
+program
+  .command('generate')
+  .description('Generate the deterministic baseline project from a spec')
+  .requiredOption('-s, --spec <path>', 'spec.yaml path')
+  .option('-o, --out <dir>', 'output directory (default: /workspace/<runId> inside container)')
+  .option('--api <url>', 'code-foundry-api base url', process.env.CODE_FOUNDRY_API_URL ?? 'http://localhost:3005')
+  .option('--actor <id>', 'actor user id stamped on the run', process.env.USER ?? 'cli')
+  .action(generateCommand)
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(err.message ?? err)

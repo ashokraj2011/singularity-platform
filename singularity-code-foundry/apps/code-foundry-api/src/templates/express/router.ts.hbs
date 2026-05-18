@@ -1,0 +1,17 @@
+{{{header "typescript"}}}
+import { Router, type Request, type Response } from 'express'
+{{#each endpoints}}import { {{this.serviceName}}Service } from './service.js'
+{{/each}}
+
+export const router: Router = Router()
+
+{{#each endpoints}}
+// <generated:protected region="api-contract">
+router.{{lowercaseMethod this.method}}('{{this.routePath}}', (req: Request, res: Response) => {
+  const service = new {{this.serviceName}}Service()
+  const result = service.{{this.operationId}}({{#each this.pathParams}}req.params.{{this.name}}{{#unless @last}}, {{/unless}}{{/each}})
+  res.status({{#if this.errors}}200{{else}}200{{/if}}).json(result)
+})
+// </generated:protected>
+
+{{/each}}

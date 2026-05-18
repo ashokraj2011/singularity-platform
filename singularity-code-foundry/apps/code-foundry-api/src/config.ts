@@ -33,8 +33,11 @@ export const config = {
   // Foundry's own opaque service token (declared but not yet used —
   // arrives in M42.6 when the REST API is hardened with auth).
   CODEGEN_SERVICE_TOKEN: process.env.CODEGEN_SERVICE_TOKEN ?? 'dev-codegen-service-token',
-  GENERATOR_VERSION: process.env.GENERATOR_VERSION ?? 'code-foundry-0.1.0',
-  TEMPLATE_VERSION: process.env.TEMPLATE_VERSION ?? 'spec-only-0.1.0', // M42.2 will diverge per stack
+  GENERATOR_VERSION: process.env.GENERATOR_VERSION ?? 'code-foundry-0.2.0',
+  TEMPLATE_VERSION: process.env.TEMPLATE_VERSION ?? 'spec-only-0.1.0', // each generator overrides this
+  // Per-run output directories live under WORKSPACE_ROOT/<runId>/.
+  // Defaults to /workspace which the compose file mounts as a volume.
+  WORKSPACE_ROOT: process.env.WORKSPACE_ROOT ?? '/workspace',
   // Per-key cache TTL for the feature-flag client (ms).
   FEATURE_FLAG_TTL_MS: Number(process.env.FEATURE_FLAG_TTL_MS ?? 30_000),
 }

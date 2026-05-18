@@ -1,0 +1,27 @@
+{{{header "python"}}}
+"""Generated FastAPI router for {{application.name}}.
+
+The decorator + signature for each endpoint live inside a
+generated:protected region; the Patch Guard rejects any LLM diff
+that modifies them. Service-level business logic lives in service.py
+and may carry llm-editable regions when rule DSL coverage is partial
+or absent.
+"""
+from fastapi import APIRouter, Depends
+{{#each models}}from .models import {{this.name}}
+{{/each}}from .service import {{#each endpoints}}{{this.serviceName}}{{#unless @last}}, {{/unless}}{{/each}}
+
+router = APIRouter()
+
+{{#each endpoints}}
+# <generated:protected region="api-contract">
+@router.{{lowercaseMethod this.method}}(
+    "{{this.routePath}}",
+    response_model={{this.responseType}},
+)
+def {{snake this.operationId}}({{#each this.pathParams}}{{this.name}}: {{this.pythonType}}{{#unless @last}}, {{/unless}}{{/each}}) -> {{this.responseType}}:
+    service = {{this.serviceName}}()
+    return service.{{snake this.operationId}}({{#each this.pathParams}}{{this.name}}{{#unless @last}}, {{/unless}}{{/each}})
+# </generated:protected>
+
+{{/each}}

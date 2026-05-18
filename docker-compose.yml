@@ -317,8 +317,9 @@ services:
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       CODEGEN_SERVICE_TOKEN: ${CODEGEN_SERVICE_TOKEN:-dev-codegen-service-token}
-      GENERATOR_VERSION: code-foundry-0.1.0
+      GENERATOR_VERSION: code-foundry-0.2.0
       TEMPLATE_VERSION: spec-only-0.1.0
+      WORKSPACE_ROOT: /workspace
       FEATURE_FLAG_TTL_MS: 30000
     ports:
       - "3005:3005"
@@ -326,6 +327,10 @@ services:
       # Hot-reload sources for the dev target.
       - ./singularity-code-foundry/apps/code-foundry-api/src:/app/apps/code-foundry-api/src
       - ./singularity-code-foundry/apps/code-foundry-api/examples:/app/apps/code-foundry-api/examples
+      # M42.2 — host-visible workspace for generated projects (per-run dirs).
+      # Override CODE_FOUNDRY_WORKSPACE_HOST to point at a real working
+      # checkout when you want to mvn-build the generated output.
+      - ${CODE_FOUNDRY_WORKSPACE_HOST:-./singularity-code-foundry/.workspace}:/workspace
     depends_on:
       at-postgres:
         condition: service_healthy

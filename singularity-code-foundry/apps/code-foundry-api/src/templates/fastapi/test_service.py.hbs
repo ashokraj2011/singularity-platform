@@ -1,0 +1,10 @@
+{{{header "python"}}}
+"""Generated FastAPI test scaffold for {{application.name}}."""
+{{#each endpoints}}
+# <llm-editable region="test-case">
+def test_{{snake this.operationId}}_returns_expected_shape():
+    """TODO(LLM-task): fill in assertions for {{this.operationId}}."""
+    pass
+# </llm-editable>
+
+{{/each}}

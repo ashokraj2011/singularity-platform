@@ -1,0 +1,29 @@
+{{{header "java"}}}
+package {{application.packageName}}.controller;
+
+import {{application.packageName}}.service.{{endpoint.serviceName}};
+import {{application.packageName}}.model.{{endpoint.responseType}};
+import org.springframework.web.bind.annotation.*;
+
+{{#protectedRegion "api-contract" "java"}}
+@RestController
+@RequestMapping("{{endpoint.basePath}}")
+public class {{endpoint.controllerName}} {
+
+    private final {{endpoint.serviceName}} service;
+
+    public {{endpoint.controllerName}}({{endpoint.serviceName}} service) {
+        this.service = service;
+    }
+
+    @{{endpoint.httpAnnotation}}("{{endpoint.routePath}}")
+    public {{endpoint.responseType}} {{endpoint.operationId}}(
+{{#each endpoint.pathParams}}        @PathVariable {{this.javaType}} {{this.name}}{{#unless @last}},
+{{/unless}}{{/each}}
+    ) {
+        return service.{{endpoint.operationId}}(
+{{#each endpoint.pathParams}}            {{this.name}}{{#unless @last}},{{/unless}}
+{{/each}}        );
+    }
+}
+{{/protectedRegion}}

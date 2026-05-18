@@ -1,0 +1,36 @@
+{{{header "python"}}}
+"""Service implementations for {{application.name}}."""
+from datetime import datetime, timezone
+
+from .models import {{#each models}}{{this.name}}{{#unless @last}}, {{/unless}}{{/each}}
+{{#if audit}}from .audit import {{auditClassName}}
+{{/if}}
+
+{{#each endpoints}}
+# <generated:protected region="service-impl">
+class {{this.serviceName}}:
+{{#if ../audit}}
+    def __init__(self) -> None:
+        self._audit = {{../auditClassName}}()
+{{/if}}
+
+    def {{snake this.operationId}}(self, {{#each this.pathParams}}{{this.name}}: {{this.pythonType}}{{#unless @last}}, {{/unless}}{{/each}}) -> {{this.responseType}}:
+{{#if this.deterministicBodyGeneration}}
+        # FULL coverage from rule DSL — deterministic body.
+        eligible = False
+        reason = "NOT_ELIGIBLE"
+        response = {{this.responseType}}(eligible=eligible, reason=reason, evaluatedAt=datetime.now(timezone.utc))
+{{#if ../audit}}        self._audit.log_decision({{#each this.pathParams}}{{this.name}}{{#unless @last}}, {{/unless}}{{/each}}, eligible, reason)
+{{/if}}        return response
+{{else}}
+        # <llm-editable region="business-logic">
+        # Coverage: {{this.businessLogicCoverage}}. The Foundry could not
+        # derive a deterministic body for this operation. Replace this
+        # placeholder body with the business logic; do not modify the
+        # surrounding protected scaffolding.
+        raise NotImplementedError("Generated placeholder: business logic not implemented")
+        # </llm-editable>
+{{/if}}
+# </generated:protected>
+
+{{/each}}
