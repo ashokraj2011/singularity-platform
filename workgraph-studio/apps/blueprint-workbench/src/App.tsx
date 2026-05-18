@@ -59,6 +59,10 @@ import {
   type WorkflowInstanceListItem,
 } from './api'
 import { AppSwitcher } from './components/AppSwitcher'
+import { LoopRail } from './neo/LoopRail'
+import { LiveCockpit } from './neo/LiveCockpit'
+import { FocusPane, computeFocusIntent, type FocusAction } from './neo/FocusPane'
+import { NeoNotifier } from './neo/NeoNotifier'
 
 const knownRoleMeta: Record<string, { label: string; icon: typeof Brain }> = {
   ARCHITECT: { label: 'Architect', icon: Brain },
@@ -70,7 +74,6 @@ const defaultWorkbenchGoal = 'Create a governed planning, design, development, Q
 
 type WorkbenchSection = 'workflow' | 'artifacts' | 'terminal'
 type WorkbenchUiMode = 'neo' | 'classic'
-type NeoWorkspaceTab = 'stage' | 'review' | 'artifacts' | 'terminal'
 
 const WORKBENCH_UI_MODE_KEY = 'singularity-blueprint-workbench-ui'
 const WORKGRAPH_WEB_ORIGIN = normalizeOrigin(import.meta.env.VITE_WORKGRAPH_WEB_ORIGIN)
@@ -953,6 +956,8 @@ function WorkbenchSetup({
   )
 }
 
+type NeoOverlayKind = 'none' | 'review' | 'artifacts' | 'terminal'
+
 function WorkbenchNeo({
   session,
   activeSection,
@@ -965,40 +970,34 @@ function WorkbenchNeo({
   onSession: (session: BlueprintSession) => void
 }) {
   const [activeStageKey, setActiveStageKey] = useState<string | null>(null)
-  const [workspaceTab, setWorkspaceTab] = useState<NeoWorkspaceTab>(() => sectionToNeoTab(activeSection))
+  const [overlay, setOverlay] = useState<NeoOverlayKind>('none')
   const stages = session?.loopDefinition?.stages ?? []
   const firstStageKey = stages[0]?.key ?? null
 
   useEffect(() => {
     if (!session) {
       setActiveStageKey(null)
+      setOverlay('none')
       return
     }
     setActiveStageKey(session.currentStageKey ?? firstStageKey)
   }, [session?.id, session?.currentStageKey, firstStageKey])
 
+  // Mirror external section requests into the overlay state so the
+  // host AppSwitcher can still pop the Artifacts / Terminal views.
   useEffect(() => {
-    setWorkspaceTab(sectionToNeoTab(activeSection))
+    if (activeSection === 'artifacts') setOverlay('artifacts')
+    else if (activeSection === 'terminal') setOverlay('terminal')
+    else if (overlay === 'artifacts' || overlay === 'terminal') setOverlay('none')
   }, [activeSection])
 
   const activeStage = stages.find(stage => stage.key === activeStageKey) ?? stages[0]
   const activeAttempt = session && activeStage ? attemptsFor(session, activeStage.key).at(-1) : undefined
-  const showReview = Boolean(session && activeStage && activeAttempt && isDeveloperStage(activeStage))
+  const canReview = Boolean(session && activeStage && activeAttempt && isDeveloperStage(activeStage))
 
-  useEffect(() => {
-    if (!session) return
-    if (showReview) {
-      setWorkspaceTab('review')
-    } else {
-      setWorkspaceTab(current => current === 'review' ? 'stage' : current)
-    }
-  }, [session?.id, activeStage?.key, showReview])
-
-  const chooseTab = (tab: NeoWorkspaceTab) => {
-    setWorkspaceTab(tab)
-    if (tab === 'artifacts') onSection('artifacts')
-    else if (tab === 'terminal') onSection('terminal')
-    else onSection('workflow')
+  const closeOverlay = (reset = true) => {
+    setOverlay('none')
+    if (reset) onSection('workflow')
   }
 
   if (!session) {
@@ -1012,214 +1011,392 @@ function WorkbenchNeo({
   }
 
   return (
-    <section className="neo-shell">
-      <main className="neo-main">
-        <NeoPipeline session={session} activeStageKey={activeStage?.key ?? null} onStage={(stageKey) => {
-          setActiveStageKey(stageKey)
-          chooseTab('stage')
-        }} />
+    <>
+      <NeoNotifier session={session} />
+      <section className="neo-shell neo-cockpit-shell">
+        <LoopRail
+          session={session}
+          activeStageKey={activeStage?.key ?? null}
+          onStage={(key) => {
+            setActiveStageKey(key)
+            setOverlay('none')
+            onSection('workflow')
+          }}
+        />
 
-        <section className="neo-workspace-card">
-          <div className="neo-workspace-tabs" aria-label="WorkbenchNeo workspace">
-            {([
-              ['stage', 'Stage'],
-              ['review', 'Code review'],
-              ['artifacts', 'Artifacts'],
-              ['terminal', 'Terminal'],
-            ] as const).map(([tab, label]) => (
-              <button
-                key={tab}
-                type="button"
-                className={workspaceTab === tab ? 'active' : ''}
-                disabled={tab === 'review' && !showReview}
-                onClick={() => chooseTab(tab)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+        <div className="neo-center-column">
+          <NeoStageController
+            session={session}
+            stage={activeStage}
+            onSession={onSession}
+            canReview={canReview}
+            onOpenReview={() => canReview && setOverlay('review')}
+            onOpenArtifacts={() => { setOverlay('artifacts'); onSection('artifacts') }}
+            onOpenTerminal={() => { setOverlay('terminal'); onSection('terminal') }}
+          />
+          <FinalizeStrip session={session} onSession={onSession} />
+        </div>
 
-          <div className="neo-workspace-body">
-            {workspaceTab === 'stage' && activeStage && (
-              <NeoStageOverview session={session} stage={activeStage} latest={activeAttempt} />
-            )}
-            {workspaceTab === 'review' && activeStage && activeAttempt && showReview && (
-              <DeveloperCodeReview session={session} stage={activeStage} latest={activeAttempt} layout="wide" />
-            )}
-            {workspaceTab === 'review' && !showReview && (
-              <section className="neo-placeholder">
-                <FileCode2 size={22} />
-                <h3>No code review for this stage</h3>
-                <p>Select a Developer stage after it runs to review actual MCP/git diff evidence.</p>
-              </section>
-            )}
-            {workspaceTab === 'artifacts' && (
-              <AssetRail session={session} activeStageKey={activeStage?.key} onSession={onSession} />
-            )}
-            {workspaceTab === 'terminal' && (
-              <WorkbenchTerminal session={session} />
-            )}
-          </div>
-        </section>
+        <LiveCockpit
+          workflowInstanceId={session.workflowInstanceId ?? session.id}
+          authToken={getToken()}
+        />
+      </section>
 
-        <NeoEvidenceConsole session={session} activeStage={activeStage} latest={activeAttempt} />
-      </main>
-
-      <aside className="neo-action-panel">
-        <StageDetailsPanel session={session} stage={activeStage} onSession={onSession} />
-        <FinalizeStrip session={session} onSession={onSession} />
-      </aside>
-    </section>
+      {overlay === 'review' && activeStage && activeAttempt && canReview && (
+        <NeoOverlayShell title={`Code review · ${activeStage.label}`} onClose={() => closeOverlay(false)}>
+          <DeveloperCodeReview session={session} stage={activeStage} latest={activeAttempt} layout="wide" />
+        </NeoOverlayShell>
+      )}
+      {overlay === 'artifacts' && (
+        <NeoOverlayShell title="Artifacts" onClose={() => closeOverlay()}>
+          <AssetRail session={session} activeStageKey={activeStage?.key} onSession={onSession} />
+        </NeoOverlayShell>
+      )}
+      {overlay === 'terminal' && (
+        <NeoOverlayShell title="Event log" onClose={() => closeOverlay()}>
+          <WorkbenchTerminal session={session} />
+        </NeoOverlayShell>
+      )}
+    </>
   )
 }
 
-function sectionToNeoTab(section: WorkbenchSection): NeoWorkspaceTab {
-  if (section === 'artifacts') return 'artifacts'
-  if (section === 'terminal') return 'terminal'
-  return 'stage'
-}
-
-function NeoPipeline({
-  session,
-  activeStageKey,
-  onStage,
+function NeoOverlayShell({
+  title,
+  onClose,
+  children,
 }: {
-  session: BlueprintSession
-  activeStageKey: string | null
-  onStage: (stageKey: string) => void
+  title: string
+  onClose: () => void
+  children: ReactNode
 }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
   return (
-    <section className="neo-pipeline" aria-label="Stage pipeline">
-      {(session.loopDefinition?.stages ?? []).map((stage, index, stages) => {
-        const latest = attemptsFor(session, stage.key).at(-1)
-        const status = latestStatus(latest)
-        const Icon = roleMeta(stage.agentRole).icon
-        return (
-          <div className="neo-pipeline-item" key={stage.key}>
-            <button
-              type="button"
-              className={`${activeStageKey === stage.key ? 'active' : ''} ${status}`}
-              onClick={() => onStage(stage.key)}
-            >
-              <Icon size={16} />
-              <span>{stage.label}</span>
-              <strong>{latest?.verdict ? verdictLabels[latest.verdict] : latest?.status ?? 'Ready'}</strong>
-            </button>
-            {index < stages.length - 1 && <i />}
-          </div>
-        )
-      })}
-    </section>
+    <div className="neo-overlay-scrim" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="neo-overlay-card">
+        <header className="neo-overlay-head">
+          <strong>{title}</strong>
+          <button type="button" className="neo-overlay-close" onClick={onClose} aria-label="Close">
+            <X size={16} />
+          </button>
+        </header>
+        <div className="neo-overlay-body">
+          {children}
+        </div>
+      </div>
+    </div>
   )
 }
 
-function NeoStageOverview({
+function NeoStageController({
   session,
   stage,
-  latest,
+  onSession,
+  canReview,
+  onOpenReview,
+  onOpenArtifacts,
+  onOpenTerminal,
 }: {
   session: BlueprintSession
-  stage: LoopStage
-  latest?: StageAttempt
+  stage: LoopStage | undefined
+  onSession: (session: BlueprintSession) => void
+  canReview: boolean
+  onOpenReview: () => void
+  onOpenArtifacts: () => void
+  onOpenTerminal: () => void
 }) {
-  const stageArtifacts = session.artifacts.filter(artifact => artifact.stageKey === stage.key)
+  const [answers, setAnswers] = useState<Record<string, DecisionAnswer>>({})
+  const [feedback, setFeedback] = useState('')
+  const [acceptRisk, setAcceptRisk] = useState(false)
+  const [sendBackOpen, setSendBackOpen] = useState(false)
+  const [sendBackTarget, setSendBackTarget] = useState('')
+  const [sendBackReason, setSendBackReason] = useState('')
+  const [requiredChanges, setRequiredChanges] = useState('')
+
+  // Hydrate answers from the session whenever the source-of-truth answers change.
+  useEffect(() => {
+    setAnswers(Object.fromEntries((session.decisionAnswers ?? []).map(a => [a.questionId, a])))
+  }, [session.id, session.decisionAnswers])
+
+  // Reset per-stage controls when the user switches stages.
+  useEffect(() => {
+    setFeedback('')
+    setAcceptRisk(false)
+    setSendBackOpen(false)
+    setSendBackTarget(stage?.allowedSendBackTo?.[0] ?? '')
+    setSendBackReason('')
+    setRequiredChanges('')
+  }, [stage?.key])
+
+  const runMutation = useMutation({
+    mutationFn: () => {
+      if (!stage) throw new Error('No stage selected')
+      if (!session.snapshots[0]) {
+        return api.snapshot(session.id).then(() => api.runStage(session.id, stage.key))
+      }
+      return api.runStage(session.id, stage.key)
+    },
+    onSuccess: onSession,
+  })
+  const verdictMutation = useMutation({
+    mutationFn: (verdict: LoopVerdict) => {
+      if (!stage) throw new Error('No stage selected')
+      return api.verdict(session.id, stage.key, {
+        verdict,
+        feedback: feedback.trim() || undefined,
+        acceptRisk,
+        answers: answerList(answers),
+      })
+    },
+    onSuccess: onSession,
+  })
+  const sendBackMutation = useMutation({
+    mutationFn: () => {
+      if (!stage) throw new Error('No stage selected')
+      return api.sendBack(session.id, stage.key, {
+        targetStageKey: sendBackTarget,
+        reason: sendBackReason,
+        requiredChanges: requiredChanges.trim() || undefined,
+      })
+    },
+    onSuccess: (next) => {
+      setSendBackOpen(false)
+      onSession(next)
+    },
+  })
+  const resetAttemptsMutation = useMutation({
+    mutationFn: () => {
+      if (!stage) throw new Error('No stage selected')
+      return api.resetStageAttempts(session.id, stage.key)
+    },
+    onSuccess: onSession,
+  })
+
+  if (!stage) {
+    return <FocusPane stage={undefined} latest={undefined} intent="idle" />
+  }
+
+  const latest = attemptsFor(session, stage.key).at(-1)
+  const stageAttemptCount = attemptsFor(session, stage.key).length
+  const maxLoopsForStage = session.loopDefinition?.maxLoopsPerStage ?? 3
+  const requiredMissing = (stage.questions ?? [])
+    .filter(q => q.required && !hasAnswerForQuestion(q, answerList(answers)))
+    .map(q => q.id)
+  const hasUnansweredRequired = requiredMissing.length > 0
+  const intent = computeFocusIntent(stage, latest, hasUnansweredRequired)
+  const stageArtifacts = session.artifacts.filter(a => a.stageKey === stage.key)
   const confidence = latest?.gateRecommendation?.confidence
-  return (
-    <section className="neo-stage-overview">
-      <div className="neo-stage-hero">
-        <div>
-          <span className="stage-key">{stage.key}</span>
-          <h2>{stage.label}</h2>
-          <p>{stage.description || session.goal}</p>
-        </div>
-        <div className="neo-stage-facts">
-          <DeliveryMetric label="Status" value={latest?.verdict ? verdictLabels[latest.verdict] : latest?.status ?? 'Ready'} tone={latest?.verdict === 'PASS' ? 'ok' : 'default'} />
-          <DeliveryMetric label="Role" value={roleMeta(stage.agentRole).label} />
-          <DeliveryMetric label="Confidence" value={typeof confidence === 'number' ? `${Math.round(confidence * 100)}%` : '--'} tone={typeof confidence === 'number' && confidence > 0.7 ? 'ok' : 'default'} />
-          <DeliveryMetric label="Artifacts" value={String(stageArtifacts.length)} />
-        </div>
-      </div>
 
-      <div className="neo-output-panel">
-        <div className="neo-output-header">
-          <strong>Latest stage output</strong>
-          {latest?.correlation && <code>{String(latest.correlation.cfCallId ?? latest.correlation.traceId ?? latest.id).slice(0, 36)}</code>}
-        </div>
-        {latest?.response ? (
-          <pre>{latest.response}</pre>
-        ) : (
-          <div className="neo-placeholder compact">
-            <Activity size={18} />
-            <p>No model-authored output yet. Run this stage to produce evidence and artifacts.</p>
-          </div>
-        )}
-      </div>
+  const mutationError = (runMutation.error ?? verdictMutation.error ?? sendBackMutation.error ?? resetAttemptsMutation.error)?.message ?? null
 
-      <div className="neo-contract-grid">
-        <section>
-          <h3>Expected artifacts</h3>
-          {(stage.expectedArtifacts ?? []).length === 0 && <p>No explicit artifact contract.</p>}
-          {(stage.expectedArtifacts ?? []).map(artifact => (
-            <span key={`${artifact.kind}-${artifact.title}`}>{artifact.kind} · {artifact.title}</span>
+  // Compose the FocusPane body based on intent.
+  const body: ReactNode = (
+    <>
+      {intent === 'answer' && (
+        <div className="focus-questions">
+          {(stage.questions ?? []).filter(q => q.required && !hasAnswerForQuestion(q, answerList(answers))).map(question => (
+            <QuestionAnswerCard
+              key={question.id}
+              question={question}
+              answer={answerForQuestion(question, answerList(answers))}
+              onAnswer={(answer) => setAnswers(current => ({ ...current, [question.id]: answer }))}
+            />
           ))}
-        </section>
-        <section>
-          <h3>Produced for this stage</h3>
-          {stageArtifacts.length === 0 && <p>No artifacts yet.</p>}
-          {stageArtifacts.slice(0, 6).map(artifact => (
-            <span key={artifact.id}>{artifact.title}</span>
-          ))}
-        </section>
-      </div>
-    </section>
-  )
-}
-
-function NeoEvidenceConsole({
-  session,
-  activeStage,
-  latest,
-}: {
-  session: BlueprintSession
-  activeStage?: LoopStage
-  latest?: StageAttempt
-}) {
-  const recentEvents = [...(session.reviewEvents ?? [])].reverse().slice(0, 5)
-  const openQuestions = (activeStage?.questions ?? []).filter(question => question.required && !hasAnswerForQuestion(question, session.decisionAnswers ?? []))
-  return (
-    <section className="neo-console">
-      <div className="neo-console-head">
-        <div>
-          <ShieldCheck size={16} />
-          <strong>Evidence console</strong>
-        </div>
-        <span>{activeStage?.label ?? 'No stage selected'}</span>
-      </div>
-      <div className="neo-console-grid">
-        <div>
-          <span>Latest events</span>
-          {recentEvents.length === 0 && <p>No events yet.</p>}
-          {recentEvents.map(event => (
-            <p key={event.id}><code>{event.type.replaceAll('_', ' ')}</code>{event.message}</p>
-          ))}
-        </div>
-        <div>
-          <span>Receipt</span>
-          {latest?.correlation ? (
-            <p><code>{String(latest.correlation.cfCallId ?? latest.correlation.traceId ?? latest.id)}</code>{stageCostEvidence(latest)}</p>
-          ) : (
-            <p>No execution receipt yet.</p>
+          {(stage.questions ?? []).some(q => !q.required) && (
+            <details className="focus-question-extras">
+              <summary>Optional questions ({(stage.questions ?? []).filter(q => !q.required).length})</summary>
+              {(stage.questions ?? []).filter(q => !q.required).map(question => (
+                <QuestionAnswerCard
+                  key={question.id}
+                  question={question}
+                  answer={answerForQuestion(question, answerList(answers))}
+                  onAnswer={(answer) => setAnswers(current => ({ ...current, [question.id]: answer }))}
+                />
+              ))}
+            </details>
           )}
-          {latest?.gateRecommendation?.reason && <p><code>gate</code>{latest.gateRecommendation.reason}</p>}
         </div>
-        <div>
-          <span>Open questions</span>
-          {openQuestions.length === 0 ? <p>No required unanswered questions.</p> : openQuestions.slice(0, 4).map(question => (
-            <p key={question.id}><code>{question.source === 'llm_open_question' ? 'LLM' : 'gate'}</code>{question.question}</p>
-          ))}
+      )}
+
+      {(intent === 'approve' || intent === 'rework' || intent === 'completed' || intent === 'running') && latest?.response && (
+        <div className="focus-response">
+          <header>
+            <strong>Latest stage output</strong>
+            {latest.correlation && <code>{String(latest.correlation.cfCallId ?? latest.correlation.traceId ?? latest.id).slice(0, 36)}</code>}
+          </header>
+          <pre>{latest.response}</pre>
         </div>
-      </div>
-    </section>
+      )}
+
+      {intent === 'approve' && (
+        <div className="focus-verdict-extras">
+          <label className="focus-feedback">
+            <span>Review feedback (optional)</span>
+            <textarea
+              rows={3}
+              value={feedback}
+              onChange={e => setFeedback(e.target.value)}
+              placeholder="Why this passes, what risk is accepted, or what must change."
+            />
+          </label>
+          {requiredMissing.length > 0 && (
+            <label className="focus-risk-toggle">
+              <input type="checkbox" checked={acceptRisk} onChange={e => setAcceptRisk(e.target.checked)} />
+              <span>Accept risk with unanswered required questions: {requiredMissing.join(', ')}</span>
+            </label>
+          )}
+        </div>
+      )}
+
+      {sendBackOpen && (stage.allowedSendBackTo ?? []).length > 0 && (
+        <div className="focus-sendback">
+          <header>
+            <strong>Send back</strong>
+            <button type="button" className="focus-sendback-cancel" onClick={() => setSendBackOpen(false)}>Cancel</button>
+          </header>
+          <div className="focus-sendback-grid">
+            <label>
+              <span>Target stage</span>
+              <select value={sendBackTarget} onChange={e => setSendBackTarget(e.target.value)}>
+                {(stage.allowedSendBackTo ?? []).map(key => (
+                  <option key={key} value={key}>{stageLabel(session, key)}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Reason</span>
+              <input value={sendBackReason} onChange={e => setSendBackReason(e.target.value)} placeholder="What failed?" />
+            </label>
+          </div>
+          <label>
+            <span>Required changes</span>
+            <textarea rows={2} value={requiredChanges} onChange={e => setRequiredChanges(e.target.value)} placeholder="What must the earlier stage fix before coming back?" />
+          </label>
+          <button
+            className="focus-sendback-submit"
+            disabled={!sendBackTarget || sendBackReason.trim().length < 3 || sendBackMutation.isPending}
+            onClick={() => sendBackMutation.mutate()}
+          >
+            {sendBackMutation.isPending ? '↻ ' : '↩ '}Send stage back
+          </button>
+        </div>
+      )}
+
+      {stageAttemptCount >= maxLoopsForStage && intent !== 'completed' && (
+        <div className="focus-loop-warning">
+          <strong>Loop limit reached</strong>
+          <p>This stage has used {stageAttemptCount}/{maxLoopsForStage} attempts. Reset to retry.</p>
+          <button
+            className="focus-secondary"
+            disabled={resetAttemptsMutation.isPending}
+            onClick={() => resetAttemptsMutation.mutate()}
+          >
+            {resetAttemptsMutation.isPending ? '↻ ' : '⟲ '}Reset this stage
+          </button>
+        </div>
+      )}
+    </>
+  )
+
+  // Badges — small chips under the title.
+  const badges: ReactNode = (
+    <>
+      <span className="focus-badge role">{roleMeta(stage.agentRole).label}</span>
+      <span className="focus-badge attempts">attempt #{Math.max(1, stageAttemptCount)}</span>
+      {typeof confidence === 'number' && (
+        <span className={`focus-badge confidence ${confidence > 0.7 ? 'ok' : 'mid'}`}>
+          {Math.round(confidence * 100)}% confidence
+        </span>
+      )}
+      <span className="focus-badge artifacts">{stageArtifacts.length} artifact{stageArtifacts.length === 1 ? '' : 's'}</span>
+      {canReview && (
+        <button type="button" className="focus-badge link" onClick={onOpenReview}>open code review →</button>
+      )}
+      <button type="button" className="focus-badge link" onClick={onOpenArtifacts}>artifacts →</button>
+      <button type="button" className="focus-badge link" onClick={onOpenTerminal}>event log →</button>
+    </>
+  )
+
+  // Decide the primary CTA based on intent.
+  let primaryAction: FocusAction | undefined
+  let secondaryActions: FocusAction[] = []
+  let helperText: string | undefined
+
+  if (intent === 'answer') {
+    primaryAction = {
+      label: 'Answer & continue',
+      onClick: () => verdictMutation.mutate('PASS'),
+      disabled: hasUnansweredRequired,
+      busy: verdictMutation.isPending,
+    }
+    helperText = hasUnansweredRequired
+      ? `Provide answers to ${requiredMissing.length} required question${requiredMissing.length === 1 ? '' : 's'} to unblock the agent.`
+      : 'All required questions answered.'
+  } else if (intent === 'run') {
+    primaryAction = {
+      label: session.snapshots[0] ? 'Run stage' : 'Snapshot + run',
+      onClick: () => runMutation.mutate(),
+      busy: runMutation.isPending,
+    }
+    helperText = session.snapshots[0]
+      ? 'Sends task + context to the agent loop.'
+      : 'A workspace snapshot will be created first.'
+  } else if (intent === 'running') {
+    primaryAction = undefined
+    helperText = 'The cockpit on the right shows tool calls and tokens as they happen.'
+  } else if (intent === 'approve') {
+    primaryAction = {
+      label: 'Approve & advance',
+      onClick: () => verdictMutation.mutate('PASS'),
+      busy: verdictMutation.isPending,
+    }
+    secondaryActions = [
+      { label: 'Accept with risk', onClick: () => verdictMutation.mutate('ACCEPTED_WITH_RISK'), busy: verdictMutation.isPending },
+      { label: 'Needs rework', onClick: () => verdictMutation.mutate('NEEDS_REWORK'), busy: verdictMutation.isPending },
+    ]
+    helperText = requiredMissing.length > 0 && !acceptRisk
+      ? `${requiredMissing.length} required question${requiredMissing.length === 1 ? '' : 's'} still unanswered — tick "Accept risk" to override.`
+      : 'Verdict will be recorded in the audit trail.'
+  } else if (intent === 'rework') {
+    primaryAction = {
+      label: session.snapshots[0] ? 'Re-run stage' : 'Snapshot + re-run',
+      onClick: () => runMutation.mutate(),
+      busy: runMutation.isPending,
+      disabled: stageAttemptCount >= maxLoopsForStage,
+    }
+    secondaryActions = [
+      { label: 'Reset attempts', onClick: () => resetAttemptsMutation.mutate(), busy: resetAttemptsMutation.isPending },
+    ]
+    helperText = stageAttemptCount >= maxLoopsForStage
+      ? 'Loop limit hit — reset to try again.'
+      : `Attempt ${stageAttemptCount + 1}/${maxLoopsForStage}.`
+  } else if (intent === 'completed') {
+    primaryAction = {
+      label: 'Run again',
+      onClick: () => runMutation.mutate(),
+      busy: runMutation.isPending,
+    }
+    helperText = 'Stage is closed. Re-running creates a new attempt with the same inputs.'
+  }
+
+  return (
+    <FocusPane
+      stage={stage}
+      latest={latest}
+      intent={intent}
+      badges={badges}
+      body={body}
+      primaryAction={primaryAction}
+      secondaryActions={secondaryActions.length > 0 ? secondaryActions : undefined}
+      onOpenSendBack={() => setSendBackOpen(true)}
+      inlineError={mutationError}
+      helperText={helperText}
+    />
   )
 }
 

@@ -16,7 +16,7 @@
  *   ⏪ = sent back
  */
 import { useMemo } from 'react'
-import type { BlueprintSession, LoopStage, StageAttempt } from '../api'
+import type { BlueprintSession, StageAttempt } from '../api'
 
 type StageStatus = 'pending' | 'running' | 'awaiting' | 'pass' | 'risk_accepted' | 'failed' | 'sent_back'
 
@@ -72,7 +72,7 @@ export function LoopRail({
         <span className="rail-subtitle">{session.loopDefinition?.name ?? 'Capability run'}</span>
       </header>
       <ol>
-        {items.map(({ stage, status, latest, attemptCount }, index) => {
+        {items.map(({ stage, status, attemptCount }, index) => {
           const isActive = activeStageKey === stage.key
           const needsAttention = status === 'awaiting' || (status === 'pending' && session.currentStageKey === stage.key)
           return (
