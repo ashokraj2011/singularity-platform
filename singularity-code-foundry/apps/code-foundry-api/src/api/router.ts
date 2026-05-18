@@ -16,6 +16,7 @@ import { specRouter } from './routes/spec.js'
 import { generateRouter } from './routes/generate.js'
 import { verifyRouter } from './routes/verify.js'
 import { llmTasksRouter } from './routes/llmTasks.js'
+import { brownfieldRouter } from './routes/brownfield.js'
 
 export const codegenRouter: Router = Router()
 
@@ -34,3 +35,11 @@ codegenRouter.use(
   requireFlag('code_foundry.llm_patch.enabled'),
   llmTasksRouter,
 )
+
+// Brownfield surface (M42.5) — Patent Chains B + C. Gated on the
+// brownfield sub-flag (OFF by default). The recipes themselves do not
+// call the LLM directly; the residual UPDATE_SERVICE_MAPPING +
+// UPDATE_TEST_EXPECTATION operations build LlmPatchTask rows that go
+// through the same llmTasks dispatch path, so llm_patch is enforced
+// at the existing apply-patch endpoint.
+codegenRouter.use(requireFlag('code_foundry.brownfield.enabled'), brownfieldRouter)

@@ -1,0 +1,68 @@
+# M42.5 — Example brownfield enhancement (Patent Chain B input).
+#
+# Adds a new response field `eligibilityReasonCode` to the existing
+# /eligibility endpoint. The Foundry's ADD_RESPONSE_FIELD recipe:
+#   1) Adds the field to the DTO (record component / pydantic field /
+#      zod schema + TS interface depending on stack).
+#   2) Patches the OpenAPI YAML (if one exists in the repo).
+#   3) Inserts an `<llm-editable region="business-logic">` fence inside
+#      the service implementation method so the LLM can fill in the
+#      mapping from upstream context.
+#   4) Inserts an `<llm-editable region="test-case">` fence inside the
+#      last test method so the LLM can extend the assertions.
+#
+# Only ADD_RESPONSE_FIELD is supported in V1. New recipes (16 more in
+# spec §25.8) land as small follow-ons on top of this scaffolding.
+
+specVersion: "1.0.0"
+kind: code_enhancement
+
+metadata:
+  workItemId: WI-2026-0001
+  title: "Surface a reason code on the eligibility response"
+  ownerTeam: eligibility
+  capability: customer-eligibility
+
+repo:
+  # repo.path is what the dispatcher writes to. It must match the
+  # repoPath recorded by `singularity-codegen scan-repo`.
+  path: ./.workspace/example-repo
+
+application:
+  language: java
+  framework: spring-boot
+  buildTool: maven
+
+enhancement:
+  type: ADD_RESPONSE_FIELD
+  # operationId of the endpoint that returns the model. Must exist in
+  # the scanned RepoModel.
+  targetEndpoint: getCustomerEligibility
+  # Name of the response DTO (record or class) to extend.
+  targetModel: EligibilityResponse
+
+field:
+  name: eligibilityReasonCode
+  type: string
+  required: false
+
+mapping:
+  # Source field (existing) the LLM should derive the new field from.
+  # Recipe surfaces this in the LLM patch task metadata as a hint.
+  source: customer.status
+
+update:
+  dto: true
+  openapi: true
+  serviceMapping: true   # LLM-eligible: fenced llm-editable region
+  tests: true            # LLM-eligible: fenced llm-editable region
+  audit: false           # leave audit logger untouched (guard enforces)
+
+llm:
+  allowed: true
+  allowedTasks:
+    - COMPLETE_MAPPING_LOGIC
+    - UPDATE_TEST_ASSERTIONS
+  forbiddenChanges:
+    - add_field_to_dto
+    - add_import_within_package

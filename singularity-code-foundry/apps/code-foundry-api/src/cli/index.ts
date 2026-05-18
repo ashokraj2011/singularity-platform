@@ -22,6 +22,7 @@ import { generateCommand } from './commands/generate.js'
 import { verifyCommand } from './commands/verify.js'
 import { detectGapsCommand } from './commands/detectGaps.js'
 import { createLlmTasksCommand, applyPatchCommand, dispatchTaskCommand } from './commands/llmTasks.js'
+import { scanRepoCommand, planEnhancementCommand, applyChangePlanCommand } from './commands/brownfield.js'
 
 const program = new Command()
 program
@@ -104,6 +105,38 @@ program
   .requiredOption('-t, --task-id <taskId>', 'codegen_llm_patch_tasks.id')
   .option('--api <url>', 'code-foundry-api base url', process.env.CODE_FOUNDRY_API_URL ?? 'http://localhost:3005')
   .action(dispatchTaskCommand)
+
+// ─── Brownfield (M42.5, Patent Chains B + C) ──────────────────────────────
+
+program
+  .command('scan-repo')
+  .description('Scan an existing repo and persist a CodegenRepoModel (gated on code_foundry.brownfield.enabled)')
+  .requiredOption('-r, --repo <path>', 'absolute path to the repo root')
+  .option('-f, --framework <fw>', 'spring-boot | fastapi | express (auto-detected when omitted)')
+  .option('-o, --out <file>', 'write full JSON response to this file (- = stdout)')
+  .option('--api <url>', 'code-foundry-api base url', process.env.CODE_FOUNDRY_API_URL ?? 'http://localhost:3005')
+  .option('--actor <id>', 'actor user id stamped on the row', process.env.USER ?? 'cli')
+  .action(scanRepoCommand)
+
+program
+  .command('plan-enhancement')
+  .description('Build a deterministic ChangePlan from an enhancement YAML + a repo model id')
+  .requiredOption('-s, --spec <path>', 'enhancement YAML path')
+  .requiredOption('-m, --repo-model-id <id>', 'codegen_repo_models.id (from scan-repo)')
+  .option('-o, --out <file>', 'write full JSON response to this file (- = stdout)')
+  .option('--api <url>', 'code-foundry-api base url', process.env.CODE_FOUNDRY_API_URL ?? 'http://localhost:3005')
+  .option('--actor <id>', 'actor user id stamped on the row', process.env.USER ?? 'cli')
+  .action(planEnhancementCommand)
+
+program
+  .command('apply-change-plan')
+  .description('Apply a ChangePlan: run recipes per operation, write files, queue LLM patch tasks for residual ops')
+  .requiredOption('-c, --change-plan-id <id>', 'codegen_change_plans.id (from plan-enhancement)')
+  .option('--dry-run', 'do not write files; just report what would change')
+  .option('-o, --out <file>', 'write full JSON response to this file (- = stdout)')
+  .option('--api <url>', 'code-foundry-api base url', process.env.CODE_FOUNDRY_API_URL ?? 'http://localhost:3005')
+  .option('--actor <id>', 'actor user id stamped on the row', process.env.USER ?? 'cli')
+  .action((opts) => applyChangePlanCommand({ ...opts, apply: !opts.dryRun }))
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(err.message ?? err)

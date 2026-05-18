@@ -92,6 +92,11 @@ enum RunStatus {
   FAILED
 }
 
+enum RunMode {
+  GREENFIELD
+  BROWNFIELD
+}
+
 model CodegenRun {
   id                String      @id @default(uuid())
   specId            String
@@ -99,6 +104,12 @@ model CodegenRun {
   templateVersion   String      // e.g. 'springboot-template-1.0.0'
   generatorVersion  String      // e.g. 'code-foundry-0.1.0'
   status            RunStatus   @default(STARTED)
+  // M42.5 — distinguishes a from-scratch generation (greenfield) from
+  // a recipe-driven modification of an existing repo (brownfield).
+  // For brownfield runs, outputPath is the scanned repo's root and
+  // the run references a CodegenChangePlan via brownfieldPlanId.
+  mode              RunMode     @default(GREENFIELD)
+  brownfieldPlanId  String?
   outputPath        String?     // host path or workspace ref (M42.2)
   startedAt         DateTime    @default(now())
   completedAt       DateTime?
@@ -109,10 +120,61 @@ model CodegenRun {
   gaps              CodegenGap[]
   verifications     CodegenVerification[]
   llmTasks          CodegenLlmPatchTask[]
+  changePlan        CodegenChangePlan? @relation(fields: [brownfieldPlanId], references: [id])
 
   @@index([specId, startedAt])
   @@index([status])
+  @@index([mode])
   @@map("codegen_runs")
+}
+
+// ─── BROWNFIELD MODELS (M42.5) ─────────────────────────────────────────────
+// Patent Chain B primitive. The Repo Model is the structured snapshot
+// of an existing repository the scanner produces; the Change Plan is
+// the typed list of operations the dispatcher emits after the impact
+// analysis classifies an enhancement against known patterns.
+
+model CodegenRepoModel {
+  id            String        @id @default(uuid())
+  repoPath      String
+  language      String        // 'java' | 'python' | 'typescript'
+  framework     String        // 'spring-boot' | 'fastapi' | 'express'
+  modelJson     Json
+  modelHash     String
+  scannedById   String?
+  scannedAt     DateTime      @default(now())
+  changePlans   CodegenChangePlan[]
+
+  @@index([repoPath, scannedAt])
+  @@index([modelHash])
+  @@map("codegen_repo_models")
+}
+
+enum ChangePlanStatus {
+  PROPOSED         // built; awaiting apply
+  PARTIALLY_APPLIED
+  APPLIED
+  FAILED
+  REJECTED
+}
+
+model CodegenChangePlan {
+  id                  String           @id @default(uuid())
+  repoModelId         String
+  enhancementSpecJson Json
+  enhancementSpecHash String
+  planJson            Json             // ChangeOperation[]
+  planHash            String
+  status              ChangePlanStatus @default(PROPOSED)
+  createdAt           DateTime         @default(now())
+  appliedAt           DateTime?
+
+  repoModel           CodegenRepoModel @relation(fields: [repoModelId], references: [id])
+  runs                CodegenRun[]
+
+  @@index([repoModelId])
+  @@index([status])
+  @@map("codegen_change_plans")
 }
 
 // M42.2 — One row per emitted file. Storing them denormalised here
