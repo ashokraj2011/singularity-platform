@@ -2215,6 +2215,7 @@ async function runLoopStageExecute(
   const modelAlias = executionConfig?.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS
   const limits = workbenchExecutionLimits(executionConfig)
   const isDeveloperStage = normalizeAgentRole(stage.agentRole).includes('DEV')
+  const linkedWorkItem = await workflowWorkItemContext(session.workflowInstanceId)
   const agentTemplateId = attempt.agentTemplateId
   const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
     stageKey: stage.key,
@@ -2230,6 +2231,8 @@ async function runLoopStageExecute(
       workflow_instance_id: session.workflowInstanceId ?? `blueprint-${session.id}`,
       workflow_node_id: readLoopState(session).workflowNodeId ?? session.phaseId ?? `blueprint-${stage.key}`,
       agent_run_id: isDeveloperStage ? attempt.id : undefined,
+      work_item_id: isDeveloperStage ? linkedWorkItem.workItemId : undefined,
+      work_item_code: isDeveloperStage ? linkedWorkItem.workItemCode : undefined,
       capability_id: session.capabilityId,
       agent_template_id: agentTemplateId,
       user_id: session.createdById ?? undefined,
@@ -2293,6 +2296,33 @@ async function runLoopStageExecute(
     allow_autonomous_mutation: isDeveloperStage,
     governance_mode: executionConfig?.governanceMode ?? 'fail_open',
   })
+}
+
+function jsonStringField(root: unknown, key: string): string | undefined {
+  if (!isRecord(root)) return undefined
+  const value = root[key]
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+async function workflowWorkItemContext(workflowInstanceId?: string | null): Promise<{ workItemId?: string; workItemCode?: string }> {
+  const instanceId = typeof workflowInstanceId === 'string' && workflowInstanceId.trim()
+    ? workflowInstanceId.trim()
+    : undefined
+  if (!instanceId) return {}
+  const instance = await prisma.workflowInstance.findUnique({
+    where: { id: instanceId },
+    select: { context: true },
+  })
+  const context = isRecord(instance?.context) ? instance.context : {}
+  const workItem = isRecord(context._workItem)
+    ? context._workItem
+    : isRecord(context.workItem)
+      ? context.workItem
+      : {}
+  return {
+    workItemId: jsonStringField(workItem, 'id') ?? jsonStringField(context, 'workItemId'),
+    workItemCode: jsonStringField(workItem, 'workCode') ?? jsonStringField(context, 'workItemCode'),
+  }
 }
 
 function workbenchBranchName(
@@ -2371,6 +2401,7 @@ async function createLoopStageArtifacts(
             codeChangeIds: evidence.codeChangeIds,
             workspaceBranch: evidence.workspaceBranch,
             workspaceCommitSha: evidence.workspaceCommitSha,
+            workspaceRoot: evidence.workspaceRoot,
             astIndexStatus: evidence.astIndexStatus,
           },
         }
@@ -2414,6 +2445,7 @@ async function createLoopStageArtifacts(
           codeChangeIds: codeChangeEvidence.codeChangeIds,
           workspaceBranch: codeChangeEvidence.workspaceBranch,
           workspaceCommitSha: codeChangeEvidence.workspaceCommitSha,
+          workspaceRoot: codeChangeEvidence.workspaceRoot,
           astIndexStatus: codeChangeEvidence.astIndexStatus,
         },
       },
@@ -3454,6 +3486,7 @@ async function runStage(
   const modelAlias = executionConfig?.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS
   const limits = workbenchExecutionLimits(executionConfig)
   const isDeveloperStage = stage === BlueprintStage.DEVELOPER
+  const linkedWorkItem = await workflowWorkItemContext(session.workflowInstanceId)
   const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
     stageKey: stage.toLowerCase(),
     stageLabel: humanStage(stage),
@@ -3467,6 +3500,8 @@ async function runStage(
     run_context: {
       workflow_instance_id: session.workflowInstanceId ?? `blueprint-${session.id}`,
       workflow_node_id: session.phaseId ?? `blueprint-${stage.toLowerCase()}`,
+      work_item_id: isDeveloperStage ? linkedWorkItem.workItemId : undefined,
+      work_item_code: isDeveloperStage ? linkedWorkItem.workItemCode : undefined,
       capability_id: session.capabilityId,
       agent_template_id: agentTemplateId,
       user_id: session.createdById ?? undefined,
@@ -3628,6 +3663,7 @@ async function createStageArtifacts(session: ArtifactSession, snapshot: Artifact
 	          codeChangeIds: codeChangeEvidence?.codeChangeIds ?? [],
 	          workspaceBranch: codeChangeEvidence?.workspaceBranch,
 	          workspaceCommitSha: codeChangeEvidence?.workspaceCommitSha,
+	          workspaceRoot: codeChangeEvidence?.workspaceRoot,
 	          astIndexStatus: codeChangeEvidence?.astIndexStatus,
 	        },
 	      },
@@ -4372,6 +4408,7 @@ type CodeChangeEvidence = {
   codeChangeIds?: string[]
   workspaceBranch?: string
   workspaceCommitSha?: string
+  workspaceRoot?: string
   astIndexStatus?: string
 }
 
@@ -4387,6 +4424,7 @@ function buildActualCodeChangeEvidence(session: ArtifactSession, ctx: SnapshotCo
   ].filter((path): path is string => typeof path === 'string' && path.trim().length > 0))
   const workspaceBranch = result.workspace?.workspaceBranch ?? result.correlation?.workspaceBranch ?? ''
   const workspaceCommitSha = result.workspace?.workspaceCommitSha ?? result.correlation?.workspaceCommitSha ?? ''
+  const workspaceRoot = result.workspace?.workspaceRoot ?? result.correlation?.workspaceRoot ?? ''
   const astIndexStatus = result.workspace?.astIndexStatus ?? result.correlation?.astIndexStatus ?? ''
   const actual = codeChangeIds.length > 0
   const fallbackPaths = changedPaths.length ? changedPaths : inferChangePaths(ctx, session.goal)
@@ -4401,6 +4439,7 @@ function buildActualCodeChangeEvidence(session: ArtifactSession, ctx: SnapshotCo
       session.sourceRef ? `- source_ref: ${session.sourceRef}` : undefined,
       workspaceBranch ? `- workspace_branch: ${workspaceBranch}` : undefined,
       workspaceCommitSha ? `- commit_sha: ${workspaceCommitSha}` : undefined,
+      workspaceRoot ? `- workspace_root: ${workspaceRoot}` : undefined,
       astIndexStatus ? `- ast_index_status: ${astIndexStatus}` : undefined,
       '',
       '## Code-change receipts',
@@ -4437,6 +4476,7 @@ function buildActualCodeChangeEvidence(session: ArtifactSession, ctx: SnapshotCo
     codeChangeIds,
     workspaceBranch,
     workspaceCommitSha,
+    workspaceRoot,
     astIndexStatus,
   }
 }

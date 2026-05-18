@@ -89,6 +89,7 @@ const InvokeSchema = z.object({
     nodeId: z.string().optional(),
     branchBase: z.string().optional(),
     branchName: z.string().optional(),
+    workspaceRoot: z.string().optional(),
     sourceType: z.string().optional(),
     sourceUri: z.string().optional(),
     sourceRef: z.string().optional(),
@@ -856,6 +857,7 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     workItemId: body.runContext.workItemId,
     workItemCode: body.runContext.workItemCode,
     branchName: body.runContext.branchName,
+    workspaceRoot: body.runContext.workspaceRoot,
   });
 
   return await withSandboxRoot(workspaceRoot, async () => {

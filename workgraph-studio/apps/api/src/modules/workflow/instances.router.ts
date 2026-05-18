@@ -6,7 +6,7 @@ import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
-import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, startInstance } from './runtime/WorkflowRuntime'
+import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, restartNode, startInstance } from './runtime/WorkflowRuntime'
 import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { getWorkflowBudgetOverview } from './runtime/budget'
@@ -363,6 +363,22 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/fail', validate(failNodeSchema)
     const result = await failNode(id, nodeId, failure, req.user!.userId)
     const node = await prisma.workflowNode.findUnique({ where: { id: nodeId } })
     res.json({ ...result, node })
+  } catch (err) {
+    next(err)
+  }
+})
+
+workflowInstancesRouter.post('/:id/nodes/:nodeId/restart', async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    const nodeId = req.params.nodeId as string
+    await assertInstancePermission(req.user!.userId, id, 'edit')
+    const result = await restartNode(id, nodeId, req.user!.userId)
+    const [instance, node] = await Promise.all([
+      prisma.workflowInstance.findUnique({ where: { id } }),
+      prisma.workflowNode.findUnique({ where: { id: nodeId } }),
+    ])
+    res.json({ ...result, instance, node })
   } catch (err) {
     next(err)
   }

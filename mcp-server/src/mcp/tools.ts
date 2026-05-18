@@ -65,6 +65,7 @@ const CallSchema = z.object({
       workItemCode: z.string().optional(),
       branchBase: z.string().optional(),
       branchName: z.string().optional(),
+      workspaceRoot: z.string().optional(),
       capabilityId: z.string().optional(),
       agentId: z.string().optional(),
     })
@@ -97,6 +98,7 @@ toolsRouter.post("/tools/call", async (req, res) => {
     workItemId: body.runContext.workItemId,
     workItemCode: body.runContext.workItemCode,
     branchName: body.runContext.branchName,
+    workspaceRoot: body.runContext.workspaceRoot,
   });
   const start = Date.now();
   try {

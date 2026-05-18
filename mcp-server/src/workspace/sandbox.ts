@@ -23,6 +23,7 @@ export interface WorkspaceRootRequest {
   workItemId?: string;
   workItemCode?: string;
   branchName?: string;
+  workspaceRoot?: string;
 }
 
 function safeWorkspaceSegment(value: string | undefined, fallback: string): string {
@@ -50,7 +51,24 @@ export function workItemWorkspacesRoot(): string {
     : path.resolve(baseSandboxRoot(), configured);
 }
 
+function isInside(root: string, candidate: string): boolean {
+  const rel = path.relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+function safeExplicitWorkspaceRoot(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  const resolved = path.resolve(trimmed);
+  const base = baseSandboxRoot();
+  const workspaces = workItemWorkspacesRoot();
+  if (isInside(base, resolved) || isInside(workspaces, resolved)) return resolved;
+  return undefined;
+}
+
 export function workspaceRootForRunContext(req: WorkspaceRootRequest): string {
+  const explicit = safeExplicitWorkspaceRoot(req.workspaceRoot);
+  if (explicit) return explicit;
   const identity = req.workItemCode?.trim()
     || (req.branchName?.trim() ? safeWorkspaceSegment(req.branchName, "") : "")
     || req.workItemId?.trim();

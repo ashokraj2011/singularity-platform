@@ -99,6 +99,7 @@ export interface ExecuteResponse {
     toolInvocationIds: string[]
     artifactIds: string[]
     codeChangeIds?: string[]
+    workspaceRoot?: string
     workspaceBranch?: string
     workspaceCommitSha?: string
     changedPaths?: string[]
@@ -107,6 +108,7 @@ export interface ExecuteResponse {
     astIndexedSymbols?: number
   }
   workspace?: {
+    workspaceRoot?: string
     workspaceBranch?: string
     workspaceCommitSha?: string
     changedPaths?: string[]

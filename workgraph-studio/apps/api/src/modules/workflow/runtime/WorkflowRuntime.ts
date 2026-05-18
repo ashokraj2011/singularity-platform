@@ -29,6 +29,7 @@ import { activateSetContext } from './executors/SetContextExecutor'
 import { activateErrorCatch } from './executors/ErrorCatchExecutor'
 
 type PendingAdvance = { nodeId: string }
+const RESTARTABLE_NODE_STATUSES = new Set(['COMPLETED', 'FAILED', 'BLOCKED'])
 
 type ArtifactBinding = {
   id?: string
@@ -263,138 +264,11 @@ async function activateDownstream(
       continue
     }
 
-    switch (nextNode.nodeType) {
-      case 'START':
-        // START is a pass-through; auto-advance immediately
-        await advance(instance.id, nextNode.id, context, actorId)
-        break
-      case 'END':
-        // END marks itself complete; isComplete() will then close the instance
-        await advance(instance.id, nextNode.id, context, actorId)
-        break
-      case 'HUMAN_TASK':
-        await activateHumanTask(nextNode, instance)
-        break
-      case 'WORKBENCH_TASK':
-        await activateWorkbenchTask(nextNode, instance)
-        break
-      case 'AGENT_TASK':
-        await activateAgentTask(nextNode, instance)
-        break
-      case 'APPROVAL':
-        await activateApproval(nextNode, instance, actorId)
-        break
-      case 'DECISION_GATE':
-        await activateDecisionGate(nextNode, instance)
-        await advance(instance.id, nextNode.id, context, actorId)
-        break
-      case 'CONSUMABLE_CREATION':
-        await activateConsumableCreation(nextNode, instance)
-        break
-      case 'TOOL_REQUEST':
-        await activateToolRequest(nextNode, instance)
-        break
-      case 'GIT_PUSH': {
-        const result = await activateGitPush(nextNode, instance, actorId)
-        if (result.pushed) await advance(instance.id, nextNode.id, result.output, actorId)
-        break
-      }
-      case 'POLICY_CHECK': {
-        const result = await activatePolicyCheck(nextNode, instance, actorId)
-        if (result.passed) await advance(instance.id, nextNode.id, result.output, actorId)
-        break
-      }
-      case 'EVAL_GATE': {
-        const result = await activateEvalGate(nextNode, instance, actorId)
-        if (result.passed) await advance(instance.id, nextNode.id, result.output, actorId)
-        break
-      }
-      case 'TIMER':
-        await activateTimer(nextNode, instance)
-        break
-      case 'SIGNAL_WAIT':
-        await activateSignalWait(nextNode, instance)
-        break
-      case 'CALL_WORKFLOW':
-        await activateCallWorkflow(nextNode, instance)
-        break
-      case 'WORK_ITEM':
-        await activateWorkItem(nextNode, instance, actorId)
-        break
-      case 'FOREACH':
-        await activateForeach(nextNode, instance)
-        break
-      case 'INCLUSIVE_GATEWAY':
-        await activateInclusiveGateway(nextNode, instance)
-        await advance(instance.id, nextNode.id, context, actorId)
-        break
-      case 'EVENT_GATEWAY':
-        await activateEventGateway(nextNode, instance)
-        break
-      case 'DATA_SINK':
-        await activateDataSink(nextNode, instance)
-        await advance(instance.id, nextNode.id, context, actorId)
-        break
-      case 'PARALLEL_FORK':
-        await activateParallelFork(nextNode, instance)
-        await advance(instance.id, nextNode.id, context, actorId)
-        break
-      case 'PARALLEL_JOIN':
-        await activateParallelJoin(nextNode, instance)
-        // PARALLEL_JOIN waits for all branches; advance() is triggered by GraphTraverser
-        // once expected_joins are met. Do not call advance() here.
-        break
-      case 'SIGNAL_EMIT':
-        await activateSignalEmit(nextNode, instance)
-        await advance(instance.id, nextNode.id, context, actorId)
-        break
-      case 'SET_CONTEXT':
-        await activateSetContext(nextNode, instance)
-        await advance(instance.id, nextNode.id, context, actorId)
-        break
-      case 'ERROR_CATCH':
-        await activateErrorCatch(nextNode, instance)
-        await advance(instance.id, nextNode.id, context, actorId)
-        break
-      case 'CUSTOM': {
-        // Delegate to the base executor defined in config.customTypeId → CustomNodeType.baseType
-        const customCfg = (nextNode.config ?? {}) as Record<string, unknown>
-        const baseType = customCfg._baseType as string | undefined
-        switch (baseType) {
-          case 'HUMAN_TASK': await activateHumanTask(nextNode, instance); break
-          case 'AGENT_TASK': await activateAgentTask(nextNode, instance); break
-          case 'APPROVAL': await activateApproval(nextNode, instance, actorId); break
-          case 'CONSUMABLE_CREATION': await activateConsumableCreation(nextNode, instance); break
-          case 'TOOL_REQUEST': await activateToolRequest(nextNode, instance); break
-          case 'GIT_PUSH': {
-            const result = await activateGitPush(nextNode, instance, actorId)
-            if (result.pushed) await advance(instance.id, nextNode.id, result.output, actorId)
-            break
-          }
-          case 'POLICY_CHECK': {
-            const result = await activatePolicyCheck(nextNode, instance, actorId)
-            if (result.passed) await advance(instance.id, nextNode.id, result.output, actorId)
-            break
-          }
-          case 'EVAL_GATE': {
-            const result = await activateEvalGate(nextNode, instance, actorId)
-            if (result.passed) await advance(instance.id, nextNode.id, result.output, actorId)
-            break
-          }
-          case 'TIMER': await activateTimer(nextNode, instance); break
-          case 'SIGNAL_WAIT': await activateSignalWait(nextNode, instance); break
-          case 'CALL_WORKFLOW': await activateCallWorkflow(nextNode, instance); break
-          case 'WORK_ITEM': await activateWorkItem(nextNode, instance, actorId); break
-          case 'FOREACH': await activateForeach(nextNode, instance); break
-          default: await activateHumanTask(nextNode, instance); break
-        }
-        break
-      }
-    }
+    await executeServerNode(nextNode, instance, context, actorId)
 
-	    // Fire on_activate attachments and schedule any deadlines
-	    await processAttachments(nextNode, instance, 'on_activate', actorId)
-	    await scheduleDeadlines(nextNode)
+    // Fire on_activate attachments and schedule any deadlines
+    await processAttachments(nextNode, instance, 'on_activate', actorId)
+    await scheduleDeadlines(nextNode)
   }
 }
 
@@ -461,6 +335,249 @@ type FailureInfo = {
   message: string
   code?: string
   details?: Record<string, unknown>
+}
+
+function reachableDownstreamNodeIds(startNodeId: string, edges: { sourceNodeId: string; targetNodeId: string }[]): string[] {
+  const bySource = new Map<string, string[]>()
+  for (const edge of edges) {
+    const targets = bySource.get(edge.sourceNodeId) ?? []
+    targets.push(edge.targetNodeId)
+    bySource.set(edge.sourceNodeId, targets)
+  }
+  const seen = new Set<string>()
+  const queue = [...(bySource.get(startNodeId) ?? [])]
+  while (queue.length > 0) {
+    const nodeId = queue.shift()!
+    if (nodeId === startNodeId || seen.has(nodeId)) continue
+    seen.add(nodeId)
+    queue.push(...(bySource.get(nodeId) ?? []))
+  }
+  return [...seen]
+}
+
+function clearBlockedContext(context: Record<string, unknown>, nodeType?: string): Record<string, unknown> {
+  const next = { ...context }
+  const knownKeys = ['_blockedByGitPush', '_blockedByPolicyCheck', '_blockedByEvalGate']
+  for (const key of knownKeys) {
+    if (
+      !nodeType ||
+      (nodeType === 'GIT_PUSH' && key === '_blockedByGitPush') ||
+      (nodeType === 'POLICY_CHECK' && key === '_blockedByPolicyCheck') ||
+      (nodeType === 'EVAL_GATE' && key === '_blockedByEvalGate')
+    ) {
+      delete next[key]
+    }
+  }
+  return next
+}
+
+function filterPendingAdvances(context: Record<string, unknown>, resetNodeIds: string[]): void {
+  const pending = Array.isArray(context._pendingAdvance)
+    ? (context._pendingAdvance as PendingAdvance[])
+    : []
+  if (pending.length === 0) return
+  const reset = new Set(resetNodeIds)
+  const remaining = pending.filter(item => !reset.has(item.nodeId))
+  if (remaining.length > 0) context._pendingAdvance = remaining
+  else delete context._pendingAdvance
+}
+
+function executableNodeType(node: WorkflowNode): string {
+  if (node.nodeType !== 'CUSTOM') return node.nodeType
+  const cfg = (node.config ?? {}) as Record<string, unknown>
+  const baseType = typeof cfg._baseType === 'string' ? cfg._baseType : ''
+  return baseType && baseType !== 'CUSTOM' ? baseType : 'HUMAN_TASK'
+}
+
+async function executeServerNode(
+  node: WorkflowNode,
+  instance: WorkflowInstance,
+  context: Record<string, unknown>,
+  actorId?: string,
+): Promise<void> {
+  switch (executableNodeType(node)) {
+    case 'START':
+    case 'END':
+      await advance(instance.id, node.id, context, actorId)
+      break
+    case 'HUMAN_TASK':
+      await activateHumanTask(node, instance)
+      break
+    case 'WORKBENCH_TASK':
+      await activateWorkbenchTask(node, instance)
+      break
+    case 'AGENT_TASK':
+      await activateAgentTask(node, instance)
+      break
+    case 'APPROVAL':
+      await activateApproval(node, instance, actorId)
+      break
+    case 'DECISION_GATE':
+      await activateDecisionGate(node, instance)
+      await advance(instance.id, node.id, context, actorId)
+      break
+    case 'CONSUMABLE_CREATION':
+      await activateConsumableCreation(node, instance)
+      break
+    case 'TOOL_REQUEST':
+      await activateToolRequest(node, instance)
+      break
+    case 'GIT_PUSH': {
+      const result = await activateGitPush(node, instance, actorId)
+      if (result.pushed) await advance(instance.id, node.id, result.output, actorId)
+      break
+    }
+    case 'POLICY_CHECK': {
+      const result = await activatePolicyCheck(node, instance, actorId)
+      if (result.passed) await advance(instance.id, node.id, result.output, actorId)
+      break
+    }
+    case 'EVAL_GATE': {
+      const result = await activateEvalGate(node, instance, actorId)
+      if (result.passed) await advance(instance.id, node.id, result.output, actorId)
+      break
+    }
+    case 'TIMER':
+      await activateTimer(node, instance)
+      break
+    case 'SIGNAL_WAIT':
+      await activateSignalWait(node, instance)
+      break
+    case 'CALL_WORKFLOW':
+      await activateCallWorkflow(node, instance)
+      break
+    case 'WORK_ITEM':
+      await activateWorkItem(node, instance, actorId)
+      break
+    case 'FOREACH':
+      await activateForeach(node, instance)
+      break
+    case 'INCLUSIVE_GATEWAY':
+      await activateInclusiveGateway(node, instance)
+      await advance(instance.id, node.id, context, actorId)
+      break
+    case 'EVENT_GATEWAY':
+      await activateEventGateway(node, instance)
+      break
+    case 'DATA_SINK':
+      await activateDataSink(node, instance)
+      await advance(instance.id, node.id, context, actorId)
+      break
+    case 'PARALLEL_FORK':
+      await activateParallelFork(node, instance)
+      await advance(instance.id, node.id, context, actorId)
+      break
+    case 'PARALLEL_JOIN':
+      await activateParallelJoin(node, instance)
+      break
+    case 'SIGNAL_EMIT':
+      await activateSignalEmit(node, instance)
+      await advance(instance.id, node.id, context, actorId)
+      break
+    case 'SET_CONTEXT':
+      await activateSetContext(node, instance)
+      await advance(instance.id, node.id, context, actorId)
+      break
+    case 'ERROR_CATCH':
+      await activateErrorCatch(node, instance)
+      await advance(instance.id, node.id, context, actorId)
+      break
+    default:
+      await activateHumanTask(node, instance)
+      break
+  }
+}
+
+async function executeActivatedNode(
+  node: WorkflowNode,
+  instance: WorkflowInstance,
+  context: Record<string, unknown>,
+  actorId?: string,
+): Promise<void> {
+  if (node.executionLocation !== 'SERVER') {
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+    await prisma.pendingExecution.create({
+      data: {
+        instanceId: instance.id,
+        nodeId: node.id,
+        location: node.executionLocation,
+        payload: context as any,
+        expiresAt,
+      },
+    })
+    await logEvent('NodePendingExecution', 'WorkflowNode', node.id, actorId, {
+      instanceId: instance.id,
+      location: node.executionLocation,
+    } as any)
+    return
+  }
+
+  await executeServerNode(node, instance, context, actorId)
+}
+
+export async function restartNode(
+  instanceId: string,
+  nodeId: string,
+  actorId?: string,
+): Promise<{ restartedNodeId: string; resetNodeIds: string[] }> {
+  const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
+  const node = await prisma.workflowNode.findFirst({ where: { id: nodeId, instanceId } })
+  if (!node) throw new ValidationError('Workflow node was not found in this run')
+  if (!RESTARTABLE_NODE_STATUSES.has(node.status)) {
+    throw new ValidationError('Only completed, failed, or blocked workflow nodes can be restarted')
+  }
+
+  const edges = await prisma.workflowEdge.findMany({
+    where: { instanceId },
+    select: { sourceNodeId: true, targetNodeId: true },
+  })
+  const downstreamIds = reachableDownstreamNodeIds(nodeId, edges)
+  const resetNodeIds = [nodeId, ...downstreamIds]
+  const context = clearBlockedContext((instance.context ?? {}) as Record<string, unknown>)
+  filterPendingAdvances(context, resetNodeIds)
+
+  await prisma.$transaction([
+    prisma.pendingExecution.deleteMany({
+      where: { instanceId, nodeId: { in: resetNodeIds } },
+    }),
+    prisma.workflowNode.updateMany({
+      where: { instanceId, id: { in: downstreamIds } },
+      data: { status: 'PENDING', startedAt: null, completedAt: null },
+    }),
+    prisma.workflowNode.update({
+      where: { id: nodeId },
+      data: { status: 'ACTIVE', startedAt: new Date(), completedAt: null },
+    }),
+    prisma.workflowInstance.update({
+      where: { id: instanceId },
+      data: { status: 'ACTIVE', completedAt: null, context: context as unknown as Prisma.InputJsonValue },
+    }),
+    prisma.workflowMutation.create({
+      data: {
+        instanceId,
+        nodeId,
+        mutationType: 'NODE_RESTARTED',
+        beforeState: { status: node.status, downstreamNodeIds: downstreamIds } as Prisma.InputJsonValue,
+        afterState: { status: 'ACTIVE', resetNodeIds } as Prisma.InputJsonValue,
+        performedById: actorId,
+      },
+    }),
+  ])
+
+  await logEvent('WorkflowNodeRestarted', 'WorkflowNode', nodeId, actorId, {
+    instanceId,
+    previousStatus: node.status,
+    resetNodeIds,
+  })
+  await publishOutbox('WorkflowNode', nodeId, 'NodeRestarted', { instanceId, nodeId, resetNodeIds })
+
+  const refreshedInstance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
+  const refreshedNode = await prisma.workflowNode.findUniqueOrThrow({ where: { id: nodeId } })
+  await executeActivatedNode(refreshedNode, refreshedInstance, context, actorId)
+  await processAttachments(refreshedNode, refreshedInstance, 'on_activate', actorId)
+  await scheduleDeadlines(refreshedNode)
+
+  return { restartedNodeId: nodeId, resetNodeIds }
 }
 
 /**

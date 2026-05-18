@@ -1,9 +1,18 @@
-import { Prisma, type ApprovalRequest, type WorkflowInstance, type WorkflowNode } from '@prisma/client'
+import { BlueprintStage, Prisma, type ApprovalRequest, type WorkflowInstance, type WorkflowNode } from '@prisma/client'
 import { config } from '../../../../config'
 import { prisma } from '../../../../lib/prisma'
 import { createReceipt, logEvent, publishOutbox } from '../../../../lib/audit'
 
 type JsonObject = Record<string, unknown>
+type WorkspaceEvidence = {
+  branch?: string
+  commitSha?: string
+  changedPaths: string[]
+  workspaceRoot?: string
+  codeChangeIds?: string[]
+  source?: string
+  warning?: string
+}
 
 type GitPushOutput = {
   gitPush: {
@@ -61,12 +70,7 @@ function stringsAt(root: unknown, path: string): string[] {
   return Array.isArray(value) ? value.map(String).filter(Boolean) : []
 }
 
-function findWorkspaceEvidence(value: unknown): {
-  branch?: string
-  commitSha?: string
-  changedPaths: string[]
-  source?: string
-} {
+function findWorkspaceEvidence(value: unknown): WorkspaceEvidence {
   const stack: unknown[] = [value]
   const seen = new Set<unknown>()
   while (stack.length > 0) {
@@ -86,11 +90,20 @@ function findWorkspaceEvidence(value: unknown): {
       .concat(stringsAt(current, 'workspace.changedPaths'))
       .concat(stringsAt(current, 'gitPush.changedPaths'))
       .concat(stringsAt(current, 'paths_touched'))
-    if (branch || commitSha || changedPaths.length > 0) {
+    const workspaceRoot = stringAt(current, 'workspaceRoot')
+      ?? stringAt(current, 'workspace.workspaceRoot')
+      ?? stringAt(current, 'workspace.branch.workspaceRoot')
+      ?? stringAt(current, 'gitPush.workspaceRoot')
+    const codeChangeIds = stringsAt(current, 'codeChangeIds')
+      .concat(stringsAt(current, 'correlation.codeChangeIds'))
+      .concat(stringsAt(current, 'code_change_ids'))
+    if (branch || commitSha || changedPaths.length > 0 || workspaceRoot || codeChangeIds.length > 0) {
       return {
         branch,
         commitSha,
         changedPaths: Array.from(new Set(changedPaths)),
+        workspaceRoot,
+        codeChangeIds: Array.from(new Set(codeChangeIds)),
         source: stringAt(current, 'cfCallId') ? 'agent-run-output' : 'workflow-context',
       }
     }
@@ -101,11 +114,90 @@ function findWorkspaceEvidence(value: unknown): {
   return { changedPaths: [] }
 }
 
-async function latestWorkspaceEvidence(instance: WorkflowInstance): Promise<ReturnType<typeof findWorkspaceEvidence>> {
-  const contextEvidence = findWorkspaceEvidence(instance.context)
-  if (contextEvidence.branch || contextEvidence.commitSha || contextEvidence.changedPaths.length > 0) {
-    return contextEvidence
+function hasWorkspaceEvidence(evidence: WorkspaceEvidence): boolean {
+  return Boolean(
+    evidence.branch
+    || evidence.commitSha
+    || evidence.workspaceRoot
+    || evidence.changedPaths.length > 0
+    || (evidence.codeChangeIds?.length ?? 0) > 0,
+  )
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map(value => value.trim()).filter(Boolean)))
+}
+
+function codeArtifactEvidence(payload: JsonObject, source: string): WorkspaceEvidence {
+  const nested = findWorkspaceEvidence(payload)
+  return {
+    ...nested,
+    changedPaths: uniqueStrings([
+      ...nested.changedPaths,
+      ...stringsAt(payload, 'paths'),
+      ...stringsAt(payload, 'diff.paths'),
+    ]),
+    source,
   }
+}
+
+function consumableStatus(payload: JsonObject): string | undefined {
+  return stringAt(payload, 'consumableStatus')
+    ?? stringAt(payload, 'consumable.status')
+    ?? stringAt(payload, 'consumablePublish.status')
+}
+
+function isApprovedCodeArtifact(payload: JsonObject): boolean {
+  const status = consumableStatus(payload)
+  return status === 'APPROVED' || status === 'ACCEPTED_WITH_RISK'
+}
+
+function isActualCodeArtifact(payload: JsonObject): boolean {
+  return payload.actual === true && stringsAt(payload, 'codeChangeIds').length > 0
+}
+
+async function latestWorkbenchCodeChangeEvidence(instance: WorkflowInstance): Promise<WorkspaceEvidence | null> {
+  const artifacts = await prisma.blueprintArtifact.findMany({
+    where: {
+      session: { workflowInstanceId: instance.id },
+      stage: BlueprintStage.DEVELOPER,
+      kind: 'actual_code_change',
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 80,
+    select: { payload: true },
+  })
+  if (artifacts.length === 0) return null
+
+  const latest = artifacts[0]
+  const payload = isRecord(latest?.payload) ? latest.payload : {}
+  const evidence = codeArtifactEvidence(payload, 'blueprint-workbench-approved-code-change')
+  if (!isActualCodeArtifact(payload) || !hasWorkspaceEvidence(evidence)) {
+    return {
+      changedPaths: [],
+      source: 'blueprint-workbench-code-change-missing',
+      warning: 'Latest Developer stage did not capture an actual MCP/git code change. Re-run Develop with a writable MCP workspace and approve the captured diff before Git Push.',
+    }
+  }
+
+  if (!isApprovedCodeArtifact(payload)) {
+    return {
+      ...evidence,
+      source: 'blueprint-workbench-code-change-unapproved',
+      warning: 'Latest Developer code-change evidence is not approved yet. Approve the Workbench developer artifact before Git Push.',
+    }
+  }
+
+  return evidence
+}
+
+async function latestWorkspaceEvidence(instance: WorkflowInstance): Promise<WorkspaceEvidence> {
+  const workbenchCodeEvidence = await latestWorkbenchCodeChangeEvidence(instance)
+  if (workbenchCodeEvidence) return workbenchCodeEvidence
+
+  const contextEvidence = findWorkspaceEvidence(instance.context)
+  if (hasWorkspaceEvidence(contextEvidence)) return contextEvidence
+
   const outputs = await prisma.agentRunOutput.findMany({
     where: {
       run: { instanceId: instance.id },
@@ -117,7 +209,7 @@ async function latestWorkspaceEvidence(instance: WorkflowInstance): Promise<Retu
   })
   for (const output of outputs) {
     const evidence = findWorkspaceEvidence(output.structuredPayload)
-    if (evidence.branch || evidence.commitSha || evidence.changedPaths.length > 0) return evidence
+    if (hasWorkspaceEvidence(evidence)) return { ...evidence, source: 'agent-run-output' }
   }
   return contextEvidence
 }
@@ -196,6 +288,7 @@ async function callMcpFinishWorkBranch(args: {
   workItemId?: string
   workItemCode?: string
   branchName?: string
+  workspaceRoot?: string
 }): Promise<JsonObject> {
   const response = await fetch(`${config.MCP_SERVER_URL.replace(/\/$/, '')}/mcp/work/finish-branch`, {
     method: 'POST',
@@ -215,6 +308,7 @@ async function callMcpFinishWorkBranch(args: {
         workItemId: args.workItemId,
         workItemCode: args.workItemCode,
         branchName: args.branchName,
+        workspaceRoot: args.workspaceRoot,
       },
     }),
   })
@@ -249,8 +343,28 @@ export async function activateGitPush(
     ?? evidence.branch
     ?? stringAt(context, 'workspaceBranch')
     ?? (workItemCode ? `work/${workItemCode}` : undefined)
+  const evidenceBackedBranch = Boolean(evidence.branch && branchName === evidence.branch)
   const message = cfgString(node, 'message')
     ?? `Push Singularity work ${workItemCode ?? workItemId ?? instance.id}`
+
+  if (evidence.warning) {
+    const output: GitPushOutput = {
+      gitPush: {
+        status: 'BLOCKED',
+        remote,
+        branch: branchName,
+        commitSha: evidence.commitSha,
+        changedPaths: evidence.changedPaths,
+        workspaceRoot: evidence.workspaceRoot,
+        pushed: false,
+        approvalRequired: requireApproval,
+        message: evidence.warning,
+        evidenceSource: evidence.source,
+      },
+    }
+    await blockNode(instance, node, output, actorId)
+    return { pushed: false, output }
+  }
 
   if (requireApproval) {
     const approved = await approvedGateForRun(instance, node)
@@ -262,6 +376,7 @@ export async function activateGitPush(
           branch: branchName,
           commitSha: evidence.commitSha,
           changedPaths: evidence.changedPaths,
+          workspaceRoot: evidence.workspaceRoot,
           pushed: false,
           approvalRequired: true,
           message: 'Git push requires a prior approved workflow approval gate. Add/complete an APPROVAL node before this GIT_PUSH node, or set requireApproval=false for controlled automation.',
@@ -273,12 +388,13 @@ export async function activateGitPush(
     }
   }
 
-  if (!branchName && !workItemId && !workItemCode) {
+  if (!branchName && !workItemId && !workItemCode && !evidence.workspaceRoot) {
     const output: GitPushOutput = {
       gitPush: {
         status: 'BLOCKED',
         remote,
         changedPaths: evidence.changedPaths,
+        workspaceRoot: evidence.workspaceRoot,
         pushed: false,
         approvalRequired: requireApproval,
         message: 'No WorkItem or branch was found. Configure branchName, run from a WorkItem, or ensure the coding agent returned workspaceBranch evidence.',
@@ -297,8 +413,9 @@ export async function activateGitPush(
       remote,
       message,
       workItemId,
-      workItemCode,
+      workItemCode: evidenceBackedBranch || evidence.workspaceRoot ? undefined : workItemCode,
       branchName,
+      workspaceRoot: evidence.workspaceRoot,
     })
   } catch (err) {
     const output: GitPushOutput = {
@@ -308,6 +425,7 @@ export async function activateGitPush(
         branch: branchName,
         commitSha: evidence.commitSha,
         changedPaths: evidence.changedPaths,
+        workspaceRoot: evidence.workspaceRoot,
         pushed: false,
         approvalRequired: requireApproval,
         message: (err as Error).message,
@@ -337,7 +455,7 @@ export async function activateGitPush(
       pushed,
       approvalRequired: requireApproval,
       toolInvocationId: typeof toolInvocation.id === 'string' ? toolInvocation.id : undefined,
-      workspaceRoot: typeof mcpOutput.workspaceRoot === 'string' ? mcpOutput.workspaceRoot : undefined,
+      workspaceRoot: typeof mcpOutput.workspaceRoot === 'string' ? mcpOutput.workspaceRoot : evidence.workspaceRoot,
       message: typeof mcpOutput.message === 'string' ? mcpOutput.message : message,
       pushError,
       evidenceSource: evidence.source,

@@ -197,6 +197,18 @@ function StepCard({
   const isActive    = node.status === 'ACTIVE'
   const isCompleted = node.status === 'COMPLETED'
   const isFailed    = node.status === 'FAILED'
+  const isBlocked   = node.status === 'BLOCKED'
+  const blockDetails = blockingDetailsForNode(node, instanceContext)
+  const queryClient = useQueryClient()
+  const restartMut = useMutation({
+    mutationFn: () => api.post(`/workflow-instances/${instanceId}/nodes/${node.id}/restart`).then(r => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId] })
+      queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId, 'nodes'] })
+      queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId, 'edges'] })
+    },
+  })
+  const canRestart = node.status === 'COMPLETED' || node.status === 'FAILED' || node.status === 'BLOCKED'
 
   // The inline form-fill panel is only useful for HUMAN_TASK / APPROVAL /
   // CONSUMABLE_CREATION nodes that have a defined widget form. WORK_ITEM
@@ -239,12 +251,12 @@ function StepCard({
         }}>
           {isCompleted ? <CheckCircle2 size={16} />
             : isActive  ? <visual.Icon size={16} />
-            : isFailed  ? <AlertCircle size={16} />
+            : isFailed || isBlocked ? <AlertCircle size={16} />
             : <span>{position}</span>}
         </div>
 
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-on-surface)' }}>
               {node.label}
             </span>
@@ -254,7 +266,80 @@ function StepCard({
             <span style={{ fontSize: 9, color: 'var(--color-outline)', fontFamily: 'monospace' }}>
               {node.nodeType}
             </span>
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+              {canRestart && (
+                <button
+                  type="button"
+                  style={{
+                    ...smallSecondaryButton,
+                    padding: '5px 8px',
+                    fontSize: 10,
+                    opacity: restartMut.isPending ? 0.65 : 1,
+                  }}
+                  disabled={restartMut.isPending}
+                  onClick={() => restartMut.mutate()}
+                  title="Reset this stage and downstream stages, then run this stage again"
+                >
+                  <RotateCw size={12} />
+                  {restartMut.isPending ? 'Restarting...' : 'Restart stage'}
+                </button>
+              )}
+            </div>
           </div>
+
+          {blockDetails && (
+            <div style={{
+              marginTop: 10,
+              padding: 10,
+              borderRadius: 8,
+              background: 'rgba(245,158,11,0.08)',
+              border: '1px solid rgba(245,158,11,0.28)',
+              display: 'grid',
+              gap: 6,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                <AlertCircle size={14} style={{ color: '#d97706', marginTop: 1 }} />
+                <div style={{ flex: 1 }}>
+                  <strong style={{ display: 'block', fontSize: 12, color: '#92400e' }}>
+                    {blockDetails.title}
+                  </strong>
+                  <p style={{ margin: '3px 0 0', fontSize: 11, color: '#92400e', lineHeight: 1.45 }}>
+                    {blockDetails.message}
+                  </p>
+                </div>
+              </div>
+              {blockDetails.details.length > 0 && (
+                <details>
+                  <summary style={{ fontSize: 10, fontWeight: 800, color: '#92400e', cursor: 'pointer' }}>
+                    Technical details
+                  </summary>
+                  <dl style={{
+                    margin: '6px 0 0',
+                    display: 'grid',
+                    gridTemplateColumns: 'max-content minmax(0, 1fr)',
+                    gap: '4px 10px',
+                    fontSize: 10,
+                    color: '#78350f',
+                  }}>
+                    {blockDetails.details.map(item => (
+                      <FragmentRow key={item.label} label={item.label} value={item.value} />
+                    ))}
+                  </dl>
+                </details>
+              )}
+              {restartMut.isError && (
+                <p style={{ margin: 0, fontSize: 11, color: '#991b1b' }}>
+                  {(restartMut.error as Error).message}
+                </p>
+              )}
+            </div>
+          )}
+
+          {!blockDetails && restartMut.isError && (
+            <p style={{ margin: '8px 0 0', fontSize: 11, color: '#991b1b' }}>
+              {(restartMut.error as Error).message}
+            </p>
+          )}
 
           {/* Active step: inline form fill (when applicable) */}
           <AnimatePresence>
@@ -1120,6 +1205,15 @@ function KeyValueBox({ label, value }: { label: string; value: string }) {
   )
 }
 
+function FragmentRow({ label, value }: { label: string; value: string }) {
+  return (
+    <>
+      <dt style={{ fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</dt>
+      <dd style={{ margin: 0, minWidth: 0, wordBreak: 'break-word', fontFamily: 'monospace' }}>{value}</dd>
+    </>
+  )
+}
+
 function unwrapItems<T>(data: unknown): T[] {
   if (Array.isArray(data)) return data as T[]
   if (data && typeof data === 'object') {
@@ -1133,6 +1227,53 @@ function unwrapItems<T>(data: unknown): T[] {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function stringField(root: Record<string, unknown>, key: string): string {
+  const value = root[key]
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
+}
+
+function blockingDetailsForNode(
+  node: RunNode,
+  context: Record<string, unknown>,
+): { title: string; message: string; details: { label: string; value: string }[] } | null {
+  const config = asRecord(node.config)
+  const lastError = asRecord(config._lastError)
+  const blockKey =
+    node.nodeType === 'GIT_PUSH' ? '_blockedByGitPush' :
+    node.nodeType === 'POLICY_CHECK' ? '_blockedByPolicyCheck' :
+    node.nodeType === 'EVAL_GATE' ? '_blockedByEvalGate' :
+    ''
+  const direct = blockKey ? asRecord(context[blockKey]) : {}
+  const fallback = Object.entries(context)
+    .find(([key, value]) => key.startsWith('_blockedBy') && value && typeof value === 'object' && !Array.isArray(value))?.[1]
+  const blocked = Object.keys(direct).length > 0 ? direct : asRecord(fallback)
+  const source = Object.keys(blocked).length > 0 ? blocked : lastError
+  if (node.status !== 'BLOCKED' && node.status !== 'FAILED' && Object.keys(source).length === 0) return null
+
+  const pushError = stringField(source, 'pushError')
+  const message =
+    stringField(source, 'message') ||
+    stringField(source, 'reason') ||
+    pushError ||
+    stringField(source, 'code') ||
+    (node.status === 'FAILED' ? 'This stage failed. Restart the stage after reviewing the details.' : 'This stage is blocked.')
+
+  const detailKeys = ['remote', 'branch', 'commitSha', 'workspaceRoot', 'pushError', 'evidenceSource', 'toolInvocationId', 'approvalRequestId', 'code']
+  const details = detailKeys
+    .map(key => {
+      const value = source[key]
+      if (value === undefined || value === null || value === '') return null
+      return { label: key, value: Array.isArray(value) ? value.join(', ') : String(value) }
+    })
+    .filter((item): item is { label: string; value: string } => Boolean(item))
+
+  return {
+    title: node.status === 'FAILED' ? 'Failure reason' : 'Blocking reason',
+    message,
+    details,
+  }
 }
 
 function readWorkgraphToken(): string {
@@ -1388,6 +1529,8 @@ const STATUS_VISUAL: Record<string, {
                 tagBg: 'rgba(34,197,94,0.10)',  Icon: CheckCircle2 },
   FAILED:     { bg: 'rgba(239,68,68,0.10)',  border: 'rgba(239,68,68,0.25)',  color: '#ef4444',
                 tagBg: 'rgba(239,68,68,0.10)',  Icon: AlertCircle },
+  BLOCKED:    { bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.28)', color: '#d97706',
+                tagBg: 'rgba(245,158,11,0.10)', Icon: AlertCircle },
   PAUSED:     { bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.25)', color: '#f59e0b',
                 tagBg: 'rgba(245,158,11,0.10)', Icon: Pause },
   CANCELLED:  { bg: 'rgba(100,116,139,0.10)', border: 'rgba(100,116,139,0.25)', color: '#64748b',
