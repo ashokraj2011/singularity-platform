@@ -21,6 +21,8 @@ export const config = {
   // workgraph-api hosts the feature_flags table + admin toggles. The
   // Foundry queries it to gate every entry point.
   WORKGRAPH_API_URL: process.env.WORKGRAPH_API_URL ?? 'http://workgraph-api:8080',
+  // M42.4 — prompt-composer base url for compose-and-respond LLM dispatch.
+  PROMPT_COMPOSER_URL: process.env.PROMPT_COMPOSER_URL ?? 'http://prompt-composer:3004',
   // Service token used to read /api/internal/feature-flags. Must match
   // workgraph-api's WORKGRAPH_INTERNAL_TOKEN env var. Default is the
   // dev value shipped in workgraph-api/src/config.ts.

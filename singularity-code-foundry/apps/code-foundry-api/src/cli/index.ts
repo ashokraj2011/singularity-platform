@@ -21,6 +21,7 @@ import { historyCommand } from './commands/history.js'
 import { generateCommand } from './commands/generate.js'
 import { verifyCommand } from './commands/verify.js'
 import { detectGapsCommand } from './commands/detectGaps.js'
+import { createLlmTasksCommand, applyPatchCommand, dispatchTaskCommand } from './commands/llmTasks.js'
 
 const program = new Command()
 program
@@ -81,6 +82,28 @@ program
   .requiredOption('-r, --run-id <runId>', 'codegen_runs.id')
   .option('--api <url>', 'code-foundry-api base url', process.env.CODE_FOUNDRY_API_URL ?? 'http://localhost:3005')
   .action(detectGapsCommand)
+
+program
+  .command('create-llm-tasks')
+  .description('Build typed LLM patch tasks from a run\'s LLM-eligible gaps')
+  .requiredOption('-r, --run-id <runId>', 'codegen_runs.id')
+  .option('--api <url>', 'code-foundry-api base url', process.env.CODE_FOUNDRY_API_URL ?? 'http://localhost:3005')
+  .action(createLlmTasksCommand)
+
+program
+  .command('apply-patch')
+  .description('Submit a unified diff to the Patch Guard for a task')
+  .requiredOption('-t, --task-id <taskId>', 'codegen_llm_patch_tasks.id')
+  .requiredOption('-p, --patch <path>', 'unified diff file')
+  .option('--api <url>', 'code-foundry-api base url', process.env.CODE_FOUNDRY_API_URL ?? 'http://localhost:3005')
+  .action(applyPatchCommand)
+
+program
+  .command('dispatch')
+  .description('Call prompt-composer to fetch a diff for a task. Best-effort; gracefully reports COMPOSER_UNCONFIGURED.')
+  .requiredOption('-t, --task-id <taskId>', 'codegen_llm_patch_tasks.id')
+  .option('--api <url>', 'code-foundry-api base url', process.env.CODE_FOUNDRY_API_URL ?? 'http://localhost:3005')
+  .action(dispatchTaskCommand)
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(err.message ?? err)

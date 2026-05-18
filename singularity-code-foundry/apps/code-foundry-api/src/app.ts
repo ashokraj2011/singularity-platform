@@ -20,7 +20,10 @@ export function createApp(): Express {
   // YAML is optional and accepted by routes that parse it themselves;
   // JSON is the default surface so admin tools work out of the box.
   app.use(express.json({ limit: '8mb' }))
-  app.use(express.text({ type: ['application/yaml', 'text/yaml', 'application/x-yaml'], limit: '8mb' }))
+  app.use(express.text({
+    type: ['application/yaml', 'text/yaml', 'application/x-yaml', 'text/plain', 'text/x-diff', 'application/x-patch'],
+    limit: '8mb',
+  }))
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'UP', service: 'code-foundry-api', timestamp: new Date().toISOString() })

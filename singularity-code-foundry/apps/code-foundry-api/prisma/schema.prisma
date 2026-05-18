@@ -108,6 +108,7 @@ model CodegenRun {
   artifacts         CodegenArtifact[]
   gaps              CodegenGap[]
   verifications     CodegenVerification[]
+  llmTasks          CodegenLlmPatchTask[]
 
   @@index([specId, startedAt])
   @@index([status])
@@ -185,6 +186,56 @@ model CodegenGap {
   @@index([runId, resolved])
   @@index([gapType])
   @@map("codegen_gaps")
+}
+
+// ─── LLM PATCH TASKS (M42.4) ───────────────────────────────────────────────
+// Patent Chain D primitive: a typed task object that bounds an LLM to
+// exactly one editable region of one file, with an enumerated allowed-
+// and forbidden-changes ontology the Patch Guard enforces mechanically.
+
+enum LlmTaskType {
+  COMPLETE_METHOD_BODY
+  GENERATE_ADDITIONAL_TESTS
+  FIX_COMPILE_ERROR
+  COMPLETE_MAPPING_LOGIC
+  UPDATE_TEST_ASSERTIONS
+}
+
+enum LlmTaskStatus {
+  PENDING        // task built; awaiting dispatch
+  DISPATCHED     // sent to LLM (or operator); awaiting diff
+  GUARD_PASSED   // diff returned + accepted by Patch Guard; applied to disk
+  GUARD_REJECTED // diff returned but rejected; reason captured in metadata
+  CANCELLED
+  FAILED
+}
+
+model CodegenLlmPatchTask {
+  id              String       @id @default(uuid())
+  runId           String
+  gapId           String?      // null when synthesised manually
+  taskType        LlmTaskType
+  status          LlmTaskStatus @default(PENDING)
+  targetFile      String
+  targetClass     String?
+  targetMethod    String?
+  regionId        String       // anchors the patch to a typed region
+  allowedChanges  Json         // string[] — change-class ontology
+  forbiddenChanges Json        // string[] — change-class ontology
+  promptHash      String?      // sha256 of the assembled prompt body
+  responseHash    String?      // sha256 of the unified diff returned
+  cfCallId        String?      // context-fabric call id, when composer was used
+  bundleHash      String?      // ImmutableContract bundleHash (M40), when composer was used
+  metadata        Json?        // free-form (guard reason, prompt snippet, etc.)
+  createdAt       DateTime     @default(now())
+  dispatchedAt    DateTime?
+  completedAt     DateTime?
+
+  run             CodegenRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, status])
+  @@index([gapId])
+  @@map("codegen_llm_patch_tasks")
 }
 
 // ─── VERIFICATION RESULT (M42.3) ───────────────────────────────────────────
