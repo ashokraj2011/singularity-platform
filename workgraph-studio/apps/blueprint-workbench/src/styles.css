@@ -4134,6 +4134,173 @@ button.focus-badge.link:hover {
 }
 
 /* ============================================================
+ * Markdown reader — used in the artifact viewer + FocusPane's
+ * "Latest stage output". The same element renders three flavours
+ * (markdown, json, code) via modifier classes so the same caller
+ * doesn't have to switch components.
+ * ============================================================ */
+
+.neo-markdown {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.55;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 4px 2px;
+}
+
+.neo-markdown.as-code,
+.neo-markdown.as-json {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--surface-low);
+  border: 1px solid var(--outline-variant);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.neo-markdown.as-markdown {
+  background: transparent;
+}
+
+.neo-markdown.as-markdown h1,
+.neo-markdown.as-markdown h2,
+.neo-markdown.as-markdown h3,
+.neo-markdown.as-markdown h4 {
+  font-family: inherit;
+  color: var(--text);
+  font-weight: 700;
+  letter-spacing: -0.005em;
+  margin: 18px 0 8px;
+  line-height: 1.25;
+}
+
+.neo-markdown.as-markdown h1 { font-size: 22px; border-bottom: 1px solid var(--outline-variant); padding-bottom: 4px; }
+.neo-markdown.as-markdown h2 { font-size: 18px; }
+.neo-markdown.as-markdown h3 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.neo-markdown.as-markdown h4 { font-size: 13px; color: var(--muted-low); text-transform: uppercase; letter-spacing: 0.08em; }
+
+.neo-markdown.as-markdown p {
+  margin: 8px 0;
+  color: var(--text);
+}
+
+.neo-markdown.as-markdown a {
+  color: var(--neo-primary, var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.neo-markdown.as-markdown strong { color: var(--text); font-weight: 700; }
+.neo-markdown.as-markdown em     { color: var(--muted); }
+
+.neo-markdown.as-markdown ul,
+.neo-markdown.as-markdown ol {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+
+.neo-markdown.as-markdown li { margin: 4px 0; color: var(--text); }
+.neo-markdown.as-markdown li > p:first-child { margin-top: 0; }
+.neo-markdown.as-markdown li > p:last-child  { margin-bottom: 0; }
+
+.neo-markdown.as-markdown ul li::marker { color: var(--neo-primary, var(--primary)); }
+.neo-markdown.as-markdown ol li::marker { color: var(--neo-primary, var(--primary)); font-weight: 600; }
+
+.neo-markdown.as-markdown input[type="checkbox"] {
+  margin-right: 6px;
+  accent-color: var(--neo-primary, var(--primary));
+}
+
+.neo-markdown.as-markdown blockquote {
+  margin: 10px 0;
+  padding: 6px 12px;
+  border-left: 3px solid var(--neo-info, var(--primary));
+  background: var(--surface-low);
+  color: var(--muted);
+  border-radius: 0 6px 6px 0;
+}
+
+.neo-markdown.as-markdown code {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  background: var(--surface-low);
+  border: 1px solid var(--outline-variant);
+  border-radius: 4px;
+  padding: 1px 6px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.neo-markdown.as-markdown pre {
+  margin: 12px 0;
+  padding: 12px;
+  background: var(--surface-lowest, var(--surface-low));
+  border: 1px solid var(--outline-variant);
+  border-radius: 8px;
+  overflow-x: auto;
+  line-height: 1.45;
+}
+
+.neo-markdown.as-markdown pre > code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre;
+}
+
+.neo-markdown.as-markdown hr {
+  margin: 18px 0;
+  border: none;
+  border-top: 1px solid var(--outline-variant);
+}
+
+.neo-markdown.as-markdown table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 12px;
+  width: 100%;
+}
+
+.neo-markdown.as-markdown th,
+.neo-markdown.as-markdown td {
+  border: 1px solid var(--outline-variant);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.neo-markdown.as-markdown th {
+  background: var(--surface-low);
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+
+.neo-markdown.as-markdown tr:nth-child(even) td {
+  background: var(--surface-low);
+}
+
+.neo-markdown.as-markdown img {
+  max-width: 100%;
+  border-radius: 6px;
+  margin: 8px 0;
+}
+
+/* Existing .artifact-reader uses <pre> for non-markdown branches;
+ * make sure the surrounding container doesn't double up scrollbars. */
+.artifact-reader > .neo-markdown {
+  max-height: calc(100vh - 320px);
+}
+
+/* ============================================================
  * M41.2 — Stage Chat (bottom dock)
  * Slack-style per-stage operator → agent guidance panel.
  * ============================================================ */

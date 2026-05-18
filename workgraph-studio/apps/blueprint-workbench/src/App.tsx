@@ -65,6 +65,7 @@ import { FocusPane, computeFocusIntent, type FocusAction } from './neo/FocusPane
 import { NeoNotifier } from './neo/NeoNotifier'
 import { StageChat } from './neo/StageChat'
 import { NeoThemePicker, lookClass, useNeoLook } from './neo/NeoThemePicker'
+import { MarkdownView } from './neo/MarkdownView'
 
 const knownRoleMeta: Record<string, { label: string; icon: typeof Brain }> = {
   ARCHITECT: { label: 'Architect', icon: Brain },
@@ -1252,7 +1253,7 @@ function NeoStageController({
             <strong>Latest stage output</strong>
             {latest.correlation && <code>{String(latest.correlation.cfCallId ?? latest.correlation.traceId ?? latest.id).slice(0, 36)}</code>}
           </header>
-          <pre>{latest.response}</pre>
+          <MarkdownView content={latest.response} />
         </div>
       )}
 
@@ -2292,7 +2293,11 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
           </nav>
           <article className="artifact-reader">
             <h3>{active?.title}</h3>
-            <pre>{renderArtifact(active)}</pre>
+            <MarkdownView
+              content={renderArtifact(active)}
+              kind={active?.kind}
+              title={active?.title}
+            />
           </article>
         </div>
       )}
