@@ -186,6 +186,17 @@ const loopDefaultTask = [
   "",
   "Recent feedback loops:",
   "{{sendBacks}}",
+  // M41.2 — Operator chat thread. Mustache renders this block only when
+  // {{operatorChat}} is a non-empty string. The block is intentionally
+  // PRESCRIPTIVE: the operator is steering, so treat it as a strong
+  // constraint above generic stage guidance.
+  "{{#operatorChat}}",
+  "",
+  "Operator guidance (chronological — most recent last):",
+  "{{operatorChat}}",
+  "",
+  "Treat operator guidance as a binding constraint for this attempt. If a guidance line conflicts with the captured stakeholder decisions, prefer the operator guidance and call out the conflict in your response.",
+  "{{/operatorChat}}",
   "",
   "Do not ask an open question if the captured stakeholder decisions already answer the same intent. Reuse those answers as constraints for this stage.",
   "",

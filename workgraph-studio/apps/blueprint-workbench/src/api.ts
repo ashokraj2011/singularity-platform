@@ -231,6 +231,17 @@ export type ReviewEvent = {
   createdAt: string
 }
 
+// M41.2 — Stage Chat. One thread per stage, persisted in session.metadata
+// and surfaced to the next agent attempt via the {{operatorChat}} Mustache
+// var rendered by prompt-composer's loopDefaultTask template.
+export type StageChatMessage = {
+  id: string
+  role: 'operator' | 'system' | 'agent'
+  content: string
+  createdAt: string
+  authorId?: string
+}
+
 export type FinalPack = {
   id: string
   status: string
@@ -274,6 +285,8 @@ export type BlueprintSession = {
   stageAttempts?: StageAttempt[]
   reviewEvents?: ReviewEvent[]
   decisionAnswers?: DecisionAnswer[]
+  // M41.2 — Operator-to-agent conversation threads keyed by stage.
+  stageChats?: Record<string, StageChatMessage[]>
   finalPack?: FinalPack
   executionConfig?: WorkbenchExecutionConfig
   snapshots: BlueprintSnapshot[]
@@ -446,6 +459,14 @@ export const api = {
   finalize: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/finalize`, { method: 'POST' }),
   approve: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/approve`, { method: 'POST' }),
   saveDecisionAnswers: (id: string, answers: DecisionAnswer[]) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/decision-answers`, { method: 'POST', body: JSON.stringify({ answers }) }),
+  // M41.2 — Stage Chat.
+  listStageMessages: (id: string, stageKey: string) =>
+    request<{ items: StageChatMessage[] }>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/messages`),
+  postStageMessage: (id: string, stageKey: string, body: { content: string; role?: 'operator' | 'system' }) =>
+    request<{ message: StageChatMessage; thread: StageChatMessage[] }>(
+      `/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/messages`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
   codeChanges: (id: string, stageKey?: string) => request<BlueprintCodeChangesResponse>(
     `/blueprint/sessions/${encodeURIComponent(id)}/code-changes${stageKey ? `?stageKey=${encodeURIComponent(stageKey)}` : ''}`,
   ),

@@ -144,6 +144,42 @@ const saveDecisionAnswersSchema = z.object({
   answers: z.array(decisionAnswerSchema).max(100),
 })
 
+// M41.2 — Stage Chat. Operator-to-agent messages threaded by stageKey.
+// Lives in session.metadata.stageChats[stageKey][]. The next stage attempt
+// reads the thread and surfaces it to the agent via the {{operatorChat}}
+// Mustache var (rendered by prompt-composer's loopDefaultTask template).
+const stageChatMessageSchema = z.object({
+  content: z.string().trim().min(1).max(4000),
+  role: z.enum(['operator', 'system']).optional(),
+})
+
+type StageChatMessage = {
+  id: string
+  role: 'operator' | 'system' | 'agent'
+  content: string
+  createdAt: string
+  authorId?: string
+}
+
+function isStageChatMessage(value: unknown): value is StageChatMessage {
+  if (!isRecord(value)) return false
+  if (typeof value.id !== 'string' || typeof value.content !== 'string' || typeof value.createdAt !== 'string') return false
+  return value.role === 'operator' || value.role === 'system' || value.role === 'agent'
+}
+
+function readStageChats(metadata: unknown): Record<string, StageChatMessage[]> {
+  if (!isRecord(metadata) || !isRecord(metadata.stageChats)) return {}
+  const out: Record<string, StageChatMessage[]> = {}
+  for (const [k, v] of Object.entries(metadata.stageChats)) {
+    if (Array.isArray(v)) out[k] = v.filter(isStageChatMessage)
+  }
+  return out
+}
+
+function readStageChatThread(metadata: unknown, stageKey: string): StageChatMessage[] {
+  return readStageChats(metadata)[stageKey] ?? []
+}
+
 const stageActionParamsSchema = z.object({
   id: z.string().min(1),
   stageKey: z.string().min(1).max(80),
@@ -1012,6 +1048,73 @@ blueprintRouter.post('/sessions/:id/decision-answers', validate(saveDecisionAnsw
   } catch (err) { next(err) }
 })
 
+// M41.2 — Stage Chat: list the operator/agent thread for a stage.
+// The thread persists across stage navigation and feeds back into the
+// next attempt via {{operatorChat}}.
+blueprintRouter.get('/sessions/:id/stages/:stageKey/messages', async (req, res, next) => {
+  try {
+    const params = stageActionParamsSchema.parse(req.params)
+    const session = await prisma.blueprintSession.findUnique({ where: { id: params.id } })
+    if (!session) throw new NotFoundError('BlueprintSession', params.id)
+    assertBlueprintAccess(session, req.user!.userId)
+    res.json({ items: readStageChatThread(session.metadata, params.stageKey) })
+  } catch (err) { next(err) }
+})
+
+// M41.2 — Stage Chat: append a message. We cap each stage's thread at
+// 200 messages on the write path so a runaway transcript can't bloat
+// session.metadata indefinitely.
+const STAGE_CHAT_THREAD_CAP = 200
+
+blueprintRouter.post(
+  '/sessions/:id/stages/:stageKey/messages',
+  validate(stageChatMessageSchema),
+  async (req, res, next) => {
+    try {
+      const params = stageActionParamsSchema.parse(req.params)
+      const body = req.body as z.infer<typeof stageChatMessageSchema>
+      const session = await prisma.blueprintSession.findUnique({ where: { id: params.id } })
+      if (!session) throw new NotFoundError('BlueprintSession', params.id)
+      assertBlueprintAccess(session, req.user!.userId)
+
+      const metadata = isRecord(session.metadata) ? session.metadata : {}
+      const stageChats = readStageChats(metadata)
+      const existing = stageChats[params.stageKey] ?? []
+      const message: StageChatMessage = {
+        id: crypto.randomUUID(),
+        role: body.role ?? 'operator',
+        content: body.content.trim(),
+        createdAt: new Date().toISOString(),
+        authorId: req.user!.userId,
+      }
+      const nextThread = [...existing, message]
+      // Ring buffer — drop oldest if over cap so older guidance is shed first.
+      const capped = nextThread.length > STAGE_CHAT_THREAD_CAP
+        ? nextThread.slice(nextThread.length - STAGE_CHAT_THREAD_CAP)
+        : nextThread
+
+      await prisma.blueprintSession.update({
+        where: { id: session.id },
+        data: {
+          metadata: {
+            ...metadata,
+            stageChats: { ...stageChats, [params.stageKey]: capped },
+          } as Prisma.InputJsonValue,
+        },
+      })
+
+      await recordBlueprintAudit(session.id, 'BlueprintStageChatMessage', req.user!.userId, {
+        stageKey: params.stageKey,
+        messageId: message.id,
+        role: message.role,
+        contentLen: message.content.length,
+      })
+
+      res.json({ message, thread: capped })
+    } catch (err) { next(err) }
+  },
+)
+
 async function loadSession(id: string, actorId?: string) {
   const session = await prisma.blueprintSession.findUnique({
     where: { id },
@@ -1076,6 +1179,9 @@ function shapeSession<T extends LoopSessionSeed & { artifacts?: Array<{ payload?
     stageAttempts: loop.stageAttempts,
     reviewEvents: loop.reviewEvents,
     decisionAnswers: loop.decisionAnswers,
+    // M41.2 — surface the stage chat threads so the workbench SPA can
+    // render the docked Stage Chat without an extra fetch.
+    stageChats: readStageChats(session.metadata),
     finalPack: loop.finalPack,
     executionConfig: loop.executionConfig,
     artifacts: session.artifacts?.map(shapeArtifact) ?? [],
@@ -2436,6 +2542,17 @@ function buildLoopStageVars(
   stage: LoopStageDefinition,
   state: LoopState,
 ): Record<string, string> {
+  // M41.2 — operator chat thread for this stage, rendered as chronological
+  // lines so prompt-composer's loopDefaultTask can splice it under
+  // "Operator guidance:" via the optional {{#operatorChat}} section.
+  const chatThread = readStageChatThread(session.metadata, stage.key)
+  const operatorChat = chatThread.length === 0
+    ? ''
+    : chatThread.map(m => {
+        const ts = m.createdAt?.slice(11, 16) ?? ''
+        const who = m.role === 'system' ? 'SYSTEM' : m.role === 'agent' ? 'AGENT' : 'OPERATOR'
+        return `[${ts}] ${who}: ${m.content}`
+      }).join('\n')
   const latestAccepted = state.stageAttempts
     .filter(attempt => attempt.verdict === 'PASS' || attempt.verdict === 'ACCEPTED_WITH_RISK')
     .map(attempt => `${attempt.stageLabel}#${attempt.attemptNumber}: ${attempt.verdict}`)
@@ -2473,6 +2590,10 @@ function buildLoopStageVars(
     sourceRef: session.sourceRef ?? '',
     // Helper for the "X @ Y" suffix without forcing the template to do conditionals.
     sourceRefSuffix: session.sourceRef ? ` @ ${session.sourceRef}` : '',
+    // M41.2 — operator → agent guidance thread. Empty string when no chat
+    // messages exist, so the Mustache `{{#operatorChat}}…{{/operatorChat}}`
+    // section conditionally renders only when the operator has steered.
+    operatorChat,
   }
 }
 

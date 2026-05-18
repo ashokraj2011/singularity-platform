@@ -63,6 +63,7 @@ import { LoopRail } from './neo/LoopRail'
 import { LiveCockpit } from './neo/LiveCockpit'
 import { FocusPane, computeFocusIntent, type FocusAction } from './neo/FocusPane'
 import { NeoNotifier } from './neo/NeoNotifier'
+import { StageChat } from './neo/StageChat'
 
 const knownRoleMeta: Record<string, { label: string; icon: typeof Brain }> = {
   ARCHITECT: { label: 'Architect', icon: Brain },
@@ -1042,6 +1043,16 @@ function WorkbenchNeo({
           authToken={getToken()}
         />
       </section>
+
+      {/* M41.2 — Stage Chat docked at the bottom, persistent across stage
+          navigation. Drops operator hints that feed into the next attempt. */}
+      <div className="neo-bottom-dock">
+        <StageChat
+          sessionId={session.id}
+          stage={activeStage}
+          seedThread={activeStage ? session.stageChats?.[activeStage.key] : undefined}
+        />
+      </div>
 
       {overlay === 'review' && activeStage && activeAttempt && canReview && (
         <NeoOverlayShell title={`Code review · ${activeStage.label}`} onClose={() => closeOverlay(false)}>
