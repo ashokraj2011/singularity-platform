@@ -133,6 +133,14 @@ jobs:
       - name: bin/check-secret-guardrails.sh
         run: bash bin/check-secret-guardrails.sh
 
+  codegen-manifest:
+    name: code-foundry codegen manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bin/check-codegen-manifest.sh
+        run: bash bin/check-codegen-manifest.sh
+
   # ─── Python service (context-fabric) ────────────────────────────────────────
   python-syntax:
     name: python syntax (context-fabric)

@@ -317,6 +317,10 @@ services:
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       CODEGEN_SERVICE_TOKEN: ${CODEGEN_SERVICE_TOKEN:-dev-codegen-service-token}
+      # M42.6 — origins allowed by the CORS layer. The SPA on :5181 hits
+      # the API on :3005; production should override with the SPA's
+      # public URL.
+      FOUNDRY_WEB_ORIGIN: ${FOUNDRY_WEB_ORIGIN:-http://localhost:5181}
       GENERATOR_VERSION: code-foundry-0.2.0
       TEMPLATE_VERSION: spec-only-0.1.0
       WORKSPACE_ROOT: /workspace
@@ -341,6 +345,37 @@ services:
         limits:
           memory: 2G
           cpus: '1.0'
+
+  # ─────────────────────────────────────────────────────────────────────
+  # M42.6 — Code Foundry approval UI. Vite + React dev server on :5181.
+  # Talks to code-foundry-api via /api/* (Vite dev proxy). Production
+  # builds would serve the static `dist/` behind the API host directly.
+  # ─────────────────────────────────────────────────────────────────────
+  code-foundry-web:
+    build:
+      context: ./singularity-code-foundry
+      dockerfile: apps/code-foundry-web/Dockerfile
+    container_name: singularity-code-foundry-web
+    environment:
+      NODE_ENV: development
+      VITE_FOUNDRY_API_URL: http://code-foundry-api:3005
+      # When the operator sets CODEGEN_SERVICE_TOKEN to a non-default
+      # value, propagate it to the SPA build so fetch() can send it.
+      VITE_FOUNDRY_TOKEN: ${CODEGEN_SERVICE_TOKEN:-dev-codegen-service-token}
+    ports:
+      - "5181:5181"
+    volumes:
+      - ./singularity-code-foundry/apps/code-foundry-web/src:/app/apps/code-foundry-web/src
+      - ./singularity-code-foundry/apps/code-foundry-web/index.html:/app/apps/code-foundry-web/index.html
+      - ./singularity-code-foundry/apps/code-foundry-web/public:/app/apps/code-foundry-web/public
+    depends_on:
+      code-foundry-api:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
 
   agent-web:
     build:

@@ -17,6 +17,26 @@ export function createApp(): Express {
   const app = express()
 
   app.use(pinoHttp({ logger: log, quietReqLogger: true }))
+  // M42.6 — minimal CORS so the code-foundry-web SPA on :5181 can call
+  // the API on :3005. Origins are pinned via FOUNDRY_WEB_ORIGIN (defaults
+  // to the dev localhost form). We allow Authorization + content-type
+  // and respond to preflights inline.
+  app.use((req, res, next) => {
+    const allowed = (process.env.FOUNDRY_WEB_ORIGIN ?? 'http://localhost:5181').split(',').map(s => s.trim())
+    const origin = req.headers.origin
+    if (typeof origin === 'string' && allowed.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin)
+      res.setHeader('Vary', 'Origin')
+      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Actor-Id, X-Work-Item-Id')
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+      res.setHeader('Access-Control-Allow-Credentials', 'true')
+    }
+    if (req.method === 'OPTIONS') {
+      res.status(204).end()
+      return
+    }
+    next()
+  })
   // YAML is optional and accepted by routes that parse it themselves;
   // JSON is the default surface so admin tools work out of the box.
   app.use(express.json({ limit: '8mb' }))

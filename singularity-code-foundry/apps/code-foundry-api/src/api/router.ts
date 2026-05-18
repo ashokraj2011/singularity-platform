@@ -12,13 +12,21 @@
  */
 import { Router } from 'express'
 import { requireFlag } from '../lib/featureGate.js'
+import { bearerAuth } from '../lib/bearer.js'
 import { specRouter } from './routes/spec.js'
 import { generateRouter } from './routes/generate.js'
 import { verifyRouter } from './routes/verify.js'
 import { llmTasksRouter } from './routes/llmTasks.js'
 import { brownfieldRouter } from './routes/brownfield.js'
+import { runsRouter } from './routes/runs.js'
 
 export const codegenRouter: Router = Router()
+
+// M42.6 — Bearer auth applied to every codegen route. Pass-through
+// when CODEGEN_SERVICE_TOKEN is the dev default OR the caller is on
+// localhost, so the local docker-compose flow + the SPA running on
+// :5181 against :3005 both keep working without extra configuration.
+codegenRouter.use(bearerAuth())
 
 // Master gate.
 codegenRouter.use(requireFlag('code_foundry.enabled'))
@@ -30,6 +38,10 @@ codegenRouter.use(requireFlag('code_foundry.enabled'))
 codegenRouter.use(requireFlag('code_foundry.greenfield.enabled'), specRouter)
 codegenRouter.use(requireFlag('code_foundry.greenfield.enabled'), generateRouter)
 codegenRouter.use(requireFlag('code_foundry.greenfield.enabled'), verifyRouter)
+// Read-only list/detail endpoints used by the M42.6 SPA. Gated on the
+// master flag only — these are read across both greenfield and brownfield
+// runs and the SPA shows runs from both modes side-by-side.
+codegenRouter.use(runsRouter)
 codegenRouter.use(
   requireFlag('code_foundry.greenfield.enabled'),
   requireFlag('code_foundry.llm_patch.enabled'),
