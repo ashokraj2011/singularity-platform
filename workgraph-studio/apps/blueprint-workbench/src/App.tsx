@@ -1038,8 +1038,12 @@ function WorkbenchNeo({
           <FinalizeStrip session={session} onSession={onSession} />
         </div>
 
+        {/* LiveCockpit needs a workflow instance id to subscribe to the
+            SSE stream. Standalone Workbench sessions without a linked
+            workflow run get an explanatory empty state instead of a
+            permanent connection error. */}
         <LiveCockpit
-          workflowInstanceId={session.workflowInstanceId ?? session.id}
+          workflowInstanceId={session.workflowInstanceId ?? null}
           authToken={getToken()}
         />
       </section>

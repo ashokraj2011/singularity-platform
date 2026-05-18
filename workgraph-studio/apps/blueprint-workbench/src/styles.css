@@ -3643,6 +3643,12 @@ button.focus-badge.link:hover {
   border: 1px solid var(--outline-variant);
 }
 
+.neo-cockpit.unlinked .cockpit-empty {
+  padding: 32px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .cockpit-status.streaming { color: #22c55e; border-color: rgba(34, 197, 94, 0.4); }
 .cockpit-status.polling   { color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); }
 .cockpit-status.connecting { color: #a5b4fc; border-color: rgba(99, 102, 241, 0.4); }

@@ -92,6 +92,25 @@ export function LiveCockpit({
   const [error, setError] = useState<string | null>(null)
   const seenIds = useRef<Set<string>>(new Set())
 
+  // Standalone Workbench sessions aren't tied to a workflow run, so the
+  // SSE stream has nothing to subscribe to. Show a friendly empty state
+  // instead of a permanent connection error.
+  if (!workflowInstanceId) {
+    return (
+      <section className="neo-cockpit unlinked" aria-label="Live agent activity">
+        <header className="cockpit-head">
+          <span className="cockpit-title">Live cockpit</span>
+          <span className="cockpit-status idle">○ not linked</span>
+        </header>
+        <p className="cockpit-empty">
+          This session isn't linked to a workflow run, so there's no live
+          event stream to subscribe to. Open the Workbench from an active
+          workflow task to see tools and tokens flow in real time.
+        </p>
+      </section>
+    )
+  }
+
   function push(ev: CockpitEvent) {
     if (!ev.id || seenIds.current.has(ev.id)) return
     seenIds.current.add(ev.id)
@@ -123,6 +142,13 @@ export function LiveCockpit({
         const r = await fetch(url, { headers: { Authorization: `Bearer ${authToken}` } })
         if (!r.ok) {
           setStatus('error')
+          // 403/404 are terminal — the run is gone or not ours. Stop the
+          // polling loop instead of grinding a request every 2.5s forever.
+          if (r.status === 403 || r.status === 404) {
+            setError(r.status === 403 ? 'workflow run not accessible' : 'workflow run not found')
+            stopped = true
+            return
+          }
           setError(`HTTP ${r.status}`)
         } else {
           const d = await r.json() as { events?: CockpitEvent[]; tail_id?: string | null }
