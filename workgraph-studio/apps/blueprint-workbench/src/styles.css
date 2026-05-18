@@ -3061,22 +3061,101 @@ pre {
   --neo-tool: #9333ea;       --neo-tool-rgb: 147, 51, 234;
 }
 
-/* Theme picker swatch row (lives in the LoopRail footer). */
+.neo-cockpit-root.neo-theme-fidelity {
+  /* Fidelity-inspired institutional green. High-trust, low-saturation
+     for the primary; warm gold for attention so verdict gates pop
+     against the green sea. */
+  --neo-primary: #00843D;    --neo-primary-rgb: 0, 132, 61;
+  --neo-ok: #00A651;         --neo-ok-rgb: 0, 166, 81;
+  --neo-attention: #C68A00;  --neo-attention-rgb: 198, 138, 0;
+  --neo-danger: #C62828;     --neo-danger-rgb: 198, 40, 40;
+  --neo-info: #006B5C;       --neo-info-rgb: 0, 107, 92;
+  --neo-accent: #4E7C2A;     --neo-accent-rgb: 78, 124, 42;
+  --neo-tool: #2E7D32;       --neo-tool-rgb: 46, 125, 50;
+}
+
+/* ============================================================
+ * Surface mode (dark / light).
+ * Default scope (.neo-cockpit-root) inherits the framework's
+ * dark surface tokens from :root. .neo-mode-light overrides every
+ * surface + text + outline + shadow var with a light-mode palette
+ * scoped to the cockpit only, so the cockpit can be light while the
+ * rest of the SPA stays dark (or vice versa).
+ * ============================================================ */
+
+.neo-cockpit-root.neo-mode-light {
+  --background:         #f6f8fb;
+  --surface:            #ffffff;
+  --surface-lowest:     #eef2f7;
+  --surface-low:        #f1f4f9;
+  --surface-container:  #ffffff;
+  --surface-high:       #e5e9f0;
+  --surface-highest:    #d8dde6;
+  --outline:            #6b7280;
+  --outline-variant:    #d1d5db;
+  --text:               #111827;
+  --muted:              #374151;
+  --muted-low:          rgba(55, 65, 81, 0.7);
+  --primary:            #1d4ed8;
+  --shadow:             rgba(15, 23, 42, 0.10);
+}
+
+/* ============================================================
+ * Font theme.
+ * --neo-font cascades into .neo-cockpit-root and all descendants
+ * except <pre>/<code>/<time>/.metric-value etc which keep
+ * JetBrains Mono so structured output stays legible.
+ * ============================================================ */
+
+.neo-cockpit-root.neo-font-default {
+  --neo-font: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
+}
+
+.neo-cockpit-root.neo-font-serif {
+  --neo-font: "Iowan Old Style", "Georgia", "Source Serif Pro",
+              "Apple Garamond", ui-serif, serif;
+}
+
+.neo-cockpit-root.neo-font-mono {
+  --neo-font: "JetBrains Mono", ui-monospace, SFMono-Regular,
+              Menlo, monospace;
+}
+
+.neo-cockpit-root { font-family: var(--neo-font, inherit); }
+.neo-cockpit-root .neo-shell,
+.neo-cockpit-root .neo-bottom-dock,
+.neo-cockpit-root .neo-overlay-card {
+  font-family: var(--neo-font, inherit);
+}
+
+/* Theme picker — three labelled rows pinned at the LoopRail bottom.
+   Row 1: Color swatches.  Row 2: Surface mode chips (Dark/Light).
+   Row 3: Font chips (Default/Serif/Mono). */
 .neo-theme-picker {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 8px;
   padding: 10px 6px 4px;
   margin-top: auto;
   border-top: 1px solid var(--outline-variant);
+  flex-shrink: 0;
+}
+
+.neo-theme-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .neo-theme-picker-label {
-  font-size: 10px;
+  font-size: 9px;
   text-transform: uppercase;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
   color: var(--muted-low);
   flex-shrink: 0;
+  min-width: 44px;
+  font-weight: 600;
 }
 
 .neo-theme-picker-swatches {
@@ -3104,6 +3183,33 @@ pre {
   border-color: var(--text);
   box-shadow: 0 0 0 2px var(--surface-container), 0 0 0 3px var(--text);
 }
+
+/* Chip variant for surface mode + font (non-color choices). */
+.neo-theme-chip {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--outline-variant);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.neo-theme-chip:hover {
+  background: var(--surface-low);
+  color: var(--text);
+}
+
+.neo-theme-chip.active {
+  background: rgba(var(--neo-primary-rgb), 0.12);
+  color: var(--neo-primary);
+  border-color: var(--neo-primary);
+}
+
+.neo-theme-chip.font-serif { font-family: "Iowan Old Style", "Georgia", serif; }
+.neo-theme-chip.font-mono  { font-family: "JetBrains Mono", monospace; font-size: 10px; }
 
 /* ============================================================
  * M41.1 — Workbench Neo Cockpit
@@ -3180,6 +3286,12 @@ pre {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* Take whatever vertical space is left after the header + picker so
+     the theme picker stays pinned at the bottom of the rail no matter
+     how many stages the loop has. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .rail-row {

@@ -64,7 +64,7 @@ import { LiveCockpit } from './neo/LiveCockpit'
 import { FocusPane, computeFocusIntent, type FocusAction } from './neo/FocusPane'
 import { NeoNotifier } from './neo/NeoNotifier'
 import { StageChat } from './neo/StageChat'
-import { NeoThemePicker, themeClass, useNeoTheme } from './neo/NeoThemePicker'
+import { NeoThemePicker, lookClass, useNeoLook } from './neo/NeoThemePicker'
 
 const knownRoleMeta: Record<string, { label: string; icon: typeof Brain }> = {
   ARCHITECT: { label: 'Architect', icon: Brain },
@@ -973,7 +973,7 @@ function WorkbenchNeo({
 }) {
   const [activeStageKey, setActiveStageKey] = useState<string | null>(null)
   const [overlay, setOverlay] = useState<NeoOverlayKind>('none')
-  const [theme, setTheme] = useNeoTheme()
+  const [look, setLook] = useNeoLook()
   const stages = session?.loopDefinition?.stages ?? []
   const firstStageKey = stages[0]?.key ?? null
 
@@ -1013,11 +1013,13 @@ function WorkbenchNeo({
     )
   }
 
-  // M41.4 — themeClass(theme) yields the .neo-cockpit-root wrapper class
-  // that scopes every --neo-* CSS variable, so the LoopRail, FocusPane,
-  // LiveCockpit, StageChat AND overlays all theme together.
+  // M41.5 — lookClass(look) yields the .neo-cockpit-root wrapper class
+  // with three orthogonal modifiers (color theme, surface mode,
+  // font family) that scope every --neo-* CSS variable. The LoopRail,
+  // FocusPane, LiveCockpit, StageChat AND overlays all inherit the
+  // same look so the cockpit feels like a single coherent surface.
   return (
-    <div className={themeClass(theme)}>
+    <div className={lookClass(look)}>
       <NeoNotifier session={session} />
       <section className="neo-shell neo-cockpit-shell">
         <LoopRail
@@ -1028,7 +1030,7 @@ function WorkbenchNeo({
             setOverlay('none')
             onSection('workflow')
           }}
-          footer={<NeoThemePicker value={theme} onChange={setTheme} />}
+          footer={<NeoThemePicker value={look} onChange={setLook} />}
         />
 
         <div className="neo-center-column">
