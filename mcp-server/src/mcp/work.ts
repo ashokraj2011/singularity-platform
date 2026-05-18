@@ -27,6 +27,7 @@ import { finishWorkBranchTool } from "../tools/ast-tools";
 import { recordToolInvocation } from "../audit/store";
 import { branchNameForWork, prepareWorkBranch } from "../workspace/git-workspace";
 import { withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbox";
+import { redactSecrets } from "../security/redact";
 
 export const workRouter = Router();
 
@@ -97,29 +98,30 @@ workRouter.post("/work/finish-branch", async (req, res) => {
     const rec = recordToolInvocation({
       correlation,
       tool_name: "finish_work_branch",
-      args: { message: body.message, push: body.push, remote: body.remote },
-      output: r.output,
+      args: redactSecrets({ message: body.message, push: body.push, remote: body.remote }),
+      output: redactSecrets(r.output),
       success: r.success,
-      error: r.error,
+      error: r.error ? redactSecrets(r.error) : undefined,
       latency_ms: Date.now() - start,
     });
     res.json({
       success: true,
-      data: { tool_invocation: rec, output: r.output },
+      data: { tool_invocation: rec, output: redactSecrets(r.output) },
       requestId: res.locals.requestId,
     });
   } catch (err) {
+    const message = redactSecrets((err as Error).message);
     const rec = recordToolInvocation({
       correlation,
       tool_name: "finish_work_branch",
-      args: { message: body.message, push: body.push, remote: body.remote },
+      args: redactSecrets({ message: body.message, push: body.push, remote: body.remote }),
       output: null,
       success: false,
-      error: (err as Error).message,
+      error: message,
       latency_ms: Date.now() - start,
     });
     throw new AppError(
-      (err as Error).message,
+      message,
       500,
       "WORK_FINISH_BRANCH_FAILED",
       { tool_invocation: rec },

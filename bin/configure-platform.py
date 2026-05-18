@@ -14,10 +14,12 @@ import getpass
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -35,11 +37,13 @@ PORTAL_DOCTOR_PATH = ROOT / "singularity-portal/public/ops-doctor.json"
 
 SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASS", "DATABASE")
 
+COPILOT_ONLY_PROFILES = {"office-copilot-only", "fidelity-copilot-only"}
 
 PROFILE_IAM_MODES = {
     "local-docker": "real-iam-dev",
     "office-laptop": "real-iam-dev",
     "office-copilot-only": "real-iam-dev",
+    "fidelity-copilot-only": "real-iam-dev",
     "pseudo-iam-dev": "pseudo-iam-dev",
     "real-iam-dev": "real-iam-dev",
 }
@@ -76,6 +80,12 @@ CONFIG_KEY_MAP = {
     "mcpRuntime.astMaxWorkspaceBytes": "MCP_AST_MAX_WORKSPACE_BYTES",
     "mcpRuntime.astMaxSymbols": "MCP_AST_MAX_SYMBOLS",
     "mcpRuntime.workBranchPrefix": "MCP_WORK_BRANCH_PREFIX",
+    "git.push.enabled": "MCP_GIT_PUSH_ENABLED",
+    "git.auth.mode": "MCP_GIT_AUTH_MODE",
+    "git.remoteName": "MCP_GIT_PUSH_REMOTE",
+    "git.sshKeyPath": "MCP_GIT_SSH_KEY_HOST_PATH",
+    "git.tokenEnv": "MCP_GIT_TOKEN_ENV",
+    "git.defaultBranchPrefix": "MCP_WORK_BRANCH_PREFIX",
     "llm.provider": "LLM_PROVIDER",
     "llm.model": "LLM_MODEL",
     "llm.allowedProviders": "MCP_ALLOWED_LLM_PROVIDERS",
@@ -158,7 +168,13 @@ def flatten_local_config(data: dict | None = None) -> dict[str, str]:
 def config_template(profile: str, args: argparse.Namespace | None = None) -> dict:
     mode = PROFILE_IAM_MODES.get(profile, "real-iam-dev")
     use_pseudo = mode == "pseudo-iam-dev"
-    copilot_only = profile == "office-copilot-only" or bool(getattr(args, "office_copilot_only", False)) if args else profile == "office-copilot-only"
+    copilot_only = (
+        profile in COPILOT_ONLY_PROFILES
+        or bool(getattr(args, "office_copilot_only", False))
+        or bool(getattr(args, "fidelity_copilot_only", False))
+        if args
+        else profile in COPILOT_ONLY_PROFILES
+    )
     sandbox_root = getattr(args, "mcp_sandbox_root", None) if args else None
     sandbox_root = sandbox_root or str(ROOT)
     provider = getattr(args, "llm_provider", None) if args else None
@@ -211,6 +227,14 @@ def config_template(profile: str, args: argparse.Namespace | None = None) -> dic
             "astMaxWorkspaceBytes": 24000000,
             "astMaxSymbols": 250000,
             "workBranchPrefix": "sg",
+        },
+        "git": {
+            "push": {"enabled": False},
+            "auth": {"mode": "disabled"},
+            "remoteName": "origin",
+            "sshKeyPath": "",
+            "tokenEnv": "GITHUB_TOKEN",
+            "defaultBranchPrefix": "sg",
         },
         "llm": {
             "provider": provider,
@@ -379,6 +403,13 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
     formal_verifier_url = pick("FORMAL_VERIFIER_URL", None, "FORMAL_VERIFIER_URL", "http://localhost:8010")
     formal_default_timeout_ms = pick("FORMAL_VERIFICATION_DEFAULT_TIMEOUT_MS", None, "FORMAL_VERIFICATION_DEFAULT_TIMEOUT_MS", "3000")
     formal_max_timeout_ms = pick("FORMAL_VERIFICATION_MAX_TIMEOUT_MS", None, "FORMAL_VERIFICATION_MAX_TIMEOUT_MS", "10000")
+    git_push_enabled = pick("MCP_GIT_PUSH_ENABLED", None, "MCP_GIT_PUSH_ENABLED", "false")
+    git_auth_mode = pick("MCP_GIT_AUTH_MODE", None, "MCP_GIT_AUTH_MODE", "disabled")
+    git_remote = pick("MCP_GIT_PUSH_REMOTE", None, "MCP_GIT_PUSH_REMOTE", "origin")
+    git_token_env = pick("MCP_GIT_TOKEN_ENV", None, "MCP_GIT_TOKEN_ENV", "GITHUB_TOKEN")
+    git_token = os.getenv(git_token_env, os.getenv("MCP_GIT_TOKEN", ""))
+    git_ssh_key_host_path = pick("MCP_GIT_SSH_KEY_HOST_PATH", None, "MCP_GIT_SSH_KEY_HOST_PATH", "")
+    git_ssh_key_container_path = "/run/secrets/singularity_git_ssh_key" if git_ssh_key_host_path else ""
 
     iam_base_default = "http://localhost:8101/api/v1" if use_pseudo else "http://localhost:8100/api/v1"
     iam_service_default = "http://localhost:8101" if use_pseudo else "http://localhost:8100"
@@ -448,6 +479,13 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
         "MCP_AST_MAX_WORKSPACE_BYTES": pick("MCP_AST_MAX_WORKSPACE_BYTES", None, "MCP_AST_MAX_WORKSPACE_BYTES", "24000000"),
         "MCP_AST_MAX_SYMBOLS": pick("MCP_AST_MAX_SYMBOLS", None, "MCP_AST_MAX_SYMBOLS", "250000"),
         "MCP_WORK_BRANCH_PREFIX": pick("MCP_WORK_BRANCH_PREFIX", None, "MCP_WORK_BRANCH_PREFIX", "sg"),
+        "MCP_GIT_PUSH_ENABLED": git_push_enabled,
+        "MCP_GIT_AUTH_MODE": git_auth_mode,
+        "MCP_GIT_PUSH_REMOTE": git_remote,
+        "MCP_GIT_TOKEN_ENV": git_token_env,
+        "MCP_GIT_TOKEN": git_token,
+        "MCP_GIT_SSH_KEY_HOST_PATH": git_ssh_key_host_path,
+        "MCP_GIT_SSH_KEY_PATH": git_ssh_key_container_path,
     }
 
 
@@ -517,6 +555,13 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
                 "MCP_AST_MAX_WORKSPACE_BYTES",
                 "MCP_AST_MAX_SYMBOLS",
                 "MCP_WORK_BRANCH_PREFIX",
+                "MCP_GIT_PUSH_ENABLED",
+                "MCP_GIT_AUTH_MODE",
+                "MCP_GIT_PUSH_REMOTE",
+                "MCP_GIT_TOKEN_ENV",
+                "MCP_GIT_TOKEN",
+                "MCP_GIT_SSH_KEY_HOST_PATH",
+                "MCP_GIT_SSH_KEY_PATH",
             ]
         } | {
             # The root compose runs Context Fabric inside Docker, so the
@@ -576,6 +621,12 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
             "MCP_AST_MAX_WORKSPACE_BYTES": values["MCP_AST_MAX_WORKSPACE_BYTES"],
             "MCP_AST_MAX_SYMBOLS": values["MCP_AST_MAX_SYMBOLS"],
             "MCP_WORK_BRANCH_PREFIX": values["MCP_WORK_BRANCH_PREFIX"],
+            "MCP_GIT_PUSH_ENABLED": values["MCP_GIT_PUSH_ENABLED"],
+            "MCP_GIT_AUTH_MODE": values["MCP_GIT_AUTH_MODE"],
+            "MCP_GIT_PUSH_REMOTE": values["MCP_GIT_PUSH_REMOTE"],
+            "MCP_GIT_TOKEN_ENV": values["MCP_GIT_TOKEN_ENV"],
+            "MCP_GIT_TOKEN": values["MCP_GIT_TOKEN"],
+            "MCP_GIT_SSH_KEY_PATH": values["MCP_GIT_SSH_KEY_PATH"],
             "CONTEXT_FABRIC_URL": values["CONTEXT_FABRIC_URL"],
             "CONTEXT_FABRIC_SERVICE_TOKEN": values["CONTEXT_FABRIC_SERVICE_TOKEN"],
         },
@@ -670,14 +721,14 @@ def command_init(args: argparse.Namespace) -> None:
         print("  ./singularity.sh config write")
         return
     command_write(args)
-    if args.profile == "office-copilot-only":
+    if args.profile in COPILOT_ONLY_PROFILES:
         args.path = ".singularity/mcp-models.json"
         args.default_alias = "copilot"
         args.copilot_only = True
         args.copilot_model = getattr(args, "llm_model", None) or "gpt-4o"
         command_mcp_catalog(args)
     print("\nNext:")
-    if args.profile == "office-copilot-only":
+    if args.profile in COPILOT_ONLY_PROFILES:
         print("  cd mcp-server && npm run build && npx singularity-mcp doctor")
     else:
         print("  ./singularity.sh config mcp-catalog --default-alias mock")
@@ -712,6 +763,40 @@ def command_mcp(args: argparse.Namespace) -> None:
         set_path(data, "mcpRuntime.astDbPath", str(Path(args.ast_db_path).expanduser()))
     write_local_config(data, force=True)
     command_write(args)
+
+
+def command_git(args: argparse.Namespace) -> None:
+    data = load_local_config() or config_template("office-laptop", args)
+    mode = args.mode
+    remote = args.remote or get_path(data, "git.remoteName") or "origin"
+    enabled = mode != "disabled"
+    set_path(data, "git.push.enabled", enabled)
+    set_path(data, "git.auth.mode", mode)
+    set_path(data, "git.remoteName", remote)
+    if args.branch_prefix:
+        set_path(data, "git.defaultBranchPrefix", args.branch_prefix)
+        set_path(data, "mcpRuntime.workBranchPrefix", args.branch_prefix)
+    if mode == "ssh":
+        if not args.ssh_key:
+            raise SystemExit("--ssh-key is required when --mode ssh")
+        key_path = str(Path(args.ssh_key).expanduser())
+        set_path(data, "git.sshKeyPath", key_path)
+        set_path(data, "git.tokenEnv", get_path(data, "git.tokenEnv") or "GITHUB_TOKEN")
+    elif mode == "token":
+        token_env = args.token_env or "GITHUB_TOKEN"
+        set_path(data, "git.tokenEnv", token_env)
+        set_path(data, "git.sshKeyPath", "")
+    else:
+        set_path(data, "git.sshKeyPath", "")
+        set_path(data, "git.tokenEnv", args.token_env or get_path(data, "git.tokenEnv") or "GITHUB_TOKEN")
+    write_local_config(data, force=True)
+    if not args.no_write:
+        command_write(args)
+    print("\nGit push credential config updated. Secrets are not stored in config.")
+    if mode == "token":
+        print(f"Set {args.token_env or 'GITHUB_TOKEN'} in your shell before exporting env files or starting containers.")
+    print("Verify with:")
+    print("  ./singularity.sh doctor git")
 
 
 def mcp_provider_config_payload(*, copilot_only: bool, default_provider: str, default_model: str) -> dict:
@@ -760,8 +845,14 @@ def write_mcp_provider_config(path_value: str, payload: dict) -> Path:
     return out
 
 
-def apply_copilot_only(data: dict, *, token: str | None = None, model: str = "gpt-4o") -> dict:
-    data["profile"] = "office-copilot-only"
+def apply_copilot_only(
+    data: dict,
+    *,
+    token: str | None = None,
+    model: str = "gpt-4o",
+    profile: str = "office-copilot-only",
+) -> dict:
+    data["profile"] = profile
     set_path(data, "llm.provider", "copilot")
     set_path(data, "llm.model", model)
     set_path(data, "llm.allowedProviders", "copilot")
@@ -784,8 +875,9 @@ def apply_copilot_only(data: dict, *, token: str | None = None, model: str = "gp
 
 def command_office_copilot_only(args: argparse.Namespace) -> None:
     """Fence office setups to GitHub Copilot only and clear other provider access."""
-    data = load_local_config() or config_template("office-copilot-only", args)
-    apply_copilot_only(data, token=args.copilot_token, model=args.copilot_model)
+    profile = getattr(args, "profile_name", "office-copilot-only")
+    data = load_local_config() or config_template(profile, args)
+    apply_copilot_only(data, token=args.copilot_token, model=args.copilot_model, profile=profile)
     write_local_config(data, force=True)
     args.llm_provider = "copilot"
     args.llm_model = args.copilot_model
@@ -799,13 +891,20 @@ def command_office_copilot_only(args: argparse.Namespace) -> None:
     args.default_alias = "copilot"
     args.copilot_only = True
     command_mcp_catalog(args)
-    print("\nOffice Copilot-only mode is active.")
+    mode_label = "Fidelity Copilot headless-only" if profile == "fidelity-copilot-only" else "Office Copilot-only"
+    print(f"\n{mode_label} mode is active.")
     print("Non-Copilot provider keys are blanked in generated env files and MCP enforces:")
     print("  .singularity/llm-providers.json")
     print("  .singularity/mcp-models.json")
     print("  MCP_ALLOWED_LLM_PROVIDERS=copilot")
     print("\nIf you only use the GitHub Copilot CLI tools, make sure this passes:")
     print("  cd mcp-server && npm run build && npx singularity-mcp doctor")
+
+
+def command_fidelity_copilot_only(args: argparse.Namespace) -> None:
+    """Fence Fidelity laptop setups to GitHub Copilot headless access only."""
+    args.profile_name = "fidelity-copilot-only"
+    command_office_copilot_only(args)
 
 
 def command_interactive(args: argparse.Namespace) -> None:
@@ -891,6 +990,12 @@ def command_show(_: argparse.Namespace) -> None:
         "TOOL_SERVICE_URL",
         "MCP_SANDBOX_ROOT",
         "MCP_AST_DB_PATH",
+        "MCP_GIT_PUSH_ENABLED",
+        "MCP_GIT_AUTH_MODE",
+        "MCP_GIT_PUSH_REMOTE",
+        "MCP_GIT_TOKEN_ENV",
+        "MCP_GIT_TOKEN",
+        "MCP_GIT_SSH_KEY_PATH",
     ]
     for path in files:
         env = parse_env(path)
@@ -972,6 +1077,129 @@ def write_doctor_summary(records: list[dict[str, str]], *, failures: int, warnin
     PORTAL_DOCTOR_PATH.write_text(json.dumps(payload, indent=2) + "\n")
 
 
+def merged_env_config() -> dict[str, str]:
+    merged: dict[str, str] = flatten_local_config()
+    for path in [
+        ROOT / ".env",
+        ROOT / "singularity-iam-service/.env",
+        ROOT / "context-fabric/.env",
+        ROOT / "mcp-server/.env",
+        ROOT / "agent-and-tools/.env",
+        ROOT / "workgraph-studio/apps/api/.env",
+    ]:
+        merged.update(parse_env(path))
+    return merged
+
+
+def run_secret_doctor(record) -> None:
+    guard = ROOT / "bin/check-secret-guardrails.sh"
+    if not guard.exists():
+        record("WARN", "secret guard script is missing", "restore bin/check-secret-guardrails.sh")
+        return
+    result = subprocess.run(["bash", str(guard)], cwd=ROOT, text=True, capture_output=True, check=False)
+    if result.returncode == 0:
+        record("OK", "tracked-file secret guardrails passed")
+        return
+    output = (result.stderr or result.stdout or "").strip()
+    first = output.splitlines()[0] if output else "secret guard failed"
+    record("FAIL", first, "bash bin/check-secret-guardrails.sh")
+
+
+def run_git_doctor(record, merged: dict[str, str]) -> None:
+    enabled = (merged.get("MCP_GIT_PUSH_ENABLED") or "false").lower() == "true"
+    mode = (merged.get("MCP_GIT_AUTH_MODE") or "disabled").lower()
+    remote = merged.get("MCP_GIT_PUSH_REMOTE") or "origin"
+    workspace = Path(merged.get("MCP_SANDBOX_ROOT") or str(ROOT)).expanduser()
+    if not workspace.is_absolute():
+        workspace = ROOT / workspace
+
+    if enabled:
+        record("OK", f"Git push is enabled ({mode})")
+    else:
+        record("WARN", "Git push is disabled; GIT_PUSH nodes will preserve commits but block before publishing", "./singularity.sh config git --mode ssh --ssh-key ~/.ssh/id_ed25519 --remote origin")
+
+    if workspace.exists() and os.access(workspace, os.W_OK):
+        record("OK", f"MCP workspace is writable: {workspace}")
+    else:
+        record("FAIL", f"MCP workspace is not writable: {workspace}", "./singularity.sh config mcp --sandbox-root <writable-path>")
+
+    if mode == "ssh":
+        key_path = merged.get("MCP_GIT_SSH_KEY_HOST_PATH") or merged.get("MCP_GIT_SSH_KEY_PATH") or ""
+        if key_path and Path(key_path).expanduser().exists():
+            record("OK", "Git SSH key path exists")
+        elif os.getenv("SSH_AUTH_SOCK"):
+            record("OK", "SSH agent socket is available")
+        else:
+            record("FAIL", "SSH mode selected but no SSH key path or SSH agent is available", "./singularity.sh config git --mode ssh --ssh-key ~/.ssh/id_ed25519 --remote origin")
+    elif mode == "token":
+        token_env = merged.get("MCP_GIT_TOKEN_ENV") or "GITHUB_TOKEN"
+        if os.getenv(token_env) or merged.get("MCP_GIT_TOKEN"):
+            record("OK", f"Git token env is present: {token_env}")
+        else:
+            record("FAIL", f"token mode selected but {token_env} is not set", f"export {token_env}=<github-token-with-repo-write>")
+    elif enabled:
+        record("FAIL", "Git push is enabled but git auth mode is disabled", "./singularity.sh config git --mode ssh --ssh-key ~/.ssh/id_ed25519 --remote origin")
+
+    workspace_is_repo = (workspace / ".git").exists()
+    if workspace_is_repo:
+        remote_check = subprocess.run(["git", "-C", str(workspace), "remote", "get-url", remote], text=True, capture_output=True, check=False)
+        if remote_check.returncode == 0:
+            record("OK", f"Git remote is configured: {remote}")
+        else:
+            record("WARN", f"Git remote {remote} is not configured in {workspace}", f"git -C {workspace} remote add {remote} <repo-url>")
+        identity = subprocess.run(["git", "-C", str(workspace), "config", "--get", "user.email"], text=True, capture_output=True, check=False)
+        if identity.returncode == 0 and identity.stdout.strip():
+            record("OK", "Git commit identity is configured")
+        else:
+            record("WARN", "Git commit identity is missing in workspace", f"git -C {workspace} config user.email you@example.com")
+    else:
+        record("WARN", f"MCP workspace is not a Git repo yet: {workspace}", "Run a WorkItem coding stage or prepare_work_branch first")
+
+    if enabled and workspace_is_repo:
+        head = subprocess.run(["git", "-C", str(workspace), "rev-parse", "--verify", "HEAD"], text=True, capture_output=True, check=False)
+        if head.returncode != 0:
+            record("WARN", "Git dry-run push skipped because the workspace has no commits yet", "Run a coding stage first")
+            return
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        askpass_path = ""
+        try:
+            if mode == "token":
+                token_env = merged.get("MCP_GIT_TOKEN_ENV") or "GITHUB_TOKEN"
+                token = os.getenv(token_env) or merged.get("MCP_GIT_TOKEN") or ""
+                if not token:
+                    record("FAIL", f"Git dry-run push skipped because {token_env} is unavailable", f"export {token_env}=<github-token-with-repo-write>")
+                    return
+                fd, askpass_path = tempfile.mkstemp(prefix="singularity-git-askpass-", text=True)
+                with os.fdopen(fd, "w") as fh:
+                    fh.write("#!/usr/bin/env sh\ncase \"$1\" in\n  *Username*) printf '%s\\n' \"${SINGULARITY_GIT_USERNAME:-x-access-token}\" ;;\n  *) printf '%s\\n' \"${SINGULARITY_GIT_TOKEN:-}\" ;;\nesac\n")
+                os.chmod(askpass_path, 0o700)
+                env["GIT_ASKPASS"] = askpass_path
+                env["SINGULARITY_GIT_USERNAME"] = merged.get("MCP_GIT_USERNAME") or "x-access-token"
+                env["SINGULARITY_GIT_TOKEN"] = token
+            elif mode == "ssh":
+                key_path = merged.get("MCP_GIT_SSH_KEY_HOST_PATH") or ""
+                if key_path:
+                    env["GIT_SSH_COMMAND"] = f"ssh -i {shlex.quote(str(Path(key_path).expanduser()))} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+            dry_run = subprocess.run(
+                ["git", "-C", str(workspace), "push", "--dry-run", "-u", remote, "HEAD"],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=env,
+            )
+            if dry_run.returncode == 0:
+                record("OK", "Git dry-run push succeeded")
+            else:
+                detail = (dry_run.stderr or dry_run.stdout or "").splitlines()
+                reason = detail[0] if detail else "unknown git dry-run failure"
+                reason = re.sub(r"https?://([^/\s:@]+):([^@\s/]+)@", "https://[REDACTED_CREDENTIALS]@", reason)
+                record("FAIL", f"Git dry-run push failed: {reason}", "./singularity.sh doctor git")
+        finally:
+            if askpass_path:
+                Path(askpass_path).unlink(missing_ok=True)
+
+
 def command_doctor(args: argparse.Namespace) -> None:
     failures = 0
     warnings = 0
@@ -989,17 +1217,35 @@ def command_doctor(args: argparse.Namespace) -> None:
     print("Singularity configuration doctor\n")
 
     config = load_local_config()
-    strict_office = bool(getattr(args, "office_copilot_only", False))
+    strict_fidelity = bool(getattr(args, "fidelity_copilot_only", False))
+    strict_office = bool(getattr(args, "office_copilot_only", False)) or strict_fidelity
+    copilot_fix_command = "./singularity.sh fidelity-copilot-only" if strict_fidelity else "./singularity.sh office-copilot-only"
+    scope = getattr(args, "scope", "all")
+    if scope == "secrets":
+        run_secret_doctor(record)
+        write_doctor_summary(records, failures=failures, warnings=warnings)
+        if failures:
+            sys.exit(1)
+        return
+    if scope == "git":
+        run_git_doctor(record, merged_env_config())
+        write_doctor_summary(records, failures=failures, warnings=warnings)
+        if failures:
+            sys.exit(1)
+        return
 
     if CONFIG_PATH.exists():
         record("OK", f"canonical config exists: {CONFIG_PATH.relative_to(ROOT)}")
     else:
         record("WARN", f"canonical config missing: {CONFIG_PATH.relative_to(ROOT)}", "./singularity.sh config init --profile office-laptop")
     if strict_office:
-        if config.get("profile") == "office-copilot-only":
-            record("OK", "canonical profile is office-copilot-only")
+        if strict_fidelity and config.get("profile") == "fidelity-copilot-only":
+            record("OK", "canonical profile is fidelity-copilot-only")
+        elif not strict_fidelity and config.get("profile") in COPILOT_ONLY_PROFILES:
+            record("OK", f"canonical profile is {config.get('profile')}")
         else:
-            record("FAIL", "strict office validation requires profile=office-copilot-only", "./singularity.sh office-copilot-only")
+            expected = "fidelity-copilot-only" if strict_fidelity else "office-copilot-only or fidelity-copilot-only"
+            record("FAIL", f"strict Copilot-only validation requires profile={expected}", copilot_fix_command)
 
     for path in [
         ROOT / ".env",
@@ -1059,19 +1305,12 @@ def command_doctor(args: argparse.Namespace) -> None:
             first_line = re.sub(r"\x1b\[[0-9;]*m", "", guard_output.splitlines()[0]) if guard_output else "unknown failure"
             record("FAIL", f"nginx Docker DNS guard failed: {first_line}", "bash bin/check-nginx-docker-dns.sh")
 
-    merged: dict[str, str] = flatten_local_config()
-    for path in [
-        ROOT / ".env",
-        ROOT / "singularity-iam-service/.env",
-        ROOT / "context-fabric/.env",
-        ROOT / "mcp-server/.env",
-        ROOT / "agent-and-tools/.env",
-        ROOT / "workgraph-studio/apps/api/.env",
-    ]:
-        merged.update(parse_env(path))
+    merged = merged_env_config()
+    run_git_doctor(record, merged)
+    run_secret_doctor(record)
     provider = merged.get("MCP_LLM_PROVIDER") or merged.get("LLM_PROVIDER") or "mock"
     allowed_providers = [item.strip().lower() for item in (merged.get("MCP_ALLOWED_LLM_PROVIDERS") or "").split(",") if item.strip()]
-    profile_copilot_only = config.get("profile") == "office-copilot-only"
+    profile_copilot_only = config.get("profile") in COPILOT_ONLY_PROFILES
     copilot_only = strict_office or profile_copilot_only or allowed_providers == ["copilot"]
     if provider == "openai" and not (merged.get("OPENAI_API_KEY") or merged.get("OPENAI_COMPATIBLE_API_KEY")):
         record("FAIL", "OpenAI provider selected but no OpenAI key is configured", "./singularity.sh config set llm.openai.apiKey sk-...")
@@ -1087,9 +1326,9 @@ def command_doctor(args: argparse.Namespace) -> None:
             if merged.get(key)
         ]
         if provider != "copilot":
-            record("FAIL", "Copilot-only mode requires MCP_LLM_PROVIDER/LLM_PROVIDER=copilot", "./singularity.sh config office-copilot-only")
+            record("FAIL", "Copilot-only mode requires MCP_LLM_PROVIDER/LLM_PROVIDER=copilot", copilot_fix_command)
         elif forbidden:
-            record("FAIL", f"Copilot-only mode has non-Copilot access still configured: {', '.join(forbidden)}", "./singularity.sh config office-copilot-only")
+            record("FAIL", f"Copilot-only mode has non-Copilot access still configured: {', '.join(forbidden)}", copilot_fix_command)
         else:
             record("OK", "Copilot-only provider fence is active")
         cli_ok, cli_msg = gh_copilot_ready()
@@ -1098,7 +1337,7 @@ def command_doctor(args: argparse.Namespace) -> None:
             if allowed_providers == ["copilot"]:
                 record("OK", "MCP provider allowlist is exactly copilot")
             else:
-                record("FAIL", "strict office validation requires MCP_ALLOWED_LLM_PROVIDERS=copilot", "./singularity.sh office-copilot-only")
+                record("FAIL", "strict Copilot-only validation requires MCP_ALLOWED_LLM_PROVIDERS=copilot", copilot_fix_command)
 
     mcp_token = merged.get("MCP_DEMO_BEARER_TOKEN") or merged.get("MCP_BEARER_TOKEN", "")
     if len(mcp_token) < 16:
@@ -1130,7 +1369,7 @@ def command_doctor(args: argparse.Namespace) -> None:
                     if providers == ["copilot"]:
                         record("OK", "MCP model catalog is Copilot-only")
                     else:
-                        record("FAIL", f"MCP model catalog includes non-Copilot providers: {', '.join(providers)}", "./singularity.sh config office-copilot-only")
+                        record("FAIL", f"MCP model catalog includes non-Copilot providers: {', '.join(providers)}", copilot_fix_command)
                 except Exception as exc:
                     record("WARN", f"Could not inspect MCP model catalog providers: {exc}", "./singularity.sh config mcp-catalog --copilot-only")
         else:
@@ -1156,9 +1395,9 @@ def command_doctor(args: argparse.Namespace) -> None:
                     if allowed == ["copilot"] and not enabled_non_copilot:
                         record("OK", "MCP provider config is Copilot-only")
                     else:
-                        record("FAIL", "MCP provider config is not fenced to Copilot", "./singularity.sh config office-copilot-only")
+                        record("FAIL", "MCP provider config is not fenced to Copilot", copilot_fix_command)
                 except Exception as exc:
-                    record("WARN", f"Could not inspect MCP provider config: {exc}", "./singularity.sh config office-copilot-only")
+                    record("WARN", f"Could not inspect MCP provider config: {exc}", copilot_fix_command)
         else:
             fix = "./singularity.sh config mcp-catalog --copilot-only" if copilot_only else "./singularity.sh config mcp-catalog --default-alias mock"
             record("WARN", f"MCP provider config missing: {p}", fix)
@@ -1182,9 +1421,9 @@ def command_doctor(args: argparse.Namespace) -> None:
             if default_provider == "copilot":
                 record("OK", "live MCP default provider is copilot")
             else:
-                record("FAIL", f"live MCP default provider is {default_provider or '(unset)'}, not copilot", "./singularity.sh office-copilot-only && ./singularity.sh restart mcp-server-demo")
+                record("FAIL", f"live MCP default provider is {default_provider or '(unset)'}, not copilot", f"{copilot_fix_command} && ./singularity.sh restart mcp-server-demo")
             if non_copilot_enabled:
-                record("FAIL", f"live MCP still enables/allows non-Copilot providers: {', '.join(non_copilot_enabled)}", "./singularity.sh office-copilot-only && ./singularity.sh restart mcp-server-demo")
+                record("FAIL", f"live MCP still enables/allows non-Copilot providers: {', '.join(non_copilot_enabled)}", f"{copilot_fix_command} && ./singularity.sh restart mcp-server-demo")
             else:
                 record("OK", "live MCP provider fence exposes only Copilot")
             if copilot_row.get("ready") is True:
@@ -1440,6 +1679,7 @@ def command_providers(_: argparse.Namespace) -> None:
         print("  ./singularity.sh config mcp-catalog --default-alias mock")
         print("or:")
         print("  ./singularity.sh config office-copilot-only")
+        print("  ./singularity.sh config fidelity-copilot-only")
         return
     payload = json.loads(p.read_text())
     allowed = [str(item).lower() for item in payload.get("allowedProviders", [])]
@@ -1515,7 +1755,9 @@ def main() -> None:
     p_show.set_defaults(func=command_show)
 
     p_doctor = sub.add_parser("doctor", help="Validate env files, ports, service URLs, and key presence")
+    p_doctor.add_argument("scope", nargs="?", choices=["all", "git", "secrets"], default="all")
     p_doctor.add_argument("--office-copilot-only", action="store_true", help="Fail unless this laptop is fenced to Copilot-only provider/model access")
+    p_doctor.add_argument("--fidelity-copilot-only", action="store_true", help="Fail unless this laptop is fenced to Fidelity Copilot headless-only access")
     p_doctor.set_defaults(func=command_doctor)
 
     p_set = sub.add_parser("set", help="Set one canonical config key and rewrite env files")
@@ -1532,6 +1774,15 @@ def main() -> None:
     p_mcp_runtime.add_argument("--ast-db-path", default=None)
     p_mcp_runtime.set_defaults(func=command_mcp)
 
+    p_git = sub.add_parser("git", help="Configure local Git push credentials for approved WorkItem branches")
+    p_git.add_argument("--mode", choices=["disabled", "ssh", "token"], required=True)
+    p_git.add_argument("--ssh-key", default=None, help="Local SSH private key path. Stored as a path only; key contents are never copied into config.")
+    p_git.add_argument("--token-env", default=None, help="Environment variable name holding the Git token. Token value is never stored in config.")
+    p_git.add_argument("--remote", default=None, help="Git remote name to push to, default origin")
+    p_git.add_argument("--branch-prefix", default=None, help="Default WorkItem branch prefix, default sg")
+    p_git.add_argument("--no-write", action="store_true")
+    p_git.set_defaults(func=command_git)
+
     p_export = sub.add_parser("export", help="Print shell exports for the standard profile")
     add_common_write_args(p_export)
     p_export.set_defaults(func=command_export)
@@ -1546,6 +1797,11 @@ def main() -> None:
     p_office.add_argument("--copilot-token", default=None, help="Optional Copilot API token; leave blank when using only gh copilot CLI tools")
     p_office.add_argument("--copilot-model", default="gpt-4o")
     p_office.set_defaults(func=command_office_copilot_only)
+
+    p_fidelity = sub.add_parser("fidelity-copilot-only", help="Fence a Fidelity laptop setup to GitHub Copilot headless only and blank every other provider")
+    p_fidelity.add_argument("--copilot-token", default=None, help="Optional Copilot API token; leave blank when using only gh copilot CLI tools")
+    p_fidelity.add_argument("--copilot-model", default="gpt-4o")
+    p_fidelity.set_defaults(func=command_fidelity_copilot_only)
 
     p_mcp = sub.add_parser("mcp-register", help="Register a local MCP server in IAM for a capability")
     p_mcp.add_argument("--capability-id", required=True)

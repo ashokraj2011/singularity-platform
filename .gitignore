@@ -5,10 +5,17 @@
 .singularity/config.local.json
 .singularity/ops-doctor.json
 .singularity/llm-providers.json
+.singularity/*.env
 .singularity/*.sqlite
+.singularity/secrets/
+.singularity/keys/
+.singularity/git-credentials
 singularity-portal/public/ops-doctor.json
 *.pem
 *.key
+*.p8
+id_rsa
+id_ed25519
 /tmp/iam_jwt.txt
 
 # ── node ──────────────────────────────────────────────────────────────────

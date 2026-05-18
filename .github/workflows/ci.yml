@@ -125,6 +125,14 @@ jobs:
       - name: bin/check-monorepo-versions.sh
         run: bash bin/check-monorepo-versions.sh
 
+  secret-guardrails:
+    name: local secret guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bin/check-secret-guardrails.sh
+        run: bash bin/check-secret-guardrails.sh
+
   # ─── Python service (context-fabric) ────────────────────────────────────────
   python-syntax:
     name: python syntax (context-fabric)

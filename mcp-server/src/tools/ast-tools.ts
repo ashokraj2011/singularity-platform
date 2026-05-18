@@ -211,7 +211,7 @@ export const finishWorkBranchTool: ToolHandler = {
     );
     const after = await indexWorkspace("finish");
     return {
-      success: !push || !result.pushError,
+      success: !push || result.pushed === true,
       output: {
         kind: result.committed ? "code_change" : "workspace_finish",
         paths_touched: result.changedPaths,
@@ -223,7 +223,10 @@ export const finishWorkBranchTool: ToolHandler = {
         message: result.message,
         pushed: result.pushed,
         push_error: result.pushError,
-        remote: push ? (remote ?? "origin") : undefined,
+        push_blocked_code: result.pushBlockedCode,
+        push_fix_commands: result.pushFixCommands,
+        push_retryable: result.pushRetryable,
+        remote: push ? (result.pushRemote ?? remote ?? "origin") : undefined,
         astIndexBefore: before,
         astIndexAfter: after,
       },

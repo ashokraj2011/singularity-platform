@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { config } from "../config";
 import { events } from "../events/bus";
 import type { CorrelationIds } from "../audit/store";
+import { redactSecrets } from "../security/redact";
 import { sandboxRoot } from "./sandbox";
 
 const execFileP = promisify(execFile);
@@ -38,6 +39,10 @@ export interface FinishBranchResult {
   pushed?: boolean;
   /** M27.5 — non-empty when the push attempt failed but the local commit succeeded. */
   pushError?: string;
+  pushBlockedCode?: "GIT_AUTH_MISSING" | "GIT_REMOTE_UNREACHABLE" | "GIT_PUSH_REJECTED" | "NO_COMMIT_TO_PUSH";
+  pushFixCommands?: string[];
+  pushRetryable?: boolean;
+  pushRemote?: string;
 }
 
 let activeBranch: WorkBranchInfo | null = null;
@@ -64,11 +69,12 @@ export function branchNameForWork(req: BranchRequest): string | null {
   ].join("/").slice(0, 180);
 }
 
-async function git(args: string[], opts?: { allowFail?: boolean; maxBuffer?: number }): Promise<string> {
+async function git(args: string[], opts?: { allowFail?: boolean; maxBuffer?: number; env?: NodeJS.ProcessEnv }): Promise<string> {
   try {
     const { stdout } = await execFileP("git", args, {
       cwd: sandboxRoot(),
       maxBuffer: opts?.maxBuffer ?? 10 * 1024 * 1024,
+      env: opts?.env ? { ...process.env, ...opts.env } : process.env,
     });
     return stdout.trim();
   } catch (err) {
@@ -77,18 +83,238 @@ async function git(args: string[], opts?: { allowFail?: boolean; maxBuffer?: num
   }
 }
 
-async function pushBranch(branch: string, remote?: string): Promise<{ pushed: boolean; pushError?: string; remote: string }> {
-  const resolvedRemote = remote?.trim() || "origin";
-  try {
-    const hasRemote = Boolean(await git(["remote", "get-url", resolvedRemote], { allowFail: true }));
-    if (!hasRemote) {
-      return { pushed: false, pushError: `remote '${resolvedRemote}' is not configured`, remote: resolvedRemote };
+type PushBlockedCode = NonNullable<FinishBranchResult["pushBlockedCode"]>;
+type PushResult = {
+  pushed: boolean;
+  pushError?: string;
+  remote: string;
+  blockedCode?: PushBlockedCode;
+  fixCommands?: string[];
+  retryable?: boolean;
+};
+
+function isPushResult(value: NodeJS.ProcessEnv | PushResult): value is PushResult {
+  return typeof (value as PushResult).pushed === "boolean";
+}
+
+function fixCommandsForPushBlock(code: PushBlockedCode, remote: string): string[] {
+  if (code === "GIT_AUTH_MISSING") {
+    if (config.MCP_GIT_AUTH_MODE === "ssh") {
+      return [
+        "./singularity.sh config git --mode ssh --ssh-key ~/.ssh/id_ed25519 --remote " + remote,
+        "./singularity.sh doctor git",
+        "./singularity.sh restart mcp-server-demo",
+      ];
     }
-    await git(["push", "-u", resolvedRemote, branch], { maxBuffer: 10 * 1024 * 1024 });
-    return { pushed: true, remote: resolvedRemote };
-  } catch (err) {
-    return { pushed: false, pushError: (err as Error).message, remote: resolvedRemote };
+    return [
+      "export GITHUB_TOKEN=<github-token-with-repo-write>",
+      "./singularity.sh config git --mode token --token-env GITHUB_TOKEN --remote " + remote,
+      "./singularity.sh doctor git",
+      "./singularity.sh restart mcp-server-demo",
+    ];
   }
+  if (code === "GIT_REMOTE_UNREACHABLE") {
+    return [
+      "git remote -v",
+      "git remote set-url " + remote + " <ssh-or-https-repo-url>",
+      "./singularity.sh doctor git",
+    ];
+  }
+  if (code === "NO_COMMIT_TO_PUSH") {
+    return [
+      "Re-run the Developer stage with a writable MCP workspace.",
+      "Approve the captured code diff, then retry Git Push.",
+    ];
+  }
+  return [
+    "Inspect the remote rejection, update/rebase the work branch if needed, then retry Git Push.",
+    "./singularity.sh doctor git",
+  ];
+}
+
+function classifyPushError(error: string): PushBlockedCode {
+  const lower = error.toLowerCase();
+  if (
+    lower.includes("could not read username")
+    || lower.includes("authentication failed")
+    || lower.includes("permission denied")
+    || lower.includes("could not read from remote repository")
+    || lower.includes("repository not found")
+  ) {
+    return "GIT_AUTH_MISSING";
+  }
+  if (
+    lower.includes("remote") && (
+      lower.includes("not configured")
+      || lower.includes("could not resolve host")
+      || lower.includes("not found")
+      || lower.includes("does not appear to be a git repository")
+    )
+  ) {
+    return "GIT_REMOTE_UNREACHABLE";
+  }
+  return "GIT_PUSH_REJECTED";
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+async function ensureAskPassScript(): Promise<string> {
+  const dir = path.join(sandboxRoot(), ".git", "singularity");
+  await fs.promises.mkdir(dir, { recursive: true });
+  const script = path.join(dir, "git-askpass.sh");
+  await fs.promises.writeFile(
+    script,
+    "#!/usr/bin/env sh\ncase \"$1\" in\n  *Username*) printf '%s\\n' \"${SINGULARITY_GIT_USERNAME:-x-access-token}\" ;;\n  *) printf '%s\\n' \"${SINGULARITY_GIT_TOKEN:-}\" ;;\nesac\n",
+    { mode: 0o700 },
+  );
+  return script;
+}
+
+async function gitAuthEnv(): Promise<NodeJS.ProcessEnv | PushResult> {
+  if (!config.MCP_GIT_PUSH_ENABLED || config.MCP_GIT_AUTH_MODE === "disabled") {
+    return {
+      pushed: false,
+      remote: config.MCP_GIT_PUSH_REMOTE,
+      pushError: "Git push is disabled. Configure Git credentials before publishing WorkItem branches.",
+      blockedCode: "GIT_AUTH_MISSING",
+      fixCommands: fixCommandsForPushBlock("GIT_AUTH_MISSING", config.MCP_GIT_PUSH_REMOTE),
+      retryable: true,
+    };
+  }
+
+  if (config.MCP_GIT_AUTH_MODE === "token") {
+    const token = process.env[config.MCP_GIT_TOKEN_ENV] || config.MCP_GIT_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+    if (!token) {
+      return {
+        pushed: false,
+        remote: config.MCP_GIT_PUSH_REMOTE,
+        pushError: `Git token env '${config.MCP_GIT_TOKEN_ENV}' is not available inside MCP.`,
+        blockedCode: "GIT_AUTH_MISSING",
+        fixCommands: fixCommandsForPushBlock("GIT_AUTH_MISSING", config.MCP_GIT_PUSH_REMOTE),
+        retryable: true,
+      };
+    }
+    return {
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_ASKPASS: await ensureAskPassScript(),
+      SINGULARITY_GIT_USERNAME: config.MCP_GIT_USERNAME,
+      SINGULARITY_GIT_TOKEN: token,
+    };
+  }
+
+  const env: NodeJS.ProcessEnv = {
+    GIT_TERMINAL_PROMPT: "0",
+  };
+  if (config.MCP_GIT_SSH_KEY_PATH) {
+    try {
+      const stat = await fs.promises.stat(config.MCP_GIT_SSH_KEY_PATH);
+      if (!stat.isFile()) {
+        return {
+          pushed: false,
+          remote: config.MCP_GIT_PUSH_REMOTE,
+          pushError: `Configured SSH key path is not a file: ${config.MCP_GIT_SSH_KEY_PATH}`,
+          blockedCode: "GIT_AUTH_MISSING",
+          fixCommands: fixCommandsForPushBlock("GIT_AUTH_MISSING", config.MCP_GIT_PUSH_REMOTE),
+          retryable: true,
+        };
+      }
+      env.GIT_SSH_COMMAND = `ssh -i ${shellQuote(config.MCP_GIT_SSH_KEY_PATH)} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`;
+    } catch {
+      return {
+        pushed: false,
+        remote: config.MCP_GIT_PUSH_REMOTE,
+        pushError: `Configured SSH key path is not readable: ${config.MCP_GIT_SSH_KEY_PATH}`,
+        blockedCode: "GIT_AUTH_MISSING",
+        fixCommands: fixCommandsForPushBlock("GIT_AUTH_MISSING", config.MCP_GIT_PUSH_REMOTE),
+        retryable: true,
+      };
+    }
+  }
+  return env;
+}
+
+async function pushBranch(branch: string, remote?: string): Promise<PushResult> {
+  const resolvedRemote = remote?.trim() || config.MCP_GIT_PUSH_REMOTE || "origin";
+  const auth = await gitAuthEnv();
+  if (isPushResult(auth)) {
+    return { ...auth, remote: resolvedRemote, fixCommands: auth.fixCommands ?? fixCommandsForPushBlock(auth.blockedCode ?? "GIT_AUTH_MISSING", resolvedRemote) };
+  }
+  try {
+    const hasRemote = Boolean(await git(["remote", "get-url", resolvedRemote], { allowFail: true, env: auth }));
+    if (!hasRemote) {
+      return {
+        pushed: false,
+        pushError: `remote '${resolvedRemote}' is not configured`,
+        remote: resolvedRemote,
+        blockedCode: "GIT_REMOTE_UNREACHABLE",
+        fixCommands: fixCommandsForPushBlock("GIT_REMOTE_UNREACHABLE", resolvedRemote),
+        retryable: true,
+      };
+    }
+    await git(["push", "--dry-run", "-u", resolvedRemote, branch], { maxBuffer: 10 * 1024 * 1024, env: auth });
+    await git(["push", "-u", resolvedRemote, branch], { maxBuffer: 10 * 1024 * 1024, env: auth });
+    return { pushed: true, remote: resolvedRemote, retryable: false };
+  } catch (err) {
+    const pushError = redactSecrets((err as Error).message);
+    const blockedCode = classifyPushError(pushError);
+    return {
+      pushed: false,
+      pushError,
+      remote: resolvedRemote,
+      blockedCode,
+      fixCommands: fixCommandsForPushBlock(blockedCode, resolvedRemote),
+      retryable: blockedCode !== "NO_COMMIT_TO_PUSH",
+    };
+  }
+}
+
+function pushFields(push: PushResult | undefined): Pick<FinishBranchResult, "pushed" | "pushError" | "pushBlockedCode" | "pushFixCommands" | "pushRetryable" | "pushRemote"> {
+  return {
+    pushed: push?.pushed,
+    pushError: push?.pushError ? redactSecrets(push.pushError) : undefined,
+    pushBlockedCode: push?.blockedCode,
+    pushFixCommands: push?.fixCommands,
+    pushRetryable: push?.retryable,
+    pushRemote: push?.remote,
+  };
+}
+
+function noCommitPushResult(push: PushResult | undefined): Partial<FinishBranchResult> {
+  if (!push) return {};
+  if (push.pushed) return pushFields(push);
+  if (!push.blockedCode) return pushFields(push);
+  return {
+    ...pushFields(push),
+    pushBlockedCode: push.blockedCode,
+    pushRetryable: true,
+  };
+}
+
+async function pushExistingBranch(branch: string, options?: FinishBranchOptions): Promise<Partial<FinishBranchResult>> {
+  if (!options?.push) return {};
+  const commitSha = await currentHeadSha();
+  if (!commitSha) {
+    return {
+      pushed: false,
+      pushError: "No commit is available to push from this workspace branch.",
+      pushBlockedCode: "NO_COMMIT_TO_PUSH",
+      pushFixCommands: fixCommandsForPushBlock("NO_COMMIT_TO_PUSH", options.remote ?? config.MCP_GIT_PUSH_REMOTE ?? "origin"),
+      pushRetryable: true,
+      pushRemote: options.remote ?? config.MCP_GIT_PUSH_REMOTE ?? "origin",
+    };
+  }
+  return noCommitPushResult(await pushBranch(branch, options.remote));
+}
+
+function pushMessage(push: Partial<FinishBranchResult> | undefined, pushedText: string, failedText: string): string {
+  if (!push || push.pushed === undefined) return failedText;
+  if (push.pushed) return pushedText;
+  if (push.pushBlockedCode === "NO_COMMIT_TO_PUSH") return "no commit to push";
+  if (push.pushBlockedCode === "GIT_AUTH_MISSING") return "committed locally; push needs Git credentials";
+  if (push.pushBlockedCode === "GIT_REMOTE_UNREACHABLE") return "committed locally; git remote is not reachable";
+  return failedText;
 }
 
 export async function ensureGitRepo(): Promise<void> {
@@ -239,19 +465,16 @@ export async function finishWorkBranch(
   const changedPaths = await dirtyPaths();
   if (changedPaths.length === 0) {
     const commitSha = await currentHeadSha();
-    const push = options?.push ? await pushBranch(branch, options.remote) : undefined;
+    const push = options?.push ? await pushExistingBranch(branch, options) : undefined;
     return {
       branch,
       workspaceRoot: sandboxRoot(),
       commitSha,
       changedPaths: [],
       committed: false,
-      pushed: push?.pushed,
-      pushError: push?.pushError,
+      ...push,
       message: options?.push
-        ? push?.pushed
-          ? "no changes to commit; pushed existing branch"
-          : "no changes to commit; push failed"
+        ? pushMessage(push, "no changes to commit; pushed existing branch", "no changes to commit; push failed")
         : "no changes to commit",
     };
   }
@@ -264,17 +487,9 @@ export async function finishWorkBranch(
     ? await git(["show", "--format=", commitSha], { allowFail: true, maxBuffer: 20 * 1024 * 1024 })
     : patch;
 
-  // M27.5 — optional upstream push. Off by default; opt-in per tool call.
-  // We don't gate on `requires_approval` here because finish_work_branch
-  // itself is the gate at the agent-loop level (and the new `push` arg is
-  // explicitly opt-in by the caller).
-  let pushed = false;
-  let pushError: string | undefined;
-  if (options?.push && commitSha) {
-    const push = await pushBranch(branch, options.remote);
-    pushed = push.pushed;
-    pushError = push.pushError;
-  }
+  const push = options?.push && commitSha
+    ? await pushBranch(branch, options.remote)
+    : undefined;
 
   return {
     branch,
@@ -284,7 +499,6 @@ export async function finishWorkBranch(
     workspaceRoot: sandboxRoot(),
     committed: true,
     message: commitMessage,
-    pushed: options?.push ? pushed : undefined,
-    pushError,
+    ...pushFields(push),
   } as FinishBranchResult;
 }

@@ -2,6 +2,7 @@ import { BlueprintStage, Prisma, type ApprovalRequest, type WorkflowInstance, ty
 import { config } from '../../../../config'
 import { prisma } from '../../../../lib/prisma'
 import { createReceipt, logEvent, publishOutbox } from '../../../../lib/audit'
+import { redactSecrets } from '../../../../lib/redact'
 
 type JsonObject = Record<string, unknown>
 type WorkspaceEvidence = {
@@ -16,12 +17,15 @@ type WorkspaceEvidence = {
 
 type GitPushOutput = {
   gitPush: {
-    status: 'PUSHED' | 'BLOCKED'
+    status: 'PUSHED' | 'COMMITTED_NOT_PUSHED' | 'BLOCKED'
     remote: string
     branch?: string
     commitSha?: string
     changedPaths: string[]
     pushed: boolean
+    blockedCode?: string
+    fixCommands?: string[]
+    retryable?: boolean
     approvalRequired: boolean
     approvalRequestId?: string
     toolInvocationId?: string
@@ -243,6 +247,7 @@ async function blockNode(
   output: GitPushOutput,
   actorId?: string,
 ): Promise<void> {
+  const safeOutput = redactSecrets(output)
   await prisma.$transaction([
     prisma.workflowNode.update({
       where: { id: node.id },
@@ -254,7 +259,7 @@ async function blockNode(
         status: 'PAUSED',
         context: {
           ...((instance.context ?? {}) as JsonObject),
-          _blockedByGitPush: output.gitPush,
+          _blockedByGitPush: safeOutput.gitPush,
         } as Prisma.InputJsonValue,
       },
     }),
@@ -264,16 +269,36 @@ async function blockNode(
         nodeId: node.id,
         mutationType: 'GIT_PUSH_BLOCKED',
         beforeState: { status: node.status } as Prisma.InputJsonValue,
-        afterState: output as unknown as Prisma.InputJsonValue,
+        afterState: safeOutput as unknown as Prisma.InputJsonValue,
         performedById: actorId,
       },
     }),
   ])
   await logEvent('GitPushBlocked', 'WorkflowNode', node.id, actorId, {
     instanceId: instance.id,
-    output,
+    output: safeOutput,
   })
-  await publishOutbox('WorkflowNode', node.id, 'GitPushBlocked', { instanceId: instance.id, nodeId: node.id, output })
+  await publishOutbox('WorkflowNode', node.id, 'GitPushBlocked', { instanceId: instance.id, nodeId: node.id, output: safeOutput })
+}
+
+function pushFixCommands(code: string, remote: string): string[] {
+  if (code === 'GIT_AUTH_MISSING') {
+    return [
+      './singularity.sh config git --mode ssh --ssh-key ~/.ssh/id_ed25519 --remote ' + remote,
+      './singularity.sh doctor git',
+      './singularity.sh restart mcp-server-demo',
+    ]
+  }
+  if (code === 'GIT_REMOTE_UNREACHABLE') {
+    return ['git remote -v', 'git remote set-url ' + remote + ' <ssh-or-https-repo-url>', './singularity.sh doctor git']
+  }
+  if (code === 'NO_COMMIT_TO_PUSH') {
+    return ['Re-run the Developer stage with a writable MCP workspace.', 'Approve the captured code diff, then retry Git Push.']
+  }
+  if (code === 'APPROVAL_REQUIRED') {
+    return ['Complete the Human approval node before retrying Git Push.']
+  }
+  return ['Review the Git push error, then retry the Git Push node.']
 }
 
 // M37.1 — Uses the purpose-built POST /mcp/work/finish-branch endpoint
@@ -320,7 +345,7 @@ async function callMcpFinishWorkBranch(args: {
     body = { raw: text }
   }
   if (!response.ok) {
-    throw new Error(`MCP /work/finish-branch failed (${response.status}): ${text}`)
+    throw new Error(redactSecrets(`MCP /work/finish-branch failed (${response.status}): ${text}`))
   }
   return body
 }
@@ -357,6 +382,9 @@ export async function activateGitPush(
         changedPaths: evidence.changedPaths,
         workspaceRoot: evidence.workspaceRoot,
         pushed: false,
+        blockedCode: 'NO_COMMIT_TO_PUSH',
+        fixCommands: pushFixCommands('NO_COMMIT_TO_PUSH', remote),
+        retryable: true,
         approvalRequired: requireApproval,
         message: evidence.warning,
         evidenceSource: evidence.source,
@@ -376,11 +404,14 @@ export async function activateGitPush(
           branch: branchName,
           commitSha: evidence.commitSha,
           changedPaths: evidence.changedPaths,
-          workspaceRoot: evidence.workspaceRoot,
-          pushed: false,
-          approvalRequired: true,
-          message: 'Git push requires a prior approved workflow approval gate. Add/complete an APPROVAL node before this GIT_PUSH node, or set requireApproval=false for controlled automation.',
-          evidenceSource: evidence.source,
+        workspaceRoot: evidence.workspaceRoot,
+        pushed: false,
+        blockedCode: 'APPROVAL_REQUIRED',
+        fixCommands: pushFixCommands('APPROVAL_REQUIRED', remote),
+        retryable: true,
+        approvalRequired: true,
+        message: 'Git push requires a prior approved workflow approval gate. Add/complete an APPROVAL node before this GIT_PUSH node, or set requireApproval=false for controlled automation.',
+        evidenceSource: evidence.source,
         },
       }
       await blockNode(instance, node, output, actorId)
@@ -396,6 +427,9 @@ export async function activateGitPush(
         changedPaths: evidence.changedPaths,
         workspaceRoot: evidence.workspaceRoot,
         pushed: false,
+        blockedCode: 'NO_COMMIT_TO_PUSH',
+        fixCommands: pushFixCommands('NO_COMMIT_TO_PUSH', remote),
+        retryable: true,
         approvalRequired: requireApproval,
         message: 'No WorkItem or branch was found. Configure branchName, run from a WorkItem, or ensure the coding agent returned workspaceBranch evidence.',
         evidenceSource: evidence.source,
@@ -427,8 +461,11 @@ export async function activateGitPush(
         changedPaths: evidence.changedPaths,
         workspaceRoot: evidence.workspaceRoot,
         pushed: false,
+        blockedCode: 'GIT_PUSH_REJECTED',
+        fixCommands: pushFixCommands('GIT_PUSH_REJECTED', remote),
+        retryable: true,
         approvalRequired: requireApproval,
-        message: (err as Error).message,
+        message: redactSecrets((err as Error).message),
         evidenceSource: evidence.source,
       },
     }
@@ -441,22 +478,35 @@ export async function activateGitPush(
   const mcpOutput = isRecord(data.output) ? data.output : {}
   const pushed = mcpOutput.pushed === true
   const pushError = typeof mcpOutput.push_error === 'string' && mcpOutput.push_error.trim()
-    ? mcpOutput.push_error.trim()
+    ? redactSecrets(mcpOutput.push_error.trim())
     : undefined
+  const commitSha = typeof mcpOutput.commit_sha === 'string' ? mcpOutput.commit_sha : evidence.commitSha
+  const blockedCode = typeof mcpOutput.push_blocked_code === 'string' && mcpOutput.push_blocked_code.trim()
+    ? mcpOutput.push_blocked_code.trim()
+    : (!pushed ? 'GIT_PUSH_REJECTED' : undefined)
+  const fixCommands = Array.isArray(mcpOutput.push_fix_commands)
+    ? mcpOutput.push_fix_commands.map(String).map(command => redactSecrets(command))
+    : (blockedCode ? pushFixCommands(blockedCode, remote) : undefined)
+  const retryable = typeof mcpOutput.push_retryable === 'boolean'
+    ? mcpOutput.push_retryable
+    : (!pushed && Boolean(commitSha))
   const output: GitPushOutput = {
     gitPush: {
-      status: pushed ? 'PUSHED' : 'BLOCKED',
-      remote,
+      status: pushed ? 'PUSHED' : (commitSha ? 'COMMITTED_NOT_PUSHED' : 'BLOCKED'),
+      remote: typeof mcpOutput.remote === 'string' ? redactSecrets(mcpOutput.remote) : remote,
       branch: typeof mcpOutput.branch === 'string' ? mcpOutput.branch : branchName,
-      commitSha: typeof mcpOutput.commit_sha === 'string' ? mcpOutput.commit_sha : evidence.commitSha,
+      commitSha,
       changedPaths: Array.isArray(mcpOutput.paths_touched)
         ? mcpOutput.paths_touched.map(String)
         : evidence.changedPaths,
       pushed,
+      blockedCode,
+      fixCommands,
+      retryable,
       approvalRequired: requireApproval,
       toolInvocationId: typeof toolInvocation.id === 'string' ? toolInvocation.id : undefined,
       workspaceRoot: typeof mcpOutput.workspaceRoot === 'string' ? mcpOutput.workspaceRoot : evidence.workspaceRoot,
-      message: typeof mcpOutput.message === 'string' ? mcpOutput.message : message,
+      message: typeof mcpOutput.message === 'string' ? redactSecrets(mcpOutput.message) : message,
       pushError,
       evidenceSource: evidence.source,
     },
@@ -467,19 +517,20 @@ export async function activateGitPush(
     return { pushed: false, output }
   }
 
+  const safeOutput = redactSecrets(output)
   const eventId = await logEvent('GitBranchPushed', 'WorkflowNode', node.id, actorId, {
     instanceId: instance.id,
-    output,
+    output: safeOutput,
   })
   await createReceipt('GIT_BRANCH_PUSHED', 'WorkflowNode', node.id, {
     instanceId: instance.id,
     nodeId: node.id,
-    gitPush: output.gitPush,
+    gitPush: safeOutput.gitPush,
   }, eventId)
   await publishOutbox('WorkflowNode', node.id, 'GitBranchPushed', {
     instanceId: instance.id,
     nodeId: node.id,
-    output,
+    output: safeOutput,
   })
 
   return { pushed: true, output }

@@ -209,6 +209,12 @@ function StepCard({
     },
   })
   const canRestart = node.status === 'COMPLETED' || node.status === 'FAILED' || node.status === 'BLOCKED'
+  const restartLabel = node.nodeType === 'GIT_PUSH' && blockDetails?.retryable
+    ? (restartMut.isPending ? 'Retrying push...' : 'Retry push')
+    : (restartMut.isPending ? 'Restarting...' : 'Restart stage')
+  const restartTitle = node.nodeType === 'GIT_PUSH' && blockDetails?.retryable
+    ? 'Retry only this Git Push node after fixing credentials or remote access'
+    : 'Reset this stage and downstream stages, then run this stage again'
 
   // The inline form-fill panel is only useful for HUMAN_TASK / APPROVAL /
   // CONSUMABLE_CREATION nodes that have a defined widget form. WORK_ITEM
@@ -278,10 +284,10 @@ function StepCard({
                   }}
                   disabled={restartMut.isPending}
                   onClick={() => restartMut.mutate()}
-                  title="Reset this stage and downstream stages, then run this stage again"
+                  title={restartTitle}
                 >
                   <RotateCw size={12} />
-                  {restartMut.isPending ? 'Restarting...' : 'Restart stage'}
+                  {restartLabel}
                 </button>
               )}
             </div>
@@ -326,6 +332,23 @@ function StepCard({
                     ))}
                   </dl>
                 </details>
+              )}
+              {blockDetails.fixCommands.length > 0 && (
+                <div style={{ display: 'grid', gap: 5 }}>
+                  <strong style={{ fontSize: 10, color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                    Fix commands
+                  </strong>
+                  <pre style={{
+                    margin: 0,
+                    padding: 8,
+                    borderRadius: 7,
+                    background: 'rgba(15,23,42,0.08)',
+                    color: '#78350f',
+                    fontSize: 10,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                  }}>{blockDetails.fixCommands.join('\n')}</pre>
+                </div>
               )}
               {restartMut.isError && (
                 <p style={{ margin: 0, fontSize: 11, color: '#991b1b' }}>
@@ -1234,10 +1257,22 @@ function stringField(root: Record<string, unknown>, key: string): string {
   return typeof value === 'string' && value.trim() ? value.trim() : ''
 }
 
+function redactDisplayValue(value: string): string {
+  return value
+    .replace(/gh[pousr]_[A-Za-z0-9_]{20,}/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/github_pat_[A-Za-z0-9_]{20,}/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/sk-proj-[A-Za-z0-9_-]{20,}/g, '[REDACTED_OPENAI_KEY]')
+    .replace(/sk-[A-Za-z0-9_-]{32,}/g, '[REDACTED_OPENAI_KEY]')
+    .replace(/sk-ant-[A-Za-z0-9_-]{20,}/g, '[REDACTED_ANTHROPIC_KEY]')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{16,}/gi, 'Bearer [REDACTED_TOKEN]')
+    .replace(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, '[REDACTED_JWT]')
+    .replace(/https?:\/\/([^/\s:@]+):([^@\s/]+)@/g, 'https://[REDACTED_CREDENTIALS]@')
+}
+
 function blockingDetailsForNode(
   node: RunNode,
   context: Record<string, unknown>,
-): { title: string; message: string; details: { label: string; value: string }[] } | null {
+): { title: string; message: string; details: { label: string; value: string }[]; fixCommands: string[]; retryable: boolean } | null {
   const config = asRecord(node.config)
   const lastError = asRecord(config._lastError)
   const blockKey =
@@ -1260,19 +1295,24 @@ function blockingDetailsForNode(
     stringField(source, 'code') ||
     (node.status === 'FAILED' ? 'This stage failed. Restart the stage after reviewing the details.' : 'This stage is blocked.')
 
-  const detailKeys = ['remote', 'branch', 'commitSha', 'workspaceRoot', 'pushError', 'evidenceSource', 'toolInvocationId', 'approvalRequestId', 'code']
+  const detailKeys = ['blockedCode', 'remote', 'branch', 'commitSha', 'workspaceRoot', 'pushError', 'evidenceSource', 'toolInvocationId', 'approvalRequestId', 'code', 'retryable']
   const details = detailKeys
     .map(key => {
       const value = source[key]
       if (value === undefined || value === null || value === '') return null
-      return { label: key, value: Array.isArray(value) ? value.join(', ') : String(value) }
+      return { label: key, value: redactDisplayValue(Array.isArray(value) ? value.join(', ') : String(value)) }
     })
     .filter((item): item is { label: string; value: string } => Boolean(item))
+  const fixCommands = Array.isArray(source.fixCommands)
+    ? source.fixCommands.map(String).map(redactDisplayValue)
+    : []
 
   return {
     title: node.status === 'FAILED' ? 'Failure reason' : 'Blocking reason',
-    message,
+    message: redactDisplayValue(message),
     details,
+    fixCommands,
+    retryable: source.retryable === true,
   }
 }
 

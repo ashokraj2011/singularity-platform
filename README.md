@@ -472,6 +472,7 @@ It configures:
 - LLM provider policy and model aliases for the central gateway. Provider policy lives in `.singularity/llm-providers.json`; secrets are passed only to the `llm-gateway` service.
 - Office-safe Copilot-only mode. `./singularity.sh config office-copilot-only` blanks OpenAI/OpenRouter/Anthropic/Ollama access in generated env files, writes Copilot-only provider and model catalog files, and fences the gateway to the Copilot provider.
 - Default/local MCP runtime URL, bearer token, public URL, sandbox root, AST index path, and local work-branch defaults. MCP does **not** need to belong to a capability; capability-specific MCP registration is advanced-only.
+- Git push credentials for approved WorkItem branches. The canonical config stores only mode, remote name, token env name, or SSH key path; it never stores a token or key body. MCP is the only service that receives Git push credentials.
 - Gateway-owned model aliases. Workflows choose aliases; MCP forwards aliases and receives resolved provider/model in receipts.
 - Balanced token budget defaults. Workgraph owns run budgets, Prompt Composer owns layer/retrieval budgeting, Context Fabric enforces execution limits, and the central gateway owns provider/model routing.
 - Governed artifact fetch for prompt assembly. Prompt Composer can fetch bounded text from Workgraph MinIO/document refs through `WORKGRAPH_ARTIFACT_FETCH_URL` using `WORKGRAPH_ARTIFACT_FETCH_TOKEN`; required artifacts fail closed if only a missing/unreadable ref is provided.
@@ -485,15 +486,27 @@ Common commands:
 ./singularity.sh config interactive
 ./singularity.sh config office-copilot-only
 ./singularity.sh config mcp --base-url http://localhost:7100 --sandbox-root /path/to/repo
+./singularity.sh config git --mode ssh --ssh-key ~/.ssh/id_ed25519 --remote origin
+./singularity.sh config git --mode token --token-env GITHUB_TOKEN --remote origin
 ./singularity.sh config mcp-catalog --default-alias mock
 ./singularity.sh config providers
 ./singularity.sh config models
 ./singularity.sh config show
 ./singularity.sh doctor
+./singularity.sh doctor git
+./singularity.sh doctor secrets
 ./singularity.sh config export
 ```
 
-`show` masks secrets. `doctor` checks the canonical config, env drift, common ports, reachable service URLs, provider key presence, MCP token length, and model-catalog readiness. It also writes `singularity-portal/public/ops-doctor.json` so the Portal Setup Center can show the same status. For bare-metal runs, use `config export` to print shell exports without editing files.
+`show` masks secrets. `doctor` checks the canonical config, env drift, common ports, reachable service URLs, provider key presence, MCP token length, model-catalog readiness, Git push readiness, and tracked-file secret guardrails. `doctor git` focuses on workspace writability, remote, Git identity, and auth presence. `doctor secrets` scans tracked files for local-only config, credentialed remotes, provider keys, GitHub tokens, bearer tokens, JWT-like tokens, and private-key blocks. It also writes `singularity-portal/public/ops-doctor.json` so the Portal Setup Center can show the same status. For bare-metal runs, use `config export` to print shell exports without editing files.
+
+Git push credential boundary:
+
+- Default is disabled: `GIT_PUSH` nodes preserve branch/commit evidence and block with `GIT_AUTH_MISSING`.
+- SSH mode mounts only the selected key path or SSH agent socket into `mcp-server-demo`, read-only.
+- Token mode passes only the selected env var value, such as `GITHUB_TOKEN`, into MCP. Tokens are not written to `.singularity/config.local.json`.
+- MCP redacts credentialed remotes, GitHub PATs, provider keys, bearer tokens, private keys, and token-shaped values before returning output, writing audit events, or creating receipts.
+- Workgraph shows `COMMITTED_NOT_PUSHED` when the local commit exists but publishing failed; use `Retry push` after fixing credentials so Workbench does not rerun.
 
 Office laptop / Copilot-only setup:
 

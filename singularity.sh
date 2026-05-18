@@ -13,10 +13,10 @@
 #   ./singularity.sh urls                  print all service URLs
 #   ./singularity.sh ls                    list known service names
 #   ./singularity.sh login                 quick smoke: IAM /auth/local/login
-#   ./singularity.sh doctor                validate config, ports, health, keys
+#   ./singularity.sh doctor [git|secrets]  validate config, ports, health, keys
 #   ./singularity.sh office-copilot-only   configure strict office mode: Copilot only
 #   ./singularity.sh config <command>      configure DBs, keys, endpoints, LLMs, MCP
-#     common: init | show | doctor | set | mcp | providers | models | export | write
+#     common: init | show | doctor | set | mcp | git | providers | models | export | write
 #
 # Service names match the docker-compose `services:` keys. Quick reference:
 #   portal                 the wrapper SPA on :5180
