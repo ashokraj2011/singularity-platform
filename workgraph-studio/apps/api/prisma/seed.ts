@@ -313,9 +313,45 @@ async function main() {
     create: { userId: demoUser.id, roleId: '00000000-0000-0000-0000-000000000003' },
   })
 
+  // M42.0 — Feature-flag defaults for the Singularity Code Foundry.
+  // Master kill switch ships OFF so a fresh install can't write code or
+  // dispatch LLM calls until an admin explicitly turns it on. Sub-flags
+  // ship in their intended-on-by-default state but only take effect once
+  // the master is also on (resolution AND'd in the gate library).
+  const codeFoundryFlags: Array<{ key: string; enabled: boolean; description: string }> = [
+    {
+      key: 'code_foundry.enabled',
+      enabled: false,
+      description: 'Master switch for the Singularity Code Foundry. When OFF every Foundry entry point (CLI / REST / web) returns FEATURE_DISABLED.',
+    },
+    {
+      key: 'code_foundry.greenfield.enabled',
+      enabled: true,
+      description: 'Greenfield mode: generate a brand-new service from a structured spec. Gated by the master switch.',
+    },
+    {
+      key: 'code_foundry.brownfield.enabled',
+      enabled: false,
+      description: 'Brownfield enhancement mode: scan an existing repo and apply typed change recipes. Off by default; turn on once the supported recipe library matches the change you need.',
+    },
+    {
+      key: 'code_foundry.llm_patch.enabled',
+      enabled: true,
+      description: 'Allow the Foundry to dispatch LLM patch tasks when the deterministic generator leaves a gap. When OFF the deterministic spine still runs but the gap report is returned unresolved.',
+    },
+  ]
+  for (const f of codeFoundryFlags) {
+    await prisma.featureFlag.upsert({
+      where: { key: f.key },
+      update: { description: f.description },  // never override admin-toggled `enabled` on re-seed
+      create: { key: f.key, enabled: f.enabled, description: f.description },
+    })
+  }
+
   console.log('Seed complete!')
   console.log('  Admin: admin@workgraph.local / admin123')
   console.log('  Demo:  demo@workgraph.local / demo123')
+  console.log(`  Feature flags seeded: ${codeFoundryFlags.length} (master code_foundry.enabled defaults OFF)`)
 }
 
 main()

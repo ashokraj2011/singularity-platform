@@ -1841,3 +1841,21 @@ model CapabilitySnapshot {
   @@index([externalId, fetchedAt])
   @@map("capability_snapshots")
 }
+
+// ─── FEATURE FLAGS ──────────────────────────────────────────────────────────
+// M42.0 — Admin-controlled kill switches for major platform capabilities.
+// Each row is a boolean toggle keyed by a dotted-namespace string. The
+// Foundry's CLI / REST / web UI all check the relevant key before doing
+// work; flipping `enabled=false` returns a clean FEATURE_DISABLED response
+// at every entry point. Toggles are gated to ADMIN role on PUT and emit
+// a FeatureFlagToggled audit event on every change.
+
+model FeatureFlag {
+  key         String   @id                          // e.g. 'code_foundry.enabled'
+  enabled     Boolean  @default(false)
+  description String?
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+
+  @@map("feature_flags")
+}

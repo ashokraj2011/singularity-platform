@@ -1292,6 +1292,15 @@ EVENT EVENT
     DateTime createdAt 
     }
   
+
+  "feature_flags" {
+    String key "🗝️"
+    Boolean enabled 
+    String description "❓"
+    String updatedById "❓"
+    DateTime updatedAt 
+    }
+  
     "users" }o--|o teams : "team"
     "teams" }o--|o departments : "department"
     "team_variables" }o--|| teams : "team"

@@ -1,0 +1,16 @@
+{
+  "name": "@singularity-code-foundry/root",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Singularity Code Foundry — deterministic code-generation layer with bounded LLM patches.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

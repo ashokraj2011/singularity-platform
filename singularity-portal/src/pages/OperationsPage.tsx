@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity, AlertTriangle, Boxes, CheckCircle2, ClipboardList, Copy, Database, FileText,
   Gauge, GitBranch, KeyRound,
-  Network, RefreshCw, ServerCog, ShieldCheck, SlidersHorizontal, Terminal,
+  Network, Power, RefreshCw, ServerCog, ShieldCheck, SlidersHorizontal, Terminal,
   WifiOff, Zap,
 } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
@@ -30,7 +30,7 @@ interface DoctorSummary {
   checks?: Array<{ status: 'OK' | 'WARN' | 'FAIL'; message: string; fix?: string }>
 }
 
-type OpsTab = 'setup' | 'readiness' | 'trust' | 'audit' | 'workitems' | 'architecture' | 'formal' | 'causality'
+type OpsTab = 'setup' | 'readiness' | 'trust' | 'audit' | 'workitems' | 'architecture' | 'formal' | 'causality' | 'capabilities'
 
 interface WorkflowRunRow {
   id: string
@@ -176,6 +176,7 @@ const opsTabs: Array<{ key: OpsTab; label: string; icon: typeof SlidersHorizonta
   { key: 'architecture', label: 'Architecture', icon: GitBranch, description: 'Capability diagrams' },
   { key: 'formal', label: 'Governance Paths', icon: ShieldCheck, description: 'Formal analysis' },
   { key: 'causality', label: 'AI Causality Proof', icon: ShieldCheck, description: 'Incident evidence' },
+  { key: 'capabilities', label: 'Capabilities', icon: Power, description: 'Feature flags & kill switches' },
 ]
 
 function stateFromQuery(q: { isSuccess: boolean; isError: boolean; data?: unknown }): HealthState {
@@ -567,6 +568,8 @@ export function OperationsPage() {
         <ArchitecturePanel />
       ) : activeTab === 'formal' ? (
         <FormalVerificationPanel />
+      ) : activeTab === 'capabilities' ? (
+        <CapabilitiesPanel />
       ) : (
         <CausalityPanel />
       )}
@@ -1493,6 +1496,175 @@ function ArchitecturePanel() {
           )}
         </CardBody>
       </Card>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// M42.0 — CapabilitiesPanel
+//
+// Admin surface for the feature_flags table. Lists every flag with a toggle.
+// PUT is gated to ADMIN role inside workgraph-api (returns 403 otherwise);
+// the UI shows the failure inline so non-admins understand why the toggle
+// didn't take. Every change emits a FeatureFlagToggled audit event.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface FeatureFlagRow {
+  key: string
+  enabled: boolean
+  description?: string | null
+  updatedById?: string | null
+  updatedAt?: string
+}
+
+function CapabilitiesPanel() {
+  const qc = useQueryClient()
+  const flags = useQuery({
+    queryKey: ['ops', 'feature-flags'],
+    queryFn: async () => {
+      const res = await workgraphApi.get('/api/admin/feature-flags')
+      return (res.data?.items ?? []) as FeatureFlagRow[]
+    },
+    refetchInterval: 15_000,
+  })
+
+  const toggle = useMutation({
+    mutationFn: async ({ key, enabled }: { key: string; enabled: boolean }) => {
+      const res = await workgraphApi.put(`/api/admin/feature-flags/${encodeURIComponent(key)}`, { enabled })
+      return res.data as FeatureFlagRow
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['ops', 'feature-flags'] }),
+  })
+
+  const rows = flags.data ?? []
+  // Group by the namespace prefix (everything before the last dot). For V1
+  // this is just 'code_foundry' but the grouping keeps the panel sensible as
+  // future capabilities (e.g. 'eval_lab', 'agent_studio') get their own
+  // flags.
+  const grouped = useMemo(() => {
+    const map = new Map<string, FeatureFlagRow[]>()
+    for (const row of rows) {
+      const dot = row.key.lastIndexOf('.')
+      const ns = dot >= 0 ? row.key.slice(0, dot) : 'platform'
+      const list = map.get(ns) ?? []
+      list.push(row)
+      map.set(ns, list)
+    }
+    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b))
+  }, [rows])
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader
+          title="Platform capability gates"
+          subtitle="Admin-controlled kill switches for major features. The master switch ships OFF on a fresh install — flip it on to enable the capability across CLI, REST, and web entry points."
+          action={
+            <button
+              type="button"
+              onClick={() => flags.refetch()}
+              className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+            >
+              <RefreshCw className={cn('mr-1 inline h-3 w-3', flags.isFetching && 'animate-spin')} />
+              Refresh
+            </button>
+          }
+        />
+        <CardBody className="space-y-5">
+          {flags.isLoading && <p className="text-sm text-slate-500">Loading flags…</p>}
+          {flags.isError && (
+            <p className="text-sm text-red-600">
+              Failed to load: {(flags.error as Error)?.message ?? 'unknown'}
+            </p>
+          )}
+          {!flags.isLoading && rows.length === 0 && (
+            <p className="text-sm text-slate-500">
+              No flags registered yet. Re-seed workgraph-api (<code>npx prisma db seed</code>)
+              to install the Code Foundry defaults.
+            </p>
+          )}
+          {grouped.map(([ns, rowsInNs]) => (
+            <div key={ns} className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-widest text-slate-500">
+                {ns}
+              </div>
+              <div className="space-y-2">
+                {rowsInNs.map((row) => (
+                  <FeatureFlagCard
+                    key={row.key}
+                    row={row}
+                    pending={toggle.isPending && toggle.variables?.key === row.key}
+                    onToggle={(enabled) => toggle.mutate({ key: row.key, enabled })}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+          {toggle.isError && (
+            <p className="text-sm text-red-600">
+              Toggle failed: {((toggle.error as { response?: { data?: { message?: string } } })?.response?.data?.message) ?? (toggle.error as Error).message}
+            </p>
+          )}
+        </CardBody>
+      </Card>
+    </div>
+  )
+}
+
+function FeatureFlagCard({
+  row,
+  pending,
+  onToggle,
+}: {
+  row: FeatureFlagRow
+  pending: boolean
+  onToggle: (enabled: boolean) => void
+}) {
+  return (
+    <div className="flex items-start gap-4 rounded-lg border border-slate-200 bg-white p-3">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={row.enabled}
+        disabled={pending}
+        onClick={() => onToggle(!row.enabled)}
+        className={cn(
+          'mt-0.5 inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors',
+          row.enabled ? 'bg-emerald-600' : 'bg-slate-300',
+          pending && 'opacity-50 cursor-wait',
+        )}
+      >
+        <span
+          className={cn(
+            'inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform',
+            row.enabled ? 'translate-x-5' : 'translate-x-0.5',
+          )}
+        />
+      </button>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <code className="font-mono text-xs font-semibold text-slate-800">{row.key}</code>
+          <span
+            className={cn(
+              'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
+              row.enabled
+                ? 'bg-emerald-100 text-emerald-700'
+                : 'bg-slate-100 text-slate-500',
+            )}
+          >
+            {row.enabled ? 'on' : 'off'}
+          </span>
+        </div>
+        {row.description && (
+          <p className="mt-1 text-xs text-slate-600">{row.description}</p>
+        )}
+        {row.updatedAt && (
+          <p className="mt-1 text-[10px] text-slate-400">
+            last changed {new Date(row.updatedAt).toLocaleString()}
+            {row.updatedById ? ` by ${row.updatedById.slice(0, 8)}` : ''}
+          </p>
+        )}
+      </div>
     </div>
   )
 }
