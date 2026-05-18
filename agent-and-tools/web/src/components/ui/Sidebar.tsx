@@ -146,7 +146,7 @@ export function Sidebar() {
             }}
             onError={(e) => { (e.currentTarget as HTMLImageElement).src = "/singularity-logo.png" }}
           />
-          <div>
+          <div style={{ minWidth: 0, overflow: "hidden" }}>
             <h2
               style={{
                 fontFamily: "var(--font-sans)",
@@ -165,12 +165,21 @@ export function Sidebar() {
                 fontSize: "0.5625rem",
                 fontWeight: 600,
                 textTransform: "uppercase",
-                letterSpacing: "0.18em",
+                // Was 0.18em — rendered "GOVERNED AGENTIC DELIVERY" at
+                // ~190px, but the brand-text column inside a 236px sidebar
+                // only has ~110px after the logo + collapse button take
+                // their share, so it wrapped word-by-word onto three lines.
+                // 0.10em keeps the airy microcaps feel and fits one line.
+                letterSpacing: "0.10em",
                 color: "rgba(245,242,234,0.55)",
                 opacity: 0.85,
                 marginTop: 2,
                 marginBottom: 0,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
               }}
+              title="Governed Agentic Delivery"
             >
               Governed Agentic Delivery
             </p>
