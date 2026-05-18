@@ -1,0 +1,76 @@
+specVersion: 1.0.0
+kind: service
+
+metadata:
+  id: eligibility-service-fastapi-spec
+  name: Eligibility Service (FastAPI)
+  description: Python/FastAPI variant of the eligibility service.
+  ownerTeam: Personalization Platform
+  capability: Personalization
+  version: 1.0.0
+
+application:
+  name: EligibilityService
+  groupId: com.company.personalization
+  artifactId: eligibility-service
+  packageName: com.company.personalization.eligibility
+  language: python
+  framework: fastapi
+  buildTool: poetry
+  pythonVersion: "3.11"
+
+api:
+  basePath: /customers
+  endpoints:
+    - name: GetCustomerEligibility
+      operationId: getCustomerEligibility
+      method: GET
+      path: /{customerId}/eligibility
+      auth: required
+      input:
+        pathParams:
+          - { name: customerId, type: string, required: true }
+      output:
+        statusCode: 200
+        type: EligibilityResponse
+      errors:
+        - { statusCode: 400, type: ErrorResponse }
+        - { statusCode: 404, type: ErrorResponse }
+
+models:
+  - name: EligibilityResponse
+    fields:
+      - { name: eligible,    type: boolean,  required: true }
+      - { name: reason,      type: string,   required: true }
+      - { name: evaluatedAt, type: datetime, required: true }
+  - name: ErrorResponse
+    fields:
+      - { name: code,    type: string, required: true }
+      - { name: message, type: string, required: true }
+
+dataSources:
+  - name: customerProfileApi
+    type: rest
+    timeoutMs: 500
+    resilience:
+      runtime: tenacity
+      retry:           { maxAttempts: 3, waitDurationMs: 100 }
+      circuitBreaker:  { failureRateThreshold: 50 }
+      fallback:        { strategy: cached_previous_response, ttlSeconds: 60 }
+
+businessLogic:
+  type: rule_reference
+  rules:
+    - id: getCustomerEligibility
+      description: Customer is eligible only if beneficiary status is missing.
+      inputs: [customerProfileApi.beneficiaryStatus]
+      output: EligibilityResponse
+      logic:
+        when: { field: beneficiaryStatus, operator: equals, value: MISSING }
+        then: { eligible: true,  reason: BENEFICIARY_MISSING }
+        else: { eligible: false, reason: NOT_ELIGIBLE }
+
+audit:
+  enabled: true
+  eventName: CUSTOMER_ELIGIBILITY_EVALUATED
+  fields: [customerId, eligible, reason]

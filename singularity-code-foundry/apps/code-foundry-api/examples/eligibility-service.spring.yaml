@@ -1,0 +1,132 @@
+specVersion: 1.0.0
+kind: service
+
+metadata:
+  id: eligibility-service-spec
+  name: Eligibility Service (Spring Boot)
+  description: Customer eligibility evaluation service.
+  ownerTeam: Personalization Platform
+  capability: Personalization
+  version: 1.0.0
+
+application:
+  name: EligibilityService
+  groupId: com.company.personalization
+  artifactId: eligibility-service
+  packageName: com.company.personalization.eligibility
+  language: java
+  framework: spring-boot
+  buildTool: maven
+  javaVersion: "21"
+
+api:
+  basePath: /customers
+  endpoints:
+    - name: GetCustomerEligibility
+      operationId: getCustomerEligibility
+      method: GET
+      path: /{customerId}/eligibility
+      auth: required
+      input:
+        pathParams:
+          - { name: customerId, type: string, required: true }
+      output:
+        statusCode: 200
+        type: EligibilityResponse
+      errors:
+        - { statusCode: 400, type: ErrorResponse }
+        - { statusCode: 404, type: ErrorResponse }
+        - { statusCode: 500, type: ErrorResponse }
+
+models:
+  - name: EligibilityResponse
+    fields:
+      - { name: eligible,    type: boolean,  required: true }
+      - { name: reason,      type: string,   required: true }
+      - { name: evaluatedAt, type: datetime, required: true }
+  - name: ErrorResponse
+    fields:
+      - { name: code,    type: string, required: true }
+      - { name: message, type: string, required: true }
+      - { name: traceId, type: string, required: false }
+
+dataSources:
+  - name: customerProfileApi
+    type: rest
+    clientName: CustomerProfileClient
+    baseUrlConfigKey: customer.profile.baseUrl
+    timeoutMs: 500
+    requiredFields: [customerId, beneficiaryStatus]
+    resilience:
+      runtime: resilience4j
+      retry:           { maxAttempts: 3, waitDurationMs: 100 }
+      circuitBreaker:  { failureRateThreshold: 50, slidingWindowSize: 50 }
+      bulkhead:        { maxConcurrentCalls: 25 }
+      fallback:        { strategy: cached_previous_response, ttlSeconds: 60 }
+
+businessLogic:
+  type: rule_reference
+  rules:
+    - id: getCustomerEligibility
+      description: Customer is eligible only if beneficiary status is missing.
+      inputs: [customerProfileApi.beneficiaryStatus]
+      output: EligibilityResponse
+      logic:
+        when: { field: beneficiaryStatus, operator: equals, value: MISSING }
+        then: { eligible: true,  reason: BENEFICIARY_MISSING }
+        else: { eligible: false, reason: NOT_ELIGIBLE }
+
+audit:
+  enabled: true
+  eventName: CUSTOMER_ELIGIBILITY_EVALUATED
+  fields: [customerId, eligible, reason]
+
+security:
+  profile: oauth2-resource-server
+  authn:
+    type: oauth2
+    issuer: https://idp.example.com/realms/personalization
+    audience: eligibility-service
+    jwks: discovery
+  authz:
+    rules:
+      - endpoint: getCustomerEligibility
+        requiredScopes: [eligibility:read]
+        requiredRoles:  [personalization-user]
+
+observability:
+  metrics:
+    enabled: true
+    runtime: micrometer
+    registry: prometheus
+    perEndpointTimers: true
+    customMetrics:
+      - { name: eligibility_decisions_total, type: counter, labels: [decision, reason] }
+  tracing:
+    enabled: true
+    runtime: opentelemetry
+    exporter: otlp
+    sampling: { type: parentbased_traceidratio, ratio: 0.1 }
+    propagation: [w3c, b3]
+  logging:
+    runtime: logback
+    format: json
+    correlationIdHeader: X-Correlation-Id
+    fields: [timestamp, level, service, traceId, spanId, correlationId]
+    redact: [customerId]
+
+tests:
+  generateUnitTests: true
+  generateContractTests: true
+  cases:
+    - name: beneficiary missing returns eligible
+      input:    { customerId: "123", beneficiaryStatus: MISSING }
+      expected: { eligible: true,  reason: BENEFICIARY_MISSING }
+    - name: beneficiary present returns not eligible
+      input:    { customerId: "456", beneficiaryStatus: PRESENT }
+      expected: { eligible: false, reason: NOT_ELIGIBLE }
+
+llm:
+  allowed: true
+  allowedTasks:    [COMPLETE_METHOD_BODY, GENERATE_ADDITIONAL_TESTS, FIX_COMPILE_ERROR]
+  forbiddenChanges: [API_CONTRACT, PACKAGE_NAME, SECURITY_CONFIG, AUDIT_CONTRACT]

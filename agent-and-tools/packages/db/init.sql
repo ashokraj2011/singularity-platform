@@ -17,6 +17,16 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS vector;
 \connect singularity
 
+-- M42.1 — code-foundry-api owns its OWN Postgres DB (`singularity_codegen`).
+-- Created here (idempotent). Stores: codegen_specs, codegen_runs,
+-- generated_artifacts, codegen_gaps, llm_patch_tasks, codegen_receipts.
+-- Foundry connects via DATABASE_URL=postgresql://...:5432/singularity_codegen.
+SELECT 'CREATE DATABASE singularity_codegen'
+ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_codegen')\gexec
+\connect singularity_codegen
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+\connect singularity
+
 -- ==================== AGENT SCHEMA ====================
 CREATE SCHEMA IF NOT EXISTS agent;
 

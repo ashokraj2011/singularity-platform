@@ -47,8 +47,10 @@ import { eventHorizonRouter } from './modules/event-horizon/event-horizon.router
 import { contractsRouter } from './modules/contracts/contracts.router'
 import { workItemsRouter } from './modules/work-items/work-items.router'
 import { internalArtifactFetchRouter } from './modules/internal/artifact-fetch.router'
-// M42.0 — admin feature-flag toggles (kill switches for major capabilities)
-import { featureFlagsRouter } from './modules/admin/feature-flags.router'
+// M42.0 — admin feature-flag toggles (kill switches for major capabilities).
+// M42.1 — internalFeatureFlagsRouter is the service-token-gated read-only
+// surface used by code-foundry-api's gate library.
+import { featureFlagsRouter, internalFeatureFlagsRouter } from './modules/admin/feature-flags.router'
 
 export function createApp(): Express {
   const app = express()
@@ -147,6 +149,9 @@ export function createApp(): Express {
   // ADMIN-only inside the router; GET is read-only for any authenticated
   // user so the Foundry's CLI/REST/web entry points can check the gate.
   app.use('/api/admin/feature-flags', authMiddleware, featureFlagsRouter)
+  // M42.1 — service-token-gated read-only mirror used by code-foundry-api's
+  // gate library. Same data, different auth path (no user JWT required).
+  app.use('/api/internal/feature-flags', internalFeatureFlagsRouter)
 
   app.use(errorHandler)
 

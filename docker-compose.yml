@@ -288,6 +288,55 @@ services:
           memory: 2G
           cpus: '1.0'
 
+  # ─────────────────────────────────────────────────────────────────────
+  # Singularity Code Foundry — deterministic-first code generation layer.
+  # M42.1 ships the spec spine: validator + IR + lifecycle + receipt + CLI.
+  # M42.2+ adds template-driven generators, verification, gap detection,
+  # constrained LLM patches, brownfield repo scanning, and approval UI.
+  # ─────────────────────────────────────────────────────────────────────
+  code-foundry-api:
+    build:
+      context: ./singularity-code-foundry
+      dockerfile: apps/code-foundry-api/Dockerfile
+      target: dev
+    container_name: singularity-code-foundry-api
+    environment:
+      NODE_ENV: development
+      PORT: 3005
+      LOG_LEVEL: info
+      # Foundry's own DB on the shared at-postgres container.
+      DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity_codegen
+      # Master gate + sub-flags live on workgraph-api's feature_flags
+      # table (M42.0). Every codegen route checks them.
+      WORKGRAPH_API_URL: http://workgraph-api:8080
+      # Service token presented as X-Service-Token when reading the
+      # feature_flags table via /api/internal/feature-flags. Must match
+      # workgraph-api's WORKGRAPH_INTERNAL_TOKEN (defaults to the same
+      # dev value).
+      WORKGRAPH_INTERNAL_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}
+      AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
+      CODEGEN_SERVICE_TOKEN: ${CODEGEN_SERVICE_TOKEN:-dev-codegen-service-token}
+      GENERATOR_VERSION: code-foundry-0.1.0
+      TEMPLATE_VERSION: spec-only-0.1.0
+      FEATURE_FLAG_TTL_MS: 30000
+    ports:
+      - "3005:3005"
+    volumes:
+      # Hot-reload sources for the dev target.
+      - ./singularity-code-foundry/apps/code-foundry-api/src:/app/apps/code-foundry-api/src
+      - ./singularity-code-foundry/apps/code-foundry-api/examples:/app/apps/code-foundry-api/examples
+    depends_on:
+      at-postgres:
+        condition: service_healthy
+      workgraph-api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+
   agent-web:
     build:
       context: ./agent-and-tools/web

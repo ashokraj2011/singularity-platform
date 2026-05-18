@@ -14,16 +14,61 @@
  * the existing isAdminUser helper used by team-variable / document
  * mutations — keeps the admin-bar consistent across the platform.
  */
-import { Router } from 'express'
+import { Router, type Request } from 'express'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
+import { config } from '../../config'
 import { validate } from '../../middleware/validate'
 import { ForbiddenError, NotFoundError } from '../../lib/errors'
 import { isAdminUser } from '../../lib/permissions/admin'
 import { logEvent, publishOutbox } from '../../lib/audit'
 
 export const featureFlagsRouter: Router = Router()
+
+// M42.1 — Separate router mounted at /api/internal/feature-flags WITHOUT
+// authMiddleware. Read-only. Service-to-service callers (e.g. the Code
+// Foundry gate library) authenticate with X-Service-Token matching
+// WORKGRAPH_INTERNAL_TOKEN — same pattern as /api/internal/artifacts.
+export const internalFeatureFlagsRouter: Router = Router()
+
+function hasServiceToken(req: Request): boolean {
+  const bearer = typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bearer ')
+    ? req.headers.authorization.slice(7)
+    : undefined
+  const header = typeof req.headers['x-service-token'] === 'string' ? req.headers['x-service-token'] : undefined
+  return (bearer ?? header) === config.WORKGRAPH_INTERNAL_TOKEN
+}
+
+internalFeatureFlagsRouter.use((req, res, next) => {
+  if (!hasServiceToken(req)) {
+    res.status(401).json({ code: 'UNAUTHORIZED', message: 'Missing or invalid service token' })
+    return
+  }
+  next()
+})
+
+internalFeatureFlagsRouter.get('/', async (_req, res, next) => {
+  try {
+    const flags = await prisma.featureFlag.findMany({ orderBy: { key: 'asc' } })
+    res.json({ items: flags })
+  } catch (err) { next(err) }
+})
+
+internalFeatureFlagsRouter.get('/:key', async (req, res, next) => {
+  try {
+    if (!KEY_PATTERN.test(req.params.key)) {
+      res.status(404).json({ code: 'NOT_FOUND', message: `FeatureFlag ${req.params.key} not found` })
+      return
+    }
+    const flag = await prisma.featureFlag.findUnique({ where: { key: req.params.key } })
+    if (!flag) {
+      res.status(404).json({ code: 'NOT_FOUND', message: `FeatureFlag ${req.params.key} not found` })
+      return
+    }
+    res.json(flag)
+  } catch (err) { next(err) }
+})
 
 const KEY_PATTERN = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/
 const toggleSchema = z.object({

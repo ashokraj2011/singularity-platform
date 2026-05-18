@@ -17,8 +17,10 @@ import { FLAG_PARENTS, type FeatureFlagRecord, type FoundryFlag } from './types'
 export interface FeatureFlagsClientOptions {
   /** workgraph-api base URL (e.g. http://workgraph-api:8080). */
   baseUrl: string
-  /** Bearer token used for the GET request. Any authenticated user can read. */
-  bearerToken: string
+  /** Service token presented as X-Service-Token to the
+   *  /api/internal/feature-flags surface (must match
+   *  workgraph-api's WORKGRAPH_INTERNAL_TOKEN env var). */
+  serviceToken: string
   /** Per-key cache TTL in milliseconds. Default 30_000. */
   cacheTtlMs?: number
   /** Optional fetch shim for tests. */
@@ -32,14 +34,14 @@ interface CacheEntry {
 
 export class FeatureFlagsClient {
   private readonly baseUrl: string
-  private readonly bearer: string
+  private readonly token: string
   private readonly ttl: number
   private readonly fetchImpl: typeof fetch
   private readonly cache: Map<string, CacheEntry> = new Map()
 
   constructor(opts: FeatureFlagsClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/$/, '')
-    this.bearer = opts.bearerToken
+    this.token = opts.serviceToken
     this.ttl = opts.cacheTtlMs ?? 30_000
     this.fetchImpl = opts.fetchImpl ?? fetch
   }
@@ -88,9 +90,9 @@ export class FeatureFlagsClient {
     if (cached && Date.now() - cached.loadedAt < this.ttl) {
       return cached.enabled
     }
-    const url = `${this.baseUrl}/api/admin/feature-flags/${encodeURIComponent(key)}`
+    const url = `${this.baseUrl}/api/internal/feature-flags/${encodeURIComponent(key)}`
     const res = await this.fetchImpl(url, {
-      headers: { authorization: `Bearer ${this.bearer}` },
+      headers: { 'x-service-token': this.token },
     })
     if (res.status === 404) {
       // Unknown key behaves as off — safer default for a kill-switch

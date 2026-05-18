@@ -1,0 +1,131 @@
+// M42.1 — Singularity Code Foundry data model.
+//
+// Lives in a dedicated singularity_codegen DB on at-postgres (the same
+// physical container that hosts singularity_composer + singularity). The
+// schema is intentionally narrow at M42.1 — only the spec spine and a
+// receipt skeleton. Generation artifacts, gaps, and patch tasks follow
+// in M42.2/M42.3/M42.4 by EXTENDING this schema (idempotent prisma db
+// push), not by replacing it.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── CODEGEN SPECS ─────────────────────────────────────────────────────────
+// A spec is a structured YAML service description. We persist the
+// canonicalized JSON form alongside the raw YAML so re-reading is
+// deterministic and the hash is stable across cosmetic edits.
+
+enum SpecLifecycleState {
+  DRAFT
+  VALIDATED
+  POLICY_APPROVED
+  FROZEN
+  GENERATED
+  SUPERSEDED
+}
+
+model CodegenSpec {
+  id              String              @id @default(uuid())
+  // The spec's own metadata.id from the YAML (e.g. 'eligibility-service-spec').
+  // (id_within_tenant, version) is globally unique within a tenant per §8.15.
+  specName        String
+  version         String              @default("1.0.0")
+  kind            String              // 'service' | 'code_enhancement' (M42.5)
+  state           SpecLifecycleState  @default(DRAFT)
+  yaml            String              // raw YAML for human review
+  canonicalJson   Json                // sorted-key JSON form (the hash anchor)
+  specHash        String              // sha256:<hex> of canonicalJson
+  irJson          Json?               // populated when state advances past POLICY_APPROVED
+  irHash          String?
+  workItemId      String?
+  createdById     String?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  lifecycleEvents SpecLifecycleEvent[]
+  runs            CodegenRun[]
+
+  @@unique([specName, version])
+  @@index([state, createdAt])
+  @@index([specHash])
+  @@map("codegen_specs")
+}
+
+// Lifecycle audit trail per spec. Every state transition writes a row
+// here; receipts and audit-gov events reference these for replay.
+model SpecLifecycleEvent {
+  id          String              @id @default(uuid())
+  specId      String
+  fromState   SpecLifecycleState?
+  toState     SpecLifecycleState
+  actorId     String?
+  reason      String?
+  payload     Json?
+  occurredAt  DateTime            @default(now())
+
+  spec        CodegenSpec         @relation(fields: [specId], references: [id], onDelete: Cascade)
+
+  @@index([specId, occurredAt])
+  @@map("codegen_spec_lifecycle_events")
+}
+
+// ─── CODEGEN RUNS ──────────────────────────────────────────────────────────
+// A run is one (spec, IR, template-version, generator-version) tuple
+// resolved at a point in time. M42.1 only records the run row; M42.2
+// fills in generated_artifacts and M42.3+ adds gaps + patches.
+
+enum RunStatus {
+  STARTED
+  GENERATED
+  VERIFIED
+  GAPS_DETECTED
+  PATCHED
+  CERTIFIED
+  COMPLETED
+  FAILED
+}
+
+model CodegenRun {
+  id                String      @id @default(uuid())
+  specId            String
+  irHash            String
+  templateVersion   String      // e.g. 'springboot-template-1.0.0'
+  generatorVersion  String      // e.g. 'code-foundry-0.1.0'
+  status            RunStatus   @default(STARTED)
+  outputPath        String?     // host path or workspace ref (M42.2)
+  startedAt         DateTime    @default(now())
+  completedAt       DateTime?
+
+  spec              CodegenSpec @relation(fields: [specId], references: [id], onDelete: Cascade)
+  receipt           CodegenReceipt?
+
+  @@index([specId, startedAt])
+  @@index([status])
+  @@map("codegen_runs")
+}
+
+// ─── CODEGEN RECEIPT ───────────────────────────────────────────────────────
+// Hash-chained receipt per run, per spec §8.14 + Patent Chain E.
+// Includes specHash, irHash, templateVersion, generatorVersion + (post
+// M42.4) patch hashes. The receiptHash is sha256 of the canonical JSON
+// of the entire receipt body — auditors can verify by recomputing.
+
+model CodegenReceipt {
+  id            String     @id @default(uuid())
+  runId         String     @unique
+  receiptJson   Json
+  receiptHash   String
+  createdAt     DateTime   @default(now())
+
+  run           CodegenRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([receiptHash])
+  @@map("codegen_receipts")
+}
