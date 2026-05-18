@@ -83,6 +83,7 @@ enum WorkItemStatus {
   AWAITING_PARENT_APPROVAL
   COMPLETED
   CANCELLED
+  ARCHIVED
 }
 
 enum WorkItemTargetStatus {
@@ -106,6 +107,7 @@ enum WorkItemEventType {
   CLARIFICATION_REQUESTED
   CLARIFICATION_ANSWERED
   CANCELLED
+  ARCHIVED
 }
 
 enum WorkItemOriginType {

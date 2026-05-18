@@ -103,6 +103,18 @@ server {
     proxy_pass $upstream;
   }
 
+  location /ops-health/formal-verifier {
+    set $upstream http://formal-verifier:8010;
+    rewrite ^/ops-health/formal-verifier$ /health break;
+    proxy_pass $upstream;
+  }
+
+  location /ops-status/formal-verifier {
+    set $upstream http://formal-verifier:8010;
+    rewrite ^/ops-status/formal-verifier$ /api/v1/verification/status break;
+    proxy_pass $upstream;
+  }
+
   location /ops-health/agent-service {
     set $upstream http://agent-service:3001;
     rewrite ^/ops-health/agent-service$ /health break;

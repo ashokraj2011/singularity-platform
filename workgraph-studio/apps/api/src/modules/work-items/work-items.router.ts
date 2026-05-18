@@ -5,6 +5,7 @@ import { validate } from '../../middleware/validate'
 import { NotFoundError } from '../../lib/errors'
 import {
   answerWorkItemClarification,
+  archiveWorkItem,
   assertCanViewWorkItem,
   approveWorkItem,
   canViewWorkItem,
@@ -25,6 +26,15 @@ const WORK_ITEM_TARGET_STATUSES = [
   'APPROVED',
   'REWORK_REQUESTED',
   'CANCELLED',
+] as const
+
+const WORK_ITEM_STATUSES = [
+  'QUEUED',
+  'IN_PROGRESS',
+  'AWAITING_PARENT_APPROVAL',
+  'COMPLETED',
+  'CANCELLED',
+  'ARCHIVED',
 ] as const
 
 const targetSchema = z.object({
@@ -78,20 +88,28 @@ workItemsRouter.post('/', validate(createSchema), async (req, res, next) => {
 
 workItemsRouter.get('/', async (req, res, next) => {
   try {
-    const { targetCapabilityId, status, mine, cursor, sourceWorkflowInstanceId, sourceWorkflowNodeId } = req.query as Record<string, string | undefined>
+    const { targetCapabilityId, status, mine, cursor, sourceWorkflowInstanceId, sourceWorkflowNodeId, includeArchived, archived } = req.query as Record<string, string | undefined>
     const limit = Math.min(Math.max(Number(req.query.limit ?? 50) || 50, 1), 100)
     const targetWhere: Record<string, unknown> = {}
     const itemWhere: Record<string, unknown> = {}
+    if (archived === '1' || archived === 'true') {
+      itemWhere.status = 'ARCHIVED'
+    } else if (!(includeArchived === '1' || includeArchived === 'true')) {
+      itemWhere.status = { not: 'ARCHIVED' }
+    }
     if (sourceWorkflowInstanceId) itemWhere.sourceWorkflowInstanceId = sourceWorkflowInstanceId
     if (sourceWorkflowNodeId) itemWhere.sourceWorkflowNodeId = sourceWorkflowNodeId
     if (targetCapabilityId) targetWhere.targetCapabilityId = targetCapabilityId
     if (status) {
       const normalized = status.toUpperCase()
-      if (!WORK_ITEM_TARGET_STATUSES.includes(normalized as (typeof WORK_ITEM_TARGET_STATUSES)[number])) {
-        res.status(400).json({ error: 'INVALID_WORK_ITEM_STATUS', message: `Unknown WorkItem target status: ${status}` })
+      if (WORK_ITEM_TARGET_STATUSES.includes(normalized as (typeof WORK_ITEM_TARGET_STATUSES)[number])) {
+        targetWhere.status = normalized
+      } else if (WORK_ITEM_STATUSES.includes(normalized as (typeof WORK_ITEM_STATUSES)[number])) {
+        itemWhere.status = normalized
+      } else {
+        res.status(400).json({ error: 'INVALID_WORK_ITEM_STATUS', message: `Unknown WorkItem status: ${status}` })
         return
       }
-      targetWhere.status = normalized
     }
     if (mine === '1' || mine === 'true') targetWhere.claimedById = req.user!.userId
 
@@ -141,6 +159,15 @@ workItemsRouter.get('/:id', async (req, res, next) => {
     if (!workItem) throw new NotFoundError('WorkItem', id)
     await assertCanViewWorkItem(req.user!.userId, workItem)
     res.json(workItem)
+  } catch (err) {
+    next(err)
+  }
+})
+
+workItemsRouter.post('/:id/archive', async (req, res, next) => {
+  try {
+    const result = await archiveWorkItem(String(req.params.id), req.user!.userId)
+    res.json(result)
   } catch (err) {
     next(err)
   }

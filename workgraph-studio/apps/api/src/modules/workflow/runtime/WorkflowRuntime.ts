@@ -299,10 +299,11 @@ async function activateDownstream(
         if (result.pushed) await advance(instance.id, nextNode.id, result.output, actorId)
         break
       }
-      case 'POLICY_CHECK':
-        await activatePolicyCheck(nextNode, instance)
-        await advance(instance.id, nextNode.id, context, actorId)
+      case 'POLICY_CHECK': {
+        const result = await activatePolicyCheck(nextNode, instance, actorId)
+        if (result.passed) await advance(instance.id, nextNode.id, result.output, actorId)
         break
+      }
       case 'EVAL_GATE': {
         const result = await activateEvalGate(nextNode, instance, actorId)
         if (result.passed) await advance(instance.id, nextNode.id, result.output, actorId)
@@ -370,10 +371,11 @@ async function activateDownstream(
             if (result.pushed) await advance(instance.id, nextNode.id, result.output, actorId)
             break
           }
-          case 'POLICY_CHECK':
-            await activatePolicyCheck(nextNode, instance)
-            await advance(instance.id, nextNode.id, context, actorId)
+          case 'POLICY_CHECK': {
+            const result = await activatePolicyCheck(nextNode, instance, actorId)
+            if (result.passed) await advance(instance.id, nextNode.id, result.output, actorId)
             break
+          }
           case 'EVAL_GATE': {
             const result = await activateEvalGate(nextNode, instance, actorId)
             if (result.passed) await advance(instance.id, nextNode.id, result.output, actorId)
@@ -594,10 +596,11 @@ export async function failNode(
           if (result.pushed) await advance(instanceId, target.id, result.output, actorId)
           break
         }
-        case 'POLICY_CHECK':
-          await activatePolicyCheck(target, instance)
-          await advance(instanceId, target.id, errorContext, actorId)
+        case 'POLICY_CHECK': {
+          const result = await activatePolicyCheck(target, instance, actorId)
+          if (result.passed) await advance(instanceId, target.id, { ...errorContext, ...result.output }, actorId)
           break
+        }
         case 'EVAL_GATE': {
           const result = await activateEvalGate(target, instance, actorId)
           if (result.passed) await advance(instanceId, target.id, result.output, actorId)

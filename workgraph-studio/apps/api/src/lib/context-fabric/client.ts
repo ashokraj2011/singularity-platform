@@ -222,8 +222,11 @@ export const contextFabricClient = {
   // M13 — fetch all code-changes captured by a single cf execute call.
   // Hits /internal/mcp/code-changes which joins the persisted call_log row
   // to the live MCP `/resources/code-changes` records.
-  async listCodeChanges(cfCallId: string): Promise<CodeChangeListResponse> {
-    const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/internal/mcp/code-changes?cf_call_id=${encodeURIComponent(cfCallId)}`
+  async listCodeChanges(cfCallId: string, options?: { codeChangeIds?: string[]; mcpServerId?: string | null }): Promise<CodeChangeListResponse> {
+    const params = new URLSearchParams({ cf_call_id: cfCallId })
+    if (options?.codeChangeIds?.length) params.set('ids', options.codeChangeIds.join(','))
+    if (options?.mcpServerId) params.set('mcp_server_id', options.mcpServerId)
+    const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/internal/mcp/code-changes?${params.toString()}`
     const res = await fetch(url, {
       method:  'GET',
       headers: { 'X-Service-Token': config.CONTEXT_FABRIC_SERVICE_TOKEN ?? '' },

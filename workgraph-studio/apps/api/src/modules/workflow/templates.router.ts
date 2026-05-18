@@ -7,14 +7,24 @@ import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { assertTemplatePermission, resolveDefaultTeamId } from '../../lib/permissions/workflowTemplate'
-import { cloneDesignToRun, getDesignInstanceId } from './lib/cloneDesignToRun'
-import { startInstance } from './runtime/WorkflowRuntime'
+import { getDesignInstanceId } from './lib/cloneDesignToRun'
 import { validateNodeConfig } from '../lookup/resolver'
 import { listAgentTemplates, type AgentTemplate } from '../../lib/agent-and-tools/client'
 import { normalizeBudgetPolicy } from './runtime/budget'
 import { resolveTeamIdForWorkflow, tokenFromAuthorizationHeader } from '../../lib/iam/teamMirror'
+import { analyzeWorkflowTemplate } from './formal-verification'
 
 export const workflowTemplatesRouter: Router = Router()
+
+workflowTemplatesRouter.post('/:id/formal-analysis', async (req, res, next) => {
+  try {
+    await assertTemplatePermission(req.user!.userId, req.params.id, 'view')
+    const analysis = await analyzeWorkflowTemplate(req.params.id, req.user!.userId)
+    res.json({ data: analysis })
+  } catch (err) {
+    next(err)
+  }
+})
 
 const metadataSchema = z.object({
   teamName:             z.string().optional(),
@@ -433,7 +443,7 @@ function buildWorkbenchConfig(
           allowedSendBackTo: ['STORY_INTAKE', 'PLAN', 'DESIGN'],
           expectedArtifacts: [
             { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
-            { kind: 'simulated_code_change', title: 'Simulated code-change evidence', required: true, format: 'MARKDOWN' },
+            { kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence', required: true, format: 'MARKDOWN' },
           ],
         },
         {
@@ -558,27 +568,7 @@ workflowTemplatesRouter.post('/:id/runs', validate(startRunSchema), async (req, 
   try {
     const id = req.params.id as string
     await assertTemplatePermission(req.user!.userId, id, 'start')
-    const body = req.body as z.infer<typeof startRunSchema>
-
-    const result = await cloneDesignToRun({
-      templateId:   id,
-      name:         body.name,
-      vars:         body.vars,
-      globals:      body.globals,
-      budgetOverride: body.budgetOverride,
-      createdById:  req.user!.userId,
-      initiativeId: body.initiativeId,
-    })
-
-    await logEvent('WorkflowRunCreated', 'WorkflowInstance', result.instance.id, req.user!.userId, {
-      templateId: id, cloned: result.cloned,
-    })
-    await publishOutbox('WorkflowInstance', result.instance.id, 'WorkflowRunCreated', {
-      instanceId: result.instance.id, templateId: id,
-    })
-    await startInstance(result.instance.id, req.user!.userId)
-    const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: result.instance.id } })
-    res.status(201).json(instance)
+    throw new ValidationError('Workflow runs must start from a WorkItem. Claim or create a WorkItem, then attach this workflow from the WorkItem queue.')
   } catch (err) { next(err) }
 })
 

@@ -28,9 +28,10 @@ class GatewayEmbeddingProvider implements EmbeddingProvider {
 
   async embed(req: EmbeddingRequest): Promise<EmbeddingResponse> {
     const start = Date.now();
+    const modelAlias = process.env.EMBEDDING_MODEL_ALIAS?.trim();
     const result = await llmEmbed({
-      model_alias: process.env.EMBEDDING_MODEL_ALIAS, // optional curated alias
       input: [req.text],
+      ...(modelAlias ? { model_alias: modelAlias } : {}),
     });
     const vector = result.embeddings?.[0];
     if (!Array.isArray(vector) || vector.length === 0) {

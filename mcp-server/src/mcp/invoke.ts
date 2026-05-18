@@ -462,7 +462,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
           desc?.requires_approval ||
           handler?.descriptor.requires_approval ||
           (risky && !state.allowAutonomousMutation) ||
-          (state.governanceMode === "human_approval_required" && risky);
+          (state.governanceMode === "human_approval_required" && risky && !state.allowAutonomousMutation);
 
         if (requiresApproval) {
           return await pauseForApproval(

@@ -328,6 +328,9 @@ export function RunInsightsPage() {
   const nodeLabelById = useMemo(() => {
     return new Map((data?.nodes ?? []).map(n => [n.id, n.label]))
   }, [data])
+  const formalEvents = useMemo(() => {
+    return (data?.events ?? []).filter(e => e.kind.startsWith('formal_verification.'))
+  }, [data])
 
   if (isLoading) return <div style={{ padding: 24, fontSize: 12, color: '#64748b' }}>Loading run insights…</div>
   if (isError)   return <div style={{ padding: 24, fontSize: 12, color: '#dc2626' }}>Failed to load: {(error as Error).message}</div>
@@ -541,6 +544,47 @@ export function RunInsightsPage() {
               ))}
             </tbody>
           </table>
+        </Section>
+      )}
+
+      {formalEvents.length > 0 && (
+        <Section title="Formal Verification">
+          <p style={{ fontSize: 11, color: '#64748b', margin: '0 0 10px 0' }}>
+            Governance Path Analyzer evidence captured for this run. Disabled gates are shown as skipped; enabled runs include solver receipts and violation events.
+          </p>
+          <div style={{ display: 'grid', gap: 6 }}>
+            {formalEvents.map(event => {
+              const payload = event.payload ?? {}
+              const result = (payload.result ?? {}) as Record<string, unknown>
+              const skipReason = (payload.skipReason ?? payload) as Record<string, unknown>
+              const title = event.kind.replace('formal_verification.', '').replace(/_/g, ' ')
+              const solverResult = String(result.result ?? skipReason.code ?? 'recorded')
+              return (
+                <div key={event.id} style={{
+                  border: '1px solid #dbeafe',
+                  background: '#eff6ff',
+                  borderRadius: 8,
+                  padding: '8px 10px',
+                  fontSize: 11,
+                  color: '#334155',
+                  display: 'grid',
+                  gap: 4,
+                }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <strong style={{ color: '#0f172a', textTransform: 'capitalize' }}>{title}</strong>
+                    <code style={{ color: solverResult === 'SAT' ? '#b91c1c' : solverResult === 'UNKNOWN' ? '#b45309' : '#047857' }}>{solverResult}</code>
+                    <span style={{ color: '#64748b' }}>{new Date(event.created_at).toLocaleString()}</span>
+                  </div>
+                  {typeof result.meaning === 'string' && <div>{result.meaning}</div>}
+                  {typeof skipReason.message === 'string' && <div>{skipReason.message}</div>}
+                  {result.riskLevel != null && <div style={{ color: '#475569' }}>Risk: {String(result.riskLevel)}</div>}
+                  {Array.isArray(result.recommendations) && result.recommendations.length > 0 && (
+                    <div style={{ color: '#475569' }}>{result.recommendations.slice(0, 2).map(item => String(item)).join(' ')}</div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         </Section>
       )}
 

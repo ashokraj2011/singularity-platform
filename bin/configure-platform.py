@@ -63,6 +63,7 @@ CONFIG_KEY_MAP = {
     "services.contextFabricUrl": "CONTEXT_FABRIC_URL",
     "services.blueprintWorkbenchUrl": "BLUEPRINT_WORKBENCH_URL",
     "services.workgraphArtifactFetchUrl": "WORKGRAPH_ARTIFACT_FETCH_URL",
+    "services.formalVerifierUrl": "FORMAL_VERIFIER_URL",
     "tokens.contextFabricServiceToken": "CONTEXT_FABRIC_SERVICE_TOKEN",
     "tokens.auditGovServiceToken": "AUDIT_GOV_SERVICE_TOKEN",
     "tokens.workgraphInternalToken": "WORKGRAPH_INTERNAL_TOKEN",
@@ -91,6 +92,9 @@ CONFIG_KEY_MAP = {
     "llm.copilot.token": "COPILOT_TOKEN",
     "llm.copilot.baseUrl": "COPILOT_BASE_URL",
     "llm.copilot.defaultModel": "COPILOT_DEFAULT_MODEL",
+    "formalVerification.enabled": "FORMAL_VERIFICATION_ENABLED",
+    "formalVerification.defaultTimeoutMs": "FORMAL_VERIFICATION_DEFAULT_TIMEOUT_MS",
+    "formalVerification.maxTimeoutMs": "FORMAL_VERIFICATION_MAX_TIMEOUT_MS",
 }
 
 
@@ -144,7 +148,7 @@ def flatten_local_config(data: dict | None = None) -> dict[str, str]:
         value = get_path(data, dotted)
         if value is None:
             continue
-        out[env_key] = str(value)
+        out[env_key] = "true" if value is True else "false" if value is False else str(value)
     if get_path(data, "identity.mode") == "pseudo-iam-dev":
         out.setdefault("IAM_BASE_URL", "http://localhost:8101/api/v1")
         out.setdefault("IAM_SERVICE_URL", "http://localhost:8101")
@@ -190,6 +194,7 @@ def config_template(profile: str, args: argparse.Namespace | None = None) -> dic
             "contextFabricUrl": "http://localhost:8000",
             "blueprintWorkbenchUrl": "http://localhost:5176",
             "workgraphArtifactFetchUrl": "http://localhost:8080/api/internal/artifacts/fetch",
+            "formalVerifierUrl": "http://localhost:8010",
         },
         "tokens": {
             "contextFabricServiceToken": os.getenv("CONTEXT_FABRIC_SERVICE_TOKEN", "dev-context-fabric-service-token"),
@@ -244,6 +249,11 @@ def config_template(profile: str, args: argparse.Namespace | None = None) -> dic
                 "warnAtPercent": 80,
                 "enforcementMode": "PAUSE_FOR_APPROVAL",
             },
+        },
+        "formalVerification": {
+            "enabled": False,
+            "defaultTimeoutMs": 3000,
+            "maxTimeoutMs": 10000,
         },
     }
 
@@ -365,6 +375,10 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
     audit_token = pick("AUDIT_GOV_SERVICE_TOKEN", "audit_token", "AUDIT_GOV_SERVICE_TOKEN", "dev-audit-gov-service-token")
     workgraph_internal_token = pick("WORKGRAPH_INTERNAL_TOKEN", None, "WORKGRAPH_INTERNAL_TOKEN", "dev-workgraph-internal-token")
     sandbox_root = pick("MCP_SANDBOX_ROOT", "mcp_sandbox_root", "MCP_SANDBOX_ROOT", str(ROOT))
+    formal_verification_enabled = pick("FORMAL_VERIFICATION_ENABLED", None, "FORMAL_VERIFICATION_ENABLED", "false")
+    formal_verifier_url = pick("FORMAL_VERIFIER_URL", None, "FORMAL_VERIFIER_URL", "http://localhost:8010")
+    formal_default_timeout_ms = pick("FORMAL_VERIFICATION_DEFAULT_TIMEOUT_MS", None, "FORMAL_VERIFICATION_DEFAULT_TIMEOUT_MS", "3000")
+    formal_max_timeout_ms = pick("FORMAL_VERIFICATION_MAX_TIMEOUT_MS", None, "FORMAL_VERIFICATION_MAX_TIMEOUT_MS", "10000")
 
     iam_base_default = "http://localhost:8101/api/v1" if use_pseudo else "http://localhost:8100/api/v1"
     iam_service_default = "http://localhost:8101" if use_pseudo else "http://localhost:8100"
@@ -392,6 +406,10 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
         "AGENT_SERVICE_URL": pick("AGENT_SERVICE_URL", "agent_service_url", "AGENT_SERVICE_URL", "http://localhost:3001"),
         "CONTEXT_FABRIC_URL": pick("CONTEXT_FABRIC_URL", "context_fabric_url", "CONTEXT_FABRIC_URL", "http://localhost:8000"),
         "BLUEPRINT_WORKBENCH_URL": pick("BLUEPRINT_WORKBENCH_URL", "blueprint_workbench_url", "BLUEPRINT_WORKBENCH_URL", "http://localhost:5176"),
+        "FORMAL_VERIFIER_URL": formal_verifier_url,
+        "FORMAL_VERIFICATION_ENABLED": formal_verification_enabled,
+        "FORMAL_VERIFICATION_DEFAULT_TIMEOUT_MS": formal_default_timeout_ms,
+        "FORMAL_VERIFICATION_MAX_TIMEOUT_MS": formal_max_timeout_ms,
         "MCP_SERVER_URL": pick("MCP_SERVER_URL", "mcp_server_url", "MCP_SERVER_URL", "http://localhost:7100"),
         "MCP_PUBLIC_BASE_URL": pick("MCP_PUBLIC_BASE_URL", "mcp_public_base_url", "MCP_PUBLIC_BASE_URL", "http://host.docker.internal:7100"),
         "MCP_DEFAULT_BASE_URL": pick("MCP_SERVER_URL", "mcp_server_url", "MCP_DEFAULT_BASE_URL", "http://localhost:7100"),
@@ -463,6 +481,10 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
                 "AGENT_SERVICE_URL",
                 "CONTEXT_FABRIC_URL",
                 "BLUEPRINT_WORKBENCH_URL",
+                "FORMAL_VERIFIER_URL",
+                "FORMAL_VERIFICATION_ENABLED",
+                "FORMAL_VERIFICATION_DEFAULT_TIMEOUT_MS",
+                "FORMAL_VERIFICATION_MAX_TIMEOUT_MS",
                 "MCP_SERVER_URL",
                 "MCP_DEFAULT_BASE_URL",
                 "MCP_DEFAULT_BEARER_TOKEN",
@@ -568,6 +590,8 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
             "CONTEXT_FABRIC_URL": values["CONTEXT_FABRIC_URL"],
             "CONTEXT_FABRIC_SERVICE_TOKEN": values["CONTEXT_FABRIC_SERVICE_TOKEN"],
             "MCP_SERVER_URL": values["MCP_SERVER_URL"],
+            "FORMAL_VERIFIER_URL": values["FORMAL_VERIFIER_URL"],
+            "FORMAL_VERIFICATION_ENABLED": values["FORMAL_VERIFICATION_ENABLED"],
             "TOOL_SERVICE_URL": values["TOOL_SERVICE_URL"],
             "AGENT_RUNTIME_URL": values["AGENT_RUNTIME_URL"],
             "WORKGRAPH_INTERNAL_TOKEN": values["WORKGRAPH_INTERNAL_TOKEN"],
@@ -631,6 +655,7 @@ def command_write(args: argparse.Namespace) -> None:
     print("  ./singularity.sh restart context-api")
     print("  ./singularity.sh restart llm-gateway")
     print("  ./singularity.sh restart mcp-server-demo")
+    print("  ./singularity.sh restart formal-verifier")
     print("  ./singularity.sh restart workgraph-api")
     print("  ./singularity.sh restart workgraph-web")
     print("  ./singularity.sh restart blueprint-workbench")
@@ -1017,6 +1042,22 @@ def command_doctor(args: argparse.Namespace) -> None:
     for name, url in urls:
         status, msg = http_check(name, url)
         record(status, msg, f"./singularity.sh restart {service_name_for_url(name)}")
+
+    nginx_guard = ROOT / "bin/check-nginx-docker-dns.sh"
+    if nginx_guard.exists():
+        guard = subprocess.run(
+            ["bash", str(nginx_guard)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if guard.returncode == 0:
+            record("OK", "nginx Docker DNS guard passed")
+        else:
+            guard_output = (guard.stderr or guard.stdout or "").strip()
+            first_line = re.sub(r"\x1b\[[0-9;]*m", "", guard_output.splitlines()[0]) if guard_output else "unknown failure"
+            record("FAIL", f"nginx Docker DNS guard failed: {first_line}", "bash bin/check-nginx-docker-dns.sh")
 
     merged: dict[str, str] = flatten_local_config()
     for path in [

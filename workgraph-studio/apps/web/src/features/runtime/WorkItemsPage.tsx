@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   ArrowRight,
+  Archive,
   CalendarClock,
   CheckCircle2,
   ExternalLink,
@@ -18,7 +19,7 @@ import { CapabilityPicker } from '../../components/lookup/EntityPickers'
 import { useActiveContextStore } from '../../store/activeContext.store'
 import { useCapabilityLabels } from './useCapabilityLabels'
 
-const TARGET_STATUSES = ['ALL', 'QUEUED', 'CLAIMED', 'IN_PROGRESS', 'SUBMITTED', 'APPROVED', 'REWORK_REQUESTED'] as const
+const TARGET_STATUSES = ['ALL', 'QUEUED', 'CLAIMED', 'IN_PROGRESS', 'SUBMITTED', 'APPROVED', 'REWORK_REQUESTED', 'ARCHIVED'] as const
 
 export function WorkItemsPage() {
   const navigate = useNavigate()
@@ -109,6 +110,14 @@ export function WorkItemsPage() {
     },
   })
 
+  const archiveMut = useMutation({
+    mutationFn: (workItemId: string) => api.post(`/work-items/${workItemId}/archive`).then(r => r.data as WorkItemRow),
+    onSuccess: () => {
+      setSelectedId('')
+      workItemsQuery.refetch()
+    },
+  })
+
   const canClaim = selectedTarget && ['QUEUED', 'REWORK_REQUESTED'].includes(selectedTarget.status) && !selectedTarget.claimedById
   const canStart = selected && selectedTarget && selectedTarget.status === 'CLAIMED' && !!effectiveWorkflow && !selectedTarget.childWorkflowInstanceId
   const canClaimAndStart = selected && selectedTarget && canClaim && !!effectiveWorkflow
@@ -146,7 +155,7 @@ export function WorkItemsPage() {
           />
         </div>
         <div style={{ minWidth: 180 }}>
-          <label style={labelStyle}>Target status</label>
+          <label style={labelStyle}>Status</label>
           <select value={status} onChange={event => setStatus(event.target.value as typeof status)} style={inputStyle}>
             {TARGET_STATUSES.map(value => <option key={value} value={value}>{value === 'ALL' ? 'All statuses' : value.replaceAll('_', ' ')}</option>)}
           </select>
@@ -231,6 +240,19 @@ export function WorkItemsPage() {
                 <button style={secondaryButtonStyle} onClick={() => navigate(`/runtime/work/workitem/${selected.id}${selectedTarget ? `?targetId=${selectedTarget.id}` : ''}`)}>
                   <ExternalLink size={13} /> Open detail
                 </button>
+                {selected.originType === 'CAPABILITY_LOCAL' && selected.status !== 'ARCHIVED' && (
+                  <button
+                    style={{ ...secondaryButtonStyle, borderColor: 'rgba(220,38,38,0.28)', color: '#b91c1c' }}
+                    disabled={archiveMut.isPending}
+                    onClick={() => {
+                      if (window.confirm(`Archive ${selected.workCode ?? selected.title}? It will be hidden from normal WorkItem queues.`)) {
+                        archiveMut.mutate(selected.id)
+                      }
+                    }}
+                  >
+                    <Archive size={13} /> {archiveMut.isPending ? 'Archiving...' : 'Archive'}
+                  </button>
+                )}
               </div>
 
               <div style={metricGridStyle}>
@@ -306,6 +328,11 @@ export function WorkItemsPage() {
                   {(claimMut.error || startMut.error || claimAndStartMut.error) && (
                     <p style={{ margin: '8px 0 0', color: '#b91c1c', fontSize: 12 }}>
                       {String((claimMut.error || startMut.error || claimAndStartMut.error) as Error)}
+                    </p>
+                  )}
+                  {archiveMut.error && (
+                    <p style={{ margin: '8px 0 0', color: '#b91c1c', fontSize: 12 }}>
+                      {(archiveMut.error as Error).message}
                     </p>
                   )}
                 </div>
@@ -503,6 +530,7 @@ function StatusPill({ status }: { status: string }) {
     : ['SUBMITTED', 'IN_PROGRESS'].includes(status) ? '#0ea5e9'
     : ['REWORK_REQUESTED', 'FROM_PARENT'].includes(status) ? '#f59e0b'
     : ['CANCELLED', 'REJECTED'].includes(status) ? '#dc2626'
+    : status === 'ARCHIVED' ? '#6b7280'
     : '#64748b'
   return (
     <span style={{

@@ -195,9 +195,7 @@ function StartWorkflowDialog({
   onClose: () => void
   onStarted: (runId: string) => void
 }) {
-  const [mode, setMode] = useState<'workitem' | 'story'>('workitem')
   const [selectedWorkItemTarget, setSelectedWorkItemTarget] = useState('')
-  const [vars, setVars] = useState<Record<string, string>>(() => initialVars(workflow))
 
   const workItemsQuery = useQuery<WorkItemRow[]>({
     queryKey: ['start-workflow-workitems', workflow.capabilityId],
@@ -216,18 +214,6 @@ function StartWorkflowDialog({
       .map(target => ({ item, target })))
   }, [workItemsQuery.data, workflow.capabilityId])
 
-  const storyMut = useMutation({
-    mutationFn: async () => {
-      const runName = `${workflow.name} · ${formatStamp(new Date())}`
-      return api.post('/workflow-instances', {
-        templateId: workflow.id,
-        name: runName,
-        vars: normalizeVars(vars),
-      }).then(r => r.data as { id: string })
-    },
-    onSuccess: run => onStarted(run.id),
-  })
-
   const workItemMut = useMutation({
     mutationFn: async () => {
       const selected = availableWorkItems.find(row => `${row.item.id}:${row.target.id}` === selectedWorkItemTarget)
@@ -244,10 +230,8 @@ function StartWorkflowDialog({
     },
   })
 
-  const inputVars = workflow.variables?.filter(v => !v.scope || v.scope === 'INPUT') ?? []
-  const canStartStory = Object.values(vars).some(v => v.trim())
   const canStartWorkItem = Boolean(selectedWorkItemTarget)
-  const error = storyMut.error || workItemMut.error
+  const selected = availableWorkItems.find(row => `${row.item.id}:${row.target.id}` === selectedWorkItemTarget)
 
   return (
     <div style={modalBackdropStyle}>
@@ -259,80 +243,74 @@ function StartWorkflowDialog({
             </p>
             <h2 style={{ margin: '4px 0 0', color: '#0f172a', fontSize: 22 }}>{workflow.name}</h2>
             <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 13 }}>
-              Start from an existing unattached WorkItem, or provide a user story as fresh input.
+              Select an unattached WorkItem. The WorkItem packet becomes the workflow input.
             </p>
           </div>
           <button style={iconButtonStyle} onClick={onClose}><X size={18} /></button>
         </div>
 
-        <div style={modeSwitchStyle}>
-          <button style={modeButtonStyle(mode === 'workitem')} onClick={() => setMode('workitem')}><Network size={14} /> Existing WorkItem</button>
-          <button style={modeButtonStyle(mode === 'story')} onClick={() => setMode('story')}><Play size={14} /> User story</button>
-        </div>
-
-        {mode === 'workitem' ? (
-          <section style={sectionStyle}>
-            <h3 style={sectionTitleStyle}>Unattached WorkItems for this capability</h3>
-            {!workflow.capabilityId ? (
-              <p style={mutedStyle}>This workflow is not tied to a capability, so WorkItem queue matching is unavailable.</p>
-            ) : workItemsQuery.isLoading ? (
-              <p style={mutedStyle}>Loading WorkItems...</p>
-            ) : availableWorkItems.length === 0 ? (
-              <p style={mutedStyle}>No unattached WorkItems are available for this workflow capability. Use User story mode or create a WorkItem first.</p>
-            ) : (
-              <select value={selectedWorkItemTarget} onChange={event => setSelectedWorkItemTarget(event.target.value)} style={inputStyle}>
-                <option value="">Select an unattached WorkItem</option>
-                {availableWorkItems.map(({ item, target }) => (
-                  <option key={`${item.id}:${target.id}`} value={`${item.id}:${target.id}`}>
-                    {item.workCode ?? item.id.slice(0, 8)} · {item.title} · {target.status}
-                  </option>
-                ))}
-              </select>
-            )}
-            <p style={{ ...mutedStyle, marginTop: 8 }}>
-              The child run will receive `_workItem`, `workItemId`, details, budget, urgency, and target capability in context.
+        <section style={sectionStyle}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <Network size={15} style={{ color: '#7c3aed' }} />
+            <h3 style={{ ...sectionTitleStyle, margin: 0 }}>WorkItem input</h3>
+          </div>
+          {!workflow.capabilityId ? (
+            <p style={mutedStyle}>
+              This workflow has no capability owner. Attach a capability before it can be started from a WorkItem.
             </p>
-            <div style={footerStyle}>
-              <button style={secondaryButtonStyle} onClick={onClose}>Cancel</button>
-              <button style={primaryButtonStyle} disabled={!canStartWorkItem || workItemMut.isPending} onClick={() => workItemMut.mutate()}>
-                {workItemMut.isPending ? 'Starting...' : 'Start from WorkItem'}
-              </button>
+          ) : workItemsQuery.isLoading ? (
+            <p style={mutedStyle}>Loading WorkItems...</p>
+          ) : availableWorkItems.length === 0 ? (
+            <p style={mutedStyle}>
+              No unattached WorkItems are available for this capability. Create or receive a WorkItem first, then attach this workflow.
+            </p>
+          ) : (
+            <select value={selectedWorkItemTarget} onChange={event => setSelectedWorkItemTarget(event.target.value)} style={inputStyle}>
+              <option value="">Select an unattached WorkItem</option>
+              {availableWorkItems.map(({ item, target }) => (
+                <option key={`${item.id}:${target.id}`} value={`${item.id}:${target.id}`}>
+                  {item.workCode ?? item.id.slice(0, 8)} · {item.title} · {target.status}
+                </option>
+              ))}
+            </select>
+          )}
+          {selected && (
+            <div style={{
+              marginTop: 12,
+              padding: 12,
+              borderRadius: 12,
+              border: '1px solid rgba(124,58,237,0.22)',
+              background: 'rgba(124,58,237,0.06)',
+            }}>
+              <p style={{ margin: 0, color: '#0f172a', fontWeight: 900, fontSize: 13 }}>
+                {selected.item.workCode ?? selected.item.id.slice(0, 8)} · {selected.item.title}
+              </p>
+              {selected.item.description && (
+                <p style={{ margin: '5px 0 0', color: '#475569', fontSize: 12, lineHeight: 1.45 }}>
+                  {selected.item.description}
+                </p>
+              )}
+              <p style={{ ...mutedStyle, marginTop: 8 }}>
+                Status: {selected.target.status} · urgency: {selected.item.urgency ?? 'NORMAL'}
+              </p>
             </div>
-          </section>
-        ) : (
-          <section style={sectionStyle}>
-            <h3 style={sectionTitleStyle}>User story input</h3>
-            {(inputVars.length ? inputVars : [{ key: 'story', label: 'User story', type: 'textarea' }]).map(v => (
-              <label key={v.key} style={labelStyle}>
-                {v.label || v.key}
-                {v.type === 'textarea' || v.key.toLowerCase().includes('story') ? (
-                  <textarea
-                    rows={5}
-                    value={vars[v.key] ?? ''}
-                    onChange={event => setVars(prev => ({ ...prev, [v.key]: event.target.value }))}
-                    placeholder={v.description || `Enter ${v.label || v.key}`}
-                    style={{ ...inputStyle, resize: 'vertical' }}
-                  />
-                ) : (
-                  <input
-                    value={vars[v.key] ?? ''}
-                    onChange={event => setVars(prev => ({ ...prev, [v.key]: event.target.value }))}
-                    placeholder={v.description || `Enter ${v.label || v.key}`}
-                    style={inputStyle}
-                  />
-                )}
-              </label>
-            ))}
-            <div style={footerStyle}>
-              <button style={secondaryButtonStyle} onClick={onClose}>Cancel</button>
-              <button style={primaryButtonStyle} disabled={!canStartStory || storyMut.isPending} onClick={() => storyMut.mutate()}>
-                {storyMut.isPending ? 'Starting...' : 'Start from story'}
-              </button>
-            </div>
-          </section>
-        )}
+          )}
+          <p style={{ ...mutedStyle, marginTop: 8 }}>
+            The run receives `_workItem`, `workItemId`, details, budget, urgency, required date, and target capability in context.
+          </p>
+          <div style={footerStyle}>
+            <button style={secondaryButtonStyle} onClick={onClose}>Cancel</button>
+            <button style={primaryButtonStyle} disabled={!canStartWorkItem || workItemMut.isPending} onClick={() => workItemMut.mutate()}>
+              {workItemMut.isPending ? 'Starting...' : 'Start from WorkItem'}
+            </button>
+          </div>
+        </section>
 
-        {error && <p style={{ margin: '10px 0 0', color: '#b91c1c', fontSize: 12 }}>{(error as Error).message}</p>}
+        {workItemMut.error && (
+          <p style={{ margin: '10px 0 0', color: '#b91c1c', fontSize: 12 }}>
+            {(workItemMut.error as Error).message}
+          </p>
+        )}
       </div>
     </div>
   )
@@ -389,7 +367,7 @@ function WorkflowCard({ workflow, onRun }: { workflow: Workflow; onRun: () => vo
           display: 'inline-flex', alignItems: 'center', gap: 6,
         }}
       >
-        <Play size={11} /> Run
+        <Play size={11} /> Start from WorkItem
       </button>
     </div>
   )
@@ -412,25 +390,6 @@ function EmptyState() {
   )
 }
 
-function initialVars(workflow: Workflow): Record<string, string> {
-  const vars: Record<string, string> = {}
-  for (const variable of workflow.variables ?? []) {
-    if (variable.scope && variable.scope !== 'INPUT') continue
-    if (variable.defaultValue !== undefined && variable.defaultValue !== null) vars[variable.key] = String(variable.defaultValue)
-    else vars[variable.key] = ''
-  }
-  if (Object.keys(vars).length === 0) vars.story = ''
-  return vars
-}
-
-function normalizeVars(vars: Record<string, string>): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(vars)) {
-    if (value.trim()) out[key] = value.trim()
-  }
-  return out
-}
-
 function unwrapItems<T>(data: unknown): T[] {
   if (Array.isArray(data)) return data as T[]
   if (data && typeof data === 'object') {
@@ -440,11 +399,6 @@ function unwrapItems<T>(data: unknown): T[] {
     if (Array.isArray(obj.data)) return obj.data as T[]
   }
   return []
-}
-
-function formatStamp(d: Date) {
-  const pad = (n: number) => n.toString().padStart(2, '0')
-  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 type WorkItemTarget = {
@@ -458,6 +412,8 @@ type WorkItemRow = {
   id: string
   workCode?: string | null
   title: string
+  description?: string | null
+  urgency?: string | null
   targets: WorkItemTarget[]
 }
 
@@ -494,31 +450,6 @@ const iconButtonStyle: CSSProperties = {
   placeItems: 'center',
 }
 
-const modeSwitchStyle: CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: '1fr 1fr',
-  gap: 8,
-  padding: 4,
-  borderRadius: 12,
-  background: '#f1f5f9',
-  marginBottom: 14,
-}
-
-const modeButtonStyle = (active: boolean): CSSProperties => ({
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: 7,
-  padding: '10px 12px',
-  borderRadius: 10,
-  border: active ? '1px solid rgba(0,132,61,0.28)' : '1px solid transparent',
-  background: active ? '#fff' : 'transparent',
-  color: active ? '#006227' : '#475569',
-  cursor: 'pointer',
-  fontWeight: 900,
-  fontSize: 12,
-})
-
 const sectionStyle: CSSProperties = {
   padding: 14,
   borderRadius: 14,
@@ -531,15 +462,6 @@ const sectionTitleStyle: CSSProperties = {
   color: '#0f172a',
   fontSize: 15,
   fontWeight: 900,
-}
-
-const labelStyle: CSSProperties = {
-  display: 'grid',
-  gap: 6,
-  color: '#475569',
-  fontSize: 11,
-  fontWeight: 900,
-  marginBottom: 10,
 }
 
 const inputStyle: CSSProperties = {

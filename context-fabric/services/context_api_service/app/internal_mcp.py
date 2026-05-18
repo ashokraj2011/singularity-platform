@@ -157,12 +157,37 @@ async def list_mcp_servers_for_capability(
 #
 # context-fabric's call_log rows carry `code_change_ids[]` and `mcp_server_id`.
 # workgraph asks us to resolve a run's code-changes; we pull the call_log row,
-# fetch the MCP server credentials from IAM, then call MCP /resources/code-changes
+# fetch the MCP server credentials from IAM, then call MCP /mcp/resources/code-changes
 # with the persisted ids. MCP is the source of truth — if MCP has restarted and
 # dropped the ring, we still return the persisted ids with a `stale: true` flag
 # so the UI can render a useful "diff content unavailable" notice.
 
-async def _fetch_mcp_server(server_id: str) -> dict:
+def _default_mcp_record() -> Optional[dict[str, Any]]:
+    base_url = (settings.mcp_default_base_url or "").strip().rstrip("/")
+    bearer = (settings.mcp_default_bearer_token or "").strip()
+    if not base_url or not bearer:
+        return None
+    return {
+        "id": (settings.mcp_default_server_id or "default-mcp").strip() or "default-mcp",
+        "base_url": base_url,
+        "bearer_token": bearer,
+        "source": "default",
+    }
+
+
+def _mcp_resource_url(base_url: str, path: str) -> str:
+    base = base_url.rstrip("/")
+    suffix = path if path.startswith("/") else f"/{path}"
+    if base.endswith("/mcp"):
+        return f"{base}{suffix}"
+    return f"{base}/mcp{suffix}"
+
+
+async def _fetch_mcp_server(server_id: str) -> dict[str, Any]:
+    default_record = _default_mcp_record()
+    if default_record and server_id == default_record["id"]:
+        return default_record
+
     url = f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{server_id}"
     resp = await _iam_get(url, timeout=10.0)
     if resp.status_code == 404:
@@ -177,33 +202,46 @@ async def _fetch_mcp_server(server_id: str) -> dict:
 
 @router.get("/code-changes")
 async def list_code_changes_for_call(
-    cf_call_id: str = Query(..., description="CallLog row id; resolves which MCP server to query"),
+    cf_call_id: Optional[str] = Query(default=None, description="CallLog row id; resolves which MCP server to query"),
+    ids: Optional[str] = Query(default=None, description="Comma-separated MCP code-change ids for call-log fallback"),
+    mcp_server_id: Optional[str] = Query(default=None, description="MCP server id to use when ids are supplied directly"),
     x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
 ):
     """Resolve all code-changes captured during a single execute call.
 
     Reads cf's local `call_log` row to find the `code_change_ids` and the
     `mcp_server_id`. Looks up the MCP server credentials from IAM, then
-    calls MCP `/resources/code-changes?ids=…` to hydrate the full records.
+    calls MCP `/mcp/resources/code-changes?ids=…` to hydrate the full records.
     Returns `{items, stale:false}` on a hit; `{items: minimal_records,
     stale: true}` when MCP has dropped the records (eg restart).
     """
     _check_service_token(x_service_token)
 
-    from . import call_log
-    rec = call_log.get_by_id(cf_call_id)
-    if not rec:
-        raise HTTPException(status_code=404, detail=f"call_log {cf_call_id} not found")
-    ids: list[str] = rec.get("code_change_ids") or []
-    if not ids:
+    supplied_ids = [item.strip() for item in (ids or "").split(",") if item.strip()]
+    rec: Optional[dict[str, Any]] = None
+    if cf_call_id:
+        from . import call_log
+        rec = call_log.get_by_id(cf_call_id)
+        if not rec and not supplied_ids:
+            raise HTTPException(status_code=404, detail=f"call_log {cf_call_id} not found")
+    elif not supplied_ids:
+        raise HTTPException(status_code=400, detail="cf_call_id or ids is required")
+
+    code_change_ids: list[str] = rec.get("code_change_ids") if rec else []
+    if not code_change_ids:
+        code_change_ids = supplied_ids
+    if not code_change_ids:
         return {"cfCallId": cf_call_id, "items": [], "stale": False}
 
-    server_id = rec.get("mcp_server_id")
+    server_id = (rec.get("mcp_server_id") if rec else None) or mcp_server_id
+    if not server_id and supplied_ids:
+        default_record = _default_mcp_record()
+        server_id = default_record["id"] if default_record else None
     if not server_id:
         # No MCP server recorded — return placeholders so the UI can still display ids.
         return {
             "cfCallId": cf_call_id,
-            "items": [{"id": i, "stale": True, "tool_name": None, "paths_touched": []} for i in ids],
+            "items": [{"id": i, "stale": True, "tool_name": None, "paths_touched": []} for i in code_change_ids],
             "stale": True,
         }
 
@@ -216,15 +254,15 @@ async def list_code_changes_for_call(
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(
-                f"{base}/resources/code-changes",
-                params={"ids": ",".join(ids)},
+                _mcp_resource_url(base, "/resources/code-changes"),
+                params={"ids": ",".join(code_change_ids)},
                 headers={"Authorization": f"Bearer {bearer}"},
             )
         except httpx.HTTPError as exc:
             # MCP unreachable — return persisted ids with stale flag.
             return {
                 "cfCallId": cf_call_id,
-                "items": [{"id": i, "stale": True, "tool_name": None, "paths_touched": []} for i in ids],
+                "items": [{"id": i, "stale": True, "tool_name": None, "paths_touched": []} for i in code_change_ids],
                 "stale": True,
                 "error": f"mcp unreachable: {exc}",
             }
@@ -234,7 +272,7 @@ async def list_code_changes_for_call(
     items = (body.get("data") or {}).get("items") or []
     # MCP returns only the records it still has — fill gaps with stale placeholders so id ordering is preserved.
     by_id = {it["id"]: it for it in items if isinstance(it, dict) and "id" in it}
-    full  = [by_id.get(i) or {"id": i, "stale": True, "tool_name": None, "paths_touched": []} for i in ids]
+    full  = [by_id.get(i) or {"id": i, "stale": True, "tool_name": None, "paths_touched": []} for i in code_change_ids]
     any_stale = any(it.get("stale") for it in full)
     return {"cfCallId": cf_call_id, "items": full, "stale": any_stale}
 
@@ -262,7 +300,7 @@ async def get_code_change(
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(
-                f"{base}/resources/code-changes/{change_id}",
+                _mcp_resource_url(base, f"/resources/code-changes/{change_id}"),
                 headers={"Authorization": f"Bearer {bearer}"},
             )
         except httpx.HTTPError as exc:
@@ -283,6 +321,10 @@ async def get_mcp_server(
     callers must already have the service token. context-fabric uses this
     when about to dial an MCP server for a workflow execution."""
     _check_service_token(x_service_token)
+
+    default_record = _default_mcp_record()
+    if default_record and server_id == default_record["id"]:
+        return default_record
 
     url = f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{server_id}"
     try:

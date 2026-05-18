@@ -406,9 +406,11 @@ const NODE_META: Record<string, {
   },
   POLICY_CHECK: {
     label: 'Policy Check', color: '#94a3b8', Icon: Shield,
-    description: 'Evaluates a named policy before continuing. Blocks the workflow if the policy denies.',
+    description: 'Evaluates a named policy before continuing. Can use the optional formal verifier when enabled at platform level.',
     standardFields: [
       { key: 'policyName', label: 'Policy name',  placeholder: 'risk-threshold' },
+      { key: 'engine', label: 'Engine', placeholder: 'local_allow | formal_verifier' },
+      { key: 'profile', label: 'Verification profile', placeholder: 'blocking | production | advisory' },
       { key: 'failAction', label: 'On failure',   placeholder: 'BLOCK | WARN | LOG' },
     ],
   },
@@ -616,7 +618,7 @@ function defaultWorkbenchConfig(): WorkbenchConfig {
           allowedSendBackTo: ['PLAN', 'DESIGN'],
           expectedArtifacts: [
             { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
-            { kind: 'simulated_code_change', title: 'Simulated code-change evidence', required: true, format: 'MARKDOWN' },
+            { kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence', required: true, format: 'MARKDOWN' },
           ],
           questions: [],
         },
@@ -3741,6 +3743,8 @@ export function NodeInspector({
                         const isPriority         = f.key === 'priority'
                         const isModelAlias       = f.key === 'modelAlias'
                         const isGovernanceMode   = f.key === 'governanceMode'
+                        const isPolicyEngine     = node.data.nodeType === 'POLICY_CHECK' && f.key === 'engine'
+                        const isFormalProfile    = node.data.nodeType === 'POLICY_CHECK' && f.key === 'profile'
                         const isEvalScope        = node.data.nodeType === 'EVAL_GATE' && f.key === 'scope'
                         const isBooleanFlag      = (node.data.nodeType === 'EVAL_GATE' && f.key === 'blockOnMissingEvidence')
                           || (node.data.nodeType === 'GIT_PUSH' && f.key === 'requireApproval')
@@ -3806,6 +3810,47 @@ export function NodeInspector({
                                   ['fail_closed', 'Fail closed'],
                                   ['degraded', 'Degraded read-only'],
                                   ['human_approval_required', 'Human approval required'],
+                                ].map(([value, label]) => (
+                                  <option key={value} value={value} style={{ background: '#0f172a' }}>{label}</option>
+                                ))}
+                              </select>
+                            ) : isPolicyEngine ? (
+                              <select
+                                value={config.standard[f.key] ?? 'local_allow'}
+                                onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
+                                style={{
+                                  width: '100%', boxSizing: 'border-box',
+                                  background: 'rgba(255,255,255,0.05)',
+                                  border: '1px solid rgba(255,255,255,0.10)',
+                                  borderRadius: 8, padding: '7px 10px',
+                                  fontSize: 11, color: '#e2e8f0',
+                                  outline: 'none', cursor: 'pointer',
+                                }}
+                              >
+                                {[
+                                  ['local_allow', 'Local allow (default)'],
+                                  ['formal_verifier', 'Formal verifier (platform toggle)'],
+                                ].map(([value, label]) => (
+                                  <option key={value} value={value} style={{ background: '#0f172a' }}>{label}</option>
+                                ))}
+                              </select>
+                            ) : isFormalProfile ? (
+                              <select
+                                value={config.standard[f.key] ?? 'blocking'}
+                                onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
+                                style={{
+                                  width: '100%', boxSizing: 'border-box',
+                                  background: 'rgba(255,255,255,0.05)',
+                                  border: '1px solid rgba(255,255,255,0.10)',
+                                  borderRadius: 8, padding: '7px 10px',
+                                  fontSize: 11, color: '#e2e8f0',
+                                  outline: 'none', cursor: 'pointer',
+                                }}
+                              >
+                                {[
+                                  ['blocking', 'Blocking'],
+                                  ['production', 'Production'],
+                                  ['advisory', 'Advisory'],
                                 ].map(([value, label]) => (
                                   <option key={value} value={value} style={{ background: '#0f172a' }}>{label}</option>
                                 ))}

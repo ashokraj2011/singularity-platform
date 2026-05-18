@@ -4,15 +4,25 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
-import { NotFoundError } from '../../lib/errors'
+import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, startInstance } from './runtime/WorkflowRuntime'
 import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
-import { cloneDesignToRun } from './lib/cloneDesignToRun'
 import { getWorkflowBudgetOverview } from './runtime/budget'
+import { analyzeWorkflowInstance } from './formal-verification'
 
 export const workflowInstancesRouter: Router = Router()
+
+workflowInstancesRouter.post('/:id/formal-analysis', async (req, res, next) => {
+  try {
+    await assertInstancePermission(req.user!.userId, req.params.id, 'view')
+    const analysis = await analyzeWorkflowInstance(req.params.id, req.user!.userId)
+    res.json({ data: analysis })
+  } catch (err) {
+    next(err)
+  }
+})
 
 const createInstanceSchema = z.object({
   templateId: z.string().uuid().optional(),
@@ -92,29 +102,7 @@ workflowInstancesRouter.post('/', validate(createInstanceSchema), async (req, re
     // When linked to a template, this is starting a run — clone the design.
     if (body.templateId) {
       await assertTemplatePermission(req.user!.userId, body.templateId, 'start')
-      const result = await cloneDesignToRun({
-        templateId:   body.templateId,
-        name:         body.name,
-        vars:         body.vars,
-        globals:      body.globals,
-        budgetOverride: body.budgetOverride,
-        createdById:  req.user!.userId,
-        initiativeId: body.initiativeId,
-      })
-      await logEvent('WorkflowRunCreated', 'WorkflowInstance', result.instance.id, req.user!.userId, {
-        templateId: body.templateId, cloned: result.cloned, via: 'instances.post',
-      })
-      await publishOutbox('WorkflowInstance', result.instance.id, 'WorkflowRunCreated', {
-        instanceId: result.instance.id, templateId: body.templateId,
-      })
-      await startInstance(result.instance.id, req.user!.userId)
-
-      const full = await prisma.workflowInstance.findUnique({
-        where: { id: result.instance.id },
-        include: { phases: true, nodes: true, edges: true },
-      })
-      res.status(201).json(full)
-      return
+      throw new ValidationError('Workflow runs must start from a WorkItem. Claim or create a WorkItem, then attach the workflow from the WorkItem queue.')
     }
 
     // No templateId — create a blank instance (rare; mostly used for tests).

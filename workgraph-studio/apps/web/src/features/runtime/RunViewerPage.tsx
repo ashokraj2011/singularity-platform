@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'motion/react'
 import {
   ArrowLeft, CheckCircle2, Circle, Clock, AlertCircle, Workflow as WorkflowIcon,
@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { RuntimeWidgetForm, type RuntimeFormSubmitTarget } from '../forms/widgets/RuntimeWidgetForm'
-import type { FormWidget } from '../forms/widgets/types'
+import { widgetHasValue, type FormWidget } from '../forms/widgets/types'
 import { LiveEventsPanel } from './LiveEventsPanel'
 import { CodeChangesPanel } from './CodeChangesPanel'
 import { CapabilityPicker } from '../../components/lookup/EntityPickers'
@@ -210,6 +210,7 @@ function StepCard({
   })()
 
   const formWidgets = (node.config?.formWidgets ?? null) as FormWidget[] | null
+  const hasFormWidgets = Boolean(formWidgets && formWidgets.length > 0)
 
   return (
     <div style={{ position: 'relative' }}>
@@ -257,7 +258,7 @@ function StepCard({
 
           {/* Active step: inline form fill (when applicable) */}
           <AnimatePresence>
-            {isActive && fillKind && formWidgets && formWidgets.length > 0 && (
+            {isActive && fillKind && hasFormWidgets && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
@@ -270,7 +271,7 @@ function StepCard({
                   instanceId={instanceId}
                   instanceName={instanceName}
                   kind={fillKind}
-                  widgets={formWidgets}
+                  widgets={formWidgets ?? []}
                 />
               </motion.div>
             )}
@@ -284,8 +285,12 @@ function StepCard({
             <WorkbenchTaskInlinePanel node={node} instanceId={instanceId} instanceContext={instanceContext} />
           )}
 
+          {isActive && node.nodeType === 'APPROVAL' && !hasFormWidgets && (
+            <ApprovalInlinePanel node={node} instanceId={instanceId} />
+          )}
+
           {/* Active step without form: simple "Mark complete" prompt */}
-          {isActive && node.nodeType !== 'WORK_ITEM' && node.nodeType !== 'WORKBENCH_TASK' && (!fillKind || !formWidgets || formWidgets.length === 0) && (
+          {isActive && node.nodeType !== 'WORK_ITEM' && node.nodeType !== 'WORKBENCH_TASK' && node.nodeType !== 'APPROVAL' && (!fillKind || !hasFormWidgets) && (
             <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.20)' }}>
               <p style={{ fontSize: 11, color: '#0c4a6e' }}>
                 Waiting for the runtime to advance.  HUMAN_TASK / APPROVAL nodes show a form-fill here when they're claimable;
@@ -350,6 +355,143 @@ function WorkbenchTaskInlinePanel({
         <a href={classicUrl} target="_blank" rel="opener" style={smallSecondaryButton}>
           <ExternalLink size={13} /> Open Classic
         </a>
+      </div>
+    </div>
+  )
+}
+
+function ApprovalInlinePanel({ node, instanceId }: { node: RunNode; instanceId: string }) {
+  const queryClient = useQueryClient()
+  const approvalQuery = useQuery<ApprovalRow | null>({
+    queryKey: ['runtime-approval', instanceId, node.id],
+    queryFn: () => api.get('/approvals', {
+      params: { instanceId, nodeId: node.id, status: 'PENDING', size: 1 },
+    }).then(r => unwrapItems<ApprovalRow>(r.data)[0] ?? null),
+    enabled: Boolean(instanceId && node.id),
+    refetchInterval: 4_000,
+  })
+
+  const refreshRun = () => {
+    approvalQuery.refetch()
+    queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId] })
+    queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId, 'nodes'] })
+  }
+
+  const ensureMut = useMutation({
+    mutationFn: () => api.post(`/approvals/workflow-node/${node.id}/ensure`).then(r => r.data as ApprovalRow),
+    onSuccess: refreshRun,
+  })
+  const decisionMut = useMutation({
+    mutationFn: (decision: 'APPROVED' | 'REJECTED') => {
+      const approval = approvalQuery.data
+      if (!approval) throw new Error('Approval request is not ready yet')
+      return api.post(`/approvals/${approval.id}/decision`, {
+        decision,
+        notes: decision === 'APPROVED'
+          ? 'Approved from workflow run timeline'
+          : 'Rejected from workflow run timeline',
+      }).then(r => r.data)
+    },
+    onSuccess: refreshRun,
+  })
+
+  const shouldEnsureApproval =
+    approvalQuery.isFetched &&
+    !approvalQuery.data &&
+    !approvalQuery.error &&
+    !ensureMut.isPending &&
+    !ensureMut.isSuccess &&
+    !ensureMut.isError
+
+  useEffect(() => {
+    if (shouldEnsureApproval) ensureMut.mutate()
+  }, [shouldEnsureApproval])
+
+  const approval = approvalQuery.data
+  const busy = approvalQuery.isLoading || ensureMut.isPending || decisionMut.isPending
+
+  if (approvalQuery.isLoading) {
+    return (
+      <div style={approvalPanelStyle}>
+        <Clock size={14} style={{ color: '#0284c7' }} />
+        <p style={{ ...mutedTextStyle, color: '#0c4a6e' }}>Looking for the approval request...</p>
+      </div>
+    )
+  }
+
+  if (approvalQuery.error) {
+    return (
+      <div style={{ ...approvalPanelStyle, borderColor: 'rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.04)' }}>
+        <AlertCircle size={14} style={{ color: '#dc2626' }} />
+        <p style={{ ...mutedTextStyle, color: '#991b1b' }}>
+          Unable to load approval request: {(approvalQuery.error as Error).message}
+        </p>
+      </div>
+    )
+  }
+
+  if (!approval) {
+    return (
+      <div style={approvalPanelStyle}>
+        <Clock size={14} style={{ color: '#0284c7' }} />
+        <div style={{ flex: 1 }}>
+          <strong style={{ display: 'block', fontSize: 12, color: 'var(--color-on-surface)' }}>
+            Human sign-off is waiting for an approval record
+          </strong>
+          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#0c4a6e', lineHeight: 1.45 }}>
+            The workflow reached this approval node, but no pending approval request was found. The runtime is creating one now; if it does not appear, retry here.
+          </p>
+          {ensureMut.isError && (
+            <p style={{ margin: '6px 0 0', fontSize: 11, color: '#991b1b' }}>
+              {(ensureMut.error as Error).message}
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          style={{ ...smallPrimaryButton, opacity: busy ? 0.65 : 1 }}
+          disabled={busy}
+          onClick={() => ensureMut.mutate()}
+        >
+          {ensureMut.isPending ? 'Creating...' : 'Retry approval'}
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div style={approvalPanelStyle}>
+      <CheckCircle2 size={14} style={{ color: '#0284c7' }} />
+      <div style={{ flex: 1 }}>
+        <strong style={{ display: 'block', fontSize: 12, color: 'var(--color-on-surface)' }}>
+          Human sign-off ready
+        </strong>
+        <p style={{ margin: '3px 0 0', fontSize: 11, color: '#0c4a6e', lineHeight: 1.45 }}>
+          Approval request {approval.id.slice(0, 8)} is pending. Approving advances the workflow to the next step.
+        </p>
+        {decisionMut.isError && (
+          <p style={{ margin: '6px 0 0', fontSize: 11, color: '#991b1b' }}>
+            {(decisionMut.error as Error).message}
+          </p>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          style={{ ...smallPrimaryButton, background: '#16a34a', opacity: busy ? 0.65 : 1 }}
+          disabled={busy}
+          onClick={() => decisionMut.mutate('APPROVED')}
+        >
+          {decisionMut.isPending ? 'Saving...' : 'Approve'}
+        </button>
+        <button
+          type="button"
+          style={{ ...smallSecondaryButton, color: '#991b1b', opacity: busy ? 0.65 : 1 }}
+          disabled={busy}
+          onClick={() => decisionMut.mutate('REJECTED')}
+        >
+          Reject
+        </button>
       </div>
     </div>
   )
@@ -739,20 +881,65 @@ function ActiveStepFill({
     kind === 'approval' ? '/approvals' :
                           '/consumables'
 
-  const { data, refetch } = useQuery<{ data?: any[] } | any[]>({
+  const entityQuery = useQuery<unknown>({
     queryKey: ['run-fill-entity', kind, node.id, instanceId],
     queryFn:  () => api.get(path, { params: { nodeId: node.id, instanceId } }).then(r => r.data),
     enabled:  !!node.id && !!instanceId,
   })
+  const [approvalSnapshot, setApprovalSnapshot] = useState<{ data: Record<string, unknown>; attachmentIds: string[] }>({
+    data: {},
+    attachmentIds: [],
+  })
 
-  const entity = (() => {
-    if (!data) return null
-    if (Array.isArray(data)) return data[0] ?? null
-    if (Array.isArray((data as any).data)) return (data as any).data[0] ?? null
-    return null
-  })() as { id: string; formData?: Record<string, unknown>; attachments?: any[] } | null
+  const ensureApprovalMut = useMutation({
+    mutationFn: () => api.post(`/approvals/workflow-node/${node.id}/ensure`).then(r => r.data),
+    onSuccess: () => entityQuery.refetch(),
+  })
+
+  const entity = unwrapItems<{ id: string; formData?: Record<string, unknown>; attachments?: any[] }>(entityQuery.data)[0] ?? null
+
+  const shouldEnsureApproval =
+    kind === 'approval' &&
+    entityQuery.isFetched &&
+    !entity &&
+    !entityQuery.error &&
+    !ensureApprovalMut.isPending &&
+    !ensureApprovalMut.isSuccess &&
+    !ensureApprovalMut.isError
+
+  useEffect(() => {
+    if (shouldEnsureApproval) ensureApprovalMut.mutate()
+  }, [shouldEnsureApproval])
 
   if (!entity) {
+    if (kind === 'approval') {
+      return (
+        <div style={approvalPanelStyle}>
+          <Clock size={14} style={{ color: '#0284c7' }} />
+          <div style={{ flex: 1 }}>
+            <strong style={{ display: 'block', fontSize: 12, color: 'var(--color-on-surface)' }}>
+              Human sign-off is waiting for an approval record
+            </strong>
+            <p style={{ margin: '3px 0 0', fontSize: 11, color: '#0c4a6e', lineHeight: 1.45 }}>
+              The workflow reached this approval form, but no pending approval request was found. The runtime is creating one now; if it does not appear, retry here.
+            </p>
+            {ensureApprovalMut.isError && (
+              <p style={{ margin: '6px 0 0', fontSize: 11, color: '#991b1b' }}>
+                {(ensureApprovalMut.error as Error).message}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            style={{ ...smallPrimaryButton, opacity: ensureApprovalMut.isPending ? 0.65 : 1 }}
+            disabled={ensureApprovalMut.isPending}
+            onClick={() => ensureApprovalMut.mutate()}
+          >
+            {ensureApprovalMut.isPending ? 'Creating...' : 'Retry approval'}
+          </button>
+        </div>
+      )
+    }
     return (
       <p style={{ fontSize: 11, color: 'var(--color-outline)', fontStyle: 'italic', marginTop: 8 }}>
         Waiting for the {kind} record to be created…
@@ -773,10 +960,114 @@ function ActiveStepFill({
         initialData={(entity.formData as Record<string, unknown>) ?? {}}
         initialAttachments={Array.isArray(entity.attachments) ? entity.attachments : []}
         canComplete={true}
-        onSubmitted={() => refetch()}
+        onSubmitted={() => entityQuery.refetch()}
+        onValuesChange={kind === 'approval' ? setApprovalSnapshot : undefined}
+        hideActions={kind === 'approval'}
+        primaryLabel={kind === 'approval' ? 'Save sign-off form' : undefined}
       />
+      {kind === 'approval' && (
+        <ApprovalDecisionControls
+          approvalId={entity.id}
+          instanceId={instanceId}
+          nodeId={node.id}
+          widgets={widgets}
+          snapshot={approvalSnapshot}
+          onDone={() => entityQuery.refetch()}
+        />
+      )}
     </div>
   )
+}
+
+function ApprovalDecisionControls({
+  approvalId, instanceId, nodeId, widgets, snapshot, onDone,
+}: {
+  approvalId: string
+  instanceId: string
+  nodeId: string
+  widgets: FormWidget[]
+  snapshot: { data: Record<string, unknown>; attachmentIds: string[] }
+  onDone: () => void
+}) {
+  const queryClient = useQueryClient()
+  const [validationError, setValidationError] = useState<string | null>(null)
+  const decisionMut = useMutation({
+    mutationFn: async (decision: 'APPROVED' | 'REJECTED') => {
+      setValidationError(null)
+      if (decision === 'APPROVED') {
+        const err = validateWidgetSnapshot(widgets, snapshot.data)
+        if (err) {
+          setValidationError(err)
+          throw new Error(err)
+        }
+      }
+      await api.post(`/approvals/${approvalId}/form-submission`, {
+        data: snapshot.data,
+        attachmentIds: snapshot.attachmentIds,
+      })
+      return api.post(`/approvals/${approvalId}/decision`, {
+        decision,
+        notes: decision === 'APPROVED'
+          ? 'Approved from workflow run timeline'
+          : 'Rejected from workflow run timeline',
+      }).then(r => r.data)
+    },
+    onSuccess: () => {
+      onDone()
+      queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId] })
+      queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId, 'nodes'] })
+      queryClient.invalidateQueries({ queryKey: ['run-fill-entity', 'approval', nodeId, instanceId] })
+    },
+  })
+
+  const busy = decisionMut.isPending
+  const error = validationError ?? (decisionMut.isError ? (decisionMut.error as Error).message : null)
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--color-outline-variant)' }}>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          style={{ ...smallSecondaryButton, color: '#991b1b', opacity: busy ? 0.65 : 1 }}
+          disabled={busy}
+          onClick={() => decisionMut.mutate('REJECTED')}
+        >
+          Reject
+        </button>
+        <button
+          type="button"
+          style={{ ...smallPrimaryButton, background: '#16a34a', opacity: busy ? 0.65 : 1 }}
+          disabled={busy}
+          onClick={() => decisionMut.mutate('APPROVED')}
+        >
+          {busy ? 'Saving...' : 'Approve and advance'}
+        </button>
+      </div>
+      {error && (
+        <p style={{ margin: '8px 0 0', fontSize: 11, color: '#991b1b', textAlign: 'right' }}>
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function validateWidgetSnapshot(widgets: FormWidget[], data: Record<string, unknown>): string | null {
+  for (const w of widgets) {
+    if (!widgetHasValue(w.type) || !w.required || !w.key) continue
+    const v = data[w.key]
+    const isEmpty =
+      v === undefined || v === null || v === '' ||
+      (Array.isArray(v) && v.length === 0) ||
+      (typeof v === 'object' && v && Object.keys(v).length === 0)
+    if (w.type === 'SIGNATURE') {
+      const sig = v as { name?: string } | undefined
+      if (!sig?.name?.trim()) return `"${w.label ?? w.key}" is required.`
+    } else if (isEmpty) {
+      return `"${w.label ?? w.key}" is required.`
+    }
+  }
+  return null
 }
 
 function CompletedStepSummary({
@@ -793,17 +1084,12 @@ function CompletedStepSummary({
     kind === 'approval' ? '/approvals' :
                           '/consumables'
 
-  const { data } = useQuery<{ data?: any[] } | any[]>({
+  const { data } = useQuery<unknown>({
     queryKey: ['run-completed-entity', kind, node.id, instanceId],
     queryFn:  () => api.get(path, { params: { nodeId: node.id, instanceId } }).then(r => r.data),
     enabled:  !!node.id && !!instanceId,
   })
-  const entity = (() => {
-    if (!data) return null
-    if (Array.isArray(data)) return data[0] ?? null
-    if (Array.isArray((data as any).data)) return (data as any).data[0] ?? null
-    return null
-  })() as { id: string; formData?: Record<string, unknown> } | null
+  const entity = unwrapItems<{ id: string; formData?: Record<string, unknown> }>(data)[0] ?? null
   if (!entity?.formData || Object.keys(entity.formData).length === 0) return null
 
   return (
@@ -964,6 +1250,18 @@ const workItemPanelStyle: CSSProperties = {
   border: '1px solid rgba(139,92,246,0.22)',
 }
 
+const approvalPanelStyle: CSSProperties = {
+  marginTop: 10,
+  padding: 12,
+  borderRadius: 10,
+  background: 'rgba(14,165,233,0.06)',
+  border: '1px solid rgba(14,165,233,0.22)',
+  display: 'flex',
+  alignItems: 'flex-start',
+  gap: 10,
+  flexWrap: 'wrap',
+}
+
 const mutedTextStyle: CSSProperties = {
   margin: 0,
   fontSize: 11,
@@ -1105,6 +1403,13 @@ type RunNode = {
   createdAt?: string;
 }
 type RunEdge = { id: string; sourceNodeId: string; targetNodeId: string; edgeType: string }
+
+type ApprovalRow = {
+  id: string
+  status: string
+  assignedToId?: string | null
+  createdAt?: string
+}
 
 type RunWorkItemTarget = {
   id: string

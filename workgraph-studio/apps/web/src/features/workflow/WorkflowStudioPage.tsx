@@ -127,7 +127,7 @@ const WORKBENCH_TASK_NODE_CONFIG = {
           allowedSendBackTo: ['PLAN', 'DESIGN'],
           expectedArtifacts: [
             { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
-            { kind: 'simulated_code_change', title: 'Simulated code-change evidence', required: true, format: 'MARKDOWN' },
+            { kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence', required: true, format: 'MARKDOWN' },
           ],
         },
         {
@@ -1859,6 +1859,12 @@ export function WorkflowStudioPage() {
   const [helpOpen, setHelpOpen] = useState(false)
   const [validateOpen, setValidateOpen] = useState(false)
   const [validationResult, setValidationResult] = useState<{ issues: ValidationIssue[]; outputs: WorkflowOutput[] } | null>(null)
+  const [formalAnalysisResult, setFormalAnalysisResult] = useState<{
+    kind: 'success' | 'error'
+    title: string
+    message?: string
+    data?: Record<string, unknown>
+  } | null>(null)
 
   // ── Undo/Redo history ─────────────────────────────────────────────────────
   type HistoryState = { nodes: typeof rfNodes; edges: typeof rfEdges }
@@ -2229,6 +2235,36 @@ export function WorkflowStudioPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['workflow-templates', workflowId] })
       setBudgetOpen(false)
+    },
+  })
+
+  const formalAnalysisMut = useMutation({
+    mutationFn: async () => {
+      const url = isDesignMode
+        ? `/workflow-templates/${designWorkflowId}/formal-analysis`
+        : `/workflow-instances/${runInstanceId}/formal-analysis`
+      const response = await api.post(url)
+      return (response.data?.data ?? response.data) as Record<string, unknown>
+    },
+    onSuccess: data => {
+      const result = data.result as Record<string, unknown> | undefined
+      setFormalAnalysisResult({
+        kind: 'success',
+        title: `Formal result: ${String(result?.result ?? 'UNKNOWN')}`,
+        message: String(result?.meaning ?? 'Governance path analysis completed.'),
+        data,
+      })
+    },
+    onError: error => {
+      const err = error as any
+      const payload = err?.response?.data
+      const message = payload?.message ?? payload?.detail?.message ?? err?.message ?? 'Formal analysis failed.'
+      setFormalAnalysisResult({
+        kind: 'error',
+        title: payload?.code === 'FORMAL_VERIFICATION_DISABLED' ? 'Formal verification disabled' : 'Formal analysis unavailable',
+        message,
+        data: payload,
+      })
     },
   })
 
@@ -2674,6 +2710,34 @@ export function WorkflowStudioPage() {
               {validationResult === null ? 'Validate' : validationResult.issues.filter(i => i.severity === 'error').length === 0 ? 'Valid ✓' : `${validationResult.issues.filter(i => i.severity === 'error').length} error${validationResult.issues.filter(i => i.severity === 'error').length > 1 ? 's' : ''}`}
             </button>
           )}
+          {((isDesignMode && designWorkflowId) || (!isDesignMode && runInstanceId)) && (
+            <button
+              onClick={() => formalAnalysisMut.mutate()}
+              disabled={formalAnalysisMut.isPending}
+              title="Analyze Governance Paths with the optional formal verifier"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5,
+                padding: '5px 14px', borderRadius: 9, fontSize: 11, fontWeight: 700, flexShrink: 0,
+                background: formalAnalysisResult?.kind === 'success'
+                  ? 'rgba(34,197,94,0.16)'
+                  : formalAnalysisResult?.kind === 'error'
+                    ? 'rgba(245,158,11,0.14)'
+                    : 'rgba(192,193,255,0.16)',
+                border: formalAnalysisResult?.kind === 'success'
+                  ? '1.5px solid rgba(34,197,94,0.36)'
+                  : formalAnalysisResult?.kind === 'error'
+                    ? '1.5px solid rgba(245,158,11,0.42)'
+                    : '1.5px solid rgba(192,193,255,0.42)',
+                color: formalAnalysisResult?.kind === 'error' ? '#fbbf24' : '#c0c1ff',
+                cursor: formalAnalysisMut.isPending ? 'wait' : 'pointer',
+                opacity: formalAnalysisMut.isPending ? 0.75 : 1,
+                transition: 'all 0.12s',
+              }}
+            >
+              <Shield size={11} />
+              {formalAnalysisMut.isPending ? 'Analyzing…' : 'Analyze Governance Paths'}
+            </button>
+          )}
           {instance?.status === 'ACTIVE' && (
             <>
               <ToolBtn icon={Pause} title="Pause" color="#fbbf24" active onClick={() => pauseInstanceMut.mutate()} />
@@ -2736,6 +2800,52 @@ export function WorkflowStudioPage() {
             onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
           />
         </motion.div>
+
+        <AnimatePresence>
+          {formalAnalysisResult && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              style={{
+                position: 'absolute', top: 72, right: 92, zIndex: 55,
+                width: 390, maxWidth: 'calc(100vw - 220px)',
+                borderRadius: 18, border: `1px solid ${formalAnalysisResult.kind === 'error' ? 'rgba(245,158,11,0.38)' : panelBdr}`,
+                background: isLight ? 'rgba(255,255,255,0.97)' : 'rgba(7,17,31,0.97)',
+                backdropFilter: 'blur(20px)',
+                boxShadow: isLight ? '0 18px 50px rgba(15,23,42,0.16)' : '0 18px 50px rgba(0,0,0,0.55)',
+                padding: 14,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <Shield size={16} style={{ color: formalAnalysisResult.kind === 'error' ? '#f59e0b' : '#22c55e', marginTop: 2 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ margin: 0, color: panelText, fontSize: 12, fontWeight: 900 }}>{formalAnalysisResult.title}</p>
+                  {formalAnalysisResult.message && (
+                    <p style={{ margin: '4px 0 0', color: panelMuted, fontSize: 10, lineHeight: 1.45 }}>{formalAnalysisResult.message}</p>
+                  )}
+                </div>
+                <button
+                  onClick={() => setFormalAnalysisResult(null)}
+                  style={{ background: 'transparent', border: 'none', color: panelMuted, cursor: 'pointer', padding: 2, display: 'flex' }}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              {formalAnalysisResult.data && (
+                <pre style={{
+                  margin: '10px 0 0', maxHeight: 230, overflow: 'auto',
+                  borderRadius: 10, border: `1px solid ${panelBdr}`,
+                  background: isLight ? '#f8fafc' : '#020617',
+                  color: isLight ? '#334155' : '#cbd5e1',
+                  padding: 10, fontSize: 10, lineHeight: 1.45,
+                }}>
+                  {JSON.stringify(formalAnalysisResult.data, null, 2)}
+                </pre>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* ─── FLOATING LEFT PALETTE DOCK ───────────────────────────────────── */}
         <motion.div

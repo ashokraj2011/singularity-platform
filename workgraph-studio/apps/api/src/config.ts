@@ -63,6 +63,11 @@ const envSchema = z.object({
   // LLM_GATEWAY_URL and LLM_GATEWAY_BEARER are retired; all LLM egress
   // flows through the MCP Server. Timeout is kept for the /mcp/invoke call.
   LLM_GATEWAY_TIMEOUT_SEC: z.coerce.number().int().positive().default(240),
+
+  // Optional SMT governance path analyzer. Default off; disabled callers must
+  // skip/return clear evidence and never call the verifier service.
+  FORMAL_VERIFICATION_ENABLED: z.coerce.boolean().default(false),
+  FORMAL_VERIFIER_URL: z.string().default('http://localhost:8010'),
 })
 
 // M35.1 — production-class envs refuse to start with weak secrets.

@@ -172,6 +172,12 @@ jobs:
         env:
           PYTHONPATH: context-fabric
         run: python3 -m pytest context-fabric/services/llm_gateway_service/tests/test_gateway_hardening.py
+      - name: formal verifier solver tests
+        env:
+          PYTHONPATH: context-fabric
+        run: |
+          python3 -m pip install -r context-fabric/services/formal_verifier_service/requirements.txt
+          python3 -m pytest context-fabric/services/formal_verifier_service/tests
 
   # ─── Shell scripts — bin/ + singularity.sh + seed/apply.sh ──────────────────
   shellcheck:
@@ -386,6 +392,18 @@ jobs:
           done < <(find . -name "docker-compose.yml" -not -path "*/node_modules/*")
           exit $fail
 
+  # ─── Nginx Docker DNS guard ────────────────────────────────────────────────
+  # Prevents frontend nginx containers from pinning stale backend container IPs.
+  # Docker service upstreams must use resolver 127.0.0.11 with variable
+  # proxy_pass instead of static `proxy_pass http://service:port`.
+  nginx-docker-dns-guard:
+    name: nginx Docker DNS guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bin/check-nginx-docker-dns.sh
+        run: bash bin/check-nginx-docker-dns.sh
+
   # ─── M33 — Single LLM Gateway lockdown ──────────────────────────────────────
   # Enforces that NO service outside context-fabric/services/llm_gateway_service/
   # opens HTTP to a provider URL, reads a provider API key, or routes by
@@ -417,7 +435,7 @@ jobs:
   container-images:
     name: image ${{ matrix.image }}
     runs-on: ubuntu-latest
-    needs: [typecheck-ts, python-syntax, context-governance-contract, shellcheck, sql-syntax, compose-syntax]
+    needs: [typecheck-ts, python-syntax, context-governance-contract, shellcheck, sql-syntax, compose-syntax, nginx-docker-dns-guard]
     strategy:
       fail-fast: false
       matrix:
@@ -434,6 +452,9 @@ jobs:
           - image: llm-gateway
             context: context-fabric
             dockerfile: services/llm_gateway_service/Dockerfile
+          - image: formal-verifier
+            context: context-fabric
+            dockerfile: services/formal_verifier_service/Dockerfile
           - image: agent-runtime
             context: agent-and-tools
             dockerfile: apps/agent-runtime/Dockerfile

@@ -326,6 +326,74 @@ export async function claimWorkItemTarget(workItemId: string, targetId: string, 
   return updated
 }
 
+export async function archiveWorkItem(workItemId: string, userId: string) {
+  const workItem = await prisma.workItem.findUnique({
+    where: { id: workItemId },
+    include: { targets: true },
+  })
+  if (!workItem) throw new NotFoundError('WorkItem', workItemId)
+  await assertCanViewWorkItem(userId, workItem)
+  if (workItem.originType !== 'CAPABILITY_LOCAL') {
+    throw new ValidationError('Only capability-created WorkItems can be archived. Parent-delegated WorkItems must be returned, completed, or cancelled by the parent capability.')
+  }
+  if (workItem.status === 'ARCHIVED') {
+    return prisma.workItem.findUniqueOrThrow({
+      where: { id: workItemId },
+      include: {
+        targets: { orderBy: { createdAt: 'asc' } },
+        events: { orderBy: { createdAt: 'asc' } },
+        clarifications: { orderBy: { createdAt: 'asc' } },
+      },
+    })
+  }
+
+  const activeTarget = workItem.targets.find(target =>
+    target.childWorkflowInstanceId && ['IN_PROGRESS', 'SUBMITTED'].includes(target.status),
+  )
+  if (activeTarget) {
+    throw new ValidationError('This WorkItem has an active or submitted workflow target. Finish, cancel, or close that run before archiving.')
+  }
+
+  const archived = await prisma.$transaction(async tx => {
+    await tx.workItemTarget.updateMany({
+      where: {
+        workItemId,
+        status: { in: ['QUEUED', 'CLAIMED', 'REWORK_REQUESTED'] },
+      },
+      data: { status: 'CANCELLED' },
+    })
+    await tx.workItemEvent.create({
+      data: {
+        workItemId,
+        eventType: 'ARCHIVED',
+        actorId: userId,
+        payload: {
+          previousStatus: workItem.status,
+          originType: workItem.originType,
+          archivedAt: new Date().toISOString(),
+        } as Prisma.InputJsonValue,
+      },
+    })
+    return tx.workItem.update({
+      where: { id: workItemId },
+      data: { status: 'ARCHIVED' },
+      include: {
+        targets: { orderBy: { createdAt: 'asc' } },
+        events: { orderBy: { createdAt: 'asc' } },
+        clarifications: { orderBy: { createdAt: 'asc' } },
+      },
+    })
+  })
+
+  await logEvent('WorkItemArchived', 'WorkItem', workItemId, userId, {
+    workCode: workItem.workCode,
+    previousStatus: workItem.status,
+    originType: workItem.originType,
+  })
+  await publishOutbox('WorkItem', workItemId, 'WorkItemArchived', { workItemId })
+  return archived
+}
+
 export async function startWorkItemTarget(
   workItemId: string,
   targetId: string,

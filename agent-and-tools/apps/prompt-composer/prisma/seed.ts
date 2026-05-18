@@ -148,9 +148,9 @@ const blueprintArchitectTask = [
 ].join("\n");
 
 const blueprintDeveloperTask = [
-  "Create a simulated developer implementation plan for: {{goal}}",
-  "Do not mutate the repository. Produce expected file changes, task breakdown, code-level approach, and handoff notes.",
-  "For MCP evidence, write simulated developer code change summary to blueprint-proposed-change.md if a demo write tool is available.",
+  "Create a governed developer implementation for: {{goal}}",
+  "Use the writable MCP workspace when available. Inspect relevant code first, then apply the requested change with tool calls and finish the work branch so a real MCP/git diff is captured.",
+  "If no writable workspace is available, clearly state that no actual code change was captured and do not invent a patch.",
 ].join("\n");
 
 const blueprintQaTask = [

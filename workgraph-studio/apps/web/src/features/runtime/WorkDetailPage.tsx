@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, AlertCircle, CheckCircle2, XCircle, Workflow, Layers, ExternalLink, Route, Network, Play } from 'lucide-react'
+import { ArrowLeft, AlertCircle, Archive, CheckCircle2, XCircle, Workflow, Layers, ExternalLink, Route, Network, Play } from 'lucide-react'
 import { api } from '../../lib/api'
 import { RuntimeWidgetForm, type RuntimeFormSubmitTarget } from '../forms/widgets/RuntimeWidgetForm'
 import type { FormWidget } from '../forms/widgets/types'
@@ -80,6 +80,10 @@ function WorkItemDetail({ id }: { id: string }) {
       refetch()
     },
   })
+  const archiveMut = useMutation({
+    mutationFn: () => api.post(`/work-items/${id}/archive`).then(r => r.data),
+    onSuccess: () => navigate('/work-items'),
+  })
 
   const activeTarget = workItem?.targets.find(t => t.id === targetId) ?? workItem?.targets[0]
   const canClaim = activeTarget && ['QUEUED', 'REWORK_REQUESTED'].includes(activeTarget.status) && !activeTarget.claimedById
@@ -113,6 +117,35 @@ function WorkItemDetail({ id }: { id: string }) {
         status={workItem.status}
         assignmentMode="ROLE_BASED"
       />
+
+      {workItem.originType === 'CAPABILITY_LOCAL' && workItem.status !== 'ARCHIVED' && (
+        <section style={{
+          ...cardStyle,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          borderColor: 'rgba(220,38,38,0.20)',
+          background: 'rgba(254,242,242,0.55)',
+        }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 14, color: 'var(--color-on-surface)' }}>Archive local WorkItem</h3>
+            <p style={{ margin: '3px 0 0', fontSize: 12, color: 'var(--color-outline)' }}>
+              Hides this capability-created WorkItem from normal queues. Parent-delegated WorkItems cannot be archived here.
+            </p>
+            {archiveMut.error && <p style={{ margin: '6px 0 0', color: '#b91c1c', fontSize: 12 }}>{(archiveMut.error as Error).message}</p>}
+          </div>
+          <button
+            style={{ ...secondaryButtonStyle, borderColor: 'rgba(220,38,38,0.30)', color: '#b91c1c' }}
+            disabled={archiveMut.isPending}
+            onClick={() => {
+              if (window.confirm(`Archive ${workItem.workCode ?? workItem.title}? It will be hidden from normal WorkItem queues.`)) archiveMut.mutate()
+            }}
+          >
+            <Archive size={13} /> {archiveMut.isPending ? 'Archiving...' : 'Archive'}
+          </button>
+        </section>
+      )}
 
       <section style={cardStyle}>
         <h3 style={{ margin: '0 0 10px', fontSize: 15, color: 'var(--color-on-surface)' }}>Request packet</h3>
@@ -346,6 +379,7 @@ function StatusPill({ status }: { status: string }) {
     : status === 'SUBMITTED' || status === 'IN_PROGRESS' ? '#0ea5e9'
     : status === 'REWORK_REQUESTED' ? '#f59e0b'
     : status === 'REJECTED' || status === 'CANCELLED' ? '#dc2626'
+    : status === 'ARCHIVED' ? '#6b7280'
     : '#64748b'
   return (
     <span style={{

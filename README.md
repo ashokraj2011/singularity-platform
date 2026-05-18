@@ -475,6 +475,7 @@ It configures:
 - Gateway-owned model aliases. Workflows choose aliases; MCP forwards aliases and receives resolved provider/model in receipts.
 - Balanced token budget defaults. Workgraph owns run budgets, Prompt Composer owns layer/retrieval budgeting, Context Fabric enforces execution limits, and the central gateway owns provider/model routing.
 - Governed artifact fetch for prompt assembly. Prompt Composer can fetch bounded text from Workgraph MinIO/document refs through `WORKGRAPH_ARTIFACT_FETCH_URL` using `WORKGRAPH_ARTIFACT_FETCH_TOKEN`; required artifacts fail closed if only a missing/unreadable ref is provided.
+- Optional formal verification. `formalVerification.enabled` maps to `FORMAL_VERIFICATION_ENABLED`; the default is `false`, so governance path controls are disabled/skipped unless an operator explicitly enables the SMT verifier.
 - UI env files for the portal, Workgraph web, IAM admin, and agent-and-tools web.
 
 Common commands:
@@ -588,6 +589,18 @@ curl http://localhost:7100/llm/models
 
 In office Copilot-only mode, `/llm/providers` should report `copilot` as allowed/enabled and `openai`, `openrouter`, `anthropic`, and `mock` as disabled or not allowed. If a workflow tries to force a disabled provider or raw provider/model, the gateway rejects it before any provider call.
 
+### Optional governance path analyzer
+
+Formal verification is a platform-level feature toggle, off by default:
+
+```bash
+./singularity.sh config set formalVerification.enabled true
+./singularity.sh config write
+./singularity.sh restart formal-verifier workgraph-api portal
+```
+
+When disabled, Workgraph formal-analysis endpoints return `FORMAL_VERIFICATION_DISABLED`, Policy Check nodes using `engine=formal_verifier` are marked skipped with an audit receipt, and no solver call is made. When enabled, `formal-verifier` exposes `/health`, `/healthz/strict`, and `/api/v1/verification/verify`, and Operations Portal shows **Governance Paths** for workflow/run analysis.
+
 ### Operator command center and guided delivery
 
 The Operations Portal (`http://localhost:5180/operations`) is the command center for day-to-day governed delivery:
@@ -597,6 +610,7 @@ The Operations Portal (`http://localhost:5180/operations`) is the command center
 - **Run Audit** — evidence-pack export for a workflow run with stage timings, tokens/cost, approvals, artifacts, receipts, Workbench stages, budget events, and gaps.
 - **WorkItems** — cross-capability WorkItem queue with child capability targets, claim/start actions, child run links, submitted consumables, approval, and rework.
 - **Architecture** — capability architecture diagrams from agent-runtime, including application diagrams and TOGAF-style collection views.
+- **Governance Paths** — optional SMT formal verification for workflow governance paths, deploy/push gates, QA approvals, and Workbench promotion checks.
 - **AI Causality Proof** — conservative RCA report for a run and optional subject such as a file path, commit SHA, artifact id, or incident symptom.
 
 Key APIs:

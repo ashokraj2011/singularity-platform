@@ -1,4 +1,4 @@
-import type { WorkflowNode, WorkflowInstance } from '@prisma/client'
+import type { WorkflowNode, WorkflowInstance, ApprovalRequest } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import {
@@ -12,7 +12,19 @@ export async function activateApproval(
   node: WorkflowNode,
   instance: WorkflowInstance,
   actorId?: string,
-): Promise<void> {
+): Promise<ApprovalRequest> {
+  const existing = await prisma.approvalRequest.findFirst({
+    where: {
+      instanceId: instance.id,
+      nodeId: node.id,
+      subjectType: 'WorkflowNode',
+      subjectId: node.id,
+      status: 'PENDING',
+    },
+    orderBy: { createdAt: 'desc' },
+  })
+  if (existing) return existing
+
   const cfg = (node.config ?? {}) as Record<string, unknown>
 
   const capabilityId = await getTemplateCapabilityId(instance)
@@ -59,4 +71,5 @@ export async function activateApproval(
     capabilityId:   routing.capabilityId,
   })
   await publishOutbox('ApprovalRequest', request.id, 'ApprovalRequested', { requestId: request.id })
+  return request
 }

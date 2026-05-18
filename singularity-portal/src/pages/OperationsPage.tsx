@@ -30,7 +30,7 @@ interface DoctorSummary {
   checks?: Array<{ status: 'OK' | 'WARN' | 'FAIL'; message: string; fix?: string }>
 }
 
-type OpsTab = 'setup' | 'readiness' | 'trust' | 'audit' | 'workitems' | 'architecture' | 'causality'
+type OpsTab = 'setup' | 'readiness' | 'trust' | 'audit' | 'workitems' | 'architecture' | 'formal' | 'causality'
 
 interface WorkflowRunRow {
   id: string
@@ -119,6 +119,7 @@ const services: ServiceCheck[] = [
   { id: 'llm-gateway', name: 'LLM Gateway', group: 'Optimization', endpoint: '/ops-health/llm-gateway', description: 'Provider routing and token usage' },
   { id: 'context-memory', name: 'Context Memory', group: 'Optimization', endpoint: '/ops-health/context-memory', description: 'Session history and summaries' },
   { id: 'metrics-ledger', name: 'Metrics Ledger', group: 'Governance', endpoint: '/ops-health/metrics-ledger', description: 'Token and cost rollups' },
+  { id: 'formal-verifier', name: 'Formal Verifier', group: 'Governance', endpoint: '/ops-health/formal-verifier', description: 'Optional SMT governance path analyzer' },
   { id: 'agent-service', name: 'Agent Service', group: 'Agent & Tools', endpoint: '/ops-health/agent-service', description: 'Agent registry' },
   { id: 'tool-service', name: 'Tool Service', group: 'Agent & Tools', endpoint: '/ops-health/tool-service', description: 'Tool registry and policy' },
   { id: 'agent-runtime', name: 'Agent Runtime', group: 'Agent & Tools', endpoint: '/ops-health/agent-runtime', description: 'Capabilities, agents, learning' },
@@ -173,6 +174,7 @@ const opsTabs: Array<{ key: OpsTab; label: string; icon: typeof SlidersHorizonta
   { key: 'audit', label: 'Run Audit', icon: FileText, description: 'Timing, cost, receipts' },
   { key: 'workitems', label: 'WorkItems', icon: ClipboardList, description: 'Cross-capability queue' },
   { key: 'architecture', label: 'Architecture', icon: GitBranch, description: 'Capability diagrams' },
+  { key: 'formal', label: 'Governance Paths', icon: ShieldCheck, description: 'Formal analysis' },
   { key: 'causality', label: 'AI Causality Proof', icon: ShieldCheck, description: 'Incident evidence' },
 ]
 
@@ -257,6 +259,22 @@ export function OperationsPage() {
     refetchInterval: 30000,
   })
 
+  const formalStatus = useQuery({
+    queryKey: ['ops-status', 'formal-verifier'],
+    queryFn: async () => {
+      const res = await fetch('/ops-status/formal-verifier', { headers: { accept: 'application/json' } })
+      if (!res.ok) throw new Error(`Formal verifier status returned ${res.status}`)
+      return res.json() as Promise<{
+        enabled: boolean
+        status: string
+        solver?: { ready?: boolean }
+        database?: { ready?: boolean; reason?: string }
+      }>
+    },
+    retry: 1,
+    refetchInterval: 30000,
+  })
+
   const doctor = useQuery({
     queryKey: ['ops-doctor'],
     queryFn: async () => {
@@ -293,6 +311,9 @@ export function OperationsPage() {
 
   const modelRows = Array.isArray(modelCatalog.data?.models) ? modelCatalog.data.models : []
   const providerRows = Array.isArray(providers.data?.providers) ? providers.data.providers : []
+  const formalVerifierIndex = services.findIndex((svc) => svc.id === 'formal-verifier')
+  const formalVerifierState = formalVerifierIndex >= 0 ? stateFromQuery(healthQueries[formalVerifierIndex]) : 'DEGRADED'
+  const formalVerifierLabel = formalStatus.data?.status ?? (formalVerifierState === 'ONLINE' ? 'Disabled' : 'Service unreachable')
 
   return (
     <div className="space-y-6">
@@ -315,7 +336,7 @@ export function OperationsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-7">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-8">
         {opsTabs.map((tab) => (
           <button
             key={tab.key}
@@ -363,6 +384,12 @@ export function OperationsPage() {
           value="Default runtime"
           status="OK"
           detail="MCP owns local files, AST, branches, tools, and model routing."
+        />
+        <SetupTile
+          title="Formal verification"
+          value={formalVerifierLabel}
+          status={formalVerifierLabel === 'Enabled' ? 'OK' : formalVerifierLabel === 'Disabled' ? 'WARN' : 'FAIL'}
+          detail={formalStatus.data?.database?.reason ?? 'Set FORMAL_VERIFICATION_ENABLED=true to enable governance path analysis and runtime gates.'}
         />
       </div>
 
@@ -538,6 +565,8 @@ export function OperationsPage() {
         <WorkItemsPanel />
       ) : activeTab === 'architecture' ? (
         <ArchitecturePanel />
+      ) : activeTab === 'formal' ? (
+        <FormalVerificationPanel />
       ) : (
         <CausalityPanel />
       )}
@@ -557,6 +586,101 @@ function unwrapItems<T>(value: unknown): T[] {
   if (Array.isArray(root?.items)) return root.items as T[]
   if (Array.isArray(root?.data)) return root.data as T[]
   return []
+}
+
+function FormalVerificationPanel() {
+  const [mode, setMode] = useState<'workflow' | 'run'>('workflow')
+  const [id, setId] = useState('')
+  const [result, setResult] = useState<any>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  async function runAnalysis() {
+    if (!id.trim()) return
+    setLoading(true)
+    setError(null)
+    setResult(null)
+    try {
+      const path = mode === 'workflow'
+        ? `/workflows/${encodeURIComponent(id.trim())}/formal-analysis`
+        : `/workflow-instances/${encodeURIComponent(id.trim())}/formal-analysis`
+      const res = await workgraphApi.post(path, {})
+      setResult(unwrapEnvelope<any>(res))
+    } catch (err: any) {
+      setError(err?.response?.data?.message ?? err?.response?.data?.code ?? err?.message ?? 'Formal analysis failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const solverResult = result?.result?.result ?? result?.result?.status
+  const risk = result?.result?.riskLevel ?? result?.result?.risk_level
+
+  return (
+    <Card>
+      <CardHeader
+        title="Governance Path Analyzer"
+        subtitle="Optional SMT checks over workflow paths. Disabled platforms return FORMAL_VERIFICATION_DISABLED and do not call the solver."
+        action={<ShieldCheck className="h-4 w-4 text-slate-400" />}
+      />
+      <CardBody className="space-y-4">
+        <div className="grid gap-3 lg:grid-cols-[180px_1fr_auto]">
+          <select
+            value={mode}
+            onChange={(event) => setMode(event.target.value as 'workflow' | 'run')}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+          >
+            <option value="workflow">Workflow template</option>
+            <option value="run">Workflow run</option>
+          </select>
+          <input
+            value={id}
+            onChange={(event) => setId(event.target.value)}
+            placeholder={mode === 'workflow' ? 'Workflow template id' : 'Workflow run id'}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 placeholder:text-slate-400"
+          />
+          <button
+            type="button"
+            onClick={runAnalysis}
+            disabled={loading || !id.trim()}
+            className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {loading ? 'Analyzing...' : 'Analyze paths'}
+          </button>
+        </div>
+
+        {error && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <div className="flex items-center gap-2 font-semibold">
+              <AlertTriangle className="h-4 w-4" />
+              {error}
+            </div>
+            {String(error).includes('FORMAL_VERIFICATION_DISABLED') && (
+              <div className="mt-2 font-mono text-xs">./singularity.sh config set formalVerification.enabled true && ./singularity.sh config write</div>
+            )}
+          </div>
+        )}
+
+        {result && (
+          <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+            <div className="rounded-xl border border-slate-200 bg-white p-4">
+              <div className="text-xs font-semibold uppercase tracking-widest text-slate-500">Solver verdict</div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Badge tone={solverResult === 'SAT' ? 'danger' : solverResult === 'UNKNOWN' ? 'warn' : 'ok'}>{solverResult ?? 'UNKNOWN'}</Badge>
+                {risk && <Badge tone={risk === 'HIGH' || risk === 'CRITICAL' ? 'danger' : 'neutral'}>{risk}</Badge>}
+              </div>
+              <div className="mt-3 text-sm text-slate-600">
+                {result?.result?.meaning ?? result?.result?.explanation ?? 'Formal verifier returned a structured result.'}
+              </div>
+            </div>
+            <pre className="max-h-[520px] overflow-auto rounded-xl border border-slate-200 bg-slate-950 p-4 text-xs text-slate-100">
+              {JSON.stringify(result, null, 2)}
+            </pre>
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  )
 }
 
 async function copyText(value: string) {

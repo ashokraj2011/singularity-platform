@@ -286,6 +286,7 @@ runtimeRouter.get('/inbox', async (req, res, next) => {
       prisma.workItemTarget.findMany({
         where: {
           status: { in: ['QUEUED', 'REWORK_REQUESTED', 'CLAIMED', 'IN_PROGRESS', 'SUBMITTED'] },
+          workItem: { status: { not: 'ARCHIVED' } },
           OR: [
             { claimedById: ctx.userId },
             { claimedById: null },

@@ -3,11 +3,12 @@ import { z } from 'zod'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
-import { NotFoundError } from '../../lib/errors'
+import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 import { advance } from '../workflow/runtime/WorkflowRuntime'
 import { approveBudgetIncreaseFromApproval } from '../workflow/runtime/budget'
 import { activateAgentTask } from '../workflow/runtime/executors/AgentTaskExecutor'
+import { activateApproval } from '../workflow/runtime/executors/ApprovalExecutor'
 import { approveWorkItem, requestWorkItemRework } from '../work-items/work-items.service'
 
 export const approvalsRouter: Router = Router()
@@ -83,6 +84,33 @@ approvalsRouter.get('/my-approvals', async (req, res, next) => {
       prisma.approvalRequest.count({ where }),
     ])
     res.json(toPageResponse(requests, total, pg))
+  } catch (err) {
+    next(err)
+  }
+})
+
+approvalsRouter.post('/workflow-node/:nodeId/ensure', async (req, res, next) => {
+  try {
+    const node = await prisma.workflowNode.findUnique({ where: { id: req.params.nodeId } })
+    if (!node) throw new NotFoundError('WorkflowNode', req.params.nodeId)
+    if (node.nodeType !== 'APPROVAL') {
+      throw new ValidationError('Only APPROVAL workflow nodes can create approval requests')
+    }
+    if (node.status !== 'ACTIVE') {
+      throw new ValidationError('Approval request can only be ensured for an ACTIVE approval node')
+    }
+
+    const instance = node.instanceId
+      ? await prisma.workflowInstance.findUnique({ where: { id: node.instanceId } })
+      : null
+    if (!instance) throw new NotFoundError('WorkflowInstance', node.instanceId ?? undefined)
+
+    const request = await activateApproval(node, instance, req.user!.userId)
+    const requestWithDecisions = await prisma.approvalRequest.findUnique({
+      where: { id: request.id },
+      include: { decisions: true },
+    })
+    res.status(201).json(requestWithDecisions ?? request)
   } catch (err) {
     next(err)
   }

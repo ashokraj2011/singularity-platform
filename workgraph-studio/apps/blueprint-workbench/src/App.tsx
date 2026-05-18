@@ -18,6 +18,8 @@ import {
   HardDrive,
   Loader2,
   LogOut,
+  Maximize2,
+  Minimize2,
   Play,
   RefreshCw,
   ScanSearch,
@@ -1011,11 +1013,6 @@ function WorkbenchNeo({
 
   return (
     <section className="neo-shell">
-      <NeoStageRail session={session} activeStageKey={activeStage?.key ?? null} onStage={(stageKey) => {
-        setActiveStageKey(stageKey)
-        chooseTab('stage')
-      }} />
-
       <main className="neo-main">
         <NeoPipeline session={session} activeStageKey={activeStage?.key ?? null} onStage={(stageKey) => {
           setActiveStageKey(stageKey)
@@ -1070,6 +1067,7 @@ function WorkbenchNeo({
 
       <aside className="neo-action-panel">
         <StageDetailsPanel session={session} stage={activeStage} onSession={onSession} />
+        <FinalizeStrip session={session} onSession={onSession} />
       </aside>
     </section>
   )
@@ -1079,56 +1077,6 @@ function sectionToNeoTab(section: WorkbenchSection): NeoWorkspaceTab {
   if (section === 'artifacts') return 'artifacts'
   if (section === 'terminal') return 'terminal'
   return 'stage'
-}
-
-function NeoStageRail({
-  session,
-  activeStageKey,
-  onStage,
-}: {
-  session: BlueprintSession
-  activeStageKey: string | null
-  onStage: (stageKey: string) => void
-}) {
-  const stages = session.loopDefinition?.stages ?? []
-  const approved = stages.filter(stage => {
-    const latest = attemptsFor(session, stage.key).at(-1)
-    return latest?.verdict === 'PASS' || latest?.verdict === 'ACCEPTED_WITH_RISK'
-  }).length
-  return (
-    <aside className="neo-stage-rail">
-      <div className="neo-project-card">
-        <span className="stage-key">Delivery cockpit</span>
-        <h2>{session.loopDefinition?.name ?? 'Workbench loop'}</h2>
-        <p>{session.sourceType} · {session.sourceUri}</p>
-        <div className="neo-progress-meter"><i style={{ width: `${stages.length ? Math.round((approved / stages.length) * 100) : 0}%` }} /></div>
-        <strong>{approved}/{stages.length} stages green</strong>
-      </div>
-
-      <nav className="neo-stage-list" aria-label="Workbench stages">
-        {stages.map(stage => {
-          const latest = attemptsFor(session, stage.key).at(-1)
-          const status = latestStatus(latest)
-          const Icon = roleMeta(stage.agentRole).icon
-          return (
-            <button
-              key={stage.key}
-              type="button"
-              className={`${activeStageKey === stage.key ? 'active' : ''} ${status}`}
-              onClick={() => onStage(stage.key)}
-            >
-              <span className="neo-stage-icon"><Icon size={16} /></span>
-              <span>
-                <strong>{stage.label}</strong>
-                <em>{roleMeta(stage.agentRole).label} · {attemptsFor(session, stage.key).length || 0} iter</em>
-              </span>
-              <small>{latest?.verdict ? verdictLabels[latest.verdict] : latest?.status ?? 'Ready'}</small>
-            </button>
-          )
-        })}
-      </nav>
-    </aside>
-  )
 }
 
 function NeoPipeline({
@@ -1796,6 +1744,7 @@ function DeveloperCodeReview({
   layout?: 'embedded' | 'wide'
 }) {
   const [activeFileId, setActiveFileId] = useState<string | null>(null)
+  const [isFullReview, setIsFullReview] = useState(false)
   const codeChangesQuery = useQuery({
     queryKey: ['blueprintCodeChanges', session.id, stage.key, latest.id],
     queryFn: () => api.codeChanges(session.id, stage.key),
@@ -1813,6 +1762,15 @@ function DeveloperCodeReview({
     setActiveFileId(current => current && files.some(file => file.id === current) ? current : files[0]?.id ?? null)
   }, [files])
 
+  useEffect(() => {
+    if (!isFullReview) return undefined
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsFullReview(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [isFullReview])
+
   const hasMcpDiff = files.some(file => file.source === 'mcp' && file.hasDiff)
   const hasAnyCapturedMcp = files.some(file => file.source === 'mcp')
   const status = latest.verdict ? verdictLabels[latest.verdict] : latest.status
@@ -1820,14 +1778,24 @@ function DeveloperCodeReview({
   const activeStats = activeFile ? reviewFileStats(activeFile) : { additions: 0, deletions: 0, total: 0 }
 
   return (
-    <section className={`code-review-panel ${layout === 'wide' ? 'wide-review' : ''}`}>
+    <section className={`code-review-panel ${layout === 'wide' ? 'wide-review' : ''} ${isFullReview ? 'fullscreen-review' : ''}`}>
       <div className="code-review-header">
         <div>
           <span className="stage-key">Developer approval</span>
           <h3><FileCode2 size={16} /> Code review</h3>
           <p>Review changed files and highlighted diffs before approving or sending work back.</p>
         </div>
-        <span className={`status ${latestStatus(latest)}`}>{status}</span>
+        <div className="code-review-actions">
+          <button
+            type="button"
+            className="code-review-expand"
+            onClick={() => setIsFullReview(current => !current)}
+          >
+            {isFullReview ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            {isFullReview ? 'Exit full view' : 'Open full view'}
+          </button>
+          <span className={`status ${latestStatus(latest)}`}>{status}</span>
+        </div>
       </div>
 
       <div className="code-review-stats" aria-label="Developer review summary">
@@ -2056,13 +2024,6 @@ function fallbackDiffBody(paths: string[], change: CodeChangeRecord) {
 
 function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintSession; activeStageKey?: string; onSession: (session: BlueprintSession) => void }) {
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null)
-  const finalizeMutation = useMutation({
-    mutationFn: () => api.finalize(session.id),
-    onSuccess: (nextSession) => {
-      onSession(nextSession)
-      notifyWorkflowFinalized(nextSession)
-    },
-  })
   const artifacts = useMemo(() => {
     const ordered = [...session.artifacts]
     ordered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
@@ -2079,8 +2040,6 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
     setActiveArtifactId(current => current && visible.some(artifact => artifact.id === current) ? current : visible[0]?.id ?? null)
   }, [session.id, activeStageKey, visible])
 
-  const green = isLoopGreen(session)
-
   return (
     <section className="control-card asset-rail">
       <div className="panel-heading">
@@ -2091,20 +2050,7 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
         </div>
       </div>
 
-      <div className="finalize-strip">
-        <div>
-          <strong>{session.finalPack ? 'Final pack stamped' : green ? 'Ready to finalize' : 'Final pack locked'}</strong>
-          <span>{session.finalPack?.summary ?? (green ? 'All required gates are green.' : 'Pass or accept risk on every required stage first.')}</span>
-          {session.finalPack?.finalPackConsumableId && (
-            <span>Workflow consumable: {session.finalPack.finalPackConsumableId.slice(0, 8)}</span>
-          )}
-        </div>
-        <button className="secondary-action approve" disabled={!green || Boolean(session.finalPack) || finalizeMutation.isPending} onClick={() => finalizeMutation.mutate()}>
-          {finalizeMutation.isPending ? <Loader2 className="spin" size={15} /> : <BadgeCheck size={15} />}
-          Finalize
-        </button>
-      </div>
-      {finalizeMutation.isError && <p className="error-text">{finalizeMutation.error.message}</p>}
+      <FinalizeStrip session={session} onSession={onSession} />
 
       {(consumableRefs.length > 0 || publishWarnings.length > 0) && (
         <div className="workflow-consumable-ledger">
@@ -2151,6 +2097,48 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
         </div>
       )}
     </section>
+  )
+}
+
+function FinalizeStrip({ session, onSession }: { session: BlueprintSession; onSession: (session: BlueprintSession) => void }) {
+  const finalizeMutation = useMutation({
+    mutationFn: () => api.finalize(session.id),
+    onSuccess: (nextSession) => {
+      onSession(nextSession)
+      notifyWorkflowFinalized(nextSession)
+    },
+  })
+  const green = isLoopGreen(session)
+  const workflowLinked = Boolean(session.workflowInstanceId && session.workflowNodeId)
+  const title = session.finalPack ? 'Final pack sent' : green ? 'Ready for final handoff' : 'Final handoff locked'
+  const summary = session.finalPack?.summary
+    ?? (green
+      ? workflowLinked
+        ? 'All required gates are green. Finalize sends artifacts, consumables, and the final pack back to the workflow, then advances the Workbench node.'
+        : 'All required gates are green. Finalize creates the final implementation pack for this standalone session.'
+      : 'Pass or accept risk on every required stage before sending the final pack back to the workflow.')
+
+  return (
+    <>
+      <div className={`finalize-strip ${green && !session.finalPack ? 'ready' : ''} ${session.finalPack ? 'stamped' : ''}`}>
+        <div>
+          <strong>{title}</strong>
+          <span>{summary}</span>
+          {session.finalPack?.finalPackConsumableId && (
+            <span>Workflow consumable: {session.finalPack.finalPackConsumableId.slice(0, 8)}</span>
+          )}
+        </div>
+        <button
+          className="secondary-action approve"
+          disabled={!green || Boolean(session.finalPack) || finalizeMutation.isPending}
+          onClick={() => finalizeMutation.mutate()}
+        >
+          {finalizeMutation.isPending ? <Loader2 className="spin" size={15} /> : <BadgeCheck size={15} />}
+          {workflowLinked ? 'Finalize + send' : 'Finalize'}
+        </button>
+      </div>
+      {finalizeMutation.isError && <p className="error-text">{finalizeMutation.error.message}</p>}
+    </>
   )
 }
 

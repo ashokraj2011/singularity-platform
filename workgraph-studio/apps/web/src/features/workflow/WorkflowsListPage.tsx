@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'motion/react'
@@ -483,18 +483,22 @@ export function WorkflowsListPage() {
   const openDesign = (workflowId: string) => navigate(`/design/${workflowId}`)
   const openDesignMut = { mutate: openDesign, isPending: false }
 
-  // ── Start a run (clones the design into a fresh instance).  Opened via the
-  // RunModal so the operator can name the run and override INPUT vars / per-
-  // instance globals before starting.
+  // ── Start a run by attaching this workflow to an existing WorkItem. WorkItem
+  // is now the only supported runtime input surface for workflow starts.
   const [runOpen, setRunOpen] = useState<WorkflowTemplate | null>(null)
   const startRunMut = useMutation({
-    mutationFn: ({ workflowId, body }: { workflowId: string; body: { name?: string; vars?: Record<string, unknown>; globals?: Record<string, unknown> } }) =>
-      api.post(`/workflow-templates/${workflowId}/runs`, body).then(r => r.data as { id: string }),
+    mutationFn: async ({ workflowId, workItemId, targetId, needsClaim }: { workflowId: string; workItemId: string; targetId: string; needsClaim: boolean }) => {
+      if (needsClaim) await api.post(`/work-items/${workItemId}/targets/${targetId}/claim`)
+      return api.post(`/work-items/${workItemId}/targets/${targetId}/start`, {
+        childWorkflowTemplateId: workflowId,
+      }).then(r => r.data as { childWorkflowInstanceId?: string })
+    },
     onSuccess: (run) => {
       qc.invalidateQueries({ queryKey: ['workflow-instances'] })
       qc.invalidateQueries({ queryKey: ['template-runs'] })
+      qc.invalidateQueries({ queryKey: ['workflow-run-workitems'] })
       setRunOpen(null)
-      navigate(`/runs/${run.id}`)
+      if (run.childWorkflowInstanceId) navigate(`/runs/${run.childWorkflowInstanceId}`)
     },
   })
 
@@ -959,7 +963,7 @@ export function WorkflowsListPage() {
                     <button
                       onClick={() => setRunOpen(tmpl)}
                       disabled={!!tmpl.archivedAt}
-                      title="Start a new run of this workflow"
+                      title="Start this workflow from an existing WorkItem"
                       style={{
                         display: 'flex', alignItems: 'center', gap: 5,
                         padding: '6px 11px', borderRadius: 8, fontSize: 11, fontWeight: 700,
@@ -969,7 +973,7 @@ export function WorkflowsListPage() {
                         cursor: tmpl.archivedAt ? 'default' : 'pointer',
                       }}
                     >
-                      <Play size={11} /> Run
+                      <Play size={11} /> Start from WorkItem
                     </button>
                   </div>
 
@@ -990,23 +994,14 @@ export function WorkflowsListPage() {
         </div>
       )}
 
-      {/* Run modal — name + optional vars/globals overrides */}
+      {/* Run modal — WorkItem is the required workflow input */}
       {runOpen && (
         <RunModal
           workflow={runOpen}
           submitting={startRunMut.isPending}
           error={startRunMut.error}
           onCancel={() => setRunOpen(null)}
-          onSubmit={(body) => startRunMut.mutate({ workflowId: runOpen.id, body })}
-          onSubmitBrowser={(body) => {
-            const params = new URLSearchParams()
-            params.set('workflowId', runOpen.id)
-            if (body.name)    params.set('name', body.name)
-            if (body.vars)    params.set('vars',    encodeURIComponent(JSON.stringify(body.vars)))
-            if (body.globals) params.set('globals', encodeURIComponent(JSON.stringify(body.globals)))
-            setRunOpen(null)
-            navigate(`/play/new?${params.toString()}`)
-          }}
+          onSubmit={({ workItemId, targetId, needsClaim }) => startRunMut.mutate({ workflowId: runOpen.id, workItemId, targetId, needsClaim })}
         />
       )}
 
@@ -1753,24 +1748,25 @@ export function WorkflowsListPage() {
   )
 }
 
-// ─── RunModal — name + INPUT vars + per-phase assignment pickers ─────────────
+// ─── RunModal — WorkItem-first workflow start ────────────────────────────────
 
-// Extract {{vars.X}} tokens from a string value.
-function extractVarRefs(val: unknown): string[] {
-  if (typeof val !== 'string') return []
-  const hits: string[] = []
-  const re = /\{\{\s*vars\.([^}\s]+)\s*\}\}/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(val)) !== null) hits.push(m[1])
-  return hits
+type WorkItemTarget = {
+  id: string
+  targetCapabilityId: string
+  status: string
+  claimedById?: string | null
+  childWorkflowInstanceId?: string | null
 }
 
-// Assignment field key per mode → what type of value it holds
-const ASSIGNMENT_VAR_KIND: Record<string, 'team' | 'user' | 'role' | 'skill'> = {
-  assignedToId: 'user',
-  teamId:       'team',
-  roleKey:      'role',
-  skillKey:     'skill',
+type WorkItemRow = {
+  id: string
+  workCode?: string | null
+  title: string
+  description?: string | null
+  urgency?: string | null
+  requiredBy?: string | null
+  originType?: string | null
+  targets: WorkItemTarget[]
 }
 
 function mutationErrorMessage(error: unknown): string | null {
@@ -1788,118 +1784,43 @@ function mutationErrorMessage(error: unknown): string | null {
 }
 
 function RunModal({
-  workflow, submitting, error, onCancel, onSubmit, onSubmitBrowser,
+  workflow, submitting, error, onCancel, onSubmit,
 }: {
   workflow:   WorkflowTemplate
   submitting: boolean
   error?:     unknown
   onCancel:   () => void
-  onSubmit:   (body: { name?: string; vars?: Record<string, unknown>; globals?: Record<string, unknown> }) => void
-  onSubmitBrowser: (body: { name?: string; vars?: Record<string, unknown>; globals?: Record<string, unknown> }) => void
+  onSubmit:   (input: { workItemId: string; targetId: string; needsClaim: boolean }) => void
 }) {
-  const inputVars = (workflow.variables ?? []).filter(v => (v.scope ?? 'INPUT') === 'INPUT')
-  const inputVarKeys = new Set(inputVars.map(v => v.key))
-
-  const [name, setName] = useState(() => {
-    const d = new Date()
-    const stamp = `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
-    return `${workflow.name} · Run · ${stamp}`
+  const navigate = useNavigate()
+  const { labelForCapability } = useCapabilityLabels()
+  const [selectedWorkItemTarget, setSelectedWorkItemTarget] = useState('')
+  const workItemsQuery = useQuery<WorkItemRow[]>({
+    queryKey: ['workflow-run-workitems', workflow.capabilityId],
+    enabled: Boolean(workflow.capabilityId),
+    queryFn: () => api.get('/work-items', {
+      params: { targetCapabilityId: workflow.capabilityId, limit: 100 },
+    }).then(r => unwrapWorkItems<WorkItemRow>(r.data)),
+    staleTime: 15_000,
   })
-  const [varsState, setVars] = useState<Record<string, unknown>>(() => {
-    const seed: Record<string, unknown> = {}
-    for (const v of inputVars) if (v.defaultValue !== undefined) seed[v.key] = v.defaultValue
-    return seed
-  })
-  const [globalsState, setGlobals] = useState<Record<string, unknown>>({})
-
-  // ── Fetch design graph to discover assignment inputs per phase ────────────
-  const { data: designGraph } = useQuery({
-    queryKey: ['design-graph', workflow.id],
-    queryFn: () => api.get(`/workflow-templates/${workflow.id}/design-graph`).then(r => r.data as {
-      phases: Array<{ id: string; name: string; displayOrder: number }>
-      nodes:  Array<{ id: string; label: string; nodeType: string; phaseId?: string; config?: Record<string, unknown> }>
-    }),
-    staleTime: 60_000,
-  })
-
-  // ── Fetch teams and users for smart pickers ───────────────────────────────
-  const { data: teamsData } = useQuery({
-    queryKey: ['teams-list'],
-    queryFn: () => api.get('/teams').then(r => {
-      const d = r.data
-      return (Array.isArray(d) ? d : (d?.content ?? [])) as Array<{ id: string; name: string }>
-    }),
-    staleTime: 60_000,
-  })
-  const { data: usersData } = useQuery({
-    queryKey: ['users-list'],
-    queryFn: () => api.get('/users?size=200').then(r => r.data?.content ?? []) as Promise<Array<{ id: string; email: string; displayName?: string }>>,
-    staleTime: 60_000,
-  })
-  const teams = teamsData ?? []
-  const users = usersData ?? []
-
-  // ── Build per-phase assignment requirements ───────────────────────────────
-  // For each node that uses {{vars.X}} in an assignment field, and X is NOT
-  // already an INPUT-scoped workflow variable, we surface it as a picker.
-  type AssignmentReq = {
-    varKey:    string
-    kind:      'team' | 'user' | 'role' | 'skill'
-    nodeLabel: string
-    nodeType:  string
-    phaseName: string
-    phaseOrder: number
+  const availableWorkItems = useMemo(() => {
+    const rows = workItemsQuery.data ?? []
+    return rows.flatMap(item => item.targets
+      .filter(target =>
+        target.targetCapabilityId === workflow.capabilityId &&
+        !target.childWorkflowInstanceId &&
+        ['QUEUED', 'CLAIMED', 'REWORK_REQUESTED'].includes(target.status))
+      .map(target => ({ item, target })))
+  }, [workItemsQuery.data, workflow.capabilityId])
+  const selected = availableWorkItems.find(row => `${row.item.id}:${row.target.id}` === selectedWorkItemTarget)
+  const submit = () => {
+    if (!selected) return
+    onSubmit({
+      workItemId: selected.item.id,
+      targetId: selected.target.id,
+      needsClaim: ['QUEUED', 'REWORK_REQUESTED'].includes(selected.target.status),
+    })
   }
-
-  const assignmentReqs: AssignmentReq[] = []
-  const seenVarKeys = new Set<string>()
-
-  if (designGraph) {
-    const phaseMap = new Map(designGraph.phases.map(p => [p.id, p]))
-    const humanNodes = designGraph.nodes.filter(n =>
-      ['HUMAN_TASK', 'APPROVAL', 'CONSUMABLE_CREATION'].includes(n.nodeType)
-    )
-    for (const n of humanNodes) {
-      const cfg = n.config ?? {}
-      const phase = n.phaseId ? phaseMap.get(n.phaseId) : undefined
-      for (const [fieldKey, kind] of Object.entries(ASSIGNMENT_VAR_KIND)) {
-        const refs = extractVarRefs(cfg[fieldKey])
-        for (const varKey of refs) {
-          if (inputVarKeys.has(varKey)) continue  // already shown above
-          if (seenVarKeys.has(varKey)) continue   // deduped across nodes
-          seenVarKeys.add(varKey)
-          assignmentReqs.push({
-            varKey, kind,
-            nodeLabel:  n.label || n.nodeType,
-            nodeType:   n.nodeType,
-            phaseName:  phase?.name ?? 'Unphased',
-            phaseOrder: phase?.displayOrder ?? 999,
-          })
-        }
-      }
-    }
-    // Sort by phase display order
-    assignmentReqs.sort((a, b) => a.phaseOrder - b.phaseOrder)
-  }
-
-  // Group assignment requirements by phase
-  const byPhase = new Map<string, AssignmentReq[]>()
-  for (const req of assignmentReqs) {
-    if (!byPhase.has(req.phaseName)) byPhase.set(req.phaseName, [])
-    byPhase.get(req.phaseName)!.push(req)
-  }
-
-  const setVar = (k: string, v: unknown) => setVars(prev => ({ ...prev, [k]: v }))
-
-  const buildBody = () => {
-    const body: { name?: string; vars?: Record<string, unknown>; globals?: Record<string, unknown> } = {}
-    if (name.trim()) body.name = name.trim()
-    if (Object.keys(varsState).length    > 0) body.vars    = varsState
-    if (Object.keys(globalsState).length > 0) body.globals = globalsState
-    return body
-  }
-  const submit        = () => onSubmit(buildBody())
-  const submitBrowser = () => onSubmitBrowser(buildBody())
   const errorMessage = mutationErrorMessage(error)
 
   return (
@@ -1923,89 +1844,92 @@ function RunModal({
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 4 }}>
           <Play size={15} style={{ color: 'var(--color-primary)' }} />
           <h3 style={{ fontSize: 15, fontWeight: 800, color: 'var(--color-on-surface)', margin: 0 }}>
-            Start a run
+            Start from WorkItem
           </h3>
         </div>
         <p style={{ fontSize: 12, color: 'var(--color-outline)', marginBottom: 16 }}>
           {workflow.name}
         </p>
 
-        {/* ── Run name ── */}
-        <div style={{ marginBottom: 14 }}>
-          <label style={modalLabelStyle}>Run name *</label>
-          <input
-            value={name}
-            onChange={e => setName(e.target.value)}
-            placeholder="e.g. Onboarding · Acme · Q4"
-            style={modalInputStyle}
-            autoFocus
-          />
-          <p style={{ fontSize: 11, color: 'var(--color-outline)', marginTop: 4 }}>
-            Shown in the Runs list and inbox so people can tell parallel runs apart.
+        <div style={{
+          padding: 12,
+          borderRadius: 12,
+          background: 'rgba(124,58,237,0.06)',
+          border: '1px solid rgba(124,58,237,0.22)',
+          marginBottom: 14,
+        }}>
+          <label style={modalLabelStyle}>WorkItem *</label>
+          {!workflow.capabilityId ? (
+            <p style={{ margin: 0, color: '#b91c1c', fontSize: 12 }}>
+              This workflow has no capability owner. Attach a capability before it can be started.
+            </p>
+          ) : workItemsQuery.isLoading ? (
+            <p style={{ margin: 0, color: '#64748b', fontSize: 12 }}>Loading WorkItems...</p>
+          ) : availableWorkItems.length === 0 ? (
+            <>
+              <p style={{ margin: 0, color: '#b91c1c', fontSize: 12, lineHeight: 1.45 }}>
+                No unattached WorkItems found for {labelForCapability(workflow.capabilityId)}.
+              </p>
+              <button
+                onClick={() => navigate(`/work-items?capabilityId=${encodeURIComponent(workflow.capabilityId ?? '')}`)}
+                style={{
+                  marginTop: 10,
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  border: '1px solid var(--color-outline-variant)',
+                  background: '#fff',
+                  color: 'var(--color-on-surface)',
+                  fontSize: 12,
+                  fontWeight: 800,
+                  cursor: 'pointer',
+                }}
+              >
+                Create or manage WorkItems
+              </button>
+            </>
+          ) : (
+            <select
+              value={selectedWorkItemTarget}
+              onChange={e => setSelectedWorkItemTarget(e.target.value)}
+              style={{ ...modalInputStyle, cursor: 'pointer', background: '#fff' }}
+              autoFocus
+            >
+              <option value="">Select an unattached WorkItem</option>
+              {availableWorkItems.map(({ item, target }) => (
+                <option key={`${item.id}:${target.id}`} value={`${item.id}:${target.id}`}>
+                  {item.workCode ?? item.id.slice(0, 8)} · {item.title} · {target.status}
+                </option>
+              ))}
+            </select>
+          )}
+          <p style={{ fontSize: 11, color: '#64748b', margin: '8px 0 0', lineHeight: 1.45 }}>
+            WorkItem details, budget, urgency, required date, source repo, and target capability become the run context.
           </p>
         </div>
 
-        {/* ── Workflow INPUT variables ── */}
-        {inputVars.length > 0 && (
-          <div style={{ marginBottom: 14 }}>
-            <label style={modalLabelStyle}>Workflow inputs ({inputVars.length})</label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {inputVars.map(v => (
-                <VarInput key={v.key} v={v} value={varsState[v.key]} onChange={val => setVar(v.key, val)} />
-              ))}
+        {selected && (
+          <div style={{
+            marginBottom: 14,
+            padding: 12,
+            borderRadius: 12,
+            border: '1px solid var(--color-outline-variant)',
+            background: '#fafafa',
+          }}>
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 900, color: 'var(--color-on-surface)' }}>
+              {selected.item.workCode ?? selected.item.id.slice(0, 8)} · {selected.item.title}
+            </p>
+            {selected.item.description && (
+              <p style={{ margin: '6px 0 0', color: '#475569', fontSize: 12, lineHeight: 1.45 }}>
+                {selected.item.description}
+              </p>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 10 }}>
+              <MiniFact label="Type" value={selected.item.originType === 'PARENT_DELEGATED' ? 'Parent delegated' : 'Local work'} />
+              <MiniFact label="Urgency" value={selected.item.urgency ?? 'NORMAL'} />
+              <MiniFact label="Target" value={workflow.capabilityId ? labelForCapability(workflow.capabilityId) : 'Not set'} />
             </div>
           </div>
         )}
-
-        {/* ── Per-phase assignment pickers ── */}
-        {byPhase.size > 0 && (
-          <div style={{ marginBottom: 14 }}>
-            <label style={modalLabelStyle}>Assignment details</label>
-            <p style={{ fontSize: 11, color: 'var(--color-outline)', marginBottom: 8 }}>
-              These nodes need to know who handles them. Select the team, user, or role for each phase.
-            </p>
-            {Array.from(byPhase.entries()).map(([phaseName, reqs]) => (
-              <div key={phaseName} style={{ marginBottom: 10 }}>
-                {/* Phase header */}
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 7,
-                  marginBottom: 6, paddingBottom: 4,
-                  borderBottom: '1px solid var(--color-outline-variant)',
-                }}>
-                  <span style={{
-                    fontSize: 9, fontWeight: 800, textTransform: 'uppercase',
-                    letterSpacing: '0.14em', color: 'var(--color-primary)',
-                  }}>
-                    {phaseName}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {reqs.map(req => (
-                    <AssignmentPicker
-                      key={req.varKey}
-                      req={req}
-                      value={varsState[req.varKey]}
-                      teams={teams}
-                      users={users}
-                      onChange={val => setVar(req.varKey, val)}
-                    />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* ── Optional globals overrides ── */}
-        <details style={{ marginBottom: 14 }}>
-          <summary style={{ ...modalLabelStyle, cursor: 'pointer', listStyle: 'none' }}>
-            Override per-instance globals (optional)
-          </summary>
-          <p style={{ fontSize: 10, color: 'var(--color-outline)', marginTop: 6, marginBottom: 6 }}>
-            Override INSTANCE-scoped team globals for this run only.
-          </p>
-          <FreeformKVEditor entries={globalsState} onChange={setGlobals} />
-        </details>
 
         {errorMessage && (
           <p style={{
@@ -2038,34 +1962,18 @@ function RunModal({
           </button>
           <button
             onClick={submit}
-            disabled={submitting || !name.trim()}
-            title="Server-side run: persisted via the backend engine; participates in the Inbox + queue routing."
-            style={{
-              display: 'flex', alignItems: 'center', gap: 5,
-              padding: '8px 14px', borderRadius: 8,
-              border: '1px solid var(--color-outline-variant)',
-              background: '#fff', color: 'var(--color-on-surface)',
-              fontSize: 12, fontWeight: 700,
-              cursor: (submitting || !name.trim()) ? 'default' : 'pointer',
-              opacity: (submitting || !name.trim()) ? 0.6 : 1,
-            }}
-          >
-            <Play size={11} /> {submitting ? 'Starting…' : 'Server run'}
-          </button>
-          <button
-            onClick={submitBrowser}
-            disabled={!name.trim()}
-            title="Browser run: runs entirely in this browser; instant feedback, single-user."
+            disabled={submitting || !selected}
+            title="Start the selected WorkItem with this workflow template."
             style={{
               display: 'flex', alignItems: 'center', gap: 5,
               padding: '8px 14px', borderRadius: 8, border: 'none',
               background: 'var(--color-primary)', color: '#fff',
               fontSize: 12, fontWeight: 700,
-              cursor: !name.trim() ? 'default' : 'pointer',
-              opacity: !name.trim() ? 0.6 : 1,
+              cursor: (submitting || !selected) ? 'default' : 'pointer',
+              opacity: (submitting || !selected) ? 0.6 : 1,
             }}
           >
-            <Play size={11} /> Run in browser
+            <Play size={11} /> {submitting ? 'Starting...' : 'Start from WorkItem'}
           </button>
         </div>
       </div>
@@ -2073,205 +1981,30 @@ function RunModal({
   )
 }
 
-// ── Workflow variable input (type-aware) ──────────────────────────────────────
-
-function VarInput({ v, value, onChange }: {
-  v: TemplateVariableDef
-  value: unknown
-  onChange: (val: unknown) => void
-}) {
+function MiniFact({ label, value }: { label: string; value: string }) {
   return (
     <div style={{
-      padding: '9px 11px', borderRadius: 8,
-      border: '1px solid var(--color-outline-variant)', background: '#fafafa',
+      padding: '8px 9px',
+      borderRadius: 9,
+      border: '1px solid var(--color-outline-variant)',
+      background: '#fff',
+      minWidth: 0,
     }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-on-surface)' }}>
-        {v.label ?? v.key}{' '}
-        <code style={{ fontFamily: 'monospace', fontWeight: 500, color: 'var(--color-outline)' }}>
-          vars.{v.key}
-        </code>
-      </div>
-      {v.description && (
-        <p style={{ fontSize: 10, color: 'var(--color-outline)', marginTop: 2 }}>{v.description}</p>
-      )}
-      {v.type === 'BOOLEAN' ? (
-        <select
-          value={String(value === true)}
-          onChange={e => onChange(e.target.value === 'true')}
-          style={{ ...modalInputStyle, marginTop: 5, cursor: 'pointer' }}
-        >
-          <option value="true">true</option>
-          <option value="false">false</option>
-        </select>
-      ) : v.type === 'JSON' ? (
-        <textarea
-          value={typeof value === 'string' ? value : JSON.stringify(value ?? '')}
-          onChange={e => {
-            try { onChange(JSON.parse(e.target.value)) } catch { onChange(e.target.value) }
-          }}
-          rows={2}
-          placeholder='{"foo": 1}'
-          style={{ ...modalInputStyle, marginTop: 5, fontFamily: 'monospace', resize: 'vertical' }}
-        />
-      ) : (
-        <input
-          type={v.type === 'NUMBER' ? 'number' : 'text'}
-          value={typeof value === 'string' || typeof value === 'number' ? String(value) : ''}
-          onChange={e => {
-            if (v.type === 'NUMBER') {
-              const n = Number(e.target.value)
-              onChange(Number.isNaN(n) ? e.target.value : n)
-            } else onChange(e.target.value)
-          }}
-          placeholder={v.defaultValue !== undefined ? String(v.defaultValue) : ''}
-          style={{ ...modalInputStyle, marginTop: 5 }}
-        />
-      )}
+      <p style={{ margin: 0, fontSize: 9, color: '#64748b', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{label}</p>
+      <p style={{ margin: '3px 0 0', fontSize: 11, color: 'var(--color-on-surface)', fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</p>
     </div>
   )
 }
 
-// ── Assignment picker (team / user / role / skill) ────────────────────────────
-
-const KIND_META = {
-  team:  { label: 'Team',  color: '#0ea5e9', hint: 'Select the team that will handle this stage' },
-  user:  { label: 'User',  color: '#22c55e', hint: 'Select the person directly assigned' },
-  role:  { label: 'Role',  color: '#a855f7', hint: 'Enter the role key (anyone with this role can claim)' },
-  skill: { label: 'Skill', color: '#f97316', hint: 'Enter the skill key (anyone with this skill can claim)' },
-}
-
-function AssignmentPicker({ req, value, teams, users, onChange }: {
-  req:    { varKey: string; kind: 'team' | 'user' | 'role' | 'skill'; nodeLabel: string; nodeType: string }
-  value:  unknown
-  teams:  Array<{ id: string; name: string }>
-  users:  Array<{ id: string; email: string; displayName?: string }>
-  onChange: (val: unknown) => void
-}) {
-  const meta = KIND_META[req.kind]
-  const strVal = typeof value === 'string' ? value : ''
-
-  return (
-    <div style={{
-      padding: '9px 11px', borderRadius: 8,
-      border: `1px solid rgba(${req.kind === 'team' ? '14,165,233' : req.kind === 'user' ? '34,197,94' : req.kind === 'role' ? '168,85,247' : '249,115,22'}, 0.25)`,
-      background: '#fafafa',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
-        <span style={{
-          fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.12em',
-          padding: '1px 6px', borderRadius: 4,
-          background: `rgba(${req.kind === 'team' ? '14,165,233' : req.kind === 'user' ? '34,197,94' : req.kind === 'role' ? '168,85,247' : '249,115,22'}, 0.12)`,
-          color: meta.color,
-        }}>
-          {meta.label}
-        </span>
-        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-on-surface)' }}>
-          {req.nodeLabel}
-        </span>
-        <code style={{ fontSize: 10, color: 'var(--color-outline)', fontFamily: 'monospace' }}>
-          vars.{req.varKey}
-        </code>
-      </div>
-      <p style={{ fontSize: 10, color: 'var(--color-outline)', marginBottom: 5 }}>{meta.hint}</p>
-
-      {req.kind === 'team' && teams.length > 0 ? (
-        <select
-          value={strVal}
-          onChange={e => onChange(e.target.value)}
-          style={{ ...modalInputStyle, cursor: 'pointer' }}
-        >
-          <option value="">Select a team…</option>
-          {teams.map(t => (
-            <option key={t.id} value={t.id}>{t.name}</option>
-          ))}
-        </select>
-      ) : req.kind === 'user' && users.length > 0 ? (
-        <select
-          value={strVal}
-          onChange={e => onChange(e.target.value)}
-          style={{ ...modalInputStyle, cursor: 'pointer' }}
-        >
-          <option value="">Select a user…</option>
-          {users.map(u => (
-            <option key={u.id} value={u.id}>{u.displayName ?? u.email}</option>
-          ))}
-        </select>
-      ) : (
-        <input
-          type="text"
-          value={strVal}
-          onChange={e => onChange(e.target.value)}
-          placeholder={req.kind === 'role' ? 'reviewer' : req.kind === 'skill' ? 'react' : ''}
-          style={modalInputStyle}
-        />
-      )}
-    </div>
-  )
-}
-
-function FreeformKVEditor({
-  entries, onChange,
-}: {
-  entries:  Record<string, unknown>
-  onChange: (next: Record<string, unknown>) => void
-}) {
-  const keys = Object.keys(entries)
-  const set = (k: string, v: unknown) => onChange({ ...entries, [k]: v })
-  const rename = (oldKey: string, newKey: string) => {
-    if (oldKey === newKey) return
-    const next: Record<string, unknown> = {}
-    for (const k of keys) next[k === oldKey ? newKey : k] = entries[k]
-    onChange(next)
+function unwrapWorkItems<T>(data: unknown): T[] {
+  if (Array.isArray(data)) return data as T[]
+  if (data && typeof data === 'object') {
+    const obj = data as Record<string, unknown>
+    if (Array.isArray(obj.items)) return obj.items as T[]
+    if (Array.isArray(obj.content)) return obj.content as T[]
+    if (Array.isArray(obj.data)) return obj.data as T[]
   }
-  const remove = (k: string) => {
-    const next = { ...entries }
-    delete next[k]
-    onChange(next)
-  }
-  const add = () => {
-    let i = 1
-    while (entries[`key${i}`] !== undefined) i++
-    onChange({ ...entries, [`key${i}`]: '' })
-  }
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-      {keys.map(k => (
-        <div key={k} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 28px', gap: 6 }}>
-          <input
-            value={k}
-            onChange={e => rename(k, e.target.value)}
-            placeholder="globals.key"
-            style={{ ...modalInputStyle, fontFamily: 'monospace' }}
-          />
-          <input
-            value={String(entries[k] ?? '')}
-            onChange={e => set(k, e.target.value)}
-            placeholder="value"
-            style={modalInputStyle}
-          />
-          <button
-            onClick={() => remove(k)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 4 }}
-          >
-            <X size={12} />
-          </button>
-        </div>
-      ))}
-      <button
-        onClick={add}
-        style={{
-          marginTop: 4, padding: '5px 10px', borderRadius: 6,
-          border: '1px dashed var(--color-outline-variant)',
-          background: 'transparent', cursor: 'pointer',
-          fontSize: 11, fontWeight: 600, color: 'var(--color-outline)',
-          alignSelf: 'flex-start',
-        }}
-      >
-        + Add override
-      </button>
-    </div>
-  )
+  return []
 }
 
 const modalLabelStyle: React.CSSProperties = {

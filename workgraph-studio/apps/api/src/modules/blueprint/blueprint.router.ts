@@ -26,7 +26,15 @@ const EXECUTE_EXCERPT_MAX_FILES = 8
 const EXECUTE_EXCERPT_MAX_CHARS = 4_000
 const EXECUTE_EXCERPT_BUDGET_CHARS = 18_000
 const COMPOSER_ARTIFACT_CONTENT_MAX_CHARS = 11_500
+function positiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim()
+  if (!raw) return fallback
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
 const WORKBENCH_DEFAULT_MODEL_ALIAS = process.env.WORKBENCH_DEFAULT_MODEL_ALIAS?.trim() || undefined
+const WORKBENCH_DEFAULT_MAX_STEPS = positiveIntEnv('WORKBENCH_MAX_STEPS', 8)
+const WORKBENCH_DEVELOPER_MAX_STEPS = positiveIntEnv('WORKBENCH_DEVELOPER_MAX_STEPS', 16)
 const GOVERNANCE_MODES = ['fail_open', 'fail_closed', 'degraded', 'human_approval_required'] as const
 type GovernanceMode = typeof GOVERNANCE_MODES[number]
 const DEFAULT_WORKBENCH_EXECUTION_CONFIG = {
@@ -624,25 +632,48 @@ blueprintRouter.get('/sessions/:id/code-changes', async (req, res, next) => {
       ? req.query.stageKey.trim()
       : undefined
     const state = readLoopState(session)
-    const cfCallIds = new Set<string>()
+    const lookups = new Map<string, { cfCallId: string; codeChangeIds: Set<string>; mcpServerId?: string }>()
+    const addLookup = (source: Record<string, unknown>) => {
+      const cfCallId = source.cfCallId
+      if (typeof cfCallId !== 'string' || !cfCallId) return
+      const current = lookups.get(cfCallId) ?? { cfCallId, codeChangeIds: new Set<string>() }
+      const rawIds = source.codeChangeIds
+      if (Array.isArray(rawIds)) {
+        for (const rawId of rawIds) {
+          if (typeof rawId === 'string' && rawId.trim()) current.codeChangeIds.add(rawId.trim())
+        }
+      }
+      const mcpServerId = source.mcpServerId
+      if (typeof mcpServerId === 'string' && mcpServerId.trim()) current.mcpServerId = mcpServerId.trim()
+      lookups.set(cfCallId, current)
+    }
     for (const attempt of state.stageAttempts ?? []) {
       if (stageKey && attempt.stageKey !== stageKey) continue
       const correlation = isRecord(attempt.correlation) ? attempt.correlation : {}
-      const cfCallId = correlation.cfCallId
-      if (typeof cfCallId === 'string' && cfCallId) cfCallIds.add(cfCallId)
+      addLookup(correlation)
     }
     for (const artifact of session.artifacts ?? []) {
       const payload = isRecord(artifact.payload) ? artifact.payload : {}
       if (stageKey && payload.stageKey !== stageKey) continue
-      const cfCallId = payload.cfCallId
-      if (typeof cfCallId === 'string' && cfCallId) cfCallIds.add(cfCallId)
+      addLookup(payload)
     }
 
-    const settled = await Promise.allSettled([...cfCallIds].map(id => contextFabricClient.listCodeChanges(id)))
+    const lookupList = [...lookups.values()].filter(lookup => lookup.codeChangeIds.size > 0)
+    const settled = await Promise.allSettled(lookupList.map(lookup => contextFabricClient.listCodeChanges(lookup.cfCallId, {
+      codeChangeIds: [...lookup.codeChangeIds],
+      mcpServerId: lookup.mcpServerId,
+    })))
     const items = settled.flatMap(result => result.status === 'fulfilled' ? result.value.items : [])
+    const rankCodeChange = (item: { paths_touched?: string[] }) => {
+      const paths = Array.isArray(item.paths_touched) ? item.paths_touched : []
+      if (paths.some(path => /\.(java|kt|scala|ts|tsx|js|jsx|py|go|rs|cs|cpp|c|h|hpp)$/i.test(path))) return 0
+      if (paths.some(path => !/\.(md|markdown|txt)$/i.test(path))) return 1
+      return 2
+    }
+    items.sort((a, b) => rankCodeChange(a) - rankCodeChange(b))
     const stale = settled.some(result => result.status === 'fulfilled' && result.value.stale)
     const errors = settled.flatMap(result => result.status === 'rejected' ? [(result.reason as Error).message] : [])
-    res.json({ sessionId: session.id, cfCallIds: [...cfCallIds], items, stale, errors })
+    res.json({ sessionId: session.id, cfCallIds: lookupList.map(lookup => lookup.cfCallId), items, stale, errors })
   } catch (err) { next(err) }
 })
 
@@ -1422,7 +1453,7 @@ function defaultLoopDefinition(session: AgentTemplateSeed): LoopDefinition {
         approvalRequired: true,
         expectedArtifacts: [
           { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
-          { kind: 'simulated_code_change', title: 'Simulated code-change evidence', required: true, format: 'MARKDOWN' },
+          { kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence', required: true, format: 'MARKDOWN' },
         ],
         questions: [
           { id: 'DEV-001', question: 'Is the implementation plan complete enough for QA to review?', required: true, options: [
@@ -1831,6 +1862,11 @@ async function saveStageVerdict(
   }
 
   const accepted = body.verdict === 'PASS' || body.verdict === 'ACCEPTED_WITH_RISK'
+  if (accepted && normalizeAgentRole(stage.agentRole).includes('DEV') && !attemptHasActualCodeChange(latestAttempt)) {
+    throw new ValidationError(
+      'Developer stage cannot be approved until an actual MCP/git code change is captured. Re-run Develop with a writable MCP workspace and a tool-capable model alias.',
+    )
+  }
   const attempts = state.stageAttempts.map(item => item.id === latestAttempt.id ? {
     ...item,
     status: verdictToAttemptStatus(body.verdict),
@@ -2140,7 +2176,7 @@ async function runLoopStageExecute(
       maxPromptChars: limits.maxPromptChars,
     },
     limits: {
-      maxSteps: 8,
+      maxSteps: isDeveloperStage ? WORKBENCH_DEVELOPER_MAX_STEPS : WORKBENCH_DEFAULT_MAX_STEPS,
       timeoutSec: 180,
       inputTokenBudget: limits.maxContextTokens,
       outputTokenBudget: limits.maxOutputTokens,
@@ -2209,16 +2245,41 @@ async function createLoopStageArtifacts(
     },
   ]
   if ((stage.expectedArtifacts ?? []).length > 0) {
-    specs.push(...(stage.expectedArtifacts ?? []).map(artifact => ({
-      kind: artifact.kind,
-      title: `${artifact.title} v${attempt.attemptNumber}`,
-      content: buildConfiguredArtifactMarkdown(session, ctx, stage, attempt, response, executionFallback, gateRecommendation, artifact),
-      payload: {
-        expectedArtifact: artifact,
-        artifactRequired: artifact.required !== false,
-        approvalRequired: stage.approvalRequired !== false,
-      },
-    })))
+    specs.push(...(stage.expectedArtifacts ?? []).map(artifact => {
+      if (isCodeChangeArtifactKind(artifact.kind)) {
+        const evidence = buildActualCodeChangeEvidence(session, ctx, result)
+        return {
+          kind: 'actual_code_change',
+          title: `Actual MCP/git code-change evidence v${attempt.attemptNumber}`,
+          content: evidence.markdown,
+          payload: {
+            expectedArtifact: { ...artifact, kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence' },
+            artifactRequired: artifact.required !== false,
+            approvalRequired: stage.approvalRequired !== false,
+            paths: evidence.paths,
+            diff: evidence.diff,
+            lines_added: evidence.linesAdded,
+            lines_removed: evidence.linesRemoved,
+            actual: evidence.actual,
+            simulated: false,
+            codeChangeIds: evidence.codeChangeIds,
+            workspaceBranch: evidence.workspaceBranch,
+            workspaceCommitSha: evidence.workspaceCommitSha,
+            astIndexStatus: evidence.astIndexStatus,
+          },
+        }
+      }
+      return {
+        kind: artifact.kind,
+        title: `${artifact.title} v${attempt.attemptNumber}`,
+        content: buildConfiguredArtifactMarkdown(session, ctx, stage, attempt, response, executionFallback, gateRecommendation, artifact),
+        payload: {
+          expectedArtifact: artifact,
+          artifactRequired: artifact.required !== false,
+          approvalRequired: stage.approvalRequired !== false,
+        },
+      }
+    }))
   } else if (stage.key === 'plan') {
     specs.push(
       { kind: 'mental_model', title: `Mental model v${attempt.attemptNumber}`, content: buildMentalModel(session, ctx) },
@@ -2230,19 +2291,24 @@ async function createLoopStageArtifacts(
       { kind: 'approved_spec_draft', title: `Spec draft v${attempt.attemptNumber}`, content: buildApprovedSpec(session, ctx, response) },
     )
   } else if (normalizeAgentRole(stage.agentRole).includes('DEV')) {
-    const codeChangeEvidence = buildCodeChangeEvidence(session, ctx, response)
+    const codeChangeEvidence = buildActualCodeChangeEvidence(session, ctx, result)
     specs.push(
       { kind: 'developer_task_pack', title: `Developer task pack v${attempt.attemptNumber}`, content: buildDeveloperTaskPack(session, ctx, response) },
       {
-        kind: 'simulated_code_change',
-        title: `Code-change evidence v${attempt.attemptNumber}`,
+        kind: 'actual_code_change',
+        title: `Actual MCP/git code-change evidence v${attempt.attemptNumber}`,
         content: codeChangeEvidence.markdown,
         payload: {
           paths: codeChangeEvidence.paths,
           diff: codeChangeEvidence.diff,
           lines_added: codeChangeEvidence.linesAdded,
           lines_removed: codeChangeEvidence.linesRemoved,
-          simulated: true,
+          actual: codeChangeEvidence.actual,
+          simulated: false,
+          codeChangeIds: codeChangeEvidence.codeChangeIds,
+          workspaceBranch: codeChangeEvidence.workspaceBranch,
+          workspaceCommitSha: codeChangeEvidence.workspaceCommitSha,
+          astIndexStatus: codeChangeEvidence.astIndexStatus,
         },
       },
     )
@@ -2632,6 +2698,12 @@ function buildGateRecommendation(result: ExecuteResponse, stage: LoopStageDefini
     confidence: 0.74,
     reason: 'No blocking execution signal was detected. Human review still owns the stage verdict.',
   }
+}
+
+function attemptHasActualCodeChange(attempt: StageAttempt): boolean {
+  const correlation = isRecord(attempt.correlation) ? attempt.correlation : {}
+  const codeChangeIds = correlation.codeChangeIds
+  return Array.isArray(codeChangeIds) && codeChangeIds.some(id => typeof id === 'string' && id.trim().length > 0)
 }
 
 function maybeApplyAutoGate(state: LoopState, stage: LoopStageDefinition, attemptId: string, actorId: string): LoopState {
@@ -3260,6 +3332,7 @@ async function runStage(
   const executionConfig = readLoopState(session).executionConfig
   const modelAlias = executionConfig?.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS
   const limits = workbenchExecutionLimits(executionConfig)
+  const isDeveloperStage = stage === BlueprintStage.DEVELOPER
   const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
     stageKey: stage.toLowerCase(),
     stageLabel: humanStage(stage),
@@ -3296,11 +3369,11 @@ async function runStage(
     ],
     overrides: {
       // M36.2 — systemPromptAppend resolved by caller via prompt-composer
-      // /api/v1/stage-prompts/resolve. The literal "no source mutation" rule
-      // is a Blueprint-runner invariant (MVP scope), not a per-stage prompt,
-      // so it stays inline as a wrapper constraint.
+      // /api/v1/stage-prompts/resolve.
       systemPromptAppend,
-      extraContext: 'This MVP must not mutate source code. Coding output is a simulated, reviewable proposal with evidence.',
+      extraContext: isDeveloperStage
+        ? 'Use the writable MCP workspace for real code edits. Inspect relevant symbols/files first, apply the requested change with tools, and finish the work branch so MCP returns code-change receipts and a git diff for human review.'
+        : undefined,
     },
     model_overrides: {
       ...(modelAlias ? { modelAlias } : {}),
@@ -3318,7 +3391,7 @@ async function runStage(
       maxPromptChars: limits.maxPromptChars,
     },
     limits: {
-      maxSteps: 8,
+      maxSteps: isDeveloperStage ? WORKBENCH_DEVELOPER_MAX_STEPS : WORKBENCH_DEFAULT_MAX_STEPS,
       timeoutSec: 180,
       inputTokenBudget: limits.maxContextTokens,
       outputTokenBudget: limits.maxOutputTokens,
@@ -3408,7 +3481,7 @@ async function createStageArtifacts(session: ArtifactSession, snapshot: Artifact
     warnings: result.warnings ?? [],
   }
   type ArtifactSpec = { kind: string; title: string; content: string; payload?: Record<string, unknown> }
-  const codeChangeEvidence = stage === BlueprintStage.DEVELOPER ? buildCodeChangeEvidence(session, ctx, response) : undefined
+  const codeChangeEvidence = stage === BlueprintStage.DEVELOPER ? buildActualCodeChangeEvidence(session, ctx, result) : undefined
   const artifacts =
     stage === BlueprintStage.ARCHITECT ? [
       { kind: 'decision_tree', title: 'Question tree', content: buildDecisionTreeMarkdown(session, ctx), payload: { tree: buildDecisionTreePayload(session, ctx) } },
@@ -3421,15 +3494,20 @@ async function createStageArtifacts(session: ArtifactSession, snapshot: Artifact
 	    stage === BlueprintStage.DEVELOPER ? [
 	      { kind: 'developer_task_pack', title: 'Developer task pack', content: buildDeveloperTaskPack(session, ctx, response) },
 	      {
-	        kind: 'simulated_code_change',
-	        title: 'Simulated code-change evidence',
+	        kind: 'actual_code_change',
+	        title: 'Actual MCP/git code-change evidence',
 	        content: codeChangeEvidence?.markdown ?? '',
 	        payload: {
 	          paths: codeChangeEvidence?.paths ?? [],
 	          diff: codeChangeEvidence?.diff ?? '',
 	          lines_added: codeChangeEvidence?.linesAdded ?? 0,
 	          lines_removed: codeChangeEvidence?.linesRemoved ?? 0,
-	          simulated: true,
+	          actual: codeChangeEvidence?.actual ?? false,
+	          simulated: false,
+	          codeChangeIds: codeChangeEvidence?.codeChangeIds ?? [],
+	          workspaceBranch: codeChangeEvidence?.workspaceBranch,
+	          workspaceCommitSha: codeChangeEvidence?.workspaceCommitSha,
+	          astIndexStatus: codeChangeEvidence?.astIndexStatus,
 	        },
 	      },
 	    ] : [
@@ -4122,7 +4200,7 @@ function buildApprovedSpec(session: ArtifactSession, ctx: SnapshotContext, respo
     '',
     '- Do not introduce a new rule DSL.',
     '- Do not change existing comparison semantics except where needed for `between` validation.',
-    '- Do not mutate repository files in this MVP workbench run.',
+    '- Do not mutate files outside the governed MCP work branch created for this WorkItem/run.',
     '',
     '## Acceptance Criteria',
     '',
@@ -4169,6 +4247,77 @@ type CodeChangeEvidence = {
   diff: string
   linesAdded: number
   linesRemoved: number
+  actual?: boolean
+  codeChangeIds?: string[]
+  workspaceBranch?: string
+  workspaceCommitSha?: string
+  astIndexStatus?: string
+}
+
+function isCodeChangeArtifactKind(kind: string) {
+  return ['actual_code_change', 'code_change_evidence', 'simulated_code_change', 'simulated_code-change'].includes(kind)
+}
+
+function buildActualCodeChangeEvidence(session: ArtifactSession, ctx: SnapshotContext, result: ExecuteResponse): Required<CodeChangeEvidence> {
+  const codeChangeIds = (result.correlation?.codeChangeIds ?? []).filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+  const changedPaths = uniqueStrings([
+    ...(result.workspace?.changedPaths ?? []),
+    ...(result.correlation?.changedPaths ?? []),
+  ].filter((path): path is string => typeof path === 'string' && path.trim().length > 0))
+  const workspaceBranch = result.workspace?.workspaceBranch ?? result.correlation?.workspaceBranch ?? ''
+  const workspaceCommitSha = result.workspace?.workspaceCommitSha ?? result.correlation?.workspaceCommitSha ?? ''
+  const astIndexStatus = result.workspace?.astIndexStatus ?? result.correlation?.astIndexStatus ?? ''
+  const actual = codeChangeIds.length > 0
+  const fallbackPaths = changedPaths.length ? changedPaths : inferChangePaths(ctx, session.goal)
+  const markdown = actual
+    ? [
+      '# actual-code-change-evidence.md',
+      '',
+      '## Captured MCP/git change',
+      '',
+      '- repository_mutated: true',
+      `- source: ${session.sourceType.toLowerCase()} ${session.sourceUri}`,
+      session.sourceRef ? `- source_ref: ${session.sourceRef}` : undefined,
+      workspaceBranch ? `- workspace_branch: ${workspaceBranch}` : undefined,
+      workspaceCommitSha ? `- commit_sha: ${workspaceCommitSha}` : undefined,
+      astIndexStatus ? `- ast_index_status: ${astIndexStatus}` : undefined,
+      '',
+      '## Code-change receipts',
+      ...codeChangeIds.map(id => `- ${id}`),
+      '',
+      '## Changed paths',
+      ...(changedPaths.length ? changedPaths : ['No path list was returned; open the MCP code-change receipts for the diff body.']).map(path => `- ${path}`),
+      '',
+      '## Review note',
+      '',
+      'The diff body is sourced from the MCP code-change receipts, not from a synthesized Workbench preview.',
+    ].filter(Boolean).join('\n')
+    : [
+      '# actual-code-change-evidence.md',
+      '',
+      '## No actual MCP/git change captured',
+      '',
+      '- repository_mutated: false',
+      `- source: ${session.sourceType.toLowerCase()} ${session.sourceUri}`,
+      session.sourceRef ? `- source_ref: ${session.sourceRef}` : undefined,
+      '',
+      'The Developer stage did not return a code-change receipt from MCP. Re-run Develop with a writable MCP workspace and a tool-capable model alias before approving this stage.',
+      '',
+      '## Candidate paths from source context',
+      ...fallbackPaths.map(path => `- ${path}`),
+    ].filter(Boolean).join('\n')
+  return {
+    markdown,
+    paths: fallbackPaths,
+    diff: '',
+    linesAdded: 0,
+    linesRemoved: 0,
+    actual,
+    codeChangeIds,
+    workspaceBranch,
+    workspaceCommitSha,
+    astIndexStatus,
+  }
 }
 
 function buildCodeChangeEvidence(session: ArtifactSession, ctx: SnapshotContext, response = ''): CodeChangeEvidence {

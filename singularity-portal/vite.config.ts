@@ -54,6 +54,16 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: () => '/health',
       },
+      '/ops-health/formal-verifier': {
+        target: 'http://localhost:8010',
+        changeOrigin: true,
+        rewrite: () => '/health',
+      },
+      '/ops-status/formal-verifier': {
+        target: 'http://localhost:8010',
+        changeOrigin: true,
+        rewrite: () => '/api/v1/verification/status',
+      },
       '/ops-health/agent-service': {
         target: 'http://localhost:3001',
         changeOrigin: true,
