@@ -6,9 +6,11 @@ import {
   LayoutDashboard, Bot, Wrench, Play, Users, BookOpen,
   GitBranch, Layers, ScrollText, ShieldCheck, Activity, Brain,
   ChevronLeft, ChevronRight, DollarSign, Cpu, WandSparkles,
+  Compass,
 } from "lucide-react";
 
 const registry = [
+  { label: "Control Plane", href: "/control-plane", icon: Compass },
   { label: "Dashboard",     href: "/",              icon: LayoutDashboard },
   // M23 — single Agent Studio entry replaces flat Agents + Agent Templates pages
   { label: "Agent Studio",  href: "/agent-studio",  icon: Bot },

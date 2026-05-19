@@ -54,6 +54,9 @@ allowed_secret_hit() {
 
 while IFS= read -r -d '' file; do
   case "$file" in
+    bin/check-secret-guardrails.sh)
+      continue
+      ;;
     package-lock.json|pnpm-lock.yaml|yarn.lock)
       continue
       ;;

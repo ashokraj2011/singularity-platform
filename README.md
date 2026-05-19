@@ -77,6 +77,8 @@ You should see `200` for all eight.
 
 ### 5. The demo path — five clicks, five "wow" moments
 
+Start from the unified Control Plane at `http://localhost:3000/control-plane`. It is the operator shell for Agent Studio, Workgraph, WorkbenchNeo, IAM, and Operations. Context Fabric, MCP, and the LLM gateway remain separate runtime services behind that shell.
+
 | Step | URL | What to show |
 |---|---|---|
 | **1. Login** | `http://localhost:5175/login` → then `http://localhost:5174` | Login with `admin@singularity.local` / `Admin1234!`, then use the IAM token in Workgraph. IAM is the source of truth for teams, roles, and capability memberships. |
@@ -112,6 +114,7 @@ You should see `200` for all eight.
 ### URLs cheat sheet (print these)
 
 ```
+Control Plane           http://localhost:3000/control-plane    unified operator shell
 Workgraph SPA            http://localhost:5174    runs, designer, insights
 Blueprint Workbench      http://localhost:5176    staged agent loop + approvals
 Agent / Tools SPA        http://localhost:3000    Agent Studio, /audit, /cost
@@ -454,6 +457,7 @@ Wraps the master compose with friendlier subcommands. Useful for starting/stoppi
 ./singularity.sh doctor                    # validate DBs, endpoints, LLM keys, MCP
 ./singularity.sh config init --profile office-laptop
 ./singularity.sh config office-copilot-only
+./singularity.sh fidelity-copilot-only     # Fidelity laptop: Copilot headless only
 ./singularity.sh config interactive        # guided local configuration wizard
 ./singularity.sh ls                        # list known service names
 ./singularity.sh build [service]           # rebuild image(s)
@@ -470,7 +474,7 @@ It configures:
 - IAM vs pseudo-IAM endpoints.
 - Service endpoints for Workgraph, prompt-composer, context-fabric, agent-runtime, tool-service, agent-service, and MCP.
 - LLM provider policy and model aliases for the central gateway. Provider policy lives in `.singularity/llm-providers.json`; secrets are passed only to the `llm-gateway` service.
-- Office-safe Copilot-only mode. `./singularity.sh config office-copilot-only` blanks OpenAI/OpenRouter/Anthropic/Ollama access in generated env files, writes Copilot-only provider and model catalog files, and fences the gateway to the Copilot provider.
+- Office/Fidelity-safe Copilot-only mode. `./singularity.sh config office-copilot-only` and `./singularity.sh fidelity-copilot-only` blank OpenAI/OpenRouter/Anthropic/Ollama access in canonical config and generated env files, write Copilot-only provider and model catalog files, and fence the gateway to the Copilot provider.
 - Default/local MCP runtime URL, bearer token, public URL, sandbox root, AST index path, and local work-branch defaults. MCP does **not** need to belong to a capability; capability-specific MCP registration is advanced-only.
 - Git push credentials for approved WorkItem branches. The canonical config stores only mode, remote name, token env name, or SSH key path; it never stores a token or key body. MCP is the only service that receives Git push credentials.
 - Gateway-owned model aliases. Workflows choose aliases; MCP forwards aliases and receives resolved provider/model in receipts.
@@ -485,6 +489,7 @@ Common commands:
 ./singularity.sh config init --profile office-laptop
 ./singularity.sh config interactive
 ./singularity.sh config office-copilot-only
+./singularity.sh config fidelity-copilot-only
 ./singularity.sh config mcp --base-url http://localhost:7100 --sandbox-root /path/to/repo
 ./singularity.sh config git --mode ssh --ssh-key ~/.ssh/id_ed25519 --remote origin
 ./singularity.sh config git --mode token --token-env GITHUB_TOKEN --remote origin
@@ -520,6 +525,18 @@ cd mcp-server && npm run build && npx singularity-mcp doctor
 ```
 
 This mode is intentionally strict: generated env files leave `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`, and `OLLAMA_BASE_URL` blank. Workflows still choose model aliases, but the gateway exposes only the `copilot` alias.
+
+Fidelity laptop setup is stricter and should be used in that environment:
+
+```bash
+./singularity.sh config init --profile fidelity-copilot-only --force
+# optional only when using the central Copilot headless gateway path
+./singularity.sh config set llm.copilot.token "$COPILOT_TOKEN"
+./singularity.sh fidelity-copilot-only
+./singularity.sh doctor --fidelity-copilot-only
+```
+
+Fidelity mode means no OpenAI, OpenRouter, Anthropic, Ollama, or OpenAI-compatible endpoint is allowed in `.singularity/config.local.json`, generated env files, provider catalogs, or MCP model catalogs. The only workflow-facing model alias is `copilot`; if the Copilot token is absent, `doctor --fidelity-copilot-only` still validates the fence and warns that only local `gh copilot` CLI/headless tools are usable until a Copilot token is provided.
 
 ### Single LLM gateway configuration
 
@@ -577,8 +594,9 @@ Useful commands:
 # Generate local mock-only provider/model config.
 ./singularity.sh config mcp-catalog --default-alias mock
 
-# Generate strict office mode: only Copilot is exposed.
+# Generate strict office/Fidelity mode: only Copilot is exposed.
 ./singularity.sh config office-copilot-only
+./singularity.sh config fidelity-copilot-only
 
 # Inspect provider policy readiness.
 ./singularity.sh config providers
@@ -879,6 +897,8 @@ urls                printable URL cheatsheet
 ls                  list known service names
 login               smoke-test IAM /auth/local/login
 doctor              validate config, health, DBs, LLM keys, MCP
+fidelity-copilot-only
+                    configure Fidelity laptop mode: Copilot headless only
 config <command>    configure DBs, keys, endpoints, LLMs, MCP
 help                usage
 ```

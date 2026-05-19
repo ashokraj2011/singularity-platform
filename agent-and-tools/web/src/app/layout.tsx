@@ -67,7 +67,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
               {/* Actions */}
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <AppSwitcher currentApp="agent-studio" />
+                <AppSwitcher />
                 <button
                   style={{
                     width: 32, height: 32, borderRadius: 10,

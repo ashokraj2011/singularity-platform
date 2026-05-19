@@ -615,6 +615,16 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
             "MCP_LLM_MODEL_CATALOG_PATH": values["MCP_LLM_MODEL_CATALOG_PATH"],
             "LLM_GATEWAY_URL": "http://localhost:8001",
             "LLM_GATEWAY_BEARER": values.get("LLM_GATEWAY_BEARER", ""),
+            # Explicitly own and blank provider egress knobs in MCP. MCP must
+            # call the central gateway by model alias, never a provider URL.
+            "OPENAI_API_KEY": values["OPENAI_API_KEY"],
+            "OPENAI_BASE_URL": values["OPENAI_BASE_URL"],
+            "OPENAI_COMPATIBLE_API_KEY": values["OPENAI_COMPATIBLE_API_KEY"],
+            "OPENAI_COMPATIBLE_BASE_URL": values["OPENAI_COMPATIBLE_BASE_URL"],
+            "OPENROUTER_API_KEY": values["OPENROUTER_API_KEY"],
+            "OPENROUTER_BASE_URL": values["OPENROUTER_BASE_URL"],
+            "ANTHROPIC_API_KEY": values["ANTHROPIC_API_KEY"],
+            "OLLAMA_BASE_URL": values["OLLAMA_BASE_URL"],
             "MCP_SANDBOX_ROOT": values["MCP_SANDBOX_ROOT"],
             "MCP_AST_DB_PATH": values["MCP_AST_DB_PATH"],
             "MCP_AST_MAX_FILE_BYTES": values["MCP_AST_MAX_FILE_BYTES"],
@@ -861,7 +871,9 @@ def apply_copilot_only(
     set_path(data, "llm.modelCatalogPath", ".singularity/mcp-models.json")
     set_path(data, "llm.modelCatalogJson", "")
     set_path(data, "llm.openai.apiKey", "")
+    set_path(data, "llm.openai.baseUrl", "")
     set_path(data, "llm.openrouter.apiKey", "")
+    set_path(data, "llm.openrouter.baseUrl", "")
     set_path(data, "llm.anthropic.apiKey", "")
     set_path(data, "llm.ollama.baseUrl", "")
     if token is not None:
@@ -1321,12 +1333,36 @@ def command_doctor(args: argparse.Namespace) -> None:
     else:
         record("OK", f"LLM provider configuration: {provider}")
     if copilot_only:
+        forbidden_config = [
+            dotted
+            for dotted in [
+                "llm.openai.apiKey",
+                "llm.openai.baseUrl",
+                "llm.openrouter.apiKey",
+                "llm.openrouter.baseUrl",
+                "llm.anthropic.apiKey",
+                "llm.ollama.baseUrl",
+            ]
+            if get_path(config, dotted)
+        ]
         forbidden = [
-            key for key in ["OPENAI_API_KEY", "OPENAI_COMPATIBLE_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OLLAMA_BASE_URL"]
+            key
+            for key in [
+                "OPENAI_API_KEY",
+                "OPENAI_BASE_URL",
+                "OPENAI_COMPATIBLE_API_KEY",
+                "OPENAI_COMPATIBLE_BASE_URL",
+                "OPENROUTER_API_KEY",
+                "OPENROUTER_BASE_URL",
+                "ANTHROPIC_API_KEY",
+                "OLLAMA_BASE_URL",
+            ]
             if merged.get(key)
         ]
         if provider != "copilot":
             record("FAIL", "Copilot-only mode requires MCP_LLM_PROVIDER/LLM_PROVIDER=copilot", copilot_fix_command)
+        elif forbidden_config:
+            record("FAIL", f"Copilot-only profile still contains non-Copilot config: {', '.join(forbidden_config)}", copilot_fix_command)
         elif forbidden:
             record("FAIL", f"Copilot-only mode has non-Copilot access still configured: {', '.join(forbidden)}", copilot_fix_command)
         else:
@@ -1415,7 +1451,7 @@ def command_doctor(args: argparse.Namespace) -> None:
                 for row in live_providers
                 if isinstance(row, dict)
                 and str(row.get("name", "")).lower() != "copilot"
-                and (row.get("enabled") is True or row.get("allowed") is True)
+                and (row.get("allowed") is True or row.get("ready") is True)
             )
             copilot_row = next((row for row in live_providers if isinstance(row, dict) and str(row.get("name", "")).lower() == "copilot"), {})
             if default_provider == "copilot":
@@ -1429,8 +1465,15 @@ def command_doctor(args: argparse.Namespace) -> None:
             if copilot_row.get("ready") is True:
                 record("OK", "live MCP Copilot provider is ready")
             else:
-                status = "FAIL" if strict_office else "WARN"
-                record(status, "live MCP Copilot provider is not ready", "./singularity.sh config set llm.copilot.token <token> && ./singularity.sh restart mcp-server-demo")
+                if not merged.get("COPILOT_TOKEN") and cli_ok:
+                    record(
+                        "WARN",
+                        "live MCP Copilot gateway token is not configured; local gh copilot CLI/headless tools are available",
+                        "./singularity.sh config set llm.copilot.token <token> && ./singularity.sh restart llm-gateway && ./singularity.sh restart mcp-server-demo",
+                    )
+                else:
+                    status = "FAIL" if strict_office else "WARN"
+                    record(status, "live MCP Copilot provider is not ready", "./singularity.sh config set llm.copilot.token <token> && ./singularity.sh restart llm-gateway && ./singularity.sh restart mcp-server-demo")
 
         models_status, models_payload, models_msg = http_json("http://localhost:7100/llm/models", bearer_token=mcp_token)
         if models_status != "OK":
@@ -1594,7 +1637,9 @@ def command_mcp_catalog(args: argparse.Namespace) -> None:
             set_path(data, "llm.providerConfigPath", str(provider_config_out))
             set_path(data, "llm.providerConfigJson", "")
             set_path(data, "llm.openai.apiKey", "")
+            set_path(data, "llm.openai.baseUrl", "")
             set_path(data, "llm.openrouter.apiKey", "")
+            set_path(data, "llm.openrouter.baseUrl", "")
             set_path(data, "llm.anthropic.apiKey", "")
             set_path(data, "llm.ollama.baseUrl", "")
             set_path(data, "llm.copilot.defaultModel", args.copilot_model)

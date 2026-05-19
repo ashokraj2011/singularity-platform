@@ -2,8 +2,9 @@
 
 import { useMemo, useState } from "react";
 import type { FocusEvent } from "react";
+import { usePathname } from "next/navigation";
 import type { LucideIcon } from "lucide-react";
-import { Bot, ExternalLink, Grid3X3, ServerCog, ShieldCheck, Workflow, Wrench } from "lucide-react";
+import { Bot, Compass, ExternalLink, Grid3X3, ServerCog, ShieldCheck, Workflow, Wrench } from "lucide-react";
 
 type AppLink = {
   id: string;
@@ -20,6 +21,7 @@ function localUrl(port: number, path = "") {
 
 function appLinks(): AppLink[] {
   return [
+    { id: "control-plane", label: "Control Plane", href: "/control-plane", description: "Unified command center", icon: Compass },
     { id: "operations", label: "Operations", href: process.env.NEXT_PUBLIC_LINK_OPERATIONS_PORTAL ?? localUrl(5180, "/operations"), description: "Health, setup, audit, readiness", icon: ServerCog },
     { id: "agent-studio", label: "Agent Studio", href: process.env.NEXT_PUBLIC_LINK_AGENT_ADMIN ?? localUrl(3000), description: "Agents, tools, capabilities", icon: Bot },
     { id: "workflow", label: "Workflow Manager", href: process.env.NEXT_PUBLIC_LINK_WORKGRAPH_DESIGNER ?? localUrl(5174), description: "Runs, WorkItems, approvals", icon: Workflow },
@@ -28,10 +30,18 @@ function appLinks(): AppLink[] {
   ];
 }
 
-export function AppSwitcher({ currentApp = "agent-studio" }: { currentApp?: string }) {
+function inferCurrentApp(pathname: string | null | undefined): string {
+  if (!pathname) return "agent-studio";
+  if (pathname.startsWith("/control-plane")) return "control-plane";
+  return "agent-studio";
+}
+
+export function AppSwitcher({ currentApp }: { currentApp?: string }) {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
   const links = useMemo(appLinks, []);
-  const current = links.find(item => item.id === currentApp) ?? links[0];
+  const resolvedCurrentApp = currentApp ?? inferCurrentApp(pathname);
+  const current = links.find(item => item.id === resolvedCurrentApp) ?? links[0];
 
   function onBlur(event: FocusEvent<HTMLDivElement>) {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
@@ -85,7 +95,7 @@ export function AppSwitcher({ currentApp = "agent-studio" }: { currentApp?: stri
           </div>
           {links.map(item => {
             const Icon = item.icon;
-            const active = item.id === currentApp;
+            const active = item.id === resolvedCurrentApp;
             return (
               <a
                 key={item.id}
