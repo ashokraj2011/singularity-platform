@@ -122,20 +122,10 @@ function SubNavItem({
 export function Sidebar() {
   const path = usePathname();
   const [collapsed, setCollapsed] = useState(false);
-  const [narrowViewport, setNarrowViewport] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("sidebar-collapsed");
     if (stored !== null) setCollapsed(stored === "true");
-  }, []);
-
-  useEffect(() => {
-    function syncViewport() {
-      setNarrowViewport(window.innerWidth < 1440);
-    }
-    syncViewport();
-    window.addEventListener("resize", syncViewport);
-    return () => window.removeEventListener("resize", syncViewport);
   }, []);
 
   function toggle() {
@@ -149,7 +139,7 @@ export function Sidebar() {
   const isActive = (href: string) =>
     href === "/" ? path === "/" : path.startsWith(href);
   const canvasRoute = path.startsWith("/prompt-workbench");
-  const effectiveCollapsed = collapsed || narrowViewport || canvasRoute;
+  const effectiveCollapsed = collapsed || canvasRoute;
   const controlPlaneRoutes = ["/control-plane", ...controlPlaneSubmenu.map((item) => item.href)];
   const controlPlaneActive = controlPlaneRoutes.some((href) => isActive(href));
 
@@ -238,7 +228,7 @@ export function Sidebar() {
         {/* Collapse toggle */}
         <button
           onClick={toggle}
-          title={effectiveCollapsed ? (canvasRoute ? "Prompt Workbench uses compact navigation" : narrowViewport ? "Sidebar is compact for this window" : "Expand sidebar") : "Collapse sidebar"}
+          title={effectiveCollapsed ? (canvasRoute ? "Prompt Workbench uses compact navigation" : "Expand sidebar") : "Collapse sidebar"}
           disabled={canvasRoute}
           style={{
             width: 32, height: 32, borderRadius: 8, border: "none",
