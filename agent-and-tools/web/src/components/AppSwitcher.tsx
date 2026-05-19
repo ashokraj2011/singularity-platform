@@ -3,43 +3,37 @@
 import { useMemo, useState } from "react";
 import type { FocusEvent } from "react";
 import { usePathname } from "next/navigation";
-import type { LucideIcon } from "lucide-react";
-import { Bot, Compass, ExternalLink, Grid3X3, ServerCog, ShieldCheck, Workflow, Wrench } from "lucide-react";
-
-type AppLink = {
-  id: string;
-  label: string;
-  href: string;
-  description: string;
-  icon: LucideIcon;
-};
-
-function localUrl(port: number, path = "") {
-  if (typeof window === "undefined") return `http://localhost:${port}${path}`;
-  return `${window.location.protocol}//${window.location.hostname}:${port}${path}`;
-}
-
-function appLinks(): AppLink[] {
-  return [
-    { id: "control-plane", label: "Control Plane", href: "/control-plane", description: "Unified command center", icon: Compass },
-    { id: "operations", label: "Operations", href: process.env.NEXT_PUBLIC_LINK_OPERATIONS_PORTAL ?? localUrl(5180, "/operations"), description: "Health, setup, audit, readiness", icon: ServerCog },
-    { id: "agent-studio", label: "Agent Studio", href: process.env.NEXT_PUBLIC_LINK_AGENT_ADMIN ?? localUrl(3000), description: "Agents, tools, capabilities", icon: Bot },
-    { id: "workflow", label: "Workflow Manager", href: process.env.NEXT_PUBLIC_LINK_WORKGRAPH_DESIGNER ?? localUrl(5174), description: "Runs, WorkItems, approvals", icon: Workflow },
-    { id: "workbench", label: "Blueprint Workbench", href: process.env.NEXT_PUBLIC_LINK_BLUEPRINT_WORKBENCH ?? localUrl(5176, "/?ui=neo"), description: "Guided delivery cockpit", icon: Wrench },
-    { id: "iam", label: "Identity & Access", href: process.env.NEXT_PUBLIC_LINK_IAM_ADMIN ?? localUrl(5175), description: "Users, teams, roles", icon: ShieldCheck },
-  ];
-}
+import { Compass, ExternalLink, Grid3X3 } from "lucide-react";
+import { controlPlaneApps } from "@/lib/controlPlaneApps";
 
 function inferCurrentApp(pathname: string | null | undefined): string {
   if (!pathname) return "agent-studio";
   if (pathname.startsWith("/control-plane")) return "control-plane";
+  if (pathname.startsWith("/workflows")) return "workflows";
+  if (pathname.startsWith("/runs")) return "runs";
+  if (pathname.startsWith("/work-items")) return "work-items";
+  if (pathname.startsWith("/workbench")) return "workbench";
+  if (pathname.startsWith("/identity")) return "identity";
+  if (pathname.startsWith("/operations")) return "operations";
   return "agent-studio";
 }
 
 export function AppSwitcher({ currentApp }: { currentApp?: string }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
-  const links = useMemo(appLinks, []);
+  const links = useMemo(
+    () => [
+      {
+        id: "control-plane",
+        label: "Control Plane",
+        href: "/control-plane",
+        summary: "Unified command center",
+        icon: Compass,
+      },
+      ...controlPlaneApps(),
+    ],
+    [],
+  );
   const resolvedCurrentApp = currentApp ?? inferCurrentApp(pathname);
   const current = links.find(item => item.id === resolvedCurrentApp) ?? links[0];
 
@@ -127,7 +121,7 @@ export function AppSwitcher({ currentApp }: { currentApp?: string }) {
                 <span style={{ minWidth: 0, flex: 1 }}>
                   <span style={{ display: "block", fontSize: 13, fontWeight: 800 }}>{item.label}</span>
                   <span style={{ display: "block", marginTop: 1, fontSize: 11, color: "var(--color-outline)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {item.description}
+                    {item.summary}
                   </span>
                 </span>
                 <ExternalLink size={13} style={{ color: "var(--color-outline)" }} />

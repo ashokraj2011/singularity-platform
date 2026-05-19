@@ -79,6 +79,9 @@ You should see `200` for all eight.
 
 Start from the unified Control Plane at `http://localhost:3000/control-plane`. It is the operator shell for Agent Studio, Workgraph, WorkbenchNeo, IAM, and Operations. Context Fabric, MCP, and the LLM gateway remain separate runtime services behind that shell.
 
+The Control Plane also exposes first-class routes under `localhost:3000` so operators can stay in one app:
+`/workflows`, `/runs`, `/work-items`, `/workbench`, `/identity`, and `/operations`.
+
 | Step | URL | What to show |
 |---|---|---|
 | **1. Login** | `http://localhost:5175/login` → then `http://localhost:5174` | Login with `admin@singularity.local` / `Admin1234!`, then use the IAM token in Workgraph. IAM is the source of truth for teams, roles, and capability memberships. |
@@ -115,6 +118,12 @@ Start from the unified Control Plane at `http://localhost:3000/control-plane`. I
 
 ```
 Control Plane           http://localhost:3000/control-plane    unified operator shell
+Control Plane routes    http://localhost:3000/workflows        workflows inside the unified shell
+                        http://localhost:3000/runs             run dashboard inside the unified shell
+                        http://localhost:3000/work-items       WorkItem queue inside the unified shell
+                        http://localhost:3000/workbench        WorkbenchNeo inside the unified shell
+                        http://localhost:3000/identity         IAM admin inside the unified shell
+                        http://localhost:3000/operations       Operations inside the unified shell
 Workgraph SPA            http://localhost:5174    runs, designer, insights
 Blueprint Workbench      http://localhost:5176    staged agent loop + approvals
 Agent / Tools SPA        http://localhost:3000    Agent Studio, /audit, /cost

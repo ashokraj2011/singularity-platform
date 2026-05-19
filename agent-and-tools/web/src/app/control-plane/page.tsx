@@ -2,91 +2,12 @@
 
 import { useMemo, useState } from "react";
 import {
-  Bot,
   Compass,
   ExternalLink,
   Maximize2,
   RefreshCw,
-  ServerCog,
-  ShieldCheck,
-  Workflow,
-  Wrench,
 } from "lucide-react";
-
-type ControlPlaneApp = {
-  id: string;
-  label: string;
-  group: string;
-  href: string;
-  summary: string;
-  icon: typeof Compass;
-};
-
-function localUrl(port: number, path = "") {
-  if (typeof window === "undefined") return `http://localhost:${port}${path}`;
-  return `${window.location.protocol}//${window.location.hostname}:${port}${path}`;
-}
-
-function controlPlaneApps(): ControlPlaneApp[] {
-  return [
-    {
-      id: "agent-studio",
-      label: "Agent Studio",
-      group: "Agent Runtime",
-      href: "/agent-studio",
-      summary: "Agents, capability teams, tools, prompt profiles, and model settings.",
-      icon: Bot,
-    },
-    {
-      id: "workflows",
-      label: "Workflows",
-      group: "Workgraph",
-      href: process.env.NEXT_PUBLIC_LINK_WORKGRAPH_WORKFLOWS ?? localUrl(5174, "/workflows"),
-      summary: "Workflow templates, designer, node settings, and run launch.",
-      icon: Workflow,
-    },
-    {
-      id: "runs",
-      label: "Runs",
-      group: "Workgraph",
-      href: process.env.NEXT_PUBLIC_LINK_WORKGRAPH_RUNS ?? localUrl(5174, "/runs"),
-      summary: "Mission Control, approvals, live events, stage restarts, and run evidence.",
-      icon: Workflow,
-    },
-    {
-      id: "work-items",
-      label: "WorkItems",
-      group: "Workgraph",
-      href: process.env.NEXT_PUBLIC_LINK_WORKGRAPH_WORKITEMS ?? localUrl(5174, "/work-items"),
-      summary: "Capability-scoped work queue, parent delegation, attach workflow, and start.",
-      icon: Workflow,
-    },
-    {
-      id: "workbench",
-      label: "WorkbenchNeo",
-      group: "Delivery",
-      href: process.env.NEXT_PUBLIC_LINK_BLUEPRINT_WORKBENCH ?? localUrl(5176, "/?ui=neo"),
-      summary: "Story-to-delivery stages, artifacts, approvals, terminal, and code review.",
-      icon: Wrench,
-    },
-    {
-      id: "identity",
-      label: "Identity",
-      group: "IAM",
-      href: process.env.NEXT_PUBLIC_LINK_IAM_ADMIN ?? localUrl(5175, "/capabilities"),
-      summary: "Users, teams, roles, capabilities, sharing grants, and authorization checks.",
-      icon: ShieldCheck,
-    },
-    {
-      id: "operations",
-      label: "Operations",
-      group: "Operations",
-      href: process.env.NEXT_PUBLIC_LINK_OPERATIONS_PORTAL ?? localUrl(5180, "/operations"),
-      summary: "Setup Center, readiness, audit packs, architecture, and trust evidence.",
-      icon: ServerCog,
-    },
-  ];
-}
+import { controlPlaneApps } from "@/lib/controlPlaneApps";
 
 export default function ControlPlanePage() {
   const apps = useMemo(controlPlaneApps, []);
@@ -139,7 +60,7 @@ export default function ControlPlanePage() {
             Refresh
           </button>
           <a
-            href={selected.href}
+            href={selected.nativeHref}
             className="btn-primary"
             style={{ height: 38, display: "inline-flex", alignItems: "center", gap: 8, textDecoration: "none" }}
           >
@@ -236,12 +157,12 @@ export default function ControlPlanePage() {
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 14, fontWeight: 800, color: "var(--color-on-surface)" }}>{selected.label}</div>
               <div style={{ fontSize: 11, color: "var(--color-outline)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {selected.href}
+                {selected.nativeHref}
               </div>
             </div>
           </div>
           <a
-            href={selected.href}
+            href={selected.nativeHref}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -260,7 +181,7 @@ export default function ControlPlanePage() {
         <iframe
           key={`${selected.id}-${frameKey}`}
           title={selected.label}
-          src={selected.href}
+          src={selected.nativeHref}
           style={{
             flex: 1,
             width: "100%",
