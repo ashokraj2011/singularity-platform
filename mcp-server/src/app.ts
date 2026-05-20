@@ -2,6 +2,7 @@ import "express-async-errors";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
+import { z } from "zod";
 import { requestIdMiddleware } from "./middleware/request-id";
 import { bearerAuth } from "./middleware/auth";
 import { errorMiddleware } from "./middleware/error";
@@ -10,10 +11,12 @@ import { toolsRouter } from "./mcp/tools";
 import { workRouter } from "./mcp/work";
 import { resourcesRouter } from "./mcp/resources";
 import { eventsRouter } from "./mcp/events";
-import { listConfiguredProviders, ensureFreshGatewayStatus } from "./llm/client";
+import { discoveryRouter } from "./mcp/discovery";
+import { listConfiguredProviders, ensureFreshGatewayStatus, llmEmbed } from "./llm/client";
 import { modelCatalogResponse } from "./llm/model-catalog";
 import { configuredDefaultModel, configuredDefaultProvider, providerConfigSummary } from "./llm/provider-config";
 import { runInvariantChecks } from "./healthz-strict";
+import { AppError } from "./shared/errors";
 
 export const app = express();
 
@@ -87,6 +90,31 @@ app.get("/llm/models", bearerAuth, async (_req, res) => {
 
 // Everything under /mcp/* requires a valid bearer token.
 app.use("/mcp", bearerAuth);
+app.use("/mcp", discoveryRouter);
+app.post("/mcp/embed", async (req, res) => {
+  const parsed = z.object({
+    modelAlias: z.string().min(1).optional(),
+    input: z.array(z.string()).min(1, "input cannot be empty"),
+    runContext: z.object({
+      traceId: z.string().optional(),
+      capabilityId: z.string().optional(),
+    }).default({}),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    throw new AppError("invalid /mcp/embed payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
+  }
+  const result = await llmEmbed({
+    ...(parsed.data.modelAlias ? { model_alias: parsed.data.modelAlias } : {}),
+    input: parsed.data.input,
+    trace_id: parsed.data.runContext.traceId,
+    capability_id: parsed.data.runContext.capabilityId,
+  });
+  res.json({
+    success: true,
+    data: result,
+    requestId: res.locals.requestId,
+  });
+});
 app.use("/mcp", invokeRouter);
 app.use("/mcp", toolsRouter);
 // M37.1 — purpose-built workflow-branch operations. Replaces the bypass

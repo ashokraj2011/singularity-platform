@@ -36,6 +36,17 @@ PORTAL_DOCTOR_PATH = ROOT / "singularity-portal/public/ops-doctor.json"
 
 
 SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASS", "DATABASE")
+DEFAULT_MCP_RUNNER_IMAGE_MAP = {
+    "python": "python:3.12-slim",
+    "python3": "python:3.12-slim",
+    "pytest": "python:3.12-slim",
+    "go": "golang:1.23-alpine",
+    "cargo": "rust:1.83-alpine",
+    "mvn": "maven:3.9-eclipse-temurin-21",
+    "gradle": "gradle:8-jdk21",
+    "gradlew": "gradle:8-jdk21",
+    "dotnet": "mcr.microsoft.com/dotnet/sdk:8.0",
+}
 
 COPILOT_ONLY_PROFILES = {"office-copilot-only", "fidelity-copilot-only"}
 
@@ -75,6 +86,13 @@ CONFIG_KEY_MAP = {
     "mcpRuntime.publicBaseUrl": "MCP_PUBLIC_BASE_URL",
     "mcpRuntime.bearerToken": "MCP_BEARER_TOKEN",
     "mcpRuntime.sandboxRoot": "MCP_SANDBOX_ROOT",
+    "mcpRuntime.commandExecutionMode": "MCP_COMMAND_EXECUTION_MODE",
+    "mcpRuntime.runnerUrl": "MCP_RUNNER_URL",
+    "mcpRuntime.runnerToken": "MCP_RUNNER_TOKEN",
+    "mcpRuntime.runnerHostWorkspacePath": "MCP_RUNNER_HOST_WORKSPACE_PATH",
+    "mcpRuntime.runnerDefaultImage": "MCP_RUNNER_DEFAULT_IMAGE",
+    "mcpRuntime.runnerImageMapJson": "MCP_RUNNER_IMAGE_MAP_JSON",
+    "mcpRuntime.runnerNetworkMode": "MCP_RUNNER_NETWORK_MODE",
     "mcpRuntime.astDbPath": "MCP_AST_DB_PATH",
     "mcpRuntime.astMaxFileBytes": "MCP_AST_MAX_FILE_BYTES",
     "mcpRuntime.astMaxWorkspaceBytes": "MCP_AST_MAX_WORKSPACE_BYTES",
@@ -141,6 +159,13 @@ def set_path(data: dict, dotted: str, value: object) -> None:
     cur[parts[-1]] = value
 
 
+def absolute_local_path(value: str) -> str:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    return str(path.resolve(strict=False))
+
+
 def load_local_config() -> dict:
     if not CONFIG_PATH.exists():
         return {}
@@ -189,6 +214,7 @@ def config_template(profile: str, args: argparse.Namespace | None = None) -> dic
     openrouter_base_url = getattr(args, "openrouter_base_url", None) if args else None
     copilot_base_url = getattr(args, "copilot_base_url", None) if args else None
     mcp_token = getattr(args, "mcp_bearer_token", None) if args else None
+    runner_host_workspace = absolute_local_path(os.getenv("MCP_SANDBOX_HOST_PATH", sandbox_root))
     return {
         "profile": profile,
         "identity": {
@@ -222,6 +248,13 @@ def config_template(profile: str, args: argparse.Namespace | None = None) -> dic
             "publicBaseUrl": "http://host.docker.internal:7100",
             "bearerToken": mcp_token or os.getenv("MCP_BEARER_TOKEN", "demo-bearer-token-must-be-min-16-chars"),
             "sandboxRoot": sandbox_root,
+            "commandExecutionMode": os.getenv("MCP_COMMAND_EXECUTION_MODE", "container"),
+            "runnerUrl": os.getenv("MCP_RUNNER_URL", "http://mcp-sandbox-runner:7110"),
+            "runnerToken": os.getenv("MCP_RUNNER_TOKEN", "dev-mcp-runner-token-min-16-chars"),
+            "runnerHostWorkspacePath": os.getenv("MCP_RUNNER_HOST_WORKSPACE_PATH", runner_host_workspace),
+            "runnerDefaultImage": os.getenv("MCP_RUNNER_DEFAULT_IMAGE", "node:20-alpine"),
+            "runnerImageMapJson": os.getenv("MCP_RUNNER_IMAGE_MAP_JSON", json.dumps(DEFAULT_MCP_RUNNER_IMAGE_MAP, separators=(",", ":"))),
+            "runnerNetworkMode": os.getenv("MCP_RUNNER_NETWORK_MODE", "none"),
             "astDbPath": f"{sandbox_root.rstrip('/')}/.singularity/mcp-ast.sqlite",
             "astMaxFileBytes": 200000,
             "astMaxWorkspaceBytes": 24000000,
@@ -399,6 +432,19 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
     audit_token = pick("AUDIT_GOV_SERVICE_TOKEN", "audit_token", "AUDIT_GOV_SERVICE_TOKEN", "dev-audit-gov-service-token")
     workgraph_internal_token = pick("WORKGRAPH_INTERNAL_TOKEN", None, "WORKGRAPH_INTERNAL_TOKEN", "dev-workgraph-internal-token")
     sandbox_root = pick("MCP_SANDBOX_ROOT", "mcp_sandbox_root", "MCP_SANDBOX_ROOT", str(ROOT))
+    runner_host_workspace_default = absolute_local_path(os.getenv("MCP_SANDBOX_HOST_PATH", sandbox_root))
+    runner_host_workspace = pick(
+        "MCP_RUNNER_HOST_WORKSPACE_PATH",
+        "mcp_runner_host_workspace_path",
+        "MCP_RUNNER_HOST_WORKSPACE_PATH",
+        runner_host_workspace_default,
+    )
+    runner_image_map_json = pick(
+        "MCP_RUNNER_IMAGE_MAP_JSON",
+        "mcp_runner_image_map_json",
+        "MCP_RUNNER_IMAGE_MAP_JSON",
+        json.dumps(DEFAULT_MCP_RUNNER_IMAGE_MAP, separators=(",", ":")),
+    )
     formal_verification_enabled = pick("FORMAL_VERIFICATION_ENABLED", None, "FORMAL_VERIFICATION_ENABLED", "false")
     formal_verifier_url = pick("FORMAL_VERIFIER_URL", None, "FORMAL_VERIFIER_URL", "http://localhost:8010")
     formal_default_timeout_ms = pick("FORMAL_VERIFICATION_DEFAULT_TIMEOUT_MS", None, "FORMAL_VERIFICATION_DEFAULT_TIMEOUT_MS", "3000")
@@ -448,6 +494,13 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
         "MCP_DEFAULT_SERVER_ID": "local-default-mcp",
         "MCP_BEARER_TOKEN": mcp_token,
         "MCP_DEMO_BEARER_TOKEN": mcp_token,
+        "MCP_COMMAND_EXECUTION_MODE": pick("MCP_COMMAND_EXECUTION_MODE", "mcp_command_execution_mode", "MCP_COMMAND_EXECUTION_MODE", "container"),
+        "MCP_RUNNER_URL": pick("MCP_RUNNER_URL", "mcp_runner_url", "MCP_RUNNER_URL", "http://mcp-sandbox-runner:7110"),
+        "MCP_RUNNER_TOKEN": pick("MCP_RUNNER_TOKEN", "mcp_runner_token", "MCP_RUNNER_TOKEN", "dev-mcp-runner-token-min-16-chars"),
+        "MCP_RUNNER_HOST_WORKSPACE_PATH": absolute_local_path(runner_host_workspace),
+        "MCP_RUNNER_DEFAULT_IMAGE": pick("MCP_RUNNER_DEFAULT_IMAGE", "mcp_runner_default_image", "MCP_RUNNER_DEFAULT_IMAGE", "node:20-alpine"),
+        "MCP_RUNNER_IMAGE_MAP_JSON": runner_image_map_json,
+        "MCP_RUNNER_NETWORK_MODE": pick("MCP_RUNNER_NETWORK_MODE", "mcp_runner_network_mode", "MCP_RUNNER_NETWORK_MODE", "none"),
         "MCP_LLM_PROVIDER": llm_provider,
         "MCP_LLM_MODEL": llm_model,
         "MCP_ALLOWED_LLM_PROVIDERS": allowed_providers,
@@ -528,6 +581,13 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
                 "MCP_DEFAULT_BEARER_TOKEN",
                 "MCP_DEFAULT_SERVER_ID",
                 "MCP_DEMO_BEARER_TOKEN",
+                "MCP_COMMAND_EXECUTION_MODE",
+                "MCP_RUNNER_URL",
+                "MCP_RUNNER_TOKEN",
+                "MCP_RUNNER_HOST_WORKSPACE_PATH",
+                "MCP_RUNNER_DEFAULT_IMAGE",
+                "MCP_RUNNER_IMAGE_MAP_JSON",
+                "MCP_RUNNER_NETWORK_MODE",
                 "MCP_LLM_PROVIDER",
                 "MCP_LLM_MODEL",
                 "MCP_ALLOWED_LLM_PROVIDERS",
@@ -626,6 +686,13 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
             "ANTHROPIC_API_KEY": values["ANTHROPIC_API_KEY"],
             "OLLAMA_BASE_URL": values["OLLAMA_BASE_URL"],
             "MCP_SANDBOX_ROOT": values["MCP_SANDBOX_ROOT"],
+            "MCP_COMMAND_EXECUTION_MODE": values["MCP_COMMAND_EXECUTION_MODE"],
+            "MCP_RUNNER_URL": values["MCP_RUNNER_URL"],
+            "MCP_RUNNER_TOKEN": values["MCP_RUNNER_TOKEN"],
+            "MCP_RUNNER_HOST_WORKSPACE_PATH": values["MCP_RUNNER_HOST_WORKSPACE_PATH"],
+            "MCP_RUNNER_DEFAULT_IMAGE": values["MCP_RUNNER_DEFAULT_IMAGE"],
+            "MCP_RUNNER_IMAGE_MAP_JSON": values["MCP_RUNNER_IMAGE_MAP_JSON"],
+            "MCP_RUNNER_NETWORK_MODE": values["MCP_RUNNER_NETWORK_MODE"],
             "MCP_AST_DB_PATH": values["MCP_AST_DB_PATH"],
             "MCP_AST_MAX_FILE_BYTES": values["MCP_AST_MAX_FILE_BYTES"],
             "MCP_AST_MAX_WORKSPACE_BYTES": values["MCP_AST_MAX_WORKSPACE_BYTES"],
@@ -766,11 +833,28 @@ def command_mcp(args: argparse.Namespace) -> None:
         set_path(data, "mcpRuntime.bearerToken", args.bearer_token)
     if args.sandbox_root:
         root = str(Path(args.sandbox_root).expanduser())
+        host_root = absolute_local_path(args.sandbox_root)
         set_path(data, "mcpRuntime.sandboxRoot", root)
+        set_path(data, "mcpRuntime.runnerHostWorkspacePath", host_root)
         if not args.ast_db_path:
             set_path(data, "mcpRuntime.astDbPath", f"{root.rstrip('/')}/.singularity/mcp-ast.sqlite")
     if args.ast_db_path:
         set_path(data, "mcpRuntime.astDbPath", str(Path(args.ast_db_path).expanduser()))
+    if getattr(args, "command_execution_mode", None):
+        set_path(data, "mcpRuntime.commandExecutionMode", args.command_execution_mode)
+    if getattr(args, "runner_url", None):
+        set_path(data, "mcpRuntime.runnerUrl", args.runner_url)
+    if getattr(args, "runner_token", None):
+        set_path(data, "mcpRuntime.runnerToken", args.runner_token)
+    if getattr(args, "runner_host_workspace_path", None):
+        set_path(data, "mcpRuntime.runnerHostWorkspacePath", absolute_local_path(args.runner_host_workspace_path))
+    if getattr(args, "runner_default_image", None):
+        set_path(data, "mcpRuntime.runnerDefaultImage", args.runner_default_image)
+    if getattr(args, "runner_image_map_json", None):
+        json.loads(args.runner_image_map_json)
+        set_path(data, "mcpRuntime.runnerImageMapJson", args.runner_image_map_json)
+    if getattr(args, "runner_network_mode", None):
+        set_path(data, "mcpRuntime.runnerNetworkMode", args.runner_network_mode)
     write_local_config(data, force=True)
     command_write(args)
 
@@ -1001,6 +1085,12 @@ def command_show(_: argparse.Namespace) -> None:
         "AGENT_RUNTIME_URL",
         "TOOL_SERVICE_URL",
         "MCP_SANDBOX_ROOT",
+        "MCP_COMMAND_EXECUTION_MODE",
+        "MCP_RUNNER_URL",
+        "MCP_RUNNER_TOKEN",
+        "MCP_RUNNER_HOST_WORKSPACE_PATH",
+        "MCP_RUNNER_DEFAULT_IMAGE",
+        "MCP_RUNNER_NETWORK_MODE",
         "MCP_AST_DB_PATH",
         "MCP_GIT_PUSH_ENABLED",
         "MCP_GIT_AUTH_MODE",
@@ -1212,6 +1302,26 @@ def run_git_doctor(record, merged: dict[str, str]) -> None:
                 Path(askpass_path).unlink(missing_ok=True)
 
 
+def run_command_isolation_doctor(record, merged: dict[str, str]) -> None:
+    mode = (merged.get("MCP_COMMAND_EXECUTION_MODE") or "container").lower()
+    if mode == "process":
+        record("WARN", "MCP command execution is in process mode", "./singularity.sh config mcp --command-execution-mode container")
+        return
+    if mode != "container":
+        record("FAIL", f"unknown MCP command execution mode: {mode}", "./singularity.sh config mcp --command-execution-mode container")
+        return
+    token = merged.get("MCP_RUNNER_TOKEN") or ""
+    workspace = merged.get("MCP_RUNNER_HOST_WORKSPACE_PATH") or ""
+    if len(token) < 16:
+        record("FAIL", "MCP runner token must be at least 16 characters", "./singularity.sh config mcp --runner-token <token-at-least-16-chars>")
+    elif not workspace:
+        record("FAIL", "MCP runner host workspace path is missing", "./singularity.sh config mcp --sandbox-root <absolute-writable-path>")
+    elif not Path(workspace).expanduser().is_absolute():
+        record("FAIL", f"MCP runner host workspace path must be absolute: {workspace}", "./singularity.sh config mcp --runner-host-workspace-path <absolute-path>")
+    else:
+        record("OK", f"MCP command execution is container-isolated via {merged.get('MCP_RUNNER_URL') or 'runner'}")
+
+
 def command_doctor(args: argparse.Namespace) -> None:
     failures = 0
     warnings = 0
@@ -1380,6 +1490,7 @@ def command_doctor(args: argparse.Namespace) -> None:
         record("FAIL", "MCP bearer token must be at least 16 characters", "./singularity.sh config mcp --bearer-token <token-at-least-16-chars>")
     else:
         record("OK", "MCP bearer token length")
+    run_command_isolation_doctor(record, merged)
 
     values = default_values(argparse.Namespace())
     for path, expected in target_envs(values).items():
@@ -1754,6 +1865,13 @@ def add_common_write_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--copilot-base-url", default=None)
     parser.add_argument("--mcp-bearer-token", default=None)
     parser.add_argument("--mcp-sandbox-root", default=None)
+    parser.add_argument("--mcp-command-execution-mode", choices=["container", "process"], default=None)
+    parser.add_argument("--mcp-runner-url", default=None)
+    parser.add_argument("--mcp-runner-token", default=None)
+    parser.add_argument("--mcp-runner-host-workspace-path", default=None)
+    parser.add_argument("--mcp-runner-default-image", default=None)
+    parser.add_argument("--mcp-runner-image-map-json", default=None)
+    parser.add_argument("--mcp-runner-network-mode", default=None)
     parser.add_argument("--mcp-model-catalog-json", default=None)
     parser.add_argument("--mcp-model-catalog-path", default=None)
     parser.add_argument("--mcp-provider-config-json", default=None)
@@ -1817,6 +1935,13 @@ def main() -> None:
     p_mcp_runtime.add_argument("--bearer-token", default=None)
     p_mcp_runtime.add_argument("--sandbox-root", default=None)
     p_mcp_runtime.add_argument("--ast-db-path", default=None)
+    p_mcp_runtime.add_argument("--command-execution-mode", choices=["container", "process"], default=None)
+    p_mcp_runtime.add_argument("--runner-url", default=None)
+    p_mcp_runtime.add_argument("--runner-token", default=None)
+    p_mcp_runtime.add_argument("--runner-host-workspace-path", default=None)
+    p_mcp_runtime.add_argument("--runner-default-image", default=None)
+    p_mcp_runtime.add_argument("--runner-image-map-json", default=None)
+    p_mcp_runtime.add_argument("--runner-network-mode", default=None)
     p_mcp_runtime.set_defaults(func=command_mcp)
 
     p_git = sub.add_parser("git", help="Configure local Git push credentials for approved WorkItem branches")

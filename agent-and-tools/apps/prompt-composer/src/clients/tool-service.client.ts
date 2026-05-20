@@ -9,6 +9,7 @@ export interface DiscoveredTool {
   risk_level: string;
   requires_approval?: boolean;
   requiresApproval?: boolean;
+  execution_target?: "LOCAL" | "SERVER" | string;
   execution_location: string;
   runtime_type: string;
 }

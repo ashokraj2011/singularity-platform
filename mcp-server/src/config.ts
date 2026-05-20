@@ -56,8 +56,33 @@ const schema = z.object({
   MCP_GIT_USERNAME: z.string().default("x-access-token"),
   MCP_GIT_SSH_KEY_PATH: z.string().optional(),
   MCP_AUTO_CHECKOUT_SOURCE: z.coerce.boolean().default(true),
+  MCP_SOURCE_CACHE_ROOT: z.string().optional(),
+  MCP_WORKSPACE_LOCK_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
+  MCP_WORKSPACE_LOCK_STALE_MS: z.coerce.number().int().positive().default(30 * 60_000),
+  MCP_WORKSPACE_GC_ENABLED: z.coerce.boolean().default(true),
+  MCP_WORKSPACE_GC_MAX_AGE_HOURS: z.coerce.number().int().positive().default(72),
+  MCP_WORKSPACE_DISK_QUOTA_BYTES: z.coerce.number().int().nonnegative().default(0),
   MCP_AUDIT_LOG_PATH: z.string().optional(),
   MCP_AUDIT_RESTORE_LIMIT: z.coerce.number().int().positive().default(5000),
+
+  // Local command execution. Production/default Docker runs use a dedicated
+  // runner service; process mode is reserved for unit tests and explicit dev
+  // override so MCP never silently falls back to host execution.
+  MCP_COMMAND_EXECUTION_MODE: z.enum(["container", "process"]).optional(),
+  MCP_RUNNER_URL: z.string().default("http://mcp-sandbox-runner:7110"),
+  MCP_RUNNER_TOKEN: z.string().optional(),
+  MCP_RUNNER_HOST_WORKSPACE_PATH: z.string().optional(),
+  MCP_RUNNER_DEFAULT_IMAGE: z.string().default("node:20-alpine"),
+  MCP_RUNNER_IMAGE_MAP_JSON: z.string().optional(),
+  MCP_RUNNER_NETWORK_MODE: z.string().default("none"),
+
+  // Optional SMT/formal verifier hook. When enabled, finish_work_branch runs
+  // a pre-commit proof over the code-change evidence and verification receipts
+  // before committing or pushing.
+  FORMAL_VERIFICATION_ENABLED: z.coerce.boolean().default(false),
+  FORMAL_VERIFIER_URL: z.string().default("http://localhost:8010"),
+  FORMAL_VERIFICATION_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
+  FORMAL_VERIFICATION_BLOCK_ON_UNKNOWN: z.coerce.boolean().default(true),
 
   // Context Fabric internal adapter used when the LLM selects a SERVER-target
   // tool. MCP remains the agent loop owner, but governed server tools still
@@ -101,4 +126,8 @@ function assertProductionSecretLocal(name: string, value: string | undefined, mi
 }
 assertProductionSecretLocal("MCP_BEARER_TOKEN", parsed.data.MCP_BEARER_TOKEN, 16);
 
-export const config = parsed.data;
+export const config = {
+  ...parsed.data,
+  MCP_COMMAND_EXECUTION_MODE: parsed.data.MCP_COMMAND_EXECUTION_MODE
+    ?? (parsed.data.NODE_ENV === "test" ? "process" : "container"),
+};

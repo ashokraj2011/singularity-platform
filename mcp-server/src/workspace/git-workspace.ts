@@ -43,9 +43,31 @@ export interface FinishBranchResult {
   pushFixCommands?: string[];
   pushRetryable?: boolean;
   pushRemote?: string;
+  formalVerification?: FormalVerificationReceipt;
+  formalVerificationBlocked?: boolean;
 }
 
 let activeBranch: WorkBranchInfo | null = null;
+
+export interface FormalVerificationReceipt {
+  kind: "verification_result";
+  verification_kind: "formal";
+  enabled: boolean;
+  passed: boolean;
+  result: "UNSAT" | "SAT" | "UNKNOWN" | "SKIPPED" | "ERROR" | string;
+  riskLevel?: string;
+  requestId?: string;
+  resultId?: string;
+  receiptId?: string;
+  counterexample?: unknown;
+  explanation?: string;
+  recommendations?: unknown[];
+  solver?: unknown;
+  hashes?: unknown;
+  payload?: Record<string, unknown>;
+  error?: string;
+  duration_ms?: number;
+}
 
 function safePart(value: string | undefined, fallback: string): string {
   const cleaned = (value ?? fallback)
@@ -454,6 +476,7 @@ export async function restoreWorkBranch(
 export interface FinishBranchOptions {
   push?: boolean;
   remote?: string;
+  verificationReceipts?: Array<Record<string, unknown>>;
 }
 
 export async function finishWorkBranch(
@@ -479,6 +502,26 @@ export async function finishWorkBranch(
     };
   }
   const patch = await git(["diff", "--binary"], { allowFail: true, maxBuffer: 20 * 1024 * 1024 });
+  const formalVerification = await runFormalVerificationBeforeFinish({
+    branch,
+    changedPaths,
+    patch,
+    verificationReceipts: options?.verificationReceipts ?? [],
+  });
+  if (formalVerification && !formalVerification.passed) {
+    return {
+      branch,
+      changedPaths,
+      patch,
+      workspaceRoot: sandboxRoot(),
+      committed: false,
+      message: formalVerification.error
+        ? `formal verification failed: ${formalVerification.error}`
+        : "formal verification blocked finish_work_branch",
+      formalVerification,
+      formalVerificationBlocked: true,
+    };
+  }
   await git(["add", "-A"]);
   const commitMessage = message?.trim() || `Singularity work item ${branch}`;
   await git(["commit", "-m", commitMessage], { maxBuffer: 20 * 1024 * 1024 });
@@ -499,6 +542,174 @@ export async function finishWorkBranch(
     workspaceRoot: sandboxRoot(),
     committed: true,
     message: commitMessage,
+    formalVerification,
     ...pushFields(push),
   } as FinishBranchResult;
+}
+
+function verificationPassed(receipts: Array<Record<string, unknown>>): boolean {
+  return receipts.length > 0 && receipts.every((receipt) => {
+    if (receipt.passed === false) return false;
+    const exitCode =
+      typeof receipt.exit_code === "number" ? receipt.exit_code
+      : typeof receipt.exitCode === "number" ? receipt.exitCode
+      : undefined;
+    if (exitCode !== undefined && exitCode !== 0) return false;
+    if (receipt.passed === true || exitCode === 0) return true;
+    return receipt.verification_kind === "formal" && String(receipt.result ?? "").toUpperCase() === "UNSAT";
+  });
+}
+
+function highRiskChangedPaths(paths: string[]): string[] {
+  return paths.filter((changedPath) => /(^|\/)(auth|security|policy|permission|iam|payment|billing|deploy|release|infra|docker|k8s|secret|config)/i.test(changedPath));
+}
+
+function formalPayloadForFinish(input: {
+  branch: string;
+  changedPaths: string[];
+  patch: string;
+  verificationReceipts: Array<Record<string, unknown>>;
+}): Record<string, unknown> {
+  const verificationReceiptPresent = input.verificationReceipts.length > 0;
+  const verificationReceiptPassed = verificationPassed(input.verificationReceipts);
+  const riskyPaths = highRiskChangedPaths(input.changedPaths);
+  return {
+    scope: "CODE_CHANGE_FINISH",
+    facts: {
+      codeChanged: input.changedPaths.length > 0,
+      changedPathCount: input.changedPaths.length,
+      changedPaths: input.changedPaths,
+      highRiskChangedPathCount: riskyPaths.length,
+      highRiskChangedPaths: riskyPaths,
+      verificationReceiptPresent,
+      verificationReceiptPassed,
+      verificationReceiptCount: input.verificationReceipts.length,
+      branch: input.branch,
+    },
+    constraints: [
+      {
+        id: "code_change_requires_verification_receipt",
+        severity: "HIGH",
+        description: "A code-changing branch must include at least one test/lint/typecheck/formal verification receipt before finish.",
+        expr: {
+          op: "IMPLIES",
+          if: { field: "codeChanged", op: "==", value: true },
+          then: { field: "verificationReceiptPresent", op: "==", value: true },
+        },
+      },
+      {
+        id: "code_change_requires_passing_verification",
+        severity: "HIGH",
+        description: "A code-changing branch must not finish with failed verification evidence.",
+        expr: {
+          op: "IMPLIES",
+          if: { field: "codeChanged", op: "==", value: true },
+          then: { field: "verificationReceiptPassed", op: "==", value: true },
+        },
+      },
+    ],
+    query: {
+      op: "AND",
+      args: [
+        { field: "codeChanged", op: "==", value: true },
+        {
+          op: "OR",
+          args: [
+            { field: "verificationReceiptPresent", op: "==", value: false },
+            { field: "verificationReceiptPassed", op: "==", value: false },
+          ],
+        },
+      ],
+    },
+    options: { timeoutMs: config.FORMAL_VERIFICATION_TIMEOUT_MS },
+    artifactRefs: [
+      {
+        type: "git_diff",
+        changedPaths: input.changedPaths,
+        patchChars: input.patch.length,
+      },
+      ...input.verificationReceipts.map((receipt, index) => ({
+        type: "verification_receipt",
+        index,
+        command: receipt.command,
+        passed: receipt.passed,
+        exit_code: receipt.exit_code ?? receipt.exitCode,
+        toolInvocationId: receipt.toolInvocationId,
+      })),
+    ],
+    metadata: {
+      generatedBy: "mcp-server",
+      branch: input.branch,
+      workspaceRoot: sandboxRoot(),
+    },
+  };
+}
+
+async function runFormalVerificationBeforeFinish(input: {
+  branch: string;
+  changedPaths: string[];
+  patch: string;
+  verificationReceipts: Array<Record<string, unknown>>;
+}): Promise<FormalVerificationReceipt | undefined> {
+  if (!config.FORMAL_VERIFICATION_ENABLED || input.changedPaths.length === 0) return undefined;
+  const payload = formalPayloadForFinish(input);
+  const started = Date.now();
+  try {
+    const res = await fetch(`${config.FORMAL_VERIFIER_URL.replace(/\/+$/, "")}/api/v1/verification/verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(config.FORMAL_VERIFICATION_TIMEOUT_MS + 1_000),
+    });
+    const text = await res.text();
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = text ? JSON.parse(text) as Record<string, unknown> : {};
+    } catch {
+      parsed = { message: text };
+    }
+    if (!res.ok) {
+      return {
+        kind: "verification_result",
+        verification_kind: "formal",
+        enabled: true,
+        passed: false,
+        result: "ERROR",
+        error: String((parsed.detail as { message?: unknown } | undefined)?.message ?? parsed.message ?? `formal verifier returned HTTP ${res.status}`),
+        payload,
+        duration_ms: Date.now() - started,
+      };
+    }
+    const result = String(parsed.result ?? "UNKNOWN").toUpperCase();
+    const passed = result === "UNSAT" || (result === "UNKNOWN" && !config.FORMAL_VERIFICATION_BLOCK_ON_UNKNOWN);
+    return {
+      kind: "verification_result",
+      verification_kind: "formal",
+      enabled: true,
+      passed,
+      result,
+      riskLevel: typeof parsed.riskLevel === "string" ? parsed.riskLevel : undefined,
+      requestId: typeof parsed.requestId === "string" ? parsed.requestId : undefined,
+      resultId: typeof parsed.resultId === "string" ? parsed.resultId : undefined,
+      receiptId: typeof parsed.receiptId === "string" ? parsed.receiptId : undefined,
+      counterexample: parsed.counterexample,
+      explanation: typeof parsed.explanation === "string" ? parsed.explanation : undefined,
+      recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : undefined,
+      solver: parsed.solver,
+      hashes: parsed.hashes,
+      payload,
+      duration_ms: Date.now() - started,
+    };
+  } catch (err) {
+    return {
+      kind: "verification_result",
+      verification_kind: "formal",
+      enabled: true,
+      passed: false,
+      result: "ERROR",
+      error: (err as Error).message,
+      payload,
+      duration_ms: Date.now() - started,
+    };
+  }
 }

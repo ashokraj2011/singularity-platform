@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pydantic_settings import BaseSettings
+import os
 
 
 class Settings(BaseSettings):
@@ -23,19 +24,20 @@ class Settings(BaseSettings):
     # governance; the MCP server itself can be a local/default workspace
     # endpoint selected by file path or deployment config rather than by
     # capability membership.
-    mcp_default_base_url: str = ""
+    mcp_default_base_url: str = "http://mcp-server:7100"
     mcp_default_bearer_token: str = ""
     mcp_default_server_id: str = "default-mcp"
 
-    # M33 — central LLM gateway. Used by the deprecated /chat/respond
-    # endpoint for one-shot synthesis. Provider keys never live here.
-    llm_gateway_url: str = "http://llm-gateway:8001"
-    llm_gateway_bearer: str = ""
     chat_respond_model_alias: str = ""
 
     class Config:
         env_prefix = ""
         extra = "ignore"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.mcp_default_base_url = os.getenv("MCP_SERVER_URL", self.mcp_default_base_url)
+        self.mcp_default_bearer_token = os.getenv("MCP_BEARER_TOKEN", self.mcp_default_bearer_token)
 
 
 settings = Settings()

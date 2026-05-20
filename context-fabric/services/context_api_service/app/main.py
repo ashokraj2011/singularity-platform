@@ -150,7 +150,6 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
     response.headers["Sunset"] = "2026-07-01"
     response.headers["Link"] = '</execute>; rel="successor-version"'
     memory_url = settings.context_memory_url.rstrip("/")
-    gateway_url = settings.llm_gateway_url.rstrip("/")
     metrics_url = settings.metrics_ledger_url.rstrip("/")
 
     await post_json(f"{memory_url}/memory/messages", {
@@ -175,39 +174,55 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
         "system_prompt": req.system_prompt,
     })
 
-    # Deprecated one-shot synthesis goes through the central LLM gateway
-    # directly. Governance fail-open/fail-closed/degraded handling lives in
-    # /execute; this endpoint is kept only for legacy direct callers.
+    # Deprecated one-shot synthesis still routes through MCP so MCP remains
+    # the only service that talks to the LLM gateway.
     gw_messages = gateway_messages_from_compiled(compiled.get("compiled_messages", []), req.message)
-    gw_payload = {
-        "messages": gw_messages,
-        "temperature": req.temperature,
-        "max_output_tokens": req.max_output_tokens,
-        "trace_id": f"chat-respond-{req.session_id}",
+    system_prompt = "\n\n".join(m["content"] for m in gw_messages if m.get("role") == "system") or None
+    history = [m for m in gw_messages[:-1] if m.get("role") != "system"]
+    mcp_payload = {
+        "history": history,
+        "message": req.message,
+        "tools": [],
+        "modelConfig": {
+            "temperature": req.temperature,
+            "maxTokens": req.max_output_tokens,
+        },
+        "runContext": {
+            "sessionId": req.session_id,
+            "agentId": req.agent_id,
+            "traceId": f"chat-respond-{req.session_id}",
+        },
+        "limits": {
+            "maxSteps": 1,
+            "timeoutSec": 180,
+            "compressToolResults": True,
+            "includeLocalTools": False,
+        },
     }
+    if system_prompt:
+        mcp_payload["systemPrompt"] = system_prompt
     model_alias = settings.chat_respond_model_alias.strip()
     if model_alias:
-        gw_payload["model_alias"] = model_alias
+        mcp_payload["modelConfig"]["modelAlias"] = model_alias
     headers = {"content-type": "application/json"}
-    if settings.llm_gateway_bearer:
-        headers["authorization"] = f"Bearer {settings.llm_gateway_bearer}"
+    if settings.mcp_default_bearer_token:
+        headers["authorization"] = f"Bearer {settings.mcp_default_bearer_token}"
     async with httpx.AsyncClient(timeout=180.0) as client:
-        gw_http = await client.post(f"{gateway_url}/v1/chat/completions", json=gw_payload, headers=headers)
-        gw_http.raise_for_status()
-        gw_resp = gw_http.json()
-    response_text = (gw_resp.get("content") or "")
+        mcp_http = await client.post(f"{settings.mcp_default_base_url.rstrip('/')}/mcp/invoke", json=mcp_payload, headers=headers)
+        mcp_http.raise_for_status()
+        mcp_resp = mcp_http.json()
+    mcp_data = mcp_resp.get("data") or {}
+    response_text = (mcp_data.get("finalResponse") or "")
+    mcp_usage = mcp_data.get("modelUsage") or {}
+    tokens_used = mcp_data.get("tokensUsed") or {}
     model_usage = {
-        "provider": gw_resp.get("provider"),
-        "model": gw_resp.get("model"),
-        "model_alias": gw_resp.get("model_alias"),
-        "latency_ms": gw_resp.get("latency_ms"),
-    }
-    tokens_used = {
-        "input": gw_resp.get("input_tokens", 0),
-        "output": gw_resp.get("output_tokens", 0),
+        "provider": mcp_usage.get("provider"),
+        "model": mcp_usage.get("model"),
+        "model_alias": mcp_usage.get("modelAlias") or mcp_usage.get("model_alias"),
+        "latency_ms": (mcp_data.get("metrics") or {}).get("mcpLatencyMs"),
     }
     tokens_used["total"] = int(tokens_used.get("input") or 0) + int(tokens_used.get("output") or 0)
-    model_call_id = str(gw_resp.get("call_id") or gw_resp.get("id") or uuid.uuid4())
+    model_call_id = str((mcp_data.get("correlation") or {}).get("mcpInvocationId") or uuid.uuid4())
 
     await post_json(f"{memory_url}/memory/messages", {
         "session_id": req.session_id,
@@ -254,7 +269,7 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
             "input_tokens": tokens_used.get("input", 0),
             "output_tokens": tokens_used.get("output", 0),
             "total_tokens": tokens_used.get("total", 0),
-            "estimated_cost": gw_resp.get("estimated_cost"),
+            "estimated_cost": mcp_usage.get("estimatedCost") or tokens_used.get("estimatedCost"),
             "latency_ms": model_usage.get("latency_ms"),
         },
         metrics_run_id=metrics_run_id,

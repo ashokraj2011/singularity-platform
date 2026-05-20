@@ -192,6 +192,11 @@ export const finishWorkBranchTool: ToolHandler = {
         message: { type: "string" },
         push:    { type: "boolean", description: "When true, push the branch to the named remote after commit (default: false, local-only)." },
         remote:  { type: "string",  description: "Remote name to push to (default: 'origin'). Only used when push=true." },
+        verificationReceipts: {
+          type: "array",
+          description: "Internal MCP-provided test/lint/typecheck/formal verification receipts captured earlier in the run.",
+          items: { type: "object" },
+        },
       },
     },
     // M27.5 — pushing changes upstream is destructive vs the developer's
@@ -205,13 +210,16 @@ export const finishWorkBranchTool: ToolHandler = {
     const before = await statsForIndex();
     const push = args.push === true;
     const remote = typeof args.remote === "string" ? args.remote : undefined;
+    const verificationReceipts = Array.isArray(args.verificationReceipts)
+      ? args.verificationReceipts.filter((receipt): receipt is Record<string, unknown> => Boolean(receipt && typeof receipt === "object" && !Array.isArray(receipt)))
+      : [];
     const result = await finishWorkBranch(
       typeof args.message === "string" ? args.message : undefined,
-      { push, remote },
+      { push, remote, verificationReceipts },
     );
     const after = await indexWorkspace("finish");
     return {
-      success: !push || result.pushed === true,
+      success: !result.formalVerificationBlocked && (!push || result.pushed === true),
       output: {
         kind: result.committed ? "code_change" : "workspace_finish",
         paths_touched: result.changedPaths,
@@ -226,11 +234,15 @@ export const finishWorkBranchTool: ToolHandler = {
         push_blocked_code: result.pushBlockedCode,
         push_fix_commands: result.pushFixCommands,
         push_retryable: result.pushRetryable,
+        formalVerification: result.formalVerification,
+        formal_verification_blocked: result.formalVerificationBlocked,
         remote: push ? (result.pushRemote ?? remote ?? "origin") : undefined,
         astIndexBefore: before,
         astIndexAfter: after,
       },
-      error: result.pushError,
+      error: result.formalVerificationBlocked
+        ? result.message
+        : result.pushError,
     };
   },
 };

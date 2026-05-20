@@ -6,7 +6,7 @@ import {
   GitBranch, ExternalLink, Search, Filter,
   ChevronDown, AlertTriangle, Clock, Users,
   Layers, Tag, PlayCircle, LayoutDashboard,
-  Activity, Package, DollarSign, Cpu, PauseCircle, BarChart3,
+  Activity, Package, DollarSign, Cpu, PauseCircle, BarChart3, HardDrive,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 
@@ -78,6 +78,22 @@ type RunBudgetOverview = {
   }
   warnings?: string[]
   events?: BudgetEvent[]
+}
+
+type McpWorkspaceStats = {
+  workItemWorkspacesRoot?: string | null
+  sourceCacheRoot?: string | null
+  workItemWorkspaceCount?: number | string | null
+  workItemBytes?: number | string | null
+  sourceCacheBytes?: number | string | null
+  totalManagedBytes?: number | string | null
+  quotaBytes?: number | string | null
+  quotaUsedPercent?: number | string | null
+  gc?: {
+    enabled?: boolean
+    maxAgeHours?: number | string | null
+    maxWorkspaces?: number | string | null
+  }
 }
 
 type ConsumableRow = {
@@ -165,6 +181,12 @@ function pageTotal(data: unknown, fallback: number) {
   return fallback
 }
 
+function unwrapWorkspaceStats(data: unknown): McpWorkspaceStats | undefined {
+  if (!data || typeof data !== 'object') return undefined
+  const record = data as { data?: unknown }
+  return ((record.data && typeof record.data === 'object') ? record.data : data) as McpWorkspaceStats
+}
+
 function num(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string' && value.trim() !== '') {
@@ -185,6 +207,19 @@ function formatCost(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return 'UNPRICED'
   if (value === 0) return '$0.0000'
   return `$${value.toFixed(value < 1 ? 4 : 2)}`
+}
+
+function formatBytes(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  if (value < 1024) return `${Math.round(value)} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let current = value / 1024
+  let unitIndex = 0
+  while (current >= 1024 && unitIndex < units.length - 1) {
+    current /= 1024
+    unitIndex += 1
+  }
+  return `${current.toFixed(current >= 10 ? 1 : 2)} ${units[unitIndex]}`
 }
 
 function formatShortDate(value?: string | null) {
@@ -299,6 +334,28 @@ function TypeBar({ label, count, total, color }: { label: string; count: number;
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
         <span style={{ fontSize: 11, fontWeight: 700, color: TEXT }}>{label}</span>
         <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: MUTED }}>{count} · {pct}%</span>
+      </div>
+      <div style={{ height: 5, borderRadius: 3, background: BORDER, overflow: 'hidden' }}>
+        <motion.div
+          initial={{ width: 0 }}
+          animate={{ width: `${pct}%` }}
+          transition={{ duration: 0.6, ease: 'easeOut' }}
+          style={{ height: '100%', borderRadius: 3, background: color }}
+        />
+      </div>
+    </div>
+  )
+}
+
+function StorageBar({ label, bytes, total, color }: { label: string; bytes: number | null; total: number | null; color: string }) {
+  const safeBytes = bytes ?? 0
+  const safeTotal = Math.max(1, total ?? 0)
+  const pct = Math.min(100, Math.round((safeBytes / safeTotal) * 100))
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, gap: 8 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: TEXT }}>{label}</span>
+        <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: MUTED }}>{formatBytes(bytes)} · {pct}%</span>
       </div>
       <div style={{ height: 5, borderRadius: 3, background: BORDER, overflow: 'hidden' }}>
         <motion.div
@@ -517,9 +574,17 @@ export function DashboardPage() {
     })),
   })
 
+  const { data: workspaceStatsEnvelope, isError: workspaceStatsError } = useQuery({
+    queryKey: ['dashboard-mcp-workspace-stats'],
+    queryFn: () => api.get('/llm/workspaces/stats').then(r => r.data),
+    refetchInterval: 30_000,
+    retry: false,
+  })
+
   const templateNames = useMemo(() => new Map(templates.map(template => [template.id, template.name])), [templates])
   const runNames = useMemo(() => new Map(instances.map(instance => [instance.id, instance.name])), [instances])
   const budgetsByRun = useMemo(() => new Map(budgetRows.map(row => [row.id, row.budget])), [budgetRows])
+  const workspaceStats = useMemo(() => unwrapWorkspaceStats(workspaceStatsEnvelope), [workspaceStatsEnvelope])
 
   // ── Derived KPIs ──
   const total = templates.length
@@ -541,6 +606,13 @@ export function DashboardPage() {
     acc.warningCount += (budget.warnings ?? []).length
     return acc
   }, { input: 0, output: 0, total: 0, cost: 0, unpriced: 0, warningCount: 0 })
+  const workspaceTotalBytes = num(workspaceStats?.totalManagedBytes)
+  const workspaceWorkItemBytes = num(workspaceStats?.workItemBytes)
+  const workspaceSourceCacheBytes = num(workspaceStats?.sourceCacheBytes)
+  const workspaceQuotaBytes = num(workspaceStats?.quotaBytes)
+  const workspaceQuotaPercent = num(workspaceStats?.quotaUsedPercent)
+  const workspaceCount = Math.round(num(workspaceStats?.workItemWorkspaceCount) ?? 0)
+  const workspaceGc = workspaceStats?.gc
 
   // ── Type distribution ──
   const typeCounts: Record<string, number> = {}
@@ -617,6 +689,7 @@ export function DashboardPage() {
 	        <KpiCard title="Tokens Used"      value={formatTokens(budgetTotals.total)} icon={Cpu}       color="#6366f1"  delay={0.13} sub={`${formatTokens(budgetTotals.input)} in / ${formatTokens(budgetTotals.output)} out`} />
 	        <KpiCard title="Est. Cost"        value={formatCost(budgetTotals.cost)}    icon={DollarSign} color="#0ea5e9"  delay={0.16} sub={budgetTotals.unpriced ? `${budgetTotals.unpriced} unpriced` : 'priced'} />
 	        <KpiCard title="Artifacts"        value={consumableTotal}             icon={Package}       color="#8b5cf6"  delay={0.19} sub={`${artifactApproved} approved`} />
+	        <KpiCard title="MCP Storage"      value={formatBytes(workspaceTotalBytes)} icon={HardDrive} color="#14b8a6" delay={0.22} sub={workspaceStatsError ? 'unavailable' : `${workspaceCount} workspaces`} />
 	      </div>
 
 	      {/* ── Run operations dashboard ───────────────────────────────── */}
@@ -716,6 +789,50 @@ export function DashboardPage() {
 	                <span style={{ fontSize: 11, color: MUTED }}>Unpriced usage events</span>
 	                <span style={{ fontSize: 12, fontWeight: 900, color: budgetTotals.unpriced ? '#b45309' : PRIMARY, fontFamily: 'var(--font-mono)' }}>{budgetTotals.unpriced}</span>
 	              </div>
+	            </div>
+	          </motion.div>
+
+	          <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.24, delay: 0.30 }}>
+	            <SectionHeader>MCP Workspace</SectionHeader>
+	            <div style={{ ...panelStyle, padding: 16 }}>
+	              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 14 }}>
+	                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+	                  <HardDrive size={14} style={{ color: '#14b8a6' }} />
+	                  <span style={{ fontSize: 12, fontWeight: 900, color: TEXT }}>{formatBytes(workspaceTotalBytes)} managed</span>
+	                </div>
+	                <Pill label={workspaceStatsError ? 'unavailable' : 'reported'} color={workspaceStatsError ? '#dc2626' : PRIMARY} />
+	              </div>
+	              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+	                <div style={{ padding: 10, borderRadius: CARD_RADIUS, background: SURFACE_LOW, border: `1px solid ${BORDER}` }}>
+	                  <p style={{ fontSize: 9, color: MUTED, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Workspaces</p>
+	                  <p style={{ fontSize: 18, fontWeight: 900, color: TEXT, lineHeight: 1.2 }}>{workspaceStatsError ? '—' : workspaceCount}</p>
+	                </div>
+	                <div style={{ padding: 10, borderRadius: CARD_RADIUS, background: SURFACE_LOW, border: `1px solid ${BORDER}` }}>
+	                  <p style={{ fontSize: 9, color: MUTED, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Quota Used</p>
+	                  <p style={{ fontSize: 18, fontWeight: 900, color: workspaceQuotaPercent != null && workspaceQuotaPercent >= 80 ? '#b45309' : TEXT, lineHeight: 1.2 }}>
+	                    {workspaceQuotaPercent == null ? '—' : `${workspaceQuotaPercent.toFixed(1)}%`}
+	                  </p>
+	                </div>
+	              </div>
+	              <div style={{ marginTop: 12 }}>
+	                <StorageBar label="Work item workspaces" bytes={workspaceWorkItemBytes} total={workspaceTotalBytes} color="#14b8a6" />
+	                <StorageBar label="Source cache" bytes={workspaceSourceCacheBytes} total={workspaceTotalBytes} color="#6366f1" />
+	              </div>
+	              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, paddingTop: 12, borderTop: `1px solid ${BORDER}` }}>
+	                <span style={{ fontSize: 11, color: MUTED }}>Quota</span>
+	                <span style={{ fontSize: 12, fontWeight: 900, color: TEXT, fontFamily: 'var(--font-mono)' }}>{formatBytes(workspaceQuotaBytes)}</span>
+	              </div>
+	              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 7 }}>
+	                <span style={{ fontSize: 11, color: MUTED }}>GC</span>
+	                <span style={{ fontSize: 12, fontWeight: 900, color: workspaceGc?.enabled === false ? '#b45309' : PRIMARY, fontFamily: 'var(--font-mono)' }}>
+	                  {workspaceGc?.enabled === true ? `enabled · ${num(workspaceGc.maxAgeHours) ?? '—'}h` : workspaceGc?.enabled === false ? 'disabled' : 'unknown'}
+	                </span>
+	              </div>
+	              {workspaceQuotaPercent != null && workspaceQuotaPercent >= 80 && (
+	                <p style={{ marginTop: 12, padding: 10, borderRadius: CARD_RADIUS, border: '1px solid #fde68a', background: '#fffbeb', color: '#92400e', fontSize: 11, lineHeight: 1.45 }}>
+	                  MCP storage is above 80% of the configured quota.
+	                </p>
+	              )}
 	            </div>
 	          </motion.div>
 	        </div>

@@ -25,6 +25,17 @@ export const layerOverrideSchema = z.object({
   content: z.string().min(1).max(4_000),
 });
 
+const toolDescriptorSchema = z.object({
+  name: z.string().min(1).max(180),
+  description: z.string().max(4_000).default(""),
+  natural_language: z.string().max(4_000).optional(),
+  input_schema: z.record(z.unknown()).default({ type: "object" }).refine(v => jsonCharLength(v) <= 12_000, "tool input_schema is too large"),
+  execution_target: z.enum(["LOCAL", "SERVER"]).default("LOCAL"),
+  risk_level: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).default("LOW"),
+  requires_approval: z.boolean().default(false),
+  version: z.string().max(80).optional(),
+});
+
 export const composeSchema = z.object({
   agentTemplateId: z.string().uuid(),
   agentBindingId: z.string().uuid().optional(),
@@ -67,6 +78,10 @@ export const composeSchema = z.object({
     riskMax: z.enum(["low", "medium", "high", "critical"]).default("medium"),
     limit: z.number().int().default(8),
   }).default({ enabled: true, riskMax: "medium", limit: 8 }),
+  // Canonical run-level tools. Context Fabric passes this after resolving
+  // Tool Service once, so Prompt Composer renders the same descriptors MCP
+  // will receive instead of doing a second discovery pass.
+  toolDescriptors: z.array(toolDescriptorSchema).max(64).optional(),
   previewOnly: z.boolean().default(false),
   // M25.5 C6 — operator escape hatch. When true, lookupCapsule() is skipped
   // (cold path runs every time) AND no fresh capsule is stored. Use this

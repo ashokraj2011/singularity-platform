@@ -9,6 +9,21 @@ import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { createReceipt, logEvent, publishOutbox } from '../../lib/audit'
 import { contextFabricClient, ContextFabricError, type ExecuteResponse } from '../../lib/context-fabric/client'
+import {
+  attemptStatusFor,
+  blueprintStageStatusFor,
+  classifyCodingStagePolicy,
+  hasActualCodeChange,
+  hasFailedVerificationReceipt,
+  hasPassingVerificationReceipt,
+  hasUnavailableVerificationReceipt,
+  hasVerificationReceipt,
+  isTerminalCodingResult,
+  resumeCodingStage,
+  runCodingStage,
+  stageRequiresVerification,
+  type CodingRunResult,
+} from '../coding-agent/orchestrator'
 // M36.2 — stage prompts (architect/developer/qa task + system prompts and the
 // loop-stage prompt) live in prompt-composer DB (StagePromptBinding rows).
 // We resolve them at call time instead of hardcoding them in this file.
@@ -57,6 +72,18 @@ const optionalUuid = z.preprocess(
   z.string().uuid().optional(),
 )
 
+const stageModelAliasesSchema = z.preprocess(value => {
+  if (value === null || value === undefined) return undefined
+  if (!isRecord(value)) return value
+  const out: Record<string, string> = {}
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw !== 'string') continue
+    const trimmed = raw.trim()
+    if (key.trim() && trimmed) out[key.trim()] = trimmed
+  }
+  return out
+}, z.record(z.string().trim().min(1).max(80)).optional())
+
 const executionSettingsSchema = z.object({
   maxLoopsPerStage: z.number().int().min(1).max(50).optional(),
   maxTotalSendBacks: z.number().int().min(0).max(200).optional(),
@@ -68,6 +95,7 @@ const executionSettingsSchema = z.object({
     value => value === '' || value === null ? null : value,
     z.string().trim().min(1).max(80).nullable().optional(),
   ),
+  stageModelAliases: stageModelAliasesSchema,
   maxContextTokens: z.number().int().min(1_000).max(200_000).optional(),
   maxOutputTokens: z.number().int().min(128).max(32_000).optional(),
   maxPromptChars: z.number().int().min(2_000).max(500_000).optional(),
@@ -200,12 +228,20 @@ const sendBackSchema = z.object({
   blockingQuestions: z.array(z.string()).max(20).optional(),
 })
 
+const stageApprovalSchema = z.object({
+  decision: z.enum(['approved', 'rejected']),
+  reason: z.string().trim().max(1000).optional(),
+  argsOverride: z.record(z.unknown()).optional(),
+  args_override: z.record(z.unknown()).optional(),
+})
+
 type CreateSessionInput = z.infer<typeof createSessionSchema>
 type UpdateSessionSettingsInput = z.infer<typeof updateSessionSettingsSchema>
+type StageApprovalInput = z.infer<typeof stageApprovalSchema>
 type DecisionAnswer = z.infer<typeof decisionAnswerSchema> & { updatedAt?: string; updatedById?: string }
 type LoopAgentRole = string
 type LoopVerdict = 'PASS' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_RISK'
-type LoopAttemptStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'PASSED' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_RISK'
+type LoopAttemptStatus = 'PENDING' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'FAILED' | 'PASSED' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_RISK'
 
 type LoopExpectedArtifact = {
   kind: string
@@ -281,6 +317,8 @@ type StageAttempt = {
   correlation?: Record<string, unknown>
   tokensUsed?: Record<string, unknown>
   metrics?: Record<string, unknown>
+  pendingApproval?: Record<string, unknown> | null
+  verificationReceipts?: Array<Record<string, unknown>>
 }
 
 type WorkbenchConsumableRef = {
@@ -374,6 +412,7 @@ type LoopState = {
     excerptBudgetChars?: number
     reuseUnchangedAttempt?: boolean
     modelAlias?: string
+    stageModelAliases?: Record<string, string>
     governanceMode?: 'fail_open' | 'fail_closed' | 'degraded' | 'human_approval_required'
     maxContextTokens?: number
     maxOutputTokens?: number
@@ -485,6 +524,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         reuseUnchangedAttempt: body.reuseUnchangedAttempt,
         governanceMode,
         modelAlias: body.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS,
+        stageModelAliases: sanitizeStageModelAliases(body.stageModelAliases),
         maxContextTokens: body.maxContextTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxContextTokens,
         maxOutputTokens: body.maxOutputTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxOutputTokens,
         maxPromptChars: body.maxPromptChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxPromptChars,
@@ -560,6 +600,9 @@ blueprintRouter.patch('/sessions/:id/settings', validate(updateSessionSettingsSc
     if (body.modelAlias !== undefined) {
       if (body.modelAlias === null) delete nextExecutionConfig.modelAlias
       else nextExecutionConfig.modelAlias = body.modelAlias
+    }
+    if (body.stageModelAliases !== undefined) {
+      nextExecutionConfig.stageModelAliases = sanitizeStageModelAliases(body.stageModelAliases)
     }
     const nextState: LoopState = {
       ...state,
@@ -914,6 +957,14 @@ blueprintRouter.post('/sessions/:id/stages/:stageKey/run', async (req, res, next
   } catch (err) { next(err) }
 })
 
+blueprintRouter.post('/sessions/:id/stages/:stageKey/approval', validate(stageApprovalSchema), async (req, res, next) => {
+  try {
+    const params = stageActionParamsSchema.parse(req.params)
+    const updated = await resumeLoopStageApproval(params.id, params.stageKey, req.body as StageApprovalInput, req.user!.userId)
+    res.json(updated)
+  } catch (err) { next(err) }
+})
+
 blueprintRouter.post('/sessions/:id/stages/:stageKey/verdict', validate(verdictSchema), async (req, res, next) => {
   try {
     const params = stageActionParamsSchema.parse(req.params)
@@ -1099,7 +1150,7 @@ blueprintRouter.post(
           metadata: {
             ...metadata,
             stageChats: { ...stageChats, [params.stageKey]: capped },
-          } as Prisma.InputJsonValue,
+          } as unknown as Prisma.InputJsonValue,
         },
       })
 
@@ -1373,6 +1424,17 @@ function stateToMetadata(session: LoopSessionSeed, state: LoopState): Prisma.Inp
   } as Prisma.InputJsonValue
 }
 
+function sanitizeStageModelAliases(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined
+  const out: Record<string, string> = {}
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw !== 'string') continue
+    const trimmed = raw.trim()
+    if (key.trim() && trimmed) out[key.trim()] = trimmed
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 function readExecutionConfig(value: unknown): LoopState['executionConfig'] {
   if (!isRecord(value)) return undefined
   return {
@@ -1380,6 +1442,7 @@ function readExecutionConfig(value: unknown): LoopState['executionConfig'] {
     excerptBudgetChars: typeof value.excerptBudgetChars === 'number' ? value.excerptBudgetChars : undefined,
     reuseUnchangedAttempt: value.reuseUnchangedAttempt !== false,
     modelAlias: typeof value.modelAlias === 'string' && value.modelAlias.trim() ? value.modelAlias.trim() : undefined,
+    stageModelAliases: sanitizeStageModelAliases(value.stageModelAliases),
     governanceMode: ['fail_open', 'fail_closed', 'degraded', 'human_approval_required'].includes(String(value.governanceMode))
       ? value.governanceMode as NonNullable<LoopState['executionConfig']>['governanceMode']
       : 'fail_open',
@@ -1397,6 +1460,28 @@ function workbenchExecutionLimits(executionConfig: LoopState['executionConfig'])
     maxPromptChars: executionConfig?.maxPromptChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxPromptChars,
     maxLayerChars: executionConfig?.maxLayerChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxLayerChars,
   }
+}
+
+function stageModelAlias(
+  executionConfig: LoopState['executionConfig'],
+  stageKey: string,
+  stageLabel?: string,
+): string | undefined {
+  const aliases = executionConfig?.stageModelAliases
+  if (!aliases) return executionConfig?.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS
+  const candidates = [
+    stageKey,
+    stageKey.toLowerCase(),
+    stageKey.toUpperCase(),
+    stageLabel,
+    stageLabel?.toLowerCase(),
+    stageLabel?.toUpperCase(),
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  for (const candidate of candidates) {
+    const alias = aliases[candidate]
+    if (alias?.trim()) return alias.trim()
+  }
+  return executionConfig?.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS
 }
 
 function applyLoopLimitSettings(
@@ -1735,6 +1820,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   const reusable = state.executionConfig?.reuseUnchangedAttempt === false ? undefined : [...priorAttempts].reverse().find(attempt =>
       attempt.inputSignature === inputSignature &&
       attempt.status !== 'RUNNING' &&
+      attempt.status !== 'PAUSED' &&
       attempt.status !== 'FAILED' &&
       (!normalizeAgentRole(stage.agentRole).includes('DEV') || ((attempt.correlation?.codeChangeIds as unknown[])?.length ?? 0) > 0) &&
       (attempt.artifactIds?.length ?? 0) > 0,
@@ -1807,21 +1893,108 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   })
 
   try {
-    const result = await runLoopStageExecute(session, snapshot, stage, attempt, task, stageSystemPromptAppend, stageExtraContext)
+    const codingResult = await runLoopStageExecute(session, snapshot, stage, attempt, task, stageSystemPromptAppend, stageExtraContext)
+    const result = codingResult.response
     await recordBlueprintBudgetUsage(session, result, stage.key, readLoopState(session).workflowNodeId)
+    if (!isTerminalCodingResult(codingResult)) {
+      await prisma.blueprintStageRun.update({
+        where: { id: dbRun.id },
+        data: {
+          status: blueprintStageStatusFor(codingResult),
+          response: result.finalResponse ?? '',
+          correlation: {
+            ...(result.correlation as unknown as Record<string, unknown>),
+            pendingApproval: codingResult.pendingApproval ?? null,
+            codingAgent: {
+              status: codingResult.status,
+              policy: codingResult.policy,
+              executeStatus: codingResult.executeStatus,
+            },
+          } as Prisma.InputJsonValue,
+          tokensUsed: result.tokensUsed as unknown as Prisma.InputJsonValue,
+          completedAt: null,
+          error: null,
+        },
+      })
+
+      const latest = await prisma.blueprintSession.findUnique({ where: { id: session.id } })
+      const pausedState = readLoopState(latest ?? session)
+      const pendingApproval = (codingResult.pendingApproval ?? null) as unknown as Record<string, unknown> | null
+      const attempts = pausedState.stageAttempts.map(item => item.id === attempt.id ? {
+        ...item,
+        status: 'PAUSED' as const,
+        response: result.finalResponse ?? '',
+        error: result.finishReason ?? 'approval_required',
+        correlation: {
+          ...(result.correlation as unknown as Record<string, unknown>),
+          pendingApproval,
+        },
+        tokensUsed: result.tokensUsed as unknown as Record<string, unknown>,
+        metrics: result.metrics as unknown as Record<string, unknown>,
+        pendingApproval,
+        gateRecommendation: {
+          verdict: 'BLOCKED' as const,
+          confidence: 0.8,
+          reason: `MCP paused ${stage.label} for ${pendingApproval?.tool_name ? `tool approval: ${pendingApproval.tool_name}` : 'human approval'}.`,
+          targetStageKey: stage.allowedSendBackTo?.[0],
+        },
+      } : item)
+      const updatedState: LoopState = {
+        ...pausedState,
+        currentStageKey: stage.key,
+        stageAttempts: attempts,
+        reviewEvents: [
+          ...pausedState.reviewEvents,
+          reviewEvent('MCP_APPROVAL_REQUIRED', `${stage.label} is paused for MCP approval.`, actorId, {
+            stageKey: stage.key,
+            attemptId: attempt.id,
+            pendingApproval,
+            cfCallId: result.correlation?.cfCallId,
+            traceId: result.correlation?.traceId,
+          }),
+        ],
+      }
+      await prisma.blueprintSession.update({
+        where: { id: session.id },
+        data: {
+          status: BlueprintSessionStatus.RUNNING,
+          metadata: stateToMetadata(latest ?? session, updatedState),
+        },
+      })
+      await recordBlueprintAudit(session.id, 'BlueprintStageRunPaused', actorId, {
+        stageKey: stage.key,
+        stageLabel: stage.label,
+        attemptId: attempt.id,
+        attemptNumber: attempt.attemptNumber,
+        cfCallId: result.correlation?.cfCallId,
+        traceId: result.correlation?.traceId,
+        mcpInvocationId: result.correlation?.mcpInvocationId,
+        pendingApproval,
+      })
+      return loadSession(session.id, actorId)
+    }
+
     const completedAt = new Date().toISOString()
-    const gateRecommendation = buildGateRecommendation(result, stage)
+    const gateRecommendation = buildCodingGateRecommendation(codingResult, stage)
     const artifactIds = await createLoopStageArtifacts(session, snapshot, stage, attempt, result, gateRecommendation, actorId)
     const rawLlmOpenQuestions = extractLlmOpenQuestions(result.finalResponse ?? '', stage, attempt)
     await prisma.blueprintStageRun.update({
       where: { id: dbRun.id },
       data: {
-        status: result.status === 'FAILED' ? BlueprintStageStatus.FAILED : BlueprintStageStatus.COMPLETED,
+        status: blueprintStageStatusFor(codingResult),
         response: result.finalResponse ?? '',
-        correlation: result.correlation as unknown as Prisma.InputJsonValue,
+        correlation: {
+          ...(result.correlation as unknown as Record<string, unknown>),
+          codingAgent: {
+            status: codingResult.status,
+            policy: codingResult.policy,
+            executeStatus: codingResult.executeStatus,
+            verificationReceipts: codingResult.verificationReceipts,
+          },
+        } as unknown as Prisma.InputJsonValue,
         tokensUsed: result.tokensUsed as unknown as Prisma.InputJsonValue,
         completedAt: new Date(completedAt),
-        error: result.status === 'FAILED' ? result.finishReason ?? 'stage failed' : null,
+        error: codingResult.status === 'FAILED' || codingResult.status === 'DENIED' ? result.finishReason ?? 'stage failed' : null,
       },
     })
 
@@ -1831,16 +2004,24 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
     const nextLoopDefinition = mergeStageQuestions(nextState.loopDefinition, stage.key, llmOpenQuestions)
     const updatedAttempts = nextState.stageAttempts.map(item => item.id === attempt.id ? {
       ...item,
-      status: result.status === 'FAILED' ? 'FAILED' as const : 'COMPLETED' as const,
+      status: attemptStatusFor(codingResult),
       completedAt,
       response: result.finalResponse ?? '',
-      error: result.status === 'FAILED' ? result.finishReason ?? 'stage failed' : undefined,
-      correlation: result.correlation as unknown as Record<string, unknown>,
+      error: codingResult.status === 'FAILED' || codingResult.status === 'DENIED' ? result.finishReason ?? 'stage failed' : undefined,
+      correlation: {
+        ...(result.correlation as unknown as Record<string, unknown>),
+        codingAgent: {
+          status: codingResult.status,
+          policy: codingResult.policy,
+          executeStatus: codingResult.executeStatus,
+        },
+      },
       tokensUsed: result.tokensUsed as unknown as Record<string, unknown>,
       metrics: result.metrics as unknown as Record<string, unknown>,
       gateRecommendation,
       artifactIds,
       generatedQuestionIds: llmOpenQuestions.map(question => question.id),
+      verificationReceipts: codingResult.verificationReceipts as unknown as Array<Record<string, unknown>>,
     } : item)
     let updatedState: LoopState = {
       ...nextState,
@@ -1946,6 +2127,276 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   }
 }
 
+async function resumeLoopStageApproval(
+  sessionId: string,
+  stageKey: string,
+  body: StageApprovalInput,
+  actorId: string,
+) {
+  const session = await prisma.blueprintSession.findUnique({
+    where: { id: sessionId },
+    include: {
+      snapshots: { orderBy: { createdAt: 'desc' }, take: 1 },
+      artifacts: { orderBy: { createdAt: 'asc' } },
+    },
+  })
+  if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+  assertBlueprintAccess(session, actorId)
+  const snapshot = session.snapshots[0]
+  if (!snapshot || snapshot.status !== 'COMPLETED') {
+    throw new ValidationError('Create a successful source snapshot before resuming a loop stage')
+  }
+
+  const state = readLoopState(session)
+  const stage = findLoopStage(state, stageKey)
+  const latestAttempt = latestStageAttempt(state, stage.key)
+  if (!latestAttempt || latestAttempt.status !== 'PAUSED') {
+    throw new ValidationError(`${stage.label} is not paused for MCP approval`)
+  }
+  const correlation = isRecord(latestAttempt.correlation) ? latestAttempt.correlation : {}
+  const pendingApproval = isRecord(latestAttempt.pendingApproval)
+    ? latestAttempt.pendingApproval
+    : isRecord(correlation.pendingApproval)
+      ? correlation.pendingApproval
+      : null
+  const cfCallId = typeof correlation.cfCallId === 'string' ? correlation.cfCallId : undefined
+  const continuationToken = pendingApproval && typeof pendingApproval.continuation_token === 'string'
+    ? pendingApproval.continuation_token
+    : undefined
+  if (!cfCallId && !continuationToken) {
+    throw new ValidationError('Paused stage is missing Context Fabric call id and continuation token')
+  }
+
+  const policy = classifyCodingStagePolicy({
+    key: stage.key,
+    label: stage.label,
+    agentRole: stage.agentRole,
+    terminal: stage.terminal,
+  })
+  let dbRun = await prisma.blueprintStageRun.findFirst({
+    where: {
+      sessionId: session.id,
+      stage: legacyStage(stage),
+      status: BlueprintStageStatus.RUNNING,
+    },
+    orderBy: { startedAt: 'desc' },
+  })
+  if (!dbRun) {
+    dbRun = await prisma.blueprintStageRun.create({
+      data: {
+        sessionId: session.id,
+        stage: legacyStage(stage),
+        status: BlueprintStageStatus.RUNNING,
+        task: `Resume paused MCP approval for ${stage.label}`,
+        startedAt: new Date(),
+      },
+    })
+  }
+
+  const codingResult = await resumeCodingStage({
+    cfCallId,
+    continuationToken,
+    decision: body.decision,
+    reason: body.reason,
+    argsOverride: body.argsOverride ?? body.args_override,
+    policy,
+  })
+  const result = codingResult.response
+  await recordBlueprintBudgetUsage(session, result, stage.key, state.workflowNodeId)
+
+  if (!isTerminalCodingResult(codingResult)) {
+    await prisma.blueprintStageRun.update({
+      where: { id: dbRun.id },
+      data: {
+        status: blueprintStageStatusFor(codingResult),
+        response: result.finalResponse ?? '',
+        correlation: {
+          ...(result.correlation as unknown as Record<string, unknown>),
+          pendingApproval: codingResult.pendingApproval ?? null,
+          codingAgent: {
+            status: codingResult.status,
+            policy: codingResult.policy,
+            executeStatus: codingResult.executeStatus,
+          },
+        } as unknown as Prisma.InputJsonValue,
+        tokensUsed: result.tokensUsed as unknown as Prisma.InputJsonValue,
+        completedAt: null,
+        error: null,
+      },
+    })
+    const latest = await prisma.blueprintSession.findUnique({ where: { id: session.id } })
+    const pausedState = readLoopState(latest ?? session)
+    const nextPendingApproval = (codingResult.pendingApproval ?? null) as unknown as Record<string, unknown> | null
+    const attempts = pausedState.stageAttempts.map(item => item.id === latestAttempt.id ? {
+      ...item,
+      status: 'PAUSED' as const,
+      response: result.finalResponse ?? item.response,
+      error: result.finishReason ?? 'approval_required',
+      correlation: {
+        ...(result.correlation as unknown as Record<string, unknown>),
+        pendingApproval: nextPendingApproval,
+      },
+      tokensUsed: result.tokensUsed as unknown as Record<string, unknown>,
+      metrics: result.metrics as unknown as Record<string, unknown>,
+      pendingApproval: nextPendingApproval,
+      gateRecommendation: {
+        verdict: 'BLOCKED' as const,
+        confidence: 0.8,
+        reason: `MCP paused ${stage.label} for another approval.`,
+        targetStageKey: stage.allowedSendBackTo?.[0],
+      },
+    } : item)
+    await prisma.blueprintSession.update({
+      where: { id: session.id },
+      data: {
+        status: BlueprintSessionStatus.RUNNING,
+        metadata: stateToMetadata(latest ?? session, {
+          ...pausedState,
+          currentStageKey: stage.key,
+          stageAttempts: attempts,
+          reviewEvents: [
+            ...pausedState.reviewEvents,
+            reviewEvent('MCP_APPROVAL_REQUIRED', `${stage.label} paused again for MCP approval.`, actorId, {
+              stageKey: stage.key,
+              attemptId: latestAttempt.id,
+              pendingApproval: nextPendingApproval,
+              cfCallId: result.correlation?.cfCallId,
+              traceId: result.correlation?.traceId,
+            }),
+          ],
+        }),
+      },
+    })
+    await recordBlueprintAudit(session.id, 'BlueprintStageRunPaused', actorId, {
+      stageKey: stage.key,
+      stageLabel: stage.label,
+      attemptId: latestAttempt.id,
+      attemptNumber: latestAttempt.attemptNumber,
+      cfCallId: result.correlation?.cfCallId,
+      traceId: result.correlation?.traceId,
+      pendingApproval: nextPendingApproval,
+    })
+    return loadSession(session.id, actorId)
+  }
+
+  const completedAt = new Date().toISOString()
+  const gateRecommendation = buildCodingGateRecommendation(codingResult, stage)
+  const artifactIds = await createLoopStageArtifacts(session, snapshot, stage, latestAttempt, result, gateRecommendation, actorId)
+  const rawLlmOpenQuestions = extractLlmOpenQuestions(result.finalResponse ?? '', stage, latestAttempt)
+  await prisma.blueprintStageRun.update({
+    where: { id: dbRun.id },
+    data: {
+      status: blueprintStageStatusFor(codingResult),
+      response: result.finalResponse ?? '',
+      correlation: {
+        ...(result.correlation as unknown as Record<string, unknown>),
+        codingAgent: {
+          status: codingResult.status,
+          policy: codingResult.policy,
+          executeStatus: codingResult.executeStatus,
+          verificationReceipts: codingResult.verificationReceipts,
+        },
+      } as unknown as Prisma.InputJsonValue,
+      tokensUsed: result.tokensUsed as unknown as Prisma.InputJsonValue,
+      completedAt: new Date(completedAt),
+      error: codingResult.status === 'FAILED' || codingResult.status === 'DENIED' ? result.finishReason ?? 'stage failed' : null,
+    },
+  })
+
+  const latest = await prisma.blueprintSession.findUnique({ where: { id: session.id } })
+  const nextState = readLoopState(latest ?? session)
+  const llmOpenQuestions = filterNewLlmOpenQuestions(rawLlmOpenQuestions, nextState, stage.key)
+  const nextLoopDefinition = mergeStageQuestions(nextState.loopDefinition, stage.key, llmOpenQuestions)
+  const updatedAttempts = nextState.stageAttempts.map(item => item.id === latestAttempt.id ? {
+    ...item,
+    status: attemptStatusFor(codingResult),
+    completedAt,
+    response: result.finalResponse ?? '',
+    error: codingResult.status === 'FAILED' || codingResult.status === 'DENIED' ? result.finishReason ?? 'stage failed' : undefined,
+    correlation: {
+      ...(result.correlation as unknown as Record<string, unknown>),
+      codingAgent: {
+        status: codingResult.status,
+        policy: codingResult.policy,
+        executeStatus: codingResult.executeStatus,
+      },
+    },
+    tokensUsed: result.tokensUsed as unknown as Record<string, unknown>,
+    metrics: result.metrics as unknown as Record<string, unknown>,
+    pendingApproval: null,
+    gateRecommendation,
+    artifactIds,
+    generatedQuestionIds: llmOpenQuestions.map(question => question.id),
+    verificationReceipts: codingResult.verificationReceipts as unknown as Array<Record<string, unknown>>,
+  } : item)
+  let updatedState: LoopState = {
+    ...nextState,
+    loopDefinition: nextLoopDefinition,
+    currentStageKey: stage.key,
+    stageAttempts: updatedAttempts,
+    reviewEvents: [
+      ...nextState.reviewEvents,
+      reviewEvent('MCP_APPROVAL_RESUMED', `${stage.label} MCP approval ${body.decision}.`, actorId, {
+        stageKey: stage.key,
+        attemptId: latestAttempt.id,
+        decision: body.decision,
+        cfCallId: result.correlation?.cfCallId,
+        traceId: result.correlation?.traceId,
+      }),
+      ...(llmOpenQuestions.length > 0 ? [reviewEvent(
+        'CLARIFICATIONS_REQUESTED',
+        `${stage.label} asked ${llmOpenQuestions.length} clarification question${llmOpenQuestions.length === 1 ? '' : 's'}.`,
+        actorId,
+        {
+          stageKey: stage.key,
+          attemptId: latestAttempt.id,
+          questionIds: llmOpenQuestions.map(question => question.id),
+        },
+      )] : []),
+      reviewEvent(
+        stage.approvalRequired !== false ? 'ARTIFACTS_AWAITING_APPROVAL' : 'STAGE_RUN_COMPLETED',
+        stage.approvalRequired !== false
+          ? `${stage.label} produced ${artifactIds.length} artifacts and is waiting for human approval.`
+          : `${stage.label} attempt ${latestAttempt.attemptNumber} completed with ${gateRecommendation.verdict}.`,
+        actorId,
+        {
+          stageKey: stage.key,
+          attemptId: latestAttempt.id,
+          gateRecommendation,
+          artifactIds,
+          approvalRequired: stage.approvalRequired !== false,
+        },
+      ),
+    ],
+  }
+  updatedState = maybeApplyAutoGate(updatedState, stage, latestAttempt.id, actorId)
+  await prisma.blueprintSession.update({
+    where: { id: session.id },
+    data: {
+      status: codingResult.status === 'FAILED' || codingResult.status === 'DENIED'
+        ? BlueprintSessionStatus.FAILED
+        : BlueprintSessionStatus.SNAPSHOTTED,
+      metadata: stateToMetadata(latest ?? session, updatedState),
+    },
+  })
+  await recordBlueprintAudit(session.id, 'BlueprintStageRunResumed', actorId, {
+    stageKey: stage.key,
+    stageLabel: stage.label,
+    attemptId: latestAttempt.id,
+    attemptNumber: latestAttempt.attemptNumber,
+    decision: body.decision,
+    verdict: gateRecommendation.verdict,
+    confidence: gateRecommendation.confidence,
+    cfCallId: result.correlation?.cfCallId,
+    traceId: result.correlation?.traceId,
+    mcpInvocationId: result.correlation?.mcpInvocationId,
+    generatedQuestionIds: llmOpenQuestions.map(question => question.id),
+    tokensUsed: result.tokensUsed,
+    metrics: result.metrics,
+  })
+  return loadSession(session.id, actorId)
+}
+
 async function saveStageVerdict(
   sessionId: string,
   stageKey: string,
@@ -1958,7 +2409,7 @@ async function saveStageVerdict(
   const state = readLoopState(session)
   const stage = findLoopStage(state, stageKey)
   const latestAttempt = latestStageAttempt(state, stage.key)
-  if (!latestAttempt || latestAttempt.status === 'RUNNING') {
+  if (!latestAttempt || latestAttempt.status === 'RUNNING' || latestAttempt.status === 'PAUSED') {
     throw new ValidationError(`Run ${stage.label} before saving a verdict`)
   }
   const mergedAnswers = mergeDecisionAnswers(state.decisionAnswers, body.answers ?? [], actorId)
@@ -1971,6 +2422,26 @@ async function saveStageVerdict(
   if (accepted && normalizeAgentRole(stage.agentRole).includes('DEV') && !attemptHasActualCodeChange(latestAttempt)) {
     throw new ValidationError(
       'Developer stage cannot be approved until an actual MCP/git code change is captured. Re-run Develop with a writable MCP workspace and a tool-capable model alias.',
+    )
+  }
+  if (accepted && attemptHasActualCodeChange(latestAttempt) && (latestAttempt.verificationReceipts?.length ?? 0) === 0) {
+    throw new ValidationError(
+      'Code-changing stages need a captured MCP verification receipt before approval. Run test, lint, typecheck, or another configured verification tool and rerun the stage.',
+    )
+  }
+  if (accepted && attemptHasActualCodeChange(latestAttempt) && attemptHasFailedVerificationReceipt(latestAttempt)) {
+    throw new ValidationError(
+      'Code-changing stages cannot be approved with failed verification receipts. Send the stage back with the test, lint, typecheck, or formal-verifier output.',
+    )
+  }
+  if (accepted && attemptHasActualCodeChange(latestAttempt) && attemptHasUnavailableVerificationReceipt(latestAttempt) && (body.verdict !== 'ACCEPTED_WITH_RISK' || !body.acceptRisk)) {
+    throw new ValidationError(
+      'Verification was explicitly recorded as unavailable. Use Accepted with risk and confirm accepted risk, or send the stage back for runnable verification.',
+    )
+  }
+  if (accepted && attemptHasActualCodeChange(latestAttempt) && !attemptHasPassingVerificationReceipt(latestAttempt)) {
+    throw new ValidationError(
+      'Code-changing stages need at least one passing MCP verification receipt before approval.',
     )
   }
   const attempts = state.stageAttempts.map(item => item.id === latestAttempt.id ? {
@@ -2209,10 +2680,10 @@ async function runLoopStageExecute(
   systemPromptAppend: string,
   // M36.6 — resolved by caller from prompt-composer (was: inline isDeveloperStage ternary)
   extraContext: string,
-): Promise<ExecuteResponse> {
+): Promise<CodingRunResult> {
   const traceId = `blueprint-${session.id}-${stage.key}`
   const executionConfig = readLoopState(session).executionConfig
-  const modelAlias = executionConfig?.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS
+  const modelAlias = stageModelAlias(executionConfig, stage.key, stage.label)
   const limits = workbenchExecutionLimits(executionConfig)
   const isDeveloperStage = normalizeAgentRole(stage.agentRole).includes('DEV')
   const linkedWorkItem = await workflowWorkItemContext(session.workflowInstanceId)
@@ -2224,7 +2695,20 @@ async function runLoopStageExecute(
     snapshotMode: executionConfig?.snapshotMode,
     excerptBudgetChars: executionConfig?.excerptBudgetChars,
   })
-  return contextFabricClient.execute({
+  const policy = classifyCodingStagePolicy({
+    key: stage.key,
+    label: stage.label,
+    agentRole: stage.agentRole,
+    terminal: stage.terminal,
+  })
+  return runCodingStage({
+    sessionId: session.id,
+    stageKey: stage.key,
+    stageLabel: stage.label,
+    attemptId: attempt.id,
+    actorId: session.createdById ?? undefined,
+    policy,
+    executeRequest: {
     trace_id: traceId,
     idempotency_key: `${session.id}:${stage.key}:${Date.now()}`,
     run_context: {
@@ -2251,6 +2735,7 @@ async function runLoopStageExecute(
       sourceRef: session.sourceRef,
       stageKey: stage.key,
       stageLabel: stage.label,
+      modelAlias,
       agentRole: stage.agentRole,
     },
     artifacts: [
@@ -2273,6 +2758,11 @@ async function runLoopStageExecute(
       ...(modelAlias ? { modelAlias } : {}),
       temperature: 0.2,
       maxOutputTokens: limits.maxOutputTokens,
+      promptCache: {
+        enabled: true,
+        strategy: 'provider_auto',
+        key: `${session.id}:${stage.key}:${session.sourceRef ?? 'default'}`,
+      },
     },
     context_policy: {
       optimizationMode: 'code_aware',
@@ -2290,11 +2780,15 @@ async function runLoopStageExecute(
       inputTokenBudget: limits.maxContextTokens,
       outputTokenBudget: limits.maxOutputTokens,
       maxHistoryMessages: 4,
+      maxHistoryTokens: Math.max(1000, Math.floor(limits.maxContextTokens * 0.75)),
+      summaryEveryMessages: 6,
+      compressToolResults: true,
       maxToolResultChars: 8000,
       maxPromptChars: limits.maxPromptChars,
     },
     allow_autonomous_mutation: isDeveloperStage,
     governance_mode: executionConfig?.governanceMode ?? 'fail_open',
+    },
   })
 }
 
@@ -2496,6 +2990,10 @@ function buildExecutionFallbackMarkdown(result: ExecuteResponse) {
   const inputTokens = result.tokensUsed?.input ?? result.modelUsage?.inputTokens ?? result.usage?.inputTokens
   const outputTokens = result.tokensUsed?.output ?? result.modelUsage?.outputTokens ?? result.usage?.outputTokens
   const totalTokens = result.tokensUsed?.total ?? result.modelUsage?.totalTokens ?? result.usage?.totalTokens
+  const promptCache = result.modelUsage?.promptCache ?? result.usage?.promptCache ?? result.promptCache ?? result.tokensUsed?.promptCache
+  const promptCacheSummary = promptCache
+    ? `- Prompt cache: reported=${String(promptCache.reported ?? false)}, read=${String(promptCache.cacheReadTokens ?? 0)}, write=${String(promptCache.cacheWriteTokens ?? 0)}`
+    : undefined
   const lines = [
     'No model-authored narrative was returned for this stage. The artifact was generated from the source snapshot, gate evidence, and execution receipt below.',
     '',
@@ -2510,6 +3008,7 @@ function buildExecutionFallbackMarkdown(result: ExecuteResponse) {
     provider || model ? `- Resolved model: ${[provider, model].filter(Boolean).join(' / ')}` : undefined,
     totalTokens != null ? `- Tokens: input=${inputTokens ?? 0}, output=${outputTokens ?? 0}, total=${totalTokens ?? 0}` : undefined,
     estimatedCost != null ? `- Estimated cost: ${estimatedCost}` : undefined,
+    promptCacheSummary,
     '',
     '### Correlation',
     result.correlation.cfCallId ? `- Context Fabric call: ${result.correlation.cfCallId}` : undefined,
@@ -2698,6 +3197,8 @@ function buildSnapshotExecuteArtifact(
       totalBudgetChars: excerptBudgetChars,
     })
   const { sampledFiles: _omitted, ...compactSummary } = summary
+  const testing = detectTestingTools(compactManifest, sampledFiles)
+  const repoInstructions = extractRepoInstructions(sampledFiles)
   return {
     snapshotId: snapshot.id,
     rootHash: snapshot.rootHash,
@@ -2706,10 +3207,77 @@ function buildSnapshotExecuteArtifact(
     compactManifest,
     manifestTruncated: manifest.length > compactManifest.length,
     relevantExcerpts,
+    repoInstructions,
+    testing,
     excerptBudgetChars,
-    estimatedChars: JSON.stringify({ compactSummary, compactManifest, relevantExcerpts }).length,
-    guidance: 'Use the snapshotId/rootHash as the stable source reference. Ask for more context only when these excerpts are insufficient.',
+    estimatedChars: JSON.stringify({ compactSummary, compactManifest, relevantExcerpts, repoInstructions, testing }).length,
+    guidance: 'Use the snapshotId/rootHash as the stable source reference. Treat repoInstructions as first-class coding constraints and ask for more context only when these excerpts are insufficient.',
   }
+}
+
+function detectTestingTools(
+  manifest: Array<{ path: string; size?: number; language?: string; sha?: string }>,
+  sampledFiles: Array<{ path: string; excerpt: string }>,
+) {
+  const paths = new Set(manifest.map(file => file.path))
+  const corpus = sampledFiles.map(file => `${file.path}\n${file.excerpt}`).join('\n')
+  const commands: Array<{ tool: string; command: string; reason: string; stages: string[]; confidence: number }> = []
+  const add = (tool: string, command: string, reason: string, confidence = 0.8) => {
+    if (commands.some(item => item.command === command)) return
+    commands.push({ tool, command, reason, stages: ['DEVELOPER', 'QA'], confidence })
+  }
+
+  const packageJson = sampledFiles.find(file => /(^|\/)package\.json$/i.test(file.path))?.excerpt ?? ''
+  const hasPath = (pattern: RegExp) => [...paths].some(path => pattern.test(path))
+  const packageManager = hasPath(/(^|\/)pnpm-lock\.yaml$/i) ? 'pnpm' : hasPath(/(^|\/)yarn\.lock$/i) ? 'yarn' : 'npm'
+  if (hasPath(/(^|\/)package\.json$/i) || /"scripts"\s*:/i.test(packageJson)) {
+    add(packageManager, packageManager === 'yarn' ? 'yarn test' : `${packageManager} test`, 'package.json was detected.')
+    if (/"lint"\s*:/i.test(packageJson)) add(packageManager, packageManager === 'yarn' ? 'yarn lint' : `${packageManager} run lint`, 'package.json exposes a lint script.', 0.75)
+    if (/"typecheck"\s*:/i.test(packageJson)) add(packageManager, packageManager === 'yarn' ? 'yarn typecheck' : `${packageManager} run typecheck`, 'package.json exposes a typecheck script.', 0.7)
+  }
+  if (hasPath(/(^|\/)pom\.xml$/i)) add('Maven', 'mvn test', 'pom.xml was detected.')
+  if (hasPath(/(^|\/)gradlew$/i)) add('Gradle', './gradlew test', 'Gradle wrapper was detected.')
+  else if (hasPath(/(^|\/)build\.gradle(\.kts)?$/i)) add('Gradle', 'gradle test', 'Gradle build file was detected.', 0.7)
+  if (hasPath(/(^|\/)(pytest\.ini|pyproject\.toml|requirements\.txt)$/i) || /\bpytest\b/i.test(corpus)) add('pytest', 'pytest', 'Python test tooling was detected.')
+  if (hasPath(/(^|\/)go\.mod$/i)) add('Go', 'go test ./...', 'go.mod was detected.')
+  if (hasPath(/(^|\/)Cargo\.toml$/i)) add('Cargo', 'cargo test', 'Cargo.toml was detected.')
+  if (hasPath(/\.(sln|csproj)$/i)) add('.NET', 'dotnet test', '.NET project files were detected.')
+  if (hasPath(/(^|\/)Makefile$/i) && /\btest:/i.test(corpus)) add('Make', 'make test', 'Makefile test target was detected.', 0.7)
+
+  return {
+    detectedCommands: commands.slice(0, 8),
+    guidance: commands.length
+      ? 'Dev and QA stages should run the most focused relevant command after code changes and report command/status/output evidence.'
+      : 'No test command was confidently detected. Inspect repo runbooks/package files before claiming verification.',
+  }
+}
+
+function isRepoInstructionPath(relPath: string): boolean {
+  const normalized = relPath.replace(/\\/g, '/')
+  const lower = normalized.toLowerCase()
+  const base = lower.split('/').pop() ?? lower
+  return (
+    base === 'agents.md' ||
+    base === 'claude.md' ||
+    base === 'skill.md' ||
+    base === 'copilot-instructions.md' ||
+    lower === '.github/copilot-instructions.md' ||
+    lower.includes('/.github/copilot-instructions.md') ||
+    lower.includes('/.cursor/rules') ||
+    lower.includes('/.windsurf/rules') ||
+    lower.endsWith('.cursorrules') ||
+    lower.endsWith('.windsurfrules')
+  )
+}
+
+function extractRepoInstructions(sampledFiles: Array<{ path: string; excerpt: string }>): Array<{ path: string; excerpt: string }> {
+  return sampledFiles
+    .filter(file => isRepoInstructionPath(file.path))
+    .slice(0, 8)
+    .map(file => ({
+      path: file.path,
+      excerpt: file.excerpt.slice(0, 4_000),
+    }))
 }
 
 function encodeComposerArtifactContent(snapshotArtifact: Record<string, unknown>): string {
@@ -2853,10 +3421,78 @@ function buildGateRecommendation(result: ExecuteResponse, stage: LoopStageDefini
   }
 }
 
+function buildCodingGateRecommendation(result: CodingRunResult, stage: LoopStageDefinition): GateRecommendation {
+  if (result.status === 'FAILED' || result.status === 'DENIED') {
+    return {
+      verdict: 'BLOCKED',
+      confidence: 0.95,
+      reason: result.response.finishReason ?? result.response.finalResponse ?? 'Coding stage did not complete successfully.',
+      targetStageKey: stage.allowedSendBackTo?.[0],
+    }
+  }
+  const base = buildGateRecommendation(result.response, stage)
+  if (base.verdict !== 'PASS') return base
+  if (hasFailedVerificationReceipt(result)) {
+    return {
+      verdict: 'NEEDS_REWORK',
+      confidence: 0.94,
+      reason: 'A test, lint, typecheck, or formal verification receipt failed. Send the work back with the verifier output before approval.',
+      targetStageKey: stage.allowedSendBackTo?.[0],
+    }
+  }
+  if (stageRequiresVerification(result.policy) && hasActualCodeChange(result) && !hasVerificationReceipt(result)) {
+    return {
+      verdict: 'NEEDS_REWORK',
+      confidence: 0.9,
+      reason: 'Code changed but no test, lint, typecheck, or verification receipt was captured. Run the detected verification command through MCP before approval.',
+      targetStageKey: stage.allowedSendBackTo?.[0],
+    }
+  }
+  if (stageRequiresVerification(result.policy) && hasActualCodeChange(result) && !hasPassingVerificationReceipt(result)) {
+    return {
+      verdict: hasUnavailableVerificationReceipt(result) ? 'ACCEPTED_WITH_RISK' : 'NEEDS_REWORK',
+      confidence: hasUnavailableVerificationReceipt(result) ? 0.78 : 0.9,
+      reason: hasUnavailableVerificationReceipt(result)
+        ? 'Code changed and MCP recorded verification as unavailable. Human accepted-risk approval is required.'
+        : 'Code changed but no passing verification receipt was captured. Run the detected verification command through MCP before approval.',
+      targetStageKey: stage.allowedSendBackTo?.[0],
+    }
+  }
+  return base
+}
+
 function attemptHasActualCodeChange(attempt: StageAttempt): boolean {
   const correlation = isRecord(attempt.correlation) ? attempt.correlation : {}
   const codeChangeIds = correlation.codeChangeIds
   return Array.isArray(codeChangeIds) && codeChangeIds.some(id => typeof id === 'string' && id.trim().length > 0)
+}
+
+function attemptReceiptExitCode(receipt: Record<string, unknown>): number | undefined {
+  return typeof receipt.exitCode === 'number'
+    ? receipt.exitCode
+    : typeof receipt.exit_code === 'number'
+      ? receipt.exit_code
+      : undefined
+}
+
+function attemptHasFailedVerificationReceipt(attempt: StageAttempt): boolean {
+  return (attempt.verificationReceipts ?? []).some(receipt => {
+    const exitCode = attemptReceiptExitCode(receipt)
+    if (attemptReceiptUnavailable(receipt)) return false
+    return receipt.passed === false || (typeof exitCode === 'number' && exitCode !== 0)
+  })
+}
+
+function attemptHasPassingVerificationReceipt(attempt: StageAttempt): boolean {
+  return (attempt.verificationReceipts ?? []).some(receipt => receipt.passed === true || attemptReceiptExitCode(receipt) === 0)
+}
+
+function attemptReceiptUnavailable(receipt: Record<string, unknown>): boolean {
+  return receipt.unavailable === true || receipt.verification_kind === 'unavailable'
+}
+
+function attemptHasUnavailableVerificationReceipt(attempt: StageAttempt): boolean {
+  return (attempt.verificationReceipts ?? []).some(receipt => attemptReceiptUnavailable(receipt))
 }
 
 function maybeApplyAutoGate(state: LoopState, stage: LoopStageDefinition, attemptId: string, actorId: string): LoopState {
@@ -3483,12 +4119,13 @@ async function runStage(
 ): Promise<ExecuteResponse> {
   const traceId = `blueprint-${session.id}-${stage.toLowerCase()}`
   const executionConfig = readLoopState(session).executionConfig
-  const modelAlias = executionConfig?.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS
+  const stageKey = stage.toLowerCase()
+  const modelAlias = stageModelAlias(executionConfig, stageKey, humanStage(stage))
   const limits = workbenchExecutionLimits(executionConfig)
   const isDeveloperStage = stage === BlueprintStage.DEVELOPER
   const linkedWorkItem = await workflowWorkItemContext(session.workflowInstanceId)
   const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
-    stageKey: stage.toLowerCase(),
+    stageKey,
     stageLabel: humanStage(stage),
     task,
     snapshotMode: executionConfig?.snapshotMode,
@@ -3514,6 +4151,7 @@ async function runStage(
       sourceUri: session.sourceUri,
       sourceRef: session.sourceRef,
       stage,
+      modelAlias,
     },
     artifacts: [
       {
@@ -3535,6 +4173,11 @@ async function runStage(
       ...(modelAlias ? { modelAlias } : {}),
       temperature: 0.2,
       maxOutputTokens: limits.maxOutputTokens,
+      promptCache: {
+        enabled: true,
+        strategy: 'provider_auto',
+        key: `${session.id}:${stageKey}:${session.sourceRef ?? 'default'}`,
+      },
     },
     context_policy: {
       optimizationMode: 'code_aware',
@@ -3552,6 +4195,9 @@ async function runStage(
       inputTokenBudget: limits.maxContextTokens,
       outputTokenBudget: limits.maxOutputTokens,
       maxHistoryMessages: 4,
+      maxHistoryTokens: Math.max(1000, Math.floor(limits.maxContextTokens * 0.75)),
+      summaryEveryMessages: 6,
+      compressToolResults: true,
       maxToolResultChars: 8000,
       maxPromptChars: limits.maxPromptChars,
     },
@@ -3574,15 +4220,17 @@ async function recordBlueprintBudgetUsage(
       inputTokens: result.tokensUsed?.input,
       outputTokens: result.tokensUsed?.output,
       totalTokens: result.tokensUsed?.total,
-      estimatedCost: result.modelUsage?.estimatedCost,
+      estimatedCost: result.modelUsage?.estimatedCost ?? result.usage?.estimatedCost ?? result.tokensUsed?.estimatedCost ?? result.tokensUsed?.estimated_cost,
       provider: result.modelUsage?.provider,
       model: result.modelUsage?.model,
       metadata: {
         source: 'blueprint-workbench',
         stageKey,
+        modelAlias: result.modelUsage?.modelAlias ?? result.usage?.modelAlias ?? result.correlation.modelAlias,
         finishReason: result.finishReason,
         status: result.status,
         tokensSaved: result.usage?.tokensSaved,
+        promptCache: result.modelUsage?.promptCache ?? result.usage?.promptCache ?? result.promptCache ?? result.tokensUsed?.promptCache,
       },
     })
   } catch (err) {
@@ -5024,12 +5672,12 @@ async function snapshotLocalDir(root: string, includeGlobs: string[], excludeGlo
       if (stat.size > MAX_EXCERPT_BYTES * 10) continue
       const file: ManifestEntry = { path: rel, size: stat.size, language: languageFor(rel) }
       totalBytes += stat.size
-      if (excerptCount < MAX_EXCERPT_FILES && isTextPath(rel) && totalBytes < MAX_TOTAL_BYTES) {
+      if ((excerptCount < MAX_EXCERPT_FILES || isRepoInstructionPath(rel)) && isTextPath(rel) && totalBytes < MAX_TOTAL_BYTES) {
         const buf = await fs.readFile(full)
         const excerpt = buf.toString('utf8', 0, Math.min(buf.length, MAX_EXCERPT_BYTES))
         file.excerpt = excerpt
         file.sha = sha256(excerpt)
-        excerptCount += 1
+        if (!isRepoInstructionPath(rel)) excerptCount += 1
       }
       manifest.push(file)
     }
@@ -5061,12 +5709,12 @@ async function snapshotGithub(sourceUri: string, sourceRef: string | undefined, 
     if (size > MAX_EXCERPT_BYTES * 10) continue
     const file: ManifestEntry = { path: rel, size, sha: item.sha, language: languageFor(rel) }
     totalBytes += size
-    if (excerptCount < MAX_EXCERPT_FILES && isTextPath(rel) && size <= MAX_EXCERPT_BYTES) {
+    if ((excerptCount < MAX_EXCERPT_FILES || isRepoInstructionPath(rel)) && isTextPath(rel) && size <= MAX_EXCERPT_BYTES) {
       const raw = `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/${encodeURIComponent(branch)}/${itemPath.split('/').map(encodeURIComponent).join('/')}`
       const rawResp = await fetch(raw)
       if (rawResp.ok) {
         file.excerpt = (await rawResp.text()).slice(0, MAX_EXCERPT_BYTES)
-        excerptCount += 1
+        if (!isRepoInstructionPath(rel)) excerptCount += 1
       }
     }
     manifest.push(file)

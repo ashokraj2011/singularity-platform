@@ -271,25 +271,25 @@ JSON
   ( "$ROOT/seed/apply.sh" "$db_user" "$db_pass" "$db_host" "$db_port" >/dev/null 2>&1 ) \
     || warn "seed/apply.sh had warnings — run it manually: seed/apply.sh $db_user"
 
-  boot audit-gov        "cd audit-governance-service  && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8500 npm run dev"
+  boot audit-gov        "cd audit-governance-service  && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8500 MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" npm run dev"
   sleep 2
   boot llm-gateway      "cd context-fabric && LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" ALLOW_CALLER_PROVIDER_OVERRIDE=false python3 -m uvicorn services.llm_gateway_service.app.main:app --host 0.0.0.0 --port 8001"
   sleep 1
 
-  boot agent-service    "cd agent-and-tools/apps/agent-service   && PORT=3001 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
-  boot tool-service     "cd agent-and-tools/apps/tool-service    && PORT=3002 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
-  boot agent-runtime    "cd agent-and-tools/apps/agent-runtime   && PORT=3003 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
-  boot prompt-composer  "cd agent-and-tools/apps/prompt-composer && PORT=3004 DATABASE_URL=\"$DATABASE_URL_COMPOSER\" DATABASE_URL_RUNTIME_READ=\"$DATABASE_URL_RUNTIME_READ\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" CAPSULE_COMPILE_MODEL_ALIAS=mock JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+  boot agent-service    "cd agent-and-tools/apps/agent-service   && PORT=3001 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+  boot tool-service     "cd agent-and-tools/apps/tool-service    && PORT=3002 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+  boot agent-runtime    "cd agent-and-tools/apps/agent-runtime   && PORT=3003 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+  boot prompt-composer  "cd agent-and-tools/apps/prompt-composer && PORT=3004 DATABASE_URL=\"$DATABASE_URL_COMPOSER\" DATABASE_URL_RUNTIME_READ=\"$DATABASE_URL_RUNTIME_READ\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" CAPSULE_COMPILE_MODEL_ALIAS=mock JWT_SECRET=\"$JWT_SECRET\" npm run dev"
 
-  boot mcp-server       "cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
-  boot context-api      "cd context-fabric/services/context_api_service && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+  boot mcp-server       "cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
+  boot context-api      "cd context-fabric/services/context_api_service && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
   sleep 3
 
-  boot workgraph-api    "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" WORKBENCH_DEFAULT_MODEL_ALIAS=mock AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
+  boot workgraph-api    "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" WORKBENCH_DEFAULT_MODEL_ALIAS=mock AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
 
   # PORT=3000 forces Next.js to fail loudly on a port collision rather than
   # silently auto-bumping to 3001 (which would dodge the SPA proxy rewrites).
-  boot agent-web        "cd agent-and-tools/web        && PORT=3000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" npm run dev"
+  boot agent-web        "cd agent-and-tools/web        && PORT=3000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" npm run dev"
   boot workgraph-web    "cd workgraph-studio/apps/web  && VITE_API_BASE=http://localhost:8080 VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" VITE_IAM_LOGIN_URL=http://localhost:5175/login VITE_AUTO_LOGIN=0 npm run dev -- --host 0.0.0.0 --port 5174"
   boot blueprint-workbench "cd workgraph-studio/apps/blueprint-workbench && npm run dev -- --host 0.0.0.0 --port 5176"
 

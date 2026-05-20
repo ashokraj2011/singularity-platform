@@ -182,6 +182,7 @@ interface NodeInsight {
     totalTokens?: number
     estimatedCost?: number
     tokensSaved?: number
+    promptCache?: Record<string, unknown>
     promptEstimatedInputTokens?: number
     budgetWarnings: string[]
     retrievalStats?: Record<string, unknown>
@@ -194,6 +195,7 @@ interface NodeInsight {
     finishReason?: string
     artifactIds: string[]
     toolInvocationIds: string[]
+    verificationReceipts: Array<Record<string, unknown>>
   }>
   workItems: Array<{
     id: string
@@ -247,6 +249,7 @@ interface AuditStageReport {
   provider?: string
   model?: string
   modelAlias?: string
+  promptCache?: Record<string, unknown>
   cfCallIds: string[]
   promptAssemblyIds: string[]
   mcpInvocationIds: string[]
@@ -943,6 +946,13 @@ async function buildInsightsResponse(id: string): Promise<InsightsResponse | nul
       const tokensUsed = payload.tokensUsed as Record<string, unknown> | undefined
       const metrics = payload.metrics as Record<string, unknown> | undefined
       const prompt = payload.prompt as Record<string, unknown> | undefined
+      const promptCache = (payload.promptCache && typeof payload.promptCache === 'object'
+        ? payload.promptCache
+        : modelUsage?.promptCache && typeof modelUsage.promptCache === 'object'
+          ? modelUsage.promptCache
+          : prompt?.promptCache && typeof prompt.promptCache === 'object'
+            ? prompt.promptCache
+            : undefined) as Record<string, unknown> | undefined
       const promptEstimatedInputTokens =
         typeof payload.promptEstimatedInputTokens === 'number' ? payload.promptEstimatedInputTokens
         : typeof prompt?.estimatedInputTokens === 'number' ? prompt.estimatedInputTokens
@@ -961,6 +971,11 @@ async function buildInsightsResponse(id: string): Promise<InsightsResponse | nul
           ? prompt.contextPlan
           : undefined) as Record<string, unknown> | undefined
       const receiptArr = receiptsByNode.get(r.nodeId) ?? []
+      const verificationReceipts = Array.isArray(payload.verificationReceipts)
+        ? payload.verificationReceipts.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+        : Array.isArray(payload.verification_receipts)
+          ? payload.verification_receipts.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+          : []
       receiptArr.push({
         agentRunId: r.id,
         status: String(r.status),
@@ -976,6 +991,7 @@ async function buildInsightsResponse(id: string): Promise<InsightsResponse | nul
         totalTokens: typeof tokensUsed?.total === 'number' ? tokensUsed.total : undefined,
         estimatedCost: typeof modelUsage?.estimatedCost === 'number' ? modelUsage.estimatedCost : undefined,
         tokensSaved: typeof metrics?.tokensSaved === 'number' ? metrics.tokensSaved : undefined,
+        promptCache,
         promptEstimatedInputTokens,
         budgetWarnings,
         retrievalStats,
@@ -988,6 +1004,7 @@ async function buildInsightsResponse(id: string): Promise<InsightsResponse | nul
         finishReason: payload.finishReason as string | undefined,
         artifactIds: Array.isArray(payload.artifactIds) ? payload.artifactIds.map(String) : [],
         toolInvocationIds: Array.isArray(payload.toolInvocationIds) ? payload.toolInvocationIds.map(String) : [],
+        verificationReceipts,
       })
       receiptsByNode.set(r.nodeId, receiptArr)
       const branch = (payload.workspaceBranch ?? (payload.workspace as Record<string, unknown> | undefined)?.workspaceBranch) as string | undefined
@@ -1116,6 +1133,9 @@ async function buildInsightsResponse(id: string): Promise<InsightsResponse | nul
         provider: str(firstBudgetMetadata?.provider) ?? node.receipts.find(receipt => receipt.provider)?.provider,
         model: str(firstBudgetMetadata?.model) ?? node.receipts.find(receipt => receipt.model)?.model,
         modelAlias: str(firstBudgetMetadata?.modelAlias) ?? node.receipts.find(receipt => receipt.modelAlias)?.modelAlias,
+        promptCache: firstBudgetMetadata?.promptCache && typeof firstBudgetMetadata.promptCache === 'object'
+          ? firstBudgetMetadata.promptCache as Record<string, unknown>
+          : node.receipts.find(receipt => receipt.promptCache)?.promptCache,
         cfCallIds: uniqueStrings([...node.receipts.map(receipt => receipt.cfCallId), ...nodeBudgetEvents.map(event => event.cfCallId)]),
         promptAssemblyIds: uniqueStrings([...node.receipts.map(receipt => receipt.promptAssemblyId), ...nodeBudgetEvents.map(event => event.promptAssemblyId)]),
         mcpInvocationIds: uniqueStrings(node.receipts.map(receipt => receipt.mcpInvocationId)),
@@ -1175,6 +1195,9 @@ async function buildInsightsResponse(id: string): Promise<InsightsResponse | nul
           provider: str(firstBudgetMetadata?.provider),
           model: str(firstBudgetMetadata?.model),
           modelAlias: str(firstBudgetMetadata?.modelAlias),
+          promptCache: firstBudgetMetadata?.promptCache && typeof firstBudgetMetadata.promptCache === 'object'
+            ? firstBudgetMetadata.promptCache as Record<string, unknown>
+            : undefined,
           cfCallIds: uniqueStrings([str(correlation.cfCallId), ...stageBudgetEvents.map(event => event.cfCallId)]),
           promptAssemblyIds: uniqueStrings([str(correlation.promptAssemblyId), ...stageBudgetEvents.map(event => event.promptAssemblyId)]),
           mcpInvocationIds: uniqueStrings([str(correlation.mcpInvocationId)]),
@@ -1234,6 +1257,9 @@ async function buildInsightsResponse(id: string): Promise<InsightsResponse | nul
           provider: str(metadata.provider),
           model: str(metadata.model),
           modelAlias: str(metadata.modelAlias),
+          promptCache: metadata.promptCache && typeof metadata.promptCache === 'object'
+            ? metadata.promptCache as Record<string, unknown>
+            : undefined,
           createdAt: event.createdAt.toISOString(),
         }
       }),

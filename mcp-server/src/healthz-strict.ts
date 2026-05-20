@@ -20,6 +20,7 @@ import { execFileSync } from "node:child_process";
 import { config } from "./config";
 import { configuredDefaultProvider } from "./llm/provider-config";
 import { listConfiguredProviders } from "./llm/client";
+import { commandExecutionStatus } from "./tools/command-execution-status";
 
 export interface InvariantResult {
   name: string;
@@ -128,6 +129,40 @@ const checks: InvariantCheck[] = [
     }
     try { accessSync(dir, constants.W_OK); return { name: "ast_db_dir_writable", ok: true, details: { dir } }; }
     catch { return { name: "ast_db_dir_writable", ok: false, reason: `${dir} not writable`, details: { dir } }; }
+  },
+
+  // 7. Command execution isolation is ready. Container mode must never fall
+  // back to local spawn when the runner is missing or misconfigured.
+  async () => {
+    const status = await commandExecutionStatus();
+    if (config.MCP_COMMAND_EXECUTION_MODE !== "container") {
+      return { name: "command_execution_isolation", ok: true, details: status };
+    }
+    if (!config.MCP_RUNNER_HOST_WORKSPACE_PATH || !config.MCP_RUNNER_HOST_WORKSPACE_PATH.startsWith("/")) {
+      return {
+        name: "command_execution_isolation",
+        ok: false,
+        reason: "MCP_RUNNER_HOST_WORKSPACE_PATH must be an absolute host path in container mode",
+        details: status,
+      };
+    }
+    if (!config.MCP_RUNNER_TOKEN?.trim()) {
+      return {
+        name: "command_execution_isolation",
+        ok: false,
+        reason: "MCP_RUNNER_TOKEN is required in container mode",
+        details: status,
+      };
+    }
+    if (!status.ready) {
+      return {
+        name: "command_execution_isolation",
+        ok: false,
+        reason: `sandbox runner unavailable: ${String(status.error ?? "unknown")}`,
+        details: status,
+      };
+    }
+    return { name: "command_execution_isolation", ok: true, details: status };
   },
 ];
 

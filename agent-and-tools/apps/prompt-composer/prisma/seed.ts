@@ -87,7 +87,7 @@ const developerCodeMutationPolicy = [
   "Developer code-mutation policy:",
   "- This run is expected to produce real MCP/git code-change evidence.",
   "- Do not provide only a narrative implementation plan.",
-  "- Inspect the workspace with MCP code tools, modify files with apply_patch or write_file, and finish with git_commit or finish_work_branch.",
+  "- Inspect the workspace with MCP code tools, modify partial file ranges with apply_patch, replace_text, or replace_range; use write_file only when providing the complete replacement file body. Finish with git_commit or finish_work_branch.",
   "- If no source change is needed, commit test or documentation evidence that proves the requested behavior.",
 ].join("\n");
 
@@ -212,7 +212,7 @@ const loopDeveloperTask = [
   "Developer execution contract:",
   "- Treat captured stakeholder decisions and prior approved artifacts as implementation requirements.",
   "- Produce an actual MCP/git code change when a writable workspace is available; do not stop at design or planning text.",
-  "- Inspect with AST/search/read tools, then mutate files with write_file/apply_patch and finish with git_commit or finish_work_branch so Code Review receives a captured diff.",
+  "- Inspect with AST/search/read tools, then mutate partial edits with apply_patch, replace_text, or replace_range; use write_file only for full-file replacements. Finish with git_commit or finish_work_branch so Code Review receives a captured diff.",
   "- If the requested behavior already exists, add or update tests/docs that prove it and commit those changes.",
   "- Only ask new open questions when the captured decisions are insufficient to safely implement.",
 ].join("\n");
@@ -235,13 +235,14 @@ const loopDeveloperExtraContext = [
   "Developer stage execution policy:",
   "- Prefer actual MCP local code tools over narrative-only output.",
   "- First verify the writable MCP workspace matches the requested source/repository before mutating files.",
-  "- Use AST/search/read tools to locate the correct source files, then use write_file/apply_patch/git_commit/finish_work_branch to create a real captured diff.",
+  "- Use AST/search/read tools to locate the correct source files, then use apply_patch, replace_text, or replace_range for partial edits; use write_file for complete file bodies. Finish with git_commit/finish_work_branch to create a real captured diff.",
+  "- Read the Source snapshot testing.detectedCommands. After code edits, run the most focused relevant command when a runnable test tool is available; use formal_verify when workflow/governance constraints need solver evidence. If no verifier is runnable, call verification_unavailable with the reason and inspected files.",
   "- Do not fabricate changed files or patch text. If the writable workspace is missing or does not match the source, say that no actual code change was captured.",
   "Requested source: {{sourceType}} {{sourceUri}}{{sourceRefSuffix}}",
 ].join("\n");
 
 const loopDefaultExtraContext =
-  "Produce governed workbench artifacts and evidence. Do not mutate source files unless this is the Developer stage with a verified writable MCP workspace.";
+  "Produce governed workbench artifacts and evidence. Use Source snapshot testing.detectedCommands for Dev/QA verification planning. Do not mutate source files unless this is the Developer stage with a verified writable MCP workspace.";
 
 function sha256(value: string): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -386,7 +387,7 @@ OUTPUT: just the paragraph. No headers, no JSON, no preamble.`,
       "This is a Developer stage with a writable MCP workspace, but the previous answer did not call any tools.",
       "Use MCP tools now before answering in prose.",
       "Inspect the code with find_symbol, get_symbol, get_ast_slice, search_code, or read_file.",
-      "Apply the requested change with apply_patch or write_file, then create code-change evidence with git_commit or finish_work_branch.",
+      "Apply partial edits with apply_patch, replace_text, or replace_range; use write_file only with complete replacement file contents. Then create code-change evidence with git_commit or finish_work_branch.",
       "Do not call prepare_work_branch; the workflow branch is already prepared.",
       "If the behavior already exists, add or update tests/documentation and commit that evidence.",
     ].join("\n"),

@@ -10,13 +10,12 @@
  *   - recall_memory:    semantic search over DistilledMemory
  *   - search_knowledge: semantic search over CapabilityKnowledgeArtifact
  *   - search_symbols:   semantic search over CapabilityCodeSymbol (joined to embeddings)
- *   - summarise_text:   LLM gateway wrapper
- *   - extract_entities: LLM gateway wrapper that asks for JSON entities
+ *   - summarise_text:   MCP-routed LLM wrapper
+ *   - extract_entities: MCP-routed LLM wrapper that asks for JSON entities
  *
  * The first three use M15's pgvector + the same hybrid scoring formula
- * (cosine × recency boost) as the prompt-composer. The LLM wrappers post
- * directly to the central LLM gateway (/v1/chat/completions) — provider
- * keys live only on llm-gateway-service.
+ * (cosine × recency boost) as the prompt-composer. The LLM wrappers call
+ * MCP /mcp/invoke; MCP is the only service that can talk to the gateway.
  */
 import { Router, Request, Response } from "express";
 import { query } from "../database";
@@ -24,8 +23,8 @@ import { getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVecto
 
 const RECENCY_BOOST_DAYS = Number(process.env.EMBEDDING_RECENCY_DAYS ?? 30);
 const RECENCY_BOOST_MAX  = Number(process.env.EMBEDDING_RECENCY_BOOST ?? 0.2);
-const LLM_GATEWAY_URL    = process.env.LLM_GATEWAY_URL    ?? "http://llm-gateway:8001";
-const LLM_GATEWAY_BEARER = process.env.LLM_GATEWAY_BEARER ?? "";
+const MCP_SERVER_URL     = (process.env.MCP_SERVER_URL ?? "http://mcp-server:7100").replace(/\/$/, "");
+const MCP_BEARER_TOKEN   = process.env.MCP_BEARER_TOKEN ?? "";
 const TOOL_LLM_MODEL_ALIAS = process.env.TOOL_LLM_MODEL_ALIAS?.trim();
 
 function recencyBoost(ageDays: number): number {
@@ -175,31 +174,38 @@ internalToolsRoutes.post("/extract_entities", async (req: Request, res: Response
   res.json({ entities: Array.isArray(parsed.entities) ? parsed.entities : [], raw: r.slice(0, 600) });
 });
 
-// ── shared LLM gateway call (M33) ──────────────────────────────────────────
+// ── shared MCP-routed LLM call ─────────────────────────────────────────────
 //
-// Pure synthesis calls (no tools, no loop) go directly to the central LLM
-// gateway. No provider keys live in tool-service.
+// Pure synthesis calls go through MCP with local tools hidden. No gateway URL
+// or provider keys live in tool-service.
 async function callMcp(opts: { systemPrompt: string; message: string }): Promise<string> {
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (LLM_GATEWAY_BEARER) headers.authorization = `Bearer ${LLM_GATEWAY_BEARER}`;
-  const res = await fetch(`${LLM_GATEWAY_URL.replace(/\/$/, "")}/v1/chat/completions`, {
+  if (MCP_BEARER_TOKEN) headers.authorization = `Bearer ${MCP_BEARER_TOKEN}`;
+  const res = await fetch(`${MCP_SERVER_URL}/mcp/invoke`, {
     method: "POST",
     headers,
     body: JSON.stringify({
-      ...(TOOL_LLM_MODEL_ALIAS ? { model_alias: TOOL_LLM_MODEL_ALIAS } : {}),
-      messages: [
-        { role: "system", content: opts.systemPrompt },
-        { role: "user",   content: opts.message },
-      ],
-      temperature: 0,
-      max_output_tokens: 1500,
-      trace_id: `tool-${Date.now()}`,
+      systemPrompt: opts.systemPrompt,
+      message: opts.message,
+      tools: [],
+      modelConfig: {
+        ...(TOOL_LLM_MODEL_ALIAS ? { modelAlias: TOOL_LLM_MODEL_ALIAS } : {}),
+        temperature: 0,
+        maxTokens: 1500,
+      },
+      runContext: { traceId: `tool-${Date.now()}` },
+      limits: {
+        maxSteps: 1,
+        timeoutSec: 70,
+        compressToolResults: true,
+        includeLocalTools: false,
+      },
     }),
     signal: AbortSignal.timeout(70_000),
   });
-  if (!res.ok) throw new Error(`LLM_GATEWAY_UPSTREAM ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const data = (await res.json()) as { content?: string };
-  return (data.content ?? "").trim();
+  if (!res.ok) throw new Error(`MCP_UPSTREAM ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const data = (await res.json()) as { data?: { finalResponse?: string } };
+  return (data.data?.finalResponse ?? "").trim();
 }
 
 // Required-dim guard surfaced for visibility in /healthz-style probes.

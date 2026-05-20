@@ -48,6 +48,11 @@ export interface ExecuteRequest {
     model?: string
     temperature?: number
     maxOutputTokens?: number
+    promptCache?: {
+      enabled?: boolean
+      strategy?: string
+      key?: string
+    }
   }
   context_policy?: Record<string, unknown>
   limits?: {
@@ -56,6 +61,9 @@ export interface ExecuteRequest {
     inputTokenBudget?: number
     outputTokenBudget?: number
     maxHistoryMessages?: number
+    maxHistoryTokens?: number
+    summaryEveryMessages?: number
+    compressToolResults?: boolean
     maxToolResultChars?: number
     maxPromptChars?: number
   }
@@ -99,6 +107,7 @@ export interface ExecuteResponse {
     toolInvocationIds: string[]
     artifactIds: string[]
     codeChangeIds?: string[]
+    verificationReceipts?: Array<Record<string, unknown>>
     workspaceRoot?: string
     workspaceBranch?: string
     workspaceCommitSha?: string
@@ -116,7 +125,15 @@ export interface ExecuteResponse {
     astIndexedFiles?: number
     astIndexedSymbols?: number
   }
-  tokensUsed?: { input: number; output: number; total: number }
+  verificationReceipts?: Array<Record<string, unknown>>
+  tokensUsed?: {
+    input: number
+    output: number
+    total: number
+    estimatedCost?: number
+    estimated_cost?: number
+    promptCache?: Record<string, unknown>
+  }
   usage?: {
     inputTokens?: number | null
     outputTokens?: number | null
@@ -126,6 +143,7 @@ export interface ExecuteResponse {
     provider?: string | null
     model?: string | null
     tokensSaved?: number | null
+    promptCache?: Record<string, unknown> | null
     promptAssemblyId?: string | null
     cfCallId?: string | null
   }
@@ -137,12 +155,15 @@ export interface ExecuteResponse {
     outputTokens?: number | null
     totalTokens?: number | null
     estimatedCost?: number | null
+    promptCache?: Record<string, unknown> | null
   }
+  promptCache?: Record<string, unknown> | null
   prompt?: {
     estimatedInputTokens?: number | null
     budgetWarnings?: string[]
     retrievalStats?: Record<string, unknown>
     contextPlan?: Record<string, unknown> | null
+    promptCache?: Record<string, unknown> | null
   }
   contextPlanHash?: string | null
   requiredContextStatus?: Record<string, unknown> | null

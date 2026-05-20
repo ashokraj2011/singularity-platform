@@ -30,6 +30,8 @@ services:
       PORT: 8500
       DATABASE_URL: postgresql://postgres:audit@audit-postgres:5432/audit_governance
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
+      MCP_SERVER_URL: ${MCP_SERVER_URL:-http://host.docker.internal:7100}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
     depends_on:
       audit-postgres:
         condition: service_healthy

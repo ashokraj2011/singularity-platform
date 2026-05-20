@@ -22,6 +22,7 @@ import { createHmac } from "node:crypto";
 import { ChatMessage, ToolCall, ToolDescriptorForLlm } from "../llm/types";
 import { CorrelationIds } from "./store";
 import type { GovernanceMode } from "../lib/audit-gov-check";
+import type { WorkspaceSourceStatus } from "../workspace/source-materializer";
 import { config } from "../config";
 
 export interface PendingApproval {
@@ -42,6 +43,11 @@ export interface PendingApproval {
     model: string;
     temperature?: number;
     maxTokens?: number;
+    promptCache?: {
+      enabled?: boolean;
+      strategy?: string;
+      key?: string;
+    };
     warnings?: string[];
   };
   correlation: CorrelationIds;
@@ -54,6 +60,10 @@ export interface PendingApproval {
   artifact_ids: string[];
   /** M13 — preserved across approval pauses so code-change provenance survives. */
   code_change_ids?: string[];
+  /** Verification receipts captured by run_test / run_command before the pause. */
+  verification_receipts?: Array<Record<string, unknown>>;
+  /** Prompt-cache usage records returned by the LLM gateway before the pause. */
+  prompt_cache_usage?: Array<Record<string, unknown>>;
   /** Workspace branch/index metadata preserved across approval pauses. */
   workspace?: {
     branch?: {
@@ -69,9 +79,21 @@ export interface PendingApproval {
     astIndexStatus?: string;
     astIndexedFiles?: number;
     astIndexedSymbols?: number;
+    source?: WorkspaceSourceStatus | null;
+    formalRepairAttempted?: boolean;
   };
   total_input_tokens: number;
   total_output_tokens: number;
+  total_estimated_cost?: number;
+  max_history_messages?: number;
+  max_history_tokens?: number;
+  compress_tool_results?: boolean;
+  context_compression?: {
+    messagesDropped: number;
+    tokensDropped: number;
+    toolResultsCompressed: number;
+    toolResultBytesSaved: number;
+  };
   governance_mode?: GovernanceMode;
   context_plan_hash?: string;
   degraded_actions_allowed?: string[];

@@ -6,16 +6,15 @@
  *   2. get(id) — return the full bundle for replay
  *   3. listForAgent(agentTemplateId) — admin view of all contracts for an agent
  *
- * The mint() path fetches modelResolution from llm-gateway's
- * GET /v1/models/resolve endpoint (M40 adds this) — composer doesn't know
- * how to bind an alias to a concrete (provider, model, version).
+ * The mint() path fetches modelResolution from MCP's /llm/models endpoint.
+ * Composer does not talk to the LLM gateway directly.
  */
 import { prisma } from "../../config/prisma";
 import { logger } from "../../config/logger";
 import { assembleBundle } from "./bundler";
 
-const LLM_GATEWAY_URL    = (process.env.LLM_GATEWAY_URL ?? "http://llm-gateway:8001").replace(/\/$/, "");
-const LLM_GATEWAY_BEARER = process.env.LLM_GATEWAY_BEARER ?? "";
+const MCP_SERVER_URL     = (process.env.MCP_SERVER_URL ?? "http://mcp-server:7100").replace(/\/$/, "");
+const MCP_BEARER_TOKEN   = process.env.MCP_BEARER_TOKEN ?? "";
 
 export interface MintContractInput {
   agentTemplateId: string;
@@ -40,28 +39,33 @@ async function resolveModelAlias(alias: string | undefined): Promise<{
   }
   try {
     const headers: Record<string, string> = { "content-type": "application/json" };
-    if (LLM_GATEWAY_BEARER) headers.authorization = `Bearer ${LLM_GATEWAY_BEARER}`;
-    const res = await fetch(`${LLM_GATEWAY_URL}/v1/models/resolve?alias=${encodeURIComponent(alias)}`, {
+    if (MCP_BEARER_TOKEN) headers.authorization = `Bearer ${MCP_BEARER_TOKEN}`;
+    const res = await fetch(`${MCP_SERVER_URL}/llm/models`, {
       headers,
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       logger.warn({ alias, status: res.status, body: text.slice(0, 200) },
-        "[contracts] llm-gateway model-resolve failed; bundle uses placeholder");
+        "[contracts] MCP model catalog failed; bundle uses placeholder");
       return { alias, provider: "unresolved", model: alias, version: null, resolvedAt };
     }
-    const json = await res.json() as { provider: string; model: string; version?: string };
+    const json = await res.json() as { data?: { models?: Array<{ id: string; provider: string; model: string; version?: string }> } };
+    const row = (json.data?.models ?? []).find((model) => model.id === alias);
+    if (!row) {
+      logger.warn({ alias }, "[contracts] MCP model alias not found; bundle uses placeholder");
+      return { alias, provider: "unresolved", model: alias, version: null, resolvedAt };
+    }
     return {
       alias,
-      provider: json.provider,
-      model: json.model,
-      version: json.version ?? null,
+      provider: row.provider,
+      model: row.model,
+      version: row.version ?? null,
       resolvedAt,
     };
   } catch (err) {
     logger.warn({ alias, err: (err as Error).message },
-      "[contracts] llm-gateway model-resolve threw; bundle uses placeholder");
+      "[contracts] MCP model catalog threw; bundle uses placeholder");
     return { alias, provider: "unresolved", model: alias, version: null, resolvedAt };
   }
 }

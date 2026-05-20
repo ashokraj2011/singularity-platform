@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import type { CorrelationIds } from "../audit/store";
 import { config } from "../config";
 import { events } from "../events/bus";
-import { sandboxRoot, SKIP_DIRS } from "./sandbox";
+import { baseSandboxRoot, sandboxRoot, SKIP_DIRS } from "./sandbox";
 
 const execFileP = promisify(execFile);
 
@@ -140,6 +141,136 @@ async function cloneIntoWorkspace(cloneUrl: string, sourceRef?: string): Promise
   }
 }
 
+async function gitBare(
+  gitDir: string,
+  args: string[],
+  opts?: { allowFail?: boolean; maxBuffer?: number },
+): Promise<string> {
+  try {
+    const { stdout } = await execFileP("git", ["--git-dir", gitDir, ...args], {
+      cwd: path.dirname(gitDir),
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+      },
+      maxBuffer: opts?.maxBuffer ?? 20 * 1024 * 1024,
+    });
+    return stdout.trim();
+  } catch (err) {
+    if (opts?.allowFail) return "";
+    throw err;
+  }
+}
+
+async function gitRaw(
+  args: string[],
+  opts?: { cwd?: string; allowFail?: boolean; maxBuffer?: number },
+): Promise<string> {
+  try {
+    const { stdout } = await execFileP("git", args, {
+      cwd: opts?.cwd ?? baseSandboxRoot(),
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+      },
+      maxBuffer: opts?.maxBuffer ?? 20 * 1024 * 1024,
+    });
+    return stdout.trim();
+  } catch (err) {
+    if (opts?.allowFail) return "";
+    throw err;
+  }
+}
+
+function sourceCacheRoot(): string {
+  const configured = config.MCP_SOURCE_CACHE_ROOT?.trim();
+  if (!configured) return path.join(baseSandboxRoot(), ".singularity", "source-cache");
+  return path.isAbsolute(configured)
+    ? path.resolve(configured)
+    : path.resolve(baseSandboxRoot(), configured);
+}
+
+function sourceCachePath(rawRemote: string): string {
+  const key = createHash("sha256")
+    .update(normalizeRemote(rawRemote) || rawRemote)
+    .digest("hex")
+    .slice(0, 24);
+  return path.join(sourceCacheRoot(), `${key}.git`);
+}
+
+async function ensureMirror(cloneUrl: string): Promise<string> {
+  const cacheRoot = sourceCacheRoot();
+  const mirror = sourceCachePath(cloneUrl);
+  await fs.promises.mkdir(cacheRoot, { recursive: true });
+  const hasHead = Boolean(await fs.promises.stat(path.join(mirror, "HEAD")).catch(() => null));
+  if (!hasHead) {
+    await fs.promises.rm(mirror, { recursive: true, force: true });
+    await gitRaw(["clone", "--mirror", cloneUrl, mirror], { cwd: cacheRoot, maxBuffer: 60 * 1024 * 1024 });
+    return mirror;
+  }
+  await gitBare(mirror, ["remote", "set-url", "origin", cloneUrl], { allowFail: true });
+  await gitBare(mirror, ["fetch", "--prune", "origin"], { allowFail: true, maxBuffer: 60 * 1024 * 1024 });
+  return mirror;
+}
+
+async function resolveMirrorCommit(mirror: string, sourceRef?: string): Promise<string> {
+  const ref = sourceRef?.trim();
+  if (ref) {
+    await gitBare(mirror, ["fetch", "--prune", "origin", ref], { allowFail: true, maxBuffer: 60 * 1024 * 1024 });
+    const candidates = [
+      `refs/remotes/origin/${ref}`,
+      `refs/heads/${ref}`,
+      "FETCH_HEAD",
+      ref,
+    ];
+    for (const candidate of candidates) {
+      const commit = await gitBare(mirror, ["rev-parse", "--verify", `${candidate}^{commit}`], { allowFail: true });
+      if (commit) return commit;
+    }
+  }
+  const originHead = await gitBare(mirror, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], { allowFail: true });
+  if (originHead) {
+    const commit = await gitBare(mirror, ["rev-parse", "--verify", `${originHead}^{commit}`], { allowFail: true });
+    if (commit) return commit;
+  }
+  const head = await gitBare(mirror, ["rev-parse", "--verify", "HEAD^{commit}"], { allowFail: true });
+  if (head) return head;
+  throw new Error("Unable to resolve a commit from the shared source cache.");
+}
+
+async function materializeGitWorktreeFromCache(cloneUrl: string, sourceRef?: string): Promise<void> {
+  const root = sandboxRoot();
+  if (path.resolve(root) === baseSandboxRoot()) {
+    throw new Error("Shared git cache worktrees require a per-run workspace root.");
+  }
+  const mirror = await ensureMirror(cloneUrl);
+  const commit = await resolveMirrorCommit(mirror, sourceRef);
+  await gitBare(mirror, ["worktree", "prune"], { allowFail: true });
+  await fs.promises.rm(root, { recursive: true, force: true });
+  await fs.promises.mkdir(path.dirname(root), { recursive: true });
+  await gitBare(mirror, ["worktree", "add", "--detach", "--force", root, commit], { maxBuffer: 60 * 1024 * 1024 });
+}
+
+async function materializeGitSource(cloneUrl: string, sourceRef?: string): Promise<string> {
+  const expected = normalizeRemote(cloneUrl);
+  const workspaceHasGit = fs.existsSync(path.join(sandboxRoot(), ".git"));
+  const existingRemote = workspaceHasGit ? normalizeRemote(await currentRemote()) : "";
+  const dirty = workspaceHasGit ? await dirtyPaths() : [];
+  if (existingRemote && existingRemote !== expected && dirty.length > 0) {
+    throw new Error(`MCP workspace has dirty changes for a different repo (${existingRemote}); refusing to replace it with ${expected}`);
+  }
+  if (existingRemote === expected && dirty.length > 0) {
+    return "workspace source retained with local changes";
+  }
+  try {
+    await materializeGitWorktreeFromCache(cloneUrl, sourceRef);
+    return "workspace source materialized from shared git cache";
+  } catch {
+    await cloneIntoWorkspace(cloneUrl, sourceRef);
+    return existingRemote === expected ? "workspace source refreshed" : "workspace source cloned";
+  }
+}
+
 async function copyLocalDirectoryIntoWorkspace(sourcePath: string): Promise<void> {
   const root = sandboxRoot();
   const resolvedSource = path.resolve(sourcePath);
@@ -194,20 +325,9 @@ export async function ensureWorkspaceSource(
         message: `Local source path was not found or is not a directory: ${localPath}`,
       };
     }
+    let message = "local workspace source materialized";
     if (fs.existsSync(path.join(localPath, ".git"))) {
-      const workspaceHasGit = fs.existsSync(path.join(sandboxRoot(), ".git"));
-      const existingRemote = workspaceHasGit ? normalizeRemote(await currentRemote()) : "";
-      const expected = normalizeRemote(localPath);
-      const dirty = workspaceHasGit ? await dirtyPaths() : [];
-      if (existingRemote && existingRemote !== expected && dirty.length > 0) {
-        throw new Error(`MCP workspace has dirty changes for a different repo (${existingRemote}); refusing to replace it with ${expected}`);
-      }
-      if (existingRemote === expected) {
-        await git(["fetch", "origin"], { allowFail: true });
-        if (req.sourceRef?.trim()) await checkoutRef(req.sourceRef);
-      } else {
-        await cloneIntoWorkspace(localPath, req.sourceRef);
-      }
+      message = await materializeGitSource(localPath, req.sourceRef);
     } else {
       await copyLocalDirectoryIntoWorkspace(localPath);
     }
@@ -220,7 +340,7 @@ export async function ensureWorkspaceSource(
       remoteUrl: await currentRemote(),
       headSha: await currentHead(),
       workspaceRoot: sandboxRoot(),
-      message: "local workspace source materialized",
+      message,
     };
     events.publish({
       kind: "workspace.source.checked_out",
@@ -244,24 +364,7 @@ export async function ensureWorkspaceSource(
     };
   }
 
-  const expected = normalizeRemote(cloneUrl);
-  const workspaceHasGit = fs.existsSync(path.join(sandboxRoot(), ".git"));
-  const existingRemote = workspaceHasGit ? normalizeRemote(await currentRemote()) : "";
-  const dirty = workspaceHasGit ? await dirtyPaths() : [];
-  if (existingRemote && existingRemote !== expected && dirty.length > 0) {
-    throw new Error(`MCP workspace has dirty changes for a different repo (${existingRemote}); refusing to replace it with ${expected}`);
-  }
-
-  if (existingRemote === expected) {
-    await git(["fetch", "--depth=1", "origin"], { allowFail: true });
-    if (req.sourceRef?.trim()) {
-      await checkoutRef(req.sourceRef);
-    } else {
-      await git(["checkout", "-B", "main", "FETCH_HEAD"], { allowFail: true });
-    }
-  } else {
-    await cloneIntoWorkspace(cloneUrl, req.sourceRef);
-  }
+  const message = await materializeGitSource(cloneUrl, req.sourceRef);
   await configureGitIdentity();
 
   const status: WorkspaceSourceStatus = {
@@ -272,7 +375,7 @@ export async function ensureWorkspaceSource(
     remoteUrl: await currentRemote(),
     headSha: await currentHead(),
     workspaceRoot: sandboxRoot(),
-    message: existingRemote === expected ? "workspace source refreshed" : "workspace source cloned",
+    message,
   };
   events.publish({
     kind: "workspace.source.checked_out",

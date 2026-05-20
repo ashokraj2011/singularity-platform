@@ -37,6 +37,7 @@ export interface LlmCallRecord {
   model: string;
   input_tokens: number;
   output_tokens: number;
+  estimated_cost?: number;
   latency_ms: number;
   prompt_messages_count: number;
   finish_reason: "stop" | "tool_call" | "length" | "error";

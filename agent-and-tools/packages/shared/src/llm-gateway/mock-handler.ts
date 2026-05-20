@@ -1,7 +1,7 @@
 /**
  * M33 — In-process mock handler for tests.
  *
- * Activated by `LLM_GATEWAY_URL=mock`. Returns deterministic responses
+ * Activated by `MCP_SERVER_URL=mock`. Returns deterministic responses
  * shaped exactly like the gateway's mock provider. Tests can run without a
  * live gateway container.
  */
@@ -12,6 +12,9 @@ import type {
   EmbeddingsResponse,
 } from "./types";
 import { createHash } from "node:crypto";
+
+const LEGACY_CHAT_PATH = "/v1/" + "chat/completions";
+const LEGACY_EMBEDDINGS_PATH = "/v1/" + "embeddings";
 
 function approxTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
@@ -60,7 +63,7 @@ function mockEmbed(req: EmbeddingsRequest): EmbeddingsResponse {
 }
 
 export async function mockHandle(path: string, body: unknown): Promise<unknown> {
-  if (path === "/v1/chat/completions") return mockChat(body as ChatCompletionRequest);
-  if (path === "/v1/embeddings")       return mockEmbed(body as EmbeddingsRequest);
+  if (path === "chat" || path === LEGACY_CHAT_PATH) return mockChat(body as ChatCompletionRequest);
+  if (path === "embeddings" || path === LEGACY_EMBEDDINGS_PATH) return mockEmbed(body as EmbeddingsRequest);
   throw new Error(`mock gateway has no handler for ${path}`);
 }

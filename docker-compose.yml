@@ -131,6 +131,8 @@ services:
       IAM_SERVICE_URL: http://iam-service:8100
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
+      MCP_SERVER_URL: http://mcp-server-demo:7100
+      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5180}
     ports:
       - "3001:3001"
@@ -165,6 +167,8 @@ services:
       DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
       IAM_SERVICE_URL: http://iam-service:8100
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
+      MCP_SERVER_URL: http://mcp-server-demo:7100
+      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5180}
     ports:
       - "3002:3002"
@@ -200,14 +204,13 @@ services:
       DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
       LOG_LEVEL: info
-      # M33 — agent-runtime never calls a provider directly. These two
+      # agent-runtime never calls a provider directly. These two
       # vars are informational fallbacks stamped onto AgentExecution rows
-      # when no model_alias is supplied; real LLM work goes through
-      # llm-gateway.
+      # when no model_alias is supplied; real LLM work goes through MCP.
       AGENT_RUN_FALLBACK_PROVIDER: stub
       AGENT_RUN_FALLBACK_MODEL: stub-model
-      LLM_GATEWAY_URL:    http://llm-gateway:8001
-      LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
+      MCP_SERVER_URL: http://mcp-server-demo:7100
+      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       IAM_SERVICE_URL: http://iam-service:8100
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
@@ -259,9 +262,9 @@ services:
       WORKGRAPH_ARTIFACT_FETCH_URL: http://workgraph-api:8080/api/internal/artifacts/fetch
       WORKGRAPH_ARTIFACT_FETCH_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
-      # M33 — composer's capsule compiler + embeddings flow through llm-gateway.
-      LLM_GATEWAY_URL:    http://llm-gateway:8001
-      LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
+      # Composer's capsule compiler + model catalog lookups flow through MCP.
+      MCP_SERVER_URL: http://mcp-server-demo:7100
+      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       CAPSULE_COMPILE_MODEL_ALIAS: ${CAPSULE_COMPILE_MODEL_ALIAS:-}
       EMBEDDING_MODEL_ALIAS:       ${EMBEDDING_MODEL_ALIAS:-}
     ports:
@@ -391,8 +394,8 @@ services:
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
-      LLM_GATEWAY_URL: http://llm-gateway:8001
-      LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
+      MCP_SERVER_URL: http://mcp-server-demo:7100
+      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       IAM_BASE_URL: http://iam-service:8100/api/v1
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
@@ -425,12 +428,12 @@ services:
       context: ./context-fabric
       dockerfile: services/context_memory_service/Dockerfile
     container_name: singularity-context-memory
-    # M33 — env_file removed; context-memory routes its summarizer through
-    # llm-gateway, never hits a provider directly.
+    # context-memory routes its summarizer through MCP, never hits a provider
+    # or LLM gateway directly.
     environment:
       CONTEXT_MEMORY_DB: /data/context_memory.db
-      LLM_GATEWAY_URL:    http://llm-gateway:8001
-      LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
+      MCP_SERVER_URL: http://mcp-server-demo:7100
+      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       SUMMARIZER_MODEL_ALIAS: ${SUMMARIZER_MODEL_ALIAS:-}
     ports:
       - "8002:8002"
@@ -471,8 +474,8 @@ services:
       context: ./context-fabric
       dockerfile: services/context_api_service/Dockerfile
     container_name: singularity-context-api
-    # M33 — env_file removed. context-api orchestrates but doesn't call
-    # providers directly. LLM traffic routes through llm-gateway via MCP.
+    # context-api orchestrates but doesn't call providers or the LLM gateway
+    # directly. LLM traffic routes through MCP.
     environment:
       CONTEXT_MEMORY_URL: http://context-memory:8002
       METRICS_LEDGER_URL: http://metrics-ledger:8003
@@ -485,10 +488,6 @@ services:
       MCP_DEFAULT_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       MCP_DEFAULT_SERVER_ID: ${MCP_DEFAULT_SERVER_ID:-local-default-mcp}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
-      # M33 — context-api never calls providers directly. All LLM work goes
-      # through the central llm-gateway. Keys are NOT passed here.
-      LLM_GATEWAY_URL: http://llm-gateway:8001
-      LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
     ports:
       - "8000:8000"
     depends_on:
@@ -637,10 +636,8 @@ services:
       MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       WORKBENCH_DEFAULT_MODEL_ALIAS: ${WORKBENCH_DEFAULT_MODEL_ALIAS:-}
       EVENT_HORIZON_MODEL_ALIAS: ${EVENT_HORIZON_MODEL_ALIAS:-}
-      # M33 — legacy direct LLM calls (e.g. POST /api/agents/:id/runs) now
-      # route through llm-gateway. No provider keys in this service.
-      LLM_GATEWAY_URL:        http://llm-gateway:8001
-      LLM_GATEWAY_BEARER:     ${LLM_GATEWAY_BEARER:-}
+      # Legacy direct LLM calls now route through MCP. No gateway URL or
+      # provider keys in this service.
       LLM_GATEWAY_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-240}
     volumes:
       - ${HOST_DOWNLOADS_DIR:-./.singularity/downloads}:/workspace/downloads:ro
@@ -730,6 +727,44 @@ services:
   # would normally live in the customer's env; the MCP_BEARER_TOKEN here
   # is the secret context-fabric uses to authenticate to this server.
   # ─────────────────────────────────────────────────────────────────────
+  mcp-sandbox-runner:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+      target: sandbox-runner
+    container_name: singularity-mcp-sandbox-runner
+    environment:
+      NODE_ENV: production
+      PORT: 7110
+      MCP_RUNNER_TOKEN: ${MCP_RUNNER_TOKEN:-dev-mcp-runner-token-min-16-chars}
+      # Must be an absolute host path because the runner asks the host
+      # Docker daemon to mount this path into ephemeral command containers.
+      MCP_RUNNER_HOST_WORKSPACE_PATH: ${MCP_RUNNER_HOST_WORKSPACE_PATH:-${MCP_SANDBOX_HOST_PATH:-${PWD}/mcp-server/.docker-sandbox}}
+      MCP_RUNNER_WORKSPACE_CONTAINER_PATH: /workspace
+      MCP_RUNNER_DEFAULT_IMAGE: ${MCP_RUNNER_DEFAULT_IMAGE:-node:20-alpine}
+      MCP_RUNNER_IMAGE_MAP_JSON: '${MCP_RUNNER_IMAGE_MAP_JSON:-{"python":"python:3.12-slim","python3":"python:3.12-slim","pytest":"python:3.12-slim","go":"golang:1.23-alpine","cargo":"rust:1.83-alpine","mvn":"maven:3.9-eclipse-temurin-21","gradle":"gradle:8-jdk21","gradlew":"gradle:8-jdk21","dotnet":"mcr.microsoft.com/dotnet/sdk:8.0"}}'
+      MCP_RUNNER_NETWORK_MODE: ${MCP_RUNNER_NETWORK_MODE:-none}
+      MCP_RUNNER_CPU_LIMIT: ${MCP_RUNNER_CPU_LIMIT:-1}
+      MCP_RUNNER_MEMORY_LIMIT: ${MCP_RUNNER_MEMORY_LIMIT:-1g}
+      MCP_RUNNER_PIDS_LIMIT: ${MCP_RUNNER_PIDS_LIMIT:-256}
+    ports:
+      - "7110:7110"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${MCP_RUNNER_HOST_WORKSPACE_PATH:-${MCP_SANDBOX_HOST_PATH:-${PWD}/mcp-server/.docker-sandbox}}:${MCP_RUNNER_HOST_WORKSPACE_PATH:-${MCP_SANDBOX_HOST_PATH:-${PWD}/mcp-server/.docker-sandbox}}:rw
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:7110/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    # M35.3 — resource limits (command runner: 1G memory / 1 CPU)
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+
   mcp-server-demo:
     build:
       context: ./mcp-server
@@ -750,6 +785,13 @@ services:
       MCP_SANDBOX_ROOT: /workspace
       MCP_WORKITEM_WORKSPACES_ROOT: ${MCP_WORKITEM_WORKSPACES_ROOT:-/workspace/.singularity/workitems}
       MCP_AST_DB_PATH:  ${MCP_CONTAINER_AST_DB_PATH:-}
+      MCP_COMMAND_EXECUTION_MODE: ${MCP_COMMAND_EXECUTION_MODE:-container}
+      MCP_RUNNER_URL: http://mcp-sandbox-runner:7110
+      MCP_RUNNER_TOKEN: ${MCP_RUNNER_TOKEN:-dev-mcp-runner-token-min-16-chars}
+      MCP_RUNNER_HOST_WORKSPACE_PATH: ${MCP_RUNNER_HOST_WORKSPACE_PATH:-${MCP_SANDBOX_HOST_PATH:-${PWD}/mcp-server/.docker-sandbox}}
+      MCP_RUNNER_DEFAULT_IMAGE: ${MCP_RUNNER_DEFAULT_IMAGE:-node:20-alpine}
+      MCP_RUNNER_IMAGE_MAP_JSON: '${MCP_RUNNER_IMAGE_MAP_JSON:-{"python":"python:3.12-slim","python3":"python:3.12-slim","pytest":"python:3.12-slim","go":"golang:1.23-alpine","cargo":"rust:1.83-alpine","mvn":"maven:3.9-eclipse-temurin-21","gradle":"gradle:8-jdk21","gradlew":"gradle:8-jdk21","dotnet":"mcr.microsoft.com/dotnet/sdk:8.0"}}'
+      MCP_RUNNER_NETWORK_MODE: ${MCP_RUNNER_NETWORK_MODE:-none}
       MCP_WORK_BRANCH_PUSH_ON_FINISH: ${MCP_WORK_BRANCH_PUSH_ON_FINISH:-false}
       MCP_WORK_BRANCH_PUSH_REMOTE: ${MCP_GIT_PUSH_REMOTE:-origin}
       MCP_GIT_PUSH_ENABLED: ${MCP_GIT_PUSH_ENABLED:-false}
@@ -791,6 +833,9 @@ services:
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
     ports:
       - "7100:7100"
+    depends_on:
+      mcp-sandbox-runner:
+        condition: service_healthy
     volumes:
       - ./mcp-server/src:/app/src
       # Generated by `./singularity.sh config mcp-catalog`; mounted read-only

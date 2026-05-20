@@ -432,7 +432,6 @@ function WorkbenchTaskInlinePanel({
 }) {
   const workbenchConfig = asRecord(node.config?.workbench)
   const neoUrl = buildWorkbenchLaunchUrl(instanceId, node.id, workbenchConfig, 'neo', instanceContext)
-  const classicUrl = buildWorkbenchLaunchUrl(instanceId, node.id, workbenchConfig, 'classic', instanceContext)
 
   return (
     <div style={{
@@ -459,9 +458,6 @@ function WorkbenchTaskInlinePanel({
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <a href={neoUrl} target="_blank" rel="opener" style={smallPrimaryButton}>
           <ExternalLink size={13} /> Open WorkbenchNeo
-        </a>
-        <a href={classicUrl} target="_blank" rel="opener" style={smallSecondaryButton}>
-          <ExternalLink size={13} /> Open Classic
         </a>
       </div>
     </div>
@@ -1331,7 +1327,7 @@ function buildWorkbenchLaunchUrl(
   workflowInstanceId: string,
   workflowNodeId: string,
   config: Record<string, unknown>,
-  uiMode: 'neo' | 'classic',
+  uiMode: 'neo',
   runtimeContext: Record<string, unknown> = {},
 ) {
   const url = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href)

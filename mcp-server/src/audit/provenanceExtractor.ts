@@ -22,6 +22,7 @@ import type { CodeChangeRecord, CorrelationIds } from "./store";
 
 const HEURISTIC_TOOL_NAMES = new Set<string>([
   "apply_patch", "write_file", "edit_file", "create_file",
+  "replace_text", "replace_range",
   "git_commit", "git_apply", "patch_file",
   // demo / smoke tools — recognised so even if the envelope is dropped,
   // the heuristic still matches.

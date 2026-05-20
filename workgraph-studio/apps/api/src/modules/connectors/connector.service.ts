@@ -12,6 +12,7 @@ import { ServiceNowAdapter } from './adapters/servicenow.adapter'
 import { LlmGatewayAdapter } from './adapters/llm-gateway.adapter'
 import { S3Adapter } from './adapters/s3.adapter'
 import { PostgresAdapter } from './adapters/postgres.adapter'
+import { SharePointAdapter } from './adapters/sharepoint.adapter'
 
 export function buildAdapter(type: ConnectorType, config: Record<string, unknown>, credentials: Record<string, unknown>): ConnectorAdapter {
   switch (type) {
@@ -27,6 +28,7 @@ export function buildAdapter(type: ConnectorType, config: Record<string, unknown
     case 'LLM_GATEWAY':  return new LlmGatewayAdapter(config as any, credentials as any)
     case 'S3':           return new S3Adapter(config as any, credentials as any)
     case 'POSTGRES':     return new PostgresAdapter(config as any, credentials as any)
+    case 'SHAREPOINT':   return new SharePointAdapter(config as any, credentials as any)
     default: throw new Error(`Unsupported connector type: ${type}`)
   }
 }

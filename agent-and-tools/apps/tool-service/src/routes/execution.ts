@@ -130,6 +130,14 @@ executionRoutes.post("/invoke", async (req: Request, res: Response) => {
       client_job_id: (job as Record<string, unknown>).id,
       execution_location: "client_local_runner",
       message: "Waiting for local runner.",
+      receipt: {
+        kind: "delegation_receipt",
+        from: "tool-service",
+        execution_location: "client_local_runner",
+        tool_name,
+        tool_version: version,
+        tool_execution_id: execId,
+      },
     });
     return;
   }
@@ -161,7 +169,22 @@ executionRoutes.post("/invoke", async (req: Request, res: Response) => {
 
       emitToolStatus({ execId, status: "success", capabilityId: capability_id, agentUid: agent_uid, toolName: tool_name, toolVersion: version, riskLevel: risk, output });
 
-      res.json({ status: "success", tool_execution_id: execId, tool_name, output });
+      res.json({
+        status: "success",
+        tool_execution_id: execId,
+        tool_name,
+        output,
+        receipt: {
+          kind: "delegation_receipt",
+          from: "tool-service",
+          execution_location: "server",
+          tool_name,
+          tool_version: version,
+          tool_execution_id: execId,
+          risk_level: risk,
+          requires_approval: tool.requires_approval,
+        },
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       await query("UPDATE tool.tool_executions SET status='error', error=$1, completed_at=now() WHERE id=$2", [msg, execId]);

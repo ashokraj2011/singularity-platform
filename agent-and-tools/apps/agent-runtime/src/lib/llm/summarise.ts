@@ -6,8 +6,7 @@
  * populate `CapabilityCodeSymbol.summary` so retrieval has a useful signal
  * beyond just the symbol name.
  *
- * M33 — Routes through the central gateway (`LLM_GATEWAY_URL`). No provider
- * fallback chain. Failures fall back silently (return null) — the caller
+ * Routes through MCP. Failures fall back silently (return null) — the caller
  * persists the symbol with summary=null and life goes on.
  */
 import { llmRespond } from "@agentandtools/shared";

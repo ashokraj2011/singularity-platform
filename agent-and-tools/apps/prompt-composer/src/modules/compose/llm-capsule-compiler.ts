@@ -8,9 +8,9 @@
  * task signature pays ~700 tokens for the paragraph instead of ~4k+ for
  * the raw chunks.
  *
- * M33 — Calls the central LLM gateway (`LLM_GATEWAY_URL`). Provider keys
- * live ONLY on the gateway. No fallback chain — gateway errors propagate
- * up; caller falls back to the RAW (JSON-layer) cache mode on null.
+ * Calls MCP for compression so prompt-composer never talks to the LLM
+ * gateway directly. Caller falls back to the RAW (JSON-layer) cache mode
+ * on null.
  */
 import { llmRespond } from "@agentandtools/shared";
 import { logger } from "../../config/logger";

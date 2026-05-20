@@ -75,6 +75,7 @@ function bootServerMode(): void {
     capabilities: [
       { capability_key: "mcp.tools.list",    description: "MCP tools/list" },
       { capability_key: "mcp.tools.call",    description: "MCP tools/call (server-side or local)" },
+      { capability_key: "mcp.discovery",     description: "Standard MCP discovery document" },
       { capability_key: "mcp.invoke",        description: "Drive an LLM<->tool agent loop" },
       { capability_key: "mcp.resume",        description: "Resume a paused agent loop after approval" },
       { capability_key: "mcp.events.ws",     description: "Live event subscription via WebSocket bridge" },

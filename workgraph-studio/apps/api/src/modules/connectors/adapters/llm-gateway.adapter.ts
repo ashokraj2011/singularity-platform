@@ -2,17 +2,14 @@ import axios from 'axios'
 import type { ConnectorAdapter, OperationDef } from '../connector-adapter'
 
 /**
- * M33 — LLM Gateway connector adapter.
+ * MCP-routed LLM connector adapter.
  *
- * Points at the central llm-gateway-service (context-fabric, port 8001).
- * The gateway is the only place provider keys live; there is no provider
- * fallback chain — gateway errors propagate. The only allowed fallback is
- * the gateway's `mock` provider.
+ * Compatibility adapter for existing "LLM Gateway" connector rows. Runtime
+ * calls point at MCP; MCP is the only service allowed to talk to the gateway.
  *
  * baseUrl examples:
- *   docker-compose:  http://llm-gateway:8001
- *   bare-metal dev:  http://localhost:8001
- *   tests:           mock                       (not yet wired; use real gateway)
+ *   docker-compose:  http://mcp-server-demo:7100
+ *   bare-metal dev:  http://localhost:7100
  */
 interface LlmGatewayConfig {
   baseUrl: string
@@ -27,8 +24,7 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
 
   private get client() {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    // The gateway accepts an optional bearer (LLM_GATEWAY_BEARER); only
-    // attach when the connector config supplied one.
+    // MCP accepts an optional bearer; only attach when the connector config supplied one.
     if (this.creds?.apiKey) headers.Authorization = `Bearer ${this.creds.apiKey}`
     return axios.create({
       baseURL: this.config.baseUrl.replace(/\/$/, ''),
@@ -38,7 +34,7 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
   }
 
   async testConnection() {
-    try { await this.client.get('/llm/models'); return { ok: true } }
+    try { await this.client.get('/health'); return { ok: true } }
     catch (e: any) { return { ok: false, error: e?.message } }
   }
 
@@ -71,22 +67,48 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
     }
 
     const modelAlias = (p.modelAlias as string) ?? this.config.defaultModelAlias
+    const systemPrompt = messages
+      .filter(m => m.role === 'system')
+      .map(m => m.content)
+      .join('\n\n')
+      .trim()
+    const conversational = messages.filter(m => m.role !== 'system')
+    const lastUserIndex = conversational.map(m => m.role).lastIndexOf('user')
+    const messageIndex = lastUserIndex >= 0 ? lastUserIndex : conversational.length - 1
+    const selected = conversational[messageIndex]
 
-    const r = await this.client.post('/v1/chat/completions', {
-      ...(modelAlias ? { model_alias: modelAlias } : {}),
-      messages,
-      ...(p.temperature !== undefined ? { temperature: p.temperature } : (this.config.defaultTemperature !== undefined ? { temperature: this.config.defaultTemperature } : {})),
-      ...(p.maxTokens !== undefined ? { max_output_tokens: p.maxTokens } : (this.config.defaultMaxTokens !== undefined ? { max_output_tokens: this.config.defaultMaxTokens } : {})),
-      trace_id: `connector-llm-${Date.now()}`,
+    const r = await this.client.post('/mcp/invoke', {
+      ...(systemPrompt ? { systemPrompt } : {}),
+      history: conversational.filter((_, index) => index !== messageIndex),
+      message: selected?.content ?? String(p.prompt ?? 'Continue.'),
+      tools: [],
+      modelConfig: {
+        ...(modelAlias ? { modelAlias } : {}),
+        ...(p.temperature !== undefined ? { temperature: p.temperature } : (this.config.defaultTemperature !== undefined ? { temperature: this.config.defaultTemperature } : {})),
+        ...(p.maxTokens !== undefined ? { maxTokens: p.maxTokens } : (this.config.defaultMaxTokens !== undefined ? { maxTokens: this.config.defaultMaxTokens } : {})),
+      },
+      runContext: { traceId: `connector-llm-${Date.now()}` },
+      limits: {
+        maxSteps: 1,
+        timeoutSec: 120,
+        compressToolResults: true,
+        includeLocalTools: false,
+      },
     })
-    const data = r.data ?? {}
+    const data = r.data?.data ?? {}
+    const usage = data.tokensUsed ?? {}
+    const modelUsage = data.modelUsage ?? {}
     return {
-      content: data.content ?? '',
-      model: data.model,
-      provider: data.provider,
-      modelAlias: data.model_alias,
-      finishReason: data.finish_reason,
-      usage: { input_tokens: data.input_tokens, output_tokens: data.output_tokens, latency_ms: data.latency_ms },
+      content: data.finalResponse ?? '',
+      model: modelUsage.model,
+      provider: modelUsage.provider,
+      modelAlias: modelUsage.modelAlias,
+      finishReason: data.finishReason,
+      usage: {
+        input_tokens: usage.input ?? modelUsage.inputTokens,
+        output_tokens: usage.output ?? modelUsage.outputTokens,
+        latency_ms: data.metrics?.mcpLatencyMs,
+      },
     }
   }
 
@@ -100,15 +122,15 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
       ? rawInput.map(v => String(v))
       : (typeof rawInput === 'string' ? [rawInput] : [])
     if (input.length === 0) {
-      throw new Error('LLM Gateway embed: `input` must be a non-empty string or string[]')
+      throw new Error('MCP embed: `input` must be a non-empty string or string[]')
     }
     const modelAlias = (p.modelAlias as string) ?? this.config.defaultModelAlias
-    const r = await this.client.post('/v1/embeddings', {
-      ...(modelAlias ? { model_alias: modelAlias } : {}),
+    const r = await this.client.post('/mcp/embed', {
+      ...(modelAlias ? { modelAlias } : {}),
       input,
-      trace_id: `connector-emb-${Date.now()}`,
+      runContext: { traceId: `connector-emb-${Date.now()}` },
     })
-    const data = r.data ?? {}
+    const data = r.data?.data ?? {}
     return {
       embeddings: data.embeddings ?? [],
       dim: data.dim,
@@ -123,7 +145,7 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
     return [
       {
         id: 'chat',
-        label: 'LLM Chat (via gateway)',
+        label: 'LLM Chat (via MCP)',
         params: [
           { key: 'messages', label: 'Messages (JSON array)', type: 'json', required: true },
           { key: 'modelAlias', label: 'Model alias (e.g. fast, balanced, mock)', type: 'string' },
@@ -134,7 +156,7 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
       },
       {
         id: 'complete',
-        label: 'LLM Complete (via gateway)',
+        label: 'LLM Complete (via MCP)',
         params: [
           { key: 'prompt', label: 'Prompt', type: 'text', required: true },
           { key: 'modelAlias', label: 'Model alias', type: 'string' },
@@ -143,7 +165,7 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
       },
       {
         id: 'embed',
-        label: 'Embeddings (via gateway)',
+        label: 'Embeddings (via MCP)',
         params: [
           { key: 'input', label: 'Input text or string[]', type: 'text', required: true },
           { key: 'modelAlias', label: 'Embeddings alias', type: 'string' },

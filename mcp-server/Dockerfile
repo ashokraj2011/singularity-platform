@@ -27,3 +27,12 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY package.json ./
 EXPOSE 7000
 CMD ["node", "dist/index.js"]
+
+FROM base AS sandbox-runner
+RUN apk add --no-cache docker-cli
+ENV NODE_ENV=production
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY package.json ./
+EXPOSE 7110
+CMD ["node", "dist/runner/server.js"]

@@ -274,7 +274,6 @@ function BlueprintWorkbenchBody({
   const [sessionId, setSessionId] = useState('')
   const [finalizedPack, setFinalizedPack] = useState<Record<string, unknown> | null>(null)
   const [showEmbeddedWorkbench, setShowEmbeddedWorkbench] = useState(false)
-  const [embeddedWorkbenchUi, setEmbeddedWorkbenchUi] = useState<'neo' | 'classic'>('neo')
   const completedRef = useRef(false)
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const runState = runtime.getState()
@@ -283,8 +282,6 @@ function BlueprintWorkbenchBody({
     ? config
     : isPlainRecord(nodeConfig.workbench) ? nodeConfig.workbench : {}
   const workbenchUrl = buildWorkbenchUrl(runState.runId, node.id, workbenchConfig, runState.context, 'neo')
-  const classicWorkbenchUrl = buildWorkbenchUrl(runState.runId, node.id, workbenchConfig, runState.context, 'classic')
-  const embeddedWorkbenchUrl = embeddedWorkbenchUi === 'classic' ? classicWorkbenchUrl : workbenchUrl
   const outputs = isPlainRecord(workbenchConfig.outputs) ? workbenchConfig.outputs : {}
   const finalPackKey = typeof outputs.finalPackKey === 'string' && outputs.finalPackKey.trim()
     ? outputs.finalPackKey.trim()
@@ -383,7 +380,7 @@ function BlueprintWorkbenchBody({
             Continue in WorkbenchNeo
           </p>
           <p style={{ margin: 0, fontSize: 12, lineHeight: 1.45, color: 'var(--color-outline)' }}>
-            Use the cleaner Neo cockpit for staged artifacts, terminal evidence, and code diff approval. Classic is still available when you need the original canvas.
+            Use the Neo cockpit for staged artifacts, terminal evidence, and code diff approval.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -407,27 +404,6 @@ function BlueprintWorkbenchBody({
           >
             <ExternalLink size={14} /> Open WorkbenchNeo
           </a>
-          <a
-            href={classicWorkbenchUrl}
-            target="_blank"
-            rel="opener"
-            style={{
-              minHeight: 38,
-              padding: '0 12px',
-              borderRadius: 9,
-              border: '1px solid var(--color-outline-variant)',
-              background: '#fff',
-              color: '#475569',
-              textDecoration: 'none',
-              fontSize: 12,
-              fontWeight: 800,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-            }}
-          >
-            <ExternalLink size={14} /> Open Classic
-          </a>
           <button
             type="button"
             onClick={() => setShowEmbeddedWorkbench(value => !value)}
@@ -449,32 +425,10 @@ function BlueprintWorkbenchBody({
       </div>
 
       {showEmbeddedWorkbench && (
-        <>
-        <div style={{ display: 'inline-flex', gap: 4, alignSelf: 'flex-start', padding: 4, border: '1px solid var(--color-outline-variant)', borderRadius: 9, background: '#fff' }}>
-          {(['neo', 'classic'] as const).map(mode => (
-            <button
-              key={mode}
-              type="button"
-              onClick={() => setEmbeddedWorkbenchUi(mode)}
-              style={{
-                border: 'none',
-                borderRadius: 7,
-                minHeight: 28,
-                padding: '0 10px',
-                background: embeddedWorkbenchUi === mode ? '#004b8d' : 'transparent',
-                color: embeddedWorkbenchUi === mode ? '#fff' : '#475569',
-                fontSize: 11,
-                fontWeight: 800,
-              }}
-            >
-              {mode === 'neo' ? 'Neo preview' : 'Classic preview'}
-            </button>
-          ))}
-        </div>
         <iframe
           ref={iframeRef}
           title="Blueprint Workbench"
-          src={embeddedWorkbenchUrl}
+          src={workbenchUrl}
           onLoad={postWorkbenchAuth}
           style={{
             width: '100%',
@@ -484,7 +438,6 @@ function BlueprintWorkbenchBody({
             background: '#0b1326',
           }}
         />
-        </>
       )}
 
       <label style={{ fontSize: 11, fontWeight: 700, color: '#334155' }}>
@@ -551,7 +504,7 @@ function buildWorkbenchUrl(
   workflowNodeId: string,
   config?: Record<string, unknown>,
   runtimeContext?: Record<string, unknown>,
-  uiMode: 'neo' | 'classic' = 'neo',
+  uiMode: 'neo' = 'neo',
 ) {
   const url = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href)
   const renderedConfig = renderWorkbenchConfig(config ?? {}, runtimeContext ?? {})

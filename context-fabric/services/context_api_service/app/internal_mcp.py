@@ -98,12 +98,16 @@ async def call_server_tool(
         "context_package_id": None,
     }
 
+    service_jwt = await get_iam_service_token()
     async with httpx.AsyncClient(timeout=120.0) as client:
         try:
             resp = await client.post(
                 f"{settings.tool_service_url.rstrip('/')}/api/v1/tools/invoke",
                 json=payload,
-                headers={"X-Trace-Id": body.traceId or ""},
+                headers={
+                    "X-Trace-Id": body.traceId or "",
+                    "Authorization": f"Bearer {service_jwt or ''}",
+                },
             )
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"tool-service unreachable: {exc}")
@@ -118,6 +122,17 @@ async def call_server_tool(
         raise HTTPException(status_code=502, detail=f"tool-service returned {resp.status_code}: {text[:500]}")
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=parsed)
+    if isinstance(parsed, dict):
+        parsed["receipt"] = {
+            "kind": "delegation_receipt",
+            "from": "context-fabric",
+            "to": "tool-service",
+            "toolName": body.toolName or tool_name,
+            "toolVersion": body.toolVersion,
+            "status": parsed.get("status"),
+            "toolExecutionId": parsed.get("tool_execution_id"),
+            "traceId": body.traceId,
+        }
     return parsed
 
 

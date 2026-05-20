@@ -13,12 +13,21 @@ export interface ToolDescriptorForLlm {
   input_schema: Record<string, unknown>;
 }
 
+export interface PromptCacheRequest {
+  enabled?: boolean;
+  strategy?: "provider_auto" | "anthropic_cache_control" | "copilot_gateway" | string;
+  key?: string;
+}
+
+export type PromptCacheUsage = Record<string, unknown>;
+
 export interface LlmRequest {
   model_alias?: string;
   // Provider/model are retained only as audit metadata on the MCP side. The
   // gateway call must use model_alias or its configured default alias.
   provider?: string;
   model?: string;
+  prompt_cache?: PromptCacheRequest;
   messages: ChatMessage[];
   tools?: ToolDescriptorForLlm[];
   temperature?: number;
@@ -47,4 +56,23 @@ export interface LlmResponse {
   provider?: string;
   model?: string;
   model_alias?: string;
+  estimated_cost?: number;
+  prompt_cache?: PromptCacheUsage;
+}
+
+export interface EmbeddingsRequest {
+  model_alias?: string;
+  input: string[];
+  trace_id?: string;
+  capability_id?: string;
+}
+
+export interface EmbeddingsResponse {
+  embeddings: number[][];
+  dim: number;
+  provider: string;
+  model: string;
+  model_alias?: string;
+  input_tokens: number;
+  latency_ms: number;
 }

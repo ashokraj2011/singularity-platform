@@ -5,7 +5,7 @@ import {
   Plus, Trash2, Edit3, CheckCircle, XCircle, Zap, Link2, Archive,
   RotateCw, ChevronDown, ChevronUp, Play,
   Mail, MessageSquare, GitBranch, Database, Globe, Activity,
-  Server, Box, Cpu, Layers,
+  Server, Box, Cpu, Layers, Cloud,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 
@@ -14,6 +14,7 @@ import { api } from '../../lib/api'
 type ConnectorType =
   | 'HTTP' | 'EMAIL' | 'TEAMS' | 'SLACK' | 'JIRA' | 'GIT'
   | 'CONFLUENCE' | 'DATADOG' | 'SERVICENOW' | 'LLM_GATEWAY' | 'S3' | 'POSTGRES'
+  | 'SHAREPOINT'
 
 interface Connector {
   id: string; type: ConnectorType; name: string; description?: string
@@ -40,6 +41,7 @@ const CONNECTOR_VISUAL: Record<ConnectorType, { color: string; Icon: React.Eleme
   LLM_GATEWAY:  { color: '#fbbf24', Icon: Cpu,          label: 'LLM Gateway' },
   S3:           { color: '#f59e0b', Icon: Box,          label: 'S3 / Object Storage' },
   POSTGRES:     { color: '#60a5fa', Icon: Database,     label: 'PostgreSQL' },
+  SHAREPOINT:   { color: '#22c55e', Icon: Cloud,        label: 'SharePoint' },
 }
 
 const CONNECTOR_TYPES = Object.keys(CONNECTOR_VISUAL) as ConnectorType[]
@@ -59,6 +61,7 @@ const CRED_FIELDS: Record<ConnectorType, { key: string; label: string; type?: st
   LLM_GATEWAY:  [{ key: 'apiKey', label: 'API Key', type: 'password' }],
   S3:           [{ key: 'accessKeyId', label: 'Access Key ID' }, { key: 'secretAccessKey', label: 'Secret Access Key', type: 'password' }],
   POSTGRES:     [{ key: 'connectionString', label: 'Connection String', type: 'password' }],
+  SHAREPOINT:   [{ key: 'bearerToken', label: 'Bearer Token', type: 'password' }, { key: 'username', label: 'Username' }, { key: 'password', label: 'Password', type: 'password' }, { key: 'clientSecret', label: 'Client Secret', type: 'password' }],
 }
 
 const CONFIG_FIELDS: Record<ConnectorType, { key: string; label: string; placeholder?: string }[]> = {
@@ -74,6 +77,7 @@ const CONFIG_FIELDS: Record<ConnectorType, { key: string; label: string; placeho
   LLM_GATEWAY:  [{ key: 'baseUrl', label: 'MCP Gateway URL', placeholder: 'http://localhost:7100' }, { key: 'defaultModelAlias', label: 'Default MCP Model Alias', placeholder: 'mock' }],
   S3:           [{ key: 'bucket', label: 'Default Bucket' }, { key: 'region', label: 'Region', placeholder: 'us-east-1' }, { key: 'endpointUrl', label: 'Custom Endpoint (MinIO etc)' }],
   POSTGRES:     [{ key: 'schema', label: 'Schema', placeholder: 'public' }],
+  SHAREPOINT:   [{ key: 'tenantId', label: 'Tenant ID' }, { key: 'clientId', label: 'App Client ID' }, { key: 'defaultSiteId', label: 'Default Site ID' }, { key: 'defaultDriveId', label: 'Default Drive ID' }, { key: 'scope', label: 'OAuth Scope', placeholder: 'https://graph.microsoft.com/Files.ReadWrite.All https://graph.microsoft.com/Sites.ReadWrite.All offline_access' }, { key: 'graphBaseUrl', label: 'Graph Base URL', placeholder: 'https://graph.microsoft.com/v1.0' }],
 }
 
 // ─── ConnectorForm ─────────────────────────────────────────────────────────────

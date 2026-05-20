@@ -1,17 +1,16 @@
 /**
- * M33 — Embeddings client. Single call path through the central LLM
- * gateway (`LLM_GATEWAY_URL`).
+ * Embeddings client. Non-MCP services call MCP's embedding path; MCP is the
+ * only component that talks to the LLM gateway.
  *
- * The legacy auto-detection (EMBEDDING_PROVIDER → openai → mock) is gone:
- * provider keys live ONLY on the gateway. There is no provider fallback
- * chain — the gateway 502/503s propagate to the caller. The only allowed
- * fallback is `LLM_GATEWAY_URL=mock`, which short-circuits to a
- * deterministic in-process mock for unit tests.
+ * The legacy auto-detection (EMBEDDING_PROVIDER -> openai -> mock) is gone:
+ * provider keys live only behind MCP/gateway. The only allowed fallback is
+ * `MCP_SERVER_URL=mock`, which short-circuits to a deterministic in-process
+ * mock for unit tests.
  *
  * The legacy `EmbeddingProvider` interface (with `name`, `defaultModel`,
  * `.embed`) is preserved so call sites in compose.service.ts /
  * capability.service.ts continue to work. The "provider" returned by
- * `getEmbeddingProvider()` is now a thin adapter over `llmEmbed`.
+ * `getEmbeddingProvider()` is now a thin adapter over MCP-routed `llmEmbed`.
  */
 import { llmEmbed } from "../llm-gateway/client";
 import type { EmbeddingProvider, EmbeddingRequest, EmbeddingResponse, EmbeddingProviderName } from "./types";
@@ -35,7 +34,7 @@ class GatewayEmbeddingProvider implements EmbeddingProvider {
     });
     const vector = result.embeddings?.[0];
     if (!Array.isArray(vector) || vector.length === 0) {
-      throw new Error("LLM gateway returned no embedding");
+      throw new Error("MCP embedding path returned no embedding");
     }
     return {
       vector,

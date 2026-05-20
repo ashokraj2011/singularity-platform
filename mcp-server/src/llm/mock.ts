@@ -133,6 +133,7 @@ export async function mockLlmRespond(req: LlmRequest, hooks?: LlmStreamHooks): P
       input_tokens,
       output_tokens: approxTokens(reply),
       latency_ms: Date.now() - start,
+      estimated_cost: 0,
     };
   }
 
@@ -147,6 +148,7 @@ export async function mockLlmRespond(req: LlmRequest, hooks?: LlmStreamHooks): P
         input_tokens,
         output_tokens: 0,
         latency_ms: Date.now() - start,
+        estimated_cost: 0,
       };
     }
   }
@@ -159,5 +161,6 @@ export async function mockLlmRespond(req: LlmRequest, hooks?: LlmStreamHooks): P
     input_tokens,
     output_tokens: approxTokens(reply),
     latency_ms: Date.now() - start,
+    estimated_cost: 0,
   };
 }

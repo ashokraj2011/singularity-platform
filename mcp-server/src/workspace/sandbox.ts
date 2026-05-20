@@ -88,6 +88,142 @@ export async function withSandboxRoot<T>(root: string, fn: () => Promise<T>): Pr
   });
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function removeStaleLock(lockPath: string): Promise<void> {
+  const stat = await fs.promises.stat(lockPath).catch(() => null);
+  if (!stat) return;
+  if (Date.now() - stat.mtimeMs > config.MCP_WORKSPACE_LOCK_STALE_MS) {
+    await fs.promises.rm(lockPath, { force: true });
+  }
+}
+
+export async function withWorkspaceLock<T>(fn: () => Promise<T>): Promise<T> {
+  const root = sandboxRoot();
+  const dir = path.join(root, ".singularity");
+  const lockPath = path.join(dir, "workspace.lock");
+  await fs.promises.mkdir(dir, { recursive: true });
+  const started = Date.now();
+  let handle: fs.promises.FileHandle | undefined;
+  while (!handle) {
+    try {
+      await removeStaleLock(lockPath);
+      handle = await fs.promises.open(lockPath, "wx");
+      await handle.writeFile(JSON.stringify({
+        pid: process.pid,
+        createdAt: new Date().toISOString(),
+        root,
+      }), "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      if (Date.now() - started > config.MCP_WORKSPACE_LOCK_TIMEOUT_MS) {
+        throw new Error(`workspace is locked: ${root}`);
+      }
+      await sleep(150);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await handle.close().catch(() => undefined);
+    await fs.promises.rm(lockPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function directorySizeBytes(root: string): Promise<number> {
+  let total = 0;
+  const entries = await fs.promises.readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const abs = path.join(root, entry.name);
+    if (entry.isDirectory()) total += await directorySizeBytes(abs);
+    else if (entry.isFile()) total += (await fs.promises.stat(abs).catch(() => ({ size: 0 }))).size;
+  }
+  return total;
+}
+
+export async function gcWorkItemWorkspaces(): Promise<{
+  scanned: number;
+  removed: number;
+  bytesRemoved: number;
+}> {
+  if (!config.MCP_WORKSPACE_GC_ENABLED) return { scanned: 0, removed: 0, bytesRemoved: 0 };
+  const root = workItemWorkspacesRoot();
+  const maxAgeMs = config.MCP_WORKSPACE_GC_MAX_AGE_HOURS * 60 * 60 * 1000;
+  const entries = await fs.promises.readdir(root, { withFileTypes: true }).catch(() => []);
+  let scanned = 0;
+  let removed = 0;
+  let bytesRemoved = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    scanned += 1;
+    const abs = path.join(root, entry.name);
+    const lockPath = path.join(abs, ".singularity", "workspace.lock");
+    const lockStat = await fs.promises.stat(lockPath).catch(() => null);
+    if (lockStat && Date.now() - lockStat.mtimeMs <= config.MCP_WORKSPACE_LOCK_STALE_MS) continue;
+    const stat = await fs.promises.stat(abs).catch(() => null);
+    if (!stat || Date.now() - stat.mtimeMs <= maxAgeMs) continue;
+    const size = await directorySizeBytes(abs);
+    await fs.promises.rm(abs, { recursive: true, force: true });
+    removed += 1;
+    bytesRemoved += size;
+  }
+  return { scanned, removed, bytesRemoved };
+}
+
+function configuredSourceCacheRoot(): string {
+  const configured = config.MCP_SOURCE_CACHE_ROOT?.trim();
+  if (!configured) return path.join(baseSandboxRoot(), ".singularity", "source-cache");
+  return path.isAbsolute(configured)
+    ? path.resolve(configured)
+    : path.resolve(baseSandboxRoot(), configured);
+}
+
+export async function workspaceStorageStats(): Promise<{
+  baseSandboxRoot: string;
+  workItemWorkspacesRoot: string;
+  sourceCacheRoot: string;
+  workItemWorkspaceCount: number;
+  workItemBytes: number;
+  sourceCacheBytes: number;
+  totalManagedBytes: number;
+  quotaBytes: number | null;
+  quotaUsedPercent: number | null;
+  gc: {
+    enabled: boolean;
+    maxAgeHours: number;
+    lockTimeoutMs: number;
+    lockStaleMs: number;
+  };
+}> {
+  const workRoot = workItemWorkspacesRoot();
+  const cacheRoot = configuredSourceCacheRoot();
+  const workEntries = await fs.promises.readdir(workRoot, { withFileTypes: true }).catch(() => []);
+  const workItemWorkspaceCount = workEntries.filter((entry) => entry.isDirectory()).length;
+  const workItemBytes = await directorySizeBytes(workRoot).catch(() => 0);
+  const sourceCacheBytes = await directorySizeBytes(cacheRoot).catch(() => 0);
+  const totalManagedBytes = workItemBytes + sourceCacheBytes;
+  const quotaBytes = config.MCP_WORKSPACE_DISK_QUOTA_BYTES > 0 ? config.MCP_WORKSPACE_DISK_QUOTA_BYTES : null;
+  return {
+    baseSandboxRoot: baseSandboxRoot(),
+    workItemWorkspacesRoot: workRoot,
+    sourceCacheRoot: cacheRoot,
+    workItemWorkspaceCount,
+    workItemBytes,
+    sourceCacheBytes,
+    totalManagedBytes,
+    quotaBytes,
+    quotaUsedPercent: quotaBytes ? (totalManagedBytes / quotaBytes) * 100 : null,
+    gc: {
+      enabled: config.MCP_WORKSPACE_GC_ENABLED,
+      maxAgeHours: config.MCP_WORKSPACE_GC_MAX_AGE_HOURS,
+      lockTimeoutMs: config.MCP_WORKSPACE_LOCK_TIMEOUT_MS,
+      lockStaleMs: config.MCP_WORKSPACE_LOCK_STALE_MS,
+    },
+  };
+}
+
 export function sandboxRoot(): string {
   return sandboxContext.getStore() ?? baseSandboxRoot();
 }

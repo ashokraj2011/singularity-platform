@@ -1,0 +1,3681 @@
+{
+  "version": 1,
+  "generatedAt": "2026-05-20T04:37:59.836Z",
+  "workspaceRoot": "/Users/ashokraj/Downloads/backupSingularity/singularity-platform/mcp-server",
+  "contentHash": "sha256:90e1ad9e8bd57cc7",
+  "manifest": {
+    "summary": "Typescript (express) codebase with 54 indexed source files and 25 declared dependencies. Entry: src/index.ts.",
+    "language": "typescript",
+    "framework": "express",
+    "primaryEntry": "src/index.ts"
+  },
+  "files": [
+    {
+      "path": "src/app.ts",
+      "language": "typescript",
+      "bytes": 3781,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "app",
+          "line": 18,
+          "endLine": 18,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/audit/pending.ts",
+      "language": "typescript",
+      "bytes": 8103,
+      "symbols": [
+        {
+          "kind": "interface",
+          "name": "PendingApproval",
+          "line": 27,
+          "endLine": 100,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "PendingToolDescriptor",
+          "line": 102,
+          "endLine": 116,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "TTL_MS",
+          "line": 118,
+          "endLine": 118,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "store",
+          "line": 119,
+          "endLine": 119,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "redeemed",
+          "line": 120,
+          "endLine": 120,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "purgeExpired",
+          "line": 122,
+          "endLine": 127,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "signToken",
+          "line": 136,
+          "endLine": 142,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "verifyToken",
+          "line": 148,
+          "endLine": 177,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "savePending",
+          "line": 179,
+          "endLine": 195,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "TakePendingResult",
+          "line": 197,
+          "endLine": 199,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "takePending",
+          "line": 201,
+          "endLine": 226,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "peekPending",
+          "line": 228,
+          "endLine": 234,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "recentPending",
+          "line": 236,
+          "endLine": 239,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/audit/provenanceExtractor.ts",
+      "language": "typescript",
+      "bytes": 5427,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "HEURISTIC_TOOL_NAMES",
+          "line": 23,
+          "endLine": 29,
+          "exported": false
+        },
+        {
+          "kind": "interface",
+          "name": "ExtractInput",
+          "line": 31,
+          "endLine": 36,
+          "exported": false
+        },
+        {
+          "kind": "type",
+          "name": "EnvelopeShape",
+          "line": 38,
+          "endLine": 47,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "asStringArray",
+          "line": 49,
+          "endLine": 53,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "asString",
+          "line": 55,
+          "endLine": 57,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "asNumber",
+          "line": 59,
+          "endLine": 61,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "fromEnvelope",
+          "line": 63,
+          "endLine": 77,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "fromHeuristic",
+          "line": 79,
+          "endLine": 101,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "extractCodeChange",
+          "line": 103,
+          "endLine": 151,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/audit/store.ts",
+      "language": "typescript",
+      "bytes": 7384,
+      "symbols": [
+        {
+          "kind": "interface",
+          "name": "CorrelationIds",
+          "line": 17,
+          "endLine": 30,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "LlmCallRecord",
+          "line": 32,
+          "endLine": 46,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "ToolInvocationRecord",
+          "line": 48,
+          "endLine": 58,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "ArtifactRecord",
+          "line": 60,
+          "endLine": 68,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "CodeChangeRecord",
+          "line": 76,
+          "endLine": 97,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "RING_CAP",
+          "line": 99,
+          "endLine": 99,
+          "exported": false
+        },
+        {
+          "kind": "type",
+          "name": "AuditKind",
+          "line": 100,
+          "endLine": 100,
+          "exported": false
+        },
+        {
+          "kind": "type",
+          "name": "PersistedAuditRecord",
+          "line": 101,
+          "endLine": 105,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "auditLogPath",
+          "line": 107,
+          "endLine": 109,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "persistAuditRecord",
+          "line": 111,
+          "endLine": 120,
+          "exported": false
+        },
+        {
+          "kind": "class",
+          "name": "Ring",
+          "line": 122,
+          "endLine": 137,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "llmCalls",
+          "line": 139,
+          "endLine": 139,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "toolInvocations",
+          "line": 140,
+          "endLine": 140,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "artifacts",
+          "line": 141,
+          "endLine": 141,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "codeChanges",
+          "line": 142,
+          "endLine": 142,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "hydrateAuditJournal",
+          "line": 144,
+          "endLine": 164,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "recordLlmCall",
+          "line": 168,
+          "endLine": 173,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "recordToolInvocation",
+          "line": 174,
+          "endLine": 181,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "recordArtifact",
+          "line": 182,
+          "endLine": 187,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "recordCodeChange",
+          "line": 188,
+          "endLine": 193,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "audit",
+          "line": 195,
+          "endLine": 216,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/cli/index.ts",
+      "language": "typescript",
+      "bytes": 12024,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "HOME",
+          "line": 25,
+          "endLine": 25,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "TOKEN_FILE",
+          "line": 26,
+          "endLine": 26,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "DEFAULT_IAM",
+          "line": 27,
+          "endLine": 27,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "DEFAULT_BRIDGE",
+          "line": 28,
+          "endLine": 28,
+          "exported": false
+        },
+        {
+          "kind": "interface",
+          "name": "SavedToken",
+          "line": 30,
+          "endLine": 38,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "ensureHome",
+          "line": 40,
+          "endLine": 45,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "saveToken",
+          "line": 47,
+          "endLine": 50,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "loadToken",
+          "line": 52,
+          "endLine": 59,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "parseArgs",
+          "line": 61,
+          "endLine": 74,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "cmdLogin",
+          "line": 77,
+          "endLine": 125,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "cmdStart",
+          "line": 128,
+          "endLine": 163,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "cmdStatus",
+          "line": 166,
+          "endLine": 179,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "check",
+          "line": 182,
+          "endLine": 189,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "cmdDoctor",
+          "line": 191,
+          "endLine": 235,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "spawnSyncCheck",
+          "line": 237,
+          "endLine": 243,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "cmdLogout",
+          "line": 246,
+          "endLine": 253,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "usage",
+          "line": 256,
+          "endLine": 273,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "main",
+          "line": 275,
+          "endLine": 286,
+          "exported": false
+        }
+      ]
+    },
+    {
+      "path": "src/config.ts",
+      "language": "typescript",
+      "bytes": 5354,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "schema",
+          "line": 6,
+          "endLine": 67,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "parsed",
+          "line": 69,
+          "endLine": 69,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "assertProductionSecretLocal",
+          "line": 80,
+          "endLine": 101,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "config",
+          "line": 104,
+          "endLine": 104,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/events/bus.ts",
+      "language": "typescript",
+      "bytes": 2776,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "RING_CAP",
+          "line": 18,
+          "endLine": 18,
+          "exported": false
+        },
+        {
+          "kind": "class",
+          "name": "EventBus",
+          "line": 20,
+          "endLine": 82,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "events",
+          "line": 84,
+          "endLine": 84,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/events/types.ts",
+      "language": "typescript",
+      "bytes": 2600,
+      "symbols": [
+        {
+          "kind": "type",
+          "name": "EventKind",
+          "line": 13,
+          "endLine": 30,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "EventCorrelation",
+          "line": 32,
+          "endLine": 46,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "McpEventEnvelope",
+          "line": 48,
+          "endLine": 55,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "SubscriptionFilter",
+          "line": 57,
+          "endLine": 67,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "matchesFilter",
+          "line": 69,
+          "endLine": 84,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/healthz-strict.ts",
+      "language": "typescript",
+      "bytes": 6866,
+      "symbols": [
+        {
+          "kind": "interface",
+          "name": "InvariantResult",
+          "line": 24,
+          "endLine": 29,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "InvariantCheck",
+          "line": 31,
+          "endLine": 31,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "checks",
+          "line": 33,
+          "endLine": 132,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "runInvariantChecks",
+          "line": 134,
+          "endLine": 141,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/index.ts",
+      "language": "typescript",
+      "bytes": 4961,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "LAPTOP_MODE",
+          "line": 18,
+          "endLine": 18,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "bootLaptopMode",
+          "line": 26,
+          "endLine": 52,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "bootServerMode",
+          "line": 54,
+          "endLine": 103,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "warmAstIndex",
+          "line": 105,
+          "endLine": 117,
+          "exported": false
+        }
+      ]
+    },
+    {
+      "path": "src/laptop/envelopes.ts",
+      "language": "typescript",
+      "bytes": 3342,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "HelloFrame",
+          "line": 16,
+          "endLine": 22,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "HelloFrame",
+          "line": 23,
+          "endLine": 23,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "HeartbeatFrame",
+          "line": 25,
+          "endLine": 28,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "HeartbeatFrame",
+          "line": 29,
+          "endLine": 29,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "ResponseFrame",
+          "line": 31,
+          "endLine": 40,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "ResponseFrame",
+          "line": 41,
+          "endLine": 41,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "AuthAckFrame",
+          "line": 45,
+          "endLine": 52,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "AuthAckFrame",
+          "line": 53,
+          "endLine": 53,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "InvokeFrame",
+          "line": 55,
+          "endLine": 60,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "InvokeFrame",
+          "line": 61,
+          "endLine": 61,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "PingFrame",
+          "line": 63,
+          "endLine": 66,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "PingFrame",
+          "line": 67,
+          "endLine": 67,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "DisconnectFrame",
+          "line": 69,
+          "endLine": 72,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "DisconnectFrame",
+          "line": 73,
+          "endLine": 73,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "InboundFrame",
+          "line": 77,
+          "endLine": 77,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "decodeInbound",
+          "line": 79,
+          "endLine": 88,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/laptop/relay-client.ts",
+      "language": "typescript",
+      "bytes": 7076,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "HEARTBEAT_MS",
+          "line": 27,
+          "endLine": 27,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "MIN_BACKOFF_MS",
+          "line": 28,
+          "endLine": 28,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "MAX_BACKOFF_MS",
+          "line": 29,
+          "endLine": 29,
+          "exported": false
+        },
+        {
+          "kind": "interface",
+          "name": "RelayConfig",
+          "line": 31,
+          "endLine": 37,
+          "exported": false
+        },
+        {
+          "kind": "class",
+          "name": "LaptopRelayClient",
+          "line": 39,
+          "endLine": 205,
+          "exported": true
+        },
+        {
+          "kind": "let",
+          "name": "CACHED_DEVICE_ID",
+          "line": 210,
+          "endLine": 210,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "ensureDeviceId",
+          "line": 211,
+          "endLine": 215,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/lib/audit-gov-approvals.ts",
+      "language": "typescript",
+      "bytes": 4027,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "AUDIT_GOV_URL",
+          "line": 17,
+          "endLine": 17,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "TIMEOUT_MS",
+          "line": 18,
+          "endLine": 18,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "persistApproval",
+          "line": 24,
+          "endLine": 59,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "ConsumedApproval",
+          "line": 61,
+          "endLine": 67,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "consumeApproval",
+          "line": 72,
+          "endLine": 106,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/lib/audit-gov-check.ts",
+      "language": "typescript",
+      "bytes": 4062,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "AUDIT_GOV_URL",
+          "line": 9,
+          "endLine": 9,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "TIMEOUT_MS",
+          "line": 10,
+          "endLine": 10,
+          "exported": false
+        },
+        {
+          "kind": "interface",
+          "name": "CheckResult",
+          "line": 12,
+          "endLine": 20,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "GovernanceMode",
+          "line": 22,
+          "endLine": 22,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "outageResult",
+          "line": 24,
+          "endLine": 32,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "getJson",
+          "line": 34,
+          "endLine": 50,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "pickScope",
+          "line": 52,
+          "endLine": 57,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "checkBudget",
+          "line": 59,
+          "endLine": 77,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "checkRateLimit",
+          "line": 79,
+          "endLine": 92,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/lib/audit-gov-emit.ts",
+      "language": "typescript",
+      "bytes": 2790,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "AUDIT_GOV_URL",
+          "line": 9,
+          "endLine": 9,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "TIMEOUT_MS",
+          "line": 10,
+          "endLine": 10,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "AUDIT_GOV_SERVICE_TOKEN",
+          "line": 11,
+          "endLine": 11,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "auditHeaders",
+          "line": 13,
+          "endLine": 17,
+          "exported": false
+        },
+        {
+          "kind": "interface",
+          "name": "EmitInput",
+          "line": 28,
+          "endLine": 39,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "emitAuditEvent",
+          "line": 41,
+          "endLine": 73,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/lib/governance-policy.contract.test.ts",
+      "language": "typescript",
+      "bytes": 1729,
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "desc",
+          "line": 6,
+          "endLine": 8,
+          "exported": false
+        }
+      ]
+    },
+    {
+      "path": "src/lib/governance-policy.ts",
+      "language": "typescript",
+      "bytes": 1114,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "MUTATION_TOOL_NAMES",
+          "line": 3,
+          "endLine": 12,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "toolRisk",
+          "line": 14,
+          "endLine": 16,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "isMutationTool",
+          "line": 18,
+          "endLine": 20,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "isRiskyToolByPolicy",
+          "line": 22,
+          "endLine": 24,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "isDegradedToolAllowedByPolicy",
+          "line": 26,
+          "endLine": 35,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/lib/http-auth.contract.test.ts",
+      "language": "typescript",
+      "bytes": 1320,
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "main",
+          "line": 4,
+          "endLine": 35,
+          "exported": false
+        }
+      ]
+    },
+    {
+      "path": "src/lib/platform-registry/register.ts",
+      "language": "typescript",
+      "bytes": 3226,
+      "symbols": [
+        {
+          "kind": "interface",
+          "name": "RegisterPayload",
+          "line": 10,
+          "endLine": 29,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "RegisterOptions",
+          "line": 31,
+          "endLine": 36,
+          "exported": true
+        },
+        {
+          "kind": "let",
+          "name": "heartbeatTimer",
+          "line": 38,
+          "endLine": 38,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "startSelfRegistration",
+          "line": 40,
+          "endLine": 84,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "stopSelfRegistration",
+          "line": 86,
+          "endLine": 89,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/llm/client.ts",
+      "language": "typescript",
+      "bytes": 7678,
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "isProviderAllowed",
+          "line": 21,
+          "endLine": 23,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "GatewayChatRequest",
+          "line": 26,
+          "endLine": 33,
+          "exported": false
+        },
+        {
+          "kind": "interface",
+          "name": "GatewayChatResponse",
+          "line": 35,
+          "endLine": 46,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "gatewayUrl",
+          "line": 48,
+          "endLine": 50,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "callGateway",
+          "line": 52,
+          "endLine": 84,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "llmRespond",
+          "line": 87,
+          "endLine": 114,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "ConfiguredProviderInfo",
+          "line": 122,
+          "endLine": 130,
+          "exported": true
+        },
+        {
+          "kind": "let",
+          "name": "cachedGatewayStatus",
+          "line": 133,
+          "endLine": 133,
+          "exported": false
+        },
+        {
+          "kind": "let",
+          "name": "lastRefreshedAt",
+          "line": 139,
+          "endLine": 139,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "refreshGatewayProviderStatus",
+          "line": 142,
+          "endLine": 172,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "ensureFreshGatewayStatus",
+          "line": 183,
+          "endLine": 186,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "listConfiguredProviders",
+          "line": 189,
+          "endLine": 214,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/llm/mock.ts",
+      "language": "typescript",
+      "bytes": 5271,
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "approxTokens",
+          "line": 20,
+          "endLine": 22,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "delay",
+          "line": 24,
+          "endLine": 26,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "lastUserMessage",
+          "line": 28,
+          "endLine": 33,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "lastToolMessage",
+          "line": 35,
+          "endLine": 40,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "decideToolCall",
+          "line": 42,
+          "endLine": 107,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "mockLlmRespond",
+          "line": 109,
+          "endLine": 166,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/llm/model-catalog.ts",
+      "language": "typescript",
+      "bytes": 5631,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "CatalogEntrySchema",
+          "line": 8,
+          "endLine": 19,
+          "exported": false
+        },
+        {
+          "kind": "type",
+          "name": "LlmModelCatalogEntry",
+          "line": 21,
+          "endLine": 25,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "ResolvedModelConfig",
+          "line": 27,
+          "endLine": 34,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "providerReady",
+          "line": 36,
+          "endLine": 39,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "readCatalogSource",
+          "line": 41,
+          "endLine": 50,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "fallbackCatalog",
+          "line": 52,
+          "endLine": 66,
+          "exported": false
+        },
+        {
+          "kind": "let",
+          "name": "cachedCatalog",
+          "line": 68,
+          "endLine": 68,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "loadModelCatalog",
+          "line": 70,
+          "endLine": 110,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "defaultModelAlias",
+          "line": 112,
+          "endLine": 114,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "modelCatalogResponse",
+          "line": 116,
+          "endLine": 125,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "resolveModelConfig",
+          "line": 127,
+          "endLine": 168,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/llm/provider-config.ts",
+      "language": "typescript",
+      "bytes": 4777,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "SupportedProviderSchema",
+          "line": 6,
+          "endLine": 6,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "SupportedProvider",
+          "line": 7,
+          "endLine": 7,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "ProviderSettingsSchema",
+          "line": 9,
+          "endLine": 17,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "ProviderConfigSchema",
+          "line": 19,
+          "endLine": 24,
+          "exported": false
+        },
+        {
+          "kind": "type",
+          "name": "ProviderSettings",
+          "line": 26,
+          "endLine": 26,
+          "exported": false
+        },
+        {
+          "kind": "type",
+          "name": "ProviderConfig",
+          "line": 27,
+          "endLine": 27,
+          "exported": false
+        },
+        {
+          "kind": "type",
+          "name": "LoadedProviderConfig",
+          "line": 29,
+          "endLine": 33,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "SUPPORTED_PROVIDERS",
+          "line": 35,
+          "endLine": 35,
+          "exported": true
+        },
+        {
+          "kind": "let",
+          "name": "cached",
+          "line": 37,
+          "endLine": 37,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "readConfigSource",
+          "line": 39,
+          "endLine": 48,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "settingsFor",
+          "line": 50,
+          "endLine": 52,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "loadProviderConfig",
+          "line": 54,
+          "endLine": 81,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "providerSettings",
+          "line": 83,
+          "endLine": 87,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "configuredDefaultProvider",
+          "line": 89,
+          "endLine": 91,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "providerDefaultModel",
+          "line": 93,
+          "endLine": 98,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "configuredDefaultModel",
+          "line": 100,
+          "endLine": 103,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "isProviderAllowedByConfig",
+          "line": 105,
+          "endLine": 114,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "providerConfigSummary",
+          "line": 121,
+          "endLine": 130,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/llm/types.ts",
+      "language": "typescript",
+      "bytes": 1383,
+      "symbols": [
+        {
+          "kind": "type",
+          "name": "Role",
+          "line": 1,
+          "endLine": 1,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "ChatMessage",
+          "line": 3,
+          "endLine": 8,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "ToolDescriptorForLlm",
+          "line": 10,
+          "endLine": 14,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "LlmRequest",
+          "line": 16,
+          "endLine": 31,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "LlmStreamHooks",
+          "line": 33,
+          "endLine": 35,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "ToolCall",
+          "line": 37,
+          "endLine": 41,
+          "exported": true
+        },
+        {
+          "kind": "type",
+          "name": "FinishReason",
+          "line": 43,
+          "endLine": 43,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "LlmResponse",
+          "line": 45,
+          "endLine": 56,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/mcp/events.ts",
+      "language": "typescript",
+      "bytes": 2104,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "eventsRouter",
+          "line": 14,
+          "endLine": 14,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "filterFromQuery",
+          "line": 16,
+          "endLine": 27,
+          "exported": false
+        }
+      ]
+    },
+    {
+      "path": "src/mcp/invoke.ts",
+      "language": "typescript",
+      "bytes": 67404,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "ToolDescSchema",
+          "line": 47,
+          "endLine": 60,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "InvokeSchema",
+          "line": 62,
+          "endLine": 115,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "ResumeSchema",
+          "line": 117,
+          "endLine": 122,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "invokeRouter",
+          "line": 124,
+          "endLine": 124,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "LoopState",
+          "line": 128,
+          "endLine": 191,
+          "exported": false
+        },
+        {
+          "kind": "type",
+          "name": "LoopOutcome",
+          "line": 193,
+          "endLine": 210,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "LOOP_REPETITION_THRESHOLD",
+          "line": 216,
+          "endLine": 216,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "LOOP_REPETITION_WINDOW",
+          "line": 217,
+          "endLine": 217,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "argsHash",
+          "line": 219,
+          "endLine": 225,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "detectRepetition",
+          "line": 227,
+          "endLine": 238,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "hasTool",
+          "line": 240,
+          "endLine": 243,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "shouldNudgeForCodeToolUse",
+          "line": 245,
+          "endLine": 252,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "NUDGE_PROMPT_KEY",
+          "line": 258,
+          "endLine": 258,
+          "exported": false
+        },
+        {
+          "kind": "let",
+          "name": "cachedNudgePrompt",
+          "line": 259,
+          "endLine": 259,
+          "exported": false
+        },
+        {
+          "kind": "let",
+          "name": "cachedNudgePromptAt",
+          "line": 260,
+          "endLine": 260,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "NUDGE_PROMPT_TTL_MS",
+          "line": 261,
+          "endLine": 261,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "getNudgePrompt",
+          "line": 263,
+          "endLine": 287,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "appendCodeToolUseNudge",
+          "line": 289,
+          "endLine": 301,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "isDegradedToolAllowed",
+          "line": 303,
+          "endLine": 305,
+          "exported": false
+        },
+        {
+          "kind": "type",
+          "name": "DispatchToolResult",
+          "line": 307,
+          "endLine": 314,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "runLoop",
+          "line": 316,
+          "endLine": 593,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "pauseForApproval",
+          "line": 595,
+          "endLine": 686,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "buildResponseBody",
+          "line": 688,
+          "endLine": 887,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "executeInvokePayload",
+          "line": 894,
+          "endLine": 1042,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "estimateTextTokens",
+          "line": 1247,
+          "endLine": 1249,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "estimateLoopInputTokens",
+          "line": 1251,
+          "endLine": 1258,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "normalizePromptCache",
+          "line": 1260,
+          "endLine": 1275,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "applySlidingWindow",
+          "line": 1277,
+          "endLine": 1305,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "dropLeadingOrphanToolMessages",
+          "line": 1307,
+          "endLine": 1311,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "toolResultForNextTurn",
+          "line": 1313,
+          "endLine": 1324,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "compactToolResult",
+          "line": 1326,
+          "endLine": 1370,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "trimToolResult",
+          "line": 1372,
+          "endLine": 1375,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "piiMaskingEnabled",
+          "line": 1384,
+          "endLine": 1388,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "applyOutputMaskIfNeeded",
+          "line": 1390,
+          "endLine": 1415,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "applyOutputMaskIfNeededAsync",
+          "line": 1422,
+          "endLine": 1448,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "applyArgsUnmaskIfNeeded",
+          "line": 1450,
+          "endLine": 1464,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "dispatchToolCall",
+          "line": 1500,
+          "endLine": 1710,
+          "exported": false
+        }
+      ]
+    },
+    {
+      "path": "src/mcp/resources.ts",
+      "language": "typescript",
+      "bytes": 5160,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "resourcesRouter",
+          "line": 5,
+          "endLine": 5,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/mcp/tools.ts",
+      "language": "typescript",
+      "bytes": 5304,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "toolsRouter",
+          "line": 10,
+          "endLine": 10,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "isProdClass",
+          "line": 43,
+          "endLine": 46,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "genericToolsCallEnabled",
+          "line": 48,
+          "endLine": 52,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "CallSchema",
+          "line": 54,
+          "endLine": 73,
+          "exported": false
+        }
+      ]
+    },
+    {
+      "path": "src/mcp/work.ts",
+      "language": "typescript",
+      "bytes": 4911,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "workRouter",
+          "line": 32,
+          "endLine": 32,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "FinishBranchSchema",
+          "line": 34,
+          "endLine": 54,
+          "exported": false
+        }
+      ]
+    },
+    {
+      "path": "src/mcp/ws.ts",
+      "language": "typescript",
+      "bytes": 6811,
+      "symbols": [
+        {
+          "kind": "interface",
+          "name": "ActiveSubscription",
+          "line": 28,
+          "endLine": 33,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "authorise",
+          "line": 35,
+          "endLine": 51,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "send",
+          "line": 53,
+          "endLine": 55,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "attachWsBridge",
+          "line": 57,
+          "endLine": 177,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/middleware/auth.ts",
+      "language": "typescript",
+      "bytes": 1537,
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "constantTimeEqual",
+          "line": 17,
+          "endLine": 29,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "bearerAuth",
+          "line": 31,
+          "endLine": 39,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/middleware/error.ts",
+      "language": "typescript",
+      "bytes": 738,
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "errorMiddleware",
+          "line": 5,
+          "endLine": 25,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/middleware/request-id.ts",
+      "language": "typescript",
+      "bytes": 359,
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "requestIdMiddleware",
+          "line": 4,
+          "endLine": 10,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/security/mask.ts",
+      "language": "typescript",
+      "bytes": 9137,
+      "symbols": [
+        {
+          "kind": "interface",
+          "name": "MaskResult",
+          "line": 31,
+          "endLine": 38,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "kindToken",
+          "line": 40,
+          "endLine": 52,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "findExistingToken",
+          "line": 59,
+          "endLine": 65,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "nextToken",
+          "line": 73,
+          "endLine": 84,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "maskPii",
+          "line": 90,
+          "endLine": 122,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "maskPiiAsync",
+          "line": 133,
+          "endLine": 143,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "maskFromMatches",
+          "line": 150,
+          "endLine": 177,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "unmaskString",
+          "line": 184,
+          "endLine": 193,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "unmaskPiiInArgs",
+          "line": 200,
+          "endLine": 216,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/security/pii-detector.ts",
+      "language": "typescript",
+      "bytes": 4129,
+      "symbols": [
+        {
+          "kind": "type",
+          "name": "PiiKind",
+          "line": 19,
+          "endLine": 19,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "PiiMatch",
+          "line": 21,
+          "endLine": 28,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "PATTERNS",
+          "line": 30,
+          "endLine": 44,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "luhnValid",
+          "line": 46,
+          "endLine": 60,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "resolveOverlaps",
+          "line": 66,
+          "endLine": 81,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "detectPii",
+          "line": 88,
+          "endLine": 108,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/security/pii-ner.ts",
+      "language": "typescript",
+      "bytes": 6559,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "MODEL_ID",
+          "line": 27,
+          "endLine": 27,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "NER_CONFIDENCE_FLOOR",
+          "line": 28,
+          "endLine": 28,
+          "exported": false
+        },
+        {
+          "kind": "let",
+          "name": "nerPipeline",
+          "line": 32,
+          "endLine": 32,
+          "exported": false
+        },
+        {
+          "kind": "let",
+          "name": "nerLoadAttempted",
+          "line": 33,
+          "endLine": 33,
+          "exported": false
+        },
+        {
+          "kind": "let",
+          "name": "nerLoadFailed",
+          "line": 34,
+          "endLine": 34,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "mapNerLabel",
+          "line": 40,
+          "endLine": 46,
+          "exported": false
+        },
+        {
+          "kind": "interface",
+          "name": "NerEntity",
+          "line": 48,
+          "endLine": 55,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "isNerEnabled",
+          "line": 57,
+          "endLine": 59,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "loadNerPipeline",
+          "line": 61,
+          "endLine": 85,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "detectNerPii",
+          "line": 94,
+          "endLine": 128,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "detectAllPii",
+          "line": 137,
+          "endLine": 150,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "resolveOverlaps",
+          "line": 152,
+          "endLine": 162,
+          "exported": false
+        }
+      ]
+    },
+    {
+      "path": "src/security/redact.ts",
+      "language": "typescript",
+      "bytes": 1307,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "SECRET_PATTERNS",
+          "line": 1,
+          "endLine": 11,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "redactText",
+          "line": 13,
+          "endLine": 19,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "redactSecrets",
+          "line": 21,
+          "endLine": 30,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/shared/errors.ts",
+      "language": "typescript",
+      "bytes": 594,
+      "symbols": [
+        {
+          "kind": "class",
+          "name": "AppError",
+          "line": 1,
+          "endLine": 10,
+          "exported": true
+        },
+        {
+          "kind": "class",
+          "name": "UnauthorizedError",
+          "line": 12,
+          "endLine": 16,
+          "exported": true
+        },
+        {
+          "kind": "class",
+          "name": "NotFoundError",
+          "line": 18,
+          "endLine": 22,
+          "exported": true
+        },
+        {
+          "kind": "class",
+          "name": "TimeoutError",
+          "line": 24,
+          "endLine": 28,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/shared/log.ts",
+      "language": "typescript",
+      "bytes": 307,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "log",
+          "line": 4,
+          "endLine": 13,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/tools/ast-tools.ts",
+      "language": "typescript",
+      "bytes": 9371,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "indexWorkspaceTool",
+          "line": 10,
+          "endLine": 29,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "findSymbolTool",
+          "line": 31,
+          "endLine": 61,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "getSymbolTool",
+          "line": 63,
+          "endLine": 87,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "getAstSliceTool",
+          "line": 89,
+          "endLine": 121,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "getDependenciesTool",
+          "line": 123,
+          "endLine": 145,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "prepareWorkBranchTool",
+          "line": 147,
+          "endLine": 181,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "finishWorkBranchTool",
+          "line": 183,
+          "endLine": 236,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/tools/copilot-headless.ts",
+      "language": "typescript",
+      "bytes": 4537,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "COPILOT_TIMEOUT_MS",
+          "line": 18,
+          "endLine": 18,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "runGh",
+          "line": 20,
+          "endLine": 43,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "copilotSuggestTool",
+          "line": 45,
+          "endLine": 84,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "copilotExplainTool",
+          "line": 86,
+          "endLine": 119,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/tools/core.ts",
+      "language": "typescript",
+      "bytes": 13213,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "execFileP",
+          "line": 15,
+          "endLine": 15,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "SKIP_DIRS",
+          "line": 17,
+          "endLine": 20,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "isHostAllowed",
+          "line": 24,
+          "endLine": 33,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "readFileTool",
+          "line": 37,
+          "endLine": 69,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "listDirectoryTool",
+          "line": 73,
+          "endLine": 129,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "searchCodeTool",
+          "line": 133,
+          "endLine": 202,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "httpGetTool",
+          "line": 206,
+          "endLine": 247,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "webFetchTool",
+          "line": 251,
+          "endLine": 292,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "stripHtml",
+          "line": 296,
+          "endLine": 311,
+          "exported": false
+        }
+      ]
+    },
+    {
+      "path": "src/tools/fs-git.ts",
+      "language": "typescript",
+      "bytes": 9884,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "execFileP",
+          "line": 28,
+          "endLine": 28,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "unifiedDiffForNewFile",
+          "line": 30,
+          "endLine": 34,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "looksLikeUnifiedDiff",
+          "line": 36,
+          "endLine": 39,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "countChangedLines",
+          "line": 41,
+          "endLine": 46,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "normalizePatchPath",
+          "line": 48,
+          "endLine": 63,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "extractPatchPaths",
+          "line": 65,
+          "endLine": 88,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "gitApply",
+          "line": 90,
+          "endLine": 103,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "writeFileTool",
+          "line": 105,
+          "endLine": 154,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "applyPatchTool",
+          "line": 156,
+          "endLine": 196,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "gitCommitTool",
+          "line": 198,
+          "endLine": 254,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/tools/registry.ts",
+      "language": "typescript",
+      "bytes": 8821,
+      "symbols": [
+        {
+          "kind": "interface",
+          "name": "ToolDescriptor",
+          "line": 13,
+          "endLine": 21,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "ToolHandler",
+          "line": 23,
+          "endLine": 30,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "echoTool",
+          "line": 32,
+          "endLine": 56,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "nowTool",
+          "line": 58,
+          "endLine": 75,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "notifyAdminTool",
+          "line": 81,
+          "endLine": 113,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "writeFileDemoTool",
+          "line": 123,
+          "endLine": 158,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "applyPatchDemoTool",
+          "line": 160,
+          "endLine": 193,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "REGISTRY",
+          "line": 211,
+          "endLine": 234,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "listLocalTools",
+          "line": 236,
+          "endLine": 238,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "getLocalTool",
+          "line": 240,
+          "endLine": 242,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/workspace/ast-index.ts",
+      "language": "typescript",
+      "bytes": 27967,
+      "symbols": [
+        {
+          "kind": "type",
+          "name": "LangKey",
+          "line": 11,
+          "endLine": 11,
+          "exported": false
+        },
+        {
+          "kind": "type",
+          "name": "TreeNode",
+          "line": 13,
+          "endLine": 22,
+          "exported": false
+        },
+        {
+          "kind": "interface",
+          "name": "FileToIndex",
+          "line": 24,
+          "endLine": 31,
+          "exported": false
+        },
+        {
+          "kind": "interface",
+          "name": "AstIndexStats",
+          "line": 33,
+          "endLine": 45,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "SymbolHit",
+          "line": 47,
+          "endLine": 58,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "LANG_FILE",
+          "line": 60,
+          "endLine": 70,
+          "exported": false
+        },
+        {
+          "kind": "let",
+          "name": "SQL",
+          "line": 72,
+          "endLine": 72,
+          "exported": false
+        },
+        {
+          "kind": "let",
+          "name": "db",
+          "line": 73,
+          "endLine": 73,
+          "exported": false
+        },
+        {
+          "kind": "let",
+          "name": "parserInited",
+          "line": 74,
+          "endLine": 74,
+          "exported": false
+        },
+        {
+          "kind": "const",
+          "name": "langCache",
+          "line": 75,
+          "endLine": 75,
+          "exported": false
+        },
+        {
+          "kind": "let",
+          "name": "lastStats",
+          "line": 76,
+          "endLine": 76,
+          "exported": false
+        },
+        {
+          "kind": "let",
+          "name": "loadedSandboxRoot",
+          "line": 81,
+          "endLine": 81,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "astDbPath",
+          "line": 83,
+          "endLine": 88,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "ensureDbMatchesSandbox",
+          "line": 94,
+          "endLine": 109,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "loadSql",
+          "line": 111,
+          "endLine": 116,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "getDb",
+          "line": 118,
+          "endLine": 181,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "persistDb",
+          "line": 183,
+          "endLine": 187,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "evictIfOversize",
+          "line": 198,
+          "endLine": 253,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "ensureParser",
+          "line": 255,
+          "endLine": 260,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "loadLanguage",
+          "line": 262,
+          "endLine": 269,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "resolveTreeSitterWasm",
+          "line": 271,
+          "endLine": 282,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "detectLanguage",
+          "line": 284,
+          "endLine": 292,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "sha256",
+          "line": 294,
+          "endLine": 296,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "walk",
+          "line": 298,
+          "endLine": 318,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "nodeText",
+          "line": 320,
+          "endLine": 322,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "nameOf",
+          "line": 324,
+          "endLine": 334,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "signatureOf",
+          "line": 336,
+          "endLine": 342,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "kindOf",
+          "line": 344,
+          "endLine": 372,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "goKindForTypeSpec",
+          "line": 378,
+          "endLine": 385,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "directDeclaratorName",
+          "line": 387,
+          "endLine": 397,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "extractImports",
+          "line": 399,
+          "endLine": 434,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "extractSymbols",
+          "line": 436,
+          "endLine": 484,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "indexFile",
+          "line": 486,
+          "endLine": 539,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "indexWorkspace",
+          "line": 541,
+          "endLine": 586,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "indexChangedFiles",
+          "line": 588,
+          "endLine": 632,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "statsForIndex",
+          "line": 634,
+          "endLine": 648,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "scoreSymbol",
+          "line": 650,
+          "endLine": 664,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "findSymbols",
+          "line": 666,
+          "endLine": 692,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "getSymbol",
+          "line": 694,
+          "endLine": 714,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "getDependencies",
+          "line": 716,
+          "endLine": 735,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/workspace/git-workspace.ts",
+      "language": "typescript",
+      "bytes": 17657,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "execFileP",
+          "line": 11,
+          "endLine": 11,
+          "exported": false
+        },
+        {
+          "kind": "interface",
+          "name": "BranchRequest",
+          "line": 13,
+          "endLine": 20,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "WorkBranchInfo",
+          "line": 22,
+          "endLine": 28,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "FinishBranchResult",
+          "line": 30,
+          "endLine": 46,
+          "exported": true
+        },
+        {
+          "kind": "let",
+          "name": "activeBranch",
+          "line": 48,
+          "endLine": 48,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "safePart",
+          "line": 50,
+          "endLine": 57,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "branchNameForWork",
+          "line": 59,
+          "endLine": 70,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "git",
+          "line": 72,
+          "endLine": 84,
+          "exported": false
+        },
+        {
+          "kind": "type",
+          "name": "PushBlockedCode",
+          "line": 86,
+          "endLine": 86,
+          "exported": false
+        },
+        {
+          "kind": "type",
+          "name": "PushResult",
+          "line": 87,
+          "endLine": 94,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "isPushResult",
+          "line": 96,
+          "endLine": 98,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "fixCommandsForPushBlock",
+          "line": 100,
+          "endLine": 133,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "classifyPushError",
+          "line": 135,
+          "endLine": 157,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "shellQuote",
+          "line": 159,
+          "endLine": 161,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "ensureAskPassScript",
+          "line": 163,
+          "endLine": 173,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "gitAuthEnv",
+          "line": 175,
+          "endLine": 236,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "pushBranch",
+          "line": 238,
+          "endLine": 271,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "pushFields",
+          "line": 273,
+          "endLine": 282,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "noCommitPushResult",
+          "line": 284,
+          "endLine": 293,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "pushExistingBranch",
+          "line": 295,
+          "endLine": 309,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "pushMessage",
+          "line": 311,
+          "endLine": 318,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "ensureGitRepo",
+          "line": 320,
+          "endLine": 325,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "ensureLocalGitExcludes",
+          "line": 327,
+          "endLine": 333,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "currentBranch",
+          "line": 335,
+          "endLine": 338,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "currentHeadSha",
+          "line": 340,
+          "endLine": 342,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "getActiveBranch",
+          "line": 344,
+          "endLine": 346,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "prepareWorkBranch",
+          "line": 348,
+          "endLine": 383,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "dirtyPaths",
+          "line": 385,
+          "endLine": 393,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "restoreWorkBranch",
+          "line": 411,
+          "endLine": 452,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "FinishBranchOptions",
+          "line": 454,
+          "endLine": 457,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "finishWorkBranch",
+          "line": 459,
+          "endLine": 504,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/workspace/sandbox.ts",
+      "language": "typescript",
+      "bytes": 4111,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "SOURCE_EXT",
+          "line": 9,
+          "endLine": 9,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "SKIP_DIRS",
+          "line": 11,
+          "endLine": 18,
+          "exported": true
+        },
+        {
+          "kind": "const",
+          "name": "sandboxContext",
+          "line": 20,
+          "endLine": 20,
+          "exported": false
+        },
+        {
+          "kind": "interface",
+          "name": "WorkspaceRootRequest",
+          "line": 22,
+          "endLine": 27,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "safeWorkspaceSegment",
+          "line": 29,
+          "endLine": 40,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "baseSandboxRoot",
+          "line": 42,
+          "endLine": 44,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "workItemWorkspacesRoot",
+          "line": 46,
+          "endLine": 52,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "isInside",
+          "line": 54,
+          "endLine": 57,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "safeExplicitWorkspaceRoot",
+          "line": 59,
+          "endLine": 67,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "workspaceRootForRunContext",
+          "line": 69,
+          "endLine": 77,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "withSandboxRoot",
+          "line": 79,
+          "endLine": 89,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "sandboxRoot",
+          "line": 91,
+          "endLine": 93,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "resolveSandboxedPath",
+          "line": 95,
+          "endLine": 108,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "toRelativeSandboxPath",
+          "line": 110,
+          "endLine": 116,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "src/workspace/source-materializer.ts",
+      "language": "typescript",
+      "bytes": 9925,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "execFileP",
+          "line": 10,
+          "endLine": 10,
+          "exported": false
+        },
+        {
+          "kind": "interface",
+          "name": "WorkspaceSourceRequest",
+          "line": 12,
+          "endLine": 16,
+          "exported": true
+        },
+        {
+          "kind": "interface",
+          "name": "WorkspaceSourceStatus",
+          "line": 18,
+          "endLine": 27,
+          "exported": true
+        },
+        {
+          "kind": "function",
+          "name": "git",
+          "line": 29,
+          "endLine": 48,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "githubCloneUrl",
+          "line": 50,
+          "endLine": 60,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "localSourcePath",
+          "line": 62,
+          "endLine": 72,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "normalizeRemote",
+          "line": 74,
+          "endLine": 82,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "removeWorkspaceContents",
+          "line": 84,
+          "endLine": 91,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "dirtyPaths",
+          "line": 93,
+          "endLine": 96,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "currentRemote",
+          "line": 98,
+          "endLine": 100,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "currentHead",
+          "line": 102,
+          "endLine": 104,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "checkoutRef",
+          "line": 106,
+          "endLine": 117,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "cloneIntoWorkspace",
+          "line": 119,
+          "endLine": 141,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "copyLocalDirectoryIntoWorkspace",
+          "line": 143,
+          "endLine": 158,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "configureGitIdentity",
+          "line": 160,
+          "endLine": 163,
+          "exported": false
+        },
+        {
+          "kind": "function",
+          "name": "ensureWorkspaceSource",
+          "line": 165,
+          "endLine": 283,
+          "exported": true
+        }
+      ]
+    },
+    {
+      "path": "test/auth-timing.test.ts",
+      "language": "typescript",
+      "bytes": 2425,
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "constantTimeEqual",
+          "line": 21,
+          "endLine": 32,
+          "exported": false
+        }
+      ]
+    },
+    {
+      "path": "test/fs-git-tools.test.ts",
+      "language": "typescript",
+      "bytes": 6314,
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "withTempSandbox",
+          "line": 8,
+          "endLine": 15,
+          "exported": false
+        }
+      ]
+    },
+    {
+      "path": "test/pending-token.test.ts",
+      "language": "typescript",
+      "bytes": 4725,
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "makeEnvelope",
+          "line": 20,
+          "endLine": 57,
+          "exported": false
+        }
+      ]
+    },
+    {
+      "path": "test/pii-mask.test.ts",
+      "language": "typescript",
+      "bytes": 5421,
+      "symbols": []
+    },
+    {
+      "path": "test/pii-ner.test.ts",
+      "language": "typescript",
+      "bytes": 4099,
+      "symbols": []
+    },
+    {
+      "path": "vitest.config.ts",
+      "language": "typescript",
+      "bytes": 1227,
+      "symbols": [
+        {
+          "kind": "const",
+          "name": "default",
+          "line": 16,
+          "endLine": 40,
+          "exported": true
+        }
+      ]
+    }
+  ],
+  "modules": [
+    {
+      "path": "src/lib",
+      "fileCount": 6,
+      "highlights": [
+        "persistApproval",
+        "ConsumedApproval",
+        "consumeApproval"
+      ]
+    },
+    {
+      "path": "src/mcp",
+      "fileCount": 6,
+      "highlights": [
+        "eventsRouter",
+        "invokeRouter",
+        "executeInvokePayload"
+      ]
+    },
+    {
+      "path": "src/llm",
+      "fileCount": 5,
+      "highlights": [
+        "isProviderAllowed",
+        "llmRespond",
+        "ConfiguredProviderInfo"
+      ]
+    },
+    {
+      "path": "src/tools",
+      "fileCount": 5,
+      "highlights": [
+        "indexWorkspaceTool",
+        "findSymbolTool",
+        "getSymbolTool"
+      ]
+    },
+    {
+      "path": "test",
+      "fileCount": 5,
+      "highlights": []
+    },
+    {
+      "path": "src",
+      "fileCount": 4,
+      "highlights": [
+        "app",
+        "config",
+        "InvariantResult"
+      ]
+    },
+    {
+      "path": "src/security",
+      "fileCount": 4,
+      "highlights": [
+        "MaskResult",
+        "maskPii",
+        "maskPiiAsync"
+      ]
+    },
+    {
+      "path": "src/workspace",
+      "fileCount": 4,
+      "highlights": [
+        "AstIndexStats",
+        "SymbolHit",
+        "indexWorkspace"
+      ]
+    },
+    {
+      "path": "src/audit",
+      "fileCount": 3,
+      "highlights": [
+        "PendingApproval",
+        "PendingToolDescriptor",
+        "savePending"
+      ]
+    },
+    {
+      "path": "src/middleware",
+      "fileCount": 3,
+      "highlights": [
+        "bearerAuth",
+        "errorMiddleware",
+        "requestIdMiddleware"
+      ]
+    },
+    {
+      "path": "src/events",
+      "fileCount": 2,
+      "highlights": [
+        "events",
+        "EventKind",
+        "EventCorrelation"
+      ]
+    },
+    {
+      "path": "src/laptop",
+      "fileCount": 2,
+      "highlights": [
+        "HelloFrame",
+        "HelloFrame",
+        "HeartbeatFrame"
+      ]
+    },
+    {
+      "path": "src/shared",
+      "fileCount": 2,
+      "highlights": [
+        "AppError",
+        "UnauthorizedError",
+        "NotFoundError"
+      ]
+    },
+    {
+      "path": "src/cli",
+      "fileCount": 1,
+      "highlights": []
+    },
+    {
+      "path": "src/lib/platform-registry",
+      "fileCount": 1,
+      "highlights": [
+        "RegisterPayload",
+        "RegisterOptions",
+        "startSelfRegistration"
+      ]
+    },
+    {
+      "path": ".",
+      "fileCount": 1,
+      "highlights": [
+        "default"
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "@xenova/transformers",
+      "version": "^2.17.2",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "cors",
+      "version": "^2.8.5",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "dotenv",
+      "version": "^16.4.5",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "express",
+      "version": "^4.21.1",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "express-async-errors",
+      "version": "^3.1.1",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "helmet",
+      "version": "^7.2.0",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "pino",
+      "version": "^9.5.0",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "pino-pretty",
+      "version": "^11.3.0",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "sql.js",
+      "version": "^1.14.1",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "tree-sitter-wasms",
+      "version": "^0.1.13",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "uuid",
+      "version": "^11.0.3",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "web-tree-sitter",
+      "version": "^0.25.10",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "ws",
+      "version": "^8.18.0",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "zod",
+      "version": "^3.24.1",
+      "scope": "runtime",
+      "source": "package.json"
+    },
+    {
+      "name": "@types/cors",
+      "version": "^2.8.17",
+      "scope": "dev",
+      "source": "package.json"
+    },
+    {
+      "name": "@types/express",
+      "version": "^4.17.21",
+      "scope": "dev",
+      "source": "package.json"
+    },
+    {
+      "name": "@types/node",
+      "version": "^20.17.6",
+      "scope": "dev",
+      "source": "package.json"
+    },
+    {
+      "name": "@types/sql.js",
+      "version": "^1.4.11",
+      "scope": "dev",
+      "source": "package.json"
+    },
+    {
+      "name": "@types/uuid",
+      "version": "^10.0.0",
+      "scope": "dev",
+      "source": "package.json"
+    },
+    {
+      "name": "@types/ws",
+      "version": "^8.5.13",
+      "scope": "dev",
+      "source": "package.json"
+    },
+    {
+      "name": "@vitest/coverage-v8",
+      "version": "^2.1.8",
+      "scope": "dev",
+      "source": "package.json"
+    },
+    {
+      "name": "ts-node",
+      "version": "^10.9.2",
+      "scope": "dev",
+      "source": "package.json"
+    },
+    {
+      "name": "ts-node-dev",
+      "version": "^2.0.0",
+      "scope": "dev",
+      "source": "package.json"
+    },
+    {
+      "name": "typescript",
+      "version": "^5.6.3",
+      "scope": "dev",
+      "source": "package.json"
+    },
+    {
+      "name": "vitest",
+      "version": "^2.1.8",
+      "scope": "dev",
+      "source": "package.json"
+    }
+  ],
+  "scripts": {
+    "npm": {
+      "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+      "dev:cli": "ts-node --transpile-only src/cli/index.ts",
+      "build": "tsc",
+      "start": "node dist/index.js",
+      "lint": "tsc --noEmit",
+      "test:contracts": "MCP_BEARER_TOKEN=test-bearer-token-12345 LLM_GATEWAY_URL=mock ts-node --transpile-only src/lib/governance-policy.contract.test.ts && MCP_BEARER_TOKEN=test-bearer-token-12345 LLM_GATEWAY_URL=mock ts-node --transpile-only src/lib/http-auth.contract.test.ts",
+      "test": "MCP_BEARER_TOKEN=test-bearer-token-12345-min-16-chars LLM_GATEWAY_URL=mock vitest run",
+      "test:watch": "MCP_BEARER_TOKEN=test-bearer-token-12345-min-16-chars LLM_GATEWAY_URL=mock vitest",
+      "test:coverage": "MCP_BEARER_TOKEN=test-bearer-token-12345-min-16-chars LLM_GATEWAY_URL=mock vitest run --coverage"
+    }
+  },
+  "stats": {
+    "filesScanned": 68,
+    "filesIndexed": 54,
+    "totalBytes": 700168,
+    "symbolCount": 426,
+    "durationMs": 81
+  },
+  "tokensEstimated": 1468
+}

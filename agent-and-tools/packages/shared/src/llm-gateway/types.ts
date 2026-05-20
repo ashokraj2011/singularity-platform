@@ -1,10 +1,8 @@
 /**
- * M33 — Wire types for the central LLM gateway.
+ * MCP-routed LLM wire types.
  *
- * Mirrors `context-fabric/services/llm_gateway_service/app/types.py`. The
- * shared package owns this contract so every TS consumer (mcp-server,
- * workgraph-api, prompt-composer, agent-runtime, …) imports the same
- * request/response shapes.
+ * Preserves the previous chat/embedding request shapes for call sites while
+ * the shared client routes chat requests through MCP.
  */
 
 export type Role = "system" | "user" | "assistant" | "tool";
@@ -39,7 +37,7 @@ export interface ChatCompletionRequest {
   temperature?: number;
   max_output_tokens?: number;
 
-  /** Streaming is not yet implemented; gateway returns 400 if true. */
+  /** Streaming is not yet implemented. */
   stream?: boolean;
 
   /** Optional caller context for audit emission. */

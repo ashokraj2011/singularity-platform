@@ -8,9 +8,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 
 beforeEach(() => {
-  // Force the mock gateway path so we don't try a real HTTP call when the
-  // validation passes.
-  process.env.LLM_GATEWAY_URL = "mock";
+  // Force the mock MCP path so we don't try a real HTTP call when validation passes.
+  process.env.MCP_SERVER_URL = "mock";
 });
 
 describe("M35.4 llmRespond validation", () => {
@@ -27,7 +26,7 @@ describe("M35.4 llmRespond validation", () => {
       llmRespond({
         messages: [{ role: "wizard" as never, content: "hi" }],
       }),
-    ).rejects.toThrow(/llm gateway request validation failed/);
+    ).rejects.toThrow(/MCP-routed LLM request validation failed/);
   });
 
   it("rejects a non-string content with a clear error", async () => {
@@ -36,7 +35,7 @@ describe("M35.4 llmRespond validation", () => {
       llmRespond({
         messages: [{ role: "user", content: 123 as never }],
       }),
-    ).rejects.toThrow(/llm gateway request validation failed/);
+    ).rejects.toThrow(/MCP-routed LLM request validation failed/);
   });
 
   it("rejects temperature outside [0, 2]", async () => {
@@ -46,7 +45,7 @@ describe("M35.4 llmRespond validation", () => {
         messages: [{ role: "user", content: "hi" }],
         temperature: 5 as never,
       }),
-    ).rejects.toThrow(/llm gateway request validation failed/);
+    ).rejects.toThrow(/MCP-routed LLM request validation failed/);
   });
 
   it("rejects non-positive max_output_tokens", async () => {
@@ -56,7 +55,7 @@ describe("M35.4 llmRespond validation", () => {
         messages: [{ role: "user", content: "hi" }],
         max_output_tokens: 0 as never,
       }),
-    ).rejects.toThrow(/llm gateway request validation failed/);
+    ).rejects.toThrow(/MCP-routed LLM request validation failed/);
   });
 });
 

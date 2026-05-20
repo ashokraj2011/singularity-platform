@@ -2,10 +2,10 @@
 POST /execute — the new orchestrator entry (M8).
 
 Workgraph's AGENT_TASK executor calls this. We:
-  1. Compose the prompt (call prompt-composer with previewOnly=true)
-  2. Enrich with conversation history + rolling summary + relevant memory
-  3. Resolve the per-capability MCP server (via IAM through /internal/mcp/servers)
-  4. Discover available tools (call tool-service /tools/discover)
+  1. Discover available tools once (call tool-service /tools/discover)
+  2. Compose the prompt (call prompt-composer with previewOnly=true)
+  3. Enrich with conversation history + rolling summary + relevant memory
+  4. Resolve the per-capability MCP server (via IAM through /internal/mcp/servers)
   5. Invoke MCP /mcp/invoke — runs the LLM↔tool loop, returns final answer
   6. Persist: assistant turn → memory; rolling summary update; metrics; CallLog
   7. Return unified response with all correlation IDs
@@ -256,6 +256,188 @@ def _str_value(obj: dict[str, Any], *keys: str, default: Optional[str] = None) -
     return default
 
 
+TOOL_EXECUTION_TARGETS = {"LOCAL", "SERVER"}
+TOOL_RISK_LEVELS = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+
+
+def _normalize_tool_for_mcp(tool: dict[str, Any]) -> tuple[Optional[dict[str, Any]], list[str]]:
+    name = tool.get("tool_name") or tool.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None, []
+
+    warnings: list[str] = []
+    clean_name = name.strip()
+    raw_target = str(tool.get("execution_target") or "LOCAL").upper()
+    execution_target = raw_target if raw_target in TOOL_EXECUTION_TARGETS else "SERVER"
+    if execution_target != raw_target:
+        warnings.append(f"tool {clean_name} returned unsupported execution_target {raw_target}; using SERVER")
+
+    raw_risk = str(tool.get("risk_level") or "low").upper()
+    risk_level = raw_risk if raw_risk in TOOL_RISK_LEVELS else "LOW"
+    if risk_level != raw_risk:
+        warnings.append(f"tool {clean_name} returned unsupported risk_level {raw_risk}; using LOW")
+
+    input_schema = tool.get("input_schema")
+    if not isinstance(input_schema, dict):
+        input_schema = {"type": "object"}
+
+    return {
+        "name": clean_name,
+        "description": tool.get("description", ""),
+        "input_schema": input_schema,
+        "execution_target": execution_target,
+        "requires_approval": bool(tool.get("requires_approval", False)),
+        "risk_level": risk_level,
+    }, warnings
+
+
+def _local_tool(name: str, description: str, input_schema: dict[str, Any],
+                risk_level: str = "LOW", requires_approval: bool = False) -> dict[str, Any]:
+    return {
+        "name": name,
+        "description": description,
+        "input_schema": input_schema,
+        "execution_target": "LOCAL",
+        "requires_approval": requires_approval,
+        "risk_level": risk_level,
+    }
+
+
+def _mandatory_local_tools_for_request(req: ExecuteRequest) -> list[dict[str, Any]]:
+    signature = " ".join([
+        str(req.vars.get("stageKey") or ""),
+        str(req.vars.get("stageLabel") or ""),
+        str(req.vars.get("agentRole") or ""),
+        req.task,
+    ]).lower()
+    is_code_stage = (
+        req.allow_autonomous_mutation
+        or any(token in signature for token in ("develop", "developer", "engineer", "code", "qa", "quality", "test", "verify"))
+    )
+    tools = [
+        _local_tool("read_file", "Read a sandbox-relative file.", {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        }),
+        _local_tool("search_code", "Search code in the MCP sandbox with ripgrep.", {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "path": {"type": "string"},
+                "max_results": {"type": "number"},
+            },
+            "required": ["query"],
+        }),
+        _local_tool("index_workspace", "Index the active workspace for symbol lookup.", {"type": "object", "properties": {}}),
+        _local_tool("find_symbol", "Find symbols in the active workspace.", {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        }),
+    ]
+    if not is_code_stage:
+        return tools
+    tools.extend([
+        _local_tool("apply_patch", "Apply a unified diff patch inside the MCP sandbox.", {
+            "type": "object",
+            "properties": {"patch": {"type": "string"}},
+            "required": ["patch"],
+        }, risk_level="MEDIUM"),
+        _local_tool("replace_text", "Replace exact anchor text inside an existing MCP sandbox file.", {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "oldText": {"type": "string"},
+                "newText": {"type": "string"},
+                "occurrence": {"oneOf": [{"type": "string", "enum": ["first", "all"]}, {"type": "number"}]},
+            },
+            "required": ["path", "oldText", "newText"],
+        }, risk_level="MEDIUM"),
+        _local_tool("replace_range", "Replace an inclusive 1-based line range inside an existing MCP sandbox file.", {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "startLine": {"type": "number"},
+                "endLine": {"type": "number"},
+                "replacement": {"type": "string"},
+            },
+            "required": ["path", "startLine", "endLine", "replacement"],
+        }, risk_level="MEDIUM"),
+        _local_tool("write_file", "Create or overwrite a complete file body; not for diffs.", {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "forceFullReplace": {"type": "boolean"},
+            },
+            "required": ["path", "content"],
+        }, risk_level="MEDIUM"),
+        _local_tool("run_test", "Run an allowlisted test, lint, typecheck, or verification command.", {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "args": {"type": "array", "items": {"type": "string"}},
+                "cwd": {"type": "string"},
+                "timeout_ms": {"type": "number"},
+            },
+            "required": ["command"],
+        }, risk_level="MEDIUM"),
+        _local_tool("run_command", "Run an allowlisted non-shell command in the MCP sandbox.", {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "args": {"type": "array", "items": {"type": "string"}},
+                "cwd": {"type": "string"},
+                "timeout_ms": {"type": "number"},
+            },
+            "required": ["command"],
+        }, risk_level="MEDIUM"),
+        _local_tool("formal_verify", "Run a formal verification query and return a solver receipt.", {
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string"},
+                "facts": {"type": "object"},
+                "constraints": {"type": "array", "items": {"type": "object"}},
+                "query": {"type": "object"},
+                "artifactRefs": {"type": "array", "items": {"type": "object"}},
+                "timeoutMs": {"type": "number"},
+            },
+            "required": ["scope", "facts", "query"],
+        }, risk_level="MEDIUM"),
+        _local_tool("verification_unavailable", "Record an explicit verification-unavailable receipt when no runnable command exists.", {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string"},
+                "inspected": {"type": "array", "items": {"type": "string"}},
+                "attemptedCommands": {"type": "array", "items": {"type": "string"}},
+                "paths_context": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["reason"],
+        }, risk_level="LOW"),
+        _local_tool("git_commit", "Commit sandbox changes with a message.", {
+            "type": "object",
+            "properties": {"message": {"type": "string"}, "author": {"type": "string"}},
+            "required": ["message"],
+        }, risk_level="MEDIUM"),
+        _local_tool("finish_work_branch", "Finish the prepared work branch and return git evidence.", {
+            "type": "object",
+            "properties": {"commitMessage": {"type": "string"}},
+        }, risk_level="MEDIUM"),
+    ])
+    return tools
+
+
+def _merge_mandatory_local_tools(tools: list[dict[str, Any]], req: ExecuteRequest) -> list[dict[str, Any]]:
+    seen = {str(tool.get("name")) for tool in tools if tool.get("name")}
+    merged = list(tools)
+    for tool in _mandatory_local_tools_for_request(req):
+        if tool["name"] not in seen:
+            merged.append(tool)
+            seen.add(tool["name"])
+    return merged
+
+
 def _default_mcp_record() -> Optional[dict[str, Any]]:
     base_url = (settings.mcp_default_base_url or "").strip().rstrip("/")
     bearer = (settings.mcp_default_bearer_token or "").strip()
@@ -341,13 +523,24 @@ def _usage_metadata(
     output_tokens = tokens_used.get("output")
     total_tokens = tokens_used.get("total")
     actual_model_usage = actual_model_usage or {}
-    model_alias = _str_value(model_overrides, "modelAlias", "model_alias") or _str_value(actual_model_usage, "modelAlias", "model_alias")
-    provider = _str_value(model_overrides, "provider") or _str_value(actual_model_usage, "provider", default="mcp-default")
-    model = _str_value(model_overrides, "model") or _str_value(actual_model_usage, "model", default="mcp-default")
-    estimated_cost = tokens_used.get("estimatedCost") or tokens_used.get("estimated_cost")
+    model_alias = _str_value(actual_model_usage, "modelAlias", "model_alias") or _str_value(model_overrides, "modelAlias", "model_alias")
+    provider = _str_value(actual_model_usage, "provider") or _str_value(model_overrides, "provider", default="mcp-default")
+    model = _str_value(actual_model_usage, "model") or _str_value(model_overrides, "model", default="mcp-default")
+    estimated_cost = (
+        tokens_used.get("estimatedCost")
+        or tokens_used.get("estimated_cost")
+        or actual_model_usage.get("estimatedCost")
+        or actual_model_usage.get("estimated_cost")
+    )
     tokens_saved = None
     if isinstance(optimization_metrics, dict):
         tokens_saved = optimization_metrics.get("tokens_saved") or optimization_metrics.get("tokensSaved")
+    prompt_cache = (
+        actual_model_usage.get("promptCache")
+        or actual_model_usage.get("prompt_cache")
+        or tokens_used.get("promptCache")
+        or tokens_used.get("prompt_cache")
+    )
     return {
         "inputTokens": input_tokens,
         "outputTokens": output_tokens,
@@ -357,6 +550,7 @@ def _usage_metadata(
         "provider": provider,
         "model": model,
         "tokensSaved": tokens_saved,
+        "promptCache": prompt_cache,
         "promptAssemblyId": prompt_assembly_id,
         "cfCallId": cf_call_id,
     }
@@ -414,8 +608,11 @@ async def _compile_execute_context(
         "optimization_mode": _str_value(context_policy, "optimizationMode", "optimization_mode", default="medium"),
         "compare_with_raw": bool(context_policy.get("compareWithRaw", context_policy.get("compare_with_raw", False))),
         "max_context_tokens": max_context,
-        "provider": _str_value(model_overrides, "provider", default="mock"),
-        "model": _str_value(model_overrides, "model", default="mock-fast"),
+        "provider": _str_value(model_overrides, "provider", default="gateway"),
+        "model": (
+            _str_value(model_overrides, "model")
+            or _str_value(model_overrides, "modelAlias", "model_alias", default="gateway-default")
+        ),
         "system_prompt": _trim_text(system_prompt or "", max_chars) if system_prompt else None,
     }
     compiled = await _post(
@@ -525,6 +722,36 @@ async def execute(req: ExecuteRequest):
     }
     execution_posture = "full"
 
+    if not req.run_context.capability_id:
+        raise HTTPException(status_code=400, detail="run_context.capability_id is required")
+    if settings.require_tenant_id and not req.run_context.tenant_id:
+        raise HTTPException(status_code=400, detail="run_context.tenant_id is required when REQUIRE_TENANT_ID=true")
+
+    # Context Fabric owns the run-level tool list. The same descriptors are
+    # rendered into the prompt by Prompt Composer and sent to MCP for execution.
+    tools_for_mcp: list[dict[str, Any]] = []
+    try:
+        discover = await _post(
+            f"{settings.tool_service_url.rstrip('/')}/api/v1/tools/discover",
+            {
+                "capability_id": req.run_context.capability_id,
+                "agent_uid": req.run_context.agent_template_id or "default-agent",
+                "query": req.task,
+                "risk_max": "high",
+                "limit": 8,
+            },
+            timeout=10.0,
+        )
+        for t in discover.get("tools", []):
+            normalized_tool, tool_warnings = _normalize_tool_for_mcp(t)
+            composer_warnings.extend(tool_warnings)
+            if normalized_tool:
+                tools_for_mcp.append(normalized_tool)
+    except Exception as exc:
+        composer_warnings.append(f"tool discovery unavailable: {exc!s}")
+
+    tools_for_mcp = _merge_mandatory_local_tools(tools_for_mcp, req)
+
     if req.run_context.agent_template_id:
         try:
             compose_payload = {
@@ -546,6 +773,7 @@ async def execute(req: ExecuteRequest):
                 "overrides": req.overrides,
                 "modelOverrides": req.model_overrides,
                 "contextPolicy": _composer_context_policy(req.context_policy, req.limits),
+                "toolDescriptors": tools_for_mcp,
                 "previewOnly": True,
             }
             composed = await _post(
@@ -559,7 +787,7 @@ async def execute(req: ExecuteRequest):
             assembled = data.get("assembled") or {}
             system_prompt = assembled.get("systemPrompt")
             user_message = assembled.get("message") or req.task
-            composer_warnings = data.get("warnings") or []
+            composer_warnings.extend(data.get("warnings") or [])
             composer_budget_warnings = data.get("budgetWarnings") or []
             composer_retrieval_stats = data.get("retrievalStats") or {}
             raw_context_plan = data.get("contextPlan")
@@ -725,7 +953,8 @@ async def execute(req: ExecuteRequest):
                     "tool_descriptor": {
                         "name": "context_plan_approval",
                         "description": "Approve execution with missing required prompt context.",
-                        "execution_target": "CONTEXT_FABRIC",
+                        "execution_target": "SERVER",
+                        "source": "context_fabric",
                         "risk_level": "HIGH",
                     },
                 },
@@ -769,11 +998,6 @@ async def execute(req: ExecuteRequest):
             pass  # fresh session; ignore
 
     # ── 3. Resolve MCP runtime ──────────────────────────────────────────
-    if not req.run_context.capability_id:
-        raise HTTPException(status_code=400, detail="run_context.capability_id is required")
-    if settings.require_tenant_id and not req.run_context.tenant_id:
-        raise HTTPException(status_code=400, detail="run_context.tenant_id is required when REQUIRE_TENANT_ID=true")
-
     try:
         full, mcp_warnings = await _resolve_mcp_record(req.run_context.capability_id)
         composer_warnings.extend(mcp_warnings)
@@ -785,33 +1009,7 @@ async def execute(req: ExecuteRequest):
     mcp_base_url = full["base_url"].rstrip("/")
     mcp_bearer = full["bearer_token"]
 
-    # ── 4. Tool discovery ───────────────────────────────────────────────
-    tools_for_mcp: list[dict] = []
-    try:
-        discover = await _post(
-            f"{settings.tool_service_url.rstrip('/')}/api/v1/tools/discover",
-            {
-                "capability_id": req.run_context.capability_id,
-                "agent_uid": req.run_context.agent_template_id or "default-agent",
-                "query": req.task,
-                "risk_max": "high",
-                "limit": 8,
-            },
-            timeout=10.0,
-        )
-        for t in discover.get("tools", []):
-            tools_for_mcp.append({
-                "name": t.get("tool_name") or t.get("name"),
-                "description": t.get("description", ""),
-                "input_schema": t.get("input_schema") or {"type": "object"},
-                "execution_target": (t.get("execution_target") or "LOCAL").upper(),
-                "requires_approval": bool(t.get("requires_approval", False)),
-                "risk_level": (t.get("risk_level") or "low").upper(),
-            })
-    except Exception:
-        pass  # tool discovery is optional; MCP may have its own local registry
-
-    # ── 5. Invoke the MCP server ────────────────────────────────────────
+    # ── 4. Invoke the MCP server ────────────────────────────────────────
     # MCP-server uses Zod with `.optional()` which accepts undefined but
     # NOT null. Strip Nones so the JSON has no null fields.
     def _strip_nones(d: dict) -> dict:
@@ -836,6 +1034,7 @@ async def execute(req: ExecuteRequest):
                 or req.limits.get("outputTokenBudget")
                 or req.limits.get("output_token_budget")
             ),
+            "promptCache": req.model_overrides.get("promptCache") or req.model_overrides.get("prompt_cache"),
         }),
         "runContext": _strip_nones({
             "sessionId": session_id,
@@ -859,6 +1058,14 @@ async def execute(req: ExecuteRequest):
             "maxSteps": req.limits.get("maxSteps") or req.limits.get("max_steps") or 3,
             "timeoutSec": req.limits.get("timeoutSec") or req.limits.get("timeout_sec") or 240,
             "maxToolResultChars": req.limits.get("maxToolResultChars") or req.limits.get("max_tool_result_chars"),
+            "maxHistoryMessages": req.limits.get("maxHistoryMessages") or req.limits.get("max_history_messages"),
+            "maxHistoryTokens": req.limits.get("maxHistoryTokens") or req.limits.get("max_history_tokens"),
+            "compressToolResults": req.limits.get("compressToolResults") if "compressToolResults" in req.limits else req.limits.get("compress_tool_results"),
+            "includeLocalTools": (
+                req.limits.get("includeLocalTools")
+                if "includeLocalTools" in req.limits
+                else req.limits.get("include_local_tools", True)
+            ),
         }),
         "allowAutonomousMutation": req.allow_autonomous_mutation,
     }
@@ -1012,6 +1219,7 @@ async def execute(req: ExecuteRequest):
     steps_taken = mcp_data.get("stepsTaken")
     status = mcp_data.get("status", "UNKNOWN")
     pending_approval = mcp_data.get("pendingApproval")  # M9.z — present when MCP paused
+    verification_receipts = mcp_data.get("verificationReceipts") or correlation.get("verificationReceipts") or []
 
     # ── 6. Persist memory turn + summary + metrics ──────────────────────
     try:
@@ -1036,6 +1244,17 @@ async def execute(req: ExecuteRequest):
                 },
                 timeout=10.0,
             )
+        summary_every = _int_limit(req.limits, "summaryEveryMessages", "summary_every_messages", default=6) or 6
+        await _post(
+            f"{settings.context_memory_url.rstrip('/')}/memory/summaries/update",
+            {
+                "session_id": session_id,
+                "agent_id": req.run_context.agent_template_id,
+                "force": False,
+                "min_messages_since_last_summary": summary_every,
+            },
+            timeout=20.0,
+        )
     except Exception:
         pass  # best-effort
 
@@ -1046,6 +1265,14 @@ async def execute(req: ExecuteRequest):
     # ── 8. CallLog row ──────────────────────────────────────────────────
     completed_at = datetime.now(timezone.utc).isoformat()
     is_paused = status == "WAITING_APPROVAL"
+    usage = _usage_metadata(
+        tokens_used=tokens_used,
+        model_overrides=req.model_overrides,
+        actual_model_usage=actual_model_usage,
+        prompt_assembly_id=prompt_assembly_id,
+        cf_call_id=cf_call_id,
+        optimization_metrics=optimization_metrics,
+    )
     call_log.insert({
         "id": cf_call_id,
         "trace_id": trace_id,
@@ -1070,7 +1297,7 @@ async def execute(req: ExecuteRequest):
         "input_tokens": tokens_used.get("input"),
         "output_tokens": tokens_used.get("output"),
         "total_tokens": tokens_used.get("total"),
-        "estimated_cost": None,  # M8.x: derive from llm-gateway records
+        "estimated_cost": usage.get("estimatedCost"),
         "started_at": started_at,
         # WAITING_APPROVAL means the run is paused — completed_at stays NULL
         # until /execute/resume finishes it.
@@ -1096,11 +1323,12 @@ async def execute(req: ExecuteRequest):
             "input_tokens": tokens_used.get("input"),
             "output_tokens": tokens_used.get("output"),
             "total_tokens": tokens_used.get("total"),
-            "estimated_cost": tokens_used.get("estimatedCost") or tokens_used.get("estimated_cost"),
-            "model_alias": _str_value(req.model_overrides, "modelAlias", "model_alias") or _str_value(actual_model_usage, "modelAlias", "model_alias"),
-            "provider": _str_value(req.model_overrides, "provider") or _str_value(actual_model_usage, "provider", default="mcp-default"),
-            "model": _str_value(req.model_overrides, "model") or _str_value(actual_model_usage, "model", default="mcp-default"),
+            "estimated_cost": usage.get("estimatedCost"),
+            "model_alias": usage.get("modelAlias"),
+            "provider": usage.get("provider"),
+            "model": usage.get("model"),
             "tokens_saved": optimization_metrics.get("tokens_saved") or optimization_metrics.get("tokensSaved"),
+            "prompt_cache": usage.get("promptCache"),
             "prompt_budget_warnings": composer_budget_warnings,
             "prompt_retrieval_stats": composer_retrieval_stats,
             "prompt_estimated_input_tokens": composer_estimated_input_tokens,
@@ -1113,15 +1341,6 @@ async def execute(req: ExecuteRequest):
             "workflow_instance_id": req.run_context.workflow_instance_id,
         },
     )
-    usage = _usage_metadata(
-        tokens_used=tokens_used,
-        model_overrides=req.model_overrides,
-        actual_model_usage=actual_model_usage,
-        prompt_assembly_id=prompt_assembly_id,
-        cf_call_id=cf_call_id,
-        optimization_metrics=optimization_metrics,
-    )
-
     return {
         "status": status,
         "finalResponse": final_response,
@@ -1140,6 +1359,7 @@ async def execute(req: ExecuteRequest):
             "toolInvocationIds": correlation.get("toolInvocationIds") or [],
             "artifactIds": correlation.get("artifactIds") or [],
             "codeChangeIds": correlation.get("codeChangeIds") or [],
+            "verificationReceipts": verification_receipts,
             "workspaceRoot": workspace.get("workspaceRoot"),
             "workspaceBranch": workspace.get("workspaceBranch"),
             "workspaceCommitSha": workspace.get("workspaceCommitSha"),
@@ -1149,6 +1369,7 @@ async def execute(req: ExecuteRequest):
             "astIndexedSymbols": workspace.get("astIndexedSymbols"),
         },
         "workspace": workspace,
+        "verificationReceipts": verification_receipts,
         "tokensUsed": tokens_used,
         "usage": usage,
         "modelUsage": {
@@ -1159,12 +1380,15 @@ async def execute(req: ExecuteRequest):
             "outputTokens": usage["outputTokens"],
             "totalTokens": usage["totalTokens"],
             "estimatedCost": usage["estimatedCost"],
+            "promptCache": usage.get("promptCache"),
         },
+        "promptCache": usage.get("promptCache"),
         "prompt": {
             "estimatedInputTokens": composer_estimated_input_tokens,
             "budgetWarnings": composer_budget_warnings,
             "retrievalStats": composer_retrieval_stats,
             "contextPlan": context_plan,
+            "promptCache": usage.get("promptCache"),
         },
         "contextPlanHash": context_plan_hash,
         "requiredContextStatus": required_context_status,
@@ -1565,12 +1789,22 @@ async def execute_resume(req: ResumeRequest):
     correlation = mcp_data.get("correlation") or {}
     workspace = mcp_data.get("workspace") or {}
     tokens_used = mcp_data.get("tokensUsed") or {}
+    actual_model_usage = mcp_data.get("modelUsage") or {}
     finish_reason = mcp_data.get("finishReason")
     steps_taken = mcp_data.get("stepsTaken")
     new_pending = mcp_data.get("pendingApproval")  # could pause again
+    verification_receipts = mcp_data.get("verificationReceipts") or correlation.get("verificationReceipts") or []
 
     is_still_paused = new_status == "WAITING_APPROVAL"
     completed_at = datetime.now(timezone.utc).isoformat()
+    usage = _usage_metadata(
+        tokens_used=tokens_used,
+        model_overrides={},
+        actual_model_usage=actual_model_usage,
+        prompt_assembly_id=rec.get("prompt_assembly_id"),
+        cf_call_id=rec["id"],
+        optimization_metrics={},
+    )
 
     call_log.update_after_resume(rec["id"], {
         "mcp_invocation_id": correlation.get("mcpInvocationId"),
@@ -1585,19 +1819,12 @@ async def execute_resume(req: ResumeRequest):
         "input_tokens": tokens_used.get("input"),
         "output_tokens": tokens_used.get("output"),
         "total_tokens": tokens_used.get("total"),
+        "estimated_cost": usage.get("estimatedCost"),
         "completed_at": None if is_still_paused else completed_at,
         "continuation_token": (new_pending or {}).get("continuation_token"),
         "pending_tool_name": (new_pending or {}).get("tool_name"),
         "pending_tool_args": (new_pending or {}).get("tool_args"),
     })
-    usage = _usage_metadata(
-        tokens_used=tokens_used,
-        model_overrides={},
-        prompt_assembly_id=rec.get("prompt_assembly_id"),
-        cf_call_id=rec["id"],
-        optimization_metrics={},
-    )
-
     return {
         "status": new_status,
         "finalResponse": final_response,
@@ -1613,6 +1840,7 @@ async def execute_resume(req: ResumeRequest):
             "toolInvocationIds": correlation.get("toolInvocationIds") or [],
             "artifactIds": correlation.get("artifactIds") or [],
             "codeChangeIds": correlation.get("codeChangeIds") or [],
+            "verificationReceipts": verification_receipts,
             "workspaceRoot": workspace.get("workspaceRoot"),
             "workspaceBranch": workspace.get("workspaceBranch"),
             "workspaceCommitSha": workspace.get("workspaceCommitSha"),
@@ -1622,16 +1850,20 @@ async def execute_resume(req: ResumeRequest):
             "astIndexedSymbols": workspace.get("astIndexedSymbols"),
         },
         "workspace": workspace,
+        "verificationReceipts": verification_receipts,
         "tokensUsed": tokens_used,
         "usage": usage,
         "modelUsage": {
+            "modelAlias": usage["modelAlias"],
             "provider": usage["provider"],
             "model": usage["model"],
             "inputTokens": usage["inputTokens"],
             "outputTokens": usage["outputTokens"],
             "totalTokens": usage["totalTokens"],
             "estimatedCost": usage["estimatedCost"],
+            "promptCache": usage.get("promptCache"),
         },
+        "promptCache": usage.get("promptCache"),
         "finishReason": finish_reason,
         "stepsTaken": steps_taken,
         "metrics": {

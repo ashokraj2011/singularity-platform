@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity, AlertTriangle, Boxes, CheckCircle2, ClipboardList, Copy, Database, FileText,
-  Gauge, GitBranch, KeyRound,
+  Gauge, GitBranch, HardDrive, KeyRound,
   Network, Power, RefreshCw, ServerCog, ShieldCheck, SlidersHorizontal, Terminal,
   WifiOff, Zap,
 } from 'lucide-react'
@@ -110,6 +110,45 @@ interface ArchitectureDiagram {
   mermaid: string
 }
 
+interface McpWorkspaceStats {
+  workItemWorkspaceCount?: number | string | null
+  workItemBytes?: number | string | null
+  sourceCacheBytes?: number | string | null
+  totalManagedBytes?: number | string | null
+  quotaBytes?: number | string | null
+  quotaUsedPercent?: number | string | null
+  gc?: {
+    enabled?: boolean
+    maxAgeHours?: number | string | null
+  }
+}
+
+interface McpCommandExecutionStatus {
+  mode?: string
+  status?: string
+  ready?: boolean
+  error?: string
+  runnerUrl?: string
+  runnerTokenConfigured?: boolean
+  hostWorkspacePath?: string | null
+  hostWorkspacePathAbsolute?: boolean
+  defaultImage?: string
+  imageMapConfigured?: boolean
+  networkMode?: string
+  policy?: {
+    allowedFamilies?: string[]
+    deniedFamilies?: string[]
+  }
+  runner?: {
+    ready?: boolean
+    status?: string
+    hostWorkspaceExists?: boolean
+    hostWorkspaceWritable?: boolean
+    dockerAvailable?: boolean
+    dockerServerVersion?: string | null
+  } | null
+}
+
 const services: ServiceCheck[] = [
   { id: 'iam', name: 'IAM', group: 'Control Plane', endpoint: '/ops-health/iam', description: 'Users, teams, roles, capabilities', critical: true },
   { id: 'workgraph-api', name: 'Workflow API', group: 'Orchestration', endpoint: '/ops-health/workgraph-api', description: 'Workflow runs, tasks, approvals', critical: true },
@@ -162,6 +201,7 @@ const commandGroups = [
     commands: [
       { label: 'Point workflows at the local MCP runtime', command: './singularity.sh config mcp --base-url http://localhost:7100 --public-base-url http://host.docker.internal:7100' },
       { label: 'Set local workspace root for AST and git branches', command: './singularity.sh config mcp --sandbox-root /path/to/repo' },
+      { label: 'Enable Docker-isolated command execution', command: './singularity.sh config mcp --command-execution-mode container --runner-host-workspace-path /path/to/repo' },
       { label: 'Laptop MCP login', command: 'cd mcp-server && npm run build && npx singularity-mcp login --email admin@singularity.local --platform http://localhost:8100/api/v1' },
     ],
   },
@@ -260,6 +300,20 @@ export function OperationsPage() {
     refetchInterval: 30000,
   })
 
+  const workspaceStats = useQuery({
+    queryKey: ['mcp', 'workspace-stats'],
+    queryFn: async () => (await workgraphApi.get('/llm/workspaces/stats')).data?.data as McpWorkspaceStats,
+    retry: 1,
+    refetchInterval: 30000,
+  })
+
+  const commandExecution = useQuery({
+    queryKey: ['mcp', 'command-execution'],
+    queryFn: async () => (await workgraphApi.get('/llm/execution')).data?.data as McpCommandExecutionStatus | null,
+    retry: 1,
+    refetchInterval: 30000,
+  })
+
   const formalStatus = useQuery({
     queryKey: ['ops-status', 'formal-verifier'],
     queryFn: async () => {
@@ -312,6 +366,22 @@ export function OperationsPage() {
 
   const modelRows = Array.isArray(modelCatalog.data?.models) ? modelCatalog.data.models : []
   const providerRows = Array.isArray(providers.data?.providers) ? providers.data.providers : []
+  const workspaceTotalBytes = numberValue(workspaceStats.data?.totalManagedBytes)
+  const workspaceCount = Math.round(numberValue(workspaceStats.data?.workItemWorkspaceCount) ?? 0)
+  const workspaceQuotaPercent = numberValue(workspaceStats.data?.quotaUsedPercent)
+  const workspaceGc = workspaceStats.data?.gc
+  const workspaceStorageStatus = workspaceStats.isError
+    ? 'FAIL'
+    : workspaceQuotaPercent != null && workspaceQuotaPercent >= 80
+      ? 'WARN'
+      : 'OK'
+  const commandExecutionStatus = commandExecution.isError
+    ? 'FAIL'
+    : commandExecution.data?.mode === 'container' && commandExecution.data?.ready
+      ? 'OK'
+      : commandExecution.data?.mode === 'process'
+        ? 'WARN'
+        : 'FAIL'
   const formalVerifierIndex = services.findIndex((svc) => svc.id === 'formal-verifier')
   const formalVerifierState = formalVerifierIndex >= 0 ? stateFromQuery(healthQueries[formalVerifierIndex]) : 'DEGRADED'
   const formalVerifierLabel = formalStatus.data?.status ?? (formalVerifierState === 'ONLINE' ? 'Disabled' : 'Service unreachable')
@@ -385,6 +455,24 @@ export function OperationsPage() {
           value="Default runtime"
           status="OK"
           detail="MCP owns local files, AST, branches, tools, and model routing."
+        />
+        <SetupTile
+          title="MCP workspace storage"
+          value={workspaceStats.isLoading ? 'Loading...' : formatBytes(workspaceTotalBytes)}
+          status={workspaceStorageStatus}
+          detail={workspaceStats.isError
+            ? 'MCP workspace storage stats are unavailable through Workgraph.'
+            : `${workspaceCount} workspaces · ${formatPercent(workspaceQuotaPercent)} quota · GC ${workspaceGc?.enabled === true ? 'enabled' : workspaceGc?.enabled === false ? 'disabled' : 'unknown'}`}
+        />
+        <SetupTile
+          title="MCP command isolation"
+          value={commandExecution.isLoading ? 'Loading...' : commandExecution.data?.mode ?? 'Unavailable'}
+          status={commandExecutionStatus}
+          detail={commandExecution.isError
+            ? 'MCP discovery is unavailable through Workgraph.'
+            : commandExecution.data?.mode === 'container'
+              ? `${commandExecution.data?.ready ? 'Runner ready' : commandExecution.data?.error ?? 'Runner unavailable'} · ${commandExecution.data?.networkMode ?? 'network unknown'}`
+              : 'Process mode is for unit tests or explicit local dev only.'}
         />
         <SetupTile
           title="Formal verification"
@@ -476,6 +564,66 @@ export function OperationsPage() {
                   <Badge tone={p.ready ? 'ok' : 'neutral'}>{p.ready ? 'Ready' : 'Not configured'}</Badge>
                 </div>
               ))}
+            </div>
+
+            <div className="space-y-2 border-t border-slate-200 pt-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
+                  <HardDrive className="h-3.5 w-3.5" />
+                  MCP Workspace Storage
+                </div>
+                <Badge tone={workspaceStorageStatus === 'FAIL' ? 'danger' : workspaceStorageStatus === 'WARN' ? 'warn' : 'ok'}>
+                  {workspaceStats.isError ? 'Unavailable' : 'Reported'}
+                </Badge>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <MetricBox label="Managed" value={formatBytes(workspaceTotalBytes)} />
+                <MetricBox label="Workspaces" value={workspaceStats.isLoading ? '...' : String(workspaceCount)} />
+                <MetricBox label="Work item bytes" value={formatBytes(numberValue(workspaceStats.data?.workItemBytes))} />
+                <MetricBox label="Source cache" value={formatBytes(numberValue(workspaceStats.data?.sourceCacheBytes))} />
+                <MetricBox label="Quota used" value={formatPercent(workspaceQuotaPercent)} />
+                <MetricBox label="GC" value={workspaceGc?.enabled === true ? `${numberValue(workspaceGc.maxAgeHours) ?? 'n/a'}h` : workspaceGc?.enabled === false ? 'disabled' : 'unknown'} />
+              </div>
+              {workspaceQuotaPercent != null && workspaceQuotaPercent >= 80 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  MCP workspace storage is above 80% of the configured quota. Review GC age or increase the workspace disk quota.
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2 border-t border-slate-200 pt-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  MCP Command Isolation
+                </div>
+                <Badge tone={commandExecutionStatus === 'OK' ? 'ok' : commandExecutionStatus === 'WARN' ? 'warn' : 'danger'}>
+                  {commandExecution.data?.mode === 'container' && commandExecution.data?.ready ? 'Container' : commandExecution.data?.mode === 'process' ? 'Process' : 'Unavailable'}
+                </Badge>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <MetricBox label="Mode" value={commandExecution.data?.mode ?? 'unknown'} />
+                <MetricBox label="Runner" value={commandExecution.data?.runner?.ready === true ? 'ready' : commandExecution.data?.runner ? 'degraded' : 'n/a'} />
+                <MetricBox label="Image" value={commandExecution.data?.defaultImage ?? 'unknown'} />
+                <MetricBox label="Network" value={commandExecution.data?.networkMode ?? 'unknown'} />
+                <MetricBox label="Docker" value={commandExecution.data?.runner?.dockerAvailable === true ? commandExecution.data.runner.dockerServerVersion ?? 'ready' : commandExecution.data?.runner ? 'unavailable' : 'n/a'} />
+                <MetricBox label="Workspace" value={commandExecution.data?.hostWorkspacePathAbsolute ? 'absolute' : 'check path'} />
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                <div className="truncate font-mono text-[10px] text-slate-500">
+                  {commandExecution.data?.hostWorkspacePath ?? 'No runner workspace path reported'}
+                </div>
+              </div>
+              {commandExecution.data?.policy?.deniedFamilies?.length ? (
+                <div className="text-[11px] leading-5 text-slate-500">
+                  Denies {commandExecution.data.policy.deniedFamilies.slice(0, 3).join(', ')}.
+                </div>
+              ) : null}
+              {commandExecutionStatus !== 'OK' && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  {commandExecution.data?.error ?? 'Container runner status is not ready. Check MCP_RUNNER_* config and Docker availability.'}
+                </div>
+              )}
             </div>
           </CardBody>
         </Card>
@@ -1802,6 +1950,33 @@ function formatDate(value?: string) {
   }
 }
 
+function numberValue(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function formatBytes(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return 'n/a'
+  if (value < 1024) return `${Math.round(value)} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let current = value / 1024
+  let unitIndex = 0
+  while (current >= 1024 && unitIndex < units.length - 1) {
+    current /= 1024
+    unitIndex += 1
+  }
+  return `${current.toFixed(current >= 10 ? 1 : 2)} ${units[unitIndex]}`
+}
+
+function formatPercent(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return 'n/a'
+  return `${value.toFixed(1)}%`
+}
+
 function SetupTile({
   title,
   value,
@@ -1826,6 +2001,15 @@ function SetupTile({
         </div>
       </CardBody>
     </Card>
+  )
+}
+
+function MetricBox({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+      <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">{label}</div>
+      <div className="mt-1 truncate font-mono text-xs font-semibold text-slate-700">{value}</div>
+    </div>
   )
 }
 

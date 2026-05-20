@@ -129,37 +129,48 @@ async def _resolve_summarizer_prompts(schema_keys_text: str, compact: str) -> tu
 
 
 async def summarize_with_llm(messages: list[dict], agent_id: str | None = None) -> dict:
-    """M33 — Routes through the central LLM gateway. The only fallback is the
-    deterministic in-process string-parsing summary (no provider fallback).
+    """Route summarization through MCP so MCP remains the only LLM-gateway
+    caller. The only fallback is the deterministic in-process string parser.
     M37.2 — Prompt strings (system + user template) sourced from prompt-composer."""
     compact = "\n".join([f"{m['role']}: {m['content']}" for m in messages[-40:]])
     schema_keys_text = str(SUMMARY_SCHEMA_KEYS)
     system_msg, prompt = await _resolve_summarizer_prompts(schema_keys_text, compact)
     payload = {
-        "messages": [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0,
-        "max_output_tokens": 1500,
-        "trace_id": f"summarize-{agent_id or 'anon'}",
+        "systemPrompt": system_msg,
+        "message": prompt,
+        "tools": [],
+        "modelConfig": {
+            "temperature": 0,
+            "maxTokens": 1500,
+        },
+        "runContext": {
+            "agentId": agent_id,
+            "traceId": f"summarize-{agent_id or 'anon'}",
+        },
+        "limits": {
+            "maxSteps": 1,
+            "timeoutSec": 120,
+            "compressToolResults": True,
+            "includeLocalTools": False,
+        },
     }
     model_alias = settings.summarizer_model_alias.strip()
     if model_alias:
-        payload["model_alias"] = model_alias
+        payload["modelConfig"]["modelAlias"] = model_alias
     try:
         headers = {"content-type": "application/json"}
-        if settings.llm_gateway_bearer:
-            headers["authorization"] = f"Bearer {settings.llm_gateway_bearer}"
+        if settings.mcp_bearer_token:
+            headers["authorization"] = f"Bearer {settings.mcp_bearer_token}"
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
-                settings.llm_gateway_url.rstrip("/") + "/v1/chat/completions",
+                settings.mcp_server_url.rstrip("/") + "/mcp/invoke",
                 json=payload,
                 headers=headers,
             )
             resp.raise_for_status()
             result = resp.json()
-        data = _extract_json(result.get("content", "") or "")
+        envelope = result.get("data") if isinstance(result, dict) else {}
+        data = _extract_json((envelope or {}).get("finalResponse", "") or "")
         if data:
             return normalize_summary(data)
     except Exception:

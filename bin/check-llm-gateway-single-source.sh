@@ -4,12 +4,14 @@
 # Enforces the "single LLM gateway" invariant:
 #   1. Only `context-fabric/services/llm_gateway_service/` opens HTTP to a
 #      provider URL.
-#   2. Only that service reads provider API keys (OPENAI_API_KEY,
+#   2. Only `mcp-server/` may call llm-gateway runtime endpoints; all other
+#      services must call MCP instead.
+#   3. Only the gateway service reads provider API keys (OPENAI_API_KEY,
 #      ANTHROPIC_API_KEY, OPENROUTER_API_KEY, COPILOT_TOKEN, GOOGLE_API_KEY,
 #      COHERE_API_KEY).
-#   3. No service-side TypeScript / Python file references the legacy
+#   4. No service-side TypeScript / Python file references the legacy
 #      provider-router env vars (LLM_PROVIDER, EMBEDDING_PROVIDER, etc.).
-#   4. No service hard-codes mock model aliases instead of letting the gateway
+#   5. No service hard-codes mock model aliases instead of letting the gateway
 #      resolve its externally configured default alias.
 #
 # Fails with a clear diff when a regression sneaks in.
@@ -94,6 +96,24 @@ header "1. Banned provider HTTP endpoints"
 run_grep_check "no service opens api.openai.com / api.anthropic.com / openrouter.ai / cohere / google generative outside the gateway" \
   'api\.openai\.com|api\.anthropic\.com|openrouter\.ai|api\.cohere\.|generativelanguage\.googleapis\.com|api\.githubcopilot\.com' \
   || failures=$((failures + 1))
+
+header "1b. MCP-only llm-gateway runtime egress"
+set +e
+direct_llm_hits="$(grep -rEn \
+  --include='*.ts' --include='*.tsx' --include='*.py' --include='*.js' --include='*.mjs' --include='*.cjs' \
+  "${EXCLUDE_DIRS[@]}" \
+  '/v1/chat/completions|/v1/embeddings|/v1/models/resolve' \
+  . 2>/dev/null \
+  | grep -vE 'context-fabric/services/llm_gateway_service/|(^|/)mcp-server/|(^|/)docs/|(^|/)\.singularity/|(^|/)docker-compose\.yml:|(^|/)\.env(\.[^:]*)?:|bin/check-llm-gateway-single-source\.sh:|/dist/|/generated/|\.md:' \
+  | strip_comment_lines || true)"
+set -e
+if [[ -n "$direct_llm_hits" ]]; then
+  red "FAIL: non-MCP service calls llm-gateway runtime endpoint directly"
+  echo "$direct_llm_hits" >&2
+  failures=$((failures + 1))
+else
+  green "OK: llm-gateway runtime endpoints are only called by MCP"
+fi
 
 if grep -En 'api\.openai\.com|api\.anthropic\.com|openrouter\.ai|api\.githubcopilot\.com|text-embedding-3-small' \
   context-fabric/services/llm_gateway_service/app/provider_config.py \

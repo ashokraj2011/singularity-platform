@@ -127,19 +127,17 @@ runtimeRoutes.post("/learning-candidates/:id/review", async (req: Request, res: 
 // POST /api/v1/learning-candidates/distill
 //   { capability_id, agent_uid, candidate_type, candidate_ids[] }
 //
-// Looks up the named accepted candidates, batches their content, asks the
-// MCP loop to synthesize 1-3 distilled memory rules through the central
-// LLM gateway, writes
+// Looks up the named accepted candidates, batches their content, asks MCP to
+// synthesize 1-3 distilled memory rules, writes
 // DistilledMemory rows the prompt-composer auto-pulls, and marks the
 // originating candidates as `distilled`.
 //
-// M33 — one-shot LLM synthesis goes through the central LLM gateway
-// (/v1/chat/completions). The MCP agent loop is not used for pure
-// synthesis. Provider keys never live in agent-service.
+// All LLM synthesis goes through MCP. Provider keys and gateway URLs never
+// live in agent-service.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const LLM_GATEWAY_URL    = process.env.LLM_GATEWAY_URL    ?? "http://llm-gateway:8001";
-const LLM_GATEWAY_BEARER = process.env.LLM_GATEWAY_BEARER ?? "";
+const MCP_SERVER_URL      = (process.env.MCP_SERVER_URL ?? "http://mcp-server:7100").replace(/\/$/, "");
+const MCP_BEARER_TOKEN    = process.env.MCP_BEARER_TOKEN ?? "";
 const DISTILL_MODEL_ALIAS = process.env.DISTILL_MODEL_ALIAS?.trim();
 
 interface DistilledMemoryEntry {
@@ -168,32 +166,40 @@ async function synthesiseCandidates(args: {
     ...args.candidates.map((c, i) => `${i + 1}. ${c.content.slice(0, 400)}`),
   ].join("\n");
 
-  const body = {
-    ...(DISTILL_MODEL_ALIAS ? { model_alias: DISTILL_MODEL_ALIAS } : {}),
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user",   content: userMessage },
-    ],
-    temperature: 0,
-    max_output_tokens: 1500,
-    trace_id: args.traceId,
-    capability_id: args.capabilityId,
-  };
-
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (LLM_GATEWAY_BEARER) headers.authorization = `Bearer ${LLM_GATEWAY_BEARER}`;
-  const res = await fetch(`${LLM_GATEWAY_URL.replace(/\/$/, "")}/v1/chat/completions`, {
+  if (MCP_BEARER_TOKEN) headers.authorization = `Bearer ${MCP_BEARER_TOKEN}`;
+  const res = await fetch(`${MCP_SERVER_URL}/mcp/invoke`, {
     method: "POST",
     headers,
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      systemPrompt,
+      message: userMessage,
+      tools: [],
+      modelConfig: {
+        ...(DISTILL_MODEL_ALIAS ? { modelAlias: DISTILL_MODEL_ALIAS } : {}),
+        temperature: 0,
+        maxTokens: 1500,
+      },
+      runContext: {
+        traceId: args.traceId,
+        capabilityId: args.capabilityId,
+        agentId: args.agentUid,
+      },
+      limits: {
+        maxSteps: 1,
+        timeoutSec: 70,
+        compressToolResults: true,
+        includeLocalTools: false,
+      },
+    }),
     signal: AbortSignal.timeout(70_000),
   });
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 400);
-    throw new AppError(`Distillation LLM_GATEWAY_UPSTREAM (${res.status}): ${detail}`, 502);
+    throw new AppError(`Distillation MCP_UPSTREAM (${res.status}): ${detail}`, 502);
   }
-  const data = (await res.json()) as { content?: string };
-  const raw = data.content ?? "";
+  const data = (await res.json()) as { data?: { finalResponse?: string } };
+  const raw = data.data?.finalResponse ?? "";
 
   // Synthetic fallback used when the LLM returns no parseable JSON (mock
   // provider, malformed reply, etc). Joins observations into one rule so the

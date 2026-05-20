@@ -706,7 +706,9 @@ export const composeService = {
       }
     }
 
-    // 5. Tool contracts — both DB-grant-driven and dynamic discovery
+    // 5. Tool contracts. In real Context Fabric runs, toolDescriptors is the
+    // canonical run-level list and must match what MCP receives. Direct
+    // preview/debug callers still fall back to static grants + discovery.
     const toolsLayer = await this.buildToolContractLayer(input, capabilityId, template.id, retrievalStats);
     if (toolsLayer) {
       const r = renderMustache(trimText(toolsLayer, budget.maxLayerChars * 2), ctx); warnings.push(...r.warnings);
@@ -890,6 +892,7 @@ export const composeService = {
         workflow_instance_id: input.workflowContext.instanceId || sessionId,
         workflow_node_id: input.workflowContext.nodeId || "compose-and-respond",
         capability_id: capabilityId ?? undefined,
+        agent_template_id: input.agentTemplateId,
       },
       task: taskRendered.rendered,
       system_prompt: finalPrompt,
@@ -1007,6 +1010,26 @@ export const composeService = {
   },
 
   async buildToolContractLayer(input: ComposeInput, capabilityId: string | null, agentTemplateId: string, retrievalStats?: { toolContractsIncluded: number }): Promise<string | null> {
+    if (Array.isArray(input.toolDescriptors)) {
+      const blocks: string[] = [];
+      const seen = new Set<string>();
+      for (const t of input.toolDescriptors) {
+        if (seen.has(t.name)) continue;
+        seen.add(t.name);
+        blocks.push(this.renderToolBlock({
+          tool_name: t.name,
+          natural_language: t.natural_language ?? t.description,
+          risk_level: t.risk_level,
+          requires_approval: t.requires_approval,
+          input_schema: t.input_schema,
+          execution_target: t.execution_target,
+        }));
+        if (retrievalStats) retrievalStats.toolContractsIncluded += 1;
+      }
+      if (blocks.length === 0) return null;
+      return `Available tools:\n\n${blocks.join("\n\n")}`;
+    }
+
     // Static grants (existing model)
     const scopeFilters: Array<{ grantScopeType: string; grantScopeId: string }> = [
       { grantScopeType: "AGENT_TEMPLATE", grantScopeId: agentTemplateId },
@@ -1029,6 +1052,8 @@ export const composeService = {
         natural_language: g.tool.description ?? "",
         risk_level: c?.riskLevel ?? "LOW",
         requires_approval: c?.requiresApproval ?? false,
+        input_schema: c?.inputSchema as Record<string, unknown> | undefined,
+        execution_target: "LOCAL",
       }));
       if (retrievalStats) retrievalStats.toolContractsIncluded += 1;
     }
@@ -1051,6 +1076,8 @@ export const composeService = {
           natural_language: t.description,
           risk_level: t.risk_level,
           requires_approval: this.requiresApprovalForDiscoveredTool(t),
+          input_schema: t.input_schema,
+          execution_target: t.execution_target,
         }));
         if (retrievalStats) retrievalStats.toolContractsIncluded += 1;
       }
@@ -1065,11 +1092,15 @@ export const composeService = {
     natural_language: string;
     risk_level: string;
     requires_approval: boolean;
+    input_schema?: Record<string, unknown>;
+    execution_target?: string;
   }): string {
+    const target = (t.execution_target || "LOCAL").toUpperCase();
     return `## Tool: ${t.tool_name}
 Description: ${t.natural_language}
 Risk: ${t.risk_level}${t.requires_approval ? " (requires approval)" : ""}
-Input contract: available to the execution layer; ask for only the fields needed.`;
+Execution target: ${target === "SERVER" ? "SERVER" : "LOCAL"}
+Input schema: ${JSON.stringify(t.input_schema ?? { type: "object" })}`;
   },
 
   requiresApprovalForDiscoveredTool(t: DiscoveredTool): boolean {

@@ -1,7 +1,7 @@
 /**
  * M18 — core-toolkit seeder.
  *
- * Registers the 10 always-on tools in `tool.tools` on tool-service startup.
+ * Registers the always-on tools in `tool.tools` on tool-service startup.
  * Idempotent: an existing (tool_name, version) row is left alone (we don't
  * overwrite operator edits like allowed_capabilities or status changes).
  *
@@ -70,9 +70,48 @@ const SEEDS: SeedTool[] = [
   },
   {
     name: "write_file", display: "Write File", riskLevel: "medium", requiresApproval: false,
-    description: "Create or overwrite a file under the MCP sandbox root.",
-    inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] },
+    description: "Create or overwrite a file under the MCP sandbox root with complete file contents, not a diff.",
+    inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string", description: "Complete new file body. Use apply_patch for unified diffs." } }, required: ["path", "content"] },
     runtime: { execution_location: "client_local_runner", runtime_type: "mcp", tool_name: "write_file" },
+    executionTarget: "LOCAL", tags: ["fs", "code", "core"],
+  },
+  {
+    name: "apply_patch", display: "Apply Patch", riskLevel: "medium", requiresApproval: false,
+    description: "Apply a unified diff patch under the MCP sandbox root.",
+    inputSchema: { type: "object", properties: { patch: { type: "string", description: "Unified diff patch text" } }, required: ["patch"] },
+    runtime: { execution_location: "client_local_runner", runtime_type: "mcp", tool_name: "apply_patch" },
+    executionTarget: "LOCAL", tags: ["fs", "code", "core"],
+  },
+  {
+    name: "replace_text", display: "Replace Text", riskLevel: "medium", requiresApproval: false,
+    description: "Replace exact anchor text inside an existing MCP sandbox file; fails without mutation when the anchor is missing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        oldText: { type: "string" },
+        newText: { type: "string" },
+        occurrence: { oneOf: [{ type: "string", enum: ["first", "all"] }, { type: "number" }] },
+      },
+      required: ["path", "oldText", "newText"],
+    },
+    runtime: { execution_location: "client_local_runner", runtime_type: "mcp", tool_name: "replace_text" },
+    executionTarget: "LOCAL", tags: ["fs", "code", "core"],
+  },
+  {
+    name: "replace_range", display: "Replace Range", riskLevel: "medium", requiresApproval: false,
+    description: "Replace an inclusive 1-based line range inside an existing MCP sandbox file; fails without mutation on invalid ranges.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        startLine: { type: "number" },
+        endLine: { type: "number" },
+        replacement: { type: "string" },
+      },
+      required: ["path", "startLine", "endLine", "replacement"],
+    },
+    runtime: { execution_location: "client_local_runner", runtime_type: "mcp", tool_name: "replace_range" },
     executionTarget: "LOCAL", tags: ["fs", "code", "core"],
   },
   {
@@ -81,6 +120,54 @@ const SEEDS: SeedTool[] = [
     inputSchema: { type: "object", properties: { message: { type: "string" }, author: { type: "string" } }, required: ["message"] },
     runtime: { execution_location: "client_local_runner", runtime_type: "mcp", tool_name: "git_commit" },
     executionTarget: "LOCAL", tags: ["git", "code", "core"],
+  },
+  {
+    name: "run_command", display: "Run Command", riskLevel: "medium", requiresApproval: false,
+    description: "Run an allowlisted non-shell command inside the MCP sandbox and return stdout/stderr evidence.",
+    inputSchema: { type: "object", properties: { command: { type: "string" }, args: { type: "array", items: { type: "string" } }, cwd: { type: "string" }, timeout_ms: { type: "number" }, max_output_chars: { type: "number" } }, required: ["command"] },
+    runtime: { execution_location: "client_local_runner", runtime_type: "mcp", tool_name: "run_command" },
+    executionTarget: "LOCAL", tags: ["command", "verification", "code", "core"],
+  },
+  {
+    name: "run_test", display: "Run Test", riskLevel: "medium", requiresApproval: false,
+    description: "Run an allowlisted test, lint, typecheck, or verification command inside the MCP sandbox and return a verification receipt.",
+    inputSchema: { type: "object", properties: { command: { type: "string" }, args: { type: "array", items: { type: "string" } }, cwd: { type: "string" }, timeout_ms: { type: "number" }, max_output_chars: { type: "number" } }, required: ["command"] },
+    runtime: { execution_location: "client_local_runner", runtime_type: "mcp", tool_name: "run_test" },
+    executionTarget: "LOCAL", tags: ["test", "verification", "code", "core"],
+  },
+  {
+    name: "formal_verify", display: "Formal Verify", riskLevel: "medium", requiresApproval: false,
+    description: "Run a formal verification query through the configured verifier and return a structured solver receipt.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scope: { type: "string" },
+        facts: { type: "object" },
+        constraints: { type: "array", items: { type: "object" } },
+        query: { type: "object" },
+        artifactRefs: { type: "array", items: { type: "object" } },
+        timeoutMs: { type: "number" },
+      },
+      required: ["scope", "facts", "query"],
+    },
+    runtime: { execution_location: "client_local_runner", runtime_type: "mcp", tool_name: "formal_verify" },
+    executionTarget: "LOCAL", tags: ["formal", "verification", "code", "core"],
+  },
+  {
+    name: "verification_unavailable", display: "Verification Unavailable", riskLevel: "low", requiresApproval: false,
+    description: "Record an explicit receipt when no runnable test, lint, typecheck, or formal verification command exists.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reason: { type: "string" },
+        inspected: { type: "array", items: { type: "string" } },
+        attemptedCommands: { type: "array", items: { type: "string" } },
+        paths_context: { type: "array", items: { type: "string" } },
+      },
+      required: ["reason"],
+    },
+    runtime: { execution_location: "client_local_runner", runtime_type: "mcp", tool_name: "verification_unavailable" },
+    executionTarget: "LOCAL", tags: ["verification", "code", "core"],
   },
   // ── tool-service SERVER tools (M18) ───────────────────────────────────────
   {
@@ -106,7 +193,7 @@ const SEEDS: SeedTool[] = [
   },
   {
     name: "summarise_text", display: "Summarise Text", riskLevel: "low", requiresApproval: false,
-    description: "Summarise an arbitrary piece of text into a single concise paragraph using the configured LLM gateway.",
+    description: "Summarise an arbitrary piece of text into a single concise paragraph through MCP-routed LLM execution.",
     inputSchema: { type: "object", properties: { text: { type: "string" }, max_chars: { type: "number" } }, required: ["text"] },
     runtime: { execution_location: "server", runtime_type: "http", endpoint_url: `${INTERNAL_BASE}/summarise_text`, method: "POST" },
     executionTarget: "SERVER", tags: ["llm", "core"],

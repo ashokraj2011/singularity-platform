@@ -63,6 +63,7 @@ interface InsightNode {
     totalTokens?: number
     estimatedCost?: number
     tokensSaved?: number
+    promptCache?: Record<string, unknown>
     promptEstimatedInputTokens?: number
     budgetWarnings: string[]
     retrievalStats?: Record<string, unknown>
@@ -75,6 +76,7 @@ interface InsightNode {
     finishReason?: string
     artifactIds: string[]
     toolInvocationIds: string[]
+    verificationReceipts: Array<Record<string, unknown>>
   }>
   workItems: Array<{
     id: string
@@ -177,6 +179,7 @@ interface InsightsResponse {
       provider?: string
       model?: string
       modelAlias?: string
+      promptCache?: Record<string, unknown>
       cfCallIds: string[]
       promptAssemblyIds: string[]
       mcpInvocationIds: string[]
@@ -203,6 +206,7 @@ interface InsightsResponse {
       provider?: string
       model?: string
       modelAlias?: string
+      promptCache?: Record<string, unknown>
       createdAt: string
     }>
   }
@@ -219,6 +223,10 @@ interface BudgetEvent {
   totalTokensDelta: number
   estimatedCostDelta: number | null
   pricingStatus: string
+  provider?: string
+  model?: string
+  modelAlias?: string
+  promptCache?: Record<string, unknown>
   createdAt: string
 }
 interface BudgetResponse {
@@ -291,6 +299,44 @@ function formatRetrievalStats(stats: Record<string, unknown>): string {
   }
   if (parts.length > 0) return parts.join(' · ')
   return Object.entries(stats).slice(0, 5).map(([k, v]) => `${k}: ${typeof v === 'object' ? 'set' : String(v)}`).join(' · ')
+}
+
+function num(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function str(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function formatVerificationIsolation(receipts: Array<Record<string, unknown>>): string | null {
+  const receipt = receipts.find((item) => str(item.execution_mode) || str(item.executionMode))
+  if (!receipt) return null
+  const mode = str(receipt.execution_mode) ?? str(receipt.executionMode)
+  const image = str(receipt.container_image) ?? str(receipt.containerImage)
+  const network = str(receipt.network_mode) ?? str(receipt.networkMode)
+  const runner = receipt.isolation && typeof receipt.isolation === 'object'
+    ? str((receipt.isolation as Record<string, unknown>).runner)
+    : null
+  const passed = typeof receipt.passed === 'boolean' ? (receipt.passed ? 'passed' : 'failed') : null
+  return [mode, image, network ? `network ${network}` : null, runner, passed].filter(Boolean).join(' · ')
+}
+
+function formatPromptCache(cache?: Record<string, unknown>): string | null {
+  if (!cache) return null
+  const reported = cache.reported === false ? 'not reported' : 'reported'
+  const hitCount = num(cache.hitCount) ?? 0
+  const missCount = num(cache.missCount) ?? 0
+  const readTokens = num(cache.cacheReadTokens) ?? num(cache.read_tokens) ?? num(cache.cache_read_input_tokens) ?? 0
+  const writeTokens = num(cache.cacheWriteTokens) ?? num(cache.write_tokens) ?? num(cache.cache_creation_input_tokens) ?? 0
+  const savedTokens = num(cache.savingsEstimatedTokens) ?? num(cache.tokensSaved) ?? num(cache.tokens_saved)
+  return [
+    reported,
+    hitCount || missCount ? `${hitCount} hit / ${missCount} miss` : undefined,
+    readTokens ? `${readTokens.toLocaleString()} read tok` : undefined,
+    writeTokens ? `${writeTokens.toLocaleString()} write tok` : undefined,
+    savedTokens ? `${savedTokens.toLocaleString()} saved` : undefined,
+  ].filter(Boolean).join(' · ')
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -484,6 +530,7 @@ export function RunInsightsPage() {
                   {stage.modelAlias || stage.provider || stage.model ? (
                     <span>{stage.modelAlias ?? stage.provider ?? 'model'}{stage.model ? <small style={{ color: '#94a3b8' }}> · {stage.model}</small> : null}</span>
                   ) : '—'}
+                  {formatPromptCache(stage.promptCache) ? <div style={{ fontSize: 9, color: '#0369a1' }}>cache {formatPromptCache(stage.promptCache)}</div> : null}
                 </td>
                 <td style={td()}>
                   {stage.cfCallIds.length > 0 ? <code>{stage.cfCallIds[0].slice(0, 10)}</code> : '—'}
@@ -527,6 +574,7 @@ export function RunInsightsPage() {
                 <th style={th(true)}>Output</th>
                 <th style={th(true)}>Total</th>
                 <th style={th(true)}>Cost</th>
+                <th style={th()}>Prompt cache</th>
                 <th style={th()}>When</th>
               </tr>
             </thead>
@@ -539,6 +587,7 @@ export function RunInsightsPage() {
                   <td style={td(true)}>{e.outputTokensDelta ? e.outputTokensDelta.toLocaleString() : '—'}</td>
                   <td style={td(true)}>{e.totalTokensDelta ? e.totalTokensDelta.toLocaleString() : '—'}</td>
                   <td style={td(true)}>{e.estimatedCostDelta == null ? '—' : `$${e.estimatedCostDelta.toFixed(4)}`}</td>
+                  <td style={td()}>{formatPromptCache(e.promptCache) ?? '—'}</td>
                   <td style={td()}>{new Date(e.createdAt).toLocaleString()}</td>
                 </tr>
               ))}
@@ -720,11 +769,22 @@ export function RunInsightsPage() {
                                 Retrieval: {formatRetrievalStats(r.retrievalStats)}
                               </div>
                             )}
+                            {formatPromptCache(r.promptCache) && (
+                              <div style={{ marginTop: 5, color: '#0369a1' }}>
+                                Prompt cache: {formatPromptCache(r.promptCache)}
+                              </div>
+                            )}
+                            {formatVerificationIsolation(r.verificationReceipts) && (
+                              <div style={{ marginTop: 5, color: '#047857', background: '#ecfdf5', border: '1px solid #bbf7d0', borderRadius: 5, padding: '4px 6px' }}>
+                                Verification: {formatVerificationIsolation(r.verificationReceipts)}
+                              </div>
+                            )}
                             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
                               {r.cfCallId && <span>CF <code>{r.cfCallId.slice(0, 10)}</code></span>}
                               {r.promptAssemblyId && <span>Prompt <code>{r.promptAssemblyId.slice(0, 10)}</code></span>}
                               {r.mcpInvocationId && <span>MCP <code>{r.mcpInvocationId.slice(0, 10)}</code></span>}
                               {r.toolInvocationIds.length > 0 && <span>tools {r.toolInvocationIds.length}</span>}
+                              {r.verificationReceipts.length > 0 && <span>verification {r.verificationReceipts.length}</span>}
                               {r.artifactIds.length > 0 && <span>artifacts {r.artifactIds.length}</span>}
                               {r.finishReason && <span>finish {r.finishReason}</span>}
                             </div>
@@ -1186,9 +1246,10 @@ function MissionStageCard({ stage }: { stage: InsightsResponse['auditReport']['s
           textTransform: 'uppercase',
         }}>{stage.status}</span>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 6 }}>
         <MissionMini label="Time" value={stage.durationMs == null ? '—' : `${stage.durationPrecise ? '' : '≈'}${fmtDuration(stage.durationMs)}`} />
         <MissionMini label="Tokens" value={stage.totalTokens ? stage.totalTokens.toLocaleString() : '—'} />
+        <MissionMini label="Cache" value={stage.promptCache?.reported === false ? 'requested' : formatPromptCache(stage.promptCache) ? 'reported' : '—'} />
         <MissionMini label="Evidence" value={`${evidence}`} />
       </div>
       <div style={{ color: '#64748b', fontSize: 10, minHeight: 16 }}>

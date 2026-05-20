@@ -1,19 +1,17 @@
 /**
- * M33 — Single LLM gateway client (TypeScript).
+ * MCP-routed LLM client (TypeScript).
  *
- * EVERY service that needs an LLM call must use this client. Provider keys
- * live ONLY in the gateway. There is no provider fallback chain — if the
- * gateway returns non-2xx, the error propagates. The only allowed fallback
- * is the deterministic in-process `mock` mode, activated by setting
- * `LLM_GATEWAY_URL=mock` (used in unit tests).
+ * EVERY non-MCP service that needs an LLM call must use MCP. Provider keys
+ * and gateway URLs live outside caller services; MCP is the only gateway
+ * client. The only allowed fallback is the deterministic in-process `mock`
+ * mode, activated by setting `MCP_SERVER_URL=mock` in unit tests.
  *
  * Env contract (every consumer service):
- *   LLM_GATEWAY_URL     required — http://llm-gateway:8001  | mock
- *   LLM_GATEWAY_BEARER  optional — service token for gateway auth
+ *   MCP_SERVER_URL      optional — http://mcp-server:7100 | mock
+ *   MCP_BEARER_TOKEN    optional — service token for MCP auth
  *
  * M35.4 — request shapes are Zod-validated before POST. A malformed request
- * (no messages, wrong role, etc.) fails fast in the calling service with a
- * clear error instead of bouncing off the gateway with a 422.
+ * (no messages, wrong role, etc.) fails fast in the calling service.
  */
 import { z } from "zod";
 import type {
@@ -58,87 +56,218 @@ const EmbeddingsRequestSchema = z.object({
 
 const MOCK_SENTINEL = "mock";
 
-function gatewayUrl(): string {
-  const v = process.env.LLM_GATEWAY_URL?.trim();
-  if (!v) {
-    throw new Error(
-      "LLM_GATEWAY_URL is not set. Every service must route LLM calls through the central " +
-      "gateway. Set LLM_GATEWAY_URL=http://llm-gateway:8001 in container env, or =mock for tests.",
-    );
-  }
-  return v;
+type McpInvokeData = {
+  status?: string;
+  finalResponse?: string;
+  finishReason?: string;
+  tokensUsed?: {
+    input?: number;
+    output?: number;
+    total?: number;
+  };
+  modelUsage?: {
+    provider?: string;
+    model?: string;
+    modelAlias?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+  };
+};
+
+type McpInvokeEnvelope = {
+  success?: boolean;
+  data?: McpInvokeData;
+};
+
+type McpEmbedEnvelope = {
+  success?: boolean;
+  data?: EmbeddingsResponse;
+};
+
+function mcpUrl(): string {
+  return (process.env.MCP_SERVER_URL?.trim() || "http://mcp-server:7100").replace(/\/$/, "");
 }
 
-function gatewayBearer(): string | undefined {
-  return process.env.LLM_GATEWAY_BEARER?.trim() || undefined;
+function mcpBearer(): string | undefined {
+  return process.env.MCP_BEARER_TOKEN?.trim() || undefined;
 }
 
-function gatewayTimeoutMs(): number {
-  const raw = process.env.LLM_GATEWAY_TIMEOUT_SEC;
+function mcpTimeoutMs(): number {
+  const raw = process.env.MCP_TIMEOUT_SEC;
   const n = raw ? Number(raw) : 240;
   return Math.max(1, n) * 1000;
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
-  const url = gatewayUrl();
+function splitMessages(messages: ChatCompletionRequest["messages"]): {
+  systemPrompt?: string;
+  history: ChatCompletionRequest["messages"];
+  message: string;
+} {
+  const systemPrompt = messages
+    .filter((m) => m.role === "system")
+    .map((m) => m.content)
+    .join("\n\n")
+    .trim();
+  const conversational = messages.filter((m) => m.role !== "system");
+  const lastUserIndex = [...conversational].map((m) => m.role).lastIndexOf("user");
+  const messageIndex = lastUserIndex >= 0 ? lastUserIndex : conversational.length - 1;
+  const chosen = conversational[messageIndex];
+  return {
+    ...(systemPrompt ? { systemPrompt } : {}),
+    history: conversational.filter((_, index) => index !== messageIndex),
+    message: chosen?.content ?? "Continue.",
+  };
+}
+
+function normalizeFinishReason(reason: string | undefined): ChatCompletionResponse["finish_reason"] {
+  if (reason === "stop" || reason === "tool_call" || reason === "length" || reason === "error") return reason;
+  if (reason === "max_steps") return "length";
+  return "error";
+}
+
+async function invokeMcp(req: ChatCompletionRequest): Promise<McpInvokeData> {
+  const url = mcpUrl();
   if (url === MOCK_SENTINEL) {
-    // In-process mock — used only by unit tests that don't want a live gateway.
-    // Resolved via dynamic import to keep `mock` opt-in (no runtime cost in prod).
     const { mockHandle } = await import("./mock-handler");
-    return mockHandle(path, body) as Promise<T>;
+    const mock = await mockHandle("chat", req) as ChatCompletionResponse;
+    return {
+      status: "COMPLETED",
+      finalResponse: mock.content,
+      finishReason: mock.finish_reason,
+      tokensUsed: { input: mock.input_tokens, output: mock.output_tokens },
+      modelUsage: {
+        provider: mock.provider,
+        model: mock.model,
+        modelAlias: mock.model_alias,
+        inputTokens: mock.input_tokens,
+        outputTokens: mock.output_tokens,
+      },
+    };
   }
+  const { systemPrompt, history, message } = splitMessages(req.messages);
   const headers: Record<string, string> = { "content-type": "application/json" };
-  const bearer = gatewayBearer();
+  const bearer = mcpBearer();
   if (bearer) headers.authorization = `Bearer ${bearer}`;
-  const res = await fetch(`${url.replace(/\/$/, "")}${path}`, {
+  const res = await fetch(`${url}/mcp/invoke`, {
     method: "POST",
     headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(gatewayTimeoutMs()),
+    body: JSON.stringify({
+      ...(systemPrompt ? { systemPrompt } : {}),
+      history,
+      message,
+      tools: req.tools ?? [],
+      modelConfig: {
+        ...(req.model_alias ? { modelAlias: req.model_alias } : {}),
+        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+        ...(req.max_output_tokens !== undefined ? { maxTokens: req.max_output_tokens } : {}),
+      },
+      runContext: {
+        traceId: req.trace_id,
+        runId: req.run_id,
+        capabilityId: req.capability_id,
+      },
+      limits: {
+        maxSteps: req.tools?.length ? 6 : 1,
+        timeoutSec: Math.ceil(mcpTimeoutMs() / 1000),
+        compressToolResults: true,
+        includeLocalTools: false,
+      },
+    }),
+    signal: AbortSignal.timeout(mcpTimeoutMs()),
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`LLM gateway ${path} → ${res.status}: ${text.slice(0, 500)}`);
+    throw new Error(`MCP /mcp/invoke -> ${res.status}: ${text.slice(0, 500)}`);
   }
+  let envelope: McpInvokeEnvelope;
   try {
-    return JSON.parse(text) as T;
+    envelope = JSON.parse(text) as McpInvokeEnvelope;
   } catch (err) {
-    throw new Error(`LLM gateway ${path} returned malformed JSON: ${(err as Error).message}`);
+    throw new Error(`MCP /mcp/invoke returned malformed JSON: ${(err as Error).message}`);
   }
+  if (envelope.success === false) {
+    throw new Error("MCP returned success=false");
+  }
+  return envelope.data ?? {};
 }
 
-/** One-shot chat completion call through the central gateway. */
+/** One-shot chat completion call through MCP. */
 export async function llmRespond(req: ChatCompletionRequest): Promise<ChatCompletionResponse> {
   // M35.4 — fail-fast validation before the wire call. Clear error from the
-  // calling service beats a generic 422 from the gateway with no context.
+  // calling service beats a generic 422 from MCP with no context.
   const validation = ChatCompletionRequestSchema.safeParse(req);
   if (!validation.success) {
     const issues = validation.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ");
-    throw new Error(`llm gateway request validation failed: ${issues}`);
+    throw new Error(`MCP-routed LLM request validation failed: ${issues}`);
   }
   // Additional sanity check: tools without a system or user message means
   // the model has nothing to respond to. Easy to hit when callers compose
   // the request lazily and forget to seed the conversation.
   if (req.tools && req.tools.length > 0 && req.messages.length < 1) {
     throw new Error(
-      `llm gateway request invalid: tools provided (${req.tools.length}) but messages is empty — the model has nothing to act on`,
+      `MCP-routed LLM request invalid: tools provided (${req.tools.length}) but messages is empty — the model has nothing to act on`,
     );
   }
-  return post<ChatCompletionResponse>("/v1/chat/completions", req);
+  const data = await invokeMcp(req);
+  const inputTokens = data.tokensUsed?.input ?? data.modelUsage?.inputTokens ?? 0;
+  const outputTokens = data.tokensUsed?.output ?? data.modelUsage?.outputTokens ?? 0;
+  return {
+    content: data.finalResponse ?? "",
+    finish_reason: normalizeFinishReason(data.finishReason),
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    latency_ms: 0,
+    provider: data.modelUsage?.provider ?? "mcp",
+    model: data.modelUsage?.model ?? req.model_alias ?? "mcp-default",
+    model_alias: data.modelUsage?.modelAlias ?? req.model_alias,
+  };
 }
 
-/** Batched embeddings call through the central gateway. */
+/** Batched embeddings call through MCP. */
 export async function llmEmbed(req: EmbeddingsRequest): Promise<EmbeddingsResponse> {
   // M35.4 — fail-fast validation before the wire call.
   const validation = EmbeddingsRequestSchema.safeParse(req);
   if (!validation.success) {
     const issues = validation.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ");
-    throw new Error(`llm gateway embeddings validation failed: ${issues}`);
+    throw new Error(`MCP-routed embeddings validation failed: ${issues}`);
   }
-  return post<EmbeddingsResponse>("/v1/embeddings", req);
+  if (mcpUrl() === MOCK_SENTINEL) {
+    const { mockHandle } = await import("./mock-handler");
+    return mockHandle("embeddings", req) as Promise<EmbeddingsResponse>;
+  }
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const bearer = mcpBearer();
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
+  const res = await fetch(`${mcpUrl()}/mcp/embed`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      ...(req.model_alias ? { modelAlias: req.model_alias } : {}),
+      input: req.input,
+      runContext: {
+        traceId: req.trace_id,
+        capabilityId: req.capability_id,
+      },
+    }),
+    signal: AbortSignal.timeout(mcpTimeoutMs()),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`MCP /mcp/embed -> ${res.status}: ${text.slice(0, 500)}`);
+  }
+  let envelope: McpEmbedEnvelope;
+  try {
+    envelope = JSON.parse(text) as McpEmbedEnvelope;
+  } catch (err) {
+    throw new Error(`MCP /mcp/embed returned malformed JSON: ${(err as Error).message}`);
+  }
+  if (envelope.success === false || !envelope.data) {
+    throw new Error("MCP /mcp/embed returned no embedding data");
+  }
+  return envelope.data;
 }
 
 /** True iff env tells us to short-circuit to the in-process mock. */
 export function isGatewayMockMode(): boolean {
-  return (process.env.LLM_GATEWAY_URL ?? "").trim() === MOCK_SENTINEL;
+  return (process.env.MCP_SERVER_URL ?? "").trim() === MOCK_SENTINEL;
 }

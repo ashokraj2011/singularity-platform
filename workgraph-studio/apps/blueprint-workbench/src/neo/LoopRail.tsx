@@ -13,6 +13,7 @@
  *   ✗  = failed
  *   ↻  = running (spins)
  *   ⌛ = awaiting human verdict (animated pulse)
+ *   ⏸ = paused for MCP approval
  *   ⏪ = sent back
  *
  * M41.4 — Renders the NeoThemePicker swatch row at the bottom so the
@@ -22,11 +23,12 @@
 import { useMemo, type ReactNode } from 'react'
 import type { BlueprintSession, StageAttempt } from '../api'
 
-type StageStatus = 'pending' | 'running' | 'awaiting' | 'pass' | 'risk_accepted' | 'failed' | 'sent_back'
+type StageStatus = 'pending' | 'running' | 'paused' | 'awaiting' | 'pass' | 'risk_accepted' | 'failed' | 'sent_back'
 
 function deriveStatus(latest: StageAttempt | undefined): StageStatus {
   if (!latest) return 'pending'
   if (latest.status === 'RUNNING') return 'running'
+  if (latest.status === 'PAUSED') return 'paused'
   if (latest.verdict === 'PASS') return 'pass'
   if (latest.verdict === 'ACCEPTED_WITH_RISK') return 'risk_accepted'
   if (latest.verdict === 'NEEDS_REWORK') return 'sent_back'
@@ -39,6 +41,7 @@ function deriveStatus(latest: StageAttempt | undefined): StageStatus {
 function statusGlyph(s: StageStatus): string {
   switch (s) {
     case 'running': return '↻'
+    case 'paused': return '⏸'
     case 'awaiting': return '⌛'
     case 'pass': return '✓'
     case 'risk_accepted': return '◑'
@@ -82,7 +85,7 @@ export function LoopRail({
       <ol>
         {items.map(({ stage, status, attemptCount }, index) => {
           const isActive = activeStageKey === stage.key
-          const needsAttention = status === 'awaiting' || (status === 'pending' && session.currentStageKey === stage.key)
+          const needsAttention = status === 'awaiting' || status === 'paused' || (status === 'pending' && session.currentStageKey === stage.key)
           return (
             <li key={stage.key} className={`rail-row ${status} ${isActive ? 'active' : ''} ${needsAttention ? 'attention' : ''}`}>
               <button type="button" onClick={() => onStage(stage.key)}>

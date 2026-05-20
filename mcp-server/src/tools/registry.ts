@@ -195,7 +195,9 @@ const applyPatchDemoTool: ToolHandler = {
 // M16 — real fs/git tools alongside the M13 demos. Both are sandboxed to
 // MCP_SANDBOX_ROOT. Demos are kept registered so existing smoke tests don't
 // break; promote write_file / git_commit when consumers are ready.
-import { writeFileTool, gitCommitTool } from "./fs-git";
+import {
+  writeFileTool, applyPatchTool, replaceTextTool, replaceRangeTool, gitCommitTool,
+} from "./fs-git";
 // M18 — core utility tools (read-only fs + http + ripgrep search).
 import {
   readFileTool, listDirectoryTool, searchCodeTool, httpGetTool, webFetchTool,
@@ -207,6 +209,8 @@ import {
   indexWorkspaceTool, findSymbolTool, getSymbolTool, getAstSliceTool,
   getDependenciesTool, prepareWorkBranchTool, finishWorkBranchTool,
 } from "./ast-tools";
+import { runCommandTool, runTestTool, verificationUnavailableTool } from "./command";
+import { formalVerifyTool } from "./formal-verify";
 
 const REGISTRY = new Map<string, ToolHandler>([
   [echoTool.descriptor.name, echoTool],
@@ -215,6 +219,9 @@ const REGISTRY = new Map<string, ToolHandler>([
   [writeFileDemoTool.descriptor.name, writeFileDemoTool],
   [applyPatchDemoTool.descriptor.name, applyPatchDemoTool],
   [writeFileTool.descriptor.name, writeFileTool],
+  [applyPatchTool.descriptor.name, applyPatchTool],
+  [replaceTextTool.descriptor.name, replaceTextTool],
+  [replaceRangeTool.descriptor.name, replaceRangeTool],
   [gitCommitTool.descriptor.name, gitCommitTool],
   [readFileTool.descriptor.name, readFileTool],
   [listDirectoryTool.descriptor.name, listDirectoryTool],
@@ -228,6 +235,10 @@ const REGISTRY = new Map<string, ToolHandler>([
   [getSymbolTool.descriptor.name, getSymbolTool],
   [getAstSliceTool.descriptor.name, getAstSliceTool],
   [getDependenciesTool.descriptor.name, getDependenciesTool],
+  [runCommandTool.descriptor.name, runCommandTool],
+  [runTestTool.descriptor.name, runTestTool],
+  [verificationUnavailableTool.descriptor.name, verificationUnavailableTool],
+  [formalVerifyTool.descriptor.name, formalVerifyTool],
   [prepareWorkBranchTool.descriptor.name, prepareWorkBranchTool],
   [finishWorkBranchTool.descriptor.name, finishWorkBranchTool],
 ]);

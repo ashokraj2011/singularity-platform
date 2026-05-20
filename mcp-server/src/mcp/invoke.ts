@@ -12,6 +12,7 @@
  * /mcp/resume picks it up later with the operator's decision.
  */
 import { Router } from "express";
+import { createHash } from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { config } from "../config";
@@ -41,7 +42,9 @@ import {
 import { maskPii, maskPiiAsync, unmaskPiiInArgs } from "../security/mask";
 import { indexWorkspace, lastAstStats } from "../workspace/ast-index";
 import { ensureWorkspaceSource, WorkspaceSourceStatus } from "../workspace/source-materializer";
-import { sandboxRoot, withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbox";
+import {
+  gcWorkItemWorkspaces, sandboxRoot, withSandboxRoot, withWorkspaceLock, workspaceRootForRunContext,
+} from "../workspace/sandbox";
 
 const ToolDescSchema = z.object({
   name: z.string(),
@@ -74,6 +77,11 @@ const InvokeSchema = z.object({
     model: z.string().optional(),
     temperature: z.number().optional(),
     maxTokens: z.number().int().optional(),
+    promptCache: z.object({
+      enabled: z.boolean().optional(),
+      strategy: z.string().optional(),
+      key: z.string().optional(),
+    }).optional(),
   }).default({}),
   runContext: z.object({
     sessionId: z.string().optional(),
@@ -98,6 +106,10 @@ const InvokeSchema = z.object({
     maxSteps: z.number().int().positive().optional(),
     timeoutSec: z.number().int().positive().optional(),
     maxToolResultChars: z.number().int().positive().optional(),
+    maxHistoryMessages: z.number().int().positive().optional(),
+    maxHistoryTokens: z.number().int().positive().optional(),
+    compressToolResults: z.boolean().optional(),
+    includeLocalTools: z.boolean().optional(),
   }).default({}),
   governanceMode: z.enum(["fail_open", "fail_closed", "degraded", "human_approval_required"]).default("fail_open"),
   contextPlanHash: z.string().optional(),
@@ -126,18 +138,35 @@ interface LoopState {
     model: string;
     temperature?: number;
     maxTokens?: number;
+    promptCache?: {
+      enabled?: boolean;
+      strategy?: string;
+      key?: string;
+    };
     warnings?: string[];
   };
   correlation: CorrelationIds;
   stepIndex: number;
   maxSteps: number;
   maxToolResultChars?: number;
+  maxHistoryMessages?: number;
+  maxHistoryTokens?: number;
+  compressToolResults?: boolean;
   llmCallIds: string[];
   toolInvocationIds: string[];
   artifactIds: string[];
   codeChangeIds: string[];
+  verificationReceipts: Array<Record<string, unknown>>;
+  promptCacheUsage: Array<Record<string, unknown>>;
   totalInputTokens: number;
   totalOutputTokens: number;
+  totalEstimatedCost: number;
+  contextCompression: {
+    messagesDropped: number;
+    tokensDropped: number;
+    toolResultsCompressed: number;
+    toolResultBytesSaved: number;
+  };
   // Repetition detector (catches gpt-4o pathology where the LLM loops on the
   // same tool call without progressing). Trims to last LOOP_REPETITION_WINDOW
   // entries — we only care about consecutive repetitions, not lifetime.
@@ -152,6 +181,7 @@ interface LoopState {
     astIndexedFiles?: number;
     astIndexedSymbols?: number;
     source?: WorkspaceSourceStatus | null;
+    formalRepairAttempted?: boolean;
   };
   governanceMode: GovernanceMode;
   contextPlanHash?: string;
@@ -216,6 +246,92 @@ function detectRepetition(history: LoopState["toolCallHistory"]): { name: string
 function hasTool(state: LoopState, names: string[]): boolean {
   const available = new Set(state.fullToolDescriptors.map((tool) => tool.name));
   return names.some((name) => available.has(name));
+}
+
+function verificationReceiptsFromOutput(
+  output: unknown,
+  toolInvocationId: string,
+  toolName: string,
+): Array<Record<string, unknown>> {
+  const receipts: Array<Record<string, unknown>> = [];
+  collectVerificationReceipts(output, toolInvocationId, toolName, receipts);
+  return receipts;
+}
+
+function collectVerificationReceipts(
+  output: unknown,
+  toolInvocationId: string,
+  toolName: string,
+  receipts: Array<Record<string, unknown>>,
+): void {
+  if (!output || typeof output !== "object") return;
+  if (Array.isArray(output)) {
+    for (const item of output) {
+      collectVerificationReceipts(item, toolInvocationId, toolName, receipts);
+    }
+    return;
+  }
+  const record = output as Record<string, unknown>;
+  const kind = String(record.kind ?? record.type ?? "").toLowerCase();
+  const looksLikeVerification =
+    kind === "verification_result" ||
+    kind === "test_result" ||
+    Boolean(record.command && ("exit_code" in record || "exitCode" in record || "passed" in record));
+  if (looksLikeVerification) {
+    receipts.push({
+      ...record,
+      toolInvocationId: typeof record.toolInvocationId === "string" ? record.toolInvocationId : toolInvocationId,
+      toolName: typeof record.toolName === "string" ? record.toolName : toolName,
+      capturedAt: typeof record.capturedAt === "string" ? record.capturedAt : new Date().toISOString(),
+    });
+    return;
+  }
+  for (const value of Object.values(record)) {
+    collectVerificationReceipts(value, toolInvocationId, toolName, receipts);
+  }
+}
+
+function verificationExecutionMetadata(output: unknown): Record<string, unknown> {
+  const receipt = findVerificationReceipt(output);
+  if (!receipt) return {};
+  const keys = [
+    "verification_kind",
+    "command",
+    "passed",
+    "timed_out",
+    "execution_mode",
+    "runner_receipt_id",
+    "container_image",
+    "container_id",
+    "network_mode",
+    "isolation",
+  ];
+  return Object.fromEntries(keys.filter((key) => key in receipt).map((key) => [key, receipt[key]]));
+}
+
+function findVerificationReceipt(output: unknown): Record<string, unknown> | null {
+  if (!output || typeof output !== "object") return null;
+  if (Array.isArray(output)) {
+    for (const item of output) {
+      const found = findVerificationReceipt(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  const record = output as Record<string, unknown>;
+  const kind = String(record.kind ?? record.type ?? "").toLowerCase();
+  if (
+    kind === "verification_result" ||
+    kind === "test_result" ||
+    Boolean(record.command && ("exit_code" in record || "exitCode" in record || "passed" in record))
+  ) {
+    return record;
+  }
+  for (const value of Object.values(record)) {
+    const found = findVerificationReceipt(value);
+    if (found) return found;
+  }
+  return null;
 }
 
 function shouldNudgeForCodeToolUse(state: LoopState, llmResp: LlmResponse): boolean {
@@ -291,6 +407,7 @@ type DispatchToolResult = {
 
 async function runLoop(state: LoopState): Promise<LoopOutcome> {
   while (state.stepIndex < state.maxSteps) {
+    applySlidingWindow(state);
     // Governance checks run before each model turn. The requested governance
     // mode decides whether audit-gov outages fail open, fail closed, or force
     // a restricted/degraded posture.
@@ -345,6 +462,8 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         model: state.modelConfig.model,
         prompt_messages_count: state.messages.length,
         stepIndex: state.stepIndex,
+        contextCompression: state.contextCompression,
+        promptCache: state.modelConfig.promptCache,
       },
     });
 
@@ -356,6 +475,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
       tools: state.availableTools,
       temperature: state.modelConfig.temperature,
       max_output_tokens: state.modelConfig.maxTokens,
+      prompt_cache: state.modelConfig.promptCache,
     }, {
       onDelta: async (delta) => {
         if (!delta.content) return;
@@ -375,6 +495,9 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
     });
     state.totalInputTokens += llmResp.input_tokens;
     state.totalOutputTokens += llmResp.output_tokens;
+    if (typeof llmResp.estimated_cost === "number" && Number.isFinite(llmResp.estimated_cost)) {
+      state.totalEstimatedCost += llmResp.estimated_cost;
+    }
     if (llmResp.provider) state.modelConfig.provider = llmResp.provider;
     if (llmResp.model) state.modelConfig.model = llmResp.model;
     if (llmResp.model_alias) state.modelConfig.modelAlias = llmResp.model_alias;
@@ -386,11 +509,23 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
       model: state.modelConfig.model,
       input_tokens: llmResp.input_tokens,
       output_tokens: llmResp.output_tokens,
+      estimated_cost: llmResp.estimated_cost,
       latency_ms: llmResp.latency_ms,
       prompt_messages_count: state.messages.length,
       finish_reason: llmResp.finish_reason,
     });
     state.llmCallIds.push(llmRec.id);
+    if (llmResp.prompt_cache) {
+      state.promptCacheUsage.push({
+        ...llmResp.prompt_cache,
+        llmCallId: llmRec.id,
+        stepIndex: state.stepIndex,
+        provider: state.modelConfig.provider,
+        model: state.modelConfig.model,
+        modelAlias: state.modelConfig.modelAlias,
+        capturedAt: new Date().toISOString(),
+      });
+    }
 
     // M21 — fire-and-forget to audit-governance-service. Failures land in
     // logs only and never block the agent loop.
@@ -409,8 +544,10 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         input_tokens:  llmResp.input_tokens,
         output_tokens: llmResp.output_tokens,
         total_tokens:  llmResp.input_tokens + llmResp.output_tokens,
+        estimated_cost: llmResp.estimated_cost,
         latency_ms:    llmResp.latency_ms,
         finish_reason: llmResp.finish_reason,
+        prompt_cache: llmResp.prompt_cache,
       },
     });
 
@@ -422,8 +559,10 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         finish_reason: llmResp.finish_reason,
         input_tokens: llmResp.input_tokens,
         output_tokens: llmResp.output_tokens,
+        estimated_cost: llmResp.estimated_cost,
         latency_ms: llmResp.latency_ms,
         tool_calls_count: llmResp.tool_calls?.length ?? 0,
+        promptCache: llmResp.prompt_cache,
       },
     });
 
@@ -478,7 +617,11 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         // M39 — un-mask any PII tokens in args before the tool runs. tc.args
         // came from the LLM which only saw masked tokens; the downstream
         // enterprise API needs the real values back.
-        const unmaskedTc = { ...tc, args: applyArgsUnmaskIfNeeded(state, tc.args ?? {}) };
+        const toolArgs = applyArgsUnmaskIfNeeded(state, tc.args ?? {});
+        if (tc.name === "finish_work_branch") {
+          toolArgs.verificationReceipts = state.verificationReceipts;
+        }
+        const unmaskedTc = { ...tc, args: toolArgs };
         const result = await dispatchToolCall(
           unmaskedTc,
           state.fullToolDescriptors,
@@ -488,13 +631,14 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         );
         state.toolInvocationIds.push(result.record.id);
         if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
+        state.verificationReceipts.push(...verificationReceiptsFromOutput(result.record.output, result.record.id, tc.name));
         if (result.approvalRequired) {
           return await pauseForApproval(state, tc, desc, result.approvalRequired.reason, result.record.id);
         }
         // M39 — mask PII in the tool output before the LLM sees it. M39.B
         // upgrades the path to async so the NER detector (loaded lazily under
         // MCP_PII_NER_ENABLED) can run alongside the regex baseline.
-        const rawOutput = trimToolResult(JSON.stringify(result.record.output), state.maxToolResultChars);
+        const rawOutput = toolResultForNextTurn(state, result.record.output);
         const maskedOutput = await applyOutputMaskIfNeededAsync(state, desc, rawOutput);
         state.messages.push({
           role: "tool",
@@ -592,9 +736,16 @@ async function pauseForApproval(
     tool_invocation_ids: state.toolInvocationIds,
     artifact_ids: state.artifactIds,
     code_change_ids: state.codeChangeIds,
+    verification_receipts: state.verificationReceipts,
+    prompt_cache_usage: state.promptCacheUsage,
     workspace: state.workspace,
     total_input_tokens: state.totalInputTokens,
     total_output_tokens: state.totalOutputTokens,
+    total_estimated_cost: state.totalEstimatedCost,
+    max_history_messages: state.maxHistoryMessages,
+    max_history_tokens: state.maxHistoryTokens,
+    compress_tool_results: state.compressToolResults,
+    context_compression: state.contextCompression,
     governance_mode: state.governanceMode,
     context_plan_hash: state.contextPlanHash,
     degraded_actions_allowed: state.degradedActionsAllowed,
@@ -653,6 +804,7 @@ async function buildResponseBody(
 ): Promise<Record<string, unknown>> {
   let finalArtifactId: string | undefined;
   let finalContent = "";
+  let formalFinishBlocked = false;
 
   if (outcome.kind === "complete") {
     if (state.workspace?.branch) {
@@ -661,6 +813,7 @@ async function buildResponseBody(
         {
           push: config.MCP_WORK_BRANCH_PUSH_ON_FINISH,
           remote: config.MCP_WORK_BRANCH_PUSH_REMOTE,
+          verificationReceipts: state.verificationReceipts,
         },
       );
       const stats = await indexWorkspace("auto_finish");
@@ -670,6 +823,36 @@ async function buildResponseBody(
       state.workspace.astIndexStatus = stats.status;
       state.workspace.astIndexedFiles = stats.indexedFiles;
       state.workspace.astIndexedSymbols = stats.indexedSymbols;
+      if (finish.formalVerification) state.verificationReceipts.push({ ...finish.formalVerification });
+      if (finish.formalVerificationBlocked) {
+        formalFinishBlocked = true;
+        const feedback = {
+          status: "formal_verification_blocked",
+          message: finish.message,
+          changedPaths: finish.changedPaths,
+          formalVerification: finish.formalVerification,
+        };
+        if (!state.workspace.formalRepairAttempted && state.stepIndex < state.maxSteps) {
+          state.workspace.formalRepairAttempted = true;
+          state.messages.push({
+            role: "user",
+            content: [
+              "Automatic branch finish was blocked by formal verification.",
+              "Use the verifier output below as repair feedback. Inspect and edit the workspace, run verification again, then finish the branch.",
+              JSON.stringify(feedback, null, 2),
+            ].join("\n\n"),
+          });
+          state.stepIndex += 1;
+          const repairedOutcome = await runLoop(state);
+          return buildResponseBody(state, repairedOutcome, startedAt);
+        }
+        finalContent = [
+          "Formal verification blocked branch finish.",
+          finish.formalVerification?.explanation,
+          finish.formalVerification?.counterexample ? `Counterexample: ${JSON.stringify(finish.formalVerification.counterexample)}` : undefined,
+          finish.formalVerification?.recommendations ? `Recommendations: ${JSON.stringify(finish.formalVerification.recommendations)}` : undefined,
+        ].filter(Boolean).join("\n");
+      }
       if (finish.committed && finish.commitSha) {
         const codeChange = recordCodeChange({
           correlation: { ...state.correlation },
@@ -712,7 +895,7 @@ async function buildResponseBody(
         });
       }
     }
-    finalContent = outcome.finalContent;
+    finalContent = finalContent || outcome.finalContent;
     if (finalContent) {
       const art = recordArtifact({
         correlation: state.correlation,
@@ -745,6 +928,9 @@ async function buildResponseBody(
       stepsTaken: state.stepIndex,
       llmCalls: state.llmCallIds.length,
       toolInvocations: state.toolInvocationIds.length,
+      estimated_cost: state.totalEstimatedCost,
+      contextCompression: state.contextCompression,
+      promptCache: promptCacheSummary(state),
       latency_ms: Date.now() - startedAt,
     },
   });
@@ -765,9 +951,11 @@ async function buildResponseBody(
   const status =
     outcome.kind === "paused" ? "WAITING_APPROVAL"
     : outcome.kind === "denied" ? "DENIED"
+    : formalFinishBlocked ? "FAILED"
     : outcome.finishReason === "max_steps" ? "FAILED"
     : "COMPLETED";
 
+  const promptCache = promptCacheSummary(state);
   const correlationOut: Record<string, unknown> = {
     mcpInvocationId: state.correlation.mcpInvocationId,
     traceId: state.correlation.traceId,
@@ -778,6 +966,8 @@ async function buildResponseBody(
     toolInvocationIds: state.toolInvocationIds,
     artifactIds: state.artifactIds,
     codeChangeIds: state.codeChangeIds,
+    verificationReceipts: state.verificationReceipts,
+    promptCache,
     finalArtifactId,
   };
 
@@ -791,6 +981,9 @@ async function buildResponseBody(
       input: state.totalInputTokens,
       output: state.totalOutputTokens,
       total: state.totalInputTokens + state.totalOutputTokens,
+      estimatedCost: state.totalEstimatedCost,
+      estimated_cost: state.totalEstimatedCost,
+      promptCache,
     },
     modelUsage: {
       modelAlias: state.modelConfig.modelAlias,
@@ -800,7 +993,11 @@ async function buildResponseBody(
       inputTokens: state.totalInputTokens,
       outputTokens: state.totalOutputTokens,
       totalTokens: state.totalInputTokens + state.totalOutputTokens,
+      estimatedCost: state.totalEstimatedCost,
+      promptCache,
     },
+    promptCache,
+    contextCompression: state.contextCompression,
     governance: {
       mode: state.governanceMode,
       contextPlanHash: state.contextPlanHash,
@@ -817,6 +1014,7 @@ async function buildResponseBody(
       astIndexedSymbols: state.workspace?.astIndexedSymbols ?? lastAstStats()?.indexedSymbols,
       source: state.workspace?.source,
     },
+    verificationReceipts: state.verificationReceipts,
   };
 
   if (outcome.kind === "paused") {
@@ -860,7 +1058,10 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     workspaceRoot: body.runContext.workspaceRoot,
   });
 
-  return await withSandboxRoot(workspaceRoot, async () => {
+  return await withSandboxRoot(workspaceRoot, async () => withWorkspaceLock(async () => {
+  await gcWorkItemWorkspaces().catch((err) => {
+    log.warn({ err: (err as Error).message }, "[mcp-server] workspace GC failed");
+  });
   const correlation: CorrelationIds = {
     ...body.runContext,
     runId: body.runContext.runId ?? body.runContext.workflowInstanceId,
@@ -890,19 +1091,21 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
 
   const mergedTools = new Map<string, typeof body.tools[number]>();
   for (const tool of body.tools) mergedTools.set(tool.name, tool);
-  for (const tool of listLocalTools()) {
-    if (mergedTools.has(tool.name)) continue;
-    mergedTools.set(tool.name, {
-      name: tool.name,
-      description: tool.description,
-      input_schema: tool.input_schema,
-      execution_target: "LOCAL",
-      natural_language: tool.natural_language,
-      risk_level: tool.risk_level,
-      requires_approval: tool.requires_approval,
-      // M39 — local-registry tools opt-in to PII masking via their descriptor.
-      pii_sensitive: (tool as { pii_sensitive?: boolean }).pii_sensitive,
-    });
+  if (body.limits.includeLocalTools !== false) {
+    for (const tool of listLocalTools()) {
+      if (mergedTools.has(tool.name)) continue;
+      mergedTools.set(tool.name, {
+        name: tool.name,
+        description: tool.description,
+        input_schema: tool.input_schema,
+        execution_target: "LOCAL",
+        natural_language: tool.natural_language,
+        risk_level: tool.risk_level,
+        requires_approval: tool.requires_approval,
+        // M39 — local-registry tools opt-in to PII masking via their descriptor.
+        pii_sensitive: (tool as { pii_sensitive?: boolean }).pii_sensitive,
+      });
+    }
   }
   const toolList = Array.from(mergedTools.values());
 
@@ -937,13 +1140,16 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     pii_sensitive: (t as { pii_sensitive?: boolean }).pii_sensitive,
   }));
 
-  const resolvedModel = resolveModelConfig({
-    modelAlias: body.modelConfig.modelAlias,
-    provider: body.modelConfig.provider,
-    model: body.modelConfig.model,
-    temperature: body.modelConfig.temperature,
-    maxTokens: body.modelConfig.maxTokens,
-  });
+  const resolvedModel: LoopState["modelConfig"] = {
+    ...resolveModelConfig({
+      modelAlias: body.modelConfig.modelAlias,
+      provider: body.modelConfig.provider,
+      model: body.modelConfig.model,
+      temperature: body.modelConfig.temperature,
+      maxTokens: body.modelConfig.maxTokens,
+    }),
+    promptCache: normalizePromptCache(body.modelConfig.promptCache, messages, availableTools),
+  };
 
   const state: LoopState = {
     messages,
@@ -954,12 +1160,24 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     stepIndex: 0,
     maxSteps: body.limits.maxSteps ?? config.MAX_AGENT_STEPS,
     maxToolResultChars: body.limits.maxToolResultChars,
+    maxHistoryMessages: body.limits.maxHistoryMessages,
+    maxHistoryTokens: body.limits.maxHistoryTokens,
+    compressToolResults: body.limits.compressToolResults === true,
     llmCallIds: [],
     toolInvocationIds: [],
     artifactIds: [],
     codeChangeIds: [],
+    verificationReceipts: [],
+    promptCacheUsage: [],
     totalInputTokens: 0,
     totalOutputTokens: 0,
+    totalEstimatedCost: 0,
+    contextCompression: {
+      messagesDropped: 0,
+      tokensDropped: 0,
+      toolResultsCompressed: 0,
+      toolResultBytesSaved: 0,
+    },
     toolCallHistory: [],
     toolUseNudgeCount: 0,
     workspace: {
@@ -980,7 +1198,7 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
 
   const outcome = await runLoop(state);
   return buildResponseBody(state, outcome, startedAt);
-  });
+  }));
 }
 
 invokeRouter.post("/invoke", async (req, res) => {
@@ -1054,7 +1272,7 @@ invokeRouter.post("/resume", async (req, res) => {
       workItemId: env.correlation.workItemId,
       branchName: env.workspace?.branch?.branch,
     });
-  await withSandboxRoot(resumeWorkspaceRoot, async () => {
+  await withSandboxRoot(resumeWorkspaceRoot, async () => withWorkspaceLock(async () => {
   const state: LoopState = {
     messages: env.messages,
     availableTools: env.available_tools,
@@ -1064,10 +1282,15 @@ invokeRouter.post("/resume", async (req, res) => {
     stepIndex: env.step_index,
     maxSteps: env.max_steps,
     maxToolResultChars: env.max_tool_result_chars,
+    maxHistoryMessages: env.max_history_messages,
+    maxHistoryTokens: env.max_history_tokens,
+    compressToolResults: env.compress_tool_results === true,
     llmCallIds: env.llm_call_ids,
     toolInvocationIds: env.tool_invocation_ids,
     artifactIds: env.artifact_ids,
     codeChangeIds: env.code_change_ids ?? [],
+    verificationReceipts: env.verification_receipts ?? [],
+    promptCacheUsage: env.prompt_cache_usage ?? [],
     // Resumed loops start with a fresh history — the repetition detector
     // only meaningfully fires on consecutive identical calls within a single
     // invocation, not across approval pauses.
@@ -1076,6 +1299,13 @@ invokeRouter.post("/resume", async (req, res) => {
     workspace: env.workspace,
     totalInputTokens: env.total_input_tokens,
     totalOutputTokens: env.total_output_tokens,
+    totalEstimatedCost: env.total_estimated_cost ?? 0,
+    contextCompression: env.context_compression ?? {
+      messagesDropped: 0,
+      tokensDropped: 0,
+      toolResultsCompressed: 0,
+      toolResultBytesSaved: 0,
+    },
     governanceMode: env.governance_mode ?? "fail_open",
     contextPlanHash: env.context_plan_hash,
     degradedActionsAllowed: env.degraded_actions_allowed ?? [],
@@ -1132,15 +1362,18 @@ invokeRouter.post("/resume", async (req, res) => {
     // Append a tool_result that records the rejection so the LLM gets to react.
     state.messages.push({
       role: "tool",
-      content: trimToolResult(JSON.stringify({
+      content: toolResultForNextTurn(state, {
         status: "approval_rejected",
         reason: body.reason ?? "operator rejected the request",
-      }), state.maxToolResultChars),
+      }),
       tool_call_id: tc.id,
       tool_name: tc.name,
     });
   } else {
     // Approved — execute the tool and append the result.
+    if (tc.name === "finish_work_branch") {
+      args.verificationReceipts = state.verificationReceipts;
+    }
     const result = await dispatchToolCall(
       { ...tc, args },
       env.full_tool_descriptors.map((d) => ({
@@ -1155,9 +1388,10 @@ invokeRouter.post("/resume", async (req, res) => {
     );
     state.toolInvocationIds.push(result.record.id);
     if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
+    state.verificationReceipts.push(...verificationReceiptsFromOutput(result.record.output, result.record.id, tc.name));
     // M39 / M39.B — mask resumed-tool output (async path for NER support).
     const resumeDesc = env.full_tool_descriptors.find((d) => d.name === tc.name);
-    const rawOutput = trimToolResult(JSON.stringify(result.record.output), state.maxToolResultChars);
+    const rawOutput = toolResultForNextTurn(state, result.record.output);
     state.messages.push({
       role: "tool",
       content: await applyOutputMaskIfNeededAsync(state, resumeDesc, rawOutput),
@@ -1173,7 +1407,7 @@ invokeRouter.post("/resume", async (req, res) => {
     data: await buildResponseBody(state, outcome, startedAt),
     requestId: res.locals.requestId,
   });
-  });
+  }));
 });
 
 function estimateTextTokens(value: string): number {
@@ -1187,6 +1421,167 @@ function estimateLoopInputTokens(state: LoopState): number {
     0,
   );
   return messageTokens + toolTokens + (state.modelConfig.maxTokens ?? 0);
+}
+
+function normalizePromptCache(
+  requested: { enabled?: boolean; strategy?: string; key?: string } | undefined,
+  messages: ChatMessage[],
+  tools: ToolDescriptorForLlm[],
+): LoopState["modelConfig"]["promptCache"] | undefined {
+  if (requested?.enabled !== true) return undefined;
+  const stablePrefix = JSON.stringify({
+    system: messages.filter((msg) => msg.role === "system").map((msg) => msg.content),
+    tools: tools.map((tool) => ({ name: tool.name, schema: tool.input_schema })),
+  });
+  return {
+    enabled: true,
+    strategy: requested.strategy ?? "provider_auto",
+    key: requested.key?.trim() || createHash("sha256").update(stablePrefix).digest("hex").slice(0, 24),
+  };
+}
+
+function promptCacheNumber(record: Record<string, unknown>, keys: string[]): number {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return 0;
+}
+
+function promptCacheSummary(state: LoopState): Record<string, unknown> {
+  const usage = state.promptCacheUsage;
+  const requested = state.modelConfig.promptCache;
+  const cacheReadTokens = usage.reduce((sum, item) => sum + promptCacheNumber(item, [
+    "read_tokens",
+    "cache_read_input_tokens",
+    "cacheReadInputTokens",
+    "cached_input_tokens",
+    "cachedInputTokens",
+  ]), 0);
+  const cacheWriteTokens = usage.reduce((sum, item) => sum + promptCacheNumber(item, [
+    "write_tokens",
+    "cache_creation_input_tokens",
+    "cacheCreationInputTokens",
+    "cache_write_input_tokens",
+    "cacheWriteInputTokens",
+  ]), 0);
+  const savingsEstimatedTokens = usage.reduce((sum, item) => sum + promptCacheNumber(item, [
+    "savings_estimated_tokens",
+    "savingsEstimatedTokens",
+    "tokens_saved",
+    "tokensSaved",
+  ]), 0);
+  const hitCount = usage.filter((item) => item.hit === true || item.cache_hit === true || item.cacheHit === true).length;
+  const missCount = usage.filter((item) => item.hit === false || item.cache_hit === false || item.cacheHit === false).length;
+
+  return {
+    enabled: requested?.enabled === true,
+    strategy: requested?.strategy,
+    key: requested?.key,
+    requested,
+    reported: usage.some((item) => item.reported !== false),
+    hitCount,
+    missCount,
+    cacheReadTokens,
+    cacheWriteTokens,
+    savingsEstimatedTokens: savingsEstimatedTokens > 0 ? savingsEstimatedTokens : undefined,
+    usage,
+  };
+}
+
+function applySlidingWindow(state: LoopState): void {
+  if (!state.maxHistoryMessages && !state.maxHistoryTokens) return;
+
+  const beforeMessages = state.messages.length;
+  const beforeTokens = state.messages.reduce((sum, msg) => sum + estimateTextTokens(msg.content), 0);
+  const systemMessages = state.messages.filter((msg) => msg.role === "system");
+  let rollingMessages = state.messages.filter((msg) => msg.role !== "system");
+
+  if (state.maxHistoryMessages && rollingMessages.length > state.maxHistoryMessages) {
+    rollingMessages = rollingMessages.slice(-state.maxHistoryMessages);
+    rollingMessages = dropLeadingOrphanToolMessages(rollingMessages);
+  }
+
+  if (state.maxHistoryTokens) {
+    let combined = [...systemMessages, ...rollingMessages];
+    while (rollingMessages.length > 1 && estimateLoopInputTokens({ ...state, messages: combined }) > state.maxHistoryTokens) {
+      rollingMessages = dropLeadingOrphanToolMessages(rollingMessages.slice(1));
+      combined = [...systemMessages, ...rollingMessages];
+    }
+  }
+
+  state.messages = [...systemMessages, ...rollingMessages];
+  const afterTokens = state.messages.reduce((sum, msg) => sum + estimateTextTokens(msg.content), 0);
+  const dropped = Math.max(0, beforeMessages - state.messages.length);
+  if (dropped > 0) {
+    state.contextCompression.messagesDropped += dropped;
+    state.contextCompression.tokensDropped += Math.max(0, beforeTokens - afterTokens);
+  }
+}
+
+function dropLeadingOrphanToolMessages(messages: ChatMessage[]): ChatMessage[] {
+  let start = 0;
+  while (start < messages.length && messages[start].role === "tool") start += 1;
+  return start > 0 ? messages.slice(start) : messages;
+}
+
+function toolResultForNextTurn(state: LoopState, output: unknown): string {
+  const raw = JSON.stringify(output);
+  if (!state.compressToolResults) return trimToolResult(raw, state.maxToolResultChars);
+
+  const compressed = JSON.stringify(compactToolResult(output));
+  const selected = compressed.length < raw.length ? compressed : raw;
+  if (selected.length < raw.length) {
+    state.contextCompression.toolResultsCompressed += 1;
+    state.contextCompression.toolResultBytesSaved += raw.length - selected.length;
+  }
+  return trimToolResult(selected, state.maxToolResultChars);
+}
+
+function compactToolResult(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    if (value.length <= 8) return value.map(compactToolResult);
+    return {
+      kind: "compressed_array",
+      length: value.length,
+      sample: value.slice(0, 5).map(compactToolResult),
+    };
+  }
+  if (!value || typeof value !== "object") {
+    if (typeof value === "string" && value.length > 2000) {
+      return {
+        kind: "compressed_text",
+        chars: value.length,
+        excerpt: value.slice(0, 1200),
+      };
+    }
+    return value;
+  }
+
+  const obj = value as Record<string, unknown>;
+  if (obj.kind === "code_change") {
+    return {
+      kind: obj.kind,
+      paths_touched: obj.paths_touched,
+      lines_added: obj.lines_added,
+      lines_removed: obj.lines_removed,
+      commit_sha: obj.commit_sha,
+      patch_chars: typeof obj.patch === "string" ? obj.patch.length : undefined,
+      diff_chars: typeof obj.diff === "string" ? obj.diff.length : undefined,
+    };
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(obj)) {
+    if ((key === "content" || key === "body" || key === "text") && typeof item === "string" && item.length > 2000) {
+      out[key] = { kind: "compressed_text", chars: item.length, excerpt: item.slice(0, 1200) };
+    } else if ((key === "patch" || key === "diff") && typeof item === "string" && item.length > 2000) {
+      out[`${key}_chars`] = item.length;
+    } else {
+      out[key] = compactToolResult(item);
+    }
+  }
+  return out;
 }
 
 function trimToolResult(content: string, maxChars?: number): string {
@@ -1332,6 +1727,7 @@ async function dispatchToolCall(
   });
 
   const finishWith = (rec: ToolInvocationRecord, severity: "info" | "error" = "info") => {
+    const executionMetadata = verificationExecutionMetadata(rec.output);
     events.publish({
       kind: "tool.invocation.updated",
       correlation: { ...correlation, toolInvocationId: rec.id },
@@ -1339,6 +1735,7 @@ async function dispatchToolCall(
       payload: {
         tool_name: rec.tool_name, success: rec.success, error: rec.error,
         latency_ms: rec.latency_ms,
+        ...executionMetadata,
       },
     });
     // M21 — fire-and-forget to audit-governance
@@ -1355,6 +1752,7 @@ async function dispatchToolCall(
         success:    rec.success,
         error:      rec.error,
         latency_ms: rec.latency_ms,
+        ...executionMetadata,
       },
     });
     return { record: rec };
@@ -1401,7 +1799,7 @@ async function dispatchToolCall(
       // M35.4 — capture raw response body even when JSON parse fails so we
       // can debug 5xx errors from context-fabric. Previously the silent
       // .catch(() => ({})) made every parse failure look like an empty 200.
-      let body: { status?: string; error?: unknown; reason?: unknown } = {};
+      let body: { status?: string; error?: unknown; reason?: unknown; tool_execution_id?: unknown; receipt?: unknown } = {};
       let rawBody = "";
       try {
         rawBody = await response.text();
@@ -1433,12 +1831,23 @@ async function dispatchToolCall(
         };
       }
       const success = body.status === "success";
+      const delegationReceipt = {
+        kind: "delegation_receipt",
+        execution_target: "SERVER",
+        tool_name: tc.name,
+        tool_version: desc.version,
+        status: body.status ?? "unknown",
+        context_fabric_url: config.CONTEXT_FABRIC_URL,
+        tool_execution_id: typeof body.tool_execution_id === "string" ? body.tool_execution_id : undefined,
+        downstream_receipt: body.receipt,
+        capturedAt: new Date().toISOString(),
+      };
       return finishWith(
         recordToolInvocation({
           correlation,
           tool_name: tc.name,
           args: tc.args,
-          output: body,
+          output: { ...body, delegation_receipt: delegationReceipt },
           success,
           error: success ? undefined : String(body.error ?? body.reason ?? `SERVER tool returned ${body.status ?? "unknown"}`),
           latency_ms: Date.now() - start,

@@ -4,16 +4,16 @@
  * When an operator triggers diagnosis on an engine_issue, this module:
  *   1. Loads the issue's sample trace timelines from audit_events
  *   2. Builds a structured prompt for the LLM
- *   3. Calls the central LLM gateway's /v1/chat/completions endpoint (M33)
+ *   3. Calls MCP /mcp/invoke; MCP is the only LLM gateway caller
  *   4. Stores the diagnosis in engine_issues.root_cause
  *   5. Auto-generates a proposed fix based on the diagnosis
  *
- * No provider keys live here; the gateway is the single LLM call point.
+ * No provider keys or gateway URLs live here.
  */
 import { query, queryOne } from "../db";
 
-const LLM_GATEWAY_URL    = process.env.LLM_GATEWAY_URL    ?? "http://llm-gateway:8001";
-const LLM_GATEWAY_BEARER = process.env.LLM_GATEWAY_BEARER ?? "";
+const MCP_SERVER_URL     = (process.env.MCP_SERVER_URL ?? "http://mcp-server:7100").replace(/\/$/, "");
+const MCP_BEARER_TOKEN   = process.env.MCP_BEARER_TOKEN ?? "";
 const ENGINE_MODEL_ALIAS = process.env.ENGINE_MODEL_ALIAS?.trim();
 const ENGINE_TIMEOUT_MS  = Number(process.env.ENGINE_TIMEOUT_MS ?? 120_000);
 
@@ -104,30 +104,37 @@ async function getDiagnosisSystemPrompt(): Promise<string> {
 }
 
 async function callLlmForDiagnosis(prompt: string): Promise<DiagnosisResult> {
-  // M33 — LLM call goes through the central llm-gateway. If the gateway
-  // is unavailable, fall back to deterministic local heuristics rather
-  // than reaching for any provider SDK or API directly.
+  // LLM calls go through MCP. If MCP or its gateway dependency is unavailable,
+  // fall back to deterministic local heuristics rather than reaching for any
+  // provider SDK or API directly.
   try {
     const headers: Record<string, string> = { "content-type": "application/json" };
-    if (LLM_GATEWAY_BEARER) headers.authorization = `Bearer ${LLM_GATEWAY_BEARER}`;
-    const llmRes = await fetch(`${LLM_GATEWAY_URL.replace(/\/$/, "")}/v1/chat/completions`, {
+    if (MCP_BEARER_TOKEN) headers.authorization = `Bearer ${MCP_BEARER_TOKEN}`;
+    const llmRes = await fetch(`${MCP_SERVER_URL}/mcp/invoke`, {
       method: "POST",
       headers,
       body: JSON.stringify({
-        ...(ENGINE_MODEL_ALIAS ? { model_alias: ENGINE_MODEL_ALIAS } : {}),
-        messages: [
-          { role: "system", content: await getDiagnosisSystemPrompt() },
-          { role: "user",   content: prompt },
-        ],
-        temperature: 0,
-        max_output_tokens: 1500,
-        trace_id: `engine-diagnose-${Date.now()}`,
+        systemPrompt: await getDiagnosisSystemPrompt(),
+        message: prompt,
+        tools: [],
+        modelConfig: {
+          ...(ENGINE_MODEL_ALIAS ? { modelAlias: ENGINE_MODEL_ALIAS } : {}),
+          temperature: 0,
+          maxTokens: 1500,
+        },
+        runContext: { traceId: `engine-diagnose-${Date.now()}` },
+        limits: {
+          maxSteps: 1,
+          timeoutSec: Math.ceil(ENGINE_TIMEOUT_MS / 1000),
+          compressToolResults: true,
+          includeLocalTools: false,
+        },
       }),
       signal: AbortSignal.timeout(ENGINE_TIMEOUT_MS),
     });
     if (llmRes.ok) {
-      const data = await llmRes.json() as { content?: string };
-      const content = data.content ?? "";
+      const data = await llmRes.json() as { data?: { finalResponse?: string } };
+      const content = data.data?.finalResponse ?? "";
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         return JSON.parse(jsonMatch[0]) as DiagnosisResult;

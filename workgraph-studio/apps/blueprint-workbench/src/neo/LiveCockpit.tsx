@@ -63,9 +63,10 @@ function eventLabel(ev: CockpitEvent): string {
     return `${ok} ${name}`
   }
   if (ev.kind === 'llm.call.completed') {
-    const provider = (p.provider as string) ?? ''
-    const tokens = (p.total_tokens as number) ?? 0
-    return `LLM ${provider} · ${tokens} tok`
+    const modelAlias = stringValue(p.model_alias ?? p.modelAlias) ?? stringValue(p.provider) ?? 'gateway'
+    const tokens = numberValue(p.total_tokens)
+    const cost = numberValue(p.estimated_cost ?? p.estimatedCost)
+    return `LLM ${modelAlias} · ${tokens.toLocaleString()} tok${cost ? ` · ${money(cost)}` : ''}`
   }
   if (ev.kind === 'code_change.detected') {
     const paths = (p.changed_paths as string[] | undefined) ?? []
@@ -78,6 +79,54 @@ function eventLabel(ev: CockpitEvent): string {
     return `commit ${((p.commit_sha as string) ?? '').slice(0, 7)}`
   }
   return ev.kind.replaceAll('.', ' › ')
+}
+
+function eventDetail(ev: CockpitEvent): string {
+  const p = ev.payload ?? {}
+  if (isToolEvent(ev.kind)) {
+    const duration = numberValue(p.latency_ms ?? p.latencyMs)
+    const risk = stringValue(p.risk_level ?? p.riskLevel)
+    const target = stringValue(p.execution_target ?? p.executionTarget)
+    const mode = stringValue(p.execution_mode ?? p.executionMode)
+    const image = stringValue(p.container_image ?? p.containerImage)
+    const network = stringValue(p.network_mode ?? p.networkMode)
+    const runner = typeof p.isolation === 'object' && p.isolation
+      ? stringValue((p.isolation as Record<string, unknown>).runner)
+      : undefined
+    return [target, risk, mode, image, network ? `network ${network}` : undefined, runner, duration ? `${duration} ms` : undefined]
+      .filter(Boolean)
+      .join(' · ')
+  }
+  if (ev.kind === 'llm.call.completed' || ev.kind === 'llm.response') {
+    const provider = stringValue(p.provider)
+    const model = stringValue(p.model)
+    const finish = stringValue(p.finish_reason ?? p.finishReason)
+    const latency = numberValue(p.latency_ms ?? p.latencyMs)
+    const cost = numberValue(p.estimated_cost ?? p.estimatedCost)
+    return [provider, model, finish, latency ? `${latency} ms` : undefined, cost ? money(cost) : undefined].filter(Boolean).join(' · ')
+  }
+  if (ev.kind === 'code_change.detected') {
+    const paths = (p.paths_touched as string[] | undefined) ?? (p.changed_paths as string[] | undefined) ?? []
+    return paths.slice(0, 3).join(', ')
+  }
+  if (ev.kind === 'governance.denied') {
+    return stringValue(p.reason) ?? ''
+  }
+  return stringValue(p.phase ?? p.finishReason ?? p.finish_reason) ?? ''
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function money(value: number): string {
+  if (!value) return '$0.00'
+  if (value < 0.01) return `$${value.toFixed(4)}`
+  return `$${value.toFixed(2)}`
 }
 
 export function LiveCockpit({
@@ -201,14 +250,16 @@ export function LiveCockpit({
     let toolCalls = 0
     let llmCalls = 0
     let codeChanges = 0
+    let cost = 0
     for (const ev of events) {
       const p = ev.payload ?? {}
       if (typeof p.total_tokens === 'number') tokens += p.total_tokens
+      cost += numberValue(p.estimated_cost ?? p.estimatedCost)
       if (isToolEvent(ev.kind)) toolCalls += 1
       if (ev.kind === 'llm.call.completed') llmCalls += 1
       if (ev.kind === 'code_change.detected') codeChanges += 1
     }
-    return { tokens, toolCalls, llmCalls, codeChanges }
+    return { tokens, toolCalls, llmCalls, codeChanges, cost }
   }, [events])
 
   const recent = events.slice(-40).reverse()
@@ -231,6 +282,7 @@ export function LiveCockpit({
 
       <div className="cockpit-totals">
         <Metric label="tokens" value={totals.tokens.toLocaleString()} />
+        <Metric label="cost" value={money(totals.cost)} />
         <Metric label="LLM calls" value={String(totals.llmCalls)} />
         <Metric label="tools" value={String(totals.toolCalls)} />
         <Metric label="commits" value={String(totals.codeChanges)} />
@@ -245,7 +297,10 @@ export function LiveCockpit({
         {recent.map(ev => (
           <div key={ev.id} className={`cockpit-row ${highlightClass(ev.kind)}`}>
             <span className="row-glyph" aria-hidden>{eventGlyph(ev.kind)}</span>
-            <span className="row-label">{eventLabel(ev)}</span>
+            <span className="row-copy">
+              <span className="row-label">{eventLabel(ev)}</span>
+              {eventDetail(ev) && <span className="row-detail">{eventDetail(ev)}</span>}
+            </span>
             <time className="row-time">{shortTime(ev.timestamp)}</time>
           </div>
         ))}

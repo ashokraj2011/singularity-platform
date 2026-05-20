@@ -13,6 +13,7 @@
  *   - 'idle'       — no stage selected
  *   - 'run'        — stage is fresh, needs operator to kick it off
  *   - 'running'    — agent is working; cockpit on the right has activity
+ *   - 'mcp-approval' — MCP paused on a tool/governance approval
  *   - 'answer'     — agent is blocked on a required question
  *   - 'approve'    — agent finished, awaiting verdict
  *   - 'rework'     — last attempt failed / sent back; needs re-run or rework
@@ -29,6 +30,7 @@ export type FocusIntent =
   | 'idle'
   | 'run'
   | 'running'
+  | 'mcp-approval'
   | 'answer'
   | 'approve'
   | 'rework'
@@ -150,6 +152,8 @@ function intentBannerCopy(intent: FocusIntent, stage: LoopStage, latest: StageAt
       return <><strong>Agent needs your input.</strong> Required question below — answer it before re-running this stage.</>
     case 'approve':
       return <><strong>Awaiting your verdict.</strong> Review the response and artifacts, then approve or send this stage back.</>
+    case 'mcp-approval':
+      return <><strong>MCP is waiting for approval.</strong> Review the pending tool call before the agent loop continues.</>
     case 'running':
       return <><strong>Agent is working.</strong> Live activity on the right; this view will update when the stage produces a result.</>
     case 'run':
@@ -168,13 +172,14 @@ function intentBannerCopy(intent: FocusIntent, stage: LoopStage, latest: StageAt
  * Exposed so the parent doesn't duplicate the priority logic.
  *
  * Priority order (highest first):
- *   1. answer  — required, unanswered LLM question exists
- *   2. approve — most recent attempt is COMPLETED without a verdict
- *   3. rework  — most recent attempt is FAILED or verdict NEEDS_REWORK
- *   4. running — most recent attempt is RUNNING
- *   5. completed — stage has PASS/ACCEPTED_WITH_RISK verdict
- *   6. run     — no attempt yet
- *   7. idle    — no stage
+ *   1. mcp-approval — MCP paused on a tool/governance approval
+ *   2. answer  — required, unanswered LLM question exists
+ *   3. approve — most recent attempt is COMPLETED without a verdict
+ *   4. rework  — most recent attempt is FAILED or verdict NEEDS_REWORK
+ *   5. running — most recent attempt is RUNNING
+ *   6. completed — stage has PASS/ACCEPTED_WITH_RISK verdict
+ *   7. run     — no attempt yet
+ *   8. idle    — no stage
  */
 export function computeFocusIntent(
   stage: LoopStage | undefined,
@@ -182,6 +187,7 @@ export function computeFocusIntent(
   hasUnansweredRequiredQuestion: boolean,
 ): FocusIntent {
   if (!stage) return 'idle'
+  if (latest?.status === 'PAUSED') return 'mcp-approval'
   if (hasUnansweredRequiredQuestion) return 'answer'
   if (latest?.status === 'COMPLETED' && !latest.verdict) return 'approve'
   if (latest?.status === 'FAILED' || latest?.verdict === 'NEEDS_REWORK' || latest?.verdict === 'BLOCKED') return 'rework'
@@ -189,4 +195,3 @@ export function computeFocusIntent(
   if (latest?.verdict === 'PASS' || latest?.verdict === 'ACCEPTED_WITH_RISK') return 'completed'
   return 'run'
 }
-

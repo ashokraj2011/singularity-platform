@@ -6,7 +6,17 @@
  * fallback is the gateway's `mock` provider (or `LLM_GATEWAY_URL=mock`
  * for in-process unit tests).
  */
-import { LlmRequest, LlmResponse, LlmStreamHooks, ToolCall } from "./types";
+import { createHash } from "node:crypto";
+import {
+  EmbeddingsRequest,
+  EmbeddingsResponse,
+  LlmRequest,
+  LlmResponse,
+  LlmStreamHooks,
+  PromptCacheRequest,
+  PromptCacheUsage,
+  ToolCall,
+} from "./types";
 import { config } from "../config";
 import { log } from "../shared/log";
 import {
@@ -29,6 +39,7 @@ interface GatewayChatRequest {
   tools?: LlmRequest["tools"];
   temperature?: number;
   max_output_tokens?: number;
+  prompt_cache?: LlmRequest["prompt_cache"];
 }
 
 interface GatewayChatResponse {
@@ -41,6 +52,33 @@ interface GatewayChatResponse {
   provider: string;
   model: string;
   model_alias?: string;
+  estimated_cost?: number;
+  prompt_cache?: PromptCacheUsage;
+  promptCache?: PromptCacheUsage;
+}
+
+type GatewayEmbeddingsRequest = EmbeddingsRequest;
+type GatewayEmbeddingsResponse = EmbeddingsResponse;
+
+function normalizePromptCacheUsage(
+  result: Pick<GatewayChatResponse, "prompt_cache" | "promptCache">,
+  requested?: PromptCacheRequest,
+): PromptCacheUsage | undefined {
+  const providerUsage = result.prompt_cache ?? result.promptCache;
+  if (providerUsage && typeof providerUsage === "object" && !Array.isArray(providerUsage)) {
+    return {
+      ...(requested ?? {}),
+      ...providerUsage,
+      reported: providerUsage.reported ?? true,
+    };
+  }
+  if (requested?.enabled) {
+    return {
+      ...requested,
+      reported: false,
+    };
+  }
+  return undefined;
 }
 
 function gatewayUrl(): string {
@@ -63,6 +101,7 @@ async function callGateway(body: GatewayChatRequest): Promise<GatewayChatRespons
       provider: "mock",
       model: body.model_alias || "mock-fast",
       model_alias: body.model_alias,
+      estimated_cost: 0,
     };
   }
   const headers: Record<string, string> = { "content-type": "application/json" };
@@ -80,6 +119,50 @@ async function callGateway(body: GatewayChatRequest): Promise<GatewayChatRespons
   return JSON.parse(text) as GatewayChatResponse;
 }
 
+function mockEmbedding(text: string, dim = 1536): number[] {
+  const digest = createHash("sha256").update(text).digest();
+  const out: number[] = [];
+  let i = 0;
+  while (out.length < dim) {
+    const slice = digest.subarray(i % digest.length, (i % digest.length) + 4);
+    const raw = slice.length === 4
+      ? slice.readUInt32BE(0)
+      : Buffer.concat([slice, Buffer.alloc(4 - slice.length)]).readUInt32BE(0);
+    out.push((raw % 10000) / 10000 - 0.5);
+    i++;
+  }
+  return out;
+}
+
+async function callGatewayEmbeddings(body: GatewayEmbeddingsRequest): Promise<GatewayEmbeddingsResponse> {
+  const url = gatewayUrl();
+  if (url === "mock") {
+    const embeddings = body.input.map((text) => mockEmbedding(text));
+    return {
+      embeddings,
+      dim: embeddings[0]?.length ?? 1536,
+      provider: "mock",
+      model: body.model_alias || "mock-embed",
+      model_alias: body.model_alias,
+      input_tokens: body.input.reduce((sum, text) => sum + Math.max(1, Math.ceil(text.length / 4)), 0),
+      latency_ms: 1,
+    };
+  }
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (config.LLM_GATEWAY_BEARER) headers.authorization = `Bearer ${config.LLM_GATEWAY_BEARER}`;
+  const res = await fetch(`${url.replace(/\/$/, "")}/v1/embeddings`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(config.LLM_GATEWAY_TIMEOUT_SEC * 1000),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`LLM_GATEWAY_EMBEDDINGS_UPSTREAM ${res.status}: ${text.slice(0, 500)}`);
+  }
+  return JSON.parse(text) as GatewayEmbeddingsResponse;
+}
+
 
 export async function llmRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promise<LlmResponse> {
   const start = Date.now();
@@ -89,6 +172,7 @@ export async function llmRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promi
     tools: req.tools,
     temperature: req.temperature,
     max_output_tokens: req.max_output_tokens,
+    ...(req.prompt_cache?.enabled ? { prompt_cache: req.prompt_cache } : {}),
   });
   // Surface final content via onDelta for parity with the prior non-streaming
   // path. Gateway-side SSE is a follow-up.
@@ -105,6 +189,17 @@ export async function llmRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promi
     provider: result.provider,
     model: result.model,
     model_alias: result.model_alias,
+    estimated_cost: result.estimated_cost,
+    prompt_cache: normalizePromptCacheUsage(result, req.prompt_cache),
+  };
+}
+
+export async function llmEmbed(req: EmbeddingsRequest): Promise<EmbeddingsResponse> {
+  const start = Date.now();
+  const result = await callGatewayEmbeddings(req);
+  return {
+    ...result,
+    latency_ms: result.latency_ms || (Date.now() - start),
   };
 }
 

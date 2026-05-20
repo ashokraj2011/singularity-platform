@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "build": "prisma generate && tsc",
+    "build": "prisma generate --schema=prisma/schema.prisma --generator client && prisma generate --schema=prisma/runtime-read.prisma --generator client && tsc",
     "start": "node dist/server.js",
-    "prisma:generate": "prisma generate",
+    "prisma:generate": "prisma generate --schema=prisma/schema.prisma --generator client && prisma generate --schema=prisma/runtime-read.prisma --generator client",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:dev": "prisma migrate dev",
     "prisma:seed": "ts-node --transpile-only prisma/seed.ts",

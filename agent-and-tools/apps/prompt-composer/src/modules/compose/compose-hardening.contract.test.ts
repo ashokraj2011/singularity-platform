@@ -33,6 +33,22 @@ assert(
   "dynamic tool discovery must preserve approval requirements",
 );
 assert(
+  serviceSource.includes("agent_template_id: input.agentTemplateId"),
+  "Context Fabric execution must preserve agent template id for tool discovery and memory scope",
+);
+assert(
+  serviceSource.includes("Input schema: ${JSON.stringify"),
+  "tool contract prompt blocks must include the schema that MCP will expose to the model",
+);
+assert(
+  serviceSource.includes("Array.isArray(input.toolDescriptors)"),
+  "Prompt Composer must prefer Context Fabric's canonical tool descriptors when provided",
+);
+assert(
+  serviceSource.indexOf("Array.isArray(input.toolDescriptors)") < serviceSource.indexOf("runtimeReader.toolGrant.findMany"),
+  "canonical tool descriptors must short-circuit static grants and dynamic discovery",
+);
+assert(
   serviceSource.includes("trace_id:       resolvedTraceId ?? input.workflowContext.instanceId"),
   "prompt audit events should use the resolved trace id",
 );

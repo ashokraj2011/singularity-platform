@@ -44,10 +44,13 @@ allowed_secret_hit() {
     README.md|test-mcp.sh|test-mcp-approval.sh)
       [[ "$line" == *"demo-bearer-token-must-be-min-16-chars"* ]] && return 0
       ;;
-    singularity-code-foundry/apps/code-foundry-api/src/patchGuard/secretScan.ts)
-      [[ "$line" == *"/-----BEGIN PRIVATE KEY-----/"* ]] && return 0
-      ;;
-  esac
+	  singularity-code-foundry/apps/code-foundry-api/src/patchGuard/secretScan.ts)
+	    [[ "$line" == *"/-----BEGIN PRIVATE KEY-----/"* ]] && return 0
+	    ;;
+	  bin/check-secret-guardrails.sh)
+	    [[ "$line" == *"PRIVATE KEY"* ]] && return 0
+	    ;;
+	  esac
 
   return 1
 }

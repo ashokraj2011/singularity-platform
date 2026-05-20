@@ -911,7 +911,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 
 .delivery-intake-steps {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
   gap: 8px;
   margin: 14px 0;
 }
@@ -1508,6 +1508,12 @@ code, pre, .console-top code, .terminal-log {
   border-color: rgba(114, 228, 162, 0.28);
   color: var(--ok);
   background: rgba(114, 228, 162, 0.08);
+}
+
+.status.paused {
+  border-color: rgba(var(--neo-attention-rgb), 0.4);
+  color: var(--neo-attention);
+  background: rgba(var(--neo-attention-rgb), 0.08);
 }
 
 .status.failed, .status.rework {
@@ -2804,6 +2810,16 @@ pre {
   gap: 10px;
 }
 
+.stage-model-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--outline-variant);
+  border-radius: 8px;
+  background: var(--surface-low);
+}
+
 .checkbox-row {
   display: flex;
   align-items: center;
@@ -2982,7 +2998,7 @@ pre {
     align-items: flex-end;
   }
 
-  .artifact-layout, .two-col, .agent-grid, .metric-grid {
+  .artifact-layout, .two-col, .agent-grid, .metric-grid, .stage-model-grid {
     grid-template-columns: 1fr;
   }
 
@@ -3343,6 +3359,7 @@ pre {
 .rail-row.risk_accepted .rail-pip { background: rgba(var(--neo-attention-rgb), 0.12); border-color: rgba(var(--neo-attention-rgb), 0.6); color: var(--neo-attention); }
 .rail-row.failed .rail-pip        { background: rgba(var(--neo-danger-rgb), 0.12);    border-color: rgba(var(--neo-danger-rgb), 0.6);    color: var(--neo-danger); }
 .rail-row.awaiting .rail-pip      { background: rgba(var(--neo-primary-rgb), 0.15);   border-color: rgba(var(--neo-primary-rgb), 0.6);   color: var(--neo-primary); animation: pulse-soft 1.6s ease-in-out infinite; }
+.rail-row.paused .rail-pip        { background: rgba(var(--neo-attention-rgb), 0.15); border-color: rgba(var(--neo-attention-rgb), 0.6); color: var(--neo-attention); animation: pulse-soft 1.6s ease-in-out infinite; }
 .rail-row.running .rail-pip       { background: rgba(var(--neo-info-rgb), 0.15);      border-color: rgba(var(--neo-info-rgb), 0.6);      color: var(--neo-info);   animation: spin 1.2s linear infinite; }
 .rail-row.sent_back .rail-pip     { background: rgba(var(--neo-accent-rgb), 0.12);    border-color: rgba(var(--neo-accent-rgb), 0.6);    color: var(--neo-accent); }
 
@@ -3419,6 +3436,7 @@ pre {
 }
 
 .neo-focus.intent-answer::before    { background: linear-gradient(90deg, var(--neo-attention), var(--neo-danger)); opacity: 1; }
+.neo-focus.intent-mcp-approval::before { background: linear-gradient(90deg, var(--neo-attention), var(--neo-primary)); opacity: 1; }
 .neo-focus.intent-approve::before   { background: linear-gradient(90deg, var(--neo-primary), var(--neo-ok)); opacity: 1; }
 .neo-focus.intent-rework::before    { background: linear-gradient(90deg, var(--neo-danger), var(--neo-attention)); opacity: 1; }
 .neo-focus.intent-running::before   { background: linear-gradient(90deg, var(--neo-info), var(--neo-primary)); opacity: 1; }
@@ -3514,6 +3532,7 @@ button.focus-badge.link:hover {
 }
 
 .focus-banner.banner-answer   { background: rgba(var(--neo-attention-rgb), 0.08); border-color: rgba(var(--neo-attention-rgb), 0.4); }
+.focus-banner.banner-mcp-approval { background: rgba(var(--neo-attention-rgb), 0.08); border-color: rgba(var(--neo-attention-rgb), 0.4); }
 .focus-banner.banner-approve  { background: rgba(var(--neo-primary-rgb), 0.08);   border-color: rgba(var(--neo-primary-rgb), 0.4); }
 .focus-banner.banner-rework   { background: rgba(var(--neo-danger-rgb), 0.08);    border-color: rgba(var(--neo-danger-rgb), 0.4); }
 .focus-banner.banner-running  { background: rgba(var(--neo-info-rgb), 0.08);      border-color: rgba(var(--neo-info-rgb), 0.4); }
@@ -3583,6 +3602,43 @@ button.focus-badge.link:hover {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.focus-approval-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(var(--neo-attention-rgb), 0.35);
+  background: rgba(var(--neo-attention-rgb), 0.06);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.focus-approval-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.focus-approval-card header strong {
+  color: var(--text);
+}
+
+.focus-approval-card header code,
+.focus-approval-card pre {
+  color: var(--muted);
+}
+
+.focus-approval-card pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid var(--outline-variant);
+  border-radius: 6px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.18);
 }
 
 .focus-feedback {
@@ -3770,6 +3826,7 @@ button.focus-badge.link:hover {
 }
 
 .intent-answer .focus-primary    { background: var(--neo-attention); box-shadow: 0 6px 24px rgba(var(--neo-attention-rgb), 0.35); }
+.intent-mcp-approval .focus-primary { background: var(--neo-attention); box-shadow: 0 6px 24px rgba(var(--neo-attention-rgb), 0.35); }
 .intent-approve .focus-primary   { background: var(--neo-ok);        box-shadow: 0 6px 24px rgba(var(--neo-ok-rgb), 0.35); }
 .intent-rework .focus-primary    { background: var(--neo-primary); }
 .intent-completed .focus-primary { background: var(--surface-low); color: var(--text); box-shadow: none; border: 1px solid var(--outline-variant); }
@@ -3911,7 +3968,7 @@ button.focus-badge.link:hover {
 
 .cockpit-totals {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -3970,7 +4027,22 @@ button.focus-badge.link:hover {
 
 .cockpit-row .row-glyph { font-size: 13px; }
 
+.cockpit-row .row-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .cockpit-row .row-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cockpit-row .row-detail {
+  color: var(--muted-low);
+  font-size: 10px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4520,4 +4592,3 @@ button.focus-badge.link:hover {
   opacity: 0.45;
   cursor: not-allowed;
 }
-

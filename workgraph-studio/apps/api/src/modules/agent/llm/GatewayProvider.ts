@@ -51,7 +51,9 @@ export class GatewayProvider implements LLMProvider {
         systemPrompt,
         history,
         tools: [],       // one-shot completion — no tools
-        maxSteps: 1,     // single LLM turn, no loop
+        limits: {
+          maxSteps: 1,   // single LLM turn, no loop
+        },
         modelConfig: {
           modelAlias: request.model,
           temperature: request.temperature,

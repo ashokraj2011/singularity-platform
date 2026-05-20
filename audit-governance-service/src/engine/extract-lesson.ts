@@ -21,8 +21,8 @@ import { query, queryOne } from "../db";
 const LESSON_CONFIRM_WINDOW_SEC = Number(process.env.LESSON_CONFIRM_WINDOW_SEC ?? 3600);
 const RETRY_LOOKBACK_HOURS      = Number(process.env.LESSON_RETRY_LOOKBACK_HOURS ?? 2);
 const PROMPT_COMPOSER_URL       = (process.env.PROMPT_COMPOSER_URL ?? "http://prompt-composer:3004").replace(/\/$/, "");
-const LLM_GATEWAY_URL           = (process.env.LLM_GATEWAY_URL ?? "http://llm-gateway:8001").replace(/\/$/, "");
-const LLM_GATEWAY_BEARER        = process.env.LLM_GATEWAY_BEARER ?? "";
+const MCP_SERVER_URL            = (process.env.MCP_SERVER_URL ?? "http://mcp-server:7100").replace(/\/$/, "");
+const MCP_BEARER_TOKEN          = process.env.MCP_BEARER_TOKEN ?? "";
 const ENGINE_MODEL_ALIAS        = process.env.ENGINE_MODEL_ALIAS ?? "";
 const EXTRACT_TIMEOUT_MS        = Number(process.env.LESSON_EXTRACT_TIMEOUT_MS ?? 30_000);
 
@@ -181,7 +181,7 @@ async function extractLessonForIssue(issue: IssueRow): Promise<ExtractedLesson |
   ].join("\n");
 
   const systemPrompt = await getLessonSystemPrompt();
-  const llmResponse = await callLlmGateway(systemPrompt, userPrompt);
+  const llmResponse = await callMcpForText(systemPrompt, userPrompt);
   // Parse JSON out of the LLM response (same defensive pattern as diagnose.ts).
   const match = llmResponse.match(/\{[\s\S]*\}/);
   if (!match) return null;
@@ -198,30 +198,37 @@ async function extractLessonForIssue(issue: IssueRow): Promise<ExtractedLesson |
   }
 }
 
-async function callLlmGateway(systemPrompt: string, userPrompt: string): Promise<string> {
+async function callMcpForText(systemPrompt: string, userPrompt: string): Promise<string> {
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (LLM_GATEWAY_BEARER) headers.authorization = `Bearer ${LLM_GATEWAY_BEARER}`;
-  const res = await fetch(`${LLM_GATEWAY_URL}/v1/chat/completions`, {
+  if (MCP_BEARER_TOKEN) headers.authorization = `Bearer ${MCP_BEARER_TOKEN}`;
+  const res = await fetch(`${MCP_SERVER_URL}/mcp/invoke`, {
     method: "POST",
     headers,
     body: JSON.stringify({
-      ...(ENGINE_MODEL_ALIAS ? { model_alias: ENGINE_MODEL_ALIAS } : {}),
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user",   content: userPrompt },
-      ],
-      temperature: 0,
-      max_output_tokens: 400,
-      trace_id: `engine-lesson-${Date.now()}`,
+      systemPrompt,
+      message: userPrompt,
+      tools: [],
+      modelConfig: {
+        ...(ENGINE_MODEL_ALIAS ? { modelAlias: ENGINE_MODEL_ALIAS } : {}),
+        temperature: 0,
+        maxTokens: 400,
+      },
+      runContext: { traceId: `engine-lesson-${Date.now()}` },
+      limits: {
+        maxSteps: 1,
+        timeoutSec: Math.ceil(EXTRACT_TIMEOUT_MS / 1000),
+        compressToolResults: true,
+        includeLocalTools: false,
+      },
     }),
     signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`llm-gateway lesson-extract → ${res.status}: ${text.slice(0, 300)}`);
+    throw new Error(`mcp lesson-extract → ${res.status}: ${text.slice(0, 300)}`);
   }
-  const data = await res.json() as { content?: string };
-  return data.content ?? "";
+  const data = await res.json() as { data?: { finalResponse?: string } };
+  return data.data?.finalResponse ?? "";
 }
 
 async function postLessonToComposer(issue: IssueRow, lesson: ExtractedLesson): Promise<string> {

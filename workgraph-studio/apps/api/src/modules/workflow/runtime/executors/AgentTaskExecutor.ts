@@ -400,6 +400,7 @@ export async function activateAgentTask(
         finishReason: result.finishReason,
         status: result.status,
         tokensSaved: result.usage?.tokensSaved,
+        promptCache: result.modelUsage?.promptCache ?? result.usage?.promptCache ?? result.promptCache ?? result.tokensUsed?.promptCache,
       },
     })
   } catch (err) {

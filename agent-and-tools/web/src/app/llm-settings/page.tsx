@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Cpu, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cpu, HardDrive, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
 
 type GatewayResult = {
   ok: boolean;
@@ -23,6 +23,7 @@ type LlmSettings = {
   health: GatewayResult;
   providers: GatewayResult;
   models: GatewayResult;
+  workspaceStats?: GatewayResult;
 };
 
 type ProviderRow = {
@@ -58,6 +59,29 @@ function statusClass(ok?: boolean) {
   return ok ? "badge-active" : "badge-critical";
 }
 
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatBytes(value: unknown): string {
+  const bytes = numberValue(value);
+  if (bytes == null) return "-";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let next = bytes / 1024;
+  let unit = units[0];
+  for (let i = 1; i < units.length && next >= 1024; i += 1) {
+    next /= 1024;
+    unit = units[i];
+  }
+  return `${next.toFixed(next >= 10 ? 1 : 2)} ${unit}`;
+}
+
+function formatPercent(value: unknown): string {
+  const pct = numberValue(value);
+  return pct == null ? "No quota" : `${pct.toFixed(1)}%`;
+}
+
 export default function LlmSettingsPage() {
   const [settings, setSettings] = useState<LlmSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -84,6 +108,9 @@ export default function LlmSettingsPage() {
 
   const providerData = asRecord(settings?.providers.data);
   const modelData = asRecord(settings?.models.data);
+  const workspaceEnvelope = asRecord(settings?.workspaceStats?.data);
+  const workspaceData = asRecord(workspaceEnvelope.data ?? settings?.workspaceStats?.data);
+  const workspaceGc = asRecord(workspaceData.gc);
   const gatewayConfig = asRecord(providerData.config);
   const providers = Array.isArray(providerData.providers) ? providerData.providers as ProviderRow[] : [];
   const models = Array.isArray(modelData.models) ? modelData.models as ModelRow[] : [];
@@ -95,6 +122,7 @@ export default function LlmSettingsPage() {
     ...(settings?.health.ok ? [] : [`Gateway health failed: ${settings?.health.error ?? settings?.health.status ?? "unknown"}`]),
     ...(settings?.providers.ok ? [] : [`Provider status failed: ${settings?.providers.error ?? settings?.providers.status ?? "unknown"}`]),
     ...(settings?.models.ok ? [] : [`Model catalog failed: ${settings?.models.error ?? settings?.models.status ?? "unknown"}`]),
+    ...(settings?.workspaceStats?.ok === false ? [`Workspace stats failed: ${settings.workspaceStats.error ?? settings.workspaceStats.status ?? "unknown"}`] : []),
   ], [modelData, providerData, settings]);
 
   const readyModels = models.filter(model => model.ready).length;
@@ -127,29 +155,57 @@ export default function LlmSettingsPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-6">
-        <SummaryTile icon={settings?.health.ok ? CheckCircle2 : XCircle} label="Gateway" value={settings?.health.ok ? "Online" : "Offline"} tone={settings?.health.ok ? "ok" : "bad"} />
+      <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-3 mb-6">
+        <SummaryTile icon={settings?.health.ok ? CheckCircle2 : XCircle} label="MCP" value={settings?.health.ok ? "Online" : "Offline"} tone={settings?.health.ok ? "ok" : "bad"} />
         <SummaryTile icon={Cpu} label="Default provider" value={defaultProvider} />
         <SummaryTile icon={ShieldCheck} label="Default alias" value={defaultModelAlias} />
         <SummaryTile icon={Cpu} label="Ready models" value={`${readyModels}/${models.length || 0}`} />
+        <SummaryTile icon={HardDrive} label="MCP storage" value={formatBytes(workspaceData.totalManagedBytes)} tone={settings?.workspaceStats?.ok === false ? "bad" : "neutral"} />
       </div>
 
       <section className="card p-5 mb-6">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
-            <h2 className="text-lg font-semibold text-slate-900">Gateway Control Plane</h2>
-            <p className="text-sm text-slate-500">These values come from the running agent-and-tools web container and live gateway responses.</p>
+            <h2 className="text-lg font-semibold text-slate-900">MCP Control Plane</h2>
+            <p className="text-sm text-slate-500">These values come from the running agent-and-tools web container and MCP model responses.</p>
           </div>
           <span className={`badge ${statusClass(settings?.health.ok)}`}>{settings?.health.ok ? "healthy" : "unhealthy"}</span>
         </div>
         <div className="grid md:grid-cols-2 gap-3 text-sm">
-          <Field label="LLM_GATEWAY_URL" value={settings?.gatewayUrl ?? "loading"} mono />
-          <Field label="Gateway auth" value={settings?.authMode ?? "unknown"} />
+          <Field label="MCP_SERVER_URL" value={settings?.gatewayUrl ?? "loading"} mono />
+          <Field label="MCP auth" value={settings?.authMode ?? "unknown"} />
           <Field label="Provider config" value={String(gatewayConfig.provider_config_path ?? settings?.configuredPaths.providerConfigPath ?? "unknown")} mono />
           <Field label="Model catalog" value={String(gatewayConfig.model_catalog_path ?? settings?.configuredPaths.modelCatalogPath ?? "unknown")} mono />
           <Field label="Caller provider override" value={String(gatewayConfig.allow_caller_provider_override ?? "unknown")} />
           <Field label="Timeout seconds" value={String(gatewayConfig.upstream_timeout_sec ?? "unknown")} />
         </div>
+      </section>
+
+      <section className="card p-5 mb-6">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">MCP Workspace Storage</h2>
+            <p className="text-sm text-slate-500">Managed work-item workspaces and source-cache usage reported by MCP.</p>
+          </div>
+          <span className={`badge ${statusClass(settings?.workspaceStats?.ok !== false)}`}>{settings?.workspaceStats?.ok === false ? "unavailable" : "reported"}</span>
+        </div>
+        <div className="grid md:grid-cols-4 gap-3 text-sm mb-4">
+          <Field label="Managed bytes" value={formatBytes(workspaceData.totalManagedBytes)} />
+          <Field label="Workspaces" value={String(workspaceData.workItemWorkspaceCount ?? "-")} />
+          <Field label="Quota used" value={formatPercent(workspaceData.quotaUsedPercent)} />
+          <Field label="GC" value={workspaceGc.enabled === true ? "enabled" : workspaceGc.enabled === false ? "disabled" : "unknown"} />
+        </div>
+        <div className="grid md:grid-cols-2 gap-3 text-sm">
+          <Field label="Work item root" value={String(workspaceData.workItemWorkspacesRoot ?? "-")} mono />
+          <Field label="Source cache root" value={String(workspaceData.sourceCacheRoot ?? "-")} mono />
+          <Field label="Work item bytes" value={formatBytes(workspaceData.workItemBytes)} />
+          <Field label="Source cache bytes" value={formatBytes(workspaceData.sourceCacheBytes)} />
+        </div>
+        {numberValue(workspaceData.quotaUsedPercent) != null && numberValue(workspaceData.quotaUsedPercent)! >= 80 && (
+          <p className="mt-4 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+            MCP workspace storage is above 80% of the configured quota. Shorten the GC age or increase `MCP_WORKSPACE_DISK_QUOTA_BYTES`.
+          </p>
+        )}
       </section>
 
       {warnings.length > 0 && (

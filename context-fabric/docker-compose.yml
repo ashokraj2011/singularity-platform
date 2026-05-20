@@ -21,8 +21,8 @@ services:
       dockerfile: services/context_memory_service/Dockerfile
     environment:
       - CONTEXT_MEMORY_DB=/data/context_memory.db
-      - LLM_GATEWAY_URL=http://llm-gateway-service:8001
-      - LLM_GATEWAY_BEARER=${LLM_GATEWAY_BEARER:-}
+      - MCP_SERVER_URL=${MCP_SERVER_URL:-http://host.docker.internal:7100}
+      - MCP_BEARER_TOKEN=${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       - SUMMARIZER_MODEL_ALIAS=${SUMMARIZER_MODEL_ALIAS:-}
       # M11.a
       - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
@@ -57,8 +57,6 @@ services:
 
       - CONTEXT_MEMORY_URL=http://context-memory-service:8002
       - METRICS_LEDGER_URL=http://metrics-ledger-service:8003
-      - LLM_GATEWAY_URL=http://llm-gateway-service:8001
-      - LLM_GATEWAY_BEARER=${LLM_GATEWAY_BEARER:-}
       # M8 — orchestrator dependencies
       - COMPOSER_URL=http://host.docker.internal:3004
       - TOOL_SERVICE_URL=http://host.docker.internal:3002

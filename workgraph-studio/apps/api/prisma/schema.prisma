@@ -67,6 +67,7 @@ enum ConnectorType {
   LLM_GATEWAY
   S3
   POSTGRES
+  SHAREPOINT
 }
 
 enum EdgeType {

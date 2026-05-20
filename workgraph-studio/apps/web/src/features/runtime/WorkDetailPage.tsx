@@ -718,7 +718,6 @@ function WorkbenchTaskCard({
   const [sessionId, setSessionId] = useState('')
   const [finalizedPack, setFinalizedPack] = useState<Record<string, unknown> | null>(null)
   const [showEmbeddedWorkbench, setShowEmbeddedWorkbench] = useState(false)
-  const [embeddedWorkbenchUi, setEmbeddedWorkbenchUi] = useState<'neo' | 'classic'>('neo')
   const completedRef = useRef(false)
   const config = isPlainRecord(node.config) ? node.config : {}
   const workbenchConfig = isPlainRecord(config.workbench) ? config.workbench : {}
@@ -728,8 +727,6 @@ function WorkbenchTaskCard({
     : 'finalImplementationPack'
   const canBuildUrl = !!task.instanceId && !!task.nodeId
   const workbenchUrl = canBuildUrl ? buildWorkbenchUrl(task.instanceId!, task.nodeId!, workbenchConfig, 'neo') : ''
-  const classicWorkbenchUrl = canBuildUrl ? buildWorkbenchUrl(task.instanceId!, task.nodeId!, workbenchConfig, 'classic') : ''
-  const embeddedWorkbenchUrl = embeddedWorkbenchUi === 'classic' ? classicWorkbenchUrl : workbenchUrl
 
   const completeMut = useMutation({
     mutationFn: (output: Record<string, unknown>) =>
@@ -850,7 +847,7 @@ function WorkbenchTaskCard({
             Continue in WorkbenchNeo
           </p>
           <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: 'var(--color-outline)' }}>
-            The Neo cockpit keeps stages, artifact review, terminal evidence, and code diff approval in one place. Classic remains available for the original canvas.
+            The Neo cockpit keeps stages, artifact review, terminal evidence, and code diff approval in one place.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -874,27 +871,6 @@ function WorkbenchTaskCard({
           >
             <ExternalLink size={14} /> Open WorkbenchNeo
           </a>
-          <a
-            href={classicWorkbenchUrl}
-            target="_blank"
-            rel="opener"
-            style={{
-              minHeight: 38,
-              padding: '0 12px',
-              borderRadius: 9,
-              border: '1px solid var(--color-outline-variant)',
-              background: '#fff',
-              color: '#475569',
-              textDecoration: 'none',
-              fontSize: 12,
-              fontWeight: 800,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-            }}
-          >
-            <ExternalLink size={14} /> Open Classic
-          </a>
           <button
             type="button"
             onClick={() => setShowEmbeddedWorkbench(value => !value)}
@@ -916,31 +892,9 @@ function WorkbenchTaskCard({
       </div>
 
       {showEmbeddedWorkbench && (
-        <>
-        <div style={{ display: 'inline-flex', gap: 4, alignSelf: 'flex-start', padding: 4, border: '1px solid var(--color-outline-variant)', borderRadius: 9, background: '#fff' }}>
-          {(['neo', 'classic'] as const).map(mode => (
-            <button
-              key={mode}
-              type="button"
-              onClick={() => setEmbeddedWorkbenchUi(mode)}
-              style={{
-                border: 'none',
-                borderRadius: 7,
-                minHeight: 28,
-                padding: '0 10px',
-                background: embeddedWorkbenchUi === mode ? '#7c3aed' : 'transparent',
-                color: embeddedWorkbenchUi === mode ? '#fff' : '#475569',
-                fontSize: 11,
-                fontWeight: 800,
-              }}
-            >
-              {mode === 'neo' ? 'Neo preview' : 'Classic preview'}
-            </button>
-          ))}
-        </div>
         <iframe
           title="Blueprint Workbench"
-          src={embeddedWorkbenchUrl}
+          src={workbenchUrl}
           style={{
             width: '100%',
             height: 720,
@@ -951,7 +905,6 @@ function WorkbenchTaskCard({
             pointerEvents: canComplete ? 'auto' : 'none',
           }}
         />
-        </>
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'end' }}>
@@ -1115,7 +1068,7 @@ function groupArtifactsByKind(refs: unknown[]) {
   }, {})
 }
 
-function buildWorkbenchUrl(workflowInstanceId: string, workflowNodeId: string, config?: Record<string, unknown>, uiMode: 'neo' | 'classic' = 'neo') {
+function buildWorkbenchUrl(workflowInstanceId: string, workflowNodeId: string, config?: Record<string, unknown>, uiMode: 'neo' = 'neo') {
   const url = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href)
   const bindings = isPlainRecord(config?.agentBindings) ? config.agentBindings : {}
   url.searchParams.set('workflowInstanceId', workflowInstanceId)

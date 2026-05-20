@@ -927,13 +927,12 @@ export const capabilityService = {
           severity: "info",
         },
         {
-          // M33 — embeddings flow through the central LLM gateway. The
-          // health check just verifies LLM_GATEWAY_URL is set; provider
-          // credential presence is enforced by the gateway itself.
+          // Embeddings must be routed through MCP; provider credential
+          // presence is enforced behind the MCP/gateway boundary.
           key: "embedding_provider",
-          label: "LLM gateway configured for embeddings",
-          ok: Boolean(process.env.LLM_GATEWAY_URL),
-          detail: `Embedding dim target is ${REQUIRED_EMBEDDING_DIM}; routed via LLM_GATEWAY_URL.`,
+          label: "MCP configured for embeddings",
+          ok: Boolean(process.env.MCP_SERVER_URL || process.env.MCP_INVOKE_URL),
+          detail: `Embedding dim target is ${REQUIRED_EMBEDDING_DIM}; routed via MCP.`,
           severity: "info",
         },
       ], "Runtime endpoint checks are local configuration hints; full health is shown in Operations.", "UNKNOWN"),

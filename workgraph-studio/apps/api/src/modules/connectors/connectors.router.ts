@@ -8,7 +8,7 @@ export const connectorsRouter: ReturnType<typeof Router> = Router()
 
 const CONNECTOR_TYPES: ConnectorType[] = [
   'HTTP', 'EMAIL', 'TEAMS', 'SLACK', 'JIRA', 'GIT',
-  'CONFLUENCE', 'DATADOG', 'SERVICENOW', 'LLM_GATEWAY', 'S3', 'POSTGRES',
+  'CONFLUENCE', 'DATADOG', 'SERVICENOW', 'LLM_GATEWAY', 'S3', 'POSTGRES', 'SHAREPOINT',
 ]
 
 const createSchema = z.object({

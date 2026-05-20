@@ -9,6 +9,7 @@ export type LoopVerdict = 'PASS' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_R
 export type LoopAttemptStatus =
   | 'PENDING'
   | 'RUNNING'
+  | 'PAUSED'
   | 'COMPLETED'
   | 'FAILED'
   | 'PASSED'
@@ -180,6 +181,7 @@ export type WorkbenchExecutionConfig = {
   excerptBudgetChars?: number
   reuseUnchangedAttempt?: boolean
   modelAlias?: string
+  stageModelAliases?: Record<string, string>
   governanceMode?: GovernanceMode
   maxContextTokens?: number
   maxOutputTokens?: number
@@ -217,6 +219,8 @@ export type StageAttempt = {
   correlation?: BlueprintStageRun['correlation']
   tokensUsed?: BlueprintStageRun['tokensUsed']
   metrics?: Record<string, unknown>
+  pendingApproval?: Record<string, unknown> | null
+  verificationReceipts?: Array<Record<string, unknown>>
 }
 
 export type ReviewEvent = {
@@ -452,6 +456,8 @@ export const api = {
   snapshot: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/snapshot`, { method: 'POST' }),
   run: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/run`, { method: 'POST' }),
   runStage: (id: string, stageKey: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/run`, { method: 'POST' }),
+  stageApproval: (id: string, stageKey: string, body: { decision: 'approved' | 'rejected'; reason?: string; argsOverride?: Record<string, unknown> }) =>
+    request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/approval`, { method: 'POST', body: JSON.stringify(body) }),
   verdict: (id: string, stageKey: string, body: { verdict: LoopVerdict; feedback?: string; confidence?: number; acceptRisk?: boolean; answers?: DecisionAnswer[] }) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/verdict`, { method: 'POST', body: JSON.stringify(body) }),
   sendBack: (id: string, stageKey: string, body: { targetStageKey: string; reason: string; requiredChanges?: string; blockingQuestions?: string[] }) =>
