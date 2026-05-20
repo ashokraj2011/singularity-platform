@@ -534,6 +534,13 @@ export async function finishWorkBranch(
     ? await pushBranch(branch, options.remote)
     : undefined;
 
+  try {
+    const refsStdout = await git(["for-each-ref", "--format=%(refname)", "refs/singularity/checkpoints/"], { allowFail: true });
+    for (const ref of refsStdout.split("\n").filter(Boolean)) {
+      await git(["update-ref", "-d", ref], { allowFail: true });
+    }
+  } catch { /* ignored */ }
+
   return {
     branch,
     commitSha,
@@ -713,3 +720,70 @@ async function runFormalVerificationBeforeFinish(input: {
     };
   }
 }
+
+/**
+ * Creates a checkpoint ref capturing the current state of mutatedPaths only.
+ * Does not advance HEAD or create visible commits.
+ */
+export async function createCheckpoint(
+  mutatedPaths: string[],
+  stepIndex: number,
+  correlation: CorrelationIds
+): Promise<{ ref: string; treeHash: string } | null> {
+  if (mutatedPaths.length === 0) return null;
+  await ensureGitRepo();
+
+  // Stage only the mutated paths (not git add -A)
+  await git(["add", "--", ...mutatedPaths]);
+
+  // Write tree from staged content
+  const treeHash = await git(["write-tree"]);
+
+  // Create commit object without updating HEAD
+  const hasCommit = Boolean(await git(["rev-parse", "--verify", "HEAD"], { allowFail: true }));
+  const commitTreeArgs = ["commit-tree", treeHash.trim()];
+  if (hasCommit) {
+    commitTreeArgs.push("-p", "HEAD");
+  }
+  commitTreeArgs.push("-m", `checkpoint step=${stepIndex} run=${correlation.runId ?? "?"}`);
+  const commitHash = await git(commitTreeArgs);
+
+  // Store as ref under refs/singularity/checkpoints/
+  const refName = `refs/singularity/checkpoints/${correlation.runId ?? "local"}/${stepIndex}`;
+  await git(["update-ref", refName, commitHash.trim()]);
+
+  // Reset staging area (leave working tree intact)
+  if (hasCommit) {
+    await git(["reset", "HEAD", "--", ...mutatedPaths]);
+  } else {
+    await git(["rm", "--cached", "-r", "--", ...mutatedPaths], { allowFail: true });
+  }
+
+  return { ref: refName, treeHash: treeHash.trim() };
+}
+
+/**
+ * Roll back mutated files to a checkpoint state.
+ */
+export async function rollbackToCheckpoint(ref: string, paths?: string[]): Promise<void> {
+  const cwd = sandboxRoot();
+  const target = paths?.length ? ["--", ...paths] : ["--", "."];
+  await execFileP("git", ["checkout", ref, ...target], { cwd });
+}
+
+/**
+ * Clean up checkpoint refs for a completed run.
+ */
+export async function cleanupCheckpoints(runId: string): Promise<void> {
+  const cwd = sandboxRoot();
+  const prefix = `refs/singularity/checkpoints/${runId}/`;
+  try {
+    const { stdout } = await execFileP(
+      "git", ["for-each-ref", "--format=%(refname)", prefix], { cwd }
+    );
+    for (const ref of stdout.trim().split("\n").filter(Boolean)) {
+      await execFileP("git", ["update-ref", "-d", ref], { cwd });
+    }
+  } catch { /* no refs to clean — fine */ }
+}
+

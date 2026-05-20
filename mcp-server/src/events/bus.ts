@@ -14,6 +14,7 @@ import { v4 as uuidv4 } from "uuid";
 import {
   EventKind, EventCorrelation, McpEventEnvelope, SubscriptionFilter, matchesFilter,
 } from "./types";
+import { config } from "../config";
 
 const RING_CAP = 5_000;
 
@@ -42,6 +43,29 @@ class EventBus {
     this.ring.push(ev);
     if (this.ring.length > RING_CAP) this.ring.splice(0, this.ring.length - RING_CAP);
     this.emitter.emit("event", ev);
+
+    if (config.MCP_EVENT_STORE_URL) {
+      const url = config.MCP_EVENT_STORE_URL;
+      const token = config.MCP_EVENT_STORE_TOKEN;
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(ev),
+      }).then(res => {
+        if (!res.ok) {
+          console.warn(`[mcp-server] Failed to push event to durable store: ${res.status} ${res.statusText}`);
+        }
+      }).catch(err => {
+        console.warn(`[mcp-server] Failed to push event to durable store error:`, err);
+      });
+    }
+
     return ev;
   }
 

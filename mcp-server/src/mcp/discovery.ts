@@ -28,6 +28,12 @@ const RUN_CONTEXT_SCHEMA = {
     sourceType: { type: "string" },
     sourceUri: { type: "string" },
     sourceRef: { type: "string" },
+    dependencyState: {
+      type: "object",
+      properties: {
+        changed_paths: { type: "array", items: { type: "string" } },
+      },
+    },
   },
 };
 
@@ -92,6 +98,7 @@ const INVOKE_REQUEST_SCHEMA = {
       additionalProperties: false,
       properties: {
         modelAlias: { type: "string" },
+        applierModelAlias: { type: "string", description: "Optional small/fast model alias for surgical diff generation." },
         temperature: { type: "number" },
         maxTokens: { type: "integer" },
         promptCache: {
@@ -379,6 +386,10 @@ discoveryRouter.get("/discovery", async (req, res) => {
         delegationReceipts: true,
         serviceTokenDelegation: true,
         isolatedCommandExecution: commandExecution.mode === "container",
+        autoVerification: true,
+        conflictSafeEdits: true,
+        applierModelSupport: true,
+        gitCheckpoints: true,
       },
       endpoints: endpointDescriptors(),
       tools,

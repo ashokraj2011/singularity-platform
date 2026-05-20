@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 import { resolveSandboxedPath, sandboxRoot } from "../workspace/sandbox";
 import type { ToolHandler } from "./registry";
 
@@ -57,10 +58,12 @@ export const readFileTool: ToolHandler = {
       const abs = resolveSandboxedPath(rel);
       const stat = await fs.promises.stat(abs);
       if (!stat.isFile()) throw new Error("not a regular file");
-      const content = (await fs.promises.readFile(abs, "utf8")).slice(0, max);
+      const fullContent = await fs.promises.readFile(abs, "utf8");
+      const content = fullContent.slice(0, max);
+      const contentHash = createHash("sha256").update(fullContent).digest("hex");
       return {
         success: true,
-        output: { path: rel, bytes: stat.size, truncated: stat.size > max, content },
+        output: { path: rel, bytes: stat.size, truncated: stat.size > max, content, content_hash: contentHash },
       };
     } catch (err) {
       return { success: false, output: null, error: (err as Error).message };

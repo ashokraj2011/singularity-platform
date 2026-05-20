@@ -20,6 +20,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 import type { ToolHandler } from "./registry";
 import { resolveSandboxedPath, sandboxRoot } from "../workspace/sandbox";
 import { indexChangedFiles, indexWorkspace } from "../workspace/ast-index";
@@ -158,6 +159,8 @@ export const writeFileTool: ToolHandler = {
         path:    { type: "string", description: "Sandbox-relative file path" },
         content: { type: "string", description: "Complete new file body. Do not pass unified diff text here." },
         forceFullReplace: { type: "boolean", description: "Set true only when deliberately replacing a large existing file body." },
+        expected_hash: { type: "string", description: "SHA-256 content_hash from last read_file. Required for intentional overwrites. CONFLICT if stale." },
+        expected_absent: { type: "boolean", description: "Set true when creating a new file. Fails if file already exists." },
       },
       required: ["path", "content"],
     },
@@ -172,8 +175,32 @@ export const writeFileTool: ToolHandler = {
       await fs.promises.mkdir(path.dirname(abs), { recursive: true });
       const existed = fs.existsSync(abs);
       const prevContent = existed ? await fs.promises.readFile(abs, "utf8") : "";
+      if (args.expected_absent === true && existed) {
+        return {
+          success: false,
+          output: { existing_bytes: prevContent.length },
+          error_code: "CONFLICT",
+          error: `CONFLICT: expected file to not exist, but ${rel} already exists.`,
+        };
+      }
+      if (existed && args.expected_hash) {
+        const currentHash = createHash("sha256").update(prevContent).digest("hex");
+        if (currentHash !== String(args.expected_hash)) {
+          return {
+            success: false,
+            output: { current_hash: currentHash },
+            error_code: "CONFLICT",
+            error: `CONFLICT: file modified since last read. Expected hash ${args.expected_hash}, got ${currentHash}.`,
+          };
+        }
+      }
       if (existed && looksLikeUnifiedDiff(content)) {
-        throw new Error("write_file requires complete file contents, not a unified diff. Use apply_patch for partial edits.");
+        return {
+          success: false,
+          output: null,
+          error_code: "VALIDATION",
+          error: "write_file requires complete file contents, not a unified diff. Use apply_patch for partial edits.",
+        };
       }
       if (
         existed &&
@@ -181,9 +208,12 @@ export const writeFileTool: ToolHandler = {
         prevContent.length >= FULL_REPLACE_SOFT_LIMIT_BYTES &&
         content.length >= FULL_REPLACE_SOFT_LIMIT_BYTES
       ) {
-        throw new Error(
-          `write_file would replace a large existing file (${prevContent.length} bytes). Use apply_patch for partial edits, or pass forceFullReplace=true for an intentional full-body replacement.`,
-        );
+        return {
+          success: false,
+          output: null,
+          error_code: "VALIDATION",
+          error: `write_file would replace a large existing file (${prevContent.length} bytes). Use apply_patch for partial edits, or pass forceFullReplace=true for an intentional full-body replacement.`,
+        };
       }
       await fs.promises.writeFile(abs, content, "utf8");
       await indexChangedFiles([rel], "write_file");
@@ -217,6 +247,16 @@ export const applyPatchTool: ToolHandler = {
       type: "object",
       properties: {
         patch: { type: "string", description: "Unified diff patch text" },
+        expected_hashes: {
+          type: "object",
+          description: "Map of sandbox-relative path -> SHA-256 content_hash. Each existing file in the patch is checked.",
+          additionalProperties: { type: "string" },
+        },
+        expected_absent_paths: {
+          type: "array",
+          items: { type: "string" },
+          description: "Paths expected to not exist (new files created by the patch). CONFLICT if any already exist.",
+        },
       },
       required: ["patch"],
     },
@@ -226,8 +266,45 @@ export const applyPatchTool: ToolHandler = {
   async execute(args) {
     try {
       const patch = String(args.patch ?? "");
-      if (!patch.trim()) throw new Error("patch is required");
+      if (!patch.trim()) return { success: false, output: null, error_code: "VALIDATION", error: "patch is required" };
       const paths = extractPatchPaths(patch);
+
+      // Check existing files for hash staleness
+      if (args.expected_hashes && typeof args.expected_hashes === "object") {
+        const hashMap = args.expected_hashes as Record<string, string>;
+        for (const filePath of paths) {
+          if (!hashMap[filePath]) continue;
+          const abs = resolveSandboxedPath(filePath);
+          if (!fs.existsSync(abs)) continue;
+          const currentContent = await fs.promises.readFile(abs, "utf8");
+          const currentHash = createHash("sha256").update(currentContent).digest("hex");
+          if (currentHash !== hashMap[filePath]) {
+            return {
+              success: false,
+              output: { stale_path: filePath, current_hash: currentHash },
+              error_code: "CONFLICT",
+              error: `CONFLICT: ${filePath} modified since last read. Expected ${hashMap[filePath]}, got ${currentHash}.`,
+            };
+          }
+        }
+      }
+
+      // Check new-file paths don't already exist
+      if (Array.isArray(args.expected_absent_paths)) {
+        for (const absPath of args.expected_absent_paths) {
+          const rel = String(absPath);
+          const abs = resolveSandboxedPath(rel);
+          if (fs.existsSync(abs)) {
+            return {
+              success: false,
+              output: { existing_path: rel },
+              error_code: "CONFLICT",
+              error: `CONFLICT: Patch creates ${rel}, but file already exists.`,
+            };
+          }
+        }
+      }
+
       const cwd = sandboxRoot();
       await ensureGitRepo();
       await gitApply(["--check"], patch, cwd);
@@ -265,6 +342,14 @@ export const replaceTextTool: ToolHandler = {
           oneOf: [{ type: "string", enum: ["first", "all"] }, { type: "number" }],
           description: "Which occurrence to replace. Defaults to first. Number is 1-based.",
         },
+        expected_hash: {
+          type: "string",
+          description: "SHA-256 content_hash from last read_file. CONFLICT if current file hash differs.",
+        },
+        expected_replacements: {
+          type: "number",
+          description: "Required when occurrence='all'. Expected match count. CONFLICT if actual differs.",
+        },
       },
       required: ["path", "oldText", "newText"],
     },
@@ -276,16 +361,50 @@ export const replaceTextTool: ToolHandler = {
       const rel = String(args.path ?? "");
       const oldText = String(args.oldText ?? "");
       const newText = String(args.newText ?? "");
-      if (!oldText) throw new Error("oldText is required");
+      if (!oldText) return { success: false, output: null, error_code: "VALIDATION", error: "oldText is required" };
       const abs = resolveSandboxedPath(rel);
       const prevContent = await fs.promises.readFile(abs, "utf8");
+      if (args.expected_hash) {
+        const currentHash = createHash("sha256").update(prevContent).digest("hex");
+        if (currentHash !== String(args.expected_hash)) {
+          return {
+            success: false,
+            output: { current_hash: currentHash },
+            error_code: "CONFLICT",
+            error: `CONFLICT: file modified since last read. Expected hash ${args.expected_hash}, got ${currentHash}.`,
+          };
+        }
+      }
       const matches = [...prevContent.matchAll(new RegExp(oldText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))];
-      if (matches.length === 0) throw new Error("replace_text conflict: oldText was not found; file was not changed");
+      if (matches.length === 0) {
+        return {
+          success: false,
+          output: null,
+          error_code: "CONFLICT",
+          error: "replace_text conflict: oldText was not found; file was not changed",
+        };
+      }
 
       const occurrence = args.occurrence ?? "first";
       let content: string;
       let replaced = 0;
       if (occurrence === "all") {
+        if (typeof args.expected_replacements !== "number") {
+          return {
+            success: false,
+            output: null,
+            error_code: "VALIDATION",
+            error: "replace_text with occurrence='all' requires expected_replacements count",
+          };
+        }
+        if (matches.length !== args.expected_replacements) {
+          return {
+            success: false,
+            output: { actual_count: matches.length },
+            error_code: "CONFLICT",
+            error: `CONFLICT: expected ${args.expected_replacements} occurrence(s) of oldText, found ${matches.length}.`,
+          };
+        }
         content = prevContent.split(oldText).join(newText);
         replaced = matches.length;
       } else {
@@ -332,6 +451,7 @@ export const replaceRangeTool: ToolHandler = {
         startLine: { type: "number", description: "1-based inclusive start line" },
         endLine: { type: "number", description: "1-based inclusive end line" },
         replacement: { type: "string", description: "Replacement text for the selected line range" },
+        expected_hash: { type: "string", description: "SHA-256 content_hash from last read_file. CONFLICT if stale." },
       },
       required: ["path", "startLine", "endLine", "replacement"],
     },
@@ -345,10 +465,26 @@ export const replaceRangeTool: ToolHandler = {
       const endLine = Math.floor(Number(args.endLine));
       const replacement = String(args.replacement ?? "");
       if (!Number.isFinite(startLine) || !Number.isFinite(endLine) || startLine < 1 || endLine < startLine) {
-        throw new Error("replace_range requires a valid 1-based inclusive startLine/endLine range");
+        return {
+          success: false,
+          output: null,
+          error_code: "VALIDATION",
+          error: "replace_range requires a valid 1-based inclusive startLine/endLine range",
+        };
       }
       const abs = resolveSandboxedPath(rel);
       const prevContent = await fs.promises.readFile(abs, "utf8");
+      if (args.expected_hash) {
+        const currentHash = createHash("sha256").update(prevContent).digest("hex");
+        if (currentHash !== String(args.expected_hash)) {
+          return {
+            success: false,
+            output: { current_hash: currentHash },
+            error_code: "CONFLICT",
+            error: `CONFLICT: file modified since last read. Expected hash ${args.expected_hash}, got ${currentHash}.`,
+          };
+        }
+      }
       const hadTrailingNewline = prevContent.endsWith("\n");
       const lines = prevContent.split("\n");
       if (hadTrailingNewline) lines.pop();

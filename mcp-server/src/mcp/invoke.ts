@@ -22,10 +22,13 @@ import { llmRespond } from "../llm/client";
 import { ChatMessage, LlmResponse, ToolCall, ToolDescriptorForLlm } from "../llm/types";
 import { resolveModelConfig } from "../llm/model-catalog";
 import { getLocalTool, listLocalTools } from "../tools/registry";
+import { runVerificationCommand } from "../tools/command";
+import { detectVerifiers } from "../workspace/verifier-registry";
 import {
   CorrelationIds, recordLlmCall, recordToolInvocation, recordArtifact,
   recordCodeChange, ToolInvocationRecord, CodeChangeRecord,
 } from "../audit/store";
+import { emitRePlan } from "../audit/replan-telemetry";
 import { extractCodeChange } from "../audit/provenanceExtractor";
 import { events } from "../events/bus";
 import { emitAuditEvent } from "../lib/audit-gov-emit";
@@ -37,6 +40,7 @@ import {
 } from "../audit/pending";
 import {
   branchNameForWork, finishWorkBranch, prepareWorkBranch, restoreWorkBranch, WorkBranchInfo,
+  createCheckpoint, cleanupCheckpoints,
 } from "../workspace/git-workspace";
 // M39 — PII masking helpers. Both sync (regex baseline) and async (regex+NER).
 import { maskPii, maskPiiAsync, unmaskPiiInArgs } from "../security/mask";
@@ -73,6 +77,7 @@ const InvokeSchema = z.object({
   tools: z.array(ToolDescSchema).default([]),
   modelConfig: z.object({
     modelAlias: z.string().optional(),
+    applierModelAlias: z.string().optional(),
     provider: z.string().optional(),
     model: z.string().optional(),
     temperature: z.number().optional(),
@@ -101,6 +106,9 @@ const InvokeSchema = z.object({
     sourceType: z.string().optional(),
     sourceUri: z.string().optional(),
     sourceRef: z.string().optional(),
+    dependencyState: z.object({
+      changed_paths: z.array(z.string()).optional(),
+    }).optional(),
   }).default({}),
   limits: z.object({
     maxSteps: z.number().int().positive().optional(),
@@ -134,6 +142,7 @@ interface LoopState {
   fullToolDescriptors: PendingToolDescriptor[];     // execution_target + approval flag
   modelConfig: {
     modelAlias?: string;
+    applierModelAlias?: string;
     provider: string;
     model: string;
     temperature?: number;
@@ -194,6 +203,7 @@ interface LoopState {
   // dispatch so downstream enterprise APIs receive real values.
   // Empty map by default; populated lazily on the first masked output.
   piiTokenMap: Record<string, string>;
+  rePlanDepth: number;
 }
 
 type LoopOutcome =
@@ -377,6 +387,39 @@ async function getNudgePrompt(): Promise<string> {
   cachedNudgePromptAt = Date.now();
   return cachedNudgePrompt;
 }
+
+const APPLIER_PROMPT_KEY = "mcp.applier-system";
+let cachedApplierPrompt: string | null = null;
+let cachedApplierPromptAt = 0;
+
+async function getApplierPrompt(): Promise<string> {
+  const DEFAULT_APPLIER_PROMPT = `You are a precise code applier. Your task is to apply surgical edits to the codebase using the available mutation tools (replace_text, replace_range, apply_patch, write_file) to satisfy the user's requirements. Do not write explanations outside of tool calls.`;
+  if (cachedApplierPrompt && Date.now() - cachedApplierPromptAt < NUDGE_PROMPT_TTL_MS) {
+    return cachedApplierPrompt;
+  }
+  const composerUrl = process.env.PROMPT_COMPOSER_URL?.trim();
+  if (!composerUrl) {
+    return DEFAULT_APPLIER_PROMPT;
+  }
+  const url = `${composerUrl.replace(/\/$/, "")}/api/v1/system-prompts/${encodeURIComponent(APPLIER_PROMPT_KEY)}`;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+    if (!res.ok) {
+      if (cachedApplierPrompt) return cachedApplierPrompt;
+      return DEFAULT_APPLIER_PROMPT;
+    }
+    const body = await res.json() as { success: boolean; data: { content: string } };
+    if (body.success && body.data?.content) {
+      cachedApplierPrompt = body.data.content;
+      cachedApplierPromptAt = Date.now();
+      return cachedApplierPrompt;
+    }
+  } catch (err) {
+    if (cachedApplierPrompt) return cachedApplierPrompt;
+  }
+  return DEFAULT_APPLIER_PROMPT;
+}
+
 
 async function appendCodeToolUseNudge(state: LoopState, llmResp: LlmResponse): Promise<void> {
   if (llmResp.content) {
@@ -566,6 +609,253 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
       },
     });
 
+    if (
+      llmResp.finish_reason === "stop" &&
+      state.modelConfig.applierModelAlias &&
+      state.allowAutonomousMutation &&
+      state.availableTools.some((t) => ["replace_text", "replace_range", "apply_patch", "write_file"].includes(t.name))
+    ) {
+      const estimatedTokens = Math.ceil((llmResp.content ?? "").length / 4) + 1000;
+      const applierBudget = await checkBudget(
+        state.correlation.capabilityId,
+        undefined,
+        estimatedTokens,
+        state.governanceMode,
+      );
+      if (applierBudget.allowed) {
+        const applierPrompt = await getApplierPrompt();
+        const applierResp = await llmRespond({
+          model_alias: state.modelConfig.applierModelAlias,
+          messages: [
+            { role: "system", content: applierPrompt },
+            { role: "user", content: llmResp.content ?? "" },
+          ],
+          tools: state.availableTools.filter((t) =>
+            ["replace_text", "replace_range", "apply_patch", "write_file"].includes(t.name)
+          ),
+        });
+
+        state.totalInputTokens += applierResp.input_tokens;
+        state.totalOutputTokens += applierResp.output_tokens;
+        if (typeof applierResp.estimated_cost === "number" && Number.isFinite(applierResp.estimated_cost)) {
+          state.totalEstimatedCost += applierResp.estimated_cost;
+        }
+
+        const applierLlmRec = recordLlmCall({
+          correlation: state.correlation,
+          model_alias: state.modelConfig.applierModelAlias,
+          provider: applierResp.provider || "unknown",
+          model: applierResp.model || "unknown",
+          input_tokens: applierResp.input_tokens,
+          output_tokens: applierResp.output_tokens,
+          estimated_cost: applierResp.estimated_cost,
+          latency_ms: applierResp.latency_ms,
+          prompt_messages_count: 2,
+          finish_reason: applierResp.finish_reason,
+        });
+        state.llmCallIds.push(applierLlmRec.id);
+
+        emitAuditEvent({
+          trace_id: state.correlation.traceId,
+          source_service: "mcp-server",
+          kind: "llm.call.completed",
+          subject_type: "LlmCall",
+          subject_id: applierLlmRec.id,
+          capability_id: state.correlation.capabilityId,
+          severity: "info",
+          payload: {
+            model_alias: state.modelConfig.applierModelAlias,
+            role: "applier",
+            input_tokens: applierResp.input_tokens,
+            output_tokens: applierResp.output_tokens,
+            estimated_cost: applierResp.estimated_cost,
+            latency_ms: applierResp.latency_ms,
+            finish_reason: applierResp.finish_reason,
+          },
+        });
+
+        if (applierResp.finish_reason === "tool_call" && applierResp.tool_calls?.length) {
+          const applierMutatedPaths: string[] = [];
+
+          state.messages.push({
+            role: "assistant",
+            content: JSON.stringify({ tool_calls: applierResp.tool_calls }),
+          });
+
+          for (const tc of applierResp.tool_calls) {
+            const desc = state.fullToolDescriptors.find((d) => d.name === tc.name);
+            const toolArgs = applyArgsUnmaskIfNeeded(state, tc.args ?? {});
+            const result = await dispatchToolCall(
+              { ...tc, args: toolArgs },
+              state.fullToolDescriptors,
+              state.correlation,
+              undefined,
+              state.workspace?.workspaceRoot,
+            );
+            state.toolInvocationIds.push(result.record.id);
+            if (result.codeChange) {
+              state.codeChangeIds.push(result.codeChange.id);
+              if (result.codeChange.paths_touched) {
+                applierMutatedPaths.push(...result.codeChange.paths_touched);
+              }
+            }
+            state.verificationReceipts.push(
+              ...verificationReceiptsFromOutput(result.record.output, result.record.id, tc.name)
+            );
+
+            if (result.record.error_code === "CONFLICT") {
+              state.rePlanDepth++;
+              emitRePlan(state.correlation, {
+                trigger: "conflict_detected",
+                step_index: state.stepIndex,
+                convergence_depth: state.rePlanDepth,
+                conflicted_paths: [tc.args?.path as string].filter(Boolean),
+              });
+            }
+
+            if (result.approvalRequired) {
+              return await pauseForApproval(state, tc, desc, result.approvalRequired.reason, result.record.id);
+            }
+
+            const rawOutput = toolResultForNextTurn(state, result.record.output);
+            const maskedOutput = await applyOutputMaskIfNeededAsync(state, undefined, rawOutput);
+            state.messages.push({
+              role: "tool",
+              content: maskedOutput,
+              tool_call_id: tc.id,
+              tool_name: tc.name,
+            });
+          }
+
+          if (applierMutatedPaths.length > 0 && state.workspace?.workspaceRoot) {
+            const uniqueMutatedPaths = Array.from(new Set(applierMutatedPaths));
+            const allVerifiers = await detectVerifiers(state.workspace.workspaceRoot);
+            const activeVerifiers = allVerifiers.filter((v) => {
+              const matching = uniqueMutatedPaths.filter((p) => v.filePatterns.some((pat) => p.endsWith(pat)));
+              return matching.length > 0;
+            });
+
+            if (activeVerifiers.length > 0) {
+              const priority: Record<string, number> = { compile: 4, typecheck: 3, lint: 2, test: 1 };
+              activeVerifiers.sort((a, b) => (priority[b.kind] ?? 0) - (priority[a.kind] ?? 0));
+
+              const selectedVerifiers = activeVerifiers.slice(0, 3);
+              let anyFailure = false;
+              const failureMessages: string[] = [];
+
+              for (const verifier of selectedVerifiers) {
+                const matching = uniqueMutatedPaths.filter((p) => verifier.filePatterns.some((pat) => p.endsWith(pat)));
+                const runArgs = verifier.perFile ? [...verifier.args, ...matching] : verifier.args;
+
+                try {
+                  const res = await runVerificationCommand({
+                    command: verifier.command,
+                    args: runArgs,
+                    cwd: ".",
+                    timeout_ms: verifier.timeout_ms,
+                  });
+
+                  const outputObj = (res.output || {}) as Record<string, unknown>;
+                  const exitCode = typeof outputObj.exitCode === "number" ? outputObj.exitCode : (typeof outputObj.exit_code === "number" ? outputObj.exit_code : -1);
+                  const passed = res.success && (exitCode === 0 || outputObj.passed === true);
+                  const stdout = String(outputObj.stdout ?? "");
+                  const stderr = String(outputObj.stderr ?? "");
+
+                  if (passed) {
+                    state.verificationReceipts.push({
+                      kind: "verification_result",
+                      verification_kind: verifier.kind,
+                      verifier_name: verifier.name,
+                      command: `${verifier.command} ${runArgs.join(" ")}`,
+                      passed: true,
+                      exit_code: 0,
+                      capturedAt: new Date().toISOString(),
+                    });
+                  } else {
+                    anyFailure = true;
+                    failureMessages.push(`[VERIFICATION FAILURE]
+Verifier: ${verifier.name} (${verifier.kind})
+Command: ${verifier.command} ${runArgs.join(" ")}
+Exit Code: ${exitCode}
+
+Stdout:
+${stdout}
+
+Stderr:
+${stderr}`);
+
+                    state.verificationReceipts.push({
+                      kind: "verification_result",
+                      verification_kind: verifier.kind,
+                      verifier_name: verifier.name,
+                      command: `${verifier.command} ${runArgs.join(" ")}`,
+                      passed: false,
+                      exit_code: exitCode,
+                      stdout,
+                      stderr,
+                      capturedAt: new Date().toISOString(),
+                    });
+                  }
+                } catch (err) {
+                  anyFailure = true;
+                  failureMessages.push(`[VERIFICATION FAILURE]
+Verifier: ${verifier.name} (${verifier.kind})
+Command: ${verifier.command} ${runArgs.join(" ")}
+Exit Code: -1
+
+Stdout:
+${(err as Error).message}
+
+Stderr:
+${(err as Error).stack ?? ""}`);
+
+                  state.verificationReceipts.push({
+                    kind: "verification_result",
+                    verification_kind: verifier.kind,
+                    verifier_name: verifier.name,
+                    command: `${verifier.command} ${runArgs.join(" ")}`,
+                    passed: false,
+                    exit_code: -1,
+                    error: (err as Error).message,
+                    capturedAt: new Date().toISOString(),
+                  });
+                }
+              }
+
+              if (anyFailure) {
+                state.rePlanDepth++;
+                emitRePlan(state.correlation, {
+                  trigger: "verification_failure",
+                  step_index: state.stepIndex,
+                  convergence_depth: state.rePlanDepth,
+                });
+
+                const content = `Auto-verification failed. Please fix these verification failures before proceeding:
+
+${failureMessages.join("\n\n")}
+
+Please review the errors above, correct the code, and explain how you resolved the issues.`;
+
+                state.messages.push({
+                  role: "user",
+                  content,
+                });
+              }
+            }
+          }
+
+          if (applierMutatedPaths.length > 0) {
+            await createCheckpoint(applierMutatedPaths, state.stepIndex, state.correlation).catch((err) => {
+              log.warn(`[checkpoint] failed to create checkpoint: ${err.message}`);
+            });
+          }
+
+          state.stepIndex += 1;
+          continue;
+        }
+      }
+    }
+
     if (llmResp.finish_reason === "tool_call" && llmResp.tool_calls?.length) {
       // Record the assistant turn so resumed conversations stay coherent.
       state.messages.push({
@@ -573,6 +863,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         content: JSON.stringify({ tool_calls: llmResp.tool_calls }),
       });
 
+      const mutatedPaths: string[] = [];
       for (const tc of llmResp.tool_calls) {
         const desc = state.fullToolDescriptors.find((d) => d.name === tc.name);
         const handler = desc?.execution_target === "LOCAL" ? getLocalTool(tc.name) : undefined;
@@ -630,8 +921,22 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
           state.workspace?.workspaceRoot,
         );
         state.toolInvocationIds.push(result.record.id);
-        if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
+        if (result.codeChange) {
+          state.codeChangeIds.push(result.codeChange.id);
+          if (result.codeChange.paths_touched) {
+            mutatedPaths.push(...result.codeChange.paths_touched);
+          }
+        }
         state.verificationReceipts.push(...verificationReceiptsFromOutput(result.record.output, result.record.id, tc.name));
+        if (result.record.error_code === "CONFLICT") {
+          state.rePlanDepth++;
+          emitRePlan(state.correlation, {
+            trigger: "conflict_detected",
+            step_index: state.stepIndex,
+            convergence_depth: state.rePlanDepth,
+            conflicted_paths: [tc.args?.path as string].filter(Boolean),
+          });
+        }
         if (result.approvalRequired) {
           return await pauseForApproval(state, tc, desc, result.approvalRequired.reason, result.record.id);
         }
@@ -670,6 +975,130 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
           return { kind: "denied", finishReason: "agent_loop_repetition", reason, check: "loop_repetition", details: { tool_name: rep.name, repetition_count: rep.count } };
         }
       }
+
+      if (mutatedPaths.length > 0 && state.workspace?.workspaceRoot) {
+        const uniqueMutatedPaths = Array.from(new Set(mutatedPaths));
+        const allVerifiers = await detectVerifiers(state.workspace.workspaceRoot);
+        const activeVerifiers = allVerifiers.filter(v => {
+          const matching = uniqueMutatedPaths.filter(p => v.filePatterns.some(pat => p.endsWith(pat)));
+          return matching.length > 0;
+        });
+
+        if (activeVerifiers.length > 0) {
+          const priority: Record<string, number> = { compile: 4, typecheck: 3, lint: 2, test: 1 };
+          activeVerifiers.sort((a, b) => (priority[b.kind] ?? 0) - (priority[a.kind] ?? 0));
+
+          const selectedVerifiers = activeVerifiers.slice(0, 3);
+          let anyFailure = false;
+          const failureMessages: string[] = [];
+
+          for (const verifier of selectedVerifiers) {
+            const matching = uniqueMutatedPaths.filter(p => verifier.filePatterns.some(pat => p.endsWith(pat)));
+            const runArgs = verifier.perFile ? [...verifier.args, ...matching] : verifier.args;
+
+            try {
+              const res = await runVerificationCommand({
+                command: verifier.command,
+                args: runArgs,
+                cwd: ".",
+                timeout_ms: verifier.timeout_ms,
+              });
+
+              const outputObj = (res.output || {}) as Record<string, unknown>;
+              const exitCode = typeof outputObj.exitCode === "number" ? outputObj.exitCode : (typeof outputObj.exit_code === "number" ? outputObj.exit_code : -1);
+              const passed = res.success && (exitCode === 0 || outputObj.passed === true);
+              const stdout = String(outputObj.stdout ?? "");
+              const stderr = String(outputObj.stderr ?? "");
+
+              if (passed) {
+                state.verificationReceipts.push({
+                  kind: "verification_result",
+                  verification_kind: verifier.kind,
+                  verifier_name: verifier.name,
+                  command: `${verifier.command} ${runArgs.join(" ")}`,
+                  passed: true,
+                  exit_code: 0,
+                  capturedAt: new Date().toISOString(),
+                });
+              } else {
+                anyFailure = true;
+                failureMessages.push(`[VERIFICATION FAILURE]
+Verifier: ${verifier.name} (${verifier.kind})
+Command: ${verifier.command} ${runArgs.join(" ")}
+Exit Code: ${exitCode}
+
+Stdout:
+${stdout}
+
+Stderr:
+${stderr}`);
+
+                state.verificationReceipts.push({
+                  kind: "verification_result",
+                  verification_kind: verifier.kind,
+                  verifier_name: verifier.name,
+                  command: `${verifier.command} ${runArgs.join(" ")}`,
+                  passed: false,
+                  exit_code: exitCode,
+                  stdout,
+                  stderr,
+                  capturedAt: new Date().toISOString(),
+                });
+              }
+            } catch (err) {
+              anyFailure = true;
+              failureMessages.push(`[VERIFICATION FAILURE]
+Verifier: ${verifier.name} (${verifier.kind})
+Command: ${verifier.command} ${runArgs.join(" ")}
+Exit Code: -1
+
+Stdout:
+${(err as Error).message}
+
+Stderr:
+${(err as Error).stack ?? ""}`);
+
+              state.verificationReceipts.push({
+                kind: "verification_result",
+                verification_kind: verifier.kind,
+                verifier_name: verifier.name,
+                command: `${verifier.command} ${runArgs.join(" ")}`,
+                passed: false,
+                exit_code: -1,
+                error: (err as Error).message,
+                capturedAt: new Date().toISOString(),
+              });
+            }
+          }
+
+          if (anyFailure) {
+            state.rePlanDepth++;
+            emitRePlan(state.correlation, {
+              trigger: "verification_failure",
+              step_index: state.stepIndex,
+              convergence_depth: state.rePlanDepth,
+            });
+
+            const content = `Auto-verification failed. Please fix these verification failures before proceeding:
+
+${failureMessages.join("\n\n")}
+
+Please review the errors above, correct the code, and explain how you resolved the issues.`;
+
+            state.messages.push({
+              role: "user",
+              content,
+            });
+          }
+        }
+      }
+
+      if (mutatedPaths.length > 0) {
+        await createCheckpoint(mutatedPaths, state.stepIndex, state.correlation).catch((err) => {
+          log.warn(`[checkpoint] failed to create checkpoint: ${err.message}`);
+        });
+      }
+
       state.stepIndex += 1;
       continue;
     }
@@ -754,6 +1183,7 @@ async function pauseForApproval(
     // M39 — persist PII token map across the approval pause. Only included
     // when the run has accumulated tokens (avoids serializing empty maps).
     pii_token_map: Object.keys(state.piiTokenMap).length > 0 ? state.piiTokenMap : undefined,
+    re_plan_depth: state.rePlanDepth,
   });
   const payload = {
     continuation_token: env.continuation_token,
@@ -805,6 +1235,12 @@ async function buildResponseBody(
   let finalArtifactId: string | undefined;
   let finalContent = "";
   let formalFinishBlocked = false;
+
+  if (outcome.kind !== "paused" && state.correlation.runId) {
+    await cleanupCheckpoints(state.correlation.runId).catch((err) => {
+      log.warn(`[checkpoint] cleanup failed: ${err.message}`);
+    });
+  }
 
   if (outcome.kind === "complete") {
     if (state.workspace?.branch) {
@@ -1148,6 +1584,7 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
       temperature: body.modelConfig.temperature,
       maxTokens: body.modelConfig.maxTokens,
     }),
+    applierModelAlias: body.modelConfig.applierModelAlias,
     promptCache: normalizePromptCache(body.modelConfig.promptCache, messages, availableTools),
   };
 
@@ -1194,7 +1631,17 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     allowAutonomousMutation: body.allowAutonomousMutation === true,
     // M39 — fresh PII token map per run (populated lazily on first masked output)
     piiTokenMap: {},
+    rePlanDepth: (body.runContext.dependencyState?.changed_paths?.length ?? 0) > 0 ? 1 : 0,
   };
+
+  if (state.rePlanDepth > 0) {
+    emitRePlan(state.correlation, {
+      trigger: "dependency_stale",
+      step_index: 0,
+      convergence_depth: state.rePlanDepth,
+      conflicted_paths: body.runContext.dependencyState?.changed_paths,
+    });
+  }
 
   const outcome = await runLoop(state);
   return buildResponseBody(state, outcome, startedAt);
@@ -1314,6 +1761,7 @@ invokeRouter.post("/resume", async (req, res) => {
     // The HMAC-signed PendingApproval envelope (M35.2) guarantees the map
     // hasn't been tampered with between save + resume.
     piiTokenMap: env.pii_token_map ?? {},
+    rePlanDepth: env.re_plan_depth ?? 0,
   };
   state.workspace = {
     ...(state.workspace ?? {}),
@@ -1734,6 +2182,7 @@ async function dispatchToolCall(
       severity,
       payload: {
         tool_name: rec.tool_name, success: rec.success, error: rec.error,
+        error_code: rec.error_code,
         latency_ms: rec.latency_ms,
         ...executionMetadata,
       },
@@ -1741,7 +2190,7 @@ async function dispatchToolCall(
     // M21 — fire-and-forget to audit-governance
     emitAuditEvent({
       trace_id:      correlation.traceId,
-      source_service: "mcp-server",
+      source_service: "mcp-service",
       kind:          "tool.invocation.completed",
       subject_type:  "ToolInvocation",
       subject_id:    rec.id,
@@ -1751,6 +2200,7 @@ async function dispatchToolCall(
         tool_name:  rec.tool_name,
         success:    rec.success,
         error:      rec.error,
+        error_code: rec.error_code,
         latency_ms: rec.latency_ms,
         ...executionMetadata,
       },
@@ -1885,6 +2335,7 @@ async function dispatchToolCall(
     const rec = recordToolInvocation({
       correlation, tool_name: tc.name, args: tc.args,
       output: r.output, success: r.success, error: r.error,
+      error_code: r.error_code,
       latency_ms: Date.now() - start,
     });
     // M13 — provenance extraction. Only on success; failures don't have

@@ -257,6 +257,35 @@ async function runCommand(args: Record<string, unknown>, defaultKind: "command" 
   };
 }
 
+/**
+ * Shared exported helper for auto-verification. Wraps the private runCommand
+ * with the same command policy enforcement, sandbox scoping, and runner
+ * isolation.
+ */
+export async function runVerificationCommand(opts: {
+  command: string;
+  args: string[];
+  cwd?: string;
+  timeout_ms?: number;
+  max_output_chars?: number;
+  profile?: string;
+}): Promise<{
+  success: boolean;
+  output: Record<string, unknown>;
+}> {
+  return runCommand(
+    {
+      command: opts.command,
+      argv: opts.args, // runCommand expects 'argv' or resolves command + argv inside normalizeInvocation
+      cwd: opts.cwd,
+      timeout_ms: opts.timeout_ms,
+      max_output_chars: opts.max_output_chars,
+      profile: opts.profile,
+    },
+    "test",
+  ) as Promise<{ success: boolean; output: Record<string, unknown> }>;
+}
+
 function safeCommandEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH ?? "",

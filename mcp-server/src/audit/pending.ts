@@ -104,6 +104,7 @@ export interface PendingApproval {
   // tokens (e.g. "[EMAIL_1]") → real values. Tampering protection comes from
   // M35.2's HMAC-signed continuation token (which binds this envelope).
   pii_token_map?: Record<string, string>;
+  re_plan_depth?: number;
 }
 
 export interface PendingToolDescriptor {

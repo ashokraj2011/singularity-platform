@@ -89,6 +89,10 @@ const schema = z.object({
   // execute through Context Fabric + tool-service.
   CONTEXT_FABRIC_URL: z.string().default("http://localhost:8000"),
   CONTEXT_FABRIC_SERVICE_TOKEN: z.string().optional(),
+
+  // Workstream 1: Durable Event Store
+  MCP_EVENT_STORE_URL: z.string().optional(),
+  MCP_EVENT_STORE_TOKEN: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);

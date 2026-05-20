@@ -26,6 +26,7 @@ export interface ToolHandler {
     output: unknown;
     success: boolean;
     error?: string;
+    error_code?: "CONFLICT" | "VALIDATION" | "SANDBOX" | "TIMEOUT";
   }>;
 }
 

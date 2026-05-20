@@ -53,6 +53,7 @@ export interface ToolInvocationRecord {
   output: unknown;
   success: boolean;
   error?: string;
+  error_code?: string;
   latency_ms: number;
   timestamp: string;
 }
