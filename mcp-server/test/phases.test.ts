@@ -67,11 +67,20 @@ describe("PHASE_ORDER and TOOL_ALLOWLISTS", () => {
     expect(PHASE_ORDER).toEqual(["PLAN_DRAFT", "EXPLORE", "PLAN_CONFIRM", "ACT", "VERIFY", "FINALIZE"]);
   });
 
-  it("PLAN_DRAFT has NO tools (text-only output forces plan-JSON emission)", () => {
-    // v4.1 — PLAN_DRAFT's earlier read-only set caused the model to skip
-    // plan-JSON emission and use tools instead. Empty allowlist forces
-    // text-only output → plan JSON. EXPLORE picks up read tools immediately.
-    expect(TOOL_ALLOWLISTS.PLAN_DRAFT.size).toBe(0);
+  it("PLAN_DRAFT has narrow grounding tools (v4.2)", () => {
+    // v4.1 attempted to force plan-JSON by giving PLAN_DRAFT zero tools,
+    // but the model then hallucinated workspace state ("operator already
+    // implemented" — wrong) because it couldn't look. v4.2: narrow set of
+    // fast indexing tools so the model can ground its hypothesis without
+    // going off into freeform exploration. Heavy reads still belong in EXPLORE.
+    expect(isToolAllowed("PLAN_DRAFT", "index_workspace")).toBe(true);
+    expect(isToolAllowed("PLAN_DRAFT", "list_directory")).toBe(true);
+    expect(isToolAllowed("PLAN_DRAFT", "find_symbol")).toBe(true);
+    // NOT in PLAN_DRAFT — these belong in EXPLORE
+    expect(isToolAllowed("PLAN_DRAFT", "read_file")).toBe(false);
+    expect(isToolAllowed("PLAN_DRAFT", "get_ast_slice")).toBe(false);
+    expect(isToolAllowed("PLAN_DRAFT", "search_code")).toBe(false);
+    expect(isToolAllowed("PLAN_DRAFT", "write_file")).toBe(false);
   });
 
   it("EXPLORE and PLAN_CONFIRM share the read-only set (no mutation)", () => {
@@ -226,40 +235,44 @@ describe("nextPhase — transitions", () => {
     expect(nextPhase(view, new Set())).toBe("VERIFY");
   });
 
-  it("ACT under fallback plan stays put until a mutation is observed (v4.1 fix)", () => {
-    // Regression test for the bug observed in the 13:03 UTC attempt:
-    // PLAN_DRAFT exhausted without a plan → fallback synthesized with []
-    // targets → ACT used to transition to VERIFY on the first step
-    // because [].every(...) === true. New rule: fallback plans must see
-    // at least one mutation OR exhaust ACT's budget.
+  it("ACT under fallback plan stays put until ACT budget is exhausted (v4.2)", () => {
+    // v4.1 transitioned on the FIRST observed mutation under a fallback
+    // plan. The 2026-05-21 13:14 attempt showed that's too eager: model
+    // edited Operator.java, ACT bailed, agent never got to edit
+    // RuleEngineService.java or tests → wrong, incomplete code change.
+    //
+    // v4.2: under fallback, ONLY budget exhaustion transitions. The model
+    // gets its full ACT budget to make multi-file changes.
     const fallback: Plan = { ...SAMPLE_PLAN, targets: [] };
     const view = makeView({ phase: "ACT", plan: fallback, planFromFallback: true });
-
-    // First step into ACT, no code-changes, no edited entries → stay
+    // No code change → stay
     expect(nextPhase(view, new Set())).toBe(null);
-
-    // After a mutation logged via planProgress → transition
+    // One mutation observed → STILL stay (v4.2 change vs v4.1)
+    expect(nextPhase(view, new Set(["src/Operator.java"]))).toBe(null);
+    // planProgress edit also does NOT fire transition
     const withEdit = makeView({
       phase: "ACT", plan: fallback, planFromFallback: true,
       planProgress: { "src/Operator.java": { status: "edited" } },
     });
-    expect(nextPhase(withEdit, new Set())).toBe("VERIFY");
-
-    // After a mutation observed via accumulatedCodeChangePaths → transition
-    expect(nextPhase(view, new Set(["src/Operator.java"]))).toBe("VERIFY");
+    expect(nextPhase(withEdit, new Set())).toBe(null);
+    // Only budget exhaustion → transition
+    const exhausted = makeView({
+      phase: "ACT", plan: fallback, planFromFallback: true,
+      planProgress: { "src/Operator.java": { status: "edited" } },
+      phaseStepUsage: { PLAN_DRAFT: 0, EXPLORE: 0, PLAN_CONFIRM: 0, ACT: DEFAULT_PHASE_BUDGETS.ACT, VERIFY: 0, FINALIZE: 0 },
+    });
+    expect(nextPhase(exhausted, new Set())).toBe("VERIFY");
   });
 
-  it("ACT under a plan with zero `required` targets also requires a mutation", () => {
-    // Edge case: a model emits a plan but marks nothing required. The
-    // path-coverage gate would be vacuous. Same guard applies — don't let
-    // ACT transition until something actually changes.
+  it("ACT under a plan with zero `required` targets also stays until budget exhausted (v4.2)", () => {
+    // Same rule: with no path-coverage signal, run the full ACT budget.
     const noRequired: Plan = {
       ...SAMPLE_PLAN,
       targets: SAMPLE_PLAN.targets.map((t) => ({ ...t, required: false })),
     };
     const view = makeView({ phase: "ACT", plan: noRequired });
     expect(nextPhase(view, new Set())).toBe(null);
-    expect(nextPhase(view, new Set(["src/anything.java"]))).toBe("VERIFY");
+    expect(nextPhase(view, new Set(["src/anything.java"]))).toBe(null);
   });
 
   it("VERIFY → FINALIZE on budget exhaustion (else handled by runLoop on receipt)", () => {

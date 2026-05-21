@@ -69,12 +69,14 @@ const ACT_READ_SUBSET = new Set<string>([
 ]);
 
 export const TOOL_ALLOWLISTS: Record<Phase, ReadonlySet<string>> = {
-  // PLAN_DRAFT has NO tools — text-only output. Previously this phase
-  // granted read tools (verification report Gap 3 worry: model can't ground
-  // hypothesis), but the practical effect was the model called tools and
-  // skipped emitting plan JSON entirely. Forcing text-only restores the
-  // plan-JSON contract; EXPLORE picks up tool access immediately after.
-  PLAN_DRAFT: new Set<string>(),
+  // PLAN_DRAFT v4.2 — narrow grounding tools only. v4.1 made this empty
+  // (text-only) to force plan-JSON emission, but the practical effect was
+  // the model hallucinated workspace state ("operator already implemented")
+  // because it had no way to look. We narrow to fast indexing tools so the
+  // model can ground its initial hypothesis without freeform exploration.
+  // The contract prompt still requires a plan JSON in the same turn — model
+  // must call these tools AND emit the JSON. Heavy reads belong in EXPLORE.
+  PLAN_DRAFT: new Set<string>(["index_workspace", "list_directory", "find_symbol"]),
   EXPLORE: READ_ONLY_TOOLS,
   PLAN_CONFIRM: READ_ONLY_TOOLS,
   ACT: new Set([...MUTATION_TOOLS, ...ACT_READ_SUBSET]),
@@ -200,27 +202,20 @@ export function nextPhase(state: PhaseLoopStateView, accumulatedCodeChangePaths:
       if (!state.plan) return "VERIFY";
       const required = state.plan.targets.filter((t) => t.required);
 
-      // ── Fallback-plan guard ──────────────────────────────────────────
-      // When PLAN_DRAFT exhausted budget without a model-supplied plan,
-      // synthesizeFallbackPlan() ships an empty `targets` array. Without
-      // this guard, the "all required satisfied" predicate is vacuously
-      // true on the first ACT step (because [].every === true), so the
-      // loop races straight to VERIFY without any code change. We saw
-      // this fail in the 2026-05-21 13:03 attempt: the agent read
-      // Operator.java, observed "containsACharacter NOT implemented",
-      // then transitioned to VERIFY and ran mvn test against the
-      // unimplemented code — test failed, attempt blocked.
+      // ── Fallback-plan guard (v4.2) ───────────────────────────────────
+      // When the plan is fallback or has no required targets, we have no
+      // path-coverage signal to know when "enough" mutations have happened.
+      // v4.1 transitioned on the FIRST mutation, but the 2026-05-21 13:14
+      // attempt showed that's too eager: the model edited Operator.java,
+      // then ACT bailed before it could edit RuleEngineService.java or
+      // tests. The result was a wrong, incomplete code change.
       //
-      // Under a fallback plan, require either (a) at least one mutation
-      // observed via accumulatedCodeChangePaths OR planProgress, or
-      // (b) ACT's budget exhausted. Otherwise stay in ACT so the model
-      // has chances to make the edit it knows is needed.
+      // v4.2: under fallback, ACT stays put until budget is exhausted.
+      // The model gets its full ACT budget (10 steps default) to keep
+      // making edits. Budget-exhaustion already returned at the top of
+      // this case, so we just stay (`null`) here.
       if (state.planFromFallback || required.length === 0) {
-        if (accumulatedCodeChangePaths.size > 0) return "VERIFY";
-        const anyMutationLogged = Object.values(state.planProgress).some(
-          (p) => p.status === "edited",
-        );
-        return anyMutationLogged ? "VERIFY" : null;
+        return null;
       }
 
       // Normal path — every required target is satisfied if EITHER an
