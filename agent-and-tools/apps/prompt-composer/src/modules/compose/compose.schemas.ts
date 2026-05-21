@@ -82,6 +82,15 @@ export const composeSchema = z.object({
   // Tool Service once, so Prompt Composer renders the same descriptors MCP
   // will receive instead of doing a second discovery pass.
   toolDescriptors: z.array(toolDescriptorSchema).max(64).optional(),
+  // M44 Slice C — When true, the TOOL_CONTRACT layer omits the full JSON
+  // input_schema dump because the same schema is already sent to the LLM
+  // as a real tool descriptor (Anthropic/OpenAI `tools` parameter). Keeping
+  // name + purpose + risk + execution_target in prose still anchors
+  // model behaviour without paying the schema cost twice (~200-500 tokens
+  // per tool, ~20 tools per run = 5K+ duplicated tokens per call).
+  // Callers that DON'T pass tools through the structured channel
+  // (text-only models) should leave this false so they still see schemas.
+  compactToolContracts: z.boolean().default(false),
   previewOnly: z.boolean().default(false),
   // M25.5 C6 — operator escape hatch. When true, lookupCapsule() is skipped
   // (cold path runs every time) AND no fresh capsule is stored. Use this

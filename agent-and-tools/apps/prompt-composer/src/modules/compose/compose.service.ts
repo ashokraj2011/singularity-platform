@@ -1107,6 +1107,10 @@ export const composeService = {
   },
 
   async buildToolContractLayer(input: ComposeInput, capabilityId: string | null, agentTemplateId: string, retrievalStats?: { toolContractsIncluded: number }): Promise<string | null> {
+    // M44 Slice C — compact mode omits the JSON schema dump (the LLM gets it
+    // via the structured tools parameter instead). Slimmer system prefix =>
+    // ~5K tokens saved per call, more if the prompt cache isn't warm.
+    const compact = input.compactToolContracts === true;
     if (Array.isArray(input.toolDescriptors)) {
       const blocks: string[] = [];
       const seen = new Set<string>();
@@ -1120,7 +1124,7 @@ export const composeService = {
           requires_approval: t.requires_approval,
           input_schema: t.input_schema,
           execution_target: t.execution_target,
-        }));
+        }, compact));
         if (retrievalStats) retrievalStats.toolContractsIncluded += 1;
       }
       if (blocks.length === 0) return null;
@@ -1151,7 +1155,7 @@ export const composeService = {
         requires_approval: c?.requiresApproval ?? false,
         input_schema: c?.inputSchema as Record<string, unknown> | undefined,
         execution_target: "LOCAL",
-      }));
+      }, compact));
       if (retrievalStats) retrievalStats.toolContractsIncluded += 1;
     }
 
@@ -1175,7 +1179,7 @@ export const composeService = {
           requires_approval: this.requiresApprovalForDiscoveredTool(t),
           input_schema: t.input_schema,
           execution_target: t.execution_target,
-        }));
+        }, compact));
         if (retrievalStats) retrievalStats.toolContractsIncluded += 1;
       }
     }
@@ -1191,12 +1195,24 @@ export const composeService = {
     requires_approval: boolean;
     input_schema?: Record<string, unknown>;
     execution_target?: string;
-  }): string {
+  }, compact: boolean = false): string {
     const target = (t.execution_target || "LOCAL").toUpperCase();
-    return `## Tool: ${t.tool_name}
+    const header = `## Tool: ${t.tool_name}
 Description: ${t.natural_language}
 Risk: ${t.risk_level}${t.requires_approval ? " (requires approval)" : ""}
-Execution target: ${target === "SERVER" ? "SERVER" : "LOCAL"}
+Execution target: ${target === "SERVER" ? "SERVER" : "LOCAL"}`;
+    if (compact) {
+      // M44 Slice C — schema is sent through the LLM provider's structured
+      // tools channel; duplicating ~200-500 token JSON dump per tool in the
+      // prompt prose is pure waste when the model already has it natively.
+      // Compact mode keeps name + purpose + risk + execution_target so the
+      // agent still understands what's available without paying the schema
+      // cost. Required-field summary is helpful but kept short.
+      const required = Array.isArray(t.input_schema?.required) ? t.input_schema.required.join(", ") : "";
+      return required ? `${header}
+Required args: ${required}` : header;
+    }
+    return `${header}
 Input schema: ${JSON.stringify(t.input_schema ?? { type: "object" })}`;
   },
 
