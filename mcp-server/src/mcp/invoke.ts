@@ -1165,7 +1165,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
               return await pauseForApproval(state, tc, desc, result.approvalRequired.reason, result.record.id);
             }
 
-            const rawOutput = toolMessageContentForRecord(state, result.record);
+            const rawOutput = toolMessageContentForRecord(state, result.record, tc.name);
             const maskedOutput = await applyOutputMaskIfNeededAsync(state, undefined, rawOutput);
             state.messages.push({
               role: "tool",
@@ -1433,7 +1433,7 @@ Please review the errors above, correct the code, and explain how you resolved t
         // MCP_PII_NER_ENABLED) can run alongside the regex baseline.
         // toolMessageContentForRecord surfaces tool errors (success=false) so
         // the LLM can correct its strategy instead of seeing a silent "null".
-        const rawOutput = toolMessageContentForRecord(state, result.record);
+        const rawOutput = toolMessageContentForRecord(state, result.record, tc.name);
         const maskedOutput = await applyOutputMaskIfNeededAsync(state, desc, rawOutput);
         state.messages.push({
           role: "tool",
@@ -1947,7 +1947,7 @@ async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome
       if (result.approvalRequired) {
         return await pauseForApproval(state, tc, desc, result.approvalRequired.reason, result.record.id);
       }
-      const rawOutput = toolMessageContentForRecord(state, result.record);
+      const rawOutput = toolMessageContentForRecord(state, result.record, tc.name);
       const maskedOutput = await applyOutputMaskIfNeededAsync(state, desc, rawOutput);
       state.messages.push({
         role: "tool",
@@ -2952,7 +2952,7 @@ invokeRouter.post("/resume", async (req, res) => {
     state.verificationReceipts.push(...verificationReceiptsFromOutput(result.record.output, result.record.id, tc.name));
     // M39 / M39.B — mask resumed-tool output (async path for NER support).
     const resumeDesc = env.full_tool_descriptors.find((d) => d.name === tc.name);
-    const rawOutput = toolMessageContentForRecord(state, result.record);
+    const rawOutput = toolMessageContentForRecord(state, result.record, tc.name);
     state.messages.push({
       role: "tool",
       content: await applyOutputMaskIfNeededAsync(state, resumeDesc, rawOutput),
@@ -3415,11 +3415,15 @@ function padOrphanedToolUses(messages: ChatMessage[]): ChatMessage[] {
   return out;
 }
 
-function toolResultForNextTurn(state: LoopState, output: unknown): string {
+function toolResultForNextTurn(state: LoopState, output: unknown, toolName?: string): string {
   const raw = JSON.stringify(output);
   if (!state.compressToolResults) return trimToolResult(raw, state.maxToolResultChars);
 
-  const compressed = JSON.stringify(compactToolResult(output));
+  // M44 Slice D — try tool-aware summary first (knows the shape, can keep
+  // the signal-bearing parts and drop noise). Falls back to the generic
+  // compactor when the tool doesn't have a specialized summarizer.
+  const summarized = toolName ? toolAwareSummary(toolName, output) : null;
+  const compressed = JSON.stringify(summarized ?? compactToolResult(output));
   const selected = compressed.length < raw.length ? compressed : raw;
   if (selected.length < raw.length) {
     state.contextCompression.toolResultsCompressed += 1;
@@ -3445,6 +3449,7 @@ function toolResultForNextTurn(state: LoopState, output: unknown): string {
 function toolMessageContentForRecord(
   state: LoopState,
   record: { output: unknown; success?: boolean; error?: string | null; error_code?: string | null },
+  toolName?: string,
 ): string {
   if (record.success === false) {
     const errorPayload: Record<string, unknown> = {
@@ -3455,7 +3460,117 @@ function toolMessageContentForRecord(
     if (record.output !== null && record.output !== undefined) errorPayload.output = record.output;
     return trimToolResult(JSON.stringify(errorPayload), state.maxToolResultChars);
   }
-  return toolResultForNextTurn(state, record.output);
+  return toolResultForNextTurn(state, record.output, toolName);
+}
+
+/**
+ * M44 Slice D — Tool-aware compression. The generic compactToolResult below
+ * is too conservative for shape-heavy tool outputs (search_code, list_directory,
+ * file_stats, command output). This function knows specific tool shapes and
+ * keeps the signal-bearing parts (paths, line numbers, exit codes, top-N
+ * matches) while dropping the bulk (full match snippets, long stdout tails,
+ * unused metadata).
+ *
+ * Returns null when the tool isn't recognized — caller falls back to
+ * compactToolResult for generic JSON minification.
+ *
+ * Exported for testability via __testing.
+ */
+export function toolAwareSummary(toolName: string, output: unknown): unknown | null {
+  if (!output || typeof output !== "object") return null;
+  const out = output as Record<string, unknown>;
+
+  switch (toolName) {
+    case "read_file": {
+      // Keep first N + last N lines plus a marker. Full file body is rarely
+      // needed in the next turn — model can re-read if it is.
+      const content = typeof out.content === "string" ? out.content : null;
+      if (content === null || content.length < 1200) return null;
+      const lines = content.split("\n");
+      if (lines.length < 60) return null;
+      const head = lines.slice(0, 30).join("\n");
+      const tail = lines.slice(-15).join("\n");
+      return {
+        ...out,
+        content_excerpt: `${head}\n... [${lines.length - 45} lines elided, full file was ${content.length} chars] ...\n${tail}`,
+        content: undefined,
+        original_lines: lines.length,
+        original_chars: content.length,
+      };
+    }
+
+    case "search_code":
+    case "grep_lines": {
+      // Keep at most 8 matches with their line numbers + 1 line of context.
+      // Drop verbose excerpts beyond that.
+      const matches = Array.isArray(out.matches) ? out.matches : Array.isArray(out.results) ? out.results : null;
+      if (!Array.isArray(matches) || matches.length <= 8) return null;
+      return {
+        ...out,
+        matches: matches.slice(0, 8),
+        truncated_matches: matches.length - 8,
+        total_matches: matches.length,
+      };
+    }
+
+    case "list_directory": {
+      // Cap entries; keep counts so the model knows how big the dir is.
+      const entries = Array.isArray(out.entries) ? out.entries : null;
+      if (!Array.isArray(entries) || entries.length <= 40) return null;
+      return {
+        ...out,
+        entries: entries.slice(0, 40),
+        truncated_entries: entries.length - 40,
+        total_entries: entries.length,
+      };
+    }
+
+    case "list_indexed_files":
+    case "find_files": {
+      const files = Array.isArray(out.files) ? out.files : null;
+      if (!Array.isArray(files) || files.length <= 20) return null;
+      return {
+        ...out,
+        files: files.slice(0, 20),
+        truncated_files: files.length - 20,
+        total_files: files.length,
+      };
+    }
+
+    case "run_command":
+    case "run_test": {
+      // Verification output — keep stdout head + tail + exit code. Stdout
+      // is often where the failure signal lives; preserve both ends.
+      const stdout = typeof out.stdout === "string" ? out.stdout : "";
+      const stderr = typeof out.stderr === "string" ? out.stderr : "";
+      if (stdout.length + stderr.length < 3000) return null;
+      const head = stdout.slice(0, 1500);
+      const tail = stdout.length > 3000 ? stdout.slice(-800) : "";
+      return {
+        ...out,
+        stdout_head: head,
+        stdout_tail: tail || undefined,
+        stdout_chars: stdout.length,
+        stderr: stderr.length > 1000 ? `${stderr.slice(0, 600)}\n... [${stderr.length - 600} stderr chars elided]` : stderr,
+        stdout: undefined,
+      };
+    }
+
+    case "get_dependencies": {
+      // Imports lists can be long; keep counts + head.
+      const deps = Array.isArray(out.dependencies) ? out.dependencies : null;
+      if (!Array.isArray(deps) || deps.length <= 25) return null;
+      return {
+        ...out,
+        dependencies: deps.slice(0, 25),
+        truncated_dependencies: deps.length - 25,
+        total_dependencies: deps.length,
+      };
+    }
+
+    default:
+      return null;
+  }
 }
 
 function compactToolResult(value: unknown): unknown {

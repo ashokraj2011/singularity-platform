@@ -898,6 +898,13 @@ async def execute(req: ExecuteRequest):
                 "modelOverrides": req.model_overrides,
                 "contextPolicy": _composer_context_policy(req.context_policy, req.limits),
                 "toolDescriptors": tools_for_mcp,
+                # M44 Slice C — Context Fabric always sends tools through the
+                # structured channel (toolDescriptors → MCP → LLM provider's
+                # `tools` parameter), so the schema dump duplicated inside
+                # the TOOL_CONTRACT prompt-prose layer is pure waste.
+                # Enable compact rendering: name + purpose + risk + required
+                # args only. ~5-10K tokens saved per LLM call.
+                "compactToolContracts": True,
                 "previewOnly": True,
             }
             composed = await _post(
