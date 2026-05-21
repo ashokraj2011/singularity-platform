@@ -1152,7 +1152,159 @@ Please review the errors above, correct the code, and explain how you resolved t
       finishReason: llmResp.finish_reason as "stop" | "length" | "error",
     };
   }
+  if (!state.allowAutonomousMutation) {
+    const finalized = await finalizeReadOnlyAfterMaxSteps(state);
+    if (finalized) return finalized;
+  }
   return { kind: "complete", finalContent: "", finishReason: "max_steps" };
+}
+
+async function finalizeReadOnlyAfterMaxSteps(state: LoopState): Promise<LoopOutcome | null> {
+  try {
+    applySlidingWindow(state);
+    state.messages.push({
+      role: "user",
+      content: [
+        "The read-only tool step budget is exhausted.",
+        "Do not call any more tools. Use the evidence already gathered, the compressed run history, and the original task to produce the final stage response now.",
+        "If a detail is uncertain, state the assumption or gap directly instead of exploring further.",
+      ].join("\n"),
+    });
+
+    events.publish({
+      kind: "run.event",
+      correlation: { ...state.correlation },
+      payload: {
+        phase: "max_steps_finalization",
+        stepIndex: state.stepIndex,
+        llmCalls: state.llmCallIds.length,
+        toolInvocations: state.toolInvocationIds.length,
+      },
+    });
+    events.publish({
+      kind: "llm.request",
+      correlation: { ...state.correlation },
+      payload: {
+        modelAlias: state.modelConfig.modelAlias,
+        provider: state.modelConfig.provider,
+        model: state.modelConfig.model,
+        prompt_messages_count: state.messages.length,
+        stepIndex: state.stepIndex,
+        contextCompression: state.contextCompression,
+        promptCache: state.modelConfig.promptCache,
+        finalization: true,
+      },
+    });
+
+    const llmResp = await llmRespond({
+      model_alias: state.modelConfig.modelAlias,
+      provider: state.modelConfig.provider,
+      model: state.modelConfig.model,
+      messages: state.messages,
+      tools: [],
+      temperature: state.modelConfig.temperature,
+      max_output_tokens: state.modelConfig.maxTokens,
+      prompt_cache: state.modelConfig.promptCache,
+    }, {
+      onDelta: async (delta) => {
+        if (!delta.content) return;
+        events.publish({
+          kind: "llm.stream.delta",
+          correlation: { ...state.correlation },
+          payload: {
+            modelAlias: state.modelConfig.modelAlias,
+            provider: state.modelConfig.provider,
+            model: state.modelConfig.model,
+            stepIndex: state.stepIndex,
+            content: delta.content,
+            index: delta.index,
+            finalization: true,
+          },
+        });
+      },
+    });
+
+    state.totalInputTokens += llmResp.input_tokens;
+    state.totalOutputTokens += llmResp.output_tokens;
+    if (typeof llmResp.estimated_cost === "number" && Number.isFinite(llmResp.estimated_cost)) {
+      state.totalEstimatedCost += llmResp.estimated_cost;
+    }
+    if (llmResp.provider) state.modelConfig.provider = llmResp.provider;
+    if (llmResp.model) state.modelConfig.model = llmResp.model;
+    if (llmResp.model_alias) state.modelConfig.modelAlias = llmResp.model_alias;
+
+    const llmRec = recordLlmCall({
+      correlation: state.correlation,
+      model_alias: state.modelConfig.modelAlias,
+      provider: state.modelConfig.provider,
+      model: state.modelConfig.model,
+      input_tokens: llmResp.input_tokens,
+      output_tokens: llmResp.output_tokens,
+      estimated_cost: llmResp.estimated_cost,
+      latency_ms: llmResp.latency_ms,
+      prompt_messages_count: state.messages.length,
+      finish_reason: llmResp.finish_reason,
+    });
+    state.llmCallIds.push(llmRec.id);
+
+    if (llmResp.prompt_cache) {
+      state.promptCacheUsage.push({
+        ...llmResp.prompt_cache,
+        llmCallId: llmRec.id,
+        stepIndex: state.stepIndex,
+        provider: state.modelConfig.provider,
+        model: state.modelConfig.model,
+        modelAlias: state.modelConfig.modelAlias,
+        capturedAt: new Date().toISOString(),
+      });
+    }
+
+    emitAuditEvent({
+      trace_id: state.correlation.traceId,
+      source_service: "mcp-server",
+      kind: "agent_loop.max_steps_finalized",
+      subject_type: "LlmCall",
+      subject_id: llmRec.id,
+      capability_id: state.correlation.capabilityId,
+      severity: "warn",
+      payload: {
+        reason: "Read-only stage exhausted tool steps; forced a no-tools final response instead of failing empty.",
+        model_alias: state.modelConfig.modelAlias,
+        provider: state.modelConfig.provider,
+        model: state.modelConfig.model,
+        input_tokens: llmResp.input_tokens,
+        output_tokens: llmResp.output_tokens,
+        finish_reason: llmResp.finish_reason,
+      },
+    });
+
+    events.publish({
+      kind: "llm.response",
+      correlation: { ...state.correlation, llmCallId: llmRec.id },
+      payload: {
+        modelAlias: state.modelConfig.modelAlias,
+        finish_reason: llmResp.finish_reason,
+        input_tokens: llmResp.input_tokens,
+        output_tokens: llmResp.output_tokens,
+        estimated_cost: llmResp.estimated_cost,
+        latency_ms: llmResp.latency_ms,
+        tool_calls_count: llmResp.tool_calls?.length ?? 0,
+        finalization: true,
+      },
+    });
+
+    const content = (llmResp.content ?? "").trim();
+    if (!content) return null;
+    state.messages.push({ role: "assistant", content });
+    return {
+      kind: "complete",
+      finalContent: content,
+      finishReason: llmResp.finish_reason === "length" ? "length" : llmResp.finish_reason === "error" ? "error" : "stop",
+    };
+  } catch (err) {
+    log.warn({ err: (err as Error).message, trace: state.correlation.traceId }, "[max-steps-finalize] failed");
+    return null;
+  }
 }
 
 async function pauseForApproval(
