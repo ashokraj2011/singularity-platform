@@ -838,13 +838,31 @@ function advancePhaseStepAndMaybeTransition(
   }
   state.phaseMachine.phase = target;
   resetPhaseRepetition(state);
+  // M44 Slice F — cache-stability telemetry. Anthropic's prompt cache hashes
+  // the `tools` block as part of the cacheable prefix; when the tool list
+  // changes between phases, downstream cache hits are lost from that point.
+  // The diff payload makes the cost of phase filtering visible to operators
+  // without changing provider behaviour. Pair with a future cache_control
+  // breakpoint placement to actually cap the invalidation surface.
+  const prevTools = TOOL_ALLOWLISTS[cur];
+  const nextTools = TOOL_ALLOWLISTS[target];
+  const toolsRemoved = [...prevTools].filter((t) => !nextTools.has(t)).sort();
+  const toolsAdded = [...nextTools].filter((t) => !prevTools.has(t)).sort();
   emitAuditEvent({
     trace_id: state.correlation.traceId,
     source_service: "mcp-server",
     kind: "agent.phase.transitioned",
     capability_id: state.correlation.capabilityId,
     severity: "info",
-    payload: { from: cur, to: target, stepIndex: state.stepIndex },
+    payload: {
+      from: cur,
+      to: target,
+      stepIndex: state.stepIndex,
+      // M44 Slice F — surface cache-prefix-invalidating churn for observability.
+      toolsRemoved,
+      toolsAdded,
+      cachePrefixInvalidated: toolsRemoved.length > 0 || toolsAdded.length > 0,
+    },
   });
   return target;
 }
