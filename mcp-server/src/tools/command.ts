@@ -7,7 +7,7 @@ import { callSandboxRunner } from "./runner-client";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 12_000;
-const ALLOWED_COMMANDS = new Set([
+export const ALLOWED_COMMANDS = new Set([
   "git",
   "rg",
   "npm",

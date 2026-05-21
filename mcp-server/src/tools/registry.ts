@@ -216,6 +216,7 @@ import {
 } from "./ast-tools";
 import { runCommandTool, runTestTool, verificationUnavailableTool } from "./command";
 import { formalVerifyTool } from "./formal-verify";
+import { repoMapTool, recommendedVerificationTool, reviewDiffTool } from "./workflow-tools";
 import {
   queryLearningStateTool,
   querySimilarCapabilitiesTool,
@@ -262,6 +263,10 @@ const REGISTRY = new Map<string, ToolHandler>([
   [recordBlockerTool.descriptor.name, recordBlockerTool],
   [prepareWorkBranchTool.descriptor.name, prepareWorkBranchTool],
   [finishWorkBranchTool.descriptor.name, finishWorkBranchTool],
+  // M43 — agentic workflow tools
+  [repoMapTool.descriptor.name, repoMapTool],
+  [recommendedVerificationTool.descriptor.name, recommendedVerificationTool],
+  [reviewDiffTool.descriptor.name, reviewDiffTool],
 ]);
 
 export function listLocalTools(): ToolDescriptor[] {

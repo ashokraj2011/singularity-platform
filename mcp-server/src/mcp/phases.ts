@@ -52,6 +52,8 @@ const READ_ONLY_TOOLS = new Set<string>([
   "find_files",   // fallback file enumeration
   "file_stats",   // fallback metadata (fresh size after edits)
   "grep_lines",   // grep with context lines (ripgrep)
+  // M43 — agentic workflow grounding (cheap, structured, read-only).
+  "repo_map",     // initial topology + build-system + verifier inventory
 ]);
 
 const MUTATION_TOOLS = new Set<string>([
@@ -65,6 +67,8 @@ const VERIFICATION_TOOLS = new Set<string>([
   "run_test",
   "run_command",
   "verification_unavailable",
+  // M43 — pick the right command deterministically rather than free-form.
+  "recommended_verification",
 ]);
 
 /** ACT keeps a read-only subset because editing constantly needs to inspect
@@ -95,11 +99,14 @@ export const TOOL_ALLOWLISTS: Record<Phase, ReadonlySet<string>> = {
     "list_indexed_files", // M42.9 — query the index right after building it
     "list_directory",
     "find_symbol",
+    "repo_map",           // M43 — compact topology snapshot for grounding
   ]),
   EXPLORE: READ_ONLY_TOOLS,
   PLAN_CONFIRM: READ_ONLY_TOOLS,
   ACT: new Set([...MUTATION_TOOLS, ...ACT_READ_SUBSET]),
-  VERIFY: VERIFICATION_TOOLS,
+  // VERIFY can also run review_diff between/after verifier invocations to
+  // confirm coverage before the loop auto-transitions to FINALIZE.
+  VERIFY: new Set([...VERIFICATION_TOOLS, "review_diff"]),
   FINALIZE: new Set<string>(),  // no tools — MCP auto-finishes
 };
 

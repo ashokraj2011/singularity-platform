@@ -1348,6 +1348,14 @@ Please review the errors above, correct the code, and explain how you resolved t
         if (tc.name === "finish_work_branch") {
           toolArgs.verificationReceipts = state.verificationReceipts;
         }
+        // M43 — review_diff needs the same loop-state context so it can report
+        // verification coverage AND reconcile tracked code-change paths
+        // against the working-tree diff. mutatedPaths is the same source the
+        // path-coverage gate uses (populated at line ~1380 below).
+        if (tc.name === "review_diff") {
+          toolArgs.verificationReceipts = state.verificationReceipts;
+          toolArgs.codeChangePaths = [...mutatedPaths];
+        }
         const unmaskedTc = { ...tc, args: toolArgs };
         const result = await dispatchToolCall(
           unmaskedTc,
