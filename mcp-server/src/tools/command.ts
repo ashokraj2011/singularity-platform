@@ -6,7 +6,9 @@ import { resolveSandboxedPath, baseSandboxRoot } from "../workspace/sandbox";
 import { callSandboxRunner } from "./runner-client";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
-const DEFAULT_MAX_OUTPUT_CHARS = 12_000;
+// M44 — Lowered from 12_000 to 8_000 to align with the Workbench/MCP-default
+// max_tool_result_chars. Explicit caller `max_output_chars` still overrides.
+const DEFAULT_MAX_OUTPUT_CHARS = 8_000;
 export const ALLOWED_COMMANDS = new Set([
   "git",
   "rg",

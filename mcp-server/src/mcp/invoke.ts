@@ -2671,10 +2671,17 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     correlation,
     stepIndex: 0,
     maxSteps: body.limits.maxSteps ?? config.MAX_AGENT_STEPS,
-    maxToolResultChars: body.limits.maxToolResultChars,
-    maxHistoryMessages: body.limits.maxHistoryMessages,
-    maxHistoryTokens: body.limits.maxHistoryTokens,
-    compressToolResults: body.limits.compressToolResults === true,
+    // M44 — Safe defaults for token budgets. Previously these were undefined
+    // when callers omitted them, which made the sliding window + tool-result
+    // trim NO-OP and let a single noisy tool output (50K+ chars) blow up
+    // context. Workbench sent its own values; direct/resume/laptop callers
+    // got nothing. Now every caller gets a sane floor; explicit values
+    // (including explicit `false` for compress) still win.
+    maxToolResultChars: body.limits.maxToolResultChars ?? 8000,
+    maxHistoryMessages: body.limits.maxHistoryMessages ?? 12,
+    maxHistoryTokens: body.limits.maxHistoryTokens ?? 32_000,
+    // Compress is safe-default true. Explicit `false` still honored.
+    compressToolResults: body.limits.compressToolResults !== false,
     llmCallIds: [],
     toolInvocationIds: [],
     artifactIds: [],
@@ -2812,10 +2819,13 @@ invokeRouter.post("/resume", async (req, res) => {
     correlation: env.correlation,
     stepIndex: env.step_index,
     maxSteps: env.max_steps,
-    maxToolResultChars: env.max_tool_result_chars,
-    maxHistoryMessages: env.max_history_messages,
-    maxHistoryTokens: env.max_history_tokens,
-    compressToolResults: env.compress_tool_results === true,
+    // M44 — same safe-default floor as the fresh-invoke path. Resume from a
+    // pause should never come back with weaker limits than the original run
+    // (and shouldn't blow up context if an old envelope predates the field).
+    maxToolResultChars: env.max_tool_result_chars ?? 8000,
+    maxHistoryMessages: env.max_history_messages ?? 12,
+    maxHistoryTokens: env.max_history_tokens ?? 32_000,
+    compressToolResults: env.compress_tool_results !== false,
     llmCallIds: env.llm_call_ids,
     toolInvocationIds: env.tool_invocation_ids,
     artifactIds: env.artifact_ids,

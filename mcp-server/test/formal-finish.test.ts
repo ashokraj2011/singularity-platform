@@ -173,7 +173,12 @@ describe("finish_work_branch formal verification gate", () => {
       }],
       modelConfig: { modelAlias: "fake-repair" },
       allowAutonomousMutation: true,
-      limits: { maxSteps: 6, includeLocalTools: false },
+      // M44 — this test's mock LLM grep-matches diff content inside tool
+      // result messages ("repaired", "policy.ts"). The new safe-default
+      // tool-result compactor strips the diff body from code_change envelopes
+      // (keeps paths_touched but replaces patch/diff with patch_chars).
+      // Opt out so the test still sees the raw diff text.
+      limits: { maxSteps: 6, includeLocalTools: false, compressToolResults: false },
     });
 
     expect(result.status).toBe("COMPLETED");
