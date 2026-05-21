@@ -219,6 +219,49 @@ async def _post(url: str, payload: dict, timeout: float = 60.0,
         return resp.json()
 
 
+async def _build_code_context_package(
+    mcp_base_url: str,
+    mcp_token: str,
+    req: ExecuteRequest,
+    trace_id: Optional[str],
+) -> tuple[Optional[dict], Optional[str]]:
+    """
+    M52 — Call mcp-server's /mcp/code-context/build before prompt composition.
+    Returns (package_dict, warning). On failure returns (None, warning_text)
+    so the compose path can degrade gracefully to the legacy CODE_CONTEXT
+    layer. Never raises — code-context budgeting is best-effort.
+    """
+    url = f"{mcp_base_url.rstrip('/')}/mcp/code-context/build"
+    payload: dict[str, Any] = {
+        "task_text": req.task,
+        "max_token_budget": 7000,
+        "include_tests": True,
+    }
+    if trace_id:
+        payload["trace_id"] = trace_id
+    if req.run_context.capability_id:
+        payload["capability_id"] = req.run_context.capability_id
+    try:
+        body = await _post(
+            url,
+            payload,
+            timeout=45.0,  # AST indexing of medium repos lands well under this
+            headers={"authorization": f"Bearer {mcp_token}"} if mcp_token else None,
+        )
+        if not body.get("success"):
+            return None, f"mcp.code_context.skipped: backend returned success=false ({str(body)[:200]})"
+        pkg = body.get("data")
+        if not isinstance(pkg, dict) or not pkg.get("context_package_id"):
+            return None, "mcp.code_context.skipped: malformed response (missing context_package_id)"
+        return pkg, None
+    except httpx.HTTPStatusError as exc:
+        return None, f"mcp.code_context.skipped: HTTP {exc.response.status_code} from {url}"
+    except (httpx.RequestError, asyncio.TimeoutError) as exc:
+        return None, f"mcp.code_context.skipped: transport error {exc!s}"
+    except Exception as exc:  # pylint: disable=broad-except
+        return None, f"mcp.code_context.skipped: unexpected error {exc!s}"
+
+
 async def _get(url: str, params: Optional[dict] = None, timeout: float = 30.0,
                headers: Optional[dict] = None) -> dict:
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -876,6 +919,31 @@ async def execute(req: ExecuteRequest):
 
     tools_for_mcp = _merge_mandatory_local_tools(tools_for_mcp, req)
 
+    # M52 — Code Context Budgeter orchestration. For Developer-style stages,
+    # call mcp-server's /mcp/code-context/build BEFORE prompt composition so
+    # Prompt Composer can render 7 deterministic CODE_* layers in place of
+    # the legacy semantic CODE_CONTEXT layer. Slice content stays in-flight
+    # (this dict → prompt-composer → mcp-server → LLM gateway); only
+    # metadata is recorded in the audit event mcp-server emits.
+    code_context_package: Optional[dict] = None
+    is_dev_stage, _is_qa_stage = _classify_stage_role(req)
+    if is_dev_stage and req.task and req.task.strip():
+        try:
+            mcp_record, mcp_warnings = await _resolve_mcp_record(
+                req.run_context.capability_id or "",
+            )
+            composer_warnings.extend(mcp_warnings)
+            mcp_base = str(mcp_record.get("base_url") or "")
+            mcp_tok = str(mcp_record.get("bearer_token") or "")
+            if mcp_base:
+                code_context_package, ccp_warning = await _build_code_context_package(
+                    mcp_base, mcp_tok, req, trace_id,
+                )
+                if ccp_warning:
+                    composer_warnings.append(ccp_warning)
+        except Exception as exc:  # pylint: disable=broad-except
+            composer_warnings.append(f"mcp.code_context.skipped: resolve_mcp_record error {exc!s}")
+
     if req.run_context.agent_template_id:
         try:
             compose_payload = {
@@ -905,6 +973,11 @@ async def execute(req: ExecuteRequest):
                 # Enable compact rendering: name + purpose + risk + required
                 # args only. ~5-10K tokens saved per LLM call.
                 "compactToolContracts": True,
+                # M52 — When the budgeter ran successfully, attach the
+                # package so Prompt Composer emits the 7 CODE_* layers
+                # instead of the legacy monolithic CODE_CONTEXT layer.
+                # Optional: absent → composer falls back to today's path.
+                **({"codeContextPackage": code_context_package} if code_context_package else {}),
                 "previewOnly": True,
             }
             composed = await _post(

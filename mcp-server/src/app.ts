@@ -13,6 +13,7 @@ import { workRouter } from "./mcp/work";
 import { resourcesRouter } from "./mcp/resources";
 import { eventsRouter } from "./mcp/events";
 import { discoveryRouter } from "./mcp/discovery";
+import { buildCodeContextPackage } from "./mcp/code-context";
 import { listConfiguredProviders, ensureFreshGatewayStatus, llmEmbed } from "./llm/client";
 import { modelCatalogResponse } from "./llm/model-catalog";
 import { configuredDefaultModel, configuredDefaultProvider, providerConfigSummary } from "./llm/provider-config";
@@ -146,6 +147,27 @@ app.post("/mcp/embed", async (req, res) => {
       requestId: res.locals.requestId,
     });
   }
+});
+// M52 — Code Context Budgeter. Context Fabric calls this BEFORE prompt
+// composition for Developer-style stages. Returns a token-budgeted
+// package of AST slices that Prompt Composer renders into CODE_* layers.
+// NOT an agent-callable tool — the resulting prompt lands at step 0 of
+// the ReAct loop, fully formed.
+app.post("/mcp/code-context/build", async (req, res) => {
+  const parsed = z.object({
+    task_text: z.string().min(1, "task_text is required"),
+    target_hints: z.array(z.string()).optional(),
+    max_token_budget: z.number().int().positive().max(50_000).optional(),
+    max_dependency_depth: z.number().int().min(0).max(5).optional(),
+    include_tests: z.boolean().optional(),
+    trace_id: z.string().optional(),
+    capability_id: z.string().optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    throw new AppError("invalid /mcp/code-context/build payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
+  }
+  const pkg = await buildCodeContextPackage(parsed.data);
+  res.json({ success: true, data: pkg, requestId: res.locals.requestId });
 });
 app.use("/mcp", invokeRouter);
 app.use("/mcp", toolsRouter);

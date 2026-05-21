@@ -82,6 +82,70 @@ export const composeSchema = z.object({
   // Tool Service once, so Prompt Composer renders the same descriptors MCP
   // will receive instead of doing a second discovery pass.
   toolDescriptors: z.array(toolDescriptorSchema).max(64).optional(),
+  // M52 — Pre-budgeted code-context package from mcp-server. When present,
+  // Prompt Composer emits 7 CODE_* layers (TASK_INTENT, TARGET_SYMBOLS,
+  // EDITABLE_SLICES, DEPENDENCY_SLICES, TYPE_CONTRACTS, TEST_SLICES,
+  // CONTEXT_RECEIPT) IN PLACE OF the legacy monolithic CODE_CONTEXT layer.
+  // Shape mirrors mcp-server's CodeContextPackage (src/mcp/code-context.ts).
+  // Slice content lives only in-flight (in the assembled system prompt
+  // emitted to mcp-server); the central PromptAssembly DB stores the
+  // assembled text BUT the slice rows themselves are not separately
+  // persisted, so this stays consistent with "private code in MCP".
+  codeContextPackage: z.object({
+    context_package_id: z.string(),
+    task_intent: z.object({
+      kind: z.enum(["code_modification", "code_read", "unknown"]),
+      summary: z.string(),
+    }),
+    target_symbols: z.array(z.object({
+      symbol: z.string(),
+      file: z.string(),
+      language: z.string(),
+      start_line: z.number(),
+      end_line: z.number(),
+      reason: z.string(),
+    })),
+    editable_slices: z.array(z.object({
+      file: z.string(),
+      symbol: z.string(),
+      start_line: z.number(),
+      end_line: z.number(),
+      content: z.string(),
+      token_count: z.number(),
+      content_hash: z.string(),
+    })),
+    dependency_slices: z.array(z.object({
+      file: z.string(),
+      symbol: z.string(),
+      start_line: z.number(),
+      end_line: z.number(),
+      content: z.string(),
+      token_count: z.number(),
+      content_hash: z.string(),
+      dependency_depth: z.number().optional(),
+    })),
+    test_slices: z.array(z.object({
+      file: z.string(),
+      symbol: z.string(),
+      start_line: z.number(),
+      end_line: z.number(),
+      content: z.string(),
+      token_count: z.number(),
+      content_hash: z.string(),
+    })),
+    excluded_context: z.array(z.object({
+      file: z.string(),
+      symbol: z.string().optional(),
+      reason: z.string(),
+      estimated_tokens_avoided: z.number().optional(),
+    })),
+    optimization: z.object({
+      raw_estimate: z.number(),
+      optimized_estimate: z.number(),
+      tokens_saved: z.number(),
+      percent_saved: z.number(),
+    }),
+  }).optional(),
   // M44 Slice C — When true, the TOOL_CONTRACT layer omits the full JSON
   // input_schema dump because the same schema is already sent to the LLM
   // as a real tool descriptor (Anthropic/OpenAI `tools` parameter). Keeping

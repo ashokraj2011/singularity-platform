@@ -72,6 +72,17 @@ enum PromptLayerType {
   RUNTIME_EVIDENCE
   MEMORY_CONTEXT
   CODE_CONTEXT
+  // M52 — Code Context Budgeter layers. Replace the monolithic
+  // CODE_CONTEXT for runs that supply a structured codeContextPackage
+  // (built upstream by mcp-server's /mcp/code-context/build endpoint).
+  // Priority slots 310–316 in compose.service.ts, just above CODE_CONTEXT.
+  CODE_TASK_INTENT
+  CODE_TARGET_SYMBOLS
+  CODE_EDITABLE_SLICES
+  CODE_DEPENDENCY_SLICES
+  CODE_TYPE_CONTRACTS
+  CODE_TEST_SLICES
+  CODE_CONTEXT_RECEIPT
   OUTPUT_CONTRACT
   APPROVAL_POLICY
   DATA_ACCESS_POLICY

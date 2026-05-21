@@ -169,7 +169,20 @@ const PRIORITY = {
   // capability-scoped memory but more than raw code excerpts.
   GLOBAL_LESSON: 280,
   MEMORY_CONTEXT: 300,
-  CODE_CONTEXT: 320, // M14 — between MEMORY_CONTEXT and WORKFLOW_PHASE_BASE
+  // M52 — Code Context Budgeter slots. The 7 CODE_* layers sit between
+  // MEMORY_CONTEXT (300) and the legacy CODE_CONTEXT (320). When a
+  // codeContextPackage is supplied on the compose request, these layers
+  // are emitted IN PLACE OF the monolithic CODE_CONTEXT. Order matters:
+  // task intent first so the model anchors on goal, then targets, then
+  // editable, then deps, then types, then tests, then receipt last.
+  CODE_TASK_INTENT:        310,
+  CODE_TARGET_SYMBOLS:     311,
+  CODE_EDITABLE_SLICES:    312,
+  CODE_DEPENDENCY_SLICES:  313,
+  CODE_TYPE_CONTRACTS:     314,
+  CODE_TEST_SLICES:        315,
+  CODE_CONTEXT_RECEIPT:    316,
+  CODE_CONTEXT: 320, // M14 — legacy monolithic; emitted only when no codeContextPackage
   WORKFLOW_PHASE_BASE: 350,
   TOOL_CONTRACT: 500,
   ARTIFACT_CONTEXT: 600,
@@ -713,7 +726,16 @@ export const composeService = {
         // get_ast_slice) instead of paying tokens for top-N on every prompt.
         // Set PROMPT_INCLUDE_CODE_CONTEXT=true to bring back the legacy
         // behaviour for capabilities that pre-date M27.
-        if (includeCodeContext()) {
+        // M52 — Code Context Budgeter fast-path. When mcp-server has already
+        // built a token-budgeted slice package upstream (via Context Fabric →
+        // /mcp/code-context/build), emit 7 deterministic CODE_* layers IN
+        // PLACE OF the legacy semantic-retrieval CODE_CONTEXT path below.
+        if (input.codeContextPackage) {
+          const pkg = input.codeContextPackage;
+          appendCodeContextLayers(layers, pkg);
+          retrievalStats.codeIncluded =
+            pkg.editable_slices.length + pkg.dependency_slices.length + pkg.test_slices.length;
+        } else if (includeCodeContext()) {
           const symbols = budget.codeTopK === 0 ? [] : taskVec
             ? await this.semanticSymbols(capabilityId, taskVec, budget.codeTopK)
             : (await runtimeReader.capabilityCodeSymbol.findMany({
@@ -1656,4 +1678,122 @@ Input schema: ${JSON.stringify(t.input_schema ?? { type: "object" })}`;
 
 function humanLayer(layerType: string): string {
   return layerType.split("_").map(w => w.charAt(0) + w.slice(1).toLowerCase()).join(" ");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// M52 — Code Context Budgeter layer renderers
+//
+// When a structured codeContextPackage is supplied on the ComposeInput,
+// these renderers emit 7 deterministic CODE_* layers IN PLACE OF the
+// legacy semantic-retrieval CODE_CONTEXT layer. Slot priorities live in
+// PRIORITY (CODE_TASK_INTENT=310 … CODE_CONTEXT_RECEIPT=316). Each
+// renderer returns the rendered text for one layer; appendCodeContextLayers
+// pushes all 7 onto the assembly array in order.
+//
+// Exported for testability so the contract test can render in isolation
+// without spinning up the full composeAndRespond flow.
+// ─────────────────────────────────────────────────────────────────────────
+
+type CodeContextPackageInput = NonNullable<ComposeInput["codeContextPackage"]>;
+
+export function renderCodeTaskIntentLayer(pkg: CodeContextPackageInput): string {
+  const intent = pkg.task_intent;
+  return [
+    "## Code Task Intent",
+    `Kind: ${intent.kind}`,
+    `Summary: ${intent.summary}`,
+  ].join("\n");
+}
+
+export function renderCodeTargetSymbolsLayer(pkg: CodeContextPackageInput): string | null {
+  if (pkg.target_symbols.length === 0) return null;
+  const lines = ["## Target Symbols"];
+  for (const t of pkg.target_symbols) {
+    lines.push(`- \`${t.symbol}\` (${t.language}) — ${t.file}:${t.start_line}-${t.end_line} — ${t.reason}`);
+  }
+  return lines.join("\n");
+}
+
+function renderSliceBlock(s: CodeContextPackageInput["editable_slices"][number], extraTag?: string): string {
+  const header = `${s.file}:${s.start_line}-${s.end_line}  symbol=${s.symbol}${extraTag ?? ""}`;
+  return ["```", header, s.content, "```"].join("\n");
+}
+
+export function renderCodeEditableSlicesLayer(pkg: CodeContextPackageInput): string | null {
+  if (pkg.editable_slices.length === 0) return null;
+  const lines = ["## Editable Code Slices"];
+  for (const s of pkg.editable_slices) lines.push(renderSliceBlock(s));
+  return lines.join("\n\n");
+}
+
+export function renderCodeDependencySlicesLayer(pkg: CodeContextPackageInput): string | null {
+  if (pkg.dependency_slices.length === 0) return null;
+  const lines = ["## Dependency Slices"];
+  for (const s of pkg.dependency_slices) {
+    const tag = s.dependency_depth != null ? `  dep_depth=${s.dependency_depth}` : "";
+    lines.push(renderSliceBlock(s, tag));
+  }
+  return lines.join("\n\n");
+}
+
+export function renderCodeTypeContractsLayer(pkg: CodeContextPackageInput): string | null {
+  // M52 v1: type-contract extraction is best done by re-running tree-sitter
+  // queries that pull only `interface_declaration` / `type_alias_declaration`
+  // / class signatures. For Slice 1 we emit this layer ONLY when the
+  // dependency_slices already contain symbols whose name shape looks like
+  // a type/interface (PascalCase tokens). Otherwise return null so the
+  // layer is omitted cleanly. A richer impl can land in a follow-up.
+  const typey = pkg.dependency_slices.filter((s) => /^[A-Z][A-Za-z0-9_]*$/.test(s.symbol));
+  if (typey.length === 0) return null;
+  const lines = ["## Type Contracts"];
+  for (const s of typey) lines.push(renderSliceBlock(s, "  kind=type"));
+  return lines.join("\n\n");
+}
+
+export function renderCodeTestSlicesLayer(pkg: CodeContextPackageInput): string | null {
+  if (pkg.test_slices.length === 0) return null;
+  const lines = ["## Relevant Tests"];
+  for (const s of pkg.test_slices) lines.push(renderSliceBlock(s));
+  return lines.join("\n\n");
+}
+
+export function renderCodeContextReceiptLayer(pkg: CodeContextPackageInput): string {
+  const o = pkg.optimization;
+  const lines = [
+    "## Code Context Receipt",
+    `Package: ${pkg.context_package_id}`,
+    `Tokens — raw estimate: ${o.raw_estimate}, optimized: ${o.optimized_estimate}, saved: ${o.tokens_saved} (${o.percent_saved.toFixed(2)}%)`,
+    `Included — editable: ${pkg.editable_slices.length}, dependency: ${pkg.dependency_slices.length}, tests: ${pkg.test_slices.length}`,
+  ];
+  if (pkg.excluded_context.length > 0) {
+    lines.push("Excluded:");
+    for (const e of pkg.excluded_context.slice(0, 6)) {
+      const sym = e.symbol ? ` (${e.symbol})` : "";
+      lines.push(`  - ${e.file}${sym}: ${e.reason}`);
+    }
+    if (pkg.excluded_context.length > 6) {
+      lines.push(`  - ... (+${pkg.excluded_context.length - 6} more)`);
+    }
+  }
+  return lines.join("\n");
+}
+
+export function appendCodeContextLayers(layers: AssembledLayer[], pkg: CodeContextPackageInput): void {
+  const push = (layerType: AssembledLayer["layerType"], priority: number, reason: string, content: string | null) => {
+    if (!content) return;
+    layers.push({
+      layerType,
+      priority,
+      inclusionReason: reason,
+      contentSnapshot: content,
+      layerHash: sha256(content),
+    });
+  };
+  push("CODE_TASK_INTENT" as never,        PRIORITY.CODE_TASK_INTENT,       "code context budgeter",        renderCodeTaskIntentLayer(pkg));
+  push("CODE_TARGET_SYMBOLS" as never,     PRIORITY.CODE_TARGET_SYMBOLS,    "code context budgeter",        renderCodeTargetSymbolsLayer(pkg));
+  push("CODE_EDITABLE_SLICES" as never,    PRIORITY.CODE_EDITABLE_SLICES,   "code context budgeter",        renderCodeEditableSlicesLayer(pkg));
+  push("CODE_DEPENDENCY_SLICES" as never,  PRIORITY.CODE_DEPENDENCY_SLICES, "code context budgeter — deps", renderCodeDependencySlicesLayer(pkg));
+  push("CODE_TYPE_CONTRACTS" as never,     PRIORITY.CODE_TYPE_CONTRACTS,    "code context budgeter — types",renderCodeTypeContractsLayer(pkg));
+  push("CODE_TEST_SLICES" as never,        PRIORITY.CODE_TEST_SLICES,       "code context budgeter — tests",renderCodeTestSlicesLayer(pkg));
+  push("CODE_CONTEXT_RECEIPT" as never,    PRIORITY.CODE_CONTEXT_RECEIPT,   "code context budgeter — receipt", renderCodeContextReceiptLayer(pkg));
 }
