@@ -54,6 +54,10 @@ const READ_ONLY_TOOLS = new Set<string>([
   "grep_lines",   // grep with context lines (ripgrep)
   // M43 — agentic workflow grounding (cheap, structured, read-only).
   "repo_map",     // initial topology + build-system + verifier inventory
+  // M48 — capture test baseline so VERIFY can ignore pre-existing failures.
+  // Belongs to read-only set even though it spawns a subprocess: it's idempotent
+  // (no mutation) and the agent should call it once early in EXPLORE.
+  "capture_test_baseline",
 ]);
 
 const MUTATION_TOOLS = new Set<string>([

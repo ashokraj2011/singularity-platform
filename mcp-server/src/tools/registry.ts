@@ -214,7 +214,7 @@ import {
   indexWorkspaceTool, listIndexedFilesTool, findSymbolTool, getSymbolTool, getAstSliceTool,
   getDependenciesTool, prepareWorkBranchTool, finishWorkBranchTool,
 } from "./ast-tools";
-import { runCommandTool, runTestTool, verificationUnavailableTool } from "./command";
+import { runCommandTool, runTestTool, verificationUnavailableTool, captureTestBaselineTool } from "./command";
 import { formalVerifyTool } from "./formal-verify";
 import { repoMapTool, recommendedVerificationTool, reviewDiffTool } from "./workflow-tools";
 import {
@@ -255,6 +255,7 @@ const REGISTRY = new Map<string, ToolHandler>([
   [runCommandTool.descriptor.name, runCommandTool],
   [runTestTool.descriptor.name, runTestTool],
   [verificationUnavailableTool.descriptor.name, verificationUnavailableTool],
+  [captureTestBaselineTool.descriptor.name, captureTestBaselineTool],
   [formalVerifyTool.descriptor.name, formalVerifyTool],
   [queryLearningStateTool.descriptor.name, queryLearningStateTool],
   [querySimilarCapabilitiesTool.descriptor.name, querySimilarCapabilitiesTool],

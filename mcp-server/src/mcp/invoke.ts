@@ -22,7 +22,7 @@ import { llmRespond } from "../llm/client";
 import { ChatMessage, LlmResponse, ToolCall, ToolDescriptorForLlm } from "../llm/types";
 import { resolveModelConfig } from "../llm/model-catalog";
 import { getLocalTool, listLocalTools } from "../tools/registry";
-import { runVerificationCommand } from "../tools/command";
+import { runVerificationCommand, parseTestRunnerOutput, diffTestResults } from "../tools/command";
 import { detectVerifiers } from "../workspace/verifier-registry";
 import {
   CorrelationIds, recordLlmCall, recordToolInvocation, recordArtifact,
@@ -361,6 +361,74 @@ function verificationReceiptsFromOutput(
   const receipts: Array<Record<string, unknown>> = [];
   collectVerificationReceipts(output, toolInvocationId, toolName, receipts);
   return receipts;
+}
+
+/**
+ * M48 — Bridge helper: extract receipts from a tool output, enrich each
+ * with a per-test diff against any previously-captured baseline already
+ * in state, and return the enriched receipts ready to push.
+ */
+function enrichedReceiptsFromOutput(
+  state: LoopState,
+  output: unknown,
+  toolInvocationId: string,
+  toolName: string,
+): Array<Record<string, unknown>> {
+  const raw = verificationReceiptsFromOutput(output, toolInvocationId, toolName);
+  return raw.map((r) => enrichWithBaselineDiff(r, state.verificationReceipts));
+}
+
+/**
+ * M48 — Enrich a fresh verification receipt with a per-test diff against a
+ * previously-captured baseline. Returns the receipt unchanged when no
+ * baseline exists, when the runner output isn't parseable, or when this
+ * IS the baseline receipt itself. Called by the loop after collecting
+ * receipts from a tool invocation but before pushing them to state.
+ */
+function enrichWithBaselineDiff(
+  fresh: Record<string, unknown>,
+  existingReceipts: ReadonlyArray<Record<string, unknown>>,
+): Record<string, unknown> {
+  // The baseline receipt itself shouldn't be diffed.
+  if (fresh.verification_kind === "baseline") return fresh;
+  // Find the most recent baseline receipt in state.
+  const baseline = [...existingReceipts].reverse().find(r => r.verification_kind === "baseline");
+  if (!baseline) return fresh;
+  // Need stdout from both. Receipts truncate stdout to `stdout_excerpt`
+  // which may be a string OR { kind: "compressed_text", excerpt }. Unwrap.
+  const unwrapStdout = (r: Record<string, unknown>): string => {
+    const raw = r.stdout_excerpt ?? r.stdout ?? "";
+    if (typeof raw === "string") return raw;
+    if (raw && typeof raw === "object") {
+      const obj = raw as Record<string, unknown>;
+      if (typeof obj.excerpt === "string") return obj.excerpt;
+    }
+    return "";
+  };
+  const baselineCmd = String(baseline.command ?? "");
+  const freshCmd = String(fresh.command ?? "");
+  const baselineParsed = parseTestRunnerOutput(unwrapStdout(baseline), baselineCmd);
+  const freshParsed = parseTestRunnerOutput(unwrapStdout(fresh), freshCmd);
+  if (baselineParsed.format === "unparseable" || freshParsed.format === "unparseable") {
+    return { ...fresh, baseline_diff_unavailable: "test runner output not parseable; gate falls back to raw exit_code" };
+  }
+  const diff = diffTestResults(baselineParsed, freshParsed);
+  return {
+    ...fresh,
+    baseline_diff: {
+      pre_existing_failures: diff.pre_existing_failures,
+      regressions: diff.regressions,
+      fixed: diff.fixed,
+      hasRegressions: diff.hasRegressions,
+      baseline_total: baselineParsed.totalTests,
+      post_total: freshParsed.totalTests,
+    },
+    // When there are no regressions but raw passed=false (because of
+    // pre-existing failures), surface an effective_passed=true so the
+    // workgraph gate has a clear gradient between "really failed" and
+    // "still has only the upstream-broken tests."
+    effective_passed: !diff.hasRegressions,
+  };
 }
 
 function collectVerificationReceipts(
@@ -1166,7 +1234,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
               }
             }
             state.verificationReceipts.push(
-              ...verificationReceiptsFromOutput(result.record.output, result.record.id, tc.name)
+              ...enrichedReceiptsFromOutput(state, result.record.output, result.record.id, tc.name)
             );
 
             if (result.record.error_code === "CONFLICT") {
@@ -1429,7 +1497,7 @@ Please review the errors above, correct the code, and explain how you resolved t
             mutatedPaths.push(...result.codeChange.paths_touched);
           }
         }
-        state.verificationReceipts.push(...verificationReceiptsFromOutput(result.record.output, result.record.id, tc.name));
+        state.verificationReceipts.push(...enrichedReceiptsFromOutput(state, result.record.output, result.record.id, tc.name));
         if (result.record.error_code === "CONFLICT") {
           state.rePlanDepth++;
           // Phase repetition counter must reset on CONFLICT — a CONFLICT is a
@@ -1952,7 +2020,7 @@ async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome
           mutatedPaths.push(...result.codeChange.paths_touched);
         }
       }
-      state.verificationReceipts.push(...verificationReceiptsFromOutput(result.record.output, result.record.id, tc.name));
+      state.verificationReceipts.push(...enrichedReceiptsFromOutput(state, result.record.output, result.record.id, tc.name));
       if (result.record.error_code === "CONFLICT") {
         state.rePlanDepth++;
         emitRePlan(state.correlation, {
@@ -2967,7 +3035,7 @@ invokeRouter.post("/resume", async (req, res) => {
     );
     state.toolInvocationIds.push(result.record.id);
     if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
-    state.verificationReceipts.push(...verificationReceiptsFromOutput(result.record.output, result.record.id, tc.name));
+    state.verificationReceipts.push(...enrichedReceiptsFromOutput(state, result.record.output, result.record.id, tc.name));
     // M39 / M39.B — mask resumed-tool output (async path for NER support).
     const resumeDesc = env.full_tool_descriptors.find((d) => d.name === tc.name);
     const rawOutput = toolMessageContentForRecord(state, result.record, tc.name);

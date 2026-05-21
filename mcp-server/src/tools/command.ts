@@ -183,7 +183,7 @@ function truncateOutput(value: string, maxChars: number): string {
   return `${head}\n... output truncated ...\n${tail}`;
 }
 
-async function runCommand(args: Record<string, unknown>, defaultKind: "command" | "test") {
+async function runCommand(args: Record<string, unknown>, defaultKind: "command" | "test" | "baseline") {
   const { command, argv } = normalizeInvocation(args);
   const cwd = resolveSandboxedPath(typeof args.cwd === "string" && args.cwd.trim() ? args.cwd : ".");
   const timeoutMs = typeof args.timeout_ms === "number" && args.timeout_ms > 0
@@ -444,3 +444,146 @@ export const verificationUnavailableTool: ToolHandler = {
     };
   },
 };
+
+// ─────────────────────────────────────────────────────────────────────────
+// M48 — Test-baseline capture for the "ignore pre-existing failures" flow.
+//
+// The RuleEngine workflow exposed a class of failure that the verification
+// gate currently treats as a regression: the upstream `main` branch has
+// pre-existing broken tests (Map.of("k","v","k2",null) — NPE on Java 9+).
+// `mvn test` fails for reasons unrelated to the agent's edit.
+//
+// The flow this enables:
+//   1. Early in PLAN_DRAFT or EXPLORE the agent calls capture_test_baseline.
+//      That runs the verifier against the CURRENT branch (no edits yet) and
+//      records which tests fail.
+//   2. After ACT, the agent calls run_test as usual. invoke.ts joins the two
+//      receipts and computes per-test deltas (pre_existing_failures /
+//      regressions / new_failures / new_passes).
+//   3. The workgraph verification gate blocks only on regressions + new
+//      failures, not pre-existing failures.
+// ─────────────────────────────────────────────────────────────────────────
+
+export const captureTestBaselineTool: ToolHandler = {
+  descriptor: {
+    name: "capture_test_baseline",
+    description:
+      "Run the project's verifier against the CURRENT branch state (no edits yet) and tag the receipt as a baseline. " +
+      "Use this in EARLY EXPLORE on the Develop stage to anchor pre-existing test failures — they then won't be confused " +
+      "with regressions when run_test runs again after your edits. Without a baseline, the verification gate treats every " +
+      "failure (including upstream-broken tests) as a blocker. With a baseline, pre-existing failures pass through as " +
+      "informational; only NEW failures or tests-that-were-passing-and-now-fail block approval.",
+    natural_language:
+      "Use this once near the start of Develop, BEFORE making code edits. Same arguments as run_test (command + args + cwd). " +
+      "The resulting receipt is stored as the baseline for this run.",
+    input_schema: commandInputSchema,
+    risk_level: "MEDIUM",
+    requires_approval: false,
+  },
+  async execute(args) {
+    try {
+      return await runCommand(args, "baseline");
+    } catch (err) {
+      return { success: false, output: null, error: (err as Error).message };
+    }
+  },
+};
+
+/**
+ * M48 — Parse a verifier stdout to extract per-test pass/fail status.
+ *
+ * Currently supports Maven Surefire output. Other runners (pytest, vitest,
+ * gradle, etc.) get added as we need them — the function returns an
+ * "unparseable" tag so the caller can still surface the raw output without
+ * losing signal.
+ *
+ * Exported for testability.
+ */
+export interface ParsedTestResults {
+  format: "maven" | "unparseable";
+  totalTests?: number;
+  passingTests: string[];   // fully-qualified test names that passed
+  failingTests: string[];   // fully-qualified test names that failed
+  errorSummary?: string;    // one-line "X failures, Y errors"
+}
+
+export function parseTestRunnerOutput(stdout: string, command: string): ParsedTestResults {
+  const cmd = command.toLowerCase();
+  // Maven Surefire — lines of the form:
+  //   [ERROR] org.example.rules.RuleEngineServiceTest.testIsNull -- Time elapsed ...
+  //   [ERROR]   RuleEngineServiceTest.testIsNotNull:167 » NullPointer
+  // Plus a summary:  Tests run: 19, Failures: 0, Errors: 2, Skipped: 0
+  if (cmd.includes("mvn") || cmd.includes("maven")) {
+    // Collect both FQN form and short summary form, then dedupe by the
+    // (className, methodName) tail. We prefer the FQN when both appear.
+    const fqnSet = new Set<string>();
+    const shortSet = new Set<string>();
+    for (const line of stdout.split("\n")) {
+      const fullFqn = line.match(/^\[ERROR\] ([a-zA-Z_][\w.]*\.\w+)\b.* -- Time elapsed/);
+      if (fullFqn) { fqnSet.add(fullFqn[1]); continue; }
+      const short = line.match(/^\[ERROR\]\s+(\w+\.\w+):\d+\s+»/);
+      if (short) { shortSet.add(short[1]); continue; }
+    }
+    const tail = (s: string): string => s.split(".").slice(-2).join(".");
+    const fqnByTail = new Map<string, string>();
+    for (const fqn of fqnSet) fqnByTail.set(tail(fqn), fqn);
+    const failingSet = new Set<string>(fqnSet);
+    for (const sh of shortSet) {
+      // Only add the short form if we don't already have its FQN equivalent.
+      if (!fqnByTail.has(sh)) failingSet.add(sh);
+    }
+    const summary = stdout.match(/Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+)(?:,\s*Skipped:\s*(\d+))?/);
+    const totalTests = summary ? Number(summary[1]) : undefined;
+    return {
+      format: "maven",
+      totalTests,
+      // We can't enumerate the passing set reliably from stdout (Maven only
+      // logs the failing ones by default); the empty array means "unknown
+      // but presumed = totalTests - failing.length". Downstream consumers
+      // use failingTests sets for the diff.
+      passingTests: [],
+      failingTests: [...failingSet],
+      errorSummary: summary ? `${summary[2]} failure(s), ${summary[3]} error(s)${summary[4] ? `, ${summary[4]} skipped` : ""}` : undefined,
+    };
+  }
+  return { format: "unparseable", passingTests: [], failingTests: [] };
+}
+
+/**
+ * M48 — Compute the diff between a baseline test run and a post-edit run.
+ * Returns the categorisation the workgraph verification gate consumes.
+ */
+export interface VerificationDiff {
+  pre_existing_failures: string[];  // failing at baseline AND still failing → informational
+  regressions: string[];            // passing-by-omission at baseline (not in failing set), failing now → blocker
+  fixed: string[];                  // failing at baseline, passing now (the agent fixed something)
+  new_failures: string[];           // appeared in postFailing, weren't observed at baseline at all → blocker (usually new tests that fail)
+  hasRegressions: boolean;
+}
+
+export function diffTestResults(baseline: ParsedTestResults, post: ParsedTestResults): VerificationDiff {
+  const baselineFailing = new Set(baseline.failingTests);
+  const postFailing = new Set(post.failingTests);
+
+  const pre_existing_failures: string[] = [];
+  const fixed: string[] = [];
+
+  for (const t of baselineFailing) {
+    if (postFailing.has(t)) pre_existing_failures.push(t);
+    else fixed.push(t);
+  }
+  // post failures not present in baseline → either new tests OR pre-existing
+  // tests that the agent broke. We can't distinguish without a baseline test
+  // inventory, so all are treated as regressions/new_failures (both blocking).
+  // The caller can split them later by checking whether the test name was
+  // mentioned in any changed test file's diff.
+  const newOrRegressed = [...postFailing].filter(t => !baselineFailing.has(t));
+
+  return {
+    pre_existing_failures,
+    regressions: newOrRegressed,  // conservative: all post-only failures block until split
+    fixed,
+    new_failures: [],
+    hasRegressions: newOrRegressed.length > 0,
+  };
+}

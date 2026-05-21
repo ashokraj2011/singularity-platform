@@ -2549,7 +2549,9 @@ async function saveStageVerdict(
   }
   if (accepted && attemptHasActualCodeChange(latestAttempt) && attemptHasFailedVerificationReceipt(latestAttempt)) {
     throw new ValidationError(
-      'Code-changing stages cannot be approved with failed verification receipts. Send the stage back with the test, lint, typecheck, or formal-verifier output.',
+      'Code-changing stages cannot be approved with failed verification receipts. Either: ' +
+      '(a) Send the stage back so the agent can fix the failing tests, OR ' +
+      '(b) Have the agent call `capture_test_baseline` BEFORE editing (in EXPLORE) — pre-existing failures then pass through the gate as long as no NEW regressions appear.',
     )
   }
   if (accepted && attemptHasActualCodeChange(latestAttempt) && attemptHasUnavailableVerificationReceipt(latestAttempt) && (body.verdict !== 'ACCEPTED_WITH_RISK' || !body.acceptRisk)) {
@@ -3953,12 +3955,21 @@ function attemptHasFailedVerificationReceipt(attempt: StageAttempt): boolean {
   return (attempt.verificationReceipts ?? []).some(receipt => {
     const exitCode = attemptReceiptExitCode(receipt)
     if (attemptReceiptUnavailable(receipt)) return false
+    // M48 — When a per-test baseline diff is attached AND there are no
+    // regressions, the receipt failed only because of pre-existing upstream
+    // failures the agent didn't cause. Honour the diff's effective_passed
+    // signal so the gate distinguishes "upstream-broken" from "agent broke it".
+    if (receipt.effective_passed === true) return false
     return receipt.passed === false || (typeof exitCode === 'number' && exitCode !== 0)
   })
 }
 
 function attemptHasPassingVerificationReceipt(attempt: StageAttempt): boolean {
-  return (attempt.verificationReceipts ?? []).some(receipt => receipt.passed === true || attemptReceiptExitCode(receipt) === 0)
+  return (attempt.verificationReceipts ?? []).some(receipt =>
+    receipt.passed === true ||
+    receipt.effective_passed === true ||           // M48 — baseline-diff-clean counts as passing
+    attemptReceiptExitCode(receipt) === 0,
+  )
 }
 
 function attemptReceiptUnavailable(receipt: Record<string, unknown>): boolean {
