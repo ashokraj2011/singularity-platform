@@ -758,8 +758,68 @@ function tryParsePlanFromAssistant(state: LoopState, llmResp: LlmResponse): "par
       if (!merged[t.file]) merged[t.file] = { status: t.status };
     }
     state.phaseMachine.planProgress = merged;
+
+    // M48 — Baseline coherence: if the agent captured a test baseline with
+    // failures but the confirmed plan doesn't address any of them, surface
+    // a warning so operators can decide whether to send back. We don't
+    // block — the agent might legitimately have decided the failures are
+    // out of scope and used skipReason elsewhere.
+    checkBaselineAddressed(state, newPlan);
   }
   return "parsed";
+}
+
+/**
+ * M48 — Warn (via audit) when a baseline-of-failing-tests exists but the
+ * confirmed plan has no targets that touch any of them. The check uses a
+ * loose name-match (failing test method or class name appears in any
+ * target's file path or intent text) so it works without exact path
+ * resolution. False negatives are fine — the goal is to flag obvious
+ * "ignored baseline" cases, not to enumerate every legitimate scope call.
+ */
+function checkBaselineAddressed(state: LoopState, plan: Plan): void {
+  const baseline = [...state.verificationReceipts].reverse().find(r => r.verification_kind === "baseline");
+  if (!baseline) return;
+  const baselineFailing = (baseline.baseline_diff as { pre_existing_failures?: string[] } | undefined)?.pre_existing_failures
+    ?? (() => {
+      // Baseline receipts don't have a baseline_diff on themselves; parse stdout directly
+      const stdoutRaw = baseline.stdout_excerpt ?? baseline.stdout ?? "";
+      const stdout = typeof stdoutRaw === "string" ? stdoutRaw : (stdoutRaw && typeof stdoutRaw === "object" && typeof (stdoutRaw as { excerpt?: unknown }).excerpt === "string" ? (stdoutRaw as { excerpt: string }).excerpt : "");
+      const parsed = parseTestRunnerOutput(stdout, String(baseline.command ?? ""));
+      return parsed.failingTests;
+    })();
+  if (!baselineFailing || baselineFailing.length === 0) return;
+
+  // Match: a failing test like "org.example.Foo.testBar" should be considered
+  // addressed if any required target's file path contains "Foo" OR its
+  // intent text mentions the test name's last segment.
+  const tail = (s: string): string => s.split(".").slice(-2).join(".");
+  const classOnly = (s: string): string => s.split(".").slice(-2, -1).join("");
+  const unaddressed = baselineFailing.filter(t => {
+    const cls = classOnly(t);
+    const fullTail = tail(t);
+    return !plan.targets.some(target =>
+      target.required && target.status !== "skipped" && (
+        target.file.includes(cls) || target.intent.toLowerCase().includes(fullTail.toLowerCase()) || target.intent.toLowerCase().includes(t.toLowerCase())
+      ),
+    );
+  });
+  if (unaddressed.length === 0) return;
+  emitAuditEvent({
+    trace_id: state.correlation.traceId,
+    source_service: "mcp-server",
+    kind: "agent.plan.baseline_unaddressed",
+    capability_id: state.correlation.capabilityId,
+    severity: "warn",
+    payload: {
+      message:
+        "Baseline captured failing tests that the confirmed plan does not appear to address. " +
+        "The agent should add a kind:'test' or kind:'code' target for each, OR mark them skipped with skipReason. " +
+        "Skipping silently means the verification gate accepts the run as-is via baseline_diff (effective_passed=true).",
+      unaddressed,
+      planTargetFiles: plan.targets.map(t => t.file),
+    },
+  });
 }
 
 /** Decide whether a tool call is allowed in the current phase. Returns the
