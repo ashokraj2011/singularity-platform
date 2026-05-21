@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import * as path from "node:path";
 import type { ToolHandler } from "./registry";
 import { config } from "../config";
-import { resolveSandboxedPath, sandboxRoot } from "../workspace/sandbox";
+import { resolveSandboxedPath, baseSandboxRoot } from "../workspace/sandbox";
 import { callSandboxRunner } from "./runner-client";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -168,7 +168,15 @@ async function runCommand(args: Record<string, unknown>, defaultKind: "command" 
   const maxOutputChars = typeof args.max_output_chars === "number" && args.max_output_chars > 0
     ? Math.min(Math.floor(args.max_output_chars), 100_000)
     : DEFAULT_MAX_OUTPUT_CHARS;
-  const relativeCwd = path.relative(sandboxRoot(), cwd) || ".";
+  // Critical: the sandbox-runner mounts BASE sandbox root (/workspace) into
+  // the spawned container — NOT the workitem-scoped sandboxRoot(). If we
+  // compute relativeCwd against sandboxRoot() and the agent passes cwd=".",
+  // the runner ends up at /workspace (no pom.xml) instead of the workitem
+  // dir (/workspace/.singularity/workitems/WRK-XXXX where pom.xml lives).
+  // That manifested as "no POM in this directory" on every mvn invocation
+  // even though the project file existed. Anchor the relative path to the
+  // BASE root so the runner traverses into the workitem subdirectory.
+  const relativeCwd = path.relative(baseSandboxRoot(), cwd) || ".";
   if (config.MCP_COMMAND_EXECUTION_MODE === "container") {
     const receipt = await callSandboxRunner({
       command,

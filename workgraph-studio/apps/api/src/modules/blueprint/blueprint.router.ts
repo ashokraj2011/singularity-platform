@@ -50,7 +50,13 @@ function positiveIntEnv(name: string, fallback: number): number {
 }
 const WORKBENCH_DEFAULT_MODEL_ALIAS = process.env.WORKBENCH_DEFAULT_MODEL_ALIAS?.trim() || undefined
 const WORKBENCH_DEFAULT_MAX_STEPS = positiveIntEnv('WORKBENCH_MAX_STEPS', 8)
-const WORKBENCH_DEVELOPER_MAX_STEPS = positiveIntEnv('WORKBENCH_DEVELOPER_MAX_STEPS', 16)
+// Developer stage needs more steps than read-only stages because each real
+// code change is the END of a sequence of: explore (4-6 steps), read target
+// files (2-3 steps), make N edits (N steps), add tests (1-2 steps), run
+// verification (1 step), finish (1 step). 16 was tight — Sonnet hit max_steps
+// with the replace_text call already queued in step 15 (see trace from
+// 2026-05-21 10:11). 28 gives ~50% headroom over the observed need.
+const WORKBENCH_DEVELOPER_MAX_STEPS = positiveIntEnv('WORKBENCH_DEVELOPER_MAX_STEPS', 28)
 const GOVERNANCE_MODES = ['fail_open', 'fail_closed', 'degraded', 'human_approval_required'] as const
 type GovernanceMode = typeof GOVERNANCE_MODES[number]
 const DEFAULT_WORKBENCH_EXECUTION_CONFIG = {
