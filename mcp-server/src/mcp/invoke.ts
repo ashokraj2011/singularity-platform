@@ -236,6 +236,7 @@ type LoopOutcome =
 // loosen if a model legitimately needs to re-read.
 const LOOP_REPETITION_THRESHOLD = Number(process.env.MCP_LOOP_REPETITION_THRESHOLD ?? 3);
 const LOOP_REPETITION_WINDOW    = Number(process.env.MCP_LOOP_REPETITION_WINDOW ?? 5);
+const MUTATION_TOOL_NAMES = new Set(["apply_patch", "replace_text", "replace_range", "write_file"]);
 
 function argsHash(args: Record<string, unknown> | undefined): string {
   // Stable hash via sorted JSON. Empty/undefined hashes consistently so
@@ -354,7 +355,7 @@ function shouldNudgeForCodeToolUse(state: LoopState, llmResp: LlmResponse): bool
   if (llmResp.finish_reason === "tool_call" && llmResp.tool_calls?.length) return false;
   if (!state.workspace?.workspaceRoot) return false;
   const hasInspectionTools = hasTool(state, ["find_symbol", "get_symbol", "get_ast_slice", "get_dependencies", "search_code", "read_file"]);
-  const hasMutationTools = hasTool(state, ["apply_patch", "write_file", "git_commit", "finish_work_branch"]);
+  const hasMutationTools = hasTool(state, Array.from(MUTATION_TOOL_NAMES));
   return hasInspectionTools && hasMutationTools;
 }
 
@@ -1156,7 +1157,262 @@ Please review the errors above, correct the code, and explain how you resolved t
     const finalized = await finalizeReadOnlyAfterMaxSteps(state);
     if (finalized) return finalized;
   }
+  const mutated = await forceMutationAfterMaxSteps(state);
+  if (mutated) return mutated;
   return { kind: "complete", finalContent: "", finishReason: "max_steps" };
+}
+
+function mutationToolsForFinalization(state: LoopState): ToolDescriptorForLlm[] {
+  return state.availableTools.filter((tool) => MUTATION_TOOL_NAMES.has(tool.name));
+}
+
+async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome | null> {
+  if (!state.allowAutonomousMutation) return null;
+  if (state.codeChangeIds.length > 0) return null;
+  if (!state.workspace?.workspaceRoot) return null;
+  const mutationTools = mutationToolsForFinalization(state);
+  if (mutationTools.length === 0) return null;
+
+  try {
+    applySlidingWindow(state);
+    state.messages.push({
+      role: "user",
+      content: [
+        "The Developer tool step budget is exhausted and no code-change receipt exists yet.",
+        "Do not inspect more files. Use only the repository evidence already gathered and call a mutation tool now.",
+        "Prefer apply_patch or replace_text for existing files. Use write_file only for new files or deliberate full-file replacement.",
+        "If you cannot safely identify the exact edit from the gathered evidence, do not guess.",
+      ].join("\n"),
+    });
+
+    events.publish({
+      kind: "run.event",
+      correlation: { ...state.correlation },
+      payload: {
+        phase: "max_steps_mutation_finalization",
+        stepIndex: state.stepIndex,
+        llmCalls: state.llmCallIds.length,
+        toolInvocations: state.toolInvocationIds.length,
+        mutationTools: mutationTools.map((tool) => tool.name),
+      },
+    });
+    events.publish({
+      kind: "llm.request",
+      correlation: { ...state.correlation },
+      payload: {
+        modelAlias: state.modelConfig.modelAlias,
+        provider: state.modelConfig.provider,
+        model: state.modelConfig.model,
+        prompt_messages_count: state.messages.length,
+        stepIndex: state.stepIndex,
+        contextCompression: state.contextCompression,
+        promptCache: state.modelConfig.promptCache,
+        finalization: true,
+        forcedMutation: true,
+      },
+    });
+
+    const llmResp = await llmRespond({
+      model_alias: state.modelConfig.modelAlias,
+      provider: state.modelConfig.provider,
+      model: state.modelConfig.model,
+      messages: state.messages,
+      tools: mutationTools,
+      temperature: state.modelConfig.temperature,
+      max_output_tokens: state.modelConfig.maxTokens,
+      prompt_cache: state.modelConfig.promptCache,
+    }, {
+      onDelta: async (delta) => {
+        if (!delta.content) return;
+        events.publish({
+          kind: "llm.stream.delta",
+          correlation: { ...state.correlation },
+          payload: {
+            modelAlias: state.modelConfig.modelAlias,
+            provider: state.modelConfig.provider,
+            model: state.modelConfig.model,
+            stepIndex: state.stepIndex,
+            content: delta.content,
+            index: delta.index,
+            finalization: true,
+            forcedMutation: true,
+          },
+        });
+      },
+    });
+
+    state.totalInputTokens += llmResp.input_tokens;
+    state.totalOutputTokens += llmResp.output_tokens;
+    if (typeof llmResp.estimated_cost === "number" && Number.isFinite(llmResp.estimated_cost)) {
+      state.totalEstimatedCost += llmResp.estimated_cost;
+    }
+    if (llmResp.provider) state.modelConfig.provider = llmResp.provider;
+    if (llmResp.model) state.modelConfig.model = llmResp.model;
+    if (llmResp.model_alias) state.modelConfig.modelAlias = llmResp.model_alias;
+
+    const llmRec = recordLlmCall({
+      correlation: state.correlation,
+      model_alias: state.modelConfig.modelAlias,
+      provider: state.modelConfig.provider,
+      model: state.modelConfig.model,
+      input_tokens: llmResp.input_tokens,
+      output_tokens: llmResp.output_tokens,
+      estimated_cost: llmResp.estimated_cost,
+      latency_ms: llmResp.latency_ms,
+      prompt_messages_count: state.messages.length,
+      finish_reason: llmResp.finish_reason,
+    });
+    state.llmCallIds.push(llmRec.id);
+
+    if (llmResp.prompt_cache) {
+      state.promptCacheUsage.push({
+        ...llmResp.prompt_cache,
+        llmCallId: llmRec.id,
+        stepIndex: state.stepIndex,
+        provider: state.modelConfig.provider,
+        model: state.modelConfig.model,
+        modelAlias: state.modelConfig.modelAlias,
+        capturedAt: new Date().toISOString(),
+      });
+    }
+
+    emitAuditEvent({
+      trace_id: state.correlation.traceId,
+      source_service: "mcp-server",
+      kind: "agent_loop.max_steps_mutation_forced",
+      subject_type: "LlmCall",
+      subject_id: llmRec.id,
+      capability_id: state.correlation.capabilityId,
+      severity: "warn",
+      payload: {
+        reason: "Developer stage exhausted tool steps without a code-change receipt; retried with mutation-only tools.",
+        model_alias: state.modelConfig.modelAlias,
+        provider: state.modelConfig.provider,
+        model: state.modelConfig.model,
+        input_tokens: llmResp.input_tokens,
+        output_tokens: llmResp.output_tokens,
+        finish_reason: llmResp.finish_reason,
+        mutation_tools: mutationTools.map((tool) => tool.name),
+      },
+    });
+
+    events.publish({
+      kind: "llm.response",
+      correlation: { ...state.correlation, llmCallId: llmRec.id },
+      payload: {
+        modelAlias: state.modelConfig.modelAlias,
+        finish_reason: llmResp.finish_reason,
+        input_tokens: llmResp.input_tokens,
+        output_tokens: llmResp.output_tokens,
+        estimated_cost: llmResp.estimated_cost,
+        latency_ms: llmResp.latency_ms,
+        tool_calls_count: llmResp.tool_calls?.length ?? 0,
+        finalization: true,
+        forcedMutation: true,
+      },
+    });
+
+    if (llmResp.finish_reason !== "tool_call" || !llmResp.tool_calls?.length) return null;
+
+    state.messages.push({
+      role: "assistant",
+      content: JSON.stringify({ tool_calls: llmResp.tool_calls }),
+    });
+
+    const mutatedPaths: string[] = [];
+    for (const tc of llmResp.tool_calls.filter((toolCall) => MUTATION_TOOL_NAMES.has(toolCall.name))) {
+      const desc = state.fullToolDescriptors.find((d) => d.name === tc.name);
+      const handler = desc?.execution_target === "LOCAL" ? getLocalTool(tc.name) : undefined;
+      if (state.governanceMode === "degraded" && !isDegradedToolAllowed(state, tc.name, desc)) {
+        const reason = `degraded governance mode blocks tool ${tc.name}; only low-risk read-only local tools are allowed.`;
+        emitAuditEvent({
+          trace_id: state.correlation.traceId,
+          source_service: "mcp-server",
+          kind: "governance.denied",
+          capability_id: state.correlation.capabilityId,
+          severity: "warn",
+          payload: {
+            check: "tool_policy",
+            reason,
+            tool_name: tc.name,
+            execution_target: desc?.execution_target,
+            risk_level: desc?.risk_level,
+            governanceMode: state.governanceMode,
+            contextPlanHash: state.contextPlanHash,
+          },
+        });
+        return { kind: "denied", finishReason: "governance_denied", reason, check: "tool_policy", details: { tool_name: tc.name, governanceMode: state.governanceMode } };
+      }
+      const risky = isRiskyToolByPolicy(tc.name, desc);
+      const requiresApproval =
+        desc?.requires_approval ||
+        handler?.descriptor.requires_approval ||
+        (state.governanceMode === "human_approval_required" && risky && !state.allowAutonomousMutation);
+      if (requiresApproval) {
+        return await pauseForApproval(
+          state,
+          tc,
+          desc,
+          risky ? "Governance requires approval before risky or mutating tool execution." : undefined,
+        );
+      }
+
+      const toolArgs = applyArgsUnmaskIfNeeded(state, tc.args ?? {});
+      const result = await dispatchToolCall(
+        { ...tc, args: toolArgs },
+        state.fullToolDescriptors,
+        state.correlation,
+        undefined,
+        state.workspace.workspaceRoot,
+      );
+      state.toolInvocationIds.push(result.record.id);
+      if (result.codeChange) {
+        state.codeChangeIds.push(result.codeChange.id);
+        if (result.codeChange.paths_touched) {
+          mutatedPaths.push(...result.codeChange.paths_touched);
+        }
+      }
+      state.verificationReceipts.push(...verificationReceiptsFromOutput(result.record.output, result.record.id, tc.name));
+      if (result.record.error_code === "CONFLICT") {
+        state.rePlanDepth++;
+        emitRePlan(state.correlation, {
+          trigger: "conflict_detected",
+          step_index: state.stepIndex,
+          convergence_depth: state.rePlanDepth,
+          conflicted_paths: [tc.args?.path as string].filter(Boolean),
+        });
+      }
+      if (result.approvalRequired) {
+        return await pauseForApproval(state, tc, desc, result.approvalRequired.reason, result.record.id);
+      }
+      const rawOutput = toolResultForNextTurn(state, result.record.output);
+      const maskedOutput = await applyOutputMaskIfNeededAsync(state, desc, rawOutput);
+      state.messages.push({
+        role: "tool",
+        content: maskedOutput,
+        tool_call_id: tc.id,
+        tool_name: tc.name,
+      });
+    }
+
+    if (mutatedPaths.length === 0) return null;
+    const uniqueMutatedPaths = Array.from(new Set(mutatedPaths));
+    await createCheckpoint(uniqueMutatedPaths, state.stepIndex, state.correlation).catch((err) => {
+      log.warn(`[checkpoint] failed to create checkpoint: ${err.message}`);
+    });
+    state.stepIndex += 1;
+    return {
+      kind: "complete",
+      finalContent: [
+        "Applied a code change after exhausting the Developer inspection budget.",
+        `Touched paths: ${uniqueMutatedPaths.join(", ")}`,
+      ].join("\n"),
+      finishReason: "stop",
+    };
+  } catch (err) {
+    log.warn({ err: (err as Error).message, trace: state.correlation.traceId }, "[max-steps-mutation] failed");
+    return null;
+  }
 }
 
 async function finalizeReadOnlyAfterMaxSteps(state: LoopState): Promise<LoopOutcome | null> {
