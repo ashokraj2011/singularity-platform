@@ -28,6 +28,21 @@ export const ALLOWED_COMMANDS = new Set([
   "make",
 ]);
 const SHELL_TOKENS = new Set(["&&", "||", ";", "|", ">", ">>", "<", "`", "&"]);
+// M47.A — When run_command rejects a classic OS verb, point the model at the
+// MCP-native tool that does the same job. Keys are command basenames; values
+// are the suggested tool-call form. Exhaustive over the verbs in the M44/v4.4
+// prompt's "Never use these OS verbs" table.
+const OS_VERB_SUGGESTIONS: Record<string, string> = {
+  find:  "find_files(pattern)",
+  grep:  "search_code(query)  // or grep_lines for context",
+  cat:   "read_file(path)  // or get_ast_slice for a known line range",
+  wc:    "file_stats(paths)  // or list_indexed_files for code files",
+  ls:    "list_directory(path)",
+  head:  "read_file(path) and slice client-side, or get_ast_slice(startLine, endLine)",
+  tail:  "read_file(path) and slice client-side, or get_ast_slice(startLine, endLine)",
+  sed:   "replace_text(path, oldText, newText)",
+  awk:   "search_code or read_file then process",
+};
 const SECRET_TOKEN_RE = /(OPENAI|ANTHROPIC|OPENROUTER|COPILOT|GOOGLE|COHERE|TOKEN|SECRET|PASSWORD|KEY)/i;
 const SCRIPT_ALLOW_RE = /^(test|lint|typecheck|type-check|check|build|verify|unit|integration|e2e)([:\w.-]*)?$/i;
 const DENIED_VERBS = new Set([
@@ -68,7 +83,14 @@ function normalizeInvocation(args: Record<string, unknown>): { command: string; 
   }
   const basename = command.startsWith("./") ? path.basename(command) : command;
   if (!ALLOWED_COMMANDS.has(basename)) {
-    throw new Error(`command '${command}' is not in the MCP verification allowlist`);
+    // M47.A — When the rejected verb is a classic OS file inspection tool,
+    // include the MCP-native replacement in the error message. The model
+    // tends to fall back to `find`/`grep`/`cat`/`wc`/`ls` even after the
+    // v4.4 prompt warns against them; surfacing the equivalent at point
+    // of rejection short-circuits the retry loop the audit log keeps showing.
+    const suggestion = OS_VERB_SUGGESTIONS[basename];
+    const tail = suggestion ? ` — use \`${suggestion}\` (MCP-native, sandbox-scoped, token-efficient) instead` : "";
+    throw new Error(`command '${command}' is not in the MCP verification allowlist${tail}`);
   }
   validatePolicy(basename, argv);
   return { command, argv };

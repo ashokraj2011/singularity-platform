@@ -227,12 +227,26 @@ describe("nextPhase — transitions", () => {
     expect(nextPhase(view, new Set())).toBe(null);
   });
 
-  it("ACT → VERIFY on budget exhaustion regardless of coverage (safety net)", () => {
+  it("ACT → VERIFY on budget exhaustion when AT LEAST ONE code change landed", () => {
+    // M47.C — VERIFY is only useful when there's something to verify. If a
+    // mutation succeeded in ACT, exhausting the budget transitions normally.
     const view = makeView({
       phase: "ACT", plan: SAMPLE_PLAN,
       phaseStepUsage: { PLAN_DRAFT: 0, EXPLORE: 0, PLAN_CONFIRM: 0, ACT: DEFAULT_PHASE_BUDGETS.ACT, VERIFY: 0, FINALIZE: 0 },
     });
-    expect(nextPhase(view, new Set())).toBe("VERIFY");
+    expect(nextPhase(view, new Set(["src/Operator.java"]))).toBe("VERIFY");
+  });
+
+  it("ACT → FINALIZE on budget exhaustion when ZERO code changes landed (M47.C)", () => {
+    // The audit-log RCA showed agents thrashing in VERIFY trying to make
+    // edits that were phase-gated, because ACT exited with no successful
+    // mutation. Route straight to FINALIZE so the run ends cleanly and
+    // the workgraph path-coverage gate refuses approval.
+    const view = makeView({
+      phase: "ACT", plan: SAMPLE_PLAN,
+      phaseStepUsage: { PLAN_DRAFT: 0, EXPLORE: 0, PLAN_CONFIRM: 0, ACT: DEFAULT_PHASE_BUDGETS.ACT, VERIFY: 0, FINALIZE: 0 },
+    });
+    expect(nextPhase(view, new Set())).toBe("FINALIZE");
   });
 
   it("ACT under fallback plan stays put until ACT budget is exhausted (v4.2)", () => {
@@ -255,13 +269,14 @@ describe("nextPhase — transitions", () => {
       planProgress: { "src/Operator.java": { status: "edited" } },
     });
     expect(nextPhase(withEdit, new Set())).toBe(null);
-    // Only budget exhaustion → transition
+    // Only budget exhaustion → transition (with at least one code change
+    // landed → VERIFY; M47.C path covered in its own dedicated test)
     const exhausted = makeView({
       phase: "ACT", plan: fallback, planFromFallback: true,
       planProgress: { "src/Operator.java": { status: "edited" } },
       phaseStepUsage: { PLAN_DRAFT: 0, EXPLORE: 0, PLAN_CONFIRM: 0, ACT: DEFAULT_PHASE_BUDGETS.ACT, VERIFY: 0, FINALIZE: 0 },
     });
-    expect(nextPhase(exhausted, new Set())).toBe("VERIFY");
+    expect(nextPhase(exhausted, new Set(["src/Operator.java"]))).toBe("VERIFY");
   });
 
   it("ACT under a plan with zero `required` targets also stays until budget exhausted (v4.2)", () => {

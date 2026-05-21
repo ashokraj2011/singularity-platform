@@ -132,6 +132,74 @@ function extractPatchPaths(patch: string): string[] {
   return Array.from(paths);
 }
 
+/**
+ * M47.B — Pre-flight check on unified-diff hunk arithmetic. Returns a
+ * human-readable problem description if it finds one, or null if the
+ * arithmetic is internally consistent. This catches the most common
+ * "corrupt patch" cause: the @@ -A,B +C,D @@ line counts don't match
+ * the actual hunk body. git apply's error for this is unhelpfully
+ * vague; surfacing the specific count mismatch lets the LLM self-correct.
+ *
+ * Exported for testability.
+ */
+export function validatePatchHunkArithmetic(patch: string): string | null {
+  const lines = patch.split(/\r?\n/);
+  // Hunk header: @@ -<oldStart>,<oldCount> +<newStart>,<newCount> @@ optional-context
+  const headerRe = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const m = line.match(headerRe);
+    if (!m) { i++; continue; }
+    const declaredOldCount = m[2] === undefined ? 1 : Number(m[2]);
+    const declaredNewCount = m[4] === undefined ? 1 : Number(m[4]);
+    // Walk forward until the next hunk header / file header / end-of-patch.
+    let oldSeen = 0, newSeen = 0;
+    let j = i + 1;
+    while (j < lines.length) {
+      const body = lines[j];
+      if (body.startsWith("@@ ") || body.startsWith("--- ") || body.startsWith("+++ ") || body.startsWith("diff --git ")) break;
+      if (body.startsWith("+")) newSeen++;
+      else if (body.startsWith("-")) oldSeen++;
+      else if (body.startsWith(" ")) { oldSeen++; newSeen++; }
+      // Unified-diff context lines start with a literal space. An empty
+      // string in the split output is the file's trailing newline (or a
+      // blank-line break between sections), never a real context line.
+      // Other prefixes (e.g. `\ No newline at end of file`) are ignored.
+      j++;
+    }
+    if (oldSeen !== declaredOldCount) {
+      return `hunk header "${line}" declares ${declaredOldCount} source-side line(s) but the hunk body has ${oldSeen} context+removal line(s)`;
+    }
+    if (newSeen !== declaredNewCount) {
+      return `hunk header "${line}" declares ${declaredNewCount} destination-side line(s) but the hunk body has ${newSeen} context+addition line(s)`;
+    }
+    i = j;
+  }
+  return null;
+}
+
+/** M47.B — Translate opaque `git apply` errors into actionable hints. */
+function enrichGitApplyError(raw: string, patch: string): string {
+  const trimmed = raw.trim();
+  // The most useful intel is "error: corrupt patch at line N". Try to
+  // surface the lines around N from the patch so the model can see what
+  // git tripped on.
+  const m = trimmed.match(/corrupt patch at line (\d+)/i);
+  if (m) {
+    const target = Number(m[1]);
+    const lines = patch.split(/\r?\n/);
+    const start = Math.max(0, target - 3);
+    const end = Math.min(lines.length, target + 2);
+    const snippet = lines.slice(start, end).map((l, idx) => `  ${start + idx + 1}: ${l}`).join("\n");
+    return `apply_patch: ${trimmed}\n\nContext (patch lines ${start + 1}-${end}):\n${snippet}\n\nThis is usually a hunk-header arithmetic error (@@ counts don't match the body), an off-by-one anchor, or a stale file. Re-read the file and either fix the @@ counts, OR switch to replace_range/replace_text (no hunk arithmetic required).`;
+  }
+  if (/does not (apply|match)/i.test(trimmed)) {
+    return `apply_patch: ${trimmed}\n\nThe patch's context lines don't match what's currently in the file. Likely causes: (1) file was modified between read and patch, (2) you're patching against a stale snapshot, (3) whitespace mismatch. Re-read the file with read_file and rebuild the patch.`;
+  }
+  return `apply_patch: ${trimmed}`;
+}
+
 async function gitApply(args: string[], patch: string, cwd: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn("git", ["apply", ...args], { cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -321,9 +389,30 @@ export const applyPatchTool: ToolHandler = {
         }
       }
 
+      // M47.B — Pre-validate hunk-header arithmetic before handing to
+      // `git apply`. The "corrupt patch at line N" error from git is too
+      // opaque for the LLM to self-correct; surface the specific issue
+      // (e.g. "hunk @@ -192,4 +192,164 @@ declares 4 source lines but the
+      // hunk body has 6 context/removal lines").
+      const hunkIssue = validatePatchHunkArithmetic(patch);
+      if (hunkIssue) {
+        return {
+          success: false, output: null, error_code: "VALIDATION",
+          error: `apply_patch: ${hunkIssue}. Re-read the file with read_file or get_ast_slice, then either (a) re-emit the patch with corrected @@ counts, or (b) use replace_range/replace_text for the same edit (no hunk arithmetic).`,
+        };
+      }
+
       const cwd = sandboxRoot();
       await ensureGitRepo();
-      await gitApply(["--check"], patch, cwd);
+      try {
+        await gitApply(["--check"], patch, cwd);
+      } catch (err) {
+        const raw = (err as Error).message;
+        return {
+          success: false, output: null, error_code: "VALIDATION",
+          error: enrichGitApplyError(raw, patch),
+        };
+      }
       await gitApply([], patch, cwd);
       await indexChangedFiles(paths, "apply_patch");
       return {

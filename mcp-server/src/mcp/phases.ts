@@ -224,7 +224,17 @@ export function nextPhase(state: PhaseLoopStateView, accumulatedCodeChangePaths:
       return null;
     }
     case "ACT": {
-      if (budgetExhausted) return "VERIFY";
+      if (budgetExhausted) {
+        // M47.C — When ACT exhausted budget and produced ZERO successful
+        // code changes, skip VERIFY entirely. There's nothing to verify,
+        // and the agent will just thrash in VERIFY trying mutations that
+        // get phase-gated. Route straight to FINALIZE so the run ends
+        // with a clean failure that workgraph-api can route on. The
+        // path-coverage and verification-coverage gates both still apply
+        // in buildResponseBody.
+        if (accumulatedCodeChangePaths.size === 0) return "FINALIZE";
+        return "VERIFY";
+      }
       if (!state.plan) return "VERIFY";
       const required = state.plan.targets.filter((t) => t.required);
 
