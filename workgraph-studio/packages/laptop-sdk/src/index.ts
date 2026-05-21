@@ -182,6 +182,166 @@ export class SingularityLaptopSdk {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// M43 Slice 4 — Direct-Copilot parity: normalize laptop completion evidence
+// into the same correlation shape mcp-server emits, so workgraph-side gates
+// (path-coverage, deterministic-verification) work uniformly.
+//
+// The PRD acknowledges direct laptop/Copilot mode bypasses the MCP runLoop —
+// this helper closes the evidence gap by reading the post-run git state and
+// caller-supplied verification receipts, then returning a correlation
+// envelope to pass to `.complete(invocationId, ...)`.
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface LaptopVerificationReceipt {
+  command: string
+  args?: string[]
+  passed?: boolean
+  exit_code?: number
+  exitCode?: number
+  unavailable?: boolean
+  reason?: string
+}
+
+export interface NormalizeCompletionEvidenceInput {
+  /** Repo root where Copilot did its work. Defaults to process.cwd(). */
+  workdir?: string
+  /**
+   * Optional: paths the laptop-side runner expects were touched (e.g. from a
+   * pre-supplied plan). Used to populate `codeChangeCoverage.required` so the
+   * workgraph path-coverage gate can run against direct-Copilot output.
+   */
+  requiredPaths?: string[]
+  /**
+   * Verification receipts from local commands the laptop runner executed
+   * (mvn test, pnpm test, etc.). Shape mirrors mcp-server's receipts.
+   */
+  verificationReceipts?: LaptopVerificationReceipt[]
+  /**
+   * Compare against this base ref. Defaults to HEAD (i.e. uncommitted
+   * working-tree changes). Pass e.g. 'origin/main' to summarise a branch.
+   */
+  baseRef?: string
+}
+
+export interface LaptopCorrelationEvidence {
+  /** Files git knows were touched (added/modified/deleted). */
+  codeChangeIds: string[]
+  /** Verbatim pass-through with light normalisation. */
+  verificationReceipts: LaptopVerificationReceipt[]
+  /** Same shape as mcp-server's correlation.codeChangeCoverage. */
+  codeChangeCoverage?: {
+    required: string[]
+    covered: string[]
+    skipped: Array<{ file: string; reason: string }>
+    missing: string[]
+    hasRequiredCodeGap: boolean
+  }
+  /** Same shape as mcp-server's correlation.verificationCoverage. */
+  verificationCoverage: {
+    codeChanged: boolean
+    receiptsPresent: boolean
+    hasPassingReceipt: boolean
+    hasUnavailableReceipt: boolean
+    gap: boolean
+  }
+  /** Marker so workgraph can tell this came from the laptop path. */
+  agentReasoningMode: 'direct-copilot'
+}
+
+async function gitChangedFiles(workdir: string, baseRef?: string): Promise<string[]> {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const exec = promisify(execFile)
+  try {
+    if (baseRef) {
+      const { stdout } = await exec('git', ['diff', '--name-only', baseRef], { cwd: workdir, maxBuffer: 5 * 1024 * 1024 })
+      return stdout.split('\n').map(l => l.trim()).filter(Boolean)
+    }
+    // Default: working-tree diff vs HEAD plus untracked files
+    const [tracked, untracked] = await Promise.all([
+      exec('git', ['diff', '--name-only', 'HEAD'], { cwd: workdir, maxBuffer: 5 * 1024 * 1024 }).catch(() => ({ stdout: '' })),
+      exec('git', ['ls-files', '--others', '--exclude-standard'], { cwd: workdir, maxBuffer: 5 * 1024 * 1024 }).catch(() => ({ stdout: '' })),
+    ])
+    const set = new Set<string>()
+    for (const line of tracked.stdout.split('\n')) {
+      const t = line.trim()
+      if (t) set.add(t)
+    }
+    for (const line of untracked.stdout.split('\n')) {
+      const t = line.trim()
+      if (t) set.add(t)
+    }
+    return [...set].sort()
+  } catch {
+    return []
+  }
+}
+
+/**
+ * M43 Slice 4 — pure function that maps post-run laptop state into the
+ * correlation envelope mcp-server emits. Pass the result as part of the
+ * `payload` in `.complete()`:
+ *
+ *   const evidence = await normalizeLaptopCompletionEvidence({
+ *     workdir, requiredPaths, verificationReceipts: [{ command: 'mvn', passed: true }]
+ *   })
+ *   await sdk.complete(invocationId, 'COMPLETED', { correlation: evidence })
+ *
+ * The workgraph-side path-coverage and verification-coverage gates read
+ * `correlation.codeChangeCoverage` / `correlation.verificationCoverage`
+ * — identical shape to server-runtime, so behaviour is uniform.
+ */
+export async function normalizeLaptopCompletionEvidence(
+  input: NormalizeCompletionEvidenceInput = {},
+): Promise<LaptopCorrelationEvidence> {
+  const workdir = input.workdir ?? (typeof process !== 'undefined' ? process.cwd() : '.')
+  const changed = await gitChangedFiles(workdir, input.baseRef)
+  const receipts = (input.verificationReceipts ?? []).map(r => ({ ...r }))
+
+  // verificationCoverage — mirrors mcp-server's computeVerificationCoverage.
+  const codeChanged = changed.length > 0
+  const receiptsPresent = receipts.length > 0
+  const hasPassingReceipt = receipts.some(r =>
+    r.passed === true || r.exit_code === 0 || r.exitCode === 0,
+  )
+  const hasUnavailableReceipt = receipts.some(r =>
+    r.command === 'verification_unavailable' || r.unavailable === true,
+  )
+  const verificationCoverage = {
+    codeChanged,
+    receiptsPresent,
+    hasPassingReceipt,
+    hasUnavailableReceipt,
+    gap: codeChanged && !receiptsPresent,
+  }
+
+  // codeChangeCoverage — only computed when the caller supplied required
+  // paths (the laptop runner had a plan). Otherwise the workgraph gate
+  // treats absence as "not a phased run" and skips the path-coverage check.
+  let codeChangeCoverage: LaptopCorrelationEvidence['codeChangeCoverage']
+  if (input.requiredPaths && input.requiredPaths.length > 0) {
+    const required = input.requiredPaths.map(String)
+    const covered = required.filter(p => changed.includes(p))
+    const missing = required.filter(p => !changed.includes(p))
+    codeChangeCoverage = {
+      required,
+      covered,
+      skipped: [],
+      missing,
+      hasRequiredCodeGap: missing.length > 0,
+    }
+  }
+
+  return {
+    codeChangeIds: changed,
+    verificationReceipts: receipts,
+    ...(codeChangeCoverage ? { codeChangeCoverage } : {}),
+    verificationCoverage,
+    agentReasoningMode: 'direct-copilot' as const,
+  }
+}
+
 export async function detectCopilotCli(): Promise<{ available: boolean; command?: string; version?: string; warning?: string }> {
   if (typeof process === 'undefined') return { available: false, command: 'copilot', warning: 'Copilot CLI detection requires the desktop main process or CLI.' }
   const { spawn } = await import('node:child_process')
