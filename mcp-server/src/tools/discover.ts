@@ -102,6 +102,12 @@ export const findFilesTool: ToolHandler = {
       const matcher = globToRegex(pattern);
       const out: Array<{ path: string; type: "file" | "dir"; size?: number; mtime?: string }> = [];
 
+      // POSIX-style separator inside the matcher so the same glob pattern
+      // works on macOS / Linux / Windows. path.relative() on Windows returns
+      // backslash-separated paths, which would never match a glob compiled
+      // with `/` separators. We normalise here once per file.
+      const toPosix = (p: string): string => (path.sep === "\\" ? p.replace(/\\/g, "/") : p);
+
       async function walk(dir: string): Promise<void> {
         if (out.length >= max) return;
         let entries: fs.Dirent[];
@@ -114,7 +120,7 @@ export const findFilesTool: ToolHandler = {
           if (out.length >= max) return;
           if (SKIP_DIRS.has(ent.name)) continue;
           const full = path.join(dir, ent.name);
-          const relPath = path.relative(root, full);
+          const relPath = toPosix(path.relative(root, full));
           if (ent.isDirectory()) {
             if (includeDirs && matcher.test(relPath)) {
               out.push({ path: relPath, type: "dir" });
@@ -295,8 +301,13 @@ export const grepLinesTool: ToolHandler = {
       argv.push("--", q, target);
 
       const { stdout } = await execFileP("rg", argv, { cwd, maxBuffer: 5 * 1024 * 1024 }).catch((err) => {
-        const e = err as { code?: number; stdout?: string };
-        if (e.code === 1) return { stdout: "" };
+        const code = (err as { code?: number | string }).code;
+        if (code === 1) return { stdout: "" };
+        if (code === "ENOENT") {
+          throw new Error(
+            "grep_lines requires ripgrep (rg) on PATH. Install: `brew install ripgrep` (macOS), `apt install ripgrep` (Debian/Ubuntu), `choco install ripgrep` (Windows). The mcp-server Docker image ships with it preinstalled."
+          );
+        }
         throw err;
       });
 
