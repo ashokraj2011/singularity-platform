@@ -157,10 +157,11 @@ export const writeFileTool: ToolHandler = {
       type: "object",
       properties: {
         path:    { type: "string", description: "Sandbox-relative file path" },
-        content: { type: "string", description: "Complete new file body. Do not pass unified diff text here." },
+        content: { type: "string", description: "Complete new file body. Do not pass unified diff text here. Must be non-empty unless allowEmpty=true." },
         forceFullReplace: { type: "boolean", description: "Set true only when deliberately replacing a large existing file body." },
         expected_hash: { type: "string", description: "SHA-256 content_hash from last read_file. Required for intentional overwrites. CONFLICT if stale." },
         expected_absent: { type: "boolean", description: "Set true when creating a new file. Fails if file already exists." },
+        allowEmpty: { type: "boolean", description: "Set true only if you deliberately want to create a zero-byte file. Defaults to false so truncated content args are caught instead of silently producing empty files." },
       },
       required: ["path", "content"],
     },
@@ -171,6 +172,21 @@ export const writeFileTool: ToolHandler = {
     try {
       const rel = String(args.path ?? "");
       const content = String(args.content ?? "");
+      // Reject empty content unless the agent explicitly opts in. When the
+      // model output is truncated mid-emit (e.g. hits maxOutputTokens before
+      // the JSON closes), the parsed tool call arrives with content="" and
+      // the file is silently created empty. The agent then sees an empty
+      // file, retries the same call, and trips agent_loop_repetition. Fail
+      // loudly so the LLM can self-correct (shorten the file, split into
+      // multiple write_files, or use apply_patch for an incremental edit).
+      if (content.length === 0 && args.allowEmpty !== true) {
+        return {
+          success: false,
+          output: null,
+          error_code: "VALIDATION",
+          error: "write_file refused: content is empty. Common cause: your previous output was truncated by maxOutputTokens before the content arg finished streaming. Either (a) shorten the file body and retry, (b) emit the file in two halves via write_file then apply_patch, or (c) pass allowEmpty=true if you genuinely want a zero-byte file.",
+        };
+      }
       const abs = resolveSandboxedPath(rel);
       await fs.promises.mkdir(path.dirname(abs), { recursive: true });
       const existed = fs.existsSync(abs);

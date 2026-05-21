@@ -17,6 +17,11 @@ const schema = z.object({
   TOOL_SERVICE_URL: z.string().url().default("http://localhost:3002"),
   AGENT_RUNTIME_URL: z.string().url().default("http://localhost:3003"),
   CONTEXT_FABRIC_URL: z.string().url().default("http://localhost:8000"),
+  LEARNING_SERVICE_URL: z.string().url().optional(),
+  LEARNING_CONTEXT_ENABLED: z.preprocess(
+    (v) => v === undefined ? undefined : String(v).toLowerCase() !== "false",
+    z.boolean(),
+  ).default(true),
   WORKGRAPH_ARTIFACT_FETCH_URL: z.string().url().optional(),
   WORKGRAPH_ARTIFACT_FETCH_TOKEN: z.string().optional(),
   ARTIFACT_FETCH_MAX_BYTES: z.coerce.number().int().positive().max(256_000).default(64_000),

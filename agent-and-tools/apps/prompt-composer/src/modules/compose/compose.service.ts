@@ -162,6 +162,8 @@ const PRIORITY = {
   AGENT_ROLE: 100,
   CAPABILITY_CONTEXT: 200,
   RUNTIME_EVIDENCE: 250,
+  PRIOR_FAILURE_SUMMARY: 270,
+  LEARNED_PATTERNS: 275,
   // M38 — Cross-workflow lessons learned. Slot between MEMORY_CONTEXT and
   // CODE_CONTEXT so platform-wide rules carry slightly less weight than
   // capability-scoped memory but more than raw code excerpts.
@@ -184,6 +186,34 @@ const DEFAULT_CONTEXT_BUDGET = {
 };
 
 const MANDATORY_RUNTIME_LAYERS = ["PLATFORM_CONSTITUTION", "AGENT_ROLE", "TASK_CONTEXT"];
+
+type LearningStateResponse = {
+  failureSummary?: { id?: string; summary?: string; capability_id?: string; capability_type?: string } | null;
+  patterns?: Array<{ id?: string; summary?: string; pattern_kind?: string; success_rate?: number | string | null }>;
+  degraded?: boolean;
+};
+
+async function fetchLearningState(input: {
+  capabilityId: string;
+  capabilityType?: string | null;
+  task: string;
+}): Promise<LearningStateResponse | null> {
+  if (!env.LEARNING_CONTEXT_ENABLED || !env.LEARNING_SERVICE_URL) return null;
+  const params = new URLSearchParams();
+  params.set("capabilityId", input.capabilityId);
+  if (input.capabilityType) params.set("capabilityType", input.capabilityType);
+  if (input.task) params.set("situation", input.task.slice(0, 500));
+  try {
+    const res = await fetch(`${env.LEARNING_SERVICE_URL.replace(/\/+$/, "")}/api/v1/state?${params.toString()}`, {
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (!res.ok) throw new Error(`learning-service ${res.status}`);
+    return await res.json() as LearningStateResponse;
+  } catch (err) {
+    logger.warn({ err }, "learning-service unavailable; continuing without learned context");
+    return { degraded: true, patterns: [] };
+  }
+}
 
 function clampInt(value: unknown, fallback: number, min = 0, max = 100_000): number {
   return typeof value === "number" && Number.isFinite(value)
@@ -565,6 +595,73 @@ export const composeService = {
             layerHash: sha256(r3.rendered),
           });
           retrievalStats.memoryIncluded += 1;
+        }
+
+        // ── Hybrid learning-service context → PRIOR_FAILURE_SUMMARY / LEARNED_PATTERNS ──
+        // learning-service owns run summaries + pattern APIs; EngineLesson
+        // below remains the canonical prompt-lesson store. We merge both,
+        // and degrade quietly if learning-service is down.
+        const learningState = await fetchLearningState({
+          capabilityId,
+          capabilityType: capability.capabilityType ?? null,
+          task: input.task,
+        });
+        if (learningState?.degraded) warnings.push("learning-service unavailable; skipped PRIOR_FAILURE_SUMMARY / LEARNED_PATTERNS");
+        const failureSummary = learningState?.failureSummary?.summary?.trim();
+        if (failureSummary) {
+          const id = learningState?.failureSummary?.id ?? sha256(failureSummary).slice(0, 12);
+          const citation = makeCitationKey("lesson", "prior-failure-summary", id);
+          const body = trimText(failureSummary, budget.maxLayerChars);
+          const renderedBlock = `${formatCiteMarker(citation)}\n[prior failure summary]\n${body}`;
+          const r = renderMustache(renderedBlock, ctx);
+          warnings.push(...r.warnings);
+          evidenceChunks.push({
+            source_kind: "lesson",
+            source_id: id,
+            citation_key: citation,
+            excerpt: toExcerpt(body),
+            confidence: 0.8,
+            metadata: { capabilityId, learningLayer: "PRIOR_FAILURE_SUMMARY" },
+          });
+          layers.push({
+            layerType: "PRIOR_FAILURE_SUMMARY",
+            priority: PRIORITY.PRIOR_FAILURE_SUMMARY,
+            inclusionReason: "learning-service prior failure summary",
+            contentSnapshot: r.rendered,
+            layerHash: sha256(r.rendered),
+          });
+          retrievalStats.lessonsIncluded = (retrievalStats.lessonsIncluded ?? 0) + 1;
+        }
+        const patterns = (learningState?.patterns ?? [])
+          .map(p => ({ ...p, summary: p.summary?.trim() ?? "" }))
+          .filter(p => p.summary)
+          .slice(0, 5);
+        if (patterns.length > 0) {
+          const renderedPatterns = patterns
+            .map((p, index) => {
+              const rate = p.success_rate == null ? "" : ` success=${p.success_rate}`;
+              return `${index + 1}. [${p.pattern_kind ?? "pattern"}${rate}] ${trimText(p.summary ?? "", 600)}`;
+            })
+            .join("\n");
+          const citation = makeCitationKey("lesson", "learned-patterns", sha256(renderedPatterns).slice(0, 12));
+          const r = renderMustache(`${formatCiteMarker(citation)}\n[learned patterns]\n${renderedPatterns}`, ctx);
+          warnings.push(...r.warnings);
+          evidenceChunks.push({
+            source_kind: "lesson",
+            source_id: sha256(renderedPatterns).slice(0, 12),
+            citation_key: citation,
+            excerpt: toExcerpt(renderedPatterns),
+            confidence: 0.75,
+            metadata: { capabilityId, learningLayer: "LEARNED_PATTERNS", patternCount: patterns.length },
+          });
+          layers.push({
+            layerType: "LEARNED_PATTERNS",
+            priority: PRIORITY.LEARNED_PATTERNS,
+            inclusionReason: "learning-service learned patterns",
+            contentSnapshot: r.rendered,
+            layerHash: sha256(r.rendered),
+          });
+          retrievalStats.lessonsIncluded = (retrievalStats.lessonsIncluded ?? 0) + patterns.length;
         }
 
         // ── Cross-workflow lessons learned → GLOBAL_LESSON (M38) ──────────

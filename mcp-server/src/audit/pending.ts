@@ -247,3 +247,38 @@ export function recentPending(limit = 50): PendingApproval[] {
   purgeExpired();
   return Array.from(store.values()).slice(-limit).reverse();
 }
+
+/**
+ * Clear pending approvals that match the given selector. Used when a workflow
+ * stage is sent back to an earlier stage — the new attempt should start fresh,
+ * with no stale "Approve MCP action…" tokens hanging around from a prior run.
+ *
+ * Selectors are evaluated as a logical AND. If both `tracePrefix` and
+ * `workflowInstanceId` are supplied, only tokens matching BOTH are cleared.
+ * Returns the count of cleared tokens for audit/log visibility.
+ */
+export function clearPending(selector: {
+  tracePrefix?: string;
+  workflowInstanceId?: string;
+  sessionId?: string;
+}): { cleared: number; cleared_tokens: string[] } {
+  purgeExpired();
+  const cleared_tokens: string[] = [];
+  for (const [token, env] of store.entries()) {
+    const matchesTrace = selector.tracePrefix
+      ? (env.trace_id ?? "").startsWith(selector.tracePrefix)
+      : true;
+    const matchesWorkflow = selector.workflowInstanceId
+      ? env.correlation?.workflowInstanceId === selector.workflowInstanceId
+      : true;
+    const matchesSession = selector.sessionId
+      ? env.correlation?.sessionId === selector.sessionId
+      : true;
+    if (matchesTrace && matchesWorkflow && matchesSession) {
+      store.delete(token);
+      redeemed.add(token);  // poison so any retry of this token fails fast
+      cleared_tokens.push(token);
+    }
+  }
+  return { cleared: cleared_tokens.length, cleared_tokens };
+}

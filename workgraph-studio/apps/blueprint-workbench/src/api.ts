@@ -480,4 +480,25 @@ export const api = {
   agents: async (capabilityId: string) => unwrap<LookupAgent>(await request(`/lookup/agent-templates?size=200&capability_id=${encodeURIComponent(capabilityId)}`)),
   workflowInstances: async () => unwrap<WorkflowInstanceListItem>(await request('/workflow-instances?size=20')),
   workflowInstance: (id: string) => request<WorkflowInstanceDetail>(`/workflow-instances/${encodeURIComponent(id)}`),
+  // M42.7 — list registered model aliases the LLM gateway will accept.
+  // Used by the per-stage model picker in the Neo cockpit so operators can
+  // pin a stronger model (e.g. Sonnet for DEVELOP) without leaving the UI.
+  listModelAliases: () => request<LlmModelCatalog>('/llm/models'),
+}
+
+export type LlmModelCatalogEntry = {
+  id: string
+  label?: string
+  provider?: string
+  model?: string
+  description?: string
+  costTier?: 'low' | 'medium' | 'high' | string
+  default?: boolean
+  ready?: boolean
+  warnings?: string[]
+}
+
+export type LlmModelCatalog = {
+  default_model_alias?: string
+  models: LlmModelCatalogEntry[]
 }

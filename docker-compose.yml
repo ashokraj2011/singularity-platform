@@ -25,7 +25,7 @@
 # Port map (host → container):
 #   3000 agent-and-tools/web (Next.js admin)
 #   3001 agent-service             3002 tool-service           3003 agent-runtime
-#   3004 prompt-composer
+#   3004 prompt-composer          3005 code-foundry-api      3006 learning-service
 #   5174 workgraph-web             5175 UserAndCapabillity     5176 Blueprint Workbench
 #   5180 singularity-portal
 #   5432 agent-and-tools postgres  5433 IAM postgres           5434 workgraph postgres
@@ -259,6 +259,7 @@ services:
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       CONTEXT_FABRIC_URL: http://context-api:8000
+      LEARNING_SERVICE_URL: http://learning-service:3006
       WORKGRAPH_ARTIFACT_FETCH_URL: http://workgraph-api:8080/api/internal/artifacts/fetch
       WORKGRAPH_ARTIFACT_FETCH_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
@@ -290,6 +291,38 @@ services:
         limits:
           memory: 2G
           cpus: '1.0'
+
+  learning-service:
+    build:
+      context: ./agent-and-tools
+      dockerfile: apps/learning-service/Dockerfile
+      target: dev
+    container_name: singularity-learning-service
+    environment:
+      NODE_ENV: development
+      AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
+      PORT: 3006
+      DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity_learning
+      LEARNING_SERVICE_TOKEN: ${LEARNING_SERVICE_TOKEN:-dev-learning-service-token}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
+    ports:
+      - "3006:3006"
+    depends_on:
+      at-postgres:
+        condition: service_healthy
+    volumes:
+      - ./agent-and-tools/apps/learning-service/src:/app/apps/learning-service/src
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3006/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
 
   # ─────────────────────────────────────────────────────────────────────
   # Singularity Code Foundry — deterministic-first code generation layer.
@@ -458,6 +491,8 @@ services:
     # calls, no provider keys.
     environment:
       METRICS_LEDGER_DB: /data/metrics_ledger.db
+      AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     ports:
       - "8003:8003"
     volumes:
@@ -638,6 +673,7 @@ services:
       CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
       MCP_SERVER_URL: http://mcp-server-demo:7100
       MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      MCP_SESSION_JWT_SECRET: ${MCP_SESSION_JWT_SECRET:-dev-mcp-session-secret-min-32-chars!!}
       WORKBENCH_DEFAULT_MODEL_ALIAS: ${WORKBENCH_DEFAULT_MODEL_ALIAS:-}
       EVENT_HORIZON_MODEL_ALIAS: ${EVENT_HORIZON_MODEL_ALIAS:-}
       # Legacy direct LLM calls now route through MCP. No gateway URL or
@@ -752,7 +788,17 @@ services:
       MCP_RUNNER_WORKSPACE_CONTAINER_PATH: /workspace
       MCP_RUNNER_DEFAULT_IMAGE: ${MCP_RUNNER_DEFAULT_IMAGE:-node:20-alpine}
       MCP_RUNNER_IMAGE_MAP_JSON: '${MCP_RUNNER_IMAGE_MAP_JSON:-{"python":"python:3.12-slim","python3":"python:3.12-slim","pytest":"python:3.12-slim","go":"golang:1.23-alpine","cargo":"rust:1.83-alpine","mvn":"maven:3.9-eclipse-temurin-21","gradle":"gradle:8-jdk21","gradlew":"gradle:8-jdk21","dotnet":"mcr.microsoft.com/dotnet/sdk:8.0"}}'
-      MCP_RUNNER_NETWORK_MODE: ${MCP_RUNNER_NETWORK_MODE:-none}
+      # Default 'bridge' (not 'none') so verification tools that need to fetch
+      # dependencies on first run can reach their public registries:
+      #   - mvn → Maven Central
+      #   - gradle → Gradle plugin portal + Maven Central
+      #   - pnpm/npm → npm registry
+      #   - pip → PyPI
+      # Without network access, every fresh build fails at "could not resolve
+      # dependencies" and the verification step never produces a useful
+      # receipt. To re-tighten in production, set MCP_RUNNER_NETWORK_MODE=none
+      # in .env and pre-populate the cache directories with a custom image.
+      MCP_RUNNER_NETWORK_MODE: ${MCP_RUNNER_NETWORK_MODE:-bridge}
       MCP_RUNNER_CPU_LIMIT: ${MCP_RUNNER_CPU_LIMIT:-1}
       MCP_RUNNER_MEMORY_LIMIT: ${MCP_RUNNER_MEMORY_LIMIT:-1g}
       MCP_RUNNER_PIDS_LIMIT: ${MCP_RUNNER_PIDS_LIMIT:-256}
@@ -800,7 +846,17 @@ services:
       MCP_RUNNER_HOST_WORKSPACE_PATH: ${MCP_RUNNER_HOST_WORKSPACE_PATH:-${MCP_SANDBOX_HOST_PATH:-${PWD}/mcp-server/.docker-sandbox}}
       MCP_RUNNER_DEFAULT_IMAGE: ${MCP_RUNNER_DEFAULT_IMAGE:-node:20-alpine}
       MCP_RUNNER_IMAGE_MAP_JSON: '${MCP_RUNNER_IMAGE_MAP_JSON:-{"python":"python:3.12-slim","python3":"python:3.12-slim","pytest":"python:3.12-slim","go":"golang:1.23-alpine","cargo":"rust:1.83-alpine","mvn":"maven:3.9-eclipse-temurin-21","gradle":"gradle:8-jdk21","gradlew":"gradle:8-jdk21","dotnet":"mcr.microsoft.com/dotnet/sdk:8.0"}}'
-      MCP_RUNNER_NETWORK_MODE: ${MCP_RUNNER_NETWORK_MODE:-none}
+      # Default 'bridge' (not 'none') so verification tools that need to fetch
+      # dependencies on first run can reach their public registries:
+      #   - mvn → Maven Central
+      #   - gradle → Gradle plugin portal + Maven Central
+      #   - pnpm/npm → npm registry
+      #   - pip → PyPI
+      # Without network access, every fresh build fails at "could not resolve
+      # dependencies" and the verification step never produces a useful
+      # receipt. To re-tighten in production, set MCP_RUNNER_NETWORK_MODE=none
+      # in .env and pre-populate the cache directories with a custom image.
+      MCP_RUNNER_NETWORK_MODE: ${MCP_RUNNER_NETWORK_MODE:-bridge}
       MCP_WORK_BRANCH_PUSH_ON_FINISH: ${MCP_WORK_BRANCH_PUSH_ON_FINISH:-false}
       MCP_WORK_BRANCH_PUSH_REMOTE: ${MCP_GIT_PUSH_REMOTE:-origin}
       MCP_GIT_PUSH_ENABLED: ${MCP_GIT_PUSH_ENABLED:-false}
@@ -824,6 +880,13 @@ services:
       MCP_LLM_MODEL_CATALOG_PATH:  ${MCP_LLM_MODEL_CATALOG_CONTAINER_PATH:-/app/.singularity/mcp-models.json}
       MAX_AGENT_STEPS: 12
       TIMEOUT_SEC: 240
+      # Workspace lock timeout — must exceed the worst-case time for a single
+      # stage attempt (developer loop with 12 steps × Sonnet ≈ 60-180s) so a
+      # user clicking "re-run" while another attempt is still running doesn't
+      # immediately fail with "workspace is locked". Stale-lock GC still runs
+      # against MCP_WORKSPACE_LOCK_STALE_MS (default 30 min) to clean up after
+      # crashed processes.
+      MCP_WORKSPACE_LOCK_TIMEOUT_MS: ${MCP_WORKSPACE_LOCK_TIMEOUT_MS:-300000}
       # M11.a — self-register with platform-registry
       PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       PUBLIC_BASE_URL:       ${MCP_PUBLIC_BASE_URL:-http://host.docker.internal:7100}
@@ -832,6 +895,7 @@ services:
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       CONTEXT_FABRIC_URL: http://context-api:8000
       CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
+      LEARNING_SERVICE_URL: http://learning-service:3006
       # M36.7 — mcp-server fetches the "code-tool-use nudge" SystemPrompt
       # (key=mcp.code-tool-use-nudge) from prompt-composer at run time so
       # there are no inline prompts in mcp-server source. Required when

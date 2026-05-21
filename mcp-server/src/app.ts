@@ -4,9 +4,10 @@ import cors from "cors";
 import helmet from "helmet";
 import { z } from "zod";
 import { requestIdMiddleware } from "./middleware/request-id";
-import { bearerAuth } from "./middleware/auth";
+import { bearerAuth, requireMcpScope } from "./middleware/auth";
 import { errorMiddleware } from "./middleware/error";
 import { invokeRouter } from "./mcp/invoke";
+import { tokensRouter } from "./mcp/tokens";
 import { toolsRouter } from "./mcp/tools";
 import { workRouter } from "./mcp/work";
 import { resourcesRouter } from "./mcp/resources";
@@ -90,6 +91,13 @@ app.get("/llm/models", bearerAuth, async (_req, res) => {
 
 // Everything under /mcp/* requires a valid bearer token.
 app.use("/mcp", bearerAuth);
+app.use("/mcp", tokensRouter);
+app.use("/mcp/invoke", requireMcpScope("invoke"));
+app.use("/mcp/resume", requireMcpScope("invoke"));
+app.use("/mcp/tools/list", requireMcpScope("tools:list"));
+app.use("/mcp/tools/call", requireMcpScope("tools:call"));
+app.use("/mcp/resources", requireMcpScope("resources:read"));
+app.use("/mcp/events", requireMcpScope("events:read"));
 app.use("/mcp", discoveryRouter);
 app.post("/mcp/embed", async (req, res) => {
   const parsed = z.object({
@@ -103,17 +111,41 @@ app.post("/mcp/embed", async (req, res) => {
   if (!parsed.success) {
     throw new AppError("invalid /mcp/embed payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
   }
-  const result = await llmEmbed({
-    ...(parsed.data.modelAlias ? { model_alias: parsed.data.modelAlias } : {}),
-    input: parsed.data.input,
-    trace_id: parsed.data.runContext.traceId,
-    capability_id: parsed.data.runContext.capabilityId,
-  });
-  res.json({
-    success: true,
-    data: result,
-    requestId: res.locals.requestId,
-  });
+  // Graceful degradation: the default model alias resolves to Anthropic, which
+  // has no embeddings API — the gateway returns 400 in that case. Rather than
+  // letting that bubble up as a 500 (and crash whatever stage initiated the
+  // embed), return an empty-embeddings response with a clear `unavailable`
+  // marker so the caller can detect and skip the feature. Real failures (auth,
+  // timeout) still propagate.
+  try {
+    const result = await llmEmbed({
+      ...(parsed.data.modelAlias ? { model_alias: parsed.data.modelAlias } : {}),
+      input: parsed.data.input,
+      trace_id: parsed.data.runContext.traceId,
+      capability_id: parsed.data.runContext.capabilityId,
+    });
+    res.json({ success: true, data: result, requestId: res.locals.requestId });
+  } catch (err) {
+    const message = (err as Error).message ?? "";
+    const provider400 =
+      message.includes("LLM_GATEWAY_EMBEDDINGS_UPSTREAM 400") ||
+      message.includes("not supported for provider") ||
+      message.includes("embeddings not supported");
+    if (!provider400) throw err;
+    res.json({
+      success: true,
+      data: {
+        unavailable: true,
+        reason: message.slice(0, 240),
+        embeddings: parsed.data.input.map(() => [] as number[]),
+        dim: 0,
+        input_tokens: 0,
+        latency_ms: 0,
+        model_alias: parsed.data.modelAlias,
+      },
+      requestId: res.locals.requestId,
+    });
+  }
 });
 app.use("/mcp", invokeRouter);
 app.use("/mcp", toolsRouter);

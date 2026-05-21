@@ -8,6 +8,9 @@ const schema = z.object({
   PORT: z.coerce.number().default(7000),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   MCP_BEARER_TOKEN: z.string().min(16),
+  MCP_SESSION_JWT_SECRET: z.string().optional(),
+  MCP_SESSION_TOKEN_TTL_SEC: z.coerce.number().int().positive().default(12 * 60 * 60),
+  MCP_SESSION_TOKEN_ISSUER: z.string().default("singularity-mcp"),
 
   // ── M33 — Central LLM Gateway ───────────────────────────────────────────
   // Every LLM call from mcp-server routes through the central
@@ -93,6 +96,7 @@ const schema = z.object({
   // Workstream 1: Durable Event Store
   MCP_EVENT_STORE_URL: z.string().optional(),
   MCP_EVENT_STORE_TOKEN: z.string().optional(),
+  LEARNING_SERVICE_URL: z.string().default("http://learning-service:3006"),
 });
 
 const parsed = schema.safeParse(process.env);

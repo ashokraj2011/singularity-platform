@@ -3335,6 +3335,31 @@ pre {
   border-color: var(--primary);
 }
 
+/* M42.7 — per-stage model picker. Lives directly under the rail-row button,
+ * indented to align with rail-label so it visually attaches to the stage. */
+.rail-model-picker {
+  display: block;
+  margin: -2px 8px 6px 46px;
+}
+.rail-model-picker > select {
+  width: 100%;
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--surface-high, rgba(148, 163, 184, 0.3));
+  background: var(--surface, transparent);
+  color: var(--text-subtle, var(--text));
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.rail-model-picker > select:hover {
+  border-color: var(--primary);
+}
+.rail-model-picker > select:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
 .rail-pip {
   width: 26px;
   height: 26px;

@@ -33,10 +33,14 @@ jobs:
           - { name: tool-service,         dir: agent-and-tools/apps/tool-service,   mgr: workspace }
           - { name: agent-runtime,        dir: agent-and-tools/apps/agent-runtime,  mgr: workspace, prisma: true }
           - { name: prompt-composer,      dir: agent-and-tools/apps/prompt-composer, mgr: workspace, prisma: true }
+          - { name: learning-service,     dir: agent-and-tools/apps/learning-service, mgr: workspace }
           - { name: agent-and-tools/web,  dir: agent-and-tools/web,                  mgr: workspace }
           - { name: workgraph-api,        dir: workgraph-studio/apps/api,            mgr: pnpm-workspace, prisma: true }
           - { name: workgraph-web,        dir: workgraph-studio/apps/web,            mgr: pnpm-workspace }
           - { name: blueprint-workbench,  dir: workgraph-studio/apps/blueprint-workbench, mgr: pnpm-workspace }
+          - { name: laptop-sdk,           dir: workgraph-studio/packages/laptop-sdk, mgr: pnpm-workspace }
+          - { name: sgl-cli,              dir: workgraph-studio/apps/sgl-cli,        mgr: pnpm-workspace }
+          - { name: singularity-desk,     dir: workgraph-studio/apps/desktop,        mgr: pnpm-workspace }
           - { name: portal,               dir: singularity-portal,                   mgr: npm }
           - { name: user-and-capability,  dir: UserAndCapabillity,                   mgr: npm }
           - { name: platform-registry,    dir: platform-registry,                    mgr: npm }

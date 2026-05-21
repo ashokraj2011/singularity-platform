@@ -23,6 +23,7 @@ import cors from "cors";
 import helmet from "helmet";
 import { ZodError } from "zod";
 import { eventsRouter } from "./routes-events";
+import { hooksRouter } from "./routes-hooks";
 import { governanceRouter } from "./routes-governance";
 import { queryRouter } from "./routes-query";
 import { engineRouter } from "./engine/routes";
@@ -88,6 +89,7 @@ app.get("/healthz/strict", async (_req, res) => {
 });
 
 app.use("/api/v1/events",     eventsRouter);
+app.use("/api/v1/hooks",      hooksRouter);
 app.use("/api/v1/governance", governanceRouter);
 app.use("/api/v1",            queryRouter);
 app.use("/api/v1/engine",    engineRouter);

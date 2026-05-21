@@ -46,6 +46,7 @@ import { eventHorizonRouter } from './modules/event-horizon/event-horizon.router
 // M40 — ImmutableContract replay + lookup endpoints.
 import { contractsRouter } from './modules/contracts/contracts.router'
 import { workItemsRouter } from './modules/work-items/work-items.router'
+import { laptopInvocationsRouter, laptopQuestionsRouter, workItemLaptopRouter } from './modules/laptop/laptop.router'
 import { internalArtifactFetchRouter } from './modules/internal/artifact-fetch.router'
 // M42.0 — admin feature-flag toggles (kill switches for major capabilities).
 // M42.1 — internalFeatureFlagsRouter is the service-token-gated read-only
@@ -109,7 +110,10 @@ export function createApp(): Express {
   // Webhook receiver is intentionally unauthenticated; secret-gated.
   app.use('/api/triggers/webhook', webhookRouter)
   app.use('/api/tasks', authMiddleware, tasksRouter)
+  app.use('/api/work-items', authMiddleware, workItemLaptopRouter)
   app.use('/api/work-items', authMiddleware, workItemsRouter)
+  app.use('/api/laptop-invocations', authMiddleware, laptopInvocationsRouter)
+  app.use('/api/questions', authMiddleware, laptopQuestionsRouter)
   app.use('/api/approvals', authMiddleware, approvalsRouter)
   app.use('/api/consumable-types', authMiddleware, consumableTypesRouter)
   app.use('/api/consumables', authMiddleware, consumablesRouter)

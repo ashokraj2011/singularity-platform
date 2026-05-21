@@ -25,6 +25,59 @@ async function main(): Promise<void> {
       headers: { authorization: `Bearer ${process.env.MCP_BEARER_TOKEN}` },
     });
     assert.equal(authenticated.status, 200);
+
+    const minted = await fetch(`${base}/mcp/tokens`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.MCP_BEARER_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        subject: "contract-user",
+        client: "contract-test",
+        origin: "laptop",
+        scopes: ["tools:list", "tools:call"],
+        ttlSeconds: 300,
+      }),
+    });
+    assert.equal(minted.status, 201);
+    const tokenBody = await minted.json() as { token: string; jti: string };
+
+    const sessionAuthenticated = await fetch(`${base}/llm/models`, {
+      headers: { authorization: `Bearer ${tokenBody.token}` },
+    });
+    assert.equal(sessionAuthenticated.status, 200);
+
+    const scopedTools = await fetch(`${base}/mcp/tools/list`, {
+      headers: { authorization: `Bearer ${tokenBody.token}` },
+    });
+    assert.equal(scopedTools.status, 200);
+
+    const narrowMint = await fetch(`${base}/mcp/tokens`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.MCP_BEARER_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ subject: "contract-user", client: "scope-test", scopes: ["events:read"], ttlSeconds: 300 }),
+    });
+    assert.equal(narrowMint.status, 201);
+    const narrowBody = await narrowMint.json() as { token: string; jti: string };
+    const missingScope = await fetch(`${base}/mcp/tools/list`, {
+      headers: { authorization: `Bearer ${narrowBody.token}` },
+    });
+    assert.equal(missingScope.status, 401);
+
+    const revoked = await fetch(`${base}/mcp/tokens/${tokenBody.jti}/revoke`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${process.env.MCP_BEARER_TOKEN}` },
+    });
+    assert.equal(revoked.status, 200);
+
+    const sessionAfterRevoke = await fetch(`${base}/llm/models`, {
+      headers: { authorization: `Bearer ${tokenBody.token}` },
+    });
+    assert.equal(sessionAfterRevoke.status, 401);
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));

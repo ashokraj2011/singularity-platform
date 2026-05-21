@@ -936,6 +936,7 @@ model WorkItem {
   targets                 WorkItemTarget[]
   events                  WorkItemEvent[]
   clarifications          WorkItemClarification[]
+  laptopInvocations       LaptopInvocation[]
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
 
@@ -1275,16 +1276,34 @@ model AgentRun {
   nodeId        String?
   status        AgentRunStatus    @default(REQUESTED)
   initiatedById String?
+  origin        String            @default("workflow")
+  client        String?
+  traceId       String?
+  cfCallId      String?
+  promptAssemblyId String?
+  mcpServerId   String?
+  mcpInvocationId String?
+  contextPackageId String?
+  modelCallId   String?
+  laptopInvocationId String?
   agent         Agent             @relation(fields: [agentId], references: [id])
   instance      WorkflowInstance? @relation(fields: [instanceId], references: [id])
   inputs        AgentRunInput[]
   outputs       AgentRunOutput[]
   reviews       AgentReview[]
+  laptopInvocation LaptopInvocation?
   startedAt     DateTime?
   completedAt   DateTime?
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
 
+  @@index([origin, client])
+  @@index([traceId])
+  @@index([cfCallId])
+  @@index([promptAssemblyId])
+  @@index([mcpInvocationId])
+  @@index([contextPackageId])
+  @@index([modelCallId])
   @@map("agent_runs")
 }
 
@@ -1322,6 +1341,64 @@ model AgentReview {
   reviewedAt   DateTime @default(now())
 
   @@map("agent_reviews")
+}
+
+model LaptopInvocation {
+  id                 String           @id @default(uuid())
+  workItemId         String
+  agentRunId         String           @unique
+  capabilityId       String?
+  client             String
+  mode               String           @default("direct-copilot")
+  status             String           @default("STARTED")
+  userId             String?
+  tenantId           String?
+  mcpUrl             String?
+  mcpTokenJti        String?
+  repoUrl            String?
+  branch             String?
+  baseCommitSha      String?
+  renderedPrompt     String?
+  promptAssemblyId   String?
+  envelopeAssemblyId String?
+  agentSpec          Json             @default("{}")
+  data               Json             @default("{}")
+  lastHeartbeatAt    DateTime?
+  startedAt          DateTime         @default(now())
+  endedAt            DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  workItem           WorkItem         @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  agentRun           AgentRun         @relation(fields: [agentRunId], references: [id], onDelete: Cascade)
+  questions          LaptopQuestion[]
+
+  @@index([workItemId])
+  @@index([agentRunId])
+  @@index([capabilityId])
+  @@index([status, lastHeartbeatAt])
+  @@map("laptop_invocations")
+}
+
+model LaptopQuestion {
+  id           String           @id @default(uuid())
+  invocationId String
+  workItemId   String
+  question     String
+  context      Json             @default("{}")
+  status       String           @default("OPEN")
+  answer       String?
+  askedById    String?
+  answeredById String?
+  askedAt      DateTime         @default(now())
+  answeredAt   DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  invocation   LaptopInvocation @relation(fields: [invocationId], references: [id], onDelete: Cascade)
+
+  @@index([invocationId, status])
+  @@index([workItemId, status])
+  @@index([status, createdAt])
+  @@map("laptop_questions")
 }
 
 // ─── BLUEPRINT WORKBENCH ────────────────────────────────────────────────────

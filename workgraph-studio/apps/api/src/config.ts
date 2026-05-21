@@ -19,7 +19,7 @@ const envSchema = z.object({
   // ── Identity provider (Singularity IAM federation) ─────────────────────────
   // 'iam'   → all auth + authz delegated to IAM (production)
   // 'local' → fall back to the built-in HS256 JWT + bcrypt login (offline dev)
-  AUTH_PROVIDER: z.enum(['iam', 'local']).default('local'),
+  AUTH_PROVIDER: z.enum(['iam', 'local']).default('iam'),
   // Base URL for the IAM HTTP API (e.g. http://localhost:8100/api/v1).
   IAM_BASE_URL: z.string().optional(),
   // Long-lived bearer used by workgraph-studio when calling IAM as a service
@@ -57,6 +57,10 @@ const envSchema = z.object({
   MCP_SERVER_URL: z.string().default('http://localhost:7100'),
   MCP_BEARER_TOKEN: z.string().default('demo-bearer-token-must-be-min-16-chars'),
   WORKGRAPH_INTERNAL_TOKEN: z.string().default('dev-workgraph-internal-token'),
+  LAPTOP_HEARTBEAT_TIMEOUT_SEC: z.coerce.number().int().positive().default(300),
+  LAPTOP_HEARTBEAT_SWEEP_SEC: z.coerce.number().int().positive().default(60),
+  LAPTOP_MCP_TOKEN_TTL_SEC: z.coerce.number().int().positive().default(12 * 60 * 60),
+  TENANT_ISOLATION_MODE: z.enum(['off', 'strict']).default('off'),
   EVENT_HORIZON_MODEL_ALIAS: z.string().optional(),
 
   // ── M34 — One-shot LLM calls now route through MCP_SERVER_URL above ──────

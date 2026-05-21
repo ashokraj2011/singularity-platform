@@ -1,0 +1,19 @@
+{
+  "copilot": {
+    "mode": "detect-first",
+    "bundledFallbackEnabled": true,
+    "compatibilityRange": "1.0.x"
+  },
+  "distribution": {
+    "releaseBlockingTargets": ["mac", "windows"],
+    "betaTargets": ["linux"],
+    "signing": {
+      "mac": "commercial",
+      "windows": "commercial"
+    },
+    "updater": {
+      "provider": "s3-compatible",
+      "channel": "stable"
+    }
+  }
+}

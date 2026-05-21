@@ -43,6 +43,25 @@ export interface LlmCallRecord {
   finish_reason: "stop" | "tool_call" | "length" | "error";
   error?: string;
   timestamp: string;
+  // [trace] step index in the agent loop, so a transcript-style viewer can
+  // group LLM calls + tool invocations into per-step blocks.
+  step_index?: number;
+  // [trace] compact preview of the prompt — the last N messages with
+  // role + content excerpt — to let an operator inspect what context the
+  // model saw without dumping the entire transcript into the JSONL.
+  prompt_messages_preview?: Array<{
+    role: string;
+    content_preview: string;
+    tool_call_id?: string;
+    tool_name?: string;
+  }>;
+  // [trace] the model's textual response (truncated). For pure tool-call
+  // responses this is usually empty/null; for completion turns it carries
+  // the final user-visible text.
+  response_text?: string;
+  // [trace] the model's emitted tool calls. Captured as compact summary so
+  // a trace viewer can show "what did the model decide to do this turn".
+  response_tool_calls?: Array<{ name: string; args_preview: string }>;
 }
 
 export interface ToolInvocationRecord {

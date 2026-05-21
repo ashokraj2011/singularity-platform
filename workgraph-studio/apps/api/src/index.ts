@@ -11,6 +11,7 @@ import { startTimerSweep } from './modules/workflow/runtime/TimerSweep'
 import { startTriggerScheduler } from './modules/workflow/triggers/TriggerScheduler'
 import { startSelfRegistration } from './lib/platform-registry/register'
 import { startEventDispatcher } from './lib/eventbus/dispatcher'
+import { startLaptopHeartbeatWatchdog } from './modules/laptop/laptop.service'
 
 async function main() {
   // Verify DB connection
@@ -31,6 +32,7 @@ async function main() {
   startOutboxProcessor()
   startTimerSweep()
   startTriggerScheduler()
+  startLaptopHeartbeatWatchdog()
 
   // M11.e — event-bus dispatcher (LISTEN/NOTIFY + safety sweep)
   await startEventDispatcher().catch((err) => {

@@ -314,12 +314,24 @@ const commandInputSchema = {
   required: ["command"],
 };
 
+// Strict allowlist mirrored from ALLOWED_COMMANDS / SHELL_TOKENS above. Surfaced
+// in the tool description so the LLM can pick a valid invocation up front instead
+// of probing with `find`/`ls`/pipes (which silently fail and waste agent steps).
+const RUN_COMMAND_ALLOWLIST_HINT =
+  "Allowed executables: git, rg, npm, pnpm, yarn, node, python, python3, pytest, go, cargo, mvn, gradle, gradlew, dotnet, make. " +
+  "Shell operators are REJECTED: no pipes (|), redirects (>, <, 2>), chaining (&&, ||, ;), command substitution ($(...), backticks). " +
+  "For directory listing or file search use the dedicated MCP tools (list_directory, search_code, read_file) — NOT find/ls/grep via run_command. " +
+  "Pass executable + args, e.g. {\"command\": \"mvn\", \"args\": [\"test\"]} or {\"command\": \"rg\", \"args\": [\"-n\", \"pattern\", \"src/\"]}.";
+
 export const runCommandTool: ToolHandler = {
   descriptor: {
     name: "run_command",
-    description: "Run an allowlisted non-shell command inside the MCP sandbox and return stdout/stderr evidence.",
+    description:
+      "Run an allowlisted non-shell command inside the MCP sandbox and return stdout/stderr evidence. " +
+      RUN_COMMAND_ALLOWLIST_HINT,
     natural_language:
-      "Use this for build, lint, typecheck, or diagnostic commands that are on the MCP allowlist. It does not run through a shell.",
+      "Use this for build, lint, typecheck, or diagnostic commands that are on the MCP allowlist. It does not run through a shell. " +
+      "To explore the workspace use list_directory / search_code / read_file instead of find/ls/grep.",
     input_schema: commandInputSchema,
     risk_level: "MEDIUM",
     requires_approval: false,
@@ -336,7 +348,9 @@ export const runCommandTool: ToolHandler = {
 export const runTestTool: ToolHandler = {
   descriptor: {
     name: "run_test",
-    description: "Run an allowlisted test or verification command inside the MCP sandbox and return a verification receipt.",
+    description:
+      "Run an allowlisted test or verification command inside the MCP sandbox and return a verification receipt. " +
+      RUN_COMMAND_ALLOWLIST_HINT,
     natural_language:
       "Use this after code edits during Dev or QA stages to capture test, lint, typecheck, or formal verification evidence.",
     input_schema: commandInputSchema,

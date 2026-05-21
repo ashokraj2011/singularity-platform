@@ -42,6 +42,7 @@ import {
   type LoopDefinition,
   type LoopQuestion,
   type LoopVerdict,
+  type LlmModelCatalogEntry,
   type LookupAgent,
   type LookupCapability,
   type GovernanceMode,
@@ -956,6 +957,25 @@ function WorkbenchNeo({
   const [activeStageKey, setActiveStageKey] = useState<string | null>(null)
   const [overlay, setOverlay] = useState<NeoOverlayKind>('none')
   const [look, setLook] = useNeoLook()
+  // M42.7 — fetch the LLM model alias catalog so each stage row can render a
+  // model picker. Cached for 5 min — the gateway reloads on restart and the
+  // list is short, so we trade freshness for quietness.
+  const modelCatalogQuery = useQuery({
+    queryKey: ['llm-models'],
+    queryFn: () => api.listModelAliases(),
+    staleTime: 5 * 60 * 1000,
+  })
+  const modelCatalog: LlmModelCatalogEntry[] = modelCatalogQuery.data?.models ?? []
+  const defaultModelAlias =
+    session?.executionConfig?.modelAlias ||
+    modelCatalogQuery.data?.default_model_alias ||
+    undefined
+  const stageModelAliases: Record<string, string> = session?.executionConfig?.stageModelAliases ?? {}
+  const updateStageModelMutation = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Parameters<typeof api.updateSettings>[1] }) =>
+      api.updateSettings(id, body),
+    onSuccess: updated => onSession(updated),
+  })
   const stages = session?.loopDefinition?.stages ?? []
   const firstStageKey = stages[0]?.key ?? null
 
@@ -1011,6 +1031,18 @@ function WorkbenchNeo({
             setActiveStageKey(key)
             setOverlay('none')
             onSection('workflow')
+          }}
+          modelCatalog={modelCatalog}
+          stageModelAliases={stageModelAliases}
+          defaultModelAlias={defaultModelAlias}
+          onStageModelChange={(stageKey, alias) => {
+            // M42.7 — patch stageModelAliases via /settings. We merge the
+            // current map with the new pick (or delete the key when alias is
+            // null) so other pinned stages keep their model.
+            const next = { ...stageModelAliases }
+            if (alias) next[stageKey] = alias
+            else delete next[stageKey]
+            updateStageModelMutation.mutate({ id: session.id, body: { stageModelAliases: next } })
           }}
           footer={<NeoThemePicker value={look} onChange={setLook} />}
         />

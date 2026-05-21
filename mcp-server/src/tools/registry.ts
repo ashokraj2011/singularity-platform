@@ -212,6 +212,13 @@ import {
 } from "./ast-tools";
 import { runCommandTool, runTestTool, verificationUnavailableTool } from "./command";
 import { formalVerifyTool } from "./formal-verify";
+import {
+  queryLearningStateTool,
+  querySimilarCapabilitiesTool,
+  recordAssumptionTool,
+  recordBlockerTool,
+  recordOutcomePatternTool,
+} from "./learning";
 
 const REGISTRY = new Map<string, ToolHandler>([
   [echoTool.descriptor.name, echoTool],
@@ -240,6 +247,11 @@ const REGISTRY = new Map<string, ToolHandler>([
   [runTestTool.descriptor.name, runTestTool],
   [verificationUnavailableTool.descriptor.name, verificationUnavailableTool],
   [formalVerifyTool.descriptor.name, formalVerifyTool],
+  [queryLearningStateTool.descriptor.name, queryLearningStateTool],
+  [querySimilarCapabilitiesTool.descriptor.name, querySimilarCapabilitiesTool],
+  [recordOutcomePatternTool.descriptor.name, recordOutcomePatternTool],
+  [recordAssumptionTool.descriptor.name, recordAssumptionTool],
+  [recordBlockerTool.descriptor.name, recordBlockerTool],
   [prepareWorkBranchTool.descriptor.name, prepareWorkBranchTool],
   [finishWorkBranchTool.descriptor.name, finishWorkBranchTool],
 ]);

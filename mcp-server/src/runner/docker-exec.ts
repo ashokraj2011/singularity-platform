@@ -102,6 +102,23 @@ function dockerRunArgs(req: ExecuteRequest, receiptId: string, containerName: st
     "--memory", runnerConfig.MCP_RUNNER_MEMORY_LIMIT,
     "--pids-limit", String(runnerConfig.MCP_RUNNER_PIDS_LIMIT),
     "--tmpfs", `/tmp:rw,noexec,nosuid,nodev,size=${runnerConfig.MCP_RUNNER_TMPFS_SIZE}`,
+    // Writable HOME directory inside the read-only container. Required because
+    // build tools cache state under $HOME:
+    //   - mvn  → /root/.m2 (local repository)
+    //   - gradle → /root/.gradle (wrapper + caches)
+    //   - npm/pnpm/yarn → /root/.npm, /root/.local/share/pnpm
+    //   - python/pip → /root/.cache/pip
+    //   - cargo → /root/.cargo (when not pre-mounted)
+    // Without this tmpfs, mvn fails with "Could not create local repository
+    // at /root/.m2/repository" and the verification step never produces a
+    // useful receipt. tmpfs keeps the cache ephemeral (gone when the runner
+    // container exits) so there's no cross-invocation leakage.
+    "--tmpfs", `/root:rw,size=${runnerConfig.MCP_RUNNER_TMPFS_SIZE}`,
+    // Some images run as a non-root user (e.g. node:20-alpine sometimes
+    // sets WORKDIR for `node` user). Provide /home with rw tmpfs too so
+    // those paths can be written without conflicting with the read-only
+    // root filesystem.
+    "--tmpfs", `/home:rw,size=${runnerConfig.MCP_RUNNER_TMPFS_SIZE}`,
     "--label", `singularity.mcp.runner_receipt_id=${receiptId}`,
     "-v", `${runnerConfig.MCP_RUNNER_HOST_WORKSPACE_PATH}:${workspacePath}:rw`,
     "-w", workdir,

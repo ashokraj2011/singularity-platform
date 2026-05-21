@@ -2,7 +2,9 @@ packages:
   - 'apps/web'
   - 'apps/blueprint-workbench'
   - 'apps/desktop'
+  - 'apps/sgl-cli'
   - 'apps/api'
+  - 'packages/laptop-sdk'
   - 'packages/shared-types'
   - 'packages/engine'
 allowBuilds:

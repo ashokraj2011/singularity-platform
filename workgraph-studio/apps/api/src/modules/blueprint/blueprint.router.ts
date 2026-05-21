@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { BlueprintStage, BlueprintSessionStatus, BlueprintStageStatus, BlueprintSourceType, Prisma, type ConsumableStatus } from '@prisma/client'
+import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError } from '../../lib/errors'
@@ -56,8 +57,17 @@ const DEFAULT_WORKBENCH_EXECUTION_CONFIG = {
   snapshotMode: 'relevant_excerpts' as const,
   excerptBudgetChars: EXECUTE_EXCERPT_BUDGET_CHARS,
   reuseUnchangedAttempt: true,
-  maxContextTokens: 8_000,
-  maxOutputTokens: 800,
+  // 24K input budget: a single read_file of a 9K Java source ≈ 2.5K tokens,
+  // and we want 4–6 such reads + tool descriptors + system prompt to survive
+  // without forcing the sliding-window to compress useful history into
+  // breadcrumbs. At 8K, file reads triggered compression after step 2–3 and
+  // the agent forgot earlier successful list_directory results.
+  maxContextTokens: 24_000,
+  // 6000 output tokens: write_file content args for new JUnit/JavaScript test
+  // files commonly need 2000-4000 output tokens. At 800 the model truncated
+  // mid-write, leaving content="" in the tool_call, which created empty
+  // files the agent then retried in a loop → agent_loop_repetition.
+  maxOutputTokens: 6_000,
   maxPromptChars: 12_000,
   maxLayerChars: 1_000,
 }
@@ -1473,10 +1483,32 @@ function readExecutionConfig(value: unknown): LoopState['executionConfig'] {
   }
 }
 
+// Minimum context budget enforced for any workbench loop. Set high enough that
+// a developer agent can read 3-4 medium-size source files (≈2-3K tokens each)
+// plus tool descriptors + system prompt without immediately triggering sliding-
+// window compression. Sessions created before this minimum was raised still
+// have their old (8K) value persisted in metadata.executionConfig; this floor
+// transparently upgrades them so the user does not need to re-create the loop.
+const MIN_WORKBENCH_CONTEXT_TOKENS = 24_000
+
+// Minimum output budget. Below ~4K the model truncates write_file content
+// arguments mid-emit, which manifests as content="" in the tool call → the
+// agent writes empty files and retries in a loop until agent_loop_repetition
+// kicks in. Sessions persisted with the old 800-token cap get clamped up.
+const MIN_WORKBENCH_OUTPUT_TOKENS = 4_000
+
 function workbenchExecutionLimits(executionConfig: LoopState['executionConfig']) {
+  const persistedContextTokens = executionConfig?.maxContextTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxContextTokens
+  const persistedOutputTokens = executionConfig?.maxOutputTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxOutputTokens
   return {
-    maxContextTokens: executionConfig?.maxContextTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxContextTokens,
-    maxOutputTokens: executionConfig?.maxOutputTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxOutputTokens,
+    // Clamp persisted value up to the minimum to avoid stranded sessions that
+    // were created before the budget was raised (see RCA: stored 8K caused
+    // every developer step to thrash on context compression and the agent
+    // forgot earlier file reads).
+    maxContextTokens: Math.max(persistedContextTokens, MIN_WORKBENCH_CONTEXT_TOKENS),
+    // Same protection for output budget — see RCA: stored 800 caused empty
+    // write_file content args → agent_loop_repetition on retries.
+    maxOutputTokens: Math.max(persistedOutputTokens, MIN_WORKBENCH_OUTPUT_TOKENS),
     maxPromptChars: executionConfig?.maxPromptChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxPromptChars,
     maxLayerChars: executionConfig?.maxLayerChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxLayerChars,
   }
@@ -2519,6 +2551,37 @@ async function saveStageVerdict(
   return loadSession(session.id, actorId)
 }
 
+/**
+ * Tell mcp-server to invalidate any pending approval tokens tied to this
+ * workflow run. Called on send-back so the new attempt doesn't inherit a
+ * stale "Approve MCP action…" UI prompt or, worse, accidentally resume a
+ * tool call from the run we just unwound.
+ *
+ * Best-effort: a network error here should not block the send-back. If
+ * mcp-server is down the pending tokens will expire on their own
+ * (MCP_WORKSPACE_LOCK_STALE_MS default 30 min).
+ */
+async function clearMcpPendingApprovalsFor(workflowInstanceId: string): Promise<void> {
+  const url = `${config.MCP_SERVER_URL.replace(/\/$/, '')}/mcp/pending/clear`
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${config.MCP_BEARER_TOKEN}`,
+      },
+      body: JSON.stringify({ workflowInstanceId }),
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      console.warn(`[sendStageBack] mcp-server pending/clear returned ${res.status}: ${text.slice(0, 200)}`)
+    }
+  } catch (err) {
+    console.warn(`[sendStageBack] mcp-server pending/clear failed (best-effort): ${(err as Error).message}`)
+  }
+}
+
 async function sendStageBack(
   sessionId: string,
   stageKey: string,
@@ -2544,22 +2607,91 @@ async function sendStageBack(
     verdict: item.verdict ?? 'NEEDS_REWORK' as const,
     feedback: body.reason,
   } : item) : state.stageAttempts
+
+  // ── Clean-slate rollback for the TARGET stage ───────────────────────────
+  // When operators send work back, the target stage should start fresh: the
+  // previous attempt's chat history, artifacts, and bookkeeping must NOT
+  // leak into the next attempt's agent memory. Previously these stuck around
+  // and (a) confused operators with stale "Approve MCP action…" prompts and
+  // (b) let the LLM see prior tool turns whose tool_results had been pruned
+  // → Anthropic 400 "tool_use without tool_result". See RCA notes.
+  const targetAttemptsToRemove = attempts.filter(a => a.stageKey === target.key)
+  const targetArtifactIdsToRemove = targetAttemptsToRemove.flatMap(a => a.artifactIds ?? [])
+
+  // 1. Delete artifacts produced by the target stage's prior attempts.
+  if (targetArtifactIdsToRemove.length > 0) {
+    await prisma.blueprintArtifact.deleteMany({ where: { id: { in: targetArtifactIdsToRemove } } })
+  }
+  // 2. Reject any published consumables tied to those attempts (mirrors the
+  //    reset-attempts endpoint so workflow runs see them as withdrawn).
+  for (const attempt of targetAttemptsToRemove) {
+    if (attempt.artifactIds?.length) {
+      await transitionAttemptConsumables(
+        attempt.artifactIds,
+        'REJECTED',
+        actorId,
+        'BlueprintStageConsumablesRejected',
+        {
+          sessionId: session.id,
+          stageKey: target.key,
+          stageLabel: target.label,
+          targetStageKey: target.key,
+          attemptId: attempt.id,
+          reason: `Send-back from ${stage.label}: ${body.reason}`,
+        },
+      ).catch(err => {
+        // Don't fail the whole send-back if a consumable transition errors —
+        // log via the audit trail and continue. The artifacts are already
+        // deleted; this is just consumable-ledger bookkeeping.
+        console.warn(`[sendStageBack] failed to reject consumable for attempt ${attempt.id}: ${(err as Error).message}`)
+      })
+    }
+  }
+  // 3. Drop target-stage attempts from state so the next attempt is the
+  //    "first" again (matches reset-attempts semantics).
+  const attemptsAfterClean = attempts.filter(a => a.stageKey !== target.key)
+  // 4. Clear the target stage's chat thread so prior operator notes don't
+  //    feed back into the next attempt's prompt.
+  const stageChats = readStageChats(session.metadata)
+  const targetChatHadMessages = Boolean(stageChats[target.key]?.length)
+  delete stageChats[target.key]
+
   const nextState: LoopState = {
     ...state,
     currentStageKey: target.key,
-    stageAttempts: attempts,
-    reviewEvents: [...state.reviewEvents, reviewEvent('SEND_BACK', `${stage.label} sent back to ${target.label}: ${body.reason}`, actorId, {
-      stageKey: stage.key,
-      targetStageKey: target.key,
-      attemptId: latestAttempt?.id,
-      reason: body.reason,
-      requiredChanges: body.requiredChanges,
-      blockingQuestions: body.blockingQuestions ?? [],
-    })],
+    stageAttempts: attemptsAfterClean,
+    reviewEvents: [
+      ...state.reviewEvents,
+      reviewEvent('SEND_BACK', `${stage.label} sent back to ${target.label}: ${body.reason}`, actorId, {
+        stageKey: stage.key,
+        targetStageKey: target.key,
+        attemptId: latestAttempt?.id,
+        reason: body.reason,
+        requiredChanges: body.requiredChanges,
+        blockingQuestions: body.blockingQuestions ?? [],
+      }),
+      // A second event so the UI can show what was cleared. Distinct type
+      // from SEND_BACK keeps the dual-purpose nature explicit.
+      reviewEvent('STAGE_ATTEMPTS_RESET', `Cleared ${target.label} memory (${targetAttemptsToRemove.length} prior attempt${targetAttemptsToRemove.length === 1 ? '' : 's'}${targetChatHadMessages ? ', chat thread' : ''}) for the new attempt.`, actorId, {
+        stageKey: target.key,
+        stageLabel: target.label,
+        removedAttemptIds: targetAttemptsToRemove.map(a => a.id),
+        removedAttemptCount: targetAttemptsToRemove.length,
+        removedArtifactCount: targetArtifactIdsToRemove.length,
+        clearedChatThread: targetChatHadMessages,
+        triggeredBy: 'send-back',
+      }),
+    ],
   }
   await prisma.blueprintSession.update({
     where: { id: session.id },
-    data: { status: BlueprintSessionStatus.SNAPSHOTTED, metadata: stateToMetadata(session, nextState) },
+    data: {
+      status: BlueprintSessionStatus.SNAPSHOTTED,
+      metadata: {
+        ...(stateToMetadata(session, nextState) as Record<string, unknown>),
+        stageChats,
+      },
+    },
   })
   if (latestAttempt?.artifactIds?.length) {
     await transitionAttemptConsumables(
@@ -2586,7 +2718,15 @@ async function sendStageBack(
     reason: body.reason,
     requiredChanges: body.requiredChanges,
     blockingQuestions: body.blockingQuestions ?? [],
+    cleanedTargetAttempts: targetAttemptsToRemove.length,
+    cleanedTargetArtifacts: targetArtifactIdsToRemove.length,
+    clearedTargetChatThread: targetChatHadMessages,
   })
+  // Best-effort: invalidate any pending MCP approval tokens for this workflow
+  // so the new attempt doesn't see stale "Approve MCP action…" prompts.
+  if (session.workflowInstanceId) {
+    await clearMcpPendingApprovalsFor(session.workflowInstanceId)
+  }
   return loadSession(session.id, actorId)
 }
 

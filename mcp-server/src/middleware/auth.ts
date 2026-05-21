@@ -2,6 +2,16 @@ import { Request, Response, NextFunction } from "express";
 import { timingSafeEqual } from "node:crypto";
 import { config } from "../config";
 import { UnauthorizedError } from "../shared/errors";
+import { hasMcpSessionScope, McpSessionClaims, verifyMcpSessionToken } from "../lib/session-token";
+
+declare global {
+  namespace Express {
+    interface Request {
+      mcpSession?: McpSessionClaims;
+      mcpAuthKind?: "static" | "session";
+    }
+  }
+}
 
 /**
  * Bearer-token auth (M35.1).
@@ -28,12 +38,39 @@ function constantTimeEqual(a: string, b: string): boolean {
   return timingSafeEqual(aBuf, bBuf);
 }
 
+export function isStaticBearerToken(presented: string): boolean {
+  return constantTimeEqual(presented, config.MCP_BEARER_TOKEN);
+}
+
 export function bearerAuth(req: Request, _res: Response, next: NextFunction): void {
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) throw new UnauthorizedError("missing bearer token");
   const presented = header.slice(7);
-  if (!constantTimeEqual(presented, config.MCP_BEARER_TOKEN)) {
+  if (isStaticBearerToken(presented)) {
+    req.mcpAuthKind = "static";
+    next();
+    return;
+  }
+  try {
+    req.mcpSession = verifyMcpSessionToken(presented);
+    req.mcpAuthKind = "session";
+    next();
+    return;
+  } catch {
     throw new UnauthorizedError("bearer mismatch");
   }
-  next();
+}
+
+export function requireMcpScope(scope: string) {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    if (req.mcpAuthKind === "static") {
+      next();
+      return;
+    }
+    if (req.mcpSession && hasMcpSessionScope(req.mcpSession, scope)) {
+      next();
+      return;
+    }
+    throw new UnauthorizedError(`missing MCP session scope: ${scope}`);
+  };
 }

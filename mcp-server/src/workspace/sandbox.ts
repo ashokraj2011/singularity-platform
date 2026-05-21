@@ -119,7 +119,25 @@ export async function withWorkspaceLock<T>(fn: () => Promise<T>): Promise<T> {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       if (Date.now() - started > config.MCP_WORKSPACE_LOCK_TIMEOUT_MS) {
-        throw new Error(`workspace is locked: ${root}`);
+        // Surface lock-holder metadata so the operator can decide whether to
+        // wait or kill the stale run. Previously the message was just "locked"
+        // which was confusable with workspace-is-broken — operators thought
+        // they needed to wipe state when the actual cause was a concurrent
+        // run still finishing.
+        let holder = "(unknown)";
+        try {
+          const buf = await fs.promises.readFile(lockPath, "utf8");
+          const parsed = JSON.parse(buf) as { pid?: number; createdAt?: string };
+          if (parsed.createdAt) {
+            const ageSec = Math.round((Date.now() - new Date(parsed.createdAt).getTime()) / 1000);
+            holder = `pid=${parsed.pid ?? "?"} age=${ageSec}s`;
+          }
+        } catch { /* lock file gone or unparseable — leave holder=unknown */ }
+        throw new Error(
+          `workspace is locked by an in-progress run (${holder}) at ${root}. ` +
+            `Wait for it to finish, or if you believe the previous run died, delete ${lockPath} manually. ` +
+            `Stale locks older than MCP_WORKSPACE_LOCK_STALE_MS are auto-cleared on the next attempt.`,
+        );
       }
       await sleep(150);
     }

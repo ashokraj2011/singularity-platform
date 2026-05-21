@@ -21,7 +21,7 @@
  * estate. Optional — pass null/undefined as theme/onTheme to suppress.
  */
 import { useMemo, type ReactNode } from 'react'
-import type { BlueprintSession, StageAttempt } from '../api'
+import type { BlueprintSession, LlmModelCatalogEntry, StageAttempt } from '../api'
 
 type StageStatus = 'pending' | 'running' | 'paused' | 'awaiting' | 'pass' | 'risk_accepted' | 'failed' | 'sent_back'
 
@@ -55,11 +55,22 @@ export function LoopRail({
   session,
   activeStageKey,
   onStage,
+  modelCatalog,
+  stageModelAliases,
+  defaultModelAlias,
+  onStageModelChange,
   footer,
 }: {
   session: BlueprintSession
   activeStageKey: string | null
   onStage: (stageKey: string) => void
+  /** M42.7 — per-stage model picker support. When all four model* props are
+   *  provided, each rail row renders a compact <select> that pins a model
+   *  alias for that stage. Omit them to fall back to the legacy rail. */
+  modelCatalog?: LlmModelCatalogEntry[]
+  stageModelAliases?: Record<string, string>
+  defaultModelAlias?: string
+  onStageModelChange?: (stageKey: string, alias: string | null) => void
   /** Optional footer slot — used by WorkbenchNeo to dock the
    *  NeoThemePicker so it's always reachable from the rail. */
   footer?: ReactNode
@@ -76,6 +87,8 @@ export function LoopRail({
     }
   }), [session.stageAttempts, stages])
 
+  const modelPickerEnabled = Boolean(modelCatalog && modelCatalog.length > 0 && onStageModelChange)
+
   return (
     <aside className="neo-loop-rail" aria-label="Loop stages">
       <header>
@@ -86,6 +99,9 @@ export function LoopRail({
         {items.map(({ stage, status, attemptCount }, index) => {
           const isActive = activeStageKey === stage.key
           const needsAttention = status === 'awaiting' || status === 'paused' || (status === 'pending' && session.currentStageKey === stage.key)
+          const pinned = stageModelAliases?.[stage.key] ?? ''
+          // Pin precedence: per-stage > session default > catalog default
+          const effective = pinned || defaultModelAlias || ''
           return (
             <li key={stage.key} className={`rail-row ${status} ${isActive ? 'active' : ''} ${needsAttention ? 'attention' : ''}`}>
               <button type="button" onClick={() => onStage(stage.key)}>
@@ -96,6 +112,25 @@ export function LoopRail({
                 </span>
                 {needsAttention && <span className="rail-attention-dot" aria-label="needs attention" />}
               </button>
+              {modelPickerEnabled && (
+                <label className="rail-model-picker" title="Model used by this stage">
+                  <select
+                    value={pinned}
+                    onChange={e => onStageModelChange?.(stage.key, e.target.value || null)}
+                    onClick={e => e.stopPropagation()}
+                    aria-label={`Model for ${stage.label}`}
+                  >
+                    <option value="">{`(default${defaultModelAlias ? `: ${defaultModelAlias}` : ''})`}</option>
+                    {modelCatalog!.map(m => (
+                      <option key={m.id} value={m.id} disabled={m.ready === false}>
+                        {m.label ?? m.id}
+                        {m.costTier ? ` · ${m.costTier}` : ''}
+                        {m.id === effective && !pinned ? ' (in use)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               {index < items.length - 1 && <span className="rail-connector" aria-hidden />}
             </li>
           )

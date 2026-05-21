@@ -27,6 +27,7 @@ import { detectVerifiers } from "../workspace/verifier-registry";
 import {
   CorrelationIds, recordLlmCall, recordToolInvocation, recordArtifact,
   recordCodeChange, ToolInvocationRecord, CodeChangeRecord,
+  LlmCallRecord,
 } from "../audit/store";
 import { emitRePlan } from "../audit/replan-telemetry";
 import { extractCodeChange } from "../audit/provenanceExtractor";
@@ -36,7 +37,7 @@ import { checkBudget, checkRateLimit, GovernanceMode } from "../lib/audit-gov-ch
 import { isDegradedToolAllowedByPolicy, isRiskyToolByPolicy } from "../lib/governance-policy";
 import { persistApproval, consumeApproval } from "../lib/audit-gov-approvals";
 import {
-  savePending, takePending, peekPending, PendingToolDescriptor,
+  savePending, takePending, peekPending, clearPending, PendingToolDescriptor,
 } from "../audit/pending";
 import {
   branchNameForWork, finishWorkBranch, prepareWorkBranch, restoreWorkBranch, WorkBranchInfo,
@@ -562,6 +563,13 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
       latency_ms: llmResp.latency_ms,
       prompt_messages_count: state.messages.length,
       finish_reason: llmResp.finish_reason,
+      // [trace] full transcript-style capture so an operator can replay
+      // exactly what the model saw and what it emitted — see the
+      // `bin/trace.sh` viewer.
+      step_index: state.stepIndex,
+      prompt_messages_preview: buildPromptMessagesPreview(state.messages),
+      response_text: captureResponseText(llmResp.content),
+      response_tool_calls: buildResponseToolCallsPreview(llmResp.tool_calls),
     });
     state.llmCallIds.push(llmRec.id);
 
@@ -677,6 +685,12 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
           latency_ms: applierResp.latency_ms,
           prompt_messages_count: 2,
           finish_reason: applierResp.finish_reason,
+          // [trace] applier path also captured. The applier sees a tightly
+          // scoped pair (assistant tool_call → tool error / partial result),
+          // so prompt_messages_preview will usually have 2 entries.
+          step_index: state.stepIndex,
+          response_text: captureResponseText(applierResp.content),
+          response_tool_calls: buildResponseToolCallsPreview(applierResp.tool_calls),
         });
         state.llmCallIds.push(applierLlmRec.id);
 
@@ -742,7 +756,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
               return await pauseForApproval(state, tc, desc, result.approvalRequired.reason, result.record.id);
             }
 
-            const rawOutput = toolResultForNextTurn(state, result.record.output);
+            const rawOutput = toolMessageContentForRecord(state, result.record);
             const maskedOutput = await applyOutputMaskIfNeededAsync(state, undefined, rawOutput);
             state.messages.push({
               role: "tool",
@@ -968,7 +982,9 @@ Please review the errors above, correct the code, and explain how you resolved t
         // M39 — mask PII in the tool output before the LLM sees it. M39.B
         // upgrades the path to async so the NER detector (loaded lazily under
         // MCP_PII_NER_ENABLED) can run alongside the regex baseline.
-        const rawOutput = toolResultForNextTurn(state, result.record.output);
+        // toolMessageContentForRecord surfaces tool errors (success=false) so
+        // the LLM can correct its strategy instead of seeing a silent "null".
+        const rawOutput = toolMessageContentForRecord(state, result.record);
         const maskedOutput = await applyOutputMaskIfNeededAsync(state, desc, rawOutput);
         state.messages.push({
           role: "tool",
@@ -1267,6 +1283,11 @@ async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome
       latency_ms: llmResp.latency_ms,
       prompt_messages_count: state.messages.length,
       finish_reason: llmResp.finish_reason,
+      // [trace] capture transcript fields for the bin/trace.sh viewer.
+      step_index: state.stepIndex,
+      prompt_messages_preview: buildPromptMessagesPreview(state.messages),
+      response_text: captureResponseText(llmResp.content),
+      response_tool_calls: buildResponseToolCallsPreview(llmResp.tool_calls),
     });
     state.llmCallIds.push(llmRec.id);
 
@@ -1400,7 +1421,7 @@ async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome
       if (result.approvalRequired) {
         return await pauseForApproval(state, tc, desc, result.approvalRequired.reason, result.record.id);
       }
-      const rawOutput = toolResultForNextTurn(state, result.record.output);
+      const rawOutput = toolMessageContentForRecord(state, result.record);
       const maskedOutput = await applyOutputMaskIfNeededAsync(state, desc, rawOutput);
       state.messages.push({
         role: "tool",
@@ -1515,6 +1536,11 @@ async function finalizeReadOnlyAfterMaxSteps(state: LoopState): Promise<LoopOutc
       latency_ms: llmResp.latency_ms,
       prompt_messages_count: state.messages.length,
       finish_reason: llmResp.finish_reason,
+      // [trace] capture transcript fields for the bin/trace.sh viewer.
+      step_index: state.stepIndex,
+      prompt_messages_preview: buildPromptMessagesPreview(state.messages),
+      response_text: captureResponseText(llmResp.content),
+      response_tool_calls: buildResponseToolCallsPreview(llmResp.tool_calls),
     });
     state.llmCallIds.push(llmRec.id);
 
@@ -2289,7 +2315,7 @@ invokeRouter.post("/resume", async (req, res) => {
     state.verificationReceipts.push(...verificationReceiptsFromOutput(result.record.output, result.record.id, tc.name));
     // M39 / M39.B — mask resumed-tool output (async path for NER support).
     const resumeDesc = env.full_tool_descriptors.find((d) => d.name === tc.name);
-    const rawOutput = toolResultForNextTurn(state, result.record.output);
+    const rawOutput = toolMessageContentForRecord(state, result.record);
     state.messages.push({
       role: "tool",
       content: await applyOutputMaskIfNeededAsync(state, resumeDesc, rawOutput),
@@ -2409,6 +2435,56 @@ function briefArgs(args: Record<string, unknown> | undefined): string {
   return Object.entries(args).slice(0, 3).map(([k, v]) => `${k}=${briefValue(v)}`).join(", ");
 }
 
+/**
+ * [trace] Build a compact preview of the prompt messages for the audit log.
+ * Captures the LAST N messages (the recent context the model actually saw)
+ * with role + truncated content. Earlier messages are dropped — pin them via
+ * the breadcrumb system if you need them in the trace. Per-message content
+ * is capped at ~400 chars so a JSONL line stays under a few KB even with 8+
+ * messages in the window.
+ */
+function buildPromptMessagesPreview(
+  messages: ReadonlyArray<{ role: string; content?: unknown; tool_call_id?: string; tool_name?: string }>,
+  windowSize = 8,
+  perMessageMax = 400,
+): LlmCallRecord["prompt_messages_preview"] {
+  const tail = messages.slice(-windowSize);
+  return tail.map((m) => {
+    const raw = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+    const trimmed = raw.length > perMessageMax ? raw.slice(0, perMessageMax) + `…[+${raw.length - perMessageMax}ch]` : raw;
+    const out: { role: string; content_preview: string; tool_call_id?: string; tool_name?: string } = {
+      role: m.role,
+      content_preview: trimmed.replace(/\s+/g, " "),
+    };
+    if (m.tool_call_id) out.tool_call_id = m.tool_call_id;
+    if (m.tool_name) out.tool_name = m.tool_name;
+    return out;
+  });
+}
+
+/**
+ * [trace] Build a compact summary of the tool_calls the model emitted in
+ * this turn. Mirrors the [agent-step] log shape so the JSONL trace and the
+ * stdout log share vocabulary.
+ */
+function buildResponseToolCallsPreview(
+  toolCalls: ReadonlyArray<{ name: string; args?: Record<string, unknown> }> | undefined,
+): LlmCallRecord["response_tool_calls"] {
+  if (!toolCalls?.length) return undefined;
+  return toolCalls.map((tc) => ({
+    name: tc.name,
+    args_preview: briefArgs(tc.args),
+  }));
+}
+
+/** [trace] Truncate the model's text response for the audit log. */
+function captureResponseText(content: unknown, max = 2000): string | undefined {
+  if (content == null) return undefined;
+  const s = typeof content === "string" ? content : JSON.stringify(content);
+  if (!s) return undefined;
+  return s.length > max ? s.slice(0, max) + `…[+${s.length - max}ch]` : s;
+}
+
 function briefToolResult(content: string | undefined): string {
   if (!content) return "ok";
   try {
@@ -2518,6 +2594,12 @@ export function applySlidingWindow(state: LoopState): void {
   // turn in this rolling window). These can leak in via context-fabric
   // history or after re-plan paths. Anthropic rejects them just as hard.
   rollingMessages = removeOrphanedToolResults([...historicalRolling, ...pinnedLatestExchange]);
+  // Symmetric pass: when a sliding-window trim drops a tool_result but keeps
+  // the assistant message that emitted the matching tool_use, Anthropic
+  // rejects the next call with "tool_use ids were found without tool_result
+  // blocks immediately after". Pad each unmatched tool_use with a synthetic
+  // `kind: "elided"` tool_result so the invariant holds. See padOrphanedToolUses.
+  rollingMessages = padOrphanedToolUses(rollingMessages);
 
   // Compute which non-pinned messages got dropped this pass and breadcrumb them.
   const survivingSet = new Set<ChatMessage>([
@@ -2553,6 +2635,11 @@ export function applySlidingWindow(state: LoopState): void {
     ...(finalBreadcrumb ? [finalBreadcrumb] : []),
     ...rollingMessages,
   ];
+  // Final safety net: also pad orphan tool_uses across the FULL combined
+  // window. The earlier pad happened on the rolling slice only; this catches
+  // edge cases where messages got reordered (e.g. breadcrumb insertion split
+  // an assistant ↔ tool_result pair).
+  state.messages = padOrphanedToolUses(state.messages);
   const afterTokens = state.messages.reduce((sum, msg) => sum + estimateTextTokens(msg.content), 0);
   const dropped = Math.max(0, beforeMessages - state.messages.length);
   if (dropped > 0) {
@@ -2639,6 +2726,58 @@ function removeOrphanedToolResults(messages: ChatMessage[]): ChatMessage[] {
   return out;
 }
 
+/**
+ * Symmetric to removeOrphanedToolResults: when an assistant message emits a
+ * tool_use block whose matching tool_result has been dropped from the window
+ * (sliding-window compression, mid-batch approval pause, mid-batch error),
+ * Anthropic rejects the next LLM call with HTTP 400:
+ *   "`tool_use` ids were found without `tool_result` blocks immediately after".
+ *
+ * Fix: scan each assistant message's tool_use IDs and, for any whose
+ * tool_result is missing in the immediately-following tool-message run,
+ * synthesize a placeholder tool_result with `kind:"elided"`. The placeholder
+ * carries no fabricated data — it just satisfies the Anthropic invariant so
+ * the conversation can continue. The agent can interpret "elided" as
+ * "previous result no longer available" and re-fetch if it still cares.
+ */
+function padOrphanedToolUses(messages: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    out.push(msg);
+    if (msg.role !== "assistant") continue;
+    const expectedIds = assistantToolCallIds(msg);
+    if (expectedIds.length === 0) continue;
+    // Walk through any tool messages that immediately follow this assistant
+    // turn, collect the tool_call_ids they cover, and emit them in order.
+    const seen = new Set<string>();
+    let j = i + 1;
+    while (j < messages.length && messages[j].role === "tool") {
+      const tid = messages[j].tool_call_id;
+      if (typeof tid === "string") seen.add(tid);
+      out.push(messages[j]);
+      j++;
+    }
+    // Synthesize a placeholder tool_result for any expected ID that didn't
+    // show up in the run of tool messages above.
+    for (const expectedId of expectedIds) {
+      if (seen.has(expectedId)) continue;
+      out.push({
+        role: "tool",
+        tool_call_id: expectedId,
+        tool_name: "elided",
+        content: JSON.stringify({
+          kind: "elided",
+          reason: "Prior tool result is no longer in the context window. If the result still matters, re-issue the tool call.",
+        }),
+      });
+    }
+    // Skip past the tool messages we already pushed.
+    i = j - 1;
+  }
+  return out;
+}
+
 function toolResultForNextTurn(state: LoopState, output: unknown): string {
   const raw = JSON.stringify(output);
   if (!state.compressToolResults) return trimToolResult(raw, state.maxToolResultChars);
@@ -2650,6 +2789,36 @@ function toolResultForNextTurn(state: LoopState, output: unknown): string {
     state.contextCompression.toolResultBytesSaved += raw.length - selected.length;
   }
   return trimToolResult(selected, state.maxToolResultChars);
+}
+
+/**
+ * Build the tool-message content shown to the LLM.
+ *
+ * Critical: when a tool fails (e.g. `run_command` rejected for shell operators,
+ * argument validation error, server timeout) the record carries the error text
+ * in `record.error` while `record.output` is `null`. Previously the LLM only
+ * saw `JSON.stringify(null)` → "null" and had no way to learn _why_ the call
+ * failed, so it would keep retrying broken commands. Surfacing the error +
+ * error_code into the tool message lets the model self-correct on the next
+ * step (e.g. swap `find . -name '*.java' | head` → `list_directory(src/)`).
+ *
+ * Format mirrors a structured payload the LLM can reason about:
+ *   {"error":"shell operators are not allowed; ...", "error_code":"...", "success":false}
+ */
+function toolMessageContentForRecord(
+  state: LoopState,
+  record: { output: unknown; success?: boolean; error?: string | null; error_code?: string | null },
+): string {
+  if (record.success === false) {
+    const errorPayload: Record<string, unknown> = {
+      success: false,
+      error: record.error ?? "tool invocation failed without an error message",
+    };
+    if (record.error_code) errorPayload.error_code = record.error_code;
+    if (record.output !== null && record.output !== undefined) errorPayload.output = record.output;
+    return trimToolResult(JSON.stringify(errorPayload), state.maxToolResultChars);
+  }
+  return toolResultForNextTurn(state, record.output);
 }
 
 function compactToolResult(value: unknown): unknown {
@@ -2820,6 +2989,36 @@ invokeRouter.get("/pending/:token", (req, res) => {
       pending_tool_descriptor: env.pending_tool_descriptor,
       step_index: env.step_index,
     },
+    requestId: res.locals.requestId,
+  });
+});
+
+/**
+ * POST /mcp/pending/clear — invalidate pending approvals tied to a workflow
+ * run or trace prefix. Called by workgraph-api during a stage send-back so
+ * the new attempt doesn't inherit stale "Approve MCP action…" prompts from
+ * the previous run.
+ *
+ * Body: { tracePrefix?: string, workflowInstanceId?: string, sessionId?: string }
+ * Selectors are AND-ed. Returns the count of cleared tokens.
+ */
+invokeRouter.post("/pending/clear", (req, res) => {
+  const parsed = z.object({
+    tracePrefix: z.string().min(1).optional(),
+    workflowInstanceId: z.string().min(1).optional(),
+    sessionId: z.string().min(1).optional(),
+  }).refine(
+    v => v.tracePrefix || v.workflowInstanceId || v.sessionId,
+    { message: "must provide at least one selector: tracePrefix, workflowInstanceId, or sessionId" },
+  ).safeParse(req.body);
+  if (!parsed.success) {
+    throw new AppError("invalid /mcp/pending/clear payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
+  }
+  const result = clearPending(parsed.data);
+  log.info({ ...parsed.data, cleared: result.cleared }, "[mcp-server] cleared pending approvals");
+  res.json({
+    success: true,
+    data: { cleared: result.cleared, cleared_tokens: result.cleared_tokens },
     requestId: res.locals.requestId,
   });
 });

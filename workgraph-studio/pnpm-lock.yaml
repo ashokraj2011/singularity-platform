@@ -169,6 +169,50 @@ importers:
         specifier: ~6.0.2
         version: 6.0.3
 
+  apps/desktop:
+    dependencies:
+      '@singularity/laptop-sdk':
+        specifier: workspace:*
+        version: link:../../packages/laptop-sdk
+      '@vitejs/plugin-react':
+        specifier: ^6.0.1
+        version: 6.0.1(vite@8.0.10(@types/node@22.19.17)(jiti@1.21.7)(yaml@2.8.4))
+      react:
+        specifier: ^19.2.5
+        version: 19.2.5
+      react-dom:
+        specifier: ^19.2.5
+        version: 19.2.5(react@19.2.5)
+      vite:
+        specifier: ^8.0.10
+        version: 8.0.10(@types/node@22.19.17)(jiti@1.21.7)(yaml@2.8.4)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.17
+        version: 22.19.17
+      '@types/react':
+        specifier: ^19.2.14
+        version: 19.2.14
+      '@types/react-dom':
+        specifier: ^19.2.3
+        version: 19.2.3(@types/react@19.2.14)
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
+
+  apps/sgl-cli:
+    dependencies:
+      '@singularity/laptop-sdk':
+        specifier: workspace:*
+        version: link:../../packages/laptop-sdk
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.17
+        version: 22.19.17
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
+
   apps/web:
     dependencies:
       '@radix-ui/react-alert-dialog':
@@ -289,6 +333,15 @@ importers:
       typescript:
         specifier: ^5.4.5
         version: 5.9.3
+
+  packages/laptop-sdk:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.19.17
+        version: 22.19.17
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
 
   packages/shared-types:
     devDependencies:
