@@ -120,6 +120,64 @@ export type BlueprintCodeChangesResponse = {
   errors?: string[]
 }
 
+// ── M45 — Loop trace (Workbench Loop tab) ───────────────────────────────
+export type LoopTracePromptMessage = {
+  role: string
+  content_preview: string
+  tool_call_id?: string
+  tool_name?: string
+}
+export type LoopTraceToolInvocation = {
+  id: string
+  name: string
+  args: Record<string, unknown> | unknown
+  output: unknown
+  success: boolean
+  error?: string | null
+  error_code?: string | null
+  latencyMs: number
+  timestamp: string
+}
+export type LoopTraceStep = {
+  llmCallId: string
+  stepIndex: number | null
+  phase: string | null
+  model: { provider: string; model: string; alias: string | null }
+  tokens: { input: number; output: number }
+  finishReason: 'stop' | 'tool_call' | 'length' | 'error'
+  latencyMs: number
+  timestamp: string
+  promptPreview: LoopTracePromptMessage[]
+  responseText: string | null
+  responseToolCalls: Array<{ name: string; args_preview: string }>
+  toolInvocations: LoopTraceToolInvocation[]
+  error?: string | null
+}
+export type LoopTracePhaseBlock = {
+  phase: string
+  startStepIndex: number | null
+  endStepIndex: number | null
+  llmCallCount: number
+  toolInvocationCount: number
+  startedAt: string
+  endedAt: string
+}
+export type LoopTraceResponse = {
+  traceId: string
+  phases: LoopTracePhaseBlock[]
+  steps: LoopTraceStep[]
+  summary: {
+    totalSteps: number
+    totalLlmCalls: number
+    totalToolInvocations: number
+    totalCodeChanges: number
+    changedPaths: string[]
+    firstStepAt?: string | null
+    latestStepAt?: string | null
+    finishReason?: string | null
+  }
+}
+
 export type LoopQuestion = {
   id: string
   question: string
@@ -475,6 +533,11 @@ export const api = {
     ),
   codeChanges: (id: string, stageKey?: string) => request<BlueprintCodeChangesResponse>(
     `/blueprint/sessions/${encodeURIComponent(id)}/code-changes${stageKey ? `?stageKey=${encodeURIComponent(stageKey)}` : ''}`,
+  ),
+  // M45 — Loop trace timeline for the Workbench Loop tab. Polls while the
+  // stage is RUNNING; React Query handles refetchInterval at the call site.
+  loopTrace: (id: string, stageKey: string) => request<LoopTraceResponse>(
+    `/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/loop-trace`,
   ),
   capabilities: async () => unwrap<LookupCapability>(await request('/lookup/capabilities?size=200')),
   agents: async (capabilityId: string) => unwrap<LookupAgent>(await request(`/lookup/agent-templates?size=200&capability_id=${encodeURIComponent(capabilityId)}`)),

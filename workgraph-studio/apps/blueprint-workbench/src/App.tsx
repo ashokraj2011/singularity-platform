@@ -59,6 +59,7 @@ import { LiveCockpit } from './neo/LiveCockpit'
 import { FocusPane, computeFocusIntent, type FocusAction } from './neo/FocusPane'
 import { NeoNotifier } from './neo/NeoNotifier'
 import { StageChat } from './neo/StageChat'
+import { LoopTrace } from './neo/LoopTrace'
 import { NeoThemePicker, lookClass, useNeoLook } from './neo/NeoThemePicker'
 import { MarkdownView } from './neo/MarkdownView'
 
@@ -70,7 +71,7 @@ const knownRoleMeta: Record<string, { label: string; icon: typeof Brain }> = {
 
 const defaultWorkbenchGoal = 'Create a governed planning, design, development, QA, and testing loop for this codebase.'
 
-type WorkbenchSection = 'workflow' | 'artifacts' | 'terminal'
+type WorkbenchSection = 'workflow' | 'artifacts' | 'terminal' | 'loop'
 
 const WORKGRAPH_WEB_ORIGIN = normalizeOrigin(import.meta.env.VITE_WORKGRAPH_WEB_ORIGIN)
   ?? `${window.location.protocol}//${window.location.hostname}:5174`
@@ -266,6 +267,7 @@ function WorkbenchCommandHeader({
         {([
           ['workflow', 'Workflow'],
           ['artifacts', 'Artifacts'],
+          ['loop', 'Loop'],
           ['terminal', 'Terminal'],
         ] as const).map(([section, label]) => (
           <button
@@ -941,7 +943,7 @@ function WorkbenchSetup({
   )
 }
 
-type NeoOverlayKind = 'none' | 'review' | 'artifacts' | 'terminal'
+type NeoOverlayKind = 'none' | 'review' | 'artifacts' | 'terminal' | 'loop'
 
 function WorkbenchNeo({
   session,
@@ -993,7 +995,8 @@ function WorkbenchNeo({
   useEffect(() => {
     if (activeSection === 'artifacts') setOverlay('artifacts')
     else if (activeSection === 'terminal') setOverlay('terminal')
-    else if (overlay === 'artifacts' || overlay === 'terminal') setOverlay('none')
+    else if (activeSection === 'loop') setOverlay('loop')
+    else if (overlay === 'artifacts' || overlay === 'terminal' || overlay === 'loop') setOverlay('none')
   }, [activeSection])
 
   const activeStage = stages.find(stage => stage.key === activeStageKey) ?? stages[0]
@@ -1093,6 +1096,15 @@ function WorkbenchNeo({
       {overlay === 'terminal' && (
         <NeoOverlayShell title="Event log" onClose={() => closeOverlay()}>
           <WorkbenchTerminal session={session} />
+        </NeoOverlayShell>
+      )}
+      {overlay === 'loop' && (
+        <NeoOverlayShell title="Agent loop" onClose={() => closeOverlay()}>
+          <LoopTrace
+            sessionId={session.id}
+            stage={activeStage}
+            attemptStatus={activeAttempt?.status}
+          />
         </NeoOverlayShell>
       )}
     </div>
