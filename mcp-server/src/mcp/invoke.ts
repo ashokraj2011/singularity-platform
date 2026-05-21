@@ -1166,6 +1166,10 @@ function mutationToolsForFinalization(state: LoopState): ToolDescriptorForLlm[] 
   return state.availableTools.filter((tool) => MUTATION_TOOL_NAMES.has(tool.name));
 }
 
+function mutationFinalizationMaxTokens(state: LoopState): number {
+  return Math.max(state.modelConfig.maxTokens ?? 0, Number(process.env.MCP_MUTATION_FINALIZATION_MAX_TOKENS ?? 4096));
+}
+
 async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome | null> {
   if (!state.allowAutonomousMutation) return null;
   if (state.codeChangeIds.length > 0) return null;
@@ -1179,9 +1183,11 @@ async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome
       role: "user",
       content: [
         "The Developer tool step budget is exhausted and no code-change receipt exists yet.",
-        "Do not inspect more files. Use only the repository evidence already gathered and call a mutation tool now.",
+        "Do not inspect more files. Use only the repository evidence already gathered.",
+        "You must call exactly one mutation tool now. Return no prose.",
         "Prefer apply_patch or replace_text for existing files. Use write_file only for new files or deliberate full-file replacement.",
-        "If you cannot safely identify the exact edit from the gathered evidence, do not guess.",
+        "If you can identify the edit from the gathered file contents, call the mutation tool even if tests will run later.",
+        "Only skip the tool call if the exact target file and edit are genuinely unknown.",
       ].join("\n"),
     });
 
@@ -1219,7 +1225,7 @@ async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome
       messages: state.messages,
       tools: mutationTools,
       temperature: state.modelConfig.temperature,
-      max_output_tokens: state.modelConfig.maxTokens,
+      max_output_tokens: mutationFinalizationMaxTokens(state),
       prompt_cache: state.modelConfig.promptCache,
     }, {
       onDelta: async (delta) => {
@@ -1312,7 +1318,16 @@ async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome
       },
     });
 
-    if (llmResp.finish_reason !== "tool_call" || !llmResp.tool_calls?.length) return null;
+    if (llmResp.finish_reason !== "tool_call" || !llmResp.tool_calls?.length) {
+      log.warn({
+        trace: state.correlation.traceId,
+        finishReason: llmResp.finish_reason,
+        contentPreview: (llmResp.content ?? "").replace(/\s+/g, " ").slice(0, 240),
+        outputTokens: llmResp.output_tokens,
+        maxOutputTokens: mutationFinalizationMaxTokens(state),
+      }, "[max-steps-mutation] model did not return a mutation tool call");
+      return null;
+    }
 
     state.messages.push({
       role: "assistant",

@@ -122,6 +122,7 @@ describe("read-only max step finalization", () => {
 
     let llmCalls = 0;
     let forcedTools: string[] = [];
+    let forcedMaxOutputTokens = 0;
     server = http.createServer((req, res) => {
       if (!req.url?.startsWith("/v1/chat/completions")) {
         res.writeHead(404);
@@ -154,6 +155,7 @@ describe("read-only max step finalization", () => {
         }
 
         forcedTools = body.tools?.map((tool) => tool.name) ?? [];
+        forcedMaxOutputTokens = Number((body as { max_output_tokens?: number }).max_output_tokens ?? 0);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
           content: "",
@@ -229,6 +231,7 @@ describe("read-only max step finalization", () => {
     expect(result.finishReason).toBe("stop");
     expect((result.correlation as { codeChangeIds?: string[] }).codeChangeIds?.length).toBeGreaterThan(0);
     expect(forcedTools).toEqual(["apply_patch"]);
+    expect(forcedMaxOutputTokens).toBeGreaterThanOrEqual(4096);
     expect(readFileSync(join(tempRoot, "Operator.java"), "utf8")).toContain("CONTAINS_A_CHARACTER");
   });
 });
