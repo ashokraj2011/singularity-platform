@@ -676,6 +676,11 @@ services:
       MCP_SESSION_JWT_SECRET: ${MCP_SESSION_JWT_SECRET:-dev-mcp-session-secret-min-32-chars!!}
       WORKBENCH_DEFAULT_MODEL_ALIAS: ${WORKBENCH_DEFAULT_MODEL_ALIAS:-}
       EVENT_HORIZON_MODEL_ALIAS: ${EVENT_HORIZON_MODEL_ALIAS:-}
+      # Phased Agent Reasoning Model (v4) — opt-in. When true, developer
+      # stages are launched with agentReasoningMode="phased" so mcp-server
+      # runs them under the 6-phase state machine. Read-only stages (PLAN,
+      # DESIGN, QA_REVIEW) continue to use the flat loop regardless.
+      WORKBENCH_AGENT_PHASES_ENABLED: ${WORKBENCH_AGENT_PHASES_ENABLED:-false}
       # Legacy direct LLM calls now route through MCP. No gateway URL or
       # provider keys in this service.
       LLM_GATEWAY_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-240}
@@ -887,6 +892,12 @@ services:
       # against MCP_WORKSPACE_LOCK_STALE_MS (default 30 min) to clean up after
       # crashed processes.
       MCP_WORKSPACE_LOCK_TIMEOUT_MS: ${MCP_WORKSPACE_LOCK_TIMEOUT_MS:-300000}
+      # Phased Agent Reasoning Model (v4) — opt-in. When true (server) AND
+      # the caller sends agentReasoningMode="phased", runLoop switches from
+      # the flat ReAct loop to a 6-phase state machine with per-phase tool
+      # allowlists and a path-coverage gate. Default false so production
+      # behavior is unchanged until the operator flips this.
+      MCP_AGENT_PHASES_ENABLED: ${MCP_AGENT_PHASES_ENABLED:-false}
       # M11.a — self-register with platform-registry
       PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       PUBLIC_BASE_URL:       ${MCP_PUBLIC_BASE_URL:-http://host.docker.internal:7100}
