@@ -3057,6 +3057,43 @@ function isBreadcrumbMessage(msg: ChatMessage): boolean {
   return msg.role === "user" && typeof msg.content === "string" && msg.content.startsWith(BREADCRUMB_PREFIX);
 }
 
+/**
+ * M44 Slice E — Collapse consecutive identical breadcrumb lines into a
+ * single "line (x N)" entry. The model wastes context reading repeated
+ * identical attempts AND loses the signal that it's stuck in a loop.
+ * Dedup surfaces the repetition while saving breadcrumb capacity.
+ *
+ * The "x N" suffix is stripped before comparison so the function is
+ * idempotent — running it twice doesn't double-multiply the count.
+ *
+ * Exported for testability.
+ */
+const DEDUP_SUFFIX_RE = /\s*\(x\s*\d+\)\s*$/;
+
+export function dedupConsecutiveBreadcrumbs(lines: ReadonlyArray<string>): string[] {
+  if (lines.length === 0) return [];
+  const stripCount = (s: string): string => s.replace(DEDUP_SUFFIX_RE, "");
+  const out: string[] = [];
+  let lastKey: string | null = null;
+  let runCount = 0;
+  for (const line of lines) {
+    const key = stripCount(line);
+    if (key === lastKey) {
+      runCount += (line.match(DEDUP_SUFFIX_RE)?.[0].match(/\d+/)?.[0]
+        ? Number(line.match(/\d+/)?.[0])
+        : 1);
+      out[out.length - 1] = `${key} (x${runCount})`;
+    } else {
+      out.push(line);
+      lastKey = key;
+      runCount = line.match(DEDUP_SUFFIX_RE)?.[0]
+        ? Number(line.match(/\d+/)?.[0] ?? 1)
+        : 1;
+    }
+  }
+  return out;
+}
+
 function briefValue(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "string") return v.length > 60 ? v.slice(0, 57) + "..." : v;
@@ -3261,7 +3298,15 @@ export function applySlidingWindow(state: LoopState): void {
       // tool messages are consumed via the preceding assistant entry; skip standalone.
     }
     if (newLines.length > 0) {
-      state.breadcrumbs = [...state.breadcrumbs, ...newLines].slice(-MAX_BREADCRUMB_LINES);
+      // M44 Slice E — deduplicate consecutive identical breadcrumbs.
+      // The original loop would faithfully record every rejected attempt
+      // ("- read_file(path=Foo.java) -> ok" 5 times in a row), wasting both
+      // breadcrumb capacity AND signal — the model has no way to see it's
+      // looping. Collapse runs of the same line into "x N" so the breadcrumb
+      // both saves space AND surfaces the repetition.
+      state.breadcrumbs = dedupConsecutiveBreadcrumbs(
+        [...state.breadcrumbs, ...newLines],
+      ).slice(-MAX_BREADCRUMB_LINES);
     }
   }
 
