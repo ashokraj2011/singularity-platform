@@ -12,6 +12,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Unlink,
   Workflow,
 } from 'lucide-react'
 import { api } from '../../lib/api'
@@ -118,9 +119,40 @@ export function WorkItemsPage() {
     },
   })
 
+  const detachMut = useMutation({
+    mutationFn: (workItemId: string) => api.post(`/work-items/${workItemId}/detach`, {
+      reason: 'Detached from workflow from WorkItems board',
+    }).then(r => r.data as WorkItemRow),
+    onSuccess: (item) => {
+      setSelectedId(item.id)
+      workItemsQuery.refetch()
+    },
+  })
+  const detachTargetMut = useMutation({
+    mutationFn: ({ workItemId, targetId }: { workItemId: string; targetId: string }) =>
+      api.post(`/work-items/${workItemId}/targets/${targetId}/detach`, {
+        reason: 'Detached child workflow run from WorkItems board',
+      }).then(r => r.data as WorkItemRow),
+    onSuccess: (item) => {
+      setSelectedId(item.id)
+      workItemsQuery.refetch()
+    },
+  })
+
   const canClaim = selectedTarget && ['QUEUED', 'REWORK_REQUESTED'].includes(selectedTarget.status) && !selectedTarget.claimedById
   const canStart = selected && selectedTarget && selectedTarget.status === 'CLAIMED' && !!effectiveWorkflow && !selectedTarget.childWorkflowInstanceId
   const canClaimAndStart = selected && selectedTarget && canClaim && !!effectiveWorkflow
+  const canDetach = Boolean(
+    selected &&
+    !['COMPLETED', 'ARCHIVED'].includes(selected.status) &&
+    (selected.originType === 'PARENT_DELEGATED' || selected.sourceWorkflowInstanceId || selected.sourceWorkflowNodeId),
+  )
+  const canDetachTarget = Boolean(
+    selected &&
+    selectedTarget?.childWorkflowInstanceId &&
+    !['SUBMITTED', 'APPROVED'].includes(selectedTarget.status) &&
+    !['COMPLETED', 'ARCHIVED'].includes(selected.status),
+  )
 
   return (
     <div style={{ padding: 24, maxWidth: 1280, margin: '0 auto' }}>
@@ -240,6 +272,19 @@ export function WorkItemsPage() {
                 <button style={secondaryButtonStyle} onClick={() => navigate(`/runtime/work/workitem/${selected.id}${selectedTarget ? `?targetId=${selectedTarget.id}` : ''}`)}>
                   <ExternalLink size={13} /> Open detail
                 </button>
+                {canDetach && (
+                  <button
+                    style={{ ...secondaryButtonStyle, borderColor: 'rgba(245,158,11,0.32)', color: '#92400e' }}
+                    disabled={detachMut.isPending}
+                    onClick={() => {
+                      if (window.confirm(`Detach ${selected.workCode ?? selected.title} from its source workflow and return it to the available queue?`)) {
+                        detachMut.mutate(selected.id)
+                      }
+                    }}
+                  >
+                    <Unlink size={13} /> {detachMut.isPending ? 'Detaching...' : 'Detach'}
+                  </button>
+                )}
                 {selected.originType === 'CAPABILITY_LOCAL' && selected.status !== 'ARCHIVED' && (
                   <button
                     style={{ ...secondaryButtonStyle, borderColor: 'rgba(220,38,38,0.28)', color: '#b91c1c' }}
@@ -324,15 +369,33 @@ export function WorkItemsPage() {
                         <ExternalLink size={13} /> Open workflow run
                       </button>
                     )}
+                    {canDetachTarget && (
+                      <button
+                        style={{ ...secondaryButtonStyle, borderColor: 'rgba(245,158,11,0.32)', color: '#92400e' }}
+                        disabled={detachTargetMut.isPending}
+                        onClick={() => {
+                          if (window.confirm(`Detach ${selected.workCode ?? selected.title} from this child workflow run and return it to the available queue?`)) {
+                            detachTargetMut.mutate({ workItemId: selected.id, targetId: selectedTarget.id })
+                          }
+                        }}
+                      >
+                        <Unlink size={13} /> {detachTargetMut.isPending ? 'Detaching...' : 'Detach run'}
+                      </button>
+                    )}
                   </div>
-                  {(claimMut.error || startMut.error || claimAndStartMut.error) && (
+                  {(claimMut.error || startMut.error || claimAndStartMut.error || detachTargetMut.error) && (
                     <p style={{ margin: '8px 0 0', color: '#b91c1c', fontSize: 12 }}>
-                      {String((claimMut.error || startMut.error || claimAndStartMut.error) as Error)}
+                      {((claimMut.error || startMut.error || claimAndStartMut.error || detachTargetMut.error) as Error).message}
                     </p>
                   )}
                   {archiveMut.error && (
                     <p style={{ margin: '8px 0 0', color: '#b91c1c', fontSize: 12 }}>
                       {(archiveMut.error as Error).message}
+                    </p>
+                  )}
+                  {detachMut.error && (
+                    <p style={{ margin: '8px 0 0', color: '#b91c1c', fontSize: 12 }}>
+                      {(detachMut.error as Error).message}
                     </p>
                   )}
                 </div>
@@ -582,6 +645,8 @@ type WorkItemRow = {
   description?: string | null
   originType: string
   status: string
+  sourceWorkflowInstanceId?: string | null
+  sourceWorkflowNodeId?: string | null
   details?: Record<string, unknown> | null
   budget?: Record<string, unknown> | null
   urgency?: string | null

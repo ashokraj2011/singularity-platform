@@ -8,7 +8,6 @@ calls the routes here over HTTP via `LLM_GATEWAY_URL`.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Optional
 
 from pydantic_settings import BaseSettings
@@ -31,6 +30,12 @@ class Settings(BaseSettings):
 
     # Request timeout for upstream provider calls (seconds).
     upstream_timeout_sec: int = 240
+
+    # Upstream provider 429 handling. A single retry is enough for TPM bucket
+    # resets without hiding persistent quota/capacity problems.
+    upstream_rate_limit_retries: int = 1
+    upstream_rate_limit_retry_delay_sec: float = 65.0
+    upstream_rate_limit_max_sleep_sec: float = 75.0
 
     # Service-to-service bearer accepted on this gateway. Empty disables
     # auth (development only — in production set this via IAM-minted
@@ -65,6 +70,18 @@ class Settings(BaseSettings):
         self.copilot_token      = env.get("COPILOT_TOKEN")      or None
         self.anthropic_version  = env.get("ANTHROPIC_VERSION", self.anthropic_version)
         self.upstream_timeout_sec = int(env.get("UPSTREAM_TIMEOUT_SEC", str(self.upstream_timeout_sec)))
+        self.upstream_rate_limit_retries = int(env.get(
+            "LLM_GATEWAY_RATE_LIMIT_RETRIES",
+            str(self.upstream_rate_limit_retries),
+        ))
+        self.upstream_rate_limit_retry_delay_sec = float(env.get(
+            "LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC",
+            str(self.upstream_rate_limit_retry_delay_sec),
+        ))
+        self.upstream_rate_limit_max_sleep_sec = float(env.get(
+            "LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC",
+            str(self.upstream_rate_limit_max_sleep_sec),
+        ))
         self.gateway_bearer = env.get("LLM_GATEWAY_BEARER", "")
         self.allow_caller_provider_override = (
             env.get("ALLOW_CALLER_PROVIDER_OVERRIDE", "false").lower() == "true"
@@ -72,11 +89,16 @@ class Settings(BaseSettings):
 
     def credential_for(self, provider: str) -> Optional[str]:
         p = provider.lower()
-        if p in ("openai",):     return self.openai_api_key
-        if p == "openrouter":    return self.openrouter_api_key
-        if p == "anthropic":     return self.anthropic_api_key
-        if p == "copilot":       return self.copilot_token
-        if p == "mock":          return "mock"  # mock needs no key
+        if p in ("openai",):
+            return self.openai_api_key
+        if p == "openrouter":
+            return self.openrouter_api_key
+        if p == "anthropic":
+            return self.anthropic_api_key
+        if p == "copilot":
+            return self.copilot_token
+        if p == "mock":
+            return "mock"  # mock needs no key
         return None
 
 

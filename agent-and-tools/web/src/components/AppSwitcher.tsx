@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import type { FocusEvent } from "react";
 import { usePathname } from "next/navigation";
-import { Compass, ExternalLink, Grid3X3 } from "lucide-react";
+import { ExternalLink, Grid3X3 } from "lucide-react";
 import { controlPlaneApps } from "@/lib/controlPlaneApps";
 
 function inferCurrentApp(pathname: string | null | undefined): string {
@@ -22,16 +22,7 @@ export function AppSwitcher({ currentApp }: { currentApp?: string }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
   const links = useMemo(
-    () => [
-      {
-        id: "control-plane",
-        label: "Control Plane",
-        href: "/control-plane",
-        summary: "Unified command center",
-        icon: Compass,
-      },
-      ...controlPlaneApps(),
-    ],
+    () => controlPlaneApps(),
     [],
   );
   const resolvedCurrentApp = currentApp ?? inferCurrentApp(pathname);

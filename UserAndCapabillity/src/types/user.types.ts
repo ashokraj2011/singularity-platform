@@ -31,3 +31,14 @@ export interface UpdateUserRequest {
   is_super_admin?: boolean
   metadata?: Record<string, unknown>
 }
+
+export interface PlatformRole {
+  id: string
+  role_key: string
+  name: string
+  description?: string
+  role_scope: string
+  system_role: boolean
+  created_at: string
+  updated_at: string
+}

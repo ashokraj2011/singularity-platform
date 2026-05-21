@@ -19,7 +19,6 @@ import {
   Maximize2,
   Minimize2,
   RefreshCw,
-  Search,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -279,10 +278,6 @@ function WorkbenchCommandHeader({
           </button>
         ))}
       </nav>
-      <div className="command-search">
-        <Search size={15} />
-        <input placeholder="Search session, stage, artifact..." />
-      </div>
       <div className="command-metrics">
         <MetricPill label="Stage" value={activeStage?.label ?? 'No session'} tone="primary" />
         <MetricPill label="Iterations" value={String(attempts)} />
@@ -452,15 +447,15 @@ function WorkbenchSetup({
   const [maxLoopsPerStage, setMaxLoopsPerStage] = useState(workflowDefaults.loopDefinition?.maxLoopsPerStage ?? 3)
   const [maxTotalSendBacks, setMaxTotalSendBacks] = useState(workflowDefaults.loopDefinition?.maxTotalSendBacks ?? 8)
   const [snapshotMode, setSnapshotMode] = useState<SnapshotMode>('relevant_excerpts')
-  const [excerptBudgetChars, setExcerptBudgetChars] = useState(18_000)
+  const [excerptBudgetChars, setExcerptBudgetChars] = useState(8_000)
   const [reuseUnchangedAttempt, setReuseUnchangedAttempt] = useState(true)
   const [governanceMode, setGovernanceMode] = useState<GovernanceMode>('fail_open')
   const [modelAlias, setModelAlias] = useState('')
   const [stageModelAliases, setStageModelAliases] = useState<Record<string, string>>({})
-  const [maxContextTokens, setMaxContextTokens] = useState(6_000)
-  const [maxOutputTokens, setMaxOutputTokens] = useState(1_200)
-  const [maxPromptChars, setMaxPromptChars] = useState(24_000)
-  const [maxLayerChars, setMaxLayerChars] = useState(2_000)
+  const [maxContextTokens, setMaxContextTokens] = useState(3_000)
+  const [maxOutputTokens, setMaxOutputTokens] = useState(800)
+  const [maxPromptChars, setMaxPromptChars] = useState(12_000)
+  const [maxLayerChars, setMaxLayerChars] = useState(1_000)
 
   const workflowInstanceQuery = useQuery({
     queryKey: ['workflowInstanceDefaults', workflowDefaults.workflowInstanceId, workflowDefaults.workflowNodeId],
@@ -818,21 +813,21 @@ function WorkbenchSetup({
         <div className="two-col compact-fields">
           <label>
             <span>Context tokens</span>
-            <input type="number" min={1000} max={200000} step={500} value={maxContextTokens} onChange={event => setMaxContextTokens(Number(event.target.value) || 6000)} />
+            <input type="number" min={1000} max={200000} step={500} value={maxContextTokens} onChange={event => setMaxContextTokens(Number(event.target.value) || 3000)} />
           </label>
           <label>
             <span>Output tokens</span>
-            <input type="number" min={128} max={32000} step={100} value={maxOutputTokens} onChange={event => setMaxOutputTokens(Number(event.target.value) || 1200)} />
+            <input type="number" min={128} max={32000} step={100} value={maxOutputTokens} onChange={event => setMaxOutputTokens(Number(event.target.value) || 800)} />
           </label>
         </div>
         <div className="two-col compact-fields">
           <label>
             <span>Prompt chars</span>
-            <input type="number" min={2000} max={500000} step={1000} value={maxPromptChars} onChange={event => setMaxPromptChars(Number(event.target.value) || 24000)} />
+            <input type="number" min={2000} max={500000} step={1000} value={maxPromptChars} onChange={event => setMaxPromptChars(Number(event.target.value) || 12000)} />
           </label>
           <label>
             <span>Layer chars</span>
-            <input type="number" min={500} max={100000} step={250} value={maxLayerChars} onChange={event => setMaxLayerChars(Number(event.target.value) || 2000)} />
+            <input type="number" min={500} max={100000} step={250} value={maxLayerChars} onChange={event => setMaxLayerChars(Number(event.target.value) || 1000)} />
           </label>
         </div>
         <div className="two-col compact-fields">
@@ -846,7 +841,7 @@ function WorkbenchSetup({
           </label>
           <label>
             <span>Snapshot chars</span>
-            <input type="number" min={2000} max={120000} step={1000} value={excerptBudgetChars} onChange={event => setExcerptBudgetChars(Number(event.target.value) || 18000)} />
+            <input type="number" min={2000} max={120000} step={1000} value={excerptBudgetChars} onChange={event => setExcerptBudgetChars(Number(event.target.value) || 8000)} />
           </label>
         </div>
         <div className="two-col compact-fields">

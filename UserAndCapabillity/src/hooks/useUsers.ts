@@ -33,3 +33,35 @@ export function useUpdateUser(id: string) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
   })
 }
+
+export function useUserRoles(userId: string) {
+  return useQuery({
+    queryKey: ['users', userId, 'roles'],
+    queryFn: () => usersApi.listRoles(userId),
+    enabled: !!userId,
+  })
+}
+
+export function useAssignUserRole(userId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (roleKey: string) => usersApi.assignRole(userId, roleKey),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users', userId, 'roles'] }),
+  })
+}
+
+export function useRemoveUserRole(userId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (roleKey: string) => usersApi.removeRole(userId, roleKey),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users', userId, 'roles'] }),
+  })
+}
+
+export function useUserTeams(userId: string) {
+  return useQuery({
+    queryKey: ['users', userId, 'teams'],
+    queryFn: () => usersApi.listTeams(userId),
+    enabled: !!userId,
+  })
+}

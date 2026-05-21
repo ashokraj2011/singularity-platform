@@ -4,9 +4,12 @@ Ported from `mcp-server/src/llm/providers/anthropic.ts`. HTTP-only — no SDK.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -14,6 +17,28 @@ import httpx
 from ..config import settings
 from ..provider_config import provider_base_url
 from ..types import ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ToolCall, ToolDescriptor
+
+
+class AnthropicUpstreamError(RuntimeError):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _retry_after_seconds(res: httpx.Response) -> float:
+    raw = res.headers.get("retry-after")
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            try:
+                parsed = parsedate_to_datetime(raw)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return max(0.0, (parsed - datetime.now(timezone.utc)).total_seconds())
+            except Exception:
+                pass
+    return settings.upstream_rate_limit_retry_delay_sec
 
 
 def _to_anthropic(messages: List[ChatMessage]):
@@ -88,10 +113,16 @@ async def respond(
     }
     start = time.time()
     async with httpx.AsyncClient(timeout=settings.upstream_timeout_sec) as client:
-        res = await client.post(url, headers=headers, json=body)
+        attempts = max(0, settings.upstream_rate_limit_retries) + 1
+        for attempt in range(attempts):
+            res = await client.post(url, headers=headers, json=body)
+            if res.status_code != 429 or attempt >= attempts - 1:
+                break
+            delay = min(settings.upstream_rate_limit_max_sleep_sec, _retry_after_seconds(res))
+            await asyncio.sleep(delay)
     if res.status_code != 200:
         snippet = res.text[:400] if isinstance(res.text, str) else ""
-        raise RuntimeError(f"anthropic returned {res.status_code}: {snippet}")
+        raise AnthropicUpstreamError(res.status_code, f"anthropic returned {res.status_code}: {snippet}")
     data = res.json()
     text_content = ""
     tool_calls: List[ToolCall] = []
@@ -106,11 +137,16 @@ async def respond(
             ))
 
     stop = data.get("stop_reason")
-    if tool_calls:                  finish_reason = "tool_call"
-    elif stop == "max_tokens":      finish_reason = "length"
-    elif stop == "end_turn":        finish_reason = "stop"
-    elif stop == "tool_use":        finish_reason = "tool_call"
-    else:                           finish_reason = "stop"
+    if tool_calls:
+        finish_reason = "tool_call"
+    elif stop == "max_tokens":
+        finish_reason = "length"
+    elif stop == "end_turn":
+        finish_reason = "stop"
+    elif stop == "tool_use":
+        finish_reason = "tool_call"
+    else:
+        finish_reason = "stop"
 
     usage = data.get("usage") or {}
     return ChatCompletionResponse(

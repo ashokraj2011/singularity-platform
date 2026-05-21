@@ -186,17 +186,14 @@ const loopDefaultTask = [
   "",
   "Recent feedback loops:",
   "{{sendBacks}}",
-  // M41.2 — Operator chat thread. Mustache renders this block only when
-  // {{operatorChat}} is a non-empty string. The block is intentionally
-  // PRESCRIPTIVE: the operator is steering, so treat it as a strong
-  // constraint above generic stage guidance.
-  "{{#operatorChat}}",
   "",
+  // M41.2 — Operator chat thread. The local renderer supports simple
+  // {{var}} substitution, so the caller supplies "- No operator guidance."
+  // when the thread is empty.
   "Operator guidance (chronological — most recent last):",
   "{{operatorChat}}",
   "",
   "Treat operator guidance as a binding constraint for this attempt. If a guidance line conflicts with the captured stakeholder decisions, prefer the operator guidance and call out the conflict in your response.",
-  "{{/operatorChat}}",
   "",
   "Do not ask an open question if the captured stakeholder decisions already answer the same intent. Reuse those answers as constraints for this stage.",
   "",
@@ -209,12 +206,18 @@ const loopDefaultTask = [
 const loopDeveloperTask = [
   loopDefaultTask,
   "",
+  "Approved artifact context for implementation:",
+  "{{priorApprovedArtifacts}}",
+  "",
+  "Implementation directive:",
+  "{{implementationDirective}}",
+  "",
   "Developer execution contract:",
   "- Treat captured stakeholder decisions and prior approved artifacts as implementation requirements.",
   "- Produce an actual MCP/git code change when a writable workspace is available; do not stop at design or planning text.",
   "- Inspect with AST/search/read tools, then mutate partial edits with apply_patch, replace_text, or replace_range; use write_file only for full-file replacements. Finish with git_commit or finish_work_branch so Code Review receives a captured diff.",
   "- If the requested behavior already exists, add or update tests/docs that prove it and commit those changes.",
-  "- Only ask new open questions when the captured decisions are insufficient to safely implement.",
+  "- Do not ask for a more specific task when prior approved artifacts define implementable behavior. Ask only when those artifacts are genuinely contradictory or unsafe.",
 ].join("\n");
 
 // QA/test/verify-specific extension to the loop task — preserves the focus
@@ -237,6 +240,7 @@ const loopDeveloperExtraContext = [
   "- First verify the writable MCP workspace matches the requested source/repository before mutating files.",
   "- Use AST/search/read tools to locate the correct source files, then use apply_patch, replace_text, or replace_range for partial edits; use write_file for complete file bodies. Finish with git_commit/finish_work_branch to create a real captured diff.",
   "- Read the Source snapshot testing.detectedCommands. After code edits, run the most focused relevant command when a runnable test tool is available; use formal_verify when workflow/governance constraints need solver evidence. If no verifier is runnable, call verification_unavailable with the reason and inspected files.",
+  "- If Goal is generic, derive the concrete implementation from Approved artifact context in the current task. If behavior already exists, add focused tests/docs that prove it.",
   "- Do not fabricate changed files or patch text. If the writable workspace is missing or does not match the source, say that no actual code change was captured.",
   "Requested source: {{sourceType}} {{sourceUri}}{{sourceRefSuffix}}",
 ].join("\n");

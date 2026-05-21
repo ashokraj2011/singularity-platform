@@ -36,6 +36,7 @@ export type CreateWorkItemInput = {
 }
 
 const DONE_TARGET_STATUSES = new Set(['SUBMITTED', 'APPROVED'])
+const DETACH_RESET_TARGET_STATUSES = ['QUEUED', 'CLAIMED', 'SUBMITTED', 'REWORK_REQUESTED', 'CANCELLED'] as const
 const VALID_URGENCIES = new Set(['LOW', 'NORMAL', 'HIGH', 'CRITICAL'])
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -392,6 +393,258 @@ export async function archiveWorkItem(workItemId: string, userId: string) {
   })
   await publishOutbox('WorkItem', workItemId, 'WorkItemArchived', { workItemId })
   return archived
+}
+
+export async function detachWorkItemFromWorkflow(workItemId: string, userId: string, reason?: string) {
+  const workItem = await prisma.workItem.findUnique({
+    where: { id: workItemId },
+    include: { targets: true },
+  })
+  if (!workItem) throw new NotFoundError('WorkItem', workItemId)
+  await assertCanViewWorkItem(userId, workItem)
+  if (!workItem.sourceWorkflowInstanceId && !workItem.sourceWorkflowNodeId && workItem.originType === 'CAPABILITY_LOCAL') {
+    return prisma.workItem.findUniqueOrThrow({
+      where: { id: workItemId },
+      include: {
+        targets: { orderBy: { createdAt: 'asc' } },
+        events: { orderBy: { createdAt: 'asc' } },
+        clarifications: { orderBy: { createdAt: 'asc' } },
+      },
+    })
+  }
+  if (['COMPLETED', 'ARCHIVED'].includes(workItem.status)) {
+    throw new ValidationError(`WorkItem cannot be detached from status ${workItem.status}`)
+  }
+
+  const activeTarget = workItem.targets.find(target =>
+    target.childWorkflowInstanceId && target.status === 'IN_PROGRESS',
+  )
+  if (activeTarget) {
+    throw new ValidationError('This WorkItem has an active child workflow target. Finish or cancel that run before detaching.')
+  }
+
+  const sourceWorkflowInstanceId = workItem.sourceWorkflowInstanceId
+  const sourceWorkflowNodeId = workItem.sourceWorkflowNodeId
+  const previousDetails = asRecord(workItem.details)
+  const detachedAt = new Date().toISOString()
+  const nextDetails = {
+    ...previousDetails,
+    ...(previousDetails.source !== undefined ? { previousSource: previousDetails.source } : {}),
+    source: 'detached-workflow',
+    detachedFromWorkflow: {
+      workflowInstanceId: sourceWorkflowInstanceId,
+      workflowNodeId: sourceWorkflowNodeId,
+      originType: workItem.originType,
+      status: workItem.status,
+      detachedAt,
+      detachedById: userId,
+      ...(reason?.trim() ? { reason: reason.trim() } : {}),
+    },
+  }
+
+  const detached = await prisma.$transaction(async tx => {
+    if (sourceWorkflowNodeId) {
+      const sourceNode = await tx.workflowNode.findUnique({
+        where: { id: sourceWorkflowNodeId },
+        select: { config: true },
+      })
+      const cfg = asRecord(sourceNode?.config)
+      if (cfg._workItemId === workItemId) {
+        const nextConfig = { ...cfg }
+        delete nextConfig._workItemId
+        await tx.workflowNode.update({
+          where: { id: sourceWorkflowNodeId },
+          data: { config: nextConfig as Prisma.InputJsonValue },
+        })
+      }
+    }
+    if (workItem.parentApprovalRequestId) {
+      await tx.approvalRequest.updateMany({
+        where: { id: workItem.parentApprovalRequestId, status: 'PENDING' },
+        data: { status: 'DEFERRED' },
+      })
+    }
+
+    await tx.workItemTarget.updateMany({
+      where: {
+        workItemId,
+        status: { in: [...DETACH_RESET_TARGET_STATUSES] },
+      },
+      data: {
+        status: 'QUEUED',
+        claimedById: null,
+        claimedAt: null,
+        childWorkflowInstanceId: null,
+        startedAt: null,
+        submittedAt: null,
+        completedAt: null,
+        output: Prisma.DbNull,
+      },
+    })
+    await tx.workItemEvent.create({
+      data: {
+        workItemId,
+        eventType: 'DETACHED',
+        actorId: userId,
+        payload: {
+          ...(reason?.trim() ? { reason: reason.trim() } : {}),
+          previousStatus: workItem.status,
+          previousOriginType: workItem.originType,
+          sourceWorkflowInstanceId,
+          sourceWorkflowNodeId,
+          parentApprovalRequestId: workItem.parentApprovalRequestId,
+          detachedAt,
+        } as Prisma.InputJsonValue,
+      },
+    })
+    return tx.workItem.update({
+      where: { id: workItemId },
+      data: {
+        originType: 'CAPABILITY_LOCAL',
+        sourceWorkflowInstanceId: null,
+        sourceWorkflowNodeId: null,
+        parentApprovalRequestId: null,
+        approvedById: null,
+        finalOutput: Prisma.DbNull,
+        status: 'QUEUED',
+        detailsLocked: false,
+        details: nextDetails as Prisma.InputJsonValue,
+      },
+      include: {
+        targets: { orderBy: { createdAt: 'asc' } },
+        events: { orderBy: { createdAt: 'asc' } },
+        clarifications: { orderBy: { createdAt: 'asc' } },
+      },
+    })
+  })
+
+  await logEvent('WorkItemDetached', 'WorkItem', workItemId, userId, {
+    workCode: workItem.workCode,
+    previousStatus: workItem.status,
+    previousOriginType: workItem.originType,
+    sourceWorkflowInstanceId,
+    sourceWorkflowNodeId,
+  })
+  await publishOutbox('WorkItem', workItemId, 'WorkItemDetached', { workItemId })
+  return detached
+}
+
+export async function detachWorkItemTargetFromWorkflow(
+  workItemId: string,
+  targetId: string,
+  userId: string,
+  reason?: string,
+) {
+  const target = await prisma.workItemTarget.findFirst({
+    where: { id: targetId, workItemId },
+    include: { workItem: { include: { targets: true } } },
+  })
+  if (!target) throw new NotFoundError('WorkItemTarget', targetId)
+  await assertCanViewWorkItem(userId, target.workItem)
+  if (['COMPLETED', 'ARCHIVED'].includes(target.workItem.status)) {
+    throw new ValidationError(`WorkItem target cannot be detached when WorkItem is ${target.workItem.status}`)
+  }
+  if (!target.childWorkflowInstanceId) {
+    throw new ValidationError('This WorkItem target is not attached to a workflow run')
+  }
+  if (['SUBMITTED', 'APPROVED'].includes(target.status)) {
+    throw new ValidationError(`WorkItem target cannot be detached from status ${target.status}. Request rework instead.`)
+  }
+
+  const detachedAt = new Date().toISOString()
+  const childWorkflowInstanceId = target.childWorkflowInstanceId
+  const remainingLinkedTargets = target.workItem.targets.filter(t => t.id !== targetId)
+  const hasOtherActiveTargets = remainingLinkedTargets.some(t =>
+    ['IN_PROGRESS', 'SUBMITTED', 'APPROVED'].includes(t.status),
+  )
+
+  const detached = await prisma.$transaction(async tx => {
+    const childInstance = await tx.workflowInstance.findUnique({
+      where: { id: childWorkflowInstanceId },
+      select: { context: true },
+    })
+    if (childInstance) {
+      const context = asRecord(childInstance.context)
+      const workItemRef = asRecord(context._workItem)
+      const detachedRef = {
+        ...workItemRef,
+        id: workItemRef.id ?? workItemId,
+        targetId: workItemRef.targetId ?? targetId,
+        detachedAt,
+        detachedById: userId,
+        ...(reason?.trim() ? { reason: reason.trim() } : {}),
+      }
+      const detachedRefs = Array.isArray(context._detachedWorkItems)
+        ? context._detachedWorkItems.filter(item => item && typeof item === 'object')
+        : []
+      context._detachedWorkItems = [...detachedRefs, detachedRef]
+      if (workItemRef.id === workItemId || workItemRef.targetId === targetId) {
+        delete context._workItem
+      }
+      await tx.workflowInstance.update({
+        where: { id: childWorkflowInstanceId },
+        data: { context: context as Prisma.InputJsonValue },
+      })
+    }
+
+    await tx.workItemTarget.update({
+      where: { id: targetId },
+      data: {
+        status: 'QUEUED',
+        claimedById: null,
+        claimedAt: null,
+        childWorkflowInstanceId: null,
+        startedAt: null,
+        submittedAt: null,
+        completedAt: null,
+        output: Prisma.DbNull,
+      },
+    })
+    await tx.workItem.update({
+      where: { id: workItemId },
+      data: {
+        status: hasOtherActiveTargets ? target.workItem.status : 'QUEUED',
+        parentApprovalRequestId: hasOtherActiveTargets ? target.workItem.parentApprovalRequestId : null,
+      },
+    })
+    await tx.workItemEvent.create({
+      data: {
+        workItemId,
+        targetId,
+        eventType: 'DETACHED',
+        actorId: userId,
+        payload: {
+          scope: 'child_workflow_target',
+          ...(reason?.trim() ? { reason: reason.trim() } : {}),
+          previousStatus: target.status,
+          childWorkflowInstanceId,
+          childWorkflowTemplateId: target.childWorkflowTemplateId,
+          detachedAt,
+        } as Prisma.InputJsonValue,
+      },
+    })
+    return tx.workItem.findUniqueOrThrow({
+      where: { id: workItemId },
+      include: {
+        targets: { orderBy: { createdAt: 'asc' } },
+        events: { orderBy: { createdAt: 'asc' } },
+        clarifications: { orderBy: { createdAt: 'asc' } },
+      },
+    })
+  })
+
+  await logEvent('WorkItemTargetDetached', 'WorkItemTarget', targetId, userId, {
+    workItemId,
+    workCode: target.workItem.workCode,
+    previousStatus: target.status,
+    childWorkflowInstanceId,
+  })
+  await publishOutbox('WorkItemTarget', targetId, 'WorkItemTargetDetached', {
+    workItemId,
+    targetId,
+    childWorkflowInstanceId,
+  })
+  return detached
 }
 
 export async function startWorkItemTarget(

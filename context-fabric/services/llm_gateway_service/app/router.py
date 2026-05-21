@@ -10,7 +10,7 @@ Plus introspection:
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from fastapi import APIRouter, Header, HTTPException
 
@@ -177,6 +177,9 @@ async def chat_completions(
             return await anthropic_provider.respond(
                 req, resolved_model=model, api_key=credential, model_alias=alias,
             )
+    except anthropic_provider.AnthropicUpstreamError as exc:
+        status = 429 if exc.status_code == 429 else 502
+        raise HTTPException(status_code=status, detail=f"LLM_GATEWAY_UPSTREAM: {exc}")
     except HTTPException:
         raise
     except Exception as exc:

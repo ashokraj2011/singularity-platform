@@ -12,4 +12,6 @@ export const rolesApi = {
     api.post(`/roles/${roleKey}/permissions`, body).then(r => r.data),
   removePermission: (roleKey: string, permissionKey: string) =>
     api.delete(`/roles/${roleKey}/permissions/${permissionKey}`).then(r => r.data),
+  listPermissions: (roleKey: string) =>
+    api.get<import('@/types').Permission[]>(`/roles/${roleKey}/permissions`).then(r => r.data),
 }

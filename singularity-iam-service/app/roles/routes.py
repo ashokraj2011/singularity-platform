@@ -83,6 +83,26 @@ async def get_role(role_key: str, db: AsyncSession = Depends(get_db), _: User = 
     return _role_out(role)
 
 
+@router.get("/roles/{role_key}/permissions", response_model=list[PermissionOut])
+async def list_role_permissions(
+    role_key: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    role = (await db.execute(select(Role).where(Role.role_key == role_key))).scalar_one_or_none()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    rows = (await db.execute(
+        select(RolePermission).where(RolePermission.role_id == role.id)
+    )).scalars().all()
+    perms = []
+    for row in rows:
+        perm = (await db.execute(select(Permission).where(Permission.id == row.permission_id))).scalar_one_or_none()
+        if perm:
+            perms.append(_perm_out(perm))
+    return perms
+
+
 @router.post("/roles/{role_key}/permissions", status_code=201)
 async def add_permission_to_role(
     role_key: str, body: AssignPermissionRequest,

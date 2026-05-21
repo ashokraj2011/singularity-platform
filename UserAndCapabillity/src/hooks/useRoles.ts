@@ -30,7 +30,10 @@ export function useAddRolePermission(roleKey: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (body: AssignPermissionRequest) => rolesApi.addPermission(roleKey, body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['roles', roleKey] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['roles', roleKey] })
+      qc.invalidateQueries({ queryKey: ['roles', roleKey, 'permissions'] })
+    },
   })
 }
 
@@ -38,6 +41,17 @@ export function useRemoveRolePermission(roleKey: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (permKey: string) => rolesApi.removePermission(roleKey, permKey),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['roles', roleKey] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['roles', roleKey] })
+      qc.invalidateQueries({ queryKey: ['roles', roleKey, 'permissions'] })
+    },
+  })
+}
+
+export function useRolePermissions(roleKey: string) {
+  return useQuery({
+    queryKey: ['roles', roleKey, 'permissions'],
+    queryFn: () => rolesApi.listPermissions(roleKey),
+    enabled: !!roleKey,
   })
 }

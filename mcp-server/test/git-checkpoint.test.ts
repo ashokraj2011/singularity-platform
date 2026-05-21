@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -25,6 +25,34 @@ async function withTempSandbox<T>(fn: (root: string) => Promise<T>): Promise<T> 
 }
 
 describe("Git Checkpoint Refs", () => {
+  it("writes local git excludes correctly inside a git worktree", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "mcp-git-worktree-"));
+    const mirror = join(parent, "mirror.git");
+    const source = join(parent, "source");
+    const worktree = join(parent, "worktree");
+    try {
+      await execFileP("git", ["init", "--bare", mirror]);
+      await execFileP("git", ["clone", mirror, source]);
+      await execFileP("git", ["config", "user.email", "test@example.com"], { cwd: source });
+      await execFileP("git", ["config", "user.name", "Test User"], { cwd: source });
+      await execFileP("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: source });
+      await execFileP("git", ["push", "origin", "HEAD:main"], { cwd: source });
+      await execFileP("git", ["worktree", "add", worktree, "main"], { cwd: source });
+
+      expect(statSync(join(worktree, ".git")).isFile()).toBe(true);
+
+      await withSandboxRoot(worktree, async () => {
+        await ensureGitRepo();
+      });
+
+      const { stdout } = await execFileP("git", ["rev-parse", "--git-path", "info/exclude"], { cwd: worktree });
+      const excludePath = stdout.trim();
+      expect(readFileSync(excludePath, "utf8")).toContain(".singularity/");
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
   it("can create checkpoints, roll back to them, and clean them up", async () => {
     await withTempSandbox(async (root) => {
       await ensureGitRepo();

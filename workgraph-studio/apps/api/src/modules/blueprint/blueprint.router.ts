@@ -39,8 +39,8 @@ const MAX_EXCERPT_FILES = 8
 const EXECUTE_MANIFEST_MAX_FILES = 120
 const EXECUTE_EXCERPT_MAX_FILES = 8
 const EXECUTE_EXCERPT_MAX_CHARS = 4_000
-const EXECUTE_EXCERPT_BUDGET_CHARS = 18_000
-const COMPOSER_ARTIFACT_CONTENT_MAX_CHARS = 11_500
+const EXECUTE_EXCERPT_BUDGET_CHARS = 8_000
+const COMPOSER_ARTIFACT_CONTENT_MAX_CHARS = 8_000
 function positiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name]?.trim()
   if (!raw) return fallback
@@ -56,10 +56,10 @@ const DEFAULT_WORKBENCH_EXECUTION_CONFIG = {
   snapshotMode: 'relevant_excerpts' as const,
   excerptBudgetChars: EXECUTE_EXCERPT_BUDGET_CHARS,
   reuseUnchangedAttempt: true,
-  maxContextTokens: 6_000,
-  maxOutputTokens: 1_200,
-  maxPromptChars: 24_000,
-  maxLayerChars: 2_000,
+  maxContextTokens: 3_000,
+  maxOutputTokens: 800,
+  maxPromptChars: 12_000,
+  maxLayerChars: 1_000,
 }
 
 const DEFAULT_EXCLUDES = new Set([
@@ -3068,22 +3068,39 @@ function buildConfiguredArtifactMarkdown(
 // StagePromptBinding templates consume. The text content lives in
 // prompt-composer/prisma/seed.ts (loopDefaultTask, loopDeveloperTask,
 // loopQaTask). Edit there + re-seed to roll forward — no redeploy here.
+type LoopArtifactContextRecord = {
+  id: string
+  kind: string
+  title: string
+  content?: string | null
+}
+
 function buildLoopStageVars(
-  session: ArtifactSession,
+  session: ArtifactSession & { artifacts?: LoopArtifactContextRecord[] },
   stage: LoopStageDefinition,
   state: LoopState,
 ): Record<string, string> {
   // M41.2 — operator chat thread for this stage, rendered as chronological
   // lines so prompt-composer's loopDefaultTask can splice it under
-  // "Operator guidance:" via the optional {{#operatorChat}} section.
+  // "Operator guidance:".
   const chatThread = readStageChatThread(session.metadata, stage.key)
   const operatorChat = chatThread.length === 0
-    ? ''
+    ? '- No operator guidance.'
     : chatThread.map(m => {
         const ts = m.createdAt?.slice(11, 16) ?? ''
         const who = m.role === 'system' ? 'SYSTEM' : m.role === 'agent' ? 'AGENT' : 'OPERATOR'
         return `[${ts}] ${who}: ${m.content}`
       }).join('\n')
+  const isDeveloperStage = normalizeAgentRole(stage.agentRole).includes('DEV')
+  const priorApprovedArtifacts = buildPriorApprovedArtifactContext(session, state, stage.key)
+  const implementationDirective = isDeveloperStage
+    ? [
+      'Use the approved artifact context as the implementation backlog for this attempt.',
+      'If the Goal is generic, derive the concrete change from Story Intake, Plan, and Design artifacts instead of asking the operator to restate the task.',
+      'If the approved behavior already exists in code, make a verifiable codebase change such as focused tests or documentation updates that prove the accepted contract.',
+      'A Developer attempt is not approvable until MCP returns a real code_change receipt plus verification evidence.',
+    ].join(' ')
+    : ''
   const latestAccepted = state.stageAttempts
     .filter(attempt => attempt.verdict === 'PASS' || attempt.verdict === 'ACCEPTED_WITH_RISK')
     .map(attempt => `${attempt.stageLabel}#${attempt.attemptNumber}: ${attempt.verdict}`)
@@ -3113,6 +3130,8 @@ function buildLoopStageVars(
     artifacts,
     questions,
     latestAccepted,
+    priorApprovedArtifacts,
+    implementationDirective,
     capturedDecisions,
     sendBacks,
     // M36.6 — source context vars consumed by loopDeveloperExtraContext template.
@@ -3121,11 +3140,62 @@ function buildLoopStageVars(
     sourceRef: session.sourceRef ?? '',
     // Helper for the "X @ Y" suffix without forcing the template to do conditionals.
     sourceRefSuffix: session.sourceRef ? ` @ ${session.sourceRef}` : '',
-    // M41.2 — operator → agent guidance thread. Empty string when no chat
-    // messages exist, so the Mustache `{{#operatorChat}}…{{/operatorChat}}`
-    // section conditionally renders only when the operator has steered.
+    // M41.2 — operator → agent guidance thread. The prompt-composer renderer
+    // performs simple var substitution, so provide an explicit empty-state line.
     operatorChat,
   }
+}
+
+function buildPriorApprovedArtifactContext(
+  session: ArtifactSession & { artifacts?: LoopArtifactContextRecord[] },
+  state: LoopState,
+  currentStageKey: string,
+): string {
+  const acceptedArtifactIds = new Set(
+    state.stageAttempts
+      .filter(attempt =>
+        attempt.stageKey !== currentStageKey &&
+        (attempt.verdict === 'PASS' || attempt.verdict === 'ACCEPTED_WITH_RISK'),
+      )
+      .flatMap(attempt => attempt.artifactIds ?? []),
+  )
+  const artifacts = (session.artifacts ?? [])
+    .map((artifact, index) => ({ artifact, index }))
+    .filter(({ artifact }) => acceptedArtifactIds.has(artifact.id) && artifact.content?.trim())
+
+  if (artifacts.length === 0) {
+    return [
+      '- No prior approved artifact content is available.',
+      '- Inspect the repository and implement the smallest verifiable change implied by the current task.',
+      '- If no product delta is explicit, add or update tests/docs that prove the accepted behavior.',
+    ].join('\n')
+  }
+
+  const priority = new Map<string, number>([
+    ['acceptance_contract', 0],
+    ['approved_spec_draft', 1],
+    ['solution_architecture', 2],
+    ['story_brief', 3],
+    ['gaps', 4],
+    ['mental_model', 5],
+  ])
+  const maxTotalChars = 6_000
+  const maxArtifactChars = 1_000
+  let used = 0
+  const blocks: string[] = []
+  for (const { artifact } of artifacts.sort((a, b) =>
+    (priority.get(a.artifact.kind) ?? 50) - (priority.get(b.artifact.kind) ?? 50) || a.index - b.index,
+  )) {
+    const raw = (artifact.content ?? '').trim()
+    if (!raw) continue
+    const excerpt = raw.length > maxArtifactChars ? `${raw.slice(0, maxArtifactChars).trim()}\n...` : raw
+    const block = `## ${artifact.title} (${artifact.kind})\n${excerpt}`
+    if (used + block.length > maxTotalChars) break
+    blocks.push(block)
+    used += block.length
+  }
+
+  return blocks.length > 0 ? blocks.join('\n\n') : '- Prior approved artifacts were present but exceeded the prompt budget.'
 }
 
 function buildStageInputSignature(

@@ -2,12 +2,17 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 from app.database import get_db
-from app.models import User
+from app.models import User, PlatformRoleAssignment, Role
 from app.auth.deps import get_current_user
 from app.schemas import PageResponse
 from app.users.schemas import UserOut, CreateUserRequest, UpdateUserRequest
 from app.audit.service import record_event
 from datetime import datetime, timezone
+from pydantic import BaseModel
+
+
+class AssignRoleRequest(BaseModel):
+    role_key: str
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -102,3 +107,75 @@ async def update_user(
     await db.commit()
     await db.refresh(user)
     return _to_out(user)
+
+
+@router.get("/{user_id}/roles")
+async def list_user_roles(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from app.roles.schemas import RoleOut
+    rows = (await db.execute(
+        select(PlatformRoleAssignment).where(PlatformRoleAssignment.user_id == user_id)
+    )).scalars().all()
+    roles = []
+    for row in rows:
+        role = (await db.execute(select(Role).where(Role.id == row.role_id))).scalar_one_or_none()
+        if role:
+            roles.append(role)
+    from app.roles.routes import _role_out
+    return [_role_out(r) for r in roles]
+
+
+@router.post("/{user_id}/roles", status_code=201)
+async def assign_role_to_user(
+    user_id: str,
+    body: AssignRoleRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    role = (await db.execute(select(Role).where(Role.role_key == body.role_key))).scalar_one_or_none()
+    if not role:
+        raise HTTPException(status_code=404, detail=f"Role '{body.role_key}' not found")
+    existing = (await db.execute(
+        select(PlatformRoleAssignment).where(
+            PlatformRoleAssignment.user_id == user_id,
+            PlatformRoleAssignment.role_id == role.id,
+        )
+    )).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail="Role already assigned")
+    assignment = PlatformRoleAssignment(user_id=user_id, role_id=role.id, granted_by=current_user.id)
+    db.add(assignment)
+    await record_event(db, actor_user_id=current_user.id, event_type="platform_role_assigned",
+                       target_type="user", target_id=user_id, payload={"role_key": body.role_key})
+    await db.commit()
+    return {"user_id": user_id, "role_key": body.role_key}
+
+
+@router.delete("/{user_id}/roles/{role_key}", status_code=204)
+async def remove_role_from_user(
+    user_id: str,
+    role_key: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    role = (await db.execute(select(Role).where(Role.role_key == role_key))).scalar_one_or_none()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    assignment = (await db.execute(
+        select(PlatformRoleAssignment).where(
+            PlatformRoleAssignment.user_id == user_id,
+            PlatformRoleAssignment.role_id == role.id,
+        )
+    )).scalar_one_or_none()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Role not assigned to this user")
+    await db.delete(assignment)
+    await record_event(db, actor_user_id=current_user.id, event_type="platform_role_removed",
+                       target_type="user", target_id=user_id, payload={"role_key": role_key})
+    await db.commit()

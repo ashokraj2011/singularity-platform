@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, AlertCircle, Archive, CheckCircle2, XCircle, Workflow, Layers, ExternalLink, Route, Network, Play } from 'lucide-react'
+import { ArrowLeft, AlertCircle, Archive, CheckCircle2, XCircle, Workflow, Layers, ExternalLink, Route, Network, Play, Unlink } from 'lucide-react'
 import { api } from '../../lib/api'
 import { RuntimeWidgetForm, type RuntimeFormSubmitTarget } from '../forms/widgets/RuntimeWidgetForm'
 import type { FormWidget } from '../forms/widgets/types'
@@ -84,12 +84,29 @@ function WorkItemDetail({ id }: { id: string }) {
     mutationFn: () => api.post(`/work-items/${id}/archive`).then(r => r.data),
     onSuccess: () => navigate('/work-items'),
   })
+  const detachMut = useMutation({
+    mutationFn: () => api.post(`/work-items/${id}/detach`, {
+      reason: 'Detached from workflow from WorkItem detail',
+    }).then(r => r.data as WorkItemRow),
+    onSuccess: () => refetch(),
+  })
+  const detachTargetMut = useMutation({
+    mutationFn: (targetId: string) => api.post(`/work-items/${id}/targets/${targetId}/detach`, {
+      reason: 'Detached child workflow run from WorkItem detail',
+    }).then(r => r.data as WorkItemRow),
+    onSuccess: () => refetch(),
+  })
 
   const activeTarget = workItem?.targets.find(t => t.id === targetId) ?? workItem?.targets[0]
   const canClaim = activeTarget && ['QUEUED', 'REWORK_REQUESTED'].includes(activeTarget.status) && !activeTarget.claimedById
   const selectedTemplate = activeTarget ? selectedWorkflowByTarget[activeTarget.id] : ''
   const effectiveTemplate = activeTarget?.childWorkflowTemplateId || selectedTemplate
   const canStart = activeTarget && activeTarget.status === 'CLAIMED' && !!activeTarget.claimedById && !!effectiveTemplate && !activeTarget.childWorkflowInstanceId
+  const canDetachTarget = Boolean(
+    activeTarget?.childWorkflowInstanceId &&
+    !['SUBMITTED', 'APPROVED'].includes(activeTarget.status) &&
+    !['COMPLETED', 'ARCHIVED'].includes(workItem?.status ?? ''),
+  )
   const workflowsQuery = useQuery<WorkflowTemplateRow[]>({
     queryKey: ['runtime-workitem-workflows', activeTarget?.targetCapabilityId],
     enabled: Boolean(activeTarget?.targetCapabilityId),
@@ -106,6 +123,8 @@ function WorkItemDetail({ id }: { id: string }) {
 
   if (isLoading) return <p style={{ fontSize: 13, color: 'var(--color-outline)' }}>Loading WorkItem…</p>
   if (!workItem) return <ErrorState message="WorkItem not found" onBack={() => navigate('/runtime')} />
+  const canDetach = !['COMPLETED', 'ARCHIVED'].includes(workItem.status) &&
+    (workItem.originType === 'PARENT_DELEGATED' || Boolean(workItem.sourceWorkflowInstanceId || workItem.sourceWorkflowNodeId))
 
   return (
     <div>
@@ -117,6 +136,35 @@ function WorkItemDetail({ id }: { id: string }) {
         status={workItem.status}
         assignmentMode="ROLE_BASED"
       />
+
+      {canDetach && (
+        <section style={{
+          ...cardStyle,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          borderColor: 'rgba(245,158,11,0.24)',
+          background: 'rgba(255,251,235,0.72)',
+        }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 14, color: 'var(--color-on-surface)' }}>Detach from source workflow</h3>
+            <p style={{ margin: '3px 0 0', fontSize: 12, color: 'var(--color-outline)' }}>
+              Converts this delegated WorkItem into local queued work and makes it available for another workflow.
+            </p>
+            {detachMut.error && <p style={{ margin: '6px 0 0', color: '#b91c1c', fontSize: 12 }}>{(detachMut.error as Error).message}</p>}
+          </div>
+          <button
+            style={{ ...secondaryButtonStyle, borderColor: 'rgba(245,158,11,0.36)', color: '#92400e' }}
+            disabled={detachMut.isPending}
+            onClick={() => {
+              if (window.confirm(`Detach ${workItem.workCode ?? workItem.title} from its source workflow and return it to the available queue?`)) detachMut.mutate()
+            }}
+          >
+            <Unlink size={13} /> {detachMut.isPending ? 'Detaching...' : 'Detach'}
+          </button>
+        </section>
+      )}
 
       {workItem.originType === 'CAPABILITY_LOCAL' && workItem.status !== 'ARCHIVED' && (
         <section style={{
@@ -199,7 +247,25 @@ function WorkItemDetail({ id }: { id: string }) {
                 <ExternalLink size={13} /> Open child run
               </button>
             )}
+            {canDetachTarget && activeTarget.childWorkflowInstanceId && (
+              <button
+                style={{ ...secondaryButtonStyle, borderColor: 'rgba(245,158,11,0.36)', color: '#92400e' }}
+                disabled={detachTargetMut.isPending}
+                onClick={() => {
+                  if (window.confirm(`Detach ${workItem.workCode ?? workItem.title} from this child workflow run and return it to the available queue?`)) {
+                    detachTargetMut.mutate(activeTarget.id)
+                  }
+                }}
+              >
+                <Unlink size={13} /> {detachTargetMut.isPending ? 'Detaching...' : 'Detach run'}
+              </button>
+            )}
           </div>
+          {detachTargetMut.error && (
+            <p style={{ margin: '-4px 0 10px', color: '#b91c1c', fontSize: 12 }}>
+              {(detachTargetMut.error as Error).message}
+            </p>
+          )}
 
           {activeTarget.status === 'CLAIMED' && !activeTarget.childWorkflowInstanceId && (
             <div style={{ marginBottom: 12 }}>
@@ -1189,6 +1255,8 @@ type WorkItemRow = {
   title: string
   description?: string | null
   status: string
+  sourceWorkflowInstanceId?: string | null
+  sourceWorkflowNodeId?: string | null
   details?: Record<string, unknown> | null
   budget?: Record<string, unknown> | null
   urgency?: string | null

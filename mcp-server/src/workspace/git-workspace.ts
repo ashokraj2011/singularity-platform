@@ -105,6 +105,11 @@ async function git(args: string[], opts?: { allowFail?: boolean; maxBuffer?: num
   }
 }
 
+async function gitPath(relativePath: string): Promise<string> {
+  const resolved = await git(["rev-parse", "--git-path", relativePath]);
+  return path.isAbsolute(resolved) ? resolved : path.join(sandboxRoot(), resolved);
+}
+
 type PushBlockedCode = NonNullable<FinishBranchResult["pushBlockedCode"]>;
 type PushResult = {
   pushed: boolean;
@@ -183,9 +188,9 @@ function shellQuote(value: string): string {
 }
 
 async function ensureAskPassScript(): Promise<string> {
-  const dir = path.join(sandboxRoot(), ".git", "singularity");
+  const script = await gitPath("singularity/git-askpass.sh");
+  const dir = path.dirname(script);
   await fs.promises.mkdir(dir, { recursive: true });
-  const script = path.join(dir, "git-askpass.sh");
   await fs.promises.writeFile(
     script,
     "#!/usr/bin/env sh\ncase \"$1\" in\n  *Username*) printf '%s\\n' \"${SINGULARITY_GIT_USERNAME:-x-access-token}\" ;;\n  *) printf '%s\\n' \"${SINGULARITY_GIT_TOKEN:-}\" ;;\nesac\n",
@@ -347,7 +352,8 @@ export async function ensureGitRepo(): Promise<void> {
 }
 
 async function ensureLocalGitExcludes(): Promise<void> {
-  const excludePath = path.join(sandboxRoot(), ".git", "info", "exclude");
+  const excludePath = await gitPath("info/exclude");
+  await fs.promises.mkdir(path.dirname(excludePath), { recursive: true });
   const current = await fs.promises.readFile(excludePath, "utf8").catch(() => "");
   if (current.includes(".singularity/")) return;
   const prefix = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
@@ -786,4 +792,3 @@ export async function cleanupCheckpoints(runId: string): Promise<void> {
     }
   } catch { /* no refs to clean — fine */ }
 }
-

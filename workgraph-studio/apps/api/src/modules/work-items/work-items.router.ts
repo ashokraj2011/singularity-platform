@@ -11,6 +11,8 @@ import {
   canViewWorkItem,
   claimWorkItemTarget,
   createWorkItem,
+  detachWorkItemFromWorkflow,
+  detachWorkItemTargetFromWorkflow,
   requestWorkItemClarification,
   requestWorkItemRework,
   startWorkItemTarget,
@@ -77,6 +79,10 @@ const reworkSchema = z.object({
   reason: z.string().optional(),
 })
 
+const detachSchema = z.object({
+  reason: z.string().optional(),
+}).default({})
+
 workItemsRouter.post('/', validate(createSchema), async (req, res, next) => {
   try {
     const workItem = await createWorkItem(req.body as z.infer<typeof createSchema>, req.user!.userId)
@@ -88,7 +94,7 @@ workItemsRouter.post('/', validate(createSchema), async (req, res, next) => {
 
 workItemsRouter.get('/', async (req, res, next) => {
   try {
-    const { targetCapabilityId, status, mine, cursor, sourceWorkflowInstanceId, sourceWorkflowNodeId, includeArchived, archived } = req.query as Record<string, string | undefined>
+    const { targetCapabilityId, status, mine, cursor, sourceWorkflowInstanceId, sourceWorkflowNodeId, includeArchived, archived, available } = req.query as Record<string, string | undefined>
     const limit = Math.min(Math.max(Number(req.query.limit ?? 50) || 50, 1), 100)
     const targetWhere: Record<string, unknown> = {}
     const itemWhere: Record<string, unknown> = {}
@@ -100,6 +106,13 @@ workItemsRouter.get('/', async (req, res, next) => {
     if (sourceWorkflowInstanceId) itemWhere.sourceWorkflowInstanceId = sourceWorkflowInstanceId
     if (sourceWorkflowNodeId) itemWhere.sourceWorkflowNodeId = sourceWorkflowNodeId
     if (targetCapabilityId) targetWhere.targetCapabilityId = targetCapabilityId
+    if (available === '1' || available === 'true') {
+      itemWhere.status = { in: ['QUEUED', 'IN_PROGRESS'] }
+      itemWhere.sourceWorkflowInstanceId = null
+      itemWhere.sourceWorkflowNodeId = null
+      targetWhere.status = { in: ['QUEUED', 'CLAIMED', 'REWORK_REQUESTED'] }
+      targetWhere.childWorkflowInstanceId = null
+    }
     if (status) {
       const normalized = status.toUpperCase()
       if (WORK_ITEM_TARGET_STATUSES.includes(normalized as (typeof WORK_ITEM_TARGET_STATUSES)[number])) {
@@ -167,6 +180,31 @@ workItemsRouter.get('/:id', async (req, res, next) => {
 workItemsRouter.post('/:id/archive', async (req, res, next) => {
   try {
     const result = await archiveWorkItem(String(req.params.id), req.user!.userId)
+    res.json(result)
+  } catch (err) {
+    next(err)
+  }
+})
+
+workItemsRouter.post('/:id/detach', validate(detachSchema), async (req, res, next) => {
+  try {
+    const { reason } = req.body as z.infer<typeof detachSchema>
+    const result = await detachWorkItemFromWorkflow(String(req.params.id), req.user!.userId, reason)
+    res.json(result)
+  } catch (err) {
+    next(err)
+  }
+})
+
+workItemsRouter.post('/:id/targets/:targetId/detach', validate(detachSchema), async (req, res, next) => {
+  try {
+    const { reason } = req.body as z.infer<typeof detachSchema>
+    const result = await detachWorkItemTargetFromWorkflow(
+      String(req.params.id),
+      String(req.params.targetId),
+      req.user!.userId,
+      reason,
+    )
     res.json(result)
   } catch (err) {
     next(err)

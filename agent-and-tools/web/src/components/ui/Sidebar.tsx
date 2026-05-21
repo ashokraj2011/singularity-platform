@@ -3,30 +3,17 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
-  LayoutDashboard, Bot, Wrench, Play, Users, BookOpen,
+  LayoutDashboard, Wrench, Play, Users, BookOpen,
   GitBranch, Layers, ScrollText, ShieldCheck, Activity, Brain,
   ChevronLeft, ChevronRight, DollarSign, Cpu, WandSparkles,
-  Compass,
 } from "lucide-react";
 
 const registry = [
-  { label: "Control Plane", href: "/control-plane", icon: Compass },
   { label: "Dashboard",     href: "/",              icon: LayoutDashboard },
   { label: "Tools",         href: "/tools",         icon: Wrench },
   { label: "Executions",    href: "/executions",    icon: Play },
   { label: "Runners",       href: "/runners",       icon: Users },
   { label: "Learning",      href: "/learning",      icon: BookOpen },
-];
-
-const controlPlaneSubmenu = [
-  // M23 — single Agent Studio entry replaces flat Agents + Agent Templates pages
-  { label: "Agent Studio",  href: "/agent-studio",  icon: Bot },
-  { label: "Workflows",    href: "/workflows",    icon: GitBranch },
-  { label: "Runs",         href: "/runs",         icon: Play },
-  { label: "WorkItems",    href: "/work-items",   icon: Users },
-  { label: "WorkbenchNeo", href: "/workbench",    icon: Wrench },
-  { label: "Identity",     href: "/identity",     icon: ShieldCheck },
-  { label: "Operations",   href: "/operations",   icon: Activity },
 ];
 
 const runtime = [
@@ -83,42 +70,6 @@ function NavItem({
   );
 }
 
-function SubNavItem({
-  item, active, collapsed,
-}: { item: ItemDef; active: boolean; collapsed: boolean }) {
-  const Icon = item.icon;
-  return (
-    <Link href={item.href} className="block">
-      <div
-        title={collapsed ? item.label : undefined}
-        style={{
-          minHeight: 32,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: collapsed ? "center" : "flex-start",
-          gap: collapsed ? 0 : 8,
-          marginLeft: collapsed ? 0 : 24,
-          marginRight: collapsed ? 0 : 6,
-          padding: collapsed ? "8px" : "7px 10px",
-          borderRadius: 10,
-          color: active ? "var(--brand-warm-white)" : "rgba(245,242,234,0.66)",
-          background: active ? "rgba(0,166,81,0.16)" : "transparent",
-          borderLeft: collapsed ? "none" : `2px solid ${active ? "var(--brand-green-accent)" : "rgba(245,242,234,0.10)"}`,
-          fontSize: 13,
-          fontWeight: active ? 700 : 600,
-          position: "relative",
-        }}
-      >
-        <Icon
-          size={14}
-          style={{ color: active ? "var(--brand-green-accent)" : "rgba(245,242,234,0.48)", flexShrink: 0 }}
-        />
-        {!collapsed && <span>{item.label}</span>}
-      </div>
-    </Link>
-  );
-}
-
 export function Sidebar() {
   const path = usePathname();
   const [collapsed, setCollapsed] = useState(false);
@@ -140,8 +91,6 @@ export function Sidebar() {
     href === "/" ? path === "/" : path.startsWith(href);
   const canvasRoute = path.startsWith("/prompt-workbench");
   const effectiveCollapsed = collapsed || canvasRoute;
-  const controlPlaneRoutes = ["/control-plane", ...controlPlaneSubmenu.map((item) => item.href)];
-  const controlPlaneActive = controlPlaneRoutes.some((href) => isActive(href));
 
   return (
     <aside className="shell-sidebar" style={{ width: effectiveCollapsed ? 64 : 236 }}>
@@ -254,22 +203,10 @@ export function Sidebar() {
         )}
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           {registry.map(item => {
-            const active = item.href === "/control-plane" ? controlPlaneActive : isActive(item.href);
+            const active = isActive(item.href);
             return (
               <div key={item.href}>
                 <NavItem {...item} active={active} collapsed={effectiveCollapsed} />
-                {item.href === "/control-plane" && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 1, marginTop: 3, marginBottom: effectiveCollapsed ? 4 : 8 }}>
-                    {controlPlaneSubmenu.map(subItem => (
-                      <SubNavItem
-                        key={subItem.href}
-                        item={subItem}
-                        active={isActive(subItem.href)}
-                        collapsed={effectiveCollapsed}
-                      />
-                    ))}
-                  </div>
-                )}
               </div>
             );
           })}

@@ -527,6 +527,9 @@ services:
       # explicit provider/model overrides and forces model_alias use.
       ALLOW_CALLER_PROVIDER_OVERRIDE: ${LLM_GATEWAY_ALLOW_OVERRIDE:-false}
       UPSTREAM_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-240}
+      LLM_GATEWAY_RATE_LIMIT_RETRIES: ${LLM_GATEWAY_RATE_LIMIT_RETRIES:-1}
+      LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC: ${LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC:-65}
+      LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC: ${LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC:-75}
       # Provider credentials — passed ONLY to this service. Every other
       # service in the stack is enforced to NOT receive these keys (CI guard
       # in M33.7). Empty values disable the corresponding provider; the

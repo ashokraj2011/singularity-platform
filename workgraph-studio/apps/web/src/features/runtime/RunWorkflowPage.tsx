@@ -201,7 +201,7 @@ function StartWorkflowDialog({
     queryKey: ['start-workflow-workitems', workflow.capabilityId],
     enabled: Boolean(workflow.capabilityId),
     queryFn: () => api.get('/work-items', {
-      params: { targetCapabilityId: workflow.capabilityId, limit: 100 },
+      params: { targetCapabilityId: workflow.capabilityId, available: true, limit: 100 },
     }).then(r => unwrapItems<WorkItemRow>(r.data)),
   })
   const availableWorkItems = useMemo(() => {

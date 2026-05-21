@@ -1,5 +1,5 @@
 import { api } from '@/lib/api'
-import type { User, CreateUserRequest, UpdateUserRequest, PageResponse } from '@/types'
+import type { User, CreateUserRequest, UpdateUserRequest, PageResponse, PlatformRole } from '@/types'
 
 export const usersApi = {
   list: (params?: { page?: number; size?: number; search?: string }) =>
@@ -10,4 +10,12 @@ export const usersApi = {
     api.post<User>('/users', body).then(r => r.data),
   update: (id: string, body: UpdateUserRequest) =>
     api.patch<User>(`/users/${id}`, body).then(r => r.data),
+  listRoles: (userId: string) =>
+    api.get<PlatformRole[]>(`/users/${userId}/roles`).then(r => r.data),
+  assignRole: (userId: string, role_key: string) =>
+    api.post(`/users/${userId}/roles`, { role_key }).then(r => r.data),
+  removeRole: (userId: string, roleKey: string) =>
+    api.delete(`/users/${userId}/roles/${roleKey}`).then(r => r.data),
+  listTeams: (userId: string) =>
+    api.get(`/users/${userId}/teams`).then(r => r.data as import('@/types').Team[]),
 }

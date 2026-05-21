@@ -149,6 +149,9 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
 
     const approvalRequest = await prisma.approvalRequest.findUnique({ where: { id } })
     if (!approvalRequest) throw new NotFoundError('ApprovalRequest', id)
+    if (approvalRequest.status !== 'PENDING') {
+      throw new ValidationError(`ApprovalRequest cannot be decided from status ${approvalRequest.status}`)
+    }
 
     const [approvalDecision] = await prisma.$transaction([
       prisma.approvalDecision.create({

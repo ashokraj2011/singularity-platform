@@ -161,3 +161,83 @@ def test_non_mock_embeddings_response_uses_resolved_model(monkeypatch: pytest.Mo
     assert resp.provider == "openai"
     assert resp.model_alias == "embed-test"
     assert resp.input_tokens == 7
+
+
+def test_anthropic_retries_once_on_rate_limit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    providers = {
+        "defaultProvider": "anthropic",
+        "allowedProviders": ["anthropic"],
+        "providers": {
+            "anthropic": {
+                "enabled": True,
+                "baseUrl": "https://api.anthropic.com",
+                "credentialEnv": "ANTHROPIC_API_KEY",
+                "defaultModel": "claude-haiku-4-5-20251001",
+            }
+        },
+    }
+    catalog = [{"id": "anthropic", "provider": "anthropic", "model": "claude-haiku-4-5-20251001", "default": True}]
+    _, _, router = load_modules(monkeypatch, tmp_path, providers, catalog)
+    anthropic = router.anthropic_provider
+    anthropic.settings.upstream_rate_limit_retries = 1
+    anthropic.settings.upstream_rate_limit_retry_delay_sec = 0.0
+    anthropic.settings.upstream_rate_limit_max_sleep_sec = 0.0
+    monkeypatch.setattr(anthropic, "provider_base_url", lambda _provider: "https://api.anthropic.com")
+    calls = {"count": 0}
+    sleeps: list[float] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, text: str = "", data: dict | None = None, headers: dict | None = None):
+            self.status_code = status_code
+            self.text = text
+            self._data = data or {}
+            self.headers = headers or {}
+
+        def json(self) -> dict:
+            return self._data
+
+    class FakeClient:
+        def __init__(self, timeout: int):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return FakeResponse(429, "rate limited", headers={"retry-after": "0"})
+            return FakeResponse(
+                200,
+                data={
+                    "content": [{"type": "text", "text": "ok"}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 3, "output_tokens": 1},
+                },
+            )
+
+    async def fake_sleep(delay: float):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(anthropic.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(anthropic.asyncio, "sleep", fake_sleep)
+
+    req = router.ChatCompletionRequest(
+        model_alias="anthropic",
+        messages=[{"role": "user", "content": "hello"}],
+        max_output_tokens=10,
+    )
+    resp = asyncio.run(anthropic.respond(
+        req,
+        resolved_model="claude-haiku-4-5-20251001",
+        api_key="test-key",
+        model_alias="anthropic",
+    ))
+
+    assert calls["count"] == 2
+    assert sleeps == [0.0]
+    assert resp.content == "ok"
+    assert resp.input_tokens == 3

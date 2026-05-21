@@ -58,12 +58,12 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   position: sticky;
   top: 0;
   z-index: 30;
-  min-height: 72px;
+  min-height: 64px;
   display: grid;
-  grid-template-columns: auto auto auto minmax(220px, 1fr) auto auto;
-  gap: 18px;
+  grid-template-columns: minmax(230px, auto) auto minmax(0, 1fr) auto auto;
+  gap: 16px;
   align-items: center;
-  padding: 14px 24px;
+  padding: 10px 24px;
   border-bottom: 1px solid var(--outline-variant);
   background: rgba(11, 19, 38, 0.94);
   backdrop-filter: blur(14px);
@@ -73,6 +73,19 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.brand-lockup {
+  min-width: 0;
+  gap: 9px;
+}
+
+.brand-lockup > div:last-child {
+  min-width: 0;
+}
+
+.topbar-actions {
+  justify-content: flex-end;
 }
 
 .app-switcher {
@@ -178,20 +191,21 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 }
 
 .brand-mark {
-  width: 38px;
-  height: 38px;
+  width: 30px;
+  height: 30px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
+  flex: 0 0 auto;
+  border-radius: 7px;
   color: var(--on-primary);
   background: var(--primary);
   box-shadow: 0 0 30px rgba(173, 198, 255, 0.2);
 }
 
 .eyebrow {
-  margin: 0 0 2px;
+  margin: 0 0 1px;
   color: var(--muted-low);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -200,17 +214,18 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .command-header h1 {
   margin: 0;
   color: var(--primary);
-  font-size: 24px;
-  line-height: 1.1;
+  font-size: 20px;
+  line-height: 1.05;
+  white-space: nowrap;
 }
 
 .command-tabs button {
   border: 0;
   background: transparent;
   color: var(--muted-low);
-  padding: 7px 10px;
+  padding: 7px 9px;
   border-radius: 8px;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -224,33 +239,12 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   border-bottom: 2px solid var(--primary);
 }
 
-.command-search {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 360px;
-  border: 1px solid var(--outline-variant);
-  border-radius: 12px;
-  background: var(--surface-low);
-  color: var(--muted-low);
-  padding: 8px 11px;
-}
-
-.command-search input {
-  width: 100%;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--text);
-}
-
 .metric-pill {
-  min-width: 80px;
+  min-width: 78px;
   border: 1px solid var(--outline-variant);
   border-radius: 10px;
   background: var(--surface-low);
-  padding: 7px 10px;
+  padding: 6px 10px;
 }
 
 .metric-pill span {
@@ -275,7 +269,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 
 .loop-shell {
   position: relative;
-  min-height: calc(100vh - 72px);
+  min-height: calc(100vh - 64px);
   padding: 18px;
 }
 
@@ -2914,7 +2908,7 @@ pre {
     grid-template-columns: 1fr auto;
   }
 
-  .command-tabs, .command-search, .command-metrics {
+  .command-tabs, .command-metrics {
     display: none;
   }
 

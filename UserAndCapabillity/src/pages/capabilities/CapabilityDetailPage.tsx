@@ -30,7 +30,9 @@ export function CapabilityDetailPage() {
   const [relTarget, setRelTarget] = useState('')
   const [relType, setRelType] = useState<RelationshipType>('uses')
   const [relPolicy, setRelPolicy] = useState<InheritancePolicy>('none')
+  const [memberType, setMemberType] = useState<'user' | 'team'>('user')
   const [memberUserId, setMemberUserId] = useState('')
+  const [memberTeamId, setMemberTeamId] = useState('')
   const [memberRoleKey, setMemberRoleKey] = useState('')
 
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading…</div>
@@ -47,9 +49,15 @@ export function CapabilityDetailPage() {
   }
 
   async function handleAddMember() {
-    if (!memberUserId.trim() || !memberRoleKey.trim()) return
-    await addMember.mutateAsync({ user_id: memberUserId.trim(), role_key: memberRoleKey.trim() })
-    setMemberUserId('')
+    if (memberType === 'user') {
+      if (!memberUserId.trim() || !memberRoleKey.trim()) return
+      await addMember.mutateAsync({ user_id: memberUserId.trim(), role_key: memberRoleKey.trim() })
+      setMemberUserId('')
+    } else {
+      if (!memberTeamId.trim() || !memberRoleKey.trim()) return
+      await addMember.mutateAsync({ team_id: memberTeamId.trim(), role_key: memberRoleKey.trim() })
+      setMemberTeamId('')
+    }
     setMemberRoleKey('')
     setMemberOpen(false)
   }
@@ -197,14 +205,56 @@ export function CapabilityDetailPage() {
       </Dialog>
 
       {/* Add Member Dialog */}
-      <Dialog open={memberOpen} onOpenChange={setMemberOpen}>
+      <Dialog open={memberOpen} onOpenChange={open => { setMemberOpen(open); if (!open) setMemberType('user') }}>
         <DialogContent>
           <DialogHeader><DialogTitle>Add Capability Member</DialogTitle></DialogHeader>
           <div className="space-y-4 mt-2">
-            <div className="space-y-1.5">
-              <Label>User ID</Label>
-              <Input placeholder="UUID" value={memberUserId} onChange={e => setMemberUserId(e.target.value)} />
+            {/* Member type toggle */}
+            <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
+              <button
+                onClick={() => { setMemberType('user'); setMemberTeamId('') }}
+                style={{
+                  flex: 1,
+                  padding: '6px 12px',
+                  borderRadius: 6,
+                  border: memberType === 'user' ? 'none' : '1px solid #d1d5db',
+                  background: memberType === 'user' ? 'var(--primary, #00843D)' : 'transparent',
+                  color: memberType === 'user' ? '#fff' : '#374151',
+                  fontWeight: 500,
+                  fontSize: 13,
+                  cursor: 'pointer',
+                }}
+              >
+                User
+              </button>
+              <button
+                onClick={() => { setMemberType('team'); setMemberUserId('') }}
+                style={{
+                  flex: 1,
+                  padding: '6px 12px',
+                  borderRadius: 6,
+                  border: memberType === 'team' ? 'none' : '1px solid #d1d5db',
+                  background: memberType === 'team' ? 'var(--primary, #00843D)' : 'transparent',
+                  color: memberType === 'team' ? '#fff' : '#374151',
+                  fontWeight: 500,
+                  fontSize: 13,
+                  cursor: 'pointer',
+                }}
+              >
+                Team
+              </button>
             </div>
+            {memberType === 'user' ? (
+              <div className="space-y-1.5">
+                <Label>User ID</Label>
+                <Input placeholder="UUID" value={memberUserId} onChange={e => setMemberUserId(e.target.value)} />
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <Label>Team ID</Label>
+                <Input placeholder="Team UUID" value={memberTeamId} onChange={e => setMemberTeamId(e.target.value)} />
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label>Role Key</Label>
               <Input placeholder="workflow_executor" value={memberRoleKey} onChange={e => setMemberRoleKey(e.target.value)} />

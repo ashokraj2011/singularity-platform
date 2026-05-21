@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { useRole, useAddRolePermission, useRemoveRolePermission } from '@/hooks/useRoles'
+import { useRole, useAddRolePermission, useRemoveRolePermission, useRolePermissions } from '@/hooks/useRoles'
 import { usePermissions } from '@/hooks/usePermissions'
 
 export function RoleDetailPage() {
@@ -14,6 +14,7 @@ export function RoleDetailPage() {
   const navigate = useNavigate()
   const { data: role, isLoading } = useRole(roleKey!)
   const { data: allPerms } = usePermissions({ size: 500 })
+  const { data: rolePerms, isLoading: permsLoading } = useRolePermissions(roleKey!)
   const addPerm = useAddRolePermission(roleKey!)
   const removePerm = useRemoveRolePermission(roleKey!)
 
@@ -24,7 +25,9 @@ export function RoleDetailPage() {
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading…</div>
   if (!role) return <div className="p-8 text-sm text-gray-500">Role not found.</div>
 
+  const alreadyAssigned = new Set(rolePerms?.map(p => p.permission_key) ?? [])
   const filtered = allPerms?.items.filter(p =>
+    !alreadyAssigned.has(p.permission_key) &&
     p.permission_key.includes(search.toLowerCase())
   ) ?? []
 
@@ -68,10 +71,12 @@ export function RoleDetailPage() {
             )}
           </div>
           <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-50">
-            {!allPerms?.items.length ? (
+            {permsLoading ? (
+              <p className="text-sm text-gray-400 text-center py-8">Loading…</p>
+            ) : !rolePerms?.length ? (
               <p className="text-sm text-gray-400 text-center py-8">No permissions assigned</p>
             ) : (
-              allPerms.items.map(p => (
+              rolePerms.map(p => (
                 <div key={p.id} className="px-4 py-2.5 flex items-center justify-between">
                   <span className="font-mono text-xs text-gray-700">{p.permission_key}</span>
                   {!role.system_role && (
