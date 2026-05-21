@@ -25,6 +25,7 @@ import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolveSandboxedPath, sandboxRoot } from "../workspace/sandbox";
+import { globToRegex, toPosixPath } from "../workspace/glob";
 import type { ToolHandler } from "./registry";
 
 const execFileP = promisify(execFile);
@@ -53,15 +54,16 @@ export const findFilesTool: ToolHandler = {
   descriptor: {
     name: "find_files",
     description:
-      "Locate files by glob pattern within the sandbox. Returns paths + size + mtime " +
-      "ONLY (no content) so it's far cheaper than `cat`-walking a directory. Skips " +
-      "node_modules/.git/dist/build/target/etc by default. Prefer this over " +
-      "run_command('find',...) — the runner doesn't allow `find` and even if it did, " +
-      "this tool returns half the tokens.",
+      "FALLBACK file-enumeration tool. PREFER list_indexed_files when the workspace " +
+      "has been indexed (it queries the AST index — sub-millisecond, language-tagged, " +
+      "no filesystem walk). Use find_files only for non-indexable files (README, *.yml, " +
+      "*.properties, *.txt) or BEFORE the first index_workspace call. Skips " +
+      "node_modules/.git/dist/build/target/etc. NEVER call run_command('find',...) — " +
+      "the runner rejects `find` and even if it didn't, this tool returns half the tokens.",
     natural_language:
-      "Use this when you need to enumerate files matching a name pattern (e.g. '*.java', " +
-      "'**/*.test.ts', '*Test*.java'). Returns paths only — read individual files via " +
-      "read_file or get_ast_slice once you know which ones you care about.",
+      "Use only when list_indexed_files can't help — e.g. searching for README, *.yml, " +
+      "config files, or before the workspace has been indexed. For code files (*.java, " +
+      "*.ts, *.py, *.go) after PLAN_DRAFT's index_workspace, prefer list_indexed_files.",
     input_schema: {
       type: "object",
       properties: {
@@ -102,12 +104,6 @@ export const findFilesTool: ToolHandler = {
       const matcher = globToRegex(pattern);
       const out: Array<{ path: string; type: "file" | "dir"; size?: number; mtime?: string }> = [];
 
-      // POSIX-style separator inside the matcher so the same glob pattern
-      // works on macOS / Linux / Windows. path.relative() on Windows returns
-      // backslash-separated paths, which would never match a glob compiled
-      // with `/` separators. We normalise here once per file.
-      const toPosix = (p: string): string => (path.sep === "\\" ? p.replace(/\\/g, "/") : p);
-
       async function walk(dir: string): Promise<void> {
         if (out.length >= max) return;
         let entries: fs.Dirent[];
@@ -120,7 +116,7 @@ export const findFilesTool: ToolHandler = {
           if (out.length >= max) return;
           if (SKIP_DIRS.has(ent.name)) continue;
           const full = path.join(dir, ent.name);
-          const relPath = toPosix(path.relative(root, full));
+          const relPath = toPosixPath(path.relative(root, full), path.sep);
           if (ent.isDirectory()) {
             if (includeDirs && matcher.test(relPath)) {
               out.push({ path: relPath, type: "dir" });
@@ -163,12 +159,14 @@ export const fileStatsTool: ToolHandler = {
   descriptor: {
     name: "file_stats",
     description:
-      "Fast metadata for one or more sandbox files: byte size, line count, detected " +
-      "language. ~10× cheaper than read_file when all you need is 'how big' or 'how many " +
-      "lines'. Prefer this over run_command('wc',...).",
+      "FALLBACK file-metadata tool. PREFER list_indexed_files which returns size + " +
+      "language for every indexed file in one call. Use file_stats only for non-indexed " +
+      "files (README, yaml, properties) or when you need a FRESH size after an edit that " +
+      "hasn't been re-indexed. Counts lines accurately (handles \\r\\n line endings). " +
+      "NEVER call run_command('wc',...).",
     natural_language:
-      "Use this to check a file's size or line count before deciding whether to read it " +
-      "(or to pick a get_ast_slice range). Pass an array of paths to batch the call.",
+      "Use only for non-indexable files or to verify size/lines after an edit. For " +
+      "code-file sizing pre-read, list_indexed_files already gives you size + language.",
     input_schema: {
       type: "object",
       properties: {
@@ -380,54 +378,3 @@ function clamp(raw: unknown, fallback: number, min: number, max: number): number
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-/**
- * Compile a glob pattern to a RegExp. Supports:
- *   *      → any chars within a path segment
- *   **     → any chars including '/'
- *   ?      → single char
- *   [abc]  → char class
- *   {a,b}  → alternation
- * Matching is anchored full-string against either the relative path OR the
- * basename, whichever the caller passes.
- */
-function globToRegex(pattern: string): RegExp {
-  let re = "";
-  let i = 0;
-  while (i < pattern.length) {
-    const c = pattern[i];
-    if (c === "*") {
-      if (pattern[i + 1] === "*") {
-        re += ".*";
-        i += 2;
-        if (pattern[i] === "/") i += 1; // **/ → eat the slash too
-      } else {
-        re += "[^/]*";
-        i += 1;
-      }
-    } else if (c === "?") {
-      re += "[^/]";
-      i += 1;
-    } else if (c === "{") {
-      const end = pattern.indexOf("}", i);
-      if (end === -1) {
-        re += "\\{";
-        i += 1;
-      } else {
-        const alts = pattern.slice(i + 1, end).split(",").map(escapeRegex).join("|");
-        re += `(?:${alts})`;
-        i = end + 1;
-      }
-    } else if ("/\\.+^$()|".includes(c)) {
-      re += "\\" + c;
-      i += 1;
-    } else {
-      re += c;
-      i += 1;
-    }
-  }
-  return new RegExp("^" + re + "$");
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
-}

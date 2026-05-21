@@ -44,10 +44,14 @@ const READ_ONLY_TOOLS = new Set<string>([
   "read_file",
   "list_directory",
   "index_workspace",
-  // M42.8 — token-efficient OS-verb replacements
-  "find_files",   // replaces `find -name <glob>`
-  "file_stats",   // replaces `wc -l` and quick `stat`
-  "grep_lines",   // replaces `grep -A N -B M` with sandbox-scoped ripgrep
+  // M42.9 — AST-index-backed file enumeration. Preferred over find_files for
+  // code-file lookups (queries the index built in PLAN_DRAFT, no fs walk).
+  "list_indexed_files",
+  // M42.8 — fallback OS-verb replacements (filesystem walks for non-indexed
+  // files only — README, *.yml, *.properties — or before index_workspace).
+  "find_files",   // fallback file enumeration
+  "file_stats",   // fallback metadata (fresh size after edits)
+  "grep_lines",   // grep with context lines (ripgrep)
 ]);
 
 const MUTATION_TOOLS = new Set<string>([
@@ -72,6 +76,7 @@ const ACT_READ_SUBSET = new Set<string>([
   "search_code",
   "get_symbol",
   "get_ast_slice",
+  "list_indexed_files",
   "find_files",
   "file_stats",
   "grep_lines",
@@ -85,7 +90,12 @@ export const TOOL_ALLOWLISTS: Record<Phase, ReadonlySet<string>> = {
   // model can ground its initial hypothesis without freeform exploration.
   // The contract prompt still requires a plan JSON in the same turn — model
   // must call these tools AND emit the JSON. Heavy reads belong in EXPLORE.
-  PLAN_DRAFT: new Set<string>(["index_workspace", "list_directory", "find_symbol"]),
+  PLAN_DRAFT: new Set<string>([
+    "index_workspace",
+    "list_indexed_files", // M42.9 — query the index right after building it
+    "list_directory",
+    "find_symbol",
+  ]),
   EXPLORE: READ_ONLY_TOOLS,
   PLAN_CONFIRM: READ_ONLY_TOOLS,
   ACT: new Set([...MUTATION_TOOLS, ...ACT_READ_SUBSET]),

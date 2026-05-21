@@ -211,7 +211,7 @@ import {
 // user has run `gh auth login` and `gh extension install github/gh-copilot`).
 import { copilotSuggestTool, copilotExplainTool } from "./copilot-headless";
 import {
-  indexWorkspaceTool, findSymbolTool, getSymbolTool, getAstSliceTool,
+  indexWorkspaceTool, listIndexedFilesTool, findSymbolTool, getSymbolTool, getAstSliceTool,
   getDependenciesTool, prepareWorkBranchTool, finishWorkBranchTool,
 } from "./ast-tools";
 import { runCommandTool, runTestTool, verificationUnavailableTool } from "./command";
@@ -246,6 +246,7 @@ const REGISTRY = new Map<string, ToolHandler>([
   [copilotSuggestTool.descriptor.name, copilotSuggestTool],
   [copilotExplainTool.descriptor.name, copilotExplainTool],
   [indexWorkspaceTool.descriptor.name, indexWorkspaceTool],
+  [listIndexedFilesTool.descriptor.name, listIndexedFilesTool],
   [findSymbolTool.descriptor.name, findSymbolTool],
   [getSymbolTool.descriptor.name, getSymbolTool],
   [getAstSliceTool.descriptor.name, getAstSliceTool],

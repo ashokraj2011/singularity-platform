@@ -1,7 +1,7 @@
 import type { ToolHandler } from "./registry";
 import {
   findSymbols, getAstSlice, getDependencies, getSymbol, indexWorkspace,
-  statsForIndex,
+  listIndexedFiles, statsForIndex,
 } from "../workspace/ast-index";
 import {
   branchNameForWork, finishWorkBranch, prepareWorkBranch,
@@ -25,6 +25,65 @@ export const indexWorkspaceTool: ToolHandler = {
   async execute(args) {
     const stats = await indexWorkspace(typeof args.reason === "string" ? args.reason : "tool");
     return { success: stats.status === "READY", output: stats, error: stats.error };
+  },
+};
+
+export const listIndexedFilesTool: ToolHandler = {
+  descriptor: {
+    name: "list_indexed_files",
+    description:
+      "List files already in the AST index. PREFERRED over find_files for code-file " +
+      "enumeration: queries the SQLite index (sub-millisecond, no filesystem walk), " +
+      "returns path + language (tree-sitter accurate, not extension-guessed) + size + " +
+      "indexed_at for every match. Filter by glob pattern (e.g. '**/*Service.java') " +
+      "and/or tree-sitter language ('java', 'typescript', 'python', 'go'). Requires " +
+      "index_workspace to have run first — call that in PLAN_DRAFT.",
+    natural_language:
+      "Use this whenever you need to find code files by name pattern or language. " +
+      "Faster and more accurate than find_files because it queries the index built by " +
+      "index_workspace rather than walking the filesystem.",
+    input_schema: {
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description:
+            "Optional glob to filter paths (e.g. '**/*.java', 'src/**/*Service*', " +
+            "'**/*Test*.kt'). Omit to list every indexed file.",
+        },
+        language: {
+          type: "string",
+          description:
+            "Optional tree-sitter language filter: 'java', 'typescript', 'tsx', " +
+            "'javascript', 'python', 'go'. Combine with `pattern` for tighter results.",
+        },
+        limit: {
+          type: "number",
+          description: "Cap results. Default 100, max 1000.",
+        },
+      },
+    },
+    risk_level: "LOW",
+    requires_approval: false,
+  },
+  async execute(args) {
+    try {
+      const files = await listIndexedFiles({
+        pattern: typeof args.pattern === "string" && args.pattern.trim() ? args.pattern : undefined,
+        language: typeof args.language === "string" && args.language.trim() ? args.language : undefined,
+        limit: typeof args.limit === "number" ? args.limit : undefined,
+      });
+      return {
+        success: true,
+        output: {
+          count: files.length,
+          truncated: files.length >= (typeof args.limit === "number" ? args.limit : 100),
+          files,
+        },
+      };
+    } catch (err) {
+      return { success: false, output: null, error: (err as Error).message };
+    }
   },
 };
 

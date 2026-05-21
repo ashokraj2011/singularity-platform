@@ -7,6 +7,7 @@ import { config } from "../config";
 import { events } from "../events/bus";
 import { currentBranch, currentHeadSha } from "./git-workspace";
 import { baseSandboxRoot, sandboxRoot, SOURCE_EXT, SKIP_DIRS, toRelativeSandboxPath } from "./sandbox";
+import { globToRegex, toPosixPath } from "./glob";
 
 type LangKey = "python" | "typescript" | "tsx" | "javascript" | "go" | "java";
 
@@ -762,4 +763,52 @@ export async function getAstSlice(opts: {
 
 export function lastAstStats(): AstIndexStats | null {
   return lastStats;
+}
+
+/**
+ * List files already in the AST index. Pure SQL query — no filesystem walk,
+ * no re-indexing. The index is built by `indexWorkspace()`, which is the very
+ * first tool the agent calls in PLAN_DRAFT, so from EXPLORE onward this is
+ * always populated.
+ *
+ * Replaces `find_files` for the common case ("what code files exist") because
+ * the index already has path + language + size + hash. Language is the
+ * tree-sitter ground truth, not an extension guess.
+ *
+ * Glob matching is done in-JS against the path column (indices are bounded
+ * to a few thousand files in practice; SQL LIKE doesn't support `**`).
+ */
+export async function listIndexedFiles(opts: {
+  pattern?: string;
+  language?: string;
+  limit?: number;
+}): Promise<Array<{ path: string; language: string; size: number; indexedAt: string }>> {
+  const database = await getDb();
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 1000);
+  const matcher = opts.pattern ? globToRegex(opts.pattern) : null;
+
+  // Pull language-filtered rows if requested. Paths are stored using the
+  // indexer's host OS separator (backslash on Windows); we POSIX-normalise
+  // every row before testing the glob so the same pattern works everywhere.
+  const sql = opts.language
+    ? `SELECT path, language, size, indexed_at FROM files WHERE language = ? ORDER BY path ASC`
+    : `SELECT path, language, size, indexed_at FROM files ORDER BY path ASC`;
+  const stmt = database.prepare(sql);
+  if (opts.language) stmt.bind([opts.language]);
+
+  const out: Array<{ path: string; language: string; size: number; indexedAt: string }> = [];
+  while (stmt.step()) {
+    if (out.length >= limit) break;
+    const row = stmt.get();
+    const p = toPosixPath(String(row[0]), path.sep);
+    if (matcher && !matcher.test(p)) continue;
+    out.push({
+      path: p,
+      language: String(row[1]),
+      size: Number(row[2]),
+      indexedAt: String(row[3]),
+    });
+  }
+  stmt.free();
+  return out;
 }
