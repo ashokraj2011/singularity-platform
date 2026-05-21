@@ -69,7 +69,12 @@ const ACT_READ_SUBSET = new Set<string>([
 ]);
 
 export const TOOL_ALLOWLISTS: Record<Phase, ReadonlySet<string>> = {
-  PLAN_DRAFT: READ_ONLY_TOOLS,
+  // PLAN_DRAFT has NO tools — text-only output. Previously this phase
+  // granted read tools (verification report Gap 3 worry: model can't ground
+  // hypothesis), but the practical effect was the model called tools and
+  // skipped emitting plan JSON entirely. Forcing text-only restores the
+  // plan-JSON contract; EXPLORE picks up tool access immediately after.
+  PLAN_DRAFT: new Set<string>(),
   EXPLORE: READ_ONLY_TOOLS,
   PLAN_CONFIRM: READ_ONLY_TOOLS,
   ACT: new Set([...MUTATION_TOOLS, ...ACT_READ_SUBSET]),
@@ -194,10 +199,35 @@ export function nextPhase(state: PhaseLoopStateView, accumulatedCodeChangePaths:
       if (budgetExhausted) return "VERIFY";
       if (!state.plan) return "VERIFY";
       const required = state.plan.targets.filter((t) => t.required);
-      // A required target is satisfied if EITHER an accumulated code-change
-      // touched its file OR its progress entry says edited/skipped. We must
-      // check the code-change set first because the run-loop may not have
-      // populated planProgress yet for a freshly-mutated file in this step.
+
+      // ── Fallback-plan guard ──────────────────────────────────────────
+      // When PLAN_DRAFT exhausted budget without a model-supplied plan,
+      // synthesizeFallbackPlan() ships an empty `targets` array. Without
+      // this guard, the "all required satisfied" predicate is vacuously
+      // true on the first ACT step (because [].every === true), so the
+      // loop races straight to VERIFY without any code change. We saw
+      // this fail in the 2026-05-21 13:03 attempt: the agent read
+      // Operator.java, observed "containsACharacter NOT implemented",
+      // then transitioned to VERIFY and ran mvn test against the
+      // unimplemented code — test failed, attempt blocked.
+      //
+      // Under a fallback plan, require either (a) at least one mutation
+      // observed via accumulatedCodeChangePaths OR planProgress, or
+      // (b) ACT's budget exhausted. Otherwise stay in ACT so the model
+      // has chances to make the edit it knows is needed.
+      if (state.planFromFallback || required.length === 0) {
+        if (accumulatedCodeChangePaths.size > 0) return "VERIFY";
+        const anyMutationLogged = Object.values(state.planProgress).some(
+          (p) => p.status === "edited",
+        );
+        return anyMutationLogged ? "VERIFY" : null;
+      }
+
+      // Normal path — every required target is satisfied if EITHER an
+      // accumulated code-change touched its file OR its progress entry says
+      // edited/skipped. We check the code-change set first because the
+      // run-loop may not have populated planProgress yet for a freshly-
+      // mutated file in this step.
       const satisfied = required.every((t) => {
         if (accumulatedCodeChangePaths.has(t.file)) return true;
         const status = state.planProgress[t.file]?.status;
