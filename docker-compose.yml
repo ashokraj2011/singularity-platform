@@ -612,9 +612,10 @@ services:
     build:
       context: ./workgraph-studio
       dockerfile: apps/api/Dockerfile
+      target: dev
     container_name: singularity-workgraph-api
     environment:
-      NODE_ENV: production
+      NODE_ENV: development
       PORT: 8080
       DATABASE_URL: postgresql://workgraph:workgraph_secret@wg-postgres:5432/workgraph
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
@@ -643,6 +644,11 @@ services:
       # provider keys in this service.
       LLM_GATEWAY_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-240}
     volumes:
+      # Bind mounts for hot-reload via ts-node-dev. Edits to src/ or the
+      # workspace packages take effect immediately without a rebuild.
+      - ./workgraph-studio/apps/api/src:/app/apps/api/src
+      - ./workgraph-studio/apps/api/prisma:/app/apps/api/prisma
+      - ./workgraph-studio/packages:/app/packages
       - ${HOST_DOWNLOADS_DIR:-./.singularity/downloads}:/workspace/downloads:ro
     ports:
       - "8080:8080"

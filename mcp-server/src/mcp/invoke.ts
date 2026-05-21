@@ -204,6 +204,11 @@ interface LoopState {
   // Empty map by default; populated lazily on the first masked output.
   piiTokenMap: Record<string, string>;
   rePlanDepth: number;
+  // Compressed run history. Each entry is one line summarizing a dropped
+  // assistant+tool exchange (e.g. "- read_file(path=X.java) → 245 lines").
+  // Surfaces to the LLM as a pinned user message after the anchor so the
+  // agent doesn't re-explore files it already touched.
+  breadcrumbs: string[];
 }
 
 type LoopOutcome =
@@ -558,6 +563,25 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
       finish_reason: llmResp.finish_reason,
     });
     state.llmCallIds.push(llmRec.id);
+
+    // [diag] Per-step trace — one structured line per LLM turn so we can
+    // see exactly what the agent did and why it hit max_steps. Enable/grep
+    // by trace id. Cheap; safe to leave on in dev.
+    log.info({
+      step: state.stepIndex,
+      trace: state.correlation.traceId,
+      finish: llmResp.finish_reason,
+      in_msgs: state.messages.length,
+      in_tokens: llmResp.input_tokens,
+      out_tokens: llmResp.output_tokens,
+      dropped_msgs: state.contextCompression.messagesDropped,
+      breadcrumbs: state.breadcrumbs.length,
+      tool_calls: llmResp.tool_calls?.map((tc) => `${tc.name}(${briefArgs(tc.args)})`) ?? null,
+      text_preview: llmResp.content
+        ? String(llmResp.content).replace(/\s+/g, " ").slice(0, 140)
+        : null,
+    }, "[agent-step]");
+
     if (llmResp.prompt_cache) {
       state.promptCacheUsage.push({
         ...llmResp.prompt_cache,
@@ -1184,6 +1208,7 @@ async function pauseForApproval(
     // when the run has accumulated tokens (avoids serializing empty maps).
     pii_token_map: Object.keys(state.piiTokenMap).length > 0 ? state.piiTokenMap : undefined,
     re_plan_depth: state.rePlanDepth,
+    breadcrumbs: state.breadcrumbs.length > 0 ? state.breadcrumbs : undefined,
   });
   const payload = {
     continuation_token: env.continuation_token,
@@ -1632,6 +1657,7 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     // M39 — fresh PII token map per run (populated lazily on first masked output)
     piiTokenMap: {},
     rePlanDepth: (body.runContext.dependencyState?.changed_paths?.length ?? 0) > 0 ? 1 : 0,
+    breadcrumbs: [],
   };
 
   if (state.rePlanDepth > 0) {
@@ -1762,6 +1788,7 @@ invokeRouter.post("/resume", async (req, res) => {
     // hasn't been tampered with between save + resume.
     piiTokenMap: env.pii_token_map ?? {},
     rePlanDepth: env.re_plan_depth ?? 0,
+    breadcrumbs: env.breadcrumbs ?? [],
   };
   state.workspace = {
     ...(state.workspace ?? {}),
@@ -1937,28 +1964,160 @@ function promptCacheSummary(state: LoopState): Record<string, unknown> {
   };
 }
 
+const BREADCRUMB_PREFIX = "[Compressed run history — earlier tool exchanges, summarized to save context]";
+const MAX_BREADCRUMB_LINES = 40;
+
+function isBreadcrumbMessage(msg: ChatMessage): boolean {
+  return msg.role === "user" && typeof msg.content === "string" && msg.content.startsWith(BREADCRUMB_PREFIX);
+}
+
+function briefValue(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return v.length > 60 ? v.slice(0, 57) + "..." : v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  try {
+    const s = JSON.stringify(v);
+    return s.length > 60 ? s.slice(0, 57) + "..." : s;
+  } catch { return String(v).slice(0, 60); }
+}
+
+function briefArgs(args: Record<string, unknown> | undefined): string {
+  if (!args || typeof args !== "object") return "";
+  return Object.entries(args).slice(0, 3).map(([k, v]) => `${k}=${briefValue(v)}`).join(", ");
+}
+
+function briefToolResult(content: string | undefined): string {
+  if (!content) return "ok";
+  try {
+    const parsed = JSON.parse(content);
+    if (parsed && typeof parsed === "object") {
+      if ("error" in parsed && parsed.error) return `error: ${briefValue(parsed.error)}`;
+      if ("error_code" in parsed && parsed.error_code) return `error: ${briefValue(parsed.error_code)}`;
+      if (Array.isArray(parsed)) return `${parsed.length} items`;
+      if (typeof parsed.lines === "number") return `${parsed.lines} lines`;
+      if (typeof parsed.match_count === "number") return `${parsed.match_count} matches`;
+      if (Array.isArray(parsed.matches)) return `${parsed.matches.length} matches`;
+      if (Array.isArray(parsed.results)) return `${parsed.results.length} results`;
+      if (typeof parsed.path === "string") return `ok (${parsed.path})`;
+      if (parsed.success === false) return "failed";
+      if (parsed.success === true) return "ok";
+    }
+  } catch { /* not JSON; fall through */ }
+  return `${content.length} bytes`;
+}
+
+function formatBreadcrumbLine(asst: ChatMessage, next: ChatMessage | undefined): string | null {
+  try {
+    const parsed = JSON.parse(asst.content || "{}");
+    if (parsed && Array.isArray(parsed.tool_calls) && parsed.tool_calls.length > 0) {
+      const calls = parsed.tool_calls.map((c: { name?: string; args?: Record<string, unknown> }) =>
+        `${c.name ?? "?"}(${briefArgs(c.args)})`,
+      ).join(", ");
+      const result = next?.role === "tool" ? briefToolResult(next.content) : "...";
+      return `- ${calls} → ${result}`;
+    }
+  } catch { /* not a tool_call payload */ }
+  return null;
+}
+
+function buildBreadcrumbMessage(lines: string[]): ChatMessage {
+  return { role: "user", content: `${BREADCRUMB_PREFIX}\n${lines.join("\n")}` };
+}
+
 function applySlidingWindow(state: LoopState): void {
   if (!state.maxHistoryMessages && !state.maxHistoryTokens) return;
 
   const beforeMessages = state.messages.length;
   const beforeTokens = state.messages.reduce((sum, msg) => sum + estimateTextTokens(msg.content), 0);
   const systemMessages = state.messages.filter((msg) => msg.role === "system");
-  let rollingMessages = state.messages.filter((msg) => msg.role !== "system");
+  const nonSystem = state.messages.filter((msg) => msg.role !== "system");
 
-  if (state.maxHistoryMessages && rollingMessages.length > state.maxHistoryMessages) {
-    rollingMessages = rollingMessages.slice(-state.maxHistoryMessages);
-    rollingMessages = dropLeadingOrphanToolMessages(rollingMessages);
-  }
+  // Strip the existing breadcrumb message (if any) so it isn't counted as
+  // rolling history — it gets re-emitted from state.breadcrumbs below.
+  const candidates = nonSystem.filter((m) => !isBreadcrumbMessage(m));
 
-  if (state.maxHistoryTokens) {
-    let combined = [...systemMessages, ...rollingMessages];
-    while (rollingMessages.length > 1 && estimateLoopInputTokens({ ...state, messages: combined }) > state.maxHistoryTokens) {
-      rollingMessages = dropLeadingOrphanToolMessages(rollingMessages.slice(1));
-      combined = [...systemMessages, ...rollingMessages];
+  // Pin the first user message (the original task) as an anchor — without it
+  // the agent loses its goal after a few tool exchanges and wastes steps
+  // re-exploring context, eventually hitting max_steps.
+  const anchorIdx = candidates.findIndex((m) => m.role === "user");
+  const anchorMessage = anchorIdx >= 0 ? candidates[anchorIdx] : null;
+  let rollingMessages = anchorMessage
+    ? candidates.filter((_, i) => i !== anchorIdx)
+    : candidates;
+
+  // Always strip leading orphan tool messages from rolling. A tool message
+  // without a preceding assistant tool_use produces an Anthropic 400:
+  // "tool_result block must have a corresponding tool_use". Once we pin
+  // anchor + breadcrumb (both user role) ahead of rolling, Anthropic merges
+  // consecutive user messages and any leading tool_result becomes an
+  // orphan content block in message 0. Unconditional — applies even when
+  // no trim happened — because rolling can start with a tool message via
+  // context-fabric history or via the resume path. If this empties rolling,
+  // that's fine: anchor + breadcrumb still constitute a valid first message.
+  rollingMessages = dropLeadingOrphanToolMessages(rollingMessages);
+
+  if (state.maxHistoryMessages) {
+    // Reserve slots for the pinned anchor + breadcrumb so they don't eat the rolling budget.
+    const willHaveBreadcrumb = state.breadcrumbs.length > 0 || rollingMessages.length > state.maxHistoryMessages;
+    const reserved = (anchorMessage ? 1 : 0) + (willHaveBreadcrumb ? 1 : 0);
+    const rollingCap = Math.max(1, state.maxHistoryMessages - reserved);
+    if (rollingMessages.length > rollingCap) {
+      rollingMessages = dropLeadingOrphanToolMessages(rollingMessages.slice(-rollingCap));
     }
   }
 
-  state.messages = [...systemMessages, ...rollingMessages];
+  if (state.maxHistoryTokens) {
+    const anchorArr = anchorMessage ? [anchorMessage] : [];
+    const tentativeBreadcrumb = state.breadcrumbs.length > 0 ? [buildBreadcrumbMessage(state.breadcrumbs)] : [];
+    let combined = [...systemMessages, ...anchorArr, ...tentativeBreadcrumb, ...rollingMessages];
+    while (rollingMessages.length > 1 && estimateLoopInputTokens({ ...state, messages: combined }) > state.maxHistoryTokens) {
+      const candidate = dropLeadingOrphanToolMessages(rollingMessages.slice(1));
+      if (candidate.length === rollingMessages.length) break; // no progress
+      rollingMessages = candidate;
+      combined = [...systemMessages, ...anchorArr, ...tentativeBreadcrumb, ...rollingMessages];
+    }
+  }
+
+  // Defense-in-depth: scan rolling for *mid-sequence* orphan tool messages
+  // (tool_result whose tool_use_id isn't emitted by an earlier assistant
+  // turn in this rolling window). These can leak in via context-fabric
+  // history or after re-plan paths. Anthropic rejects them just as hard.
+  rollingMessages = removeOrphanedToolResults(rollingMessages);
+
+  // Compute which non-pinned messages got dropped this pass and breadcrumb them.
+  const survivingSet = new Set<ChatMessage>([
+    ...(anchorMessage ? [anchorMessage] : []),
+    ...rollingMessages,
+  ]);
+  const droppedCandidates = candidates.filter((m) => !survivingSet.has(m));
+  if (droppedCandidates.length > 0) {
+    const newLines: string[] = [];
+    for (let i = 0; i < droppedCandidates.length; i++) {
+      const cur = droppedCandidates[i];
+      const next = droppedCandidates[i + 1];
+      if (cur.role === "assistant") {
+        const line = formatBreadcrumbLine(cur, next);
+        if (line) newLines.push(line);
+      } else if (cur.role === "user") {
+        // Non-anchor user messages (e.g. auto-verification failure feedback)
+        const preview = (cur.content || "").replace(/\s+/g, " ").slice(0, 100);
+        const ell = (cur.content || "").length > 100 ? "..." : "";
+        newLines.push(`- user feedback: "${preview}${ell}"`);
+      }
+      // tool messages are consumed via the preceding assistant entry; skip standalone.
+    }
+    if (newLines.length > 0) {
+      state.breadcrumbs = [...state.breadcrumbs, ...newLines].slice(-MAX_BREADCRUMB_LINES);
+    }
+  }
+
+  const finalBreadcrumb = state.breadcrumbs.length > 0 ? buildBreadcrumbMessage(state.breadcrumbs) : null;
+  state.messages = [
+    ...systemMessages,
+    ...(anchorMessage ? [anchorMessage] : []),
+    ...(finalBreadcrumb ? [finalBreadcrumb] : []),
+    ...rollingMessages,
+  ];
   const afterTokens = state.messages.reduce((sum, msg) => sum + estimateTextTokens(msg.content), 0);
   const dropped = Math.max(0, beforeMessages - state.messages.length);
   if (dropped > 0) {
@@ -1971,6 +2130,48 @@ function dropLeadingOrphanToolMessages(messages: ChatMessage[]): ChatMessage[] {
   let start = 0;
   while (start < messages.length && messages[start].role === "tool") start += 1;
   return start > 0 ? messages.slice(start) : messages;
+}
+
+/**
+ * Remove tool_result messages whose `tool_call_id` doesn't match any
+ * tool_use ID emitted by an earlier assistant message in the same window.
+ *
+ * Anthropic rejects orphan tool_results with HTTP 400:
+ *   "tool_result block must have a corresponding tool_use block".
+ *
+ * Orphans can appear mid-sequence after sliding-window trims drop the
+ * assistant turn that originally produced them, or when context-fabric
+ * history is itself misaligned. Stripping them is always safe — the
+ * assistant call they referenced is no longer in scope anyway.
+ */
+function removeOrphanedToolResults(messages: ChatMessage[]): ChatMessage[] {
+  const knownIds = new Set<string>();
+  const out: ChatMessage[] = [];
+  for (const msg of messages) {
+    if (msg.role === "assistant") {
+      try {
+        const parsed = JSON.parse(msg.content || "{}");
+        if (parsed && Array.isArray(parsed.tool_calls)) {
+          for (const c of parsed.tool_calls) {
+            if (c && typeof c.id === "string") knownIds.add(c.id);
+          }
+        }
+      } catch { /* assistant without tool_calls JSON — ignore */ }
+      out.push(msg);
+      continue;
+    }
+    if (msg.role === "tool") {
+      const id = msg.tool_call_id;
+      if (typeof id === "string" && knownIds.has(id)) {
+        out.push(msg);
+      }
+      // else: orphan — drop silently. Re-emitting it as a breadcrumb is
+      // not useful because the original assistant call is also gone.
+      continue;
+    }
+    out.push(msg);
+  }
+  return out;
 }
 
 function toolResultForNextTurn(state: LoopState, output: unknown): string {

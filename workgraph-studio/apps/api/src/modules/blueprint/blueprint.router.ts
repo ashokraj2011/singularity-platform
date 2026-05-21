@@ -56,7 +56,7 @@ const DEFAULT_WORKBENCH_EXECUTION_CONFIG = {
   snapshotMode: 'relevant_excerpts' as const,
   excerptBudgetChars: EXECUTE_EXCERPT_BUDGET_CHARS,
   reuseUnchangedAttempt: true,
-  maxContextTokens: 3_000,
+  maxContextTokens: 8_000,
   maxOutputTokens: 800,
   maxPromptChars: 12_000,
   maxLayerChars: 1_000,
@@ -656,6 +656,19 @@ blueprintRouter.post('/sessions/:id/stages/:stageKey/reset-attempts', async (req
       return
     }
 
+    // Delete artifacts produced by the removed attempts
+    const removedArtifactIds = removedAttempts.flatMap(attempt => attempt.artifactIds ?? [])
+    if (removedArtifactIds.length > 0) {
+      await prisma.blueprintArtifact.deleteMany({ where: { id: { in: removedArtifactIds } } })
+    }
+
+    // Delete source snapshots so the next run takes a fresh one
+    await prisma.blueprintSourceSnapshot.deleteMany({ where: { sessionId: session.id } })
+
+    // Clear the stage chat thread so the next attempt starts a fresh conversation
+    const stageChats = readStageChats(session.metadata)
+    delete stageChats[stage.key]
+
     const nextState: LoopState = {
       ...state,
       currentStageKey: stage.key,
@@ -666,13 +679,15 @@ blueprintRouter.post('/sessions/:id/stages/:stageKey/reset-attempts', async (req
           id: crypto.randomUUID(),
           type: 'STAGE_ATTEMPTS_RESET',
           stageKey: stage.key,
-          message: `Reset ${removedAttempts.length} attempt${removedAttempts.length === 1 ? '' : 's'} for ${stage.label}.`,
+          message: `Reset ${removedAttempts.length} attempt${removedAttempts.length === 1 ? '' : 's'} for ${stage.label}. Artifacts and snapshots cleared.`,
           actorId: req.user!.userId,
           payload: {
             stageKey: stage.key,
             stageLabel: stage.label,
             removedAttemptIds: removedAttempts.map(attempt => attempt.id),
             removedAttemptCount: removedAttempts.length,
+            removedArtifactCount: removedArtifactIds.length,
+            snapshotsDeleted: true,
           },
           createdAt: new Date().toISOString(),
         },
@@ -682,7 +697,10 @@ blueprintRouter.post('/sessions/:id/stages/:stageKey/reset-attempts', async (req
       where: { id: session.id },
       data: {
         status: session.status === 'COMPLETED' || session.status === 'APPROVED' ? 'RUNNING' : session.status,
-        metadata: stateToMetadata(session, nextState),
+        metadata: {
+          ...(stateToMetadata(session, nextState) as Record<string, unknown>),
+          stageChats,
+        },
       },
     })
     await recordBlueprintAudit(session.id, 'BlueprintStageAttemptsReset', req.user!.userId, {
@@ -693,6 +711,8 @@ blueprintRouter.post('/sessions/:id/stages/:stageKey/reset-attempts', async (req
       stageLabel: stage.label,
       removedAttemptCount: removedAttempts.length,
       removedAttemptIds: removedAttempts.map(attempt => attempt.id),
+      removedArtifactCount: removedArtifactIds.length,
+      snapshotsDeleted: true,
     })
     res.json(await loadSession(session.id, req.user!.userId))
   } catch (err) { next(err) }
@@ -2779,7 +2799,7 @@ async function runLoopStageExecute(
       timeoutSec: 180,
       inputTokenBudget: limits.maxContextTokens,
       outputTokenBudget: limits.maxOutputTokens,
-      maxHistoryMessages: 4,
+      maxHistoryMessages: 16,
       maxHistoryTokens: Math.max(1000, Math.floor(limits.maxContextTokens * 0.75)),
       summaryEveryMessages: 6,
       compressToolResults: true,
@@ -4264,7 +4284,7 @@ async function runStage(
       timeoutSec: 180,
       inputTokenBudget: limits.maxContextTokens,
       outputTokenBudget: limits.maxOutputTokens,
-      maxHistoryMessages: 4,
+      maxHistoryMessages: 16,
       maxHistoryTokens: Math.max(1000, Math.floor(limits.maxContextTokens * 0.75)),
       summaryEveryMessages: 6,
       compressToolResults: true,

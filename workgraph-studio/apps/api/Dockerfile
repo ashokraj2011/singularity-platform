@@ -20,6 +20,27 @@ COPY packages/shared-types/package.json packages/shared-types/package.json
 COPY packages/engine/package.json packages/engine/package.json
 RUN pnpm install --frozen-lockfile || pnpm install
 
+# ── dev target ────────────────────────────────────────────────────────────
+# Hot-reload runtime. apps/api/src + prisma + workspace packages are expected
+# to be bind-mounted from the host; package.json's `dev` script runs
+# ts-node-dev --respawn so edits land without a container rebuild. The
+# initial COPY of source exists so `pnpm dev` has something to run on first
+# boot before the host bind-mount overlays it.
+FROM base AS dev
+WORKDIR /app
+ENV NODE_ENV=development
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
+COPY apps/api ./apps/api
+COPY packages/shared-types ./packages/shared-types
+COPY packages/engine ./packages/engine
+RUN mkdir -p /docs/data-model
+RUN pnpm --filter @workgraph/api exec prisma generate
+WORKDIR /app/apps/api
+EXPOSE 8080
+CMD ["sh", "-c", "npx prisma migrate deploy && pnpm dev"]
+
 FROM base AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules

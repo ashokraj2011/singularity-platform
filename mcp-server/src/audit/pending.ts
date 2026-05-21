@@ -105,6 +105,8 @@ export interface PendingApproval {
   // M35.2's HMAC-signed continuation token (which binds this envelope).
   pii_token_map?: Record<string, string>;
   re_plan_depth?: number;
+  /** Compressed run-history breadcrumbs preserved across approval pauses. */
+  breadcrumbs?: string[];
 }
 
 export interface PendingToolDescriptor {
