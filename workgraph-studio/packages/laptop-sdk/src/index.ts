@@ -182,22 +182,22 @@ export class SingularityLaptopSdk {
   }
 }
 
-export async function detectCopilotCli(): Promise<{ available: boolean; version?: string; warning?: string }> {
-  if (typeof process === 'undefined') return { available: false, warning: 'Copilot CLI detection requires the desktop main process or CLI.' }
+export async function detectCopilotCli(): Promise<{ available: boolean; command?: string; version?: string; warning?: string }> {
+  if (typeof process === 'undefined') return { available: false, command: 'copilot', warning: 'Copilot CLI detection requires the desktop main process or CLI.' }
   const { spawn } = await import('node:child_process')
   return new Promise(resolve => {
     const child = spawn('copilot', ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] })
     let out = ''
     child.stdout.on('data', chunk => { out += String(chunk) })
     child.stderr.on('data', chunk => { out += String(chunk) })
-    child.on('error', () => resolve({ available: false, warning: 'copilot CLI not found on PATH' }))
+    child.on('error', () => resolve({ available: false, command: 'copilot', warning: 'copilot CLI not found on PATH' }))
     child.on('close', code => {
-      if (code !== 0) return resolve({ available: false, warning: out.trim() || 'copilot --version failed' })
+      if (code !== 0) return resolve({ available: false, command: 'copilot', warning: out.trim() || 'copilot --version failed' })
       const version = out.trim().match(/\d+\.\d+\.\d+/)?.[0] ?? out.trim()
       const warning = version && !/^1\.0\./.test(version)
         ? 'Copilot CLI version is outside the pinned 1.0.x compatibility range; session log format may differ.'
         : undefined
-      resolve({ available: true, version, warning })
+      resolve({ available: true, command: 'copilot', version, warning })
     })
   })
 }

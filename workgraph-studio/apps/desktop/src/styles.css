@@ -7,7 +7,7 @@ body {
 
 .shell {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 360px 1fr;
   min-height: 100vh;
 }
 
@@ -30,12 +30,21 @@ label {
   color: #4f5f78;
 }
 
-input {
+input,
+textarea {
   height: 38px;
   border: 1px solid #ccd6e6;
   border-radius: 6px;
   padding: 0 10px;
   color: #172033;
+}
+
+textarea {
+  min-height: 84px;
+  padding: 10px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
 }
 
 button {
@@ -53,7 +62,8 @@ button:disabled {
 }
 
 .actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 10px;
 }
 
@@ -72,7 +82,8 @@ button:disabled {
   margin-bottom: 14px;
 }
 
-.session div {
+.session div,
+.sectionHeader {
   display: flex;
   justify-content: space-between;
   gap: 12px;
@@ -105,4 +116,55 @@ pre {
 .events div {
   padding: 10px 0;
   border-top: 1px solid #eef2f7;
+}
+
+.workitems {
+  margin-bottom: 18px;
+}
+
+.sectionHeader h2 {
+  margin-bottom: 0;
+}
+
+.sectionHeader span {
+  color: #66758f;
+  font-weight: 700;
+}
+
+.workitemList {
+  display: grid;
+  gap: 10px;
+}
+
+.workitem {
+  display: grid;
+  grid-template-columns: 120px 120px 1fr;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: auto;
+  min-height: 58px;
+  border: 1px solid #d7deea;
+  border-radius: 8px;
+  background: #fff;
+  color: #172033;
+  text-align: left;
+  padding: 12px;
+}
+
+.workitem.selected {
+  border-color: #2455c6;
+  box-shadow: 0 0 0 2px rgba(36, 85, 198, 0.16);
+}
+
+.workitem span {
+  color: #2455c6;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.workitem p {
+  margin: 0;
+  color: #4f5f78;
+  overflow-wrap: anywhere;
 }

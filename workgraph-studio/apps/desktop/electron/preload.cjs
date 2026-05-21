@@ -9,4 +9,5 @@ contextBridge.exposeInMainWorld('singularityDesk', {
   },
   openExternal: (url) => ipcRenderer.invoke('desk:open-external', url),
   notify: (input) => ipcRenderer.invoke('desk:notify', input),
+  detectCopilotCli: () => ipcRenderer.invoke('desk:detect-copilot-cli'),
 })
