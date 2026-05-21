@@ -60,7 +60,8 @@ const READ_ONLY_TOOLS = new Set<string>([
   "capture_test_baseline",
 ]);
 
-const MUTATION_TOOLS = new Set<string>([
+// Exported for use by the run loop's read-vs-mutation accounting (M50).
+export const MUTATION_TOOLS = new Set<string>([
   "replace_text",
   "replace_range",
   "apply_patch",
@@ -183,6 +184,11 @@ export interface PhaseLoopStateView {
   phaseBudgets: PhaseBudgets;
   /** True when PLAN_DRAFT exhausted budget and we synthesized a default. */
   planFromFallback: boolean;
+  /** M50 — number of read-only tool calls made in the CURRENT ACT phase
+   *  since the last mutation. Reset on entering ACT and on every successful
+   *  mutation. Used to surface "stop reading, start mutating" urgency in
+   *  the phase frame. Optional so non-phased / legacy callers don't break. */
+  actReadsSinceLastMutation?: number;
 }
 
 /**
@@ -362,6 +368,28 @@ export function synthesizePhaseFrame(state: PhaseLoopStateView): string {
 
   const transitionHint = describeTransition(phase);
   if (transitionHint) lines.push(transitionHint);
+
+  // M50 — Urgency hint when ACT is going read-heavy without mutating.
+  // The audit-log RCA showed the agent burning all 10 ACT steps on
+  // read_file/get_ast_slice/search_code/grep_lines, then exiting with
+  // zero mutations (M47.C correctly routed → FINALIZE, but the run still
+  // had no code changes for the workgraph gate). Force the agent to
+  // commit by escalating the prompt as it skews read-only.
+  if (phase === "ACT") {
+    const reads = state.actReadsSinceLastMutation ?? 0;
+    if (reads >= 5) {
+      lines.push(
+        `⚠ ACT READ-LIMIT REACHED: you have made ${reads} consecutive read-only tool calls in ACT without a single mutation. ` +
+        `Your NEXT call MUST be a mutation tool: replace_text / replace_range / apply_patch / write_file. ` +
+        `If you cannot make an edit because a required target turned out to be unnecessary, emit a plan-revision JSON marking it status:"skipped" with a non-empty skipReason. ` +
+        `Do NOT call another read tool. ACT exists to APPLY EDITS — exploration belongs in EXPLORE / PLAN_CONFIRM, which you already left.`
+      );
+    } else if (reads >= 3) {
+      lines.push(
+        `Note: ${reads} consecutive read-only calls in ACT. The next call should commit to an edit (replace_text / apply_patch / write_file) — you already explored the codebase in EXPLORE.`
+      );
+    }
+  }
 
   return lines.join("\n");
 }

@@ -398,3 +398,47 @@ describe("synthesizeFallbackPlan", () => {
     expect(plan.risks.some((r) => r.includes("goal excerpt:"))).toBe(true);
   });
 });
+
+// ── M50 — ACT read-budget urgency hint ────────────────────────────────────
+
+describe("M50 synthesizePhaseFrame — ACT read-budget escalation", () => {
+  const makeAct = (reads: number) => makeView({
+    phase: "ACT",
+    plan: SAMPLE_PLAN,
+    actReadsSinceLastMutation: reads,
+  });
+
+  it("no urgency hint at 0-2 reads", () => {
+    expect(synthesizePhaseFrame(makeAct(0))).not.toMatch(/ACT READ-LIMIT|read-only/i);
+    expect(synthesizePhaseFrame(makeAct(2))).not.toMatch(/ACT READ-LIMIT|read-only/i);
+  });
+
+  it("soft note at 3-4 reads", () => {
+    const frame = synthesizePhaseFrame(makeAct(3));
+    expect(frame).toMatch(/3 consecutive read-only calls/);
+    expect(frame).not.toMatch(/READ-LIMIT REACHED/);
+  });
+
+  it("hard escalation at >= 5 reads", () => {
+    const frame = synthesizePhaseFrame(makeAct(5));
+    expect(frame).toMatch(/ACT READ-LIMIT REACHED/);
+    expect(frame).toMatch(/MUST be a mutation tool/);
+    expect(frame).toMatch(/replace_text|apply_patch|write_file/);
+    expect(frame).toMatch(/status:"skipped"/);
+  });
+
+  it("hard escalation also at 10 reads (full ACT budget burnt on reads)", () => {
+    const frame = synthesizePhaseFrame(makeAct(10));
+    expect(frame).toMatch(/ACT READ-LIMIT REACHED/);
+    expect(frame).toMatch(/10 consecutive read-only/);
+  });
+
+  it("does NOT escalate in non-ACT phases even with a high read counter", () => {
+    const exploreFrame = synthesizePhaseFrame(makeView({
+      phase: "EXPLORE",
+      plan: SAMPLE_PLAN,
+      actReadsSinceLastMutation: 8,
+    }));
+    expect(exploreFrame).not.toMatch(/ACT READ-LIMIT|read-only calls in ACT/);
+  });
+});

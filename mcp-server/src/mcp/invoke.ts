@@ -257,6 +257,10 @@ interface LoopState {
     /** True when PLAN_DRAFT exhausted its budget and we substituted a
      *  fallback plan. Causes the path-coverage check to be vacuous. */
     planFromFallback: boolean;
+    /** M50 — consecutive read-only tool calls in the current ACT phase
+     *  since the last successful mutation. Reset on mutation and on
+     *  leaving ACT. Used by synthesizePhaseFrame to escalate urgency. */
+    actReadsSinceLastMutation?: number;
   };
 }
 
@@ -622,6 +626,7 @@ type DispatchToolResult = {
 // no-op, so the flat-loop path is completely unaffected.
 
 import {
+  MUTATION_TOOLS,
   PHASE_REPETITION_RULES,
   TOOL_ALLOWLISTS,
   computeCodeChangeCoverage,
@@ -694,6 +699,7 @@ function applyPhaseFilteringForLlmCall(state: LoopState): {
     phaseStepUsage: state.phaseMachine.phaseStepUsage,
     phaseBudgets: state.phaseMachine.phaseBudgets,
     planFromFallback: state.phaseMachine.planFromFallback,
+    actReadsSinceLastMutation: state.phaseMachine.actReadsSinceLastMutation,
   });
   // Inject the frame as the LAST system message so the model reads it most
   // recently. We append rather than mutate state.messages so the sliding
@@ -855,7 +861,22 @@ function recordPhaseToolEffect(
   toolArgs: Record<string, unknown>,
   codeChangePaths: string[],
 ): void {
-  if (!state.phaseMachine || !state.phaseMachine.plan) return;
+  if (!state.phaseMachine) return;
+  // M50 — Track read-only-vs-mutation cadence within ACT so the phase frame
+  // can escalate urgency when the agent goes too long without committing.
+  if (state.phaseMachine.phase === "ACT") {
+    if (MUTATION_TOOLS.has(toolName) && codeChangePaths.length > 0) {
+      // Successful mutation → reset the counter.
+      state.phaseMachine.actReadsSinceLastMutation = 0;
+    } else if (!MUTATION_TOOLS.has(toolName)) {
+      // Any non-mutation tool counts as a read.
+      state.phaseMachine.actReadsSinceLastMutation =
+        (state.phaseMachine.actReadsSinceLastMutation ?? 0) + 1;
+    }
+  }
+  // Note: counter is naturally meaningless outside ACT (frame only reads it
+  // when phase === ACT), so no explicit reset on phase transition needed.
+  if (!state.phaseMachine.plan) return;
   const READ_TOOLS = new Set(["read_file", "get_ast_slice", "get_symbol", "search_code", "list_directory"]);
   if (READ_TOOLS.has(toolName) && typeof toolArgs.path === "string") {
     state.phaseMachine.planProgress = markRead(state.phaseMachine.planProgress, toolArgs.path, state.stepIndex);
