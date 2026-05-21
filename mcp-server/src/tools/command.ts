@@ -123,7 +123,6 @@ function validatePackageManager(command: string, argv: string[]) {
 }
 
 function validatePolicy(command: string, argv: string[]) {
-  const denied = includesDeniedVerb(argv);
   if (["npm", "pnpm", "yarn"].includes(command)) return validatePackageManager(command, argv);
   if (command === "git") {
     const verb = firstNonOption(argv);
@@ -134,7 +133,10 @@ function validatePolicy(command: string, argv: string[]) {
     return;
   }
   if (command === "rg") return;
-  if (denied) throw new Error(`${command} ${denied} is not allowed through MCP verification tools`);
+  // M51 — Build-tool checks are ALLOW-first: explicitly enumerate legal
+  // goals/subcommands. The generic denied-verb backstop runs AFTER, so
+  // build-tool-specific tokens (e.g. mvn's `clean` goal, gradle's `clean`
+  // task) don't get blocked by the package-manager-oriented deny list.
   if (command === "node") {
     if (argv[0] === "--test" || argv[0] === "-v" || argv[0] === "--version") return;
     throw new Error("node is limited to --test or version diagnostics");
@@ -156,8 +158,13 @@ function validatePolicy(command: string, argv: string[]) {
   }
   if (command === "mvn") {
     const goals = argv.filter((arg) => !arg.startsWith("-"));
-    if (goals.length > 0 && goals.every((goal) => ["test", "verify", "compile", "package"].includes(goal))) return;
-    throw new Error("mvn is limited to test, verify, compile, or package");
+    // M51 — `clean` added: standard Maven lifecycle goal that just removes
+    // the local target/ dir — analogous to `cargo clean`. Not destructive
+    // outside the build output, and operators routinely run `mvn clean test`
+    // for a hermetic verify. The npm-oriented "clean" deny rule doesn't
+    // apply here.
+    if (goals.length > 0 && goals.every((goal) => ["test", "verify", "compile", "package", "clean"].includes(goal))) return;
+    throw new Error("mvn is limited to test, verify, compile, package, or clean");
   }
   if (command === "gradle" || command === "gradlew") {
     const tasks = argv.filter((arg) => !arg.startsWith("-"));
@@ -174,6 +181,11 @@ function validatePolicy(command: string, argv: string[]) {
     if (targets.length > 0 && targets.every((target) => SCRIPT_ALLOW_RE.test(target))) return;
     throw new Error("make requires explicit test/lint/typecheck/build/check/verify targets");
   }
+  // M51 — Generic denied-verb backstop. Reached only for commands that
+  // weren't matched by any allow-first block above. Catches things like a
+  // future allow-listed command being misused with a destructive verb.
+  const denied = includesDeniedVerb(argv);
+  if (denied) throw new Error(`${command} ${denied} is not allowed through MCP verification tools`);
 }
 
 function truncateOutput(value: string, maxChars: number): string {

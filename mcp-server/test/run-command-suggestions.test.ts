@@ -55,3 +55,37 @@ describe("M47.A run_command OS-verb suggestions", () => {
     expect(res.error).toMatch(/find_files/);
   });
 });
+
+// ── M51 — Maven/Gradle build-tool tokens not blocked by generic deny ─────
+
+describe("M51 mvn clean is allowed (Maven lifecycle goal)", () => {
+  it("accepts `mvn clean test` (hermetic verify shorthand)", async () => {
+    const res = await runTestTool.execute({ command: "mvn", args: ["clean", "test"] });
+    // Either succeeds OR fails downstream (sandbox runner) — but MUST NOT
+    // be rejected by validatePolicy with the "not in the MCP verification
+    // allowlist" message. We assert the validator didn't trip.
+    if (!res.success) {
+      expect(res.error).not.toMatch(/clean is not allowed/);
+      expect(res.error).not.toMatch(/mvn is limited to test, verify, compile, or package/);
+    }
+  });
+
+  it("accepts `mvn clean compile`", async () => {
+    const res = await runTestTool.execute({ command: "mvn", args: ["clean", "compile"] });
+    if (!res.success) {
+      expect(res.error).not.toMatch(/clean is not allowed/);
+    }
+  });
+
+  it("still rejects `mvn deploy` (deploy not in allow list)", async () => {
+    const res = await runTestTool.execute({ command: "mvn", args: ["deploy"] });
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/mvn is limited to/);
+  });
+
+  it("still rejects npm install (clean isn't the only deny token)", async () => {
+    const res = await runTestTool.execute({ command: "npm", args: ["install"] });
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/install is not allowed/);
+  });
+});
