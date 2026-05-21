@@ -356,6 +356,40 @@ def _mandatory_local_tools_for_request(req: ExecuteRequest) -> list[dict[str, An
             "properties": {"query": {"type": "string"}},
             "required": ["query"],
         }),
+        # M44 Slice B — explicit declarations for surgical AST reads. With
+        # includeLocalTools defaulting to false, these would otherwise be
+        # invisible to the LLM and the agent would fall back to full read_file
+        # (token-expensive). All three are LOW risk, read-only.
+        _local_tool("get_symbol", "Fetch one indexed symbol's body by id or name (cheaper than read_file for known functions/classes).", {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "name": {"type": "string"},
+            },
+        }),
+        _local_tool("get_ast_slice", "Fetch a slice of file content by symbol id OR explicit line range (most token-efficient code read).", {
+            "type": "object",
+            "properties": {
+                "symbolId": {"type": "string"},
+                "name": {"type": "string"},
+                "filePath": {"type": "string"},
+                "startLine": {"type": "number"},
+                "endLine": {"type": "number"},
+                "maxBytes": {"type": "number"},
+            },
+        }),
+        _local_tool("get_dependencies", "List imports / exports / call-sites for a given indexed file.", {
+            "type": "object",
+            "properties": {"filePath": {"type": "string"}},
+            "required": ["filePath"],
+        }),
+        _local_tool("list_directory", "Sandbox-scoped directory listing.", {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "recursive": {"type": "boolean"},
+            },
+        }),
         # ── M42.9 — AST-index-backed enumeration ──
         _local_tool("list_indexed_files", "Enumerate files in the AST index (path + language + size). Preferred over find_files for code lookups.", {
             "type": "object",
@@ -1151,16 +1185,20 @@ async def execute(req: ExecuteRequest):
             "maxHistoryMessages": req.limits.get("maxHistoryMessages") or req.limits.get("max_history_messages"),
             "maxHistoryTokens": req.limits.get("maxHistoryTokens") or req.limits.get("max_history_tokens"),
             "compressToolResults": req.limits.get("compressToolResults") if "compressToolResults" in req.limits else req.limits.get("compress_tool_results"),
-            # M43 — for QA stages we MUST set includeLocalTools=false,
-            # otherwise mcp-server merges its full local registry on top of
-            # our hand-curated list, re-introducing the mutation tools we
-            # deliberately excluded. Dev stages keep the prior behaviour
-            # (true by default) to avoid breaking anything that relied on
-            # MCP auto-injection.
+            # M44 Slice B — default includeLocalTools=false for EVERY stage.
+            # The canonical tool list emitted by _mandatory_local_tools_for_request
+            # is now complete (covers every tool in mcp-server's REGISTRY that
+            # any agent role should see; M43 audit). With auto-injection off,
+            # mcp-server sends only the tools we explicitly authored — saves
+            # ~4K tokens per LLM call (one local tool schema ~= 200 tokens,
+            # ~20 redundant injections). Callers that genuinely need the full
+            # registry (a debug harness, e.g.) can still pass includeLocalTools=true
+            # explicitly. M43 Slice 2 already enforced false for QA stages;
+            # this extends to Dev and non-code stages too.
             "includeLocalTools": (
                 req.limits.get("includeLocalTools")
                 if "includeLocalTools" in req.limits
-                else (False if _classify_stage_role(req)[1] else req.limits.get("include_local_tools", True))
+                else req.limits.get("include_local_tools", False)
             ),
             # ── Phased Agent Reasoning Model (v4) ──────────────────────
             # Plumb caller-supplied phase mode + per-phase budgets through

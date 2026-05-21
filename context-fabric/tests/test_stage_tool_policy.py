@@ -131,3 +131,58 @@ def test_m42_fallback_tools_present():
     tools = _mandatory_local_tools_for_request(make_req(agent_role="DEVELOPER"))
     n = names(tools)
     assert {"find_files", "file_stats", "grep_lines"}.issubset(n)
+
+
+# ── M44 Slice B — canonical-list completeness ──────────────────────────────
+# With includeLocalTools defaulting to false, the canonical list emitted by
+# context-fabric IS the agent's full tool surface. Any tool the LLM should
+# be able to call MUST be declared here. The test fails loudly if someone
+# adds a new tool to mcp-server's registry but forgets to declare it in
+# context-fabric.
+
+# This is the curated "must be exposed to a coding agent" subset of
+# mcp-server's REGISTRY. Demo/laptop-only/system-internal tools are
+# deliberately excluded.
+EXPECTED_CODING_AGENT_TOOLS = {
+    # base read + AST
+    "read_file", "search_code", "index_workspace", "find_symbol",
+    "get_symbol", "get_ast_slice", "get_dependencies",
+    "list_directory", "list_indexed_files",
+    # discovery fallback (M42.8)
+    "find_files", "file_stats", "grep_lines",
+    # workflow grounding (M43)
+    "repo_map",
+    # verification
+    "recommended_verification", "run_test", "run_command",
+    "verification_unavailable", "formal_verify",
+    # review (M43)
+    "review_diff",
+    # mutation (dev only — but must be DECLARED in canonical list)
+    "apply_patch", "replace_text", "replace_range", "write_file",
+    # workflow completion
+    "git_commit", "finish_work_branch",
+}
+
+
+def test_canonical_list_covers_every_coding_agent_tool():
+    """Every tool a coding agent should be able to call MUST be in the
+    canonical Dev list. With M44's includeLocalTools=false default, anything
+    omitted here is invisible to the LLM."""
+    tools = _mandatory_local_tools_for_request(make_req(agent_role="DEVELOPER"))
+    n = names(tools)
+    missing = EXPECTED_CODING_AGENT_TOOLS - n
+    assert not missing, (
+        f"Coding-agent tools missing from canonical Dev list: {sorted(missing)}. "
+        f"Either add them to _mandatory_local_tools_for_request or, if they're "
+        f"intentionally laptop/demo/system-only, remove them from "
+        f"EXPECTED_CODING_AGENT_TOOLS."
+    )
+
+
+def test_qa_canonical_list_covers_read_and_verify():
+    """QA stages must still see every read + verify tool (just not mutations)."""
+    qa_expected = EXPECTED_CODING_AGENT_TOOLS - MUTATION_TOOL_NAMES
+    tools = _mandatory_local_tools_for_request(make_req(agent_role="QA"))
+    n = names(tools)
+    missing = qa_expected - n
+    assert not missing, f"QA canonical list missing: {sorted(missing)}"
