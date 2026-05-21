@@ -303,18 +303,39 @@ def _local_tool(name: str, description: str, input_schema: dict[str, Any],
     }
 
 
-def _mandatory_local_tools_for_request(req: ExecuteRequest) -> list[dict[str, Any]]:
+def _classify_stage_role(req: ExecuteRequest) -> tuple[bool, bool]:
+    """Return (is_dev_stage, is_qa_stage). Stages can be neither (e.g. PLAN /
+    DESIGN — read-only research stages), but never both. Dev wins ties so that
+    a stage labelled "QA but autonomous mutation" still gets mutation tools.
+
+    M43 — previously these two were collapsed into is_code_stage which gave
+    QA stages mutation tools they should never have had.
+    """
     signature = " ".join([
         str(req.vars.get("stageKey") or ""),
         str(req.vars.get("stageLabel") or ""),
         str(req.vars.get("agentRole") or ""),
         req.task,
     ]).lower()
-    is_code_stage = (
-        req.allow_autonomous_mutation
-        or any(token in signature for token in ("develop", "developer", "engineer", "code", "qa", "quality", "test", "verify"))
-    )
-    tools = [
+    has_dev = any(t in signature for t in ("develop", "developer", "engineer", "code"))
+    has_qa = any(t in signature for t in ("qa", "quality", "test", "verify", "review"))
+    is_dev = bool(req.allow_autonomous_mutation or has_dev)
+    is_qa = bool(has_qa and not is_dev)
+    return is_dev, is_qa
+
+
+def _mandatory_local_tools_for_request(req: ExecuteRequest) -> list[dict[str, Any]]:
+    """Canonical tool inventory for a stage. Dev stages get mutation; QA
+    stages get inspection + verification only; non-code stages get the
+    grounding subset.
+
+    M43 — restructured into composable blocks (base / grounding / verify /
+    review / mutation) so the QA branch can exclude exactly mutation without
+    losing read-only AST tools or workflow-grounding tools."""
+    is_dev, is_qa = _classify_stage_role(req)
+
+    # ── base: every stage gets these (PLAN, DESIGN, DEV, QA, etc.) ──
+    base = [
         _local_tool("read_file", "Read a sandbox-relative file.", {
             "type": "object",
             "properties": {"path": {"type": "string"}},
@@ -335,10 +356,117 @@ def _mandatory_local_tools_for_request(req: ExecuteRequest) -> list[dict[str, An
             "properties": {"query": {"type": "string"}},
             "required": ["query"],
         }),
+        # ── M42.9 — AST-index-backed enumeration ──
+        _local_tool("list_indexed_files", "Enumerate files in the AST index (path + language + size). Preferred over find_files for code lookups.", {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "language": {"type": "string"},
+                "limit": {"type": "number"},
+            },
+        }),
+        # ── M42.8 — fallback filesystem tools (replace cat/find/grep/wc) ──
+        _local_tool("find_files", "Locate files by glob pattern (filesystem fallback when AST index doesn't help).", {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+                "max_results": {"type": "number"},
+            },
+            "required": ["pattern"],
+        }),
+        _local_tool("file_stats", "Bytes + lines + language for non-indexed files.", {
+            "type": "object",
+            "properties": {
+                "paths": {"type": "array", "items": {"type": "string"}},
+                "path": {"type": "string"},
+            },
+        }),
+        _local_tool("grep_lines", "Ripgrep search with N lines of context before/after each match.", {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "path": {"type": "string"},
+                "context_before": {"type": "number"},
+                "context_after": {"type": "number"},
+                "regex": {"type": "boolean"},
+                "glob": {"type": "string"},
+            },
+            "required": ["query"],
+        }),
+        # ── M43 — agentic workflow grounding ──
+        _local_tool("repo_map", "Compact repo topology: build system, languages, entrypoints, test dirs, verifier inventory.", {
+            "type": "object",
+            "properties": {"max_directories": {"type": "number"}},
+        }),
     ]
-    if not is_code_stage:
-        return tools
-    tools.extend([
+
+    if not (is_dev or is_qa):
+        # Non-code stage (PLAN / DESIGN / etc.) — read-only research only
+        return base
+
+    # ── verification block — exposed to both DEV and QA ──
+    verification = [
+        _local_tool("recommended_verification", "Ranked, allowlist-checked verifier recommendations from the verifier-registry. Use at VERIFY entry to pick the right run_test invocation deterministically.", {
+            "type": "object",
+            "properties": {
+                "changed_paths": {"type": "array", "items": {"type": "string"}},
+            },
+        }),
+        _local_tool("run_test", "Run an allowlisted test, lint, typecheck, or verification command.", {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "args": {"type": "array", "items": {"type": "string"}},
+                "cwd": {"type": "string"},
+                "timeout_ms": {"type": "number"},
+            },
+            "required": ["command"],
+        }, risk_level="MEDIUM"),
+        _local_tool("run_command", "Run an allowlisted non-shell command in the MCP sandbox.", {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "args": {"type": "array", "items": {"type": "string"}},
+                "cwd": {"type": "string"},
+                "timeout_ms": {"type": "number"},
+            },
+            "required": ["command"],
+        }, risk_level="MEDIUM"),
+        _local_tool("verification_unavailable", "Record an explicit verification-unavailable receipt when no runnable command exists.", {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string"},
+                "inspected": {"type": "array", "items": {"type": "string"}},
+                "attemptedCommands": {"type": "array", "items": {"type": "string"}},
+                "paths_context": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["reason"],
+        }, risk_level="LOW"),
+        _local_tool("formal_verify", "Run a formal verification query and return a solver receipt.", {
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string"},
+                "facts": {"type": "object"},
+                "constraints": {"type": "array", "items": {"type": "object"}},
+                "query": {"type": "object"},
+                "artifactRefs": {"type": "array", "items": {"type": "object"}},
+                "timeoutMs": {"type": "number"},
+            },
+            "required": ["scope", "facts", "query"],
+        }, risk_level="MEDIUM"),
+    ]
+
+    # ── review block — exposed to both DEV (pre-finish) and QA (inspection) ──
+    review = [
+        _local_tool("review_diff", "Pre-finish diff review: classification, test-coverage heuristic, verification-coverage intersection, risks punch list.", {
+            "type": "object",
+            "properties": {},  # loop state injects verificationReceipts + codeChangePaths
+        }),
+    ]
+
+    # ── mutation block — DEV ONLY (M43: QA stages no longer receive these) ──
+    mutation = [
         _local_tool("apply_patch", "Apply a unified diff patch inside the MCP sandbox.", {
             "type": "object",
             "properties": {"patch": {"type": "string"}},
@@ -364,7 +492,7 @@ def _mandatory_local_tools_for_request(req: ExecuteRequest) -> list[dict[str, An
             },
             "required": ["path", "startLine", "endLine", "replacement"],
         }, risk_level="MEDIUM"),
-        _local_tool("write_file", "Create or overwrite a complete file body; not for diffs.", {
+        _local_tool("write_file", "Create or overwrite a complete file body. Reserve for NEW files; use apply_patch / replace_text / replace_range for existing files.", {
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
@@ -373,59 +501,21 @@ def _mandatory_local_tools_for_request(req: ExecuteRequest) -> list[dict[str, An
             },
             "required": ["path", "content"],
         }, risk_level="MEDIUM"),
-        _local_tool("run_test", "Run an allowlisted test, lint, typecheck, or verification command.", {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string"},
-                "args": {"type": "array", "items": {"type": "string"}},
-                "cwd": {"type": "string"},
-                "timeout_ms": {"type": "number"},
-            },
-            "required": ["command"],
-        }, risk_level="MEDIUM"),
-        _local_tool("run_command", "Run an allowlisted non-shell command in the MCP sandbox.", {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string"},
-                "args": {"type": "array", "items": {"type": "string"}},
-                "cwd": {"type": "string"},
-                "timeout_ms": {"type": "number"},
-            },
-            "required": ["command"],
-        }, risk_level="MEDIUM"),
-        _local_tool("formal_verify", "Run a formal verification query and return a solver receipt.", {
-            "type": "object",
-            "properties": {
-                "scope": {"type": "string"},
-                "facts": {"type": "object"},
-                "constraints": {"type": "array", "items": {"type": "object"}},
-                "query": {"type": "object"},
-                "artifactRefs": {"type": "array", "items": {"type": "object"}},
-                "timeoutMs": {"type": "number"},
-            },
-            "required": ["scope", "facts", "query"],
-        }, risk_level="MEDIUM"),
-        _local_tool("verification_unavailable", "Record an explicit verification-unavailable receipt when no runnable command exists.", {
-            "type": "object",
-            "properties": {
-                "reason": {"type": "string"},
-                "inspected": {"type": "array", "items": {"type": "string"}},
-                "attemptedCommands": {"type": "array", "items": {"type": "string"}},
-                "paths_context": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["reason"],
-        }, risk_level="LOW"),
-        _local_tool("git_commit", "Commit sandbox changes with a message.", {
+        _local_tool("git_commit", "Commit sandbox changes with a message. Prefer finish_work_branch for workflow completion.", {
             "type": "object",
             "properties": {"message": {"type": "string"}, "author": {"type": "string"}},
             "required": ["message"],
         }, risk_level="MEDIUM"),
-        _local_tool("finish_work_branch", "Finish the prepared work branch and return git evidence.", {
+        _local_tool("finish_work_branch", "Finish the prepared work branch and return git evidence (preferred workflow completion).", {
             "type": "object",
             "properties": {"commitMessage": {"type": "string"}},
         }, risk_level="MEDIUM"),
-    ])
-    return tools
+    ]
+
+    if is_dev:
+        return base + verification + review + mutation
+    # QA: read-only inspection + verification + review, NO mutation
+    return base + verification + review
 
 
 def _merge_mandatory_local_tools(tools: list[dict[str, Any]], req: ExecuteRequest) -> list[dict[str, Any]]:
@@ -1061,10 +1151,16 @@ async def execute(req: ExecuteRequest):
             "maxHistoryMessages": req.limits.get("maxHistoryMessages") or req.limits.get("max_history_messages"),
             "maxHistoryTokens": req.limits.get("maxHistoryTokens") or req.limits.get("max_history_tokens"),
             "compressToolResults": req.limits.get("compressToolResults") if "compressToolResults" in req.limits else req.limits.get("compress_tool_results"),
+            # M43 — for QA stages we MUST set includeLocalTools=false,
+            # otherwise mcp-server merges its full local registry on top of
+            # our hand-curated list, re-introducing the mutation tools we
+            # deliberately excluded. Dev stages keep the prior behaviour
+            # (true by default) to avoid breaking anything that relied on
+            # MCP auto-injection.
             "includeLocalTools": (
                 req.limits.get("includeLocalTools")
                 if "includeLocalTools" in req.limits
-                else req.limits.get("include_local_tools", True)
+                else (False if _classify_stage_role(req)[1] else req.limits.get("include_local_tools", True))
             ),
             # ── Phased Agent Reasoning Model (v4) ──────────────────────
             # Plumb caller-supplied phase mode + per-phase budgets through
