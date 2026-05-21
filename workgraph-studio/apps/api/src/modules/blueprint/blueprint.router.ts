@@ -1922,7 +1922,16 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
     agentRole: stage.agentRole ? normalizeAgentRole(stage.agentRole) : undefined,
     vars: stageVars,
   })
-  const task = resolvedStage.task
+  // M46.C — Append prior-attempt learnings directly to the task string so it
+  // lands in the prompt regardless of whether the DB-managed `loop.stage`
+  // template references the new var. The compact block (≤2.5K chars) tells
+  // the new attempt which files the prior attempt already touched, which
+  // failed, and the top error lines from the last failed verifier run —
+  // letting it skip exploration the prior attempt already did. Empty for
+  // first attempts of a stage.
+  const task = stageVars.priorAttemptLearnings && stageVars.priorAttemptLearnings.length > 0
+    ? `${resolvedStage.task}\n\n## ${stageVars.priorAttemptLearnings}`
+    : resolvedStage.task
   const stageSystemPromptAppend = resolvedStage.systemPromptAppend
   const stageExtraContext = resolvedStage.extraContext
   const inputSignature = buildStageInputSignature(snapshot, stage, agentTemplateId, task, state)
@@ -3351,6 +3360,11 @@ function buildLoopStageVars(
       }).join('\n')
   const isDeveloperStage = normalizeAgentRole(stage.agentRole).includes('DEV')
   const priorApprovedArtifacts = buildPriorApprovedArtifactContext(session, state, stage.key)
+  // M46.C — Carry learnings from prior failed attempts of the SAME stage
+  // forward, so the new attempt can skip exploration that's already been
+  // done and avoid edits that already failed. Capped so it doesn't bloat
+  // the prompt the way verbatim transcripts would.
+  const priorAttemptLearnings = buildPriorAttemptLearnings(state, stage.key)
   const implementationDirective = isDeveloperStage
     ? [
       'Use the approved artifact context as the implementation backlog for this attempt.',
@@ -3401,7 +3415,86 @@ function buildLoopStageVars(
     // M41.2 — operator → agent guidance thread. The prompt-composer renderer
     // performs simple var substitution, so provide an explicit empty-state line.
     operatorChat,
+    // M46.C — distilled learnings from prior attempts of the same stage.
+    // Empty string when this is the first attempt.
+    priorAttemptLearnings,
   }
+}
+
+/**
+ * M46.C — Compose a compact "lessons from prior attempts" block.
+ *
+ * The previous-attempt transcript is too large to replay verbatim, but the
+ * structured signals on each StageAttempt let us build a short summary the
+ * new attempt can use to (a) skip exploration the prior attempt already did
+ * and (b) avoid the exact edits that broke things.
+ *
+ * For each prior failed attempt of the SAME stage (most recent up to 3):
+ *   - verdict + reason if available (feedback / error)
+ *   - which files the attempt successfully mutated (from correlation.codeChangeIds…
+ *     proxied via the prior attempt's verificationReceipts' changed_paths and
+ *     correlation. paths_touched)
+ *   - the last failed verification command + its top error lines
+ *
+ * Capped at ~2_500 chars total so it never dominates the prompt.
+ */
+function buildPriorAttemptLearnings(state: LoopState, currentStageKey: string): string {
+  const priorOfThisStage = state.stageAttempts
+    .filter(attempt =>
+      attempt.stageKey === currentStageKey &&
+      (attempt.verdict === 'NEEDS_REWORK' || attempt.status === 'FAILED' || attempt.status === 'NEEDS_REWORK'),
+    )
+    .slice(-3) // most recent up to 3
+  if (priorOfThisStage.length === 0) return ''
+
+  const blocks: string[] = []
+  const maxTotalChars = 2_500
+  let used = 0
+
+  for (const attempt of priorOfThisStage) {
+    const lines: string[] = []
+    lines.push(`### Attempt #${attempt.attemptNumber} — ${attempt.verdict ?? attempt.status}`)
+
+    // Touched paths so the new attempt knows which files were already edited.
+    const correlation = isRecord(attempt.correlation) ? attempt.correlation : {}
+    const codeChangeCoverage = isRecord(correlation.codeChangeCoverage) ? correlation.codeChangeCoverage : null
+    const covered = Array.isArray(codeChangeCoverage?.covered) ? (codeChangeCoverage!.covered as string[]) : []
+    const missing = Array.isArray(codeChangeCoverage?.missing) ? (codeChangeCoverage!.missing as string[]) : []
+    if (covered.length > 0) lines.push(`- Files touched: ${covered.slice(0, 6).join(', ')}${covered.length > 6 ? ` (+${covered.length - 6} more)` : ''}`)
+    if (missing.length > 0) lines.push(`- Files claimed but NOT touched: ${missing.slice(0, 5).join(', ')} — DO touch these this time`)
+
+    // Failure feedback (from human send-back or verdict).
+    if (attempt.feedback) lines.push(`- Send-back feedback: ${attempt.feedback.slice(0, 240)}`)
+    if (attempt.error && !attempt.feedback) lines.push(`- Error: ${attempt.error.slice(0, 240)}`)
+
+    // Last failed verification receipt — the actionable signal.
+    const receipts = attempt.verificationReceipts ?? []
+    const failedReceipt = [...receipts].reverse().find(r => r.passed === false || (typeof r.exit_code === 'number' && r.exit_code !== 0))
+    if (failedReceipt) {
+      const cmd = typeof failedReceipt.command === 'string' ? failedReceipt.command : '(unknown command)'
+      // Extract a meaningful chunk of stderr/stdout — top 600 chars of the most error-y lines.
+      const stdout = typeof failedReceipt.stdout_excerpt === 'string' ? failedReceipt.stdout_excerpt : ''
+      const errorLines = stdout
+        .split('\n')
+        .filter(l => /error|fail|exception|\[ERROR\]/i.test(l))
+        .slice(0, 6)
+        .join('\n')
+      lines.push(`- Last verification: ${cmd} → FAILED`)
+      if (errorLines) lines.push(`  Top error lines:\n${errorLines.split('\n').map(l => `    ${l}`).join('\n')}`)
+    }
+
+    const block = lines.join('\n')
+    if (used + block.length > maxTotalChars) {
+      blocks.push('### (older attempts elided — over budget)')
+      break
+    }
+    blocks.push(block)
+    used += block.length
+  }
+
+  return blocks.length > 0
+    ? `Prior attempt learnings (use these to skip duplicate exploration AND avoid repeating mistakes):\n\n${blocks.join('\n\n')}`
+    : ''
 }
 
 function buildPriorApprovedArtifactContext(

@@ -121,8 +121,68 @@ export function parsePlanResponse(text: string): { ok: true; plan: Plan } | { ok
     return { ok: false, error: (err as Error).message };
   }
   const validated = validatePlan(parsed);
-  if (validated.ok) return { ok: true, plan: validated.plan };
-  return { ok: false, error: `Plan schema validation failed: ${validated.issues.join("; ")}` };
+  if (!validated.ok) {
+    return { ok: false, error: `Plan schema validation failed: ${validated.issues.join("; ")}` };
+  }
+  // M46.A — Coherence check: a "registry add" without a matching "dispatch
+  // edit" is the lazy-edit anti-pattern that produced 0 functional change in
+  // the RuleEngine run. Reject so the model is forced to revise the plan.
+  const coherence = checkPlanCoherence(validated.plan);
+  if (!coherence.ok) {
+    return { ok: false, error: `Plan coherence check failed: ${coherence.issues.join("; ")}` };
+  }
+  return { ok: true, plan: validated.plan };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// M46.A — Plan coherence: detect "registry-without-dispatch" anti-pattern.
+//
+// Example failure: the agent's plan listed Operator.java (add enum value)
+// as the ONLY required code target, omitting RuleEngineService.java (the
+// switch that dispatches on the enum). The run added the enum but never
+// wired it up — verifier passed because the new operator was never tested
+// (or worse, tests broke unrelated code). The path-coverage gate couldn't
+// help because it only checks "did you edit what you said you'd edit" —
+// not "is what you said you'd edit sufficient."
+//
+// Detection heuristic: if a required code target's intent mentions
+// add/new + enum/value/operator/variant/case, expect a SECOND required
+// code target whose file path or intent looks like a dispatcher /
+// service / handler / switch. Single-target registry adds are blocked
+// with an actionable message so the model can revise.
+// ─────────────────────────────────────────────────────────────────────────
+
+const REGISTRY_INTENT_RE = /\b(add|new|introduce|create|register)\b.*\b(enum|value|operator|variant|case|kind|type)\b/i;
+const REGISTRY_FILE_RE = /(Operator|Operators|OperatorType|Enum|Types|Codes|Registry|Constants|Kinds)\.(java|kt|ts|tsx|py|go|rs|cs)$/i;
+const DISPATCH_INTENT_RE = /\b(switch|case|dispatch|handle|route|evaluate|apply|impl|implement|wire)\b/i;
+const DISPATCH_FILE_RE = /(Service|Engine|Evaluator|Handler|Dispatcher|Router|Executor|Resolver|Processor|Manager)\.(java|kt|ts|tsx|py|go|rs|cs)$/i;
+
+function looksLikeRegistryAdd(target: { file: string; intent: string }): boolean {
+  return REGISTRY_FILE_RE.test(target.file) || REGISTRY_INTENT_RE.test(target.intent);
+}
+
+function looksLikeDispatchEdit(target: { file: string; intent: string }): boolean {
+  return DISPATCH_FILE_RE.test(target.file) || DISPATCH_INTENT_RE.test(target.intent);
+}
+
+export function checkPlanCoherence(plan: Plan): { ok: true } | { ok: false; issues: string[] } {
+  const requiredCode = plan.targets.filter((t) => t.required && t.kind === "code");
+  const registryTargets = requiredCode.filter(looksLikeRegistryAdd);
+  if (registryTargets.length === 0) return { ok: true };
+  const dispatchTargets = requiredCode.filter(looksLikeDispatchEdit);
+  if (dispatchTargets.length > 0) return { ok: true };
+  // Found a registry-add but no dispatch edit — this is the lazy-edit shape.
+  return {
+    ok: false,
+    issues: [
+      `target ${registryTargets[0].file} looks like a registry/enum addition ` +
+      `("${registryTargets[0].intent}") but no matching dispatcher/service/handler ` +
+      `edit is required in this plan. Add a second required target for the ` +
+      `switch/case/dispatch site (likely a *Service.java / *Engine.java / *Evaluator.java) ` +
+      `so the new enum value is actually wired into runtime behaviour. ` +
+      `Without it, the new operator will exist in the enum but be unreachable at runtime.`,
+    ],
+  };
 }
 
 // ── Progress mutators (pure functions returning new state objects) ─────────

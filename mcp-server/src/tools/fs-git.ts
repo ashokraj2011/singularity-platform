@@ -378,6 +378,40 @@ export const replaceTextTool: ToolHandler = {
       const oldText = String(args.oldText ?? "");
       const newText = String(args.newText ?? "");
       if (!oldText) return { success: false, output: null, error_code: "VALIDATION", error: "oldText is required" };
+
+      // M46.B — Arity guard. The "lazy-edit + broke-unrelated-tests" failure
+      // mode was: model anchors on a SHORT oldText (often a closing brace
+      // near end-of-file) and supplies a LONG newText that adds many lines.
+      // The replacement smashes the small anchor + everything implicitly
+      // after it, destroying trailing content the model didn't realize was
+      // there. Block when the ratio is wildly off and point the model at
+      // apply_patch (which uses explicit context lines) or a narrower edit.
+      const oldLines = oldText.split("\n").length;
+      const newLines = newText.split("\n").length;
+      const linesAdded = Math.max(0, newLines - oldLines);
+      const linesRemoved = Math.max(0, oldLines - newLines);
+      if (linesAdded > 100 && oldLines < 10) {
+        return {
+          success: false,
+          output: null,
+          error_code: "VALIDATION",
+          error:
+            `replace_text arity guard: oldText is ${oldLines} line(s) but newText adds ${linesAdded} new line(s). ` +
+            `This shape destroys trailing content under the anchor — the model is usually unaware of what came after. ` +
+            `Use apply_patch (with explicit context lines around the insertion point) for large additions, ` +
+            `or split this into two surgical replace_text calls: (1) modify just the matching region, ` +
+            `(2) write_file a NEW file for the bulk of the new content. ` +
+            `Limits: replace_text rejects when newLines − oldLines > 100 AND oldLines < 10.`,
+        };
+      }
+      // Soft warning for moderate cases — these often work but are risky.
+      // We include the warning in the output so the model can self-correct
+      // on the next call without blocking the current edit.
+      const arityWarning = (linesAdded > 50 && oldLines < 5)
+        ? `replace_text arity warning: oldText ${oldLines}L, newText adds ${linesAdded}L. Prefer apply_patch for safer multi-line additions.`
+        : undefined;
+      void linesRemoved; // currently unused; reserved for future heuristics
+
       const abs = resolveSandboxedPath(rel);
       const prevContent = await fs.promises.readFile(abs, "utf8");
       if (args.expected_hash) {
@@ -438,16 +472,17 @@ export const replaceTextTool: ToolHandler = {
 
       await fs.promises.writeFile(abs, content, "utf8");
       const fallbackPatch = `--- a/${rel}\n+++ b/${rel}\n@@ replace_text ${replaced} occurrence(s) @@\n-${oldText}\n+${newText}\n`;
-      return {
-        success: true,
-        output: await codeChangeOutputForFile(
-          rel,
-          fallbackPatch,
-          lineCount(newText) * replaced,
-          lineCount(oldText) * replaced,
-          "replace_text",
-        ),
-      };
+      const codeChange = await codeChangeOutputForFile(
+        rel,
+        fallbackPatch,
+        lineCount(newText) * replaced,
+        lineCount(oldText) * replaced,
+        "replace_text",
+      );
+      // M46.B — attach the arity warning to the output when it triggered so
+      // the LLM sees the advisory in its tool_result on the next turn.
+      const finalOutput = arityWarning ? { ...codeChange, arity_warning: arityWarning } : codeChange;
+      return { success: true, output: finalOutput };
     } catch (err) {
       return { success: false, output: null, error: (err as Error).message };
     }

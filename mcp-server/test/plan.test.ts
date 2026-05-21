@@ -334,3 +334,93 @@ describe("summarizePlanProgress display helper", () => {
     expect(summarizePlanProgress(plan, progress)).toBe("1/3 required edited, 1 skipped");
   });
 });
+
+// ── M46.A — Plan coherence: registry-without-dispatch ────────────────────
+
+import { checkPlanCoherence } from "../src/mcp/plan";
+
+describe("M46.A checkPlanCoherence", () => {
+  const dispatchPlan: Plan = {
+    rationale: "add a new operator and wire it into the engine",
+    targets: [
+      { file: "src/main/java/org/example/rules/Operator.java", kind: "code", required: true, intent: "Add containsACharacter enum value" },
+      { file: "src/main/java/org/example/rules/RuleEngineService.java", kind: "code", required: true, intent: "Add case for containsACharacter in evalCondition switch" },
+      { file: "src/test/java/org/example/rules/RuleEngineServiceTest.java", kind: "test", required: true, intent: "JUnit test" },
+    ],
+    verification: { suggested: { command: "mvn", args: ["test"], cwd: "." } },
+  };
+
+  it("passes a plan with both registry add AND dispatch edit", () => {
+    expect(checkPlanCoherence(dispatchPlan).ok).toBe(true);
+  });
+
+  it("blocks a registry-only plan (Operator.java add, no Service edit)", () => {
+    const lazyPlan: Plan = {
+      ...dispatchPlan,
+      targets: dispatchPlan.targets.filter((t) => !t.file.endsWith("RuleEngineService.java")),
+    };
+    const result = checkPlanCoherence(lazyPlan);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues[0]).toMatch(/Operator\.java/);
+      expect(result.issues[0]).toMatch(/dispatcher|service|handler/i);
+    }
+  });
+
+  it("detects registry-add via intent keywords even when filename is non-canonical", () => {
+    const oddNames: Plan = {
+      ...dispatchPlan,
+      targets: [
+        { file: "src/main/java/example/Tokens.java", kind: "code", required: true, intent: "register a new operator value 'containsACharacter'" },
+        // no dispatcher
+      ],
+    };
+    const result = checkPlanCoherence(oddNames);
+    expect(result.ok).toBe(false);
+  });
+
+  it("detects dispatch edit via intent keywords even when filename is non-canonical", () => {
+    const intentMatch: Plan = {
+      ...dispatchPlan,
+      targets: [
+        { file: "Operator.java", kind: "code", required: true, intent: "add new enum value" },
+        { file: "Core.java", kind: "code", required: true, intent: "wire the switch case for the new operator" },
+      ],
+    };
+    expect(checkPlanCoherence(intentMatch).ok).toBe(true);
+  });
+
+  it("ignores skipped or non-required targets when looking for the dispatch edit", () => {
+    const skippedDispatcher: Plan = {
+      ...dispatchPlan,
+      targets: [
+        { file: "Operator.java", kind: "code", required: true, intent: "add enum value" },
+        { file: "OldService.java", kind: "code", required: false, intent: "switch case", status: "skipped", skipReason: "deprecated" },
+      ],
+    };
+    expect(checkPlanCoherence(skippedDispatcher).ok).toBe(false);
+  });
+
+  it("passes a docs-only plan (no registry pattern)", () => {
+    const docsOnly: Plan = {
+      ...dispatchPlan,
+      targets: [
+        { file: "README.md", kind: "docs", required: true, intent: "Document the new feature" },
+      ],
+    };
+    expect(checkPlanCoherence(docsOnly).ok).toBe(true);
+  });
+
+  it("parsePlanResponse propagates the coherence error", () => {
+    const text = "```json\n" + JSON.stringify({
+      rationale: "register new op",
+      targets: [
+        { file: "Operator.java", kind: "code", required: true, intent: "add containsX enum value" },
+      ],
+      verification: { suggested: { command: "mvn", args: ["test"], cwd: "." } },
+    }) + "\n```";
+    const result = parsePlanResponse(text);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/coherence|registry|enum/i);
+  });
+});
