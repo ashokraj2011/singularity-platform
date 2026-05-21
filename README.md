@@ -318,6 +318,7 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
 | **M11 follow-up** OTel + Jaeger | Auto-instrumentation in workgraph-api (TS), context-api (Python), tool-service (TS), agent-runtime (TS), agent-service (TS); Jaeger all-in-one in `platform-registry` compose; W3C `traceparent` propagated automatically | Single trace `1cc8ef8ac9a1207b` had **59 spans across 4 services**. UI: `http://localhost:16686` |
 | **M11 follow-up** Service-token auto-mint | IAM `POST /api/v1/auth/service-token` + workgraph + cf bootstrap + `IAM_BOOTSTRAP_USERNAME/PASSWORD` env. Replaces 60-min admin-JWT-passing-via-env. | Both services start with `IAM_SERVICE_TOKEN=""`, mint 30-day tokens on first call |
 | **M11 follow-up / M33 hardened** Central LLM gateway | `context-fabric/services/llm_gateway_service` is the only provider-calling service. MCP, Workgraph, Prompt Composer, Agent Runtime, and Context Memory send `model_alias` requests to `LLM_GATEWAY_URL`. | Missing non-mock provider config fails closed. `ALLOW_CALLER_PROVIDER_OVERRIDE=false` by default. The only implicit fallback is explicit mock mode. |
+| **M42.7** Phased Agent Reasoning Model (v4) | Replaces the flat ReAct loop in mcp-server with an opt-in 6-phase state machine (`PLAN_DRAFT → EXPLORE → PLAN_CONFIRM → ACT → VERIFY → FINALIZE`). Per-phase tool allowlists, robust plan JSON extraction, path-coverage gate (lazy-edit fix), phase-aware repetition detection, backward-compatible approval pause/resume. See [Phased Agent Reasoning Model](#phased-agent-reasoning-model-v4) below. | Flip `MCP_AGENT_PHASES_ENABLED=true` + `WORKBENCH_AGENT_PHASES_ENABLED=true` in `.env`. `pnpm --filter @singularity/mcp-server test`: 137/139 passing (was 67; +70 new). `./bin/trace.sh --latest --stage develop` shows phase transitions. |
 
 ---
 
@@ -362,6 +363,7 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
 - [`singularity.sh` cheatsheet](#singularitysh-cheatsheet)
 - [Architecture deep-dive](#architecture-deep-dive)
 - [Migration history (what was built)](#migration-history)
+- [Phased Agent Reasoning Model (v4)](#phased-agent-reasoning-model-v4)
 - [Troubleshooting](#troubleshooting)
 - [Open items / roadmap](#open-items)
 
@@ -374,7 +376,7 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
 | **singularity-iam-service** | Identity, orgs, teams, roles, capabilities, skills, JWT, MCP server registry, service-token mint, event bus | Python · FastAPI · Postgres | `8100`, postgres `5433` |
 | **agent-and-tools** | Agent definitions, tool registry, prompt assembly, agent CRUD UI; per-service event bus + OTel | TypeScript monorepo · Express · Next.js · Prisma · Postgres+pgvector | `3000–3004`, postgres `5432` |
 | **context-fabric** | LLM cost optimizer (context compaction + token-saving ledger), `/execute` orchestrator, `/receipts` join, OTel | Python · 4× FastAPI · SQLite | `8000–8003` |
-| **mcp-server** | Per-tenant MCP execution engine + WS bridge. Customer-deployed, owns local tools/AST/branches, and calls the central LLM gateway by model alias. | TypeScript · Express · WebSocket | `7100` |
+| **mcp-server** | Per-tenant MCP execution engine + WS bridge. Customer-deployed, owns local tools/AST/branches, and calls the central LLM gateway by model alias. Ships with an opt-in [Phased Agent Reasoning Model](#phased-agent-reasoning-model-v4) (6-phase state machine with path-coverage gate) behind `MCP_AGENT_PHASES_ENABLED`. | TypeScript · Express · WebSocket | `7100` |
 | **workgraph-studio** | Visual DAG designer + workflow runtime, Blueprint Workbench stage loop, federated `/api/lookup/*`, snapshot layer, unified `/api/receipts`, event bus + receiver, OTel | React + ReactFlow + Zustand · Express + Prisma · MinIO | `5174` (web) / `5176` (workbench) / `8080` (api), postgres `5434`, minio `9000-9001` |
 | **platform-registry** | Service + Contract Registry: every service self-registers on startup with capabilities + OpenAPI/event/node contracts | TypeScript · Express · Postgres | `8090`, postgres `5435` |
 | **UserAndCapabillity** | Visual admin SPA for IAM | React 19 · Vite · Tailwind · Radix · Zustand | `5175` |
@@ -971,6 +973,212 @@ The composition plane was added in five milestones, each verified end-to-end:
 | **M3** | Cut over the agent-and-tools admin (`web/`) to call composer instead of agent-runtime: new `/api/composer/*` Next.js rewrite, `web/Dockerfile` gained `PROMPT_COMPOSER_URL` build-arg (Next.js bakes rewrites at build time, not runtime), agent-runtime's prompt route mount removed |
 | **M4** | Added `POST /compose-and-respond` — workflow context, artifacts, Mustache substitution, tool-service discovery, context-fabric call, three correlation IDs |
 | **M5** | Wired workgraph's `AgentTaskExecutor` to call `/compose-and-respond`. Fixed `AgentRun.startedAt`/`completedAt` lifecycle. Fixed workgraph Dockerfile (workspace context + Alpine OpenSSL) so it actually builds and runs in production. |
+
+---
+
+## Phased Agent Reasoning Model (v4)
+
+> **Status:** opt-in via two env flags. Default off — the existing flat ReAct loop continues to run for every workflow until both flags are set to `true` AND the caller requests `agentReasoningMode: "phased"`.
+
+### Why this exists
+
+The original `mcp-server/src/mcp/invoke.ts:runLoop()` was a free-form ReAct loop: the LLM was given a system prompt plus a tool list and was free to emit any tool call (or final text) at any step until `max_steps`. Production traces surfaced six recurring failure modes that all traced back to that unstructured shape:
+
+1. **Lazy edits** — agents would add an enum value but skip the corresponding switch/handler/registry change; the gate only required *a* code-change receipt and *a* verification, never that the changes matched the requested implementation.
+2. **Wandering exploration** — agents spent 6–14 steps re-reading files whose results had been compressed out of the sliding window.
+3. **Tool-call thrashing** — agents retried `find`/`ls`/`wc` 9× before the model noticed they were rejected.
+4. **Verification skipped** — agents called `finish_work_branch` before `run_test`, leaving the gate to reject the run after the fact.
+5. **Plan never explicit** — the *implementation plan* lived only in the model's prose, got compressed, then disappeared.
+6. **Output truncation under low `maxOutputTokens`** — `write_file` content arrived empty when the model's response stream cut off mid-stream.
+
+Each was fixable in isolation; the shared root cause is that **the loop had no structured progression**. The v4 redesign introduces a six-phase state machine that gates which tools are visible AND dispatchable per phase, requires an explicit revisable plan artifact, enforces path-coverage between the plan's required code targets and the actual code-change paths, and validates verification commands against the verifier registry.
+
+### The six phases
+
+| Phase | Budget | LLM-visible AND dispatchable tools | Transition gate |
+|-------|--------|------------------------------------|-----------------|
+| `PLAN_DRAFT` | 2 | read-only: `find_symbol`, `get_symbol`, `get_ast_slice`, `get_dependencies`, `search_code`, `read_file`, `list_directory`, `index_workspace` | Valid plan JSON parsed (robust extractor) OR budget exhausted → fallback plan synthesized |
+| `EXPLORE` | 6 | read-only (same set as `PLAN_DRAFT`) | Every required draft target file has been read OR budget exhausted |
+| `PLAN_CONFIRM` | 2 | read-only | Confirmed plan JSON emitted. Dropped required targets must include a `skipReason`. |
+| `ACT` | 10 | mutation + read: `replace_text`, `replace_range`, `apply_patch`, `write_file`, plus `read_file`, `search_code`, `get_symbol`, `get_ast_slice` so the agent can verify imports / inspect surrounding code while editing | All `required: true` plan items applied (path-coverage check) OR marked `skipped` with reason OR budget exhausted |
+| `VERIFY` | 2 | `run_test`, `run_command`, `verification_unavailable` | A verification receipt exists; the receipt's command is validated against the verifier registry |
+| `FINALIZE` | 1 | **none** — `mcp-server` auto-finishes via `buildResponseBody` emitting the `finish_work_branch_auto` audit kind | Auto-close |
+
+Total developer budget: 2 + 6 + 2 + 10 + 2 + 1 = **23 steps**, with a hard cap of 28 for safety slack.
+
+> `finish_work_branch_auto` is the audit/provenance label MCP writes when it auto-finishes a successful run — it is **not** an LLM-callable tool. The LLM-callable tool is `finish_work_branch`; FINALIZE exposes neither so the model never has to make that choice.
+
+### The plan artifact
+
+A first-class JSON object produced by the model in `PLAN_DRAFT` and revised in `PLAN_CONFIRM`. The Zod schema lives in `mcp-server/src/mcp/plan.ts`:
+
+```json
+{
+  "rationale": "Add containsACharacter operator end to end.",
+  "targets": [
+    { "file": "src/main/java/.../Operator.java",          "kind": "code", "required": true,  "intent": "add enum value",         "status": "pending" },
+    { "file": "src/main/java/.../RuleEngineService.java", "kind": "code", "required": true,  "intent": "add switch case",         "status": "pending" },
+    { "file": "src/test/java/.../RuleEngineServiceTest.java", "kind": "test", "required": true, "intent": "case-insensitive test", "status": "pending" },
+    { "file": "README.md",                                "kind": "docs", "required": false, "intent": "document operator",       "status": "pending" }
+  ],
+  "verification": { "suggested": { "command": "mvn", "args": ["test"], "cwd": "." } },
+  "risks": ["case sensitivity", "null/empty handling"]
+}
+```
+
+Per-target fields:
+
+- `file` — workspace-relative path
+- `kind` — `"code" | "test" | "docs" | "config"`
+- `required` — `true | false`; required-true items must be applied or explicitly skipped before `ACT` can exit
+- `intent` — human-readable description (also used by the path-coverage gate when explaining failures)
+- `status` — `"pending" | "read" | "edited" | "skipped"` (tracked in `LoopState.phaseMachine.planProgress`)
+- `skipReason` — required when `status === "skipped"`; logged to audit
+
+**Why `kind` + `required` matter.** A docs-only task will have `required: true` only on `kind: "docs"` rows, so the path-coverage gate passes naturally. A functional-code task will have `required: true` on `kind: "code"` rows, so a README-only edit fails the gate — the lazy-edit problem.
+
+#### Robust plan-JSON extraction
+
+LLMs almost always wrap JSON in markdown fences and pad it with conversational prose. The parser (`mcp-server/src/mcp/plan.ts:extractAndParsePlan`) handles all three common shapes:
+
+1. Fenced \`\`\`json … \`\`\` blocks (with or without the `json` language tag)
+2. Plain JSON with no fence
+3. Greedy outer-brace recovery when prose surrounds the object
+
+Validation failure does **not** abort the run — see the fallback section below.
+
+### Tool gating: filter both visible AND dispatchable lists
+
+The phase filter applies to two arrays in `LoopState`:
+
+1. `availableTools` — what the LLM sees in the request's `tools` array
+2. `fullToolDescriptors` — what dispatch can execute
+
+If the model emits a tool_call for a tool not in the current phase's allowlist:
+
+- Dispatch refuses with a structured, model-readable error such as
+  > `Tool 'write_file' is not available in phase EXPLORE. Available tools this phase: find_symbol, get_ast_slice, get_dependencies, get_symbol, index_workspace, list_directory, read_file, search_code. The phase transitions to PLAN_CONFIRM after all required draft targets have been read.`
+- The refusal counts as the step (so a model that ignores guidance still hits its budget)
+- An `agent.phase.tool_violation` audit event records the attempt
+
+### Path-coverage gate (the lazy-edit fix)
+
+Three layers ensure the gate cannot be bypassed:
+
+1. **In-loop check (ACT transition):** `runLoop` cannot leave `ACT` until `unsatisfiedRequiredTargets(plan, accumulatedCodeChangePaths, planProgress)` is empty. Skipped-with-reason counts as satisfied; required-true skips are logged but not blocked.
+2. **Verifier-side check (existing):** `blueprint.router.ts:~2520` still requires a passing or explicitly-unavailable verification receipt.
+3. **Post-loop check (new):** `buildResponseBody` emits `codeChangeCoverage: { required, covered, skipped, missing, hasRequiredCodeGap }` into the run result. The workgraph-api stage gate adds a branch: if `missing` contains any `kind: "code"` target, verdict = `NEEDS_REWORK` regardless of receipt status.
+
+This is what stops `"README changed, service untouched"` from satisfying the existing gates.
+
+### Verifier validation
+
+The plan's `verification.suggested` is a **hint**, not a contract:
+
+1. At `VERIFY` entry, `mcp-server` runs `detectVerifiers(workspaceRoot)` to get the canonical list from the verifier registry.
+2. The model may pick from the registry OR pass the suggested command if it matches a registry entry AND passes the existing command-allowlist (`mcp-server/src/tools/command.ts:ALLOWED_COMMANDS`).
+3. Otherwise the agent must call `verification_unavailable` with an explicit reason — the gate accepts this as `ACCEPTED_WITH_RISK` when the operator confirms.
+
+### Repetition detector — phase-aware
+
+The previous flat-loop detector tripped on the agent's natural `CONFLICT`-retry-with-new-hash recovery pattern in mid-mutation work. The phase-aware version applies different thresholds and rules per phase:
+
+| Phase | Threshold | Tighter rule |
+|-------|-----------|--------------|
+| `PLAN_DRAFT`, `EXPLORE`, `PLAN_CONFIRM` | 3 | Standard (consecutive identical args) |
+| `ACT` | 3 | **AND** identical OUTPUT — so a `CONFLICT`-then-retry-with-new-hash does **not** fire because the output differs |
+| `VERIFY` | 2 | Verification calls are short; two identical failures = no progress |
+
+Counters reset on:
+
+- Successful mutation (`success: true` from a mutation tool)
+- `CONFLICT` `error_code` (legit re-read incoming)
+- Phase transition
+
+### Plan fallback when `PLAN_DRAFT` runs out of budget
+
+If the model burns both `PLAN_DRAFT` steps without emitting valid JSON, `mcp-server` synthesizes a minimal default plan with empty targets so the path-coverage check is vacuous and the agent operates in unconstrained-but-budget-enforced mode. An `agent.plan.fallback_synthesized` audit event flags the run.
+
+### Live phase frame injected each step
+
+Before every LLM call, `mcp-server` injects a fresh system-role frame that the sliding window cannot compress away:
+
+```
+Phase: ACT (step 4 of 10 in this phase).
+Plan progress: 1/3 required targets edited, 0 skipped. Remaining: src/main/java/.../RuleEngineService.java, src/test/.../RuleEngineServiceTest.java
+Allowed this phase: apply_patch, get_ast_slice, get_symbol, read_file, replace_range, replace_text, search_code, write_file.
+Transition: apply every required target's edit (or mark skipped with reason) to advance to VERIFY.
+```
+
+The static "Phased Agent Contract" half of the model's instructions lives in the **Developer Role Contract** layer in prompt-composer (id `00000000-0000-0000-0000-0000000000a2`); apply via `./bin/apply-phased-agent-prompt.sh` after deploying.
+
+### Approval pause / resume — backward compatible
+
+`PendingApproval.phase_machine` is an optional field on the approval envelope. When present, the resumed loop re-enters the same phase with its plan, progress, budgets, step usage, and repetition counters intact. When absent (legacy envelopes minted before v4), the resume path defaults to flat-loop mode — no crashes on old approvals in flight.
+
+### How to enable
+
+Set both flags to `true` in `.env`:
+
+```bash
+MCP_AGENT_PHASES_ENABLED=true
+WORKBENCH_AGENT_PHASES_ENABLED=true
+```
+
+Then recreate the affected containers so they pick up the env vars:
+
+```bash
+SSH_AUTH_SOCK="" docker compose up -d --no-deps --force-recreate \
+  mcp-server-demo workgraph-api context-api
+```
+
+And (one-time) apply the phased-agent prompt to prompt-composer:
+
+```bash
+./bin/apply-phased-agent-prompt.sh
+```
+
+To disable, set either flag to `false` and recreate the containers — the flat ReAct loop resumes immediately, no code rollback needed.
+
+### How to verify it's working
+
+After the next developer-stage run:
+
+```bash
+./bin/trace.sh --latest --stage develop
+```
+
+You should see:
+
+- `LlmCallRecord` entries carrying a new `phase` field (`PLAN_DRAFT`, `EXPLORE`, `ACT`, …)
+- Per-phase audit events: `agent.plan.drafted`, `agent.plan.revised`, `agent.phase.transitioned`
+- If a tool was rejected by gating: `agent.phase.tool_violation`
+- If the lazy-edit gate tripped: `agent.plan.required_code_gap`
+
+The unit-test suite covers the pure logic:
+
+```bash
+cd mcp-server && pnpm test
+# 137 passing | 2 skipped (was 67 before v4; +70 new tests)
+```
+
+### File reference
+
+| File | Role |
+|------|------|
+| `mcp-server/src/mcp/phases.ts` | Phase enum, tool allowlists, transition predicates, repetition rules, code-change coverage, phase-frame synthesis, fallback-plan synthesis |
+| `mcp-server/src/mcp/plan.ts` | Plan Zod schema (kind + required + status + skipReason), `extractAndParsePlan` robust JSON extractor, progress mutators, path-coverage helpers, plan-diff for revision audit events |
+| `mcp-server/src/mcp/invoke.ts` | `LoopState.phaseMachine` extension, runtime helpers (`initPhaseMachine`, `applyPhaseFilteringForLlmCall`, `tryParsePlanFromAssistant`, `phaseGateForToolCall`, `recordPhaseToolEffect`, `detectPhaseRepetition`, `advancePhaseStepAndMaybeTransition`), `runLoop` integration, `buildResponseBody` coverage emission, `savePending`/`takePending` persistence |
+| `mcp-server/src/config.ts` | `MCP_AGENT_PHASES_ENABLED` env flag (Zod-coerced boolean, default `false`) |
+| `mcp-server/src/audit/store.ts` | `LlmCallRecord.phase` field for trace correlation |
+| `mcp-server/src/audit/pending.ts` | `PendingApproval.phase_machine` field (backward compatible) |
+| `mcp-server/test/{phases,plan,phase-resume}.test.ts` | 70 unit tests covering pure logic + persistence |
+| `workgraph-studio/apps/api/src/modules/blueprint/blueprint.router.ts` | `WORKBENCH_AGENT_PHASES_ENABLED` opt-in, `WORKBENCH_DEVELOPER_PHASE_BUDGETS` constant, per-stage `agentReasoningMode` + `phaseBudgets` plumbed into the execute payload, `attemptCodeChangeCoverage` helper + path-coverage gate branch in the verdict check |
+| `context-fabric/services/context_api_service/app/execute.py` | Plumbs `agentReasoningMode` + `phaseBudgets` from the incoming `/execute` request into the `invoke_payload.limits` block sent to mcp-server |
+| `bin/apply-phased-agent-prompt.sh` | Idempotent one-shot script that PATCHes prompt-composer's Developer Role Contract layer with the static "Phased Agent Contract" section |
+| `docker-compose.yml` | Env-var pass-through for `MCP_AGENT_PHASES_ENABLED` (mcp-server-demo) and `WORKBENCH_AGENT_PHASES_ENABLED` (workgraph-api) |
+
+The design is preserved at `~/.claude/plans/immutable-sniffing-quiche.md` for reviewers.
 
 ---
 
