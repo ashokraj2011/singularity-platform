@@ -79,7 +79,23 @@ Initial guesses are OK in PLAN_DRAFT — EXPLORE will correct them and PLAN_CONF
 2. **EXPLORE** (~6 steps, read-only: find_symbol, get_symbol, get_ast_slice, get_dependencies, search_code, read_file, list_directory, index_workspace) — Read every required target file. Verify imports, dependencies, the structure your edits will touch.
 3. **PLAN_CONFIRM** (~2 steps, read-only) — Re-emit the plan JSON, possibly revised. Same schema as PLAN_DRAFT. If you DROP a previously-required target, that target row must include `"status": "skipped"` AND a non-empty `"skipReason"`. Unjustified drops are logged as warnings.
 4. **ACT** (~10 steps, mutation + read: replace_text, replace_range, apply_patch, write_file, read_file, search_code, get_symbol, get_ast_slice) — Apply each `required: true` target's edit. Read tools remain available so you can inspect imports while editing. To mark a target no-longer-needed mid-flight, emit a plan-revision JSON. Plan to make ALL required edits before VERIFY — once ACT exits you cannot return.
-5. **VERIFY** (~2 steps, tools: run_test, run_command, verification_unavailable) — Run the project's verification command (e.g. `mvn test`, `pnpm test`). Commands are validated against an internal allowlist (git, rg, npm, pnpm, yarn, node, python, python3, pytest, go, cargo, mvn, gradle, gradlew, dotnet, make). If no verifier exists, call `verification_unavailable` with an explicit reason — the gate will then require Accept-with-risk on approval. Do NOT call `cat`, `grep`, `find`, `ls`, `wc` — they are not allowlisted and will be rejected.
+5. **VERIFY** (~2 steps, tools: run_test, run_command, verification_unavailable) — Run the project's verification command (e.g. `mvn test`, `pnpm test`). Commands are validated against an internal allowlist (git, rg, npm, pnpm, yarn, node, python, python3, pytest, go, cargo, mvn, gradle, gradlew, dotnet, make). If no verifier exists, call `verification_unavailable` with an explicit reason — the gate will then require Accept-with-risk on approval.
+
+### Never use these OS verbs — use the MCP equivalents
+
+`cat`, `find`, `grep`, `ls`, `wc`, `head`, `tail` are NOT allowlisted in `run_command` and will be rejected. Even if they were, the MCP-native tools below are sandbox-scoped, skip `node_modules`/`.git`/`target`/etc, and return ~2-3× fewer tokens.
+
+| OS verb | MCP replacement | When to pick it |
+|---------|----------------|-----------------|
+| `cat <file>` | `read_file(path)` | full file |
+| `cat <file>` (just one part) | `get_ast_slice(filePath, startLine, endLine)` | known line range — most token-efficient |
+| `find -name "*.java"` | `find_files(pattern, path?)` | enumerate paths (returns paths only, no content) |
+| `grep "<pattern>" <file>` | `search_code(query, path?, glob?)` | just want the matching lines |
+| `grep -A 5 -B 2 "<pat>"` | `grep_lines(query, path?, context_before, context_after)` | need surrounding context |
+| `ls -la <dir>` | `list_directory(path, recursive?)` | directory tree |
+| `wc -l <file>` | `file_stats(paths: [...])` | bytes + lines + language; batches up to 50 |
+
+Calling these MCP tools is always cheaper and more reliable than `run_command`. `run_command` is reserved for `mvn test` / `pnpm test` / `git status` style verifier invocations only.
 6. **FINALIZE** (~1 step, no tools) — Emit a final summary text response. The work branch auto-finishes from here.
 
 ### Path-coverage gate

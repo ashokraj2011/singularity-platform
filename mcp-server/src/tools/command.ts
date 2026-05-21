@@ -328,7 +328,10 @@ const commandInputSchema = {
 const RUN_COMMAND_ALLOWLIST_HINT =
   "Allowed executables: git, rg, npm, pnpm, yarn, node, python, python3, pytest, go, cargo, mvn, gradle, gradlew, dotnet, make. " +
   "Shell operators are REJECTED: no pipes (|), redirects (>, <, 2>), chaining (&&, ||, ;), command substitution ($(...), backticks). " +
-  "For directory listing or file search use the dedicated MCP tools (list_directory, search_code, read_file) — NOT find/ls/grep via run_command. " +
+  "Do NOT use this tool for filesystem inspection — `cat`, `find`, `grep`, `ls`, `wc`, `head`, `tail` are NOT allowlisted. " +
+  "Use dedicated MCP tools instead, all of which are sandbox-scoped and far more token-efficient: " +
+  "read_file (cat), find_files (find -name), grep_lines (grep -A/-B with context), search_code (grep without context), " +
+  "list_directory (ls), file_stats (wc -l / stat), get_ast_slice (cat on a line range). " +
   "Pass executable + args, e.g. {\"command\": \"mvn\", \"args\": [\"test\"]} or {\"command\": \"rg\", \"args\": [\"-n\", \"pattern\", \"src/\"]}.";
 
 export const runCommandTool: ToolHandler = {

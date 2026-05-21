@@ -203,6 +203,10 @@ import {
 import {
   readFileTool, listDirectoryTool, searchCodeTool, httpGetTool, webFetchTool,
 } from "./core";
+// M42.8 — token-efficient discovery tools that replace OS verbs (find/wc/grep)
+import {
+  findFilesTool, fileStatsTool, grepLinesTool,
+} from "./discover";
 // M26 — gh copilot headless wrappers (only meaningful in laptop mode where the
 // user has run `gh auth login` and `gh extension install github/gh-copilot`).
 import { copilotSuggestTool, copilotExplainTool } from "./copilot-headless";
@@ -234,6 +238,9 @@ const REGISTRY = new Map<string, ToolHandler>([
   [readFileTool.descriptor.name, readFileTool],
   [listDirectoryTool.descriptor.name, listDirectoryTool],
   [searchCodeTool.descriptor.name, searchCodeTool],
+  [findFilesTool.descriptor.name, findFilesTool],
+  [fileStatsTool.descriptor.name, fileStatsTool],
+  [grepLinesTool.descriptor.name, grepLinesTool],
   [httpGetTool.descriptor.name, httpGetTool],
   [webFetchTool.descriptor.name, webFetchTool],
   [copilotSuggestTool.descriptor.name, copilotSuggestTool],

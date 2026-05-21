@@ -44,6 +44,10 @@ const READ_ONLY_TOOLS = new Set<string>([
   "read_file",
   "list_directory",
   "index_workspace",
+  // M42.8 — token-efficient OS-verb replacements
+  "find_files",   // replaces `find -name <glob>`
+  "file_stats",   // replaces `wc -l` and quick `stat`
+  "grep_lines",   // replaces `grep -A N -B M` with sandbox-scoped ripgrep
 ]);
 
 const MUTATION_TOOLS = new Set<string>([
@@ -60,12 +64,17 @@ const VERIFICATION_TOOLS = new Set<string>([
 ]);
 
 /** ACT keeps a read-only subset because editing constantly needs to inspect
- *  surrounding code (imports, surrounding signatures). Verification report Gap 4. */
+ *  surrounding code (imports, surrounding signatures). Verification report Gap 4.
+ *  Also includes the M42.8 token-efficient discovery tools so the agent
+ *  never falls back to OS verbs (find/grep/wc) mid-edit. */
 const ACT_READ_SUBSET = new Set<string>([
   "read_file",
   "search_code",
   "get_symbol",
   "get_ast_slice",
+  "find_files",
+  "file_stats",
+  "grep_lines",
 ]);
 
 export const TOOL_ALLOWLISTS: Record<Phase, ReadonlySet<string>> = {
