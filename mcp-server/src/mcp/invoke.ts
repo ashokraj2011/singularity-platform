@@ -313,6 +313,46 @@ function hasTool(state: LoopState, names: string[]): boolean {
   return names.some((name) => available.has(name));
 }
 
+/**
+ * M43 Slice 3 — pure helper, exported for testability. Computes the
+ * verification-coverage signal that the workgraph-side gate reads from
+ * `correlation.verificationCoverage`.
+ *
+ * `gap = codeChanged && !receiptsPresent` — verification_unavailable still
+ * counts as a receipt (the agent explicitly acknowledged no verifier), so a
+ * gap means the agent skipped VERIFY entirely after making code changes.
+ */
+export function computeVerificationCoverage(
+  codeChangeIdCount: number,
+  receipts: ReadonlyArray<Record<string, unknown>>,
+): {
+  codeChanged: boolean;
+  receiptsPresent: boolean;
+  hasPassingReceipt: boolean;
+  hasUnavailableReceipt: boolean;
+  gap: boolean;
+} {
+  const codeChanged = codeChangeIdCount > 0;
+  const receiptsPresent = receipts.length > 0;
+  const hasPassingReceipt = receipts.some((r) =>
+    r.passed === true ||
+    r.exit_code === 0 ||
+    (r as { exitCode?: unknown }).exitCode === 0,
+  );
+  const hasUnavailableReceipt = receipts.some((r) =>
+    String(r.command ?? "") === "verification_unavailable" ||
+    r.unavailable === true ||
+    r.verification_kind === "unavailable",
+  );
+  return {
+    codeChanged,
+    receiptsPresent,
+    hasPassingReceipt,
+    hasUnavailableReceipt,
+    gap: codeChanged && !receiptsPresent,
+  };
+}
+
 function verificationReceiptsFromOutput(
   output: unknown,
   toolInvocationId: string,
@@ -2396,6 +2436,35 @@ async function buildResponseBody(
     }
   }
 
+  // M43 Slice 3 — Deterministic verification gate (config-flagged).
+  // When code changed in this run we expect AT LEAST ONE verification
+  // receipt — either a real one from run_test/run_command OR an explicit
+  // `verification_unavailable` receipt acknowledging that no verifier
+  // exists. Without either, the run lacks evidence that the changes do
+  // what the task asked for. We surface a structured signal under
+  // `correlation.verificationCoverage` so workgraph-side gates can
+  // require NEEDS_REWORK.
+  let verificationCoverage: ReturnType<typeof computeVerificationCoverage> | undefined;
+  if (config.MCP_DETERMINISTIC_VERIFICATION_GATE_ENABLED) {
+    verificationCoverage = computeVerificationCoverage(
+      state.codeChangeIds.length,
+      state.verificationReceipts,
+    );
+    if (verificationCoverage.gap) {
+      emitAuditEvent({
+        trace_id: state.correlation.traceId,
+        source_service: "mcp-server",
+        kind: "agent.verification.gap",
+        capability_id: state.correlation.capabilityId,
+        severity: "warn",
+        payload: {
+          codeChangeIds: state.codeChangeIds,
+          message: "code changed but no verification receipt captured (run_test, run_command, or verification_unavailable)",
+        },
+      });
+    }
+  }
+
   const correlationOut: Record<string, unknown> = {
     mcpInvocationId: state.correlation.mcpInvocationId,
     traceId: state.correlation.traceId,
@@ -2410,6 +2479,7 @@ async function buildResponseBody(
     promptCache,
     finalArtifactId,
     ...(codeChangeCoverage ? { codeChangeCoverage, agentReasoningMode: "phased" } : {}),
+    ...(verificationCoverage ? { verificationCoverage } : {}),
   };
 
   const out: Record<string, unknown> = {

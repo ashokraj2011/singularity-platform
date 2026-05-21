@@ -44,6 +44,15 @@ const schema = z.object({
   // /Users/ashokraj/.claude/plans/immutable-sniffing-quiche.md for the design.
   MCP_AGENT_PHASES_ENABLED: z.coerce.boolean().default(false),
 
+  // M43 Slice 3 — Deterministic verification gate. When enabled, runs that
+  // produced code changes but no verification receipt (or explicit
+  // verification_unavailable receipt) are marked with
+  // `correlation.verificationCoverage.gap = true`. The workgraph-side gate
+  // can then refuse approval (NEEDS_REWORK). Default off so the gate ships
+  // as a signal first, becomes blocking once we have a feel for false
+  // positives.
+  MCP_DETERMINISTIC_VERIFICATION_GATE_ENABLED: z.coerce.boolean().default(false),
+
   // M16 — sandbox root for the real fs/git tools. All paths must resolve
   // strictly inside this dir; absolute paths and `..` traversal are rejected.
   // Default is the workdir; ops can mount a host directory in via docker-compose

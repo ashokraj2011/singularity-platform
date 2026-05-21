@@ -2536,6 +2536,21 @@ async function saveStageVerdict(
         `Send the stage back so the agent can complete the implementation, or revise the plan to mark ${coverage.missing.length === 1 ? 'that file' : 'those files'} skipped with an explicit reason.`,
       )
     }
+    // ── M43 Slice 3 — Deterministic verification gate ─────────────────
+    // mcp-server (with MCP_DETERMINISTIC_VERIFICATION_GATE_ENABLED=true) emits
+    // `correlation.verificationCoverage`. When `gap=true`, the run produced
+    // code changes but no verification receipt at all (not even an explicit
+    // verification_unavailable). Refuse to approve — the agent must either
+    // run a verifier or explicitly acknowledge no verifier exists.
+    const verCoverage = attemptVerificationCoverage(latestAttempt)
+    if (verCoverage && verCoverage.gap) {
+      throw new ValidationError(
+        `Verification gate: code changes are present in this attempt but no verification receipt was captured. ` +
+        `The agent must call run_test (with a recommended_verification command), run_command, ` +
+        `or verification_unavailable with an explicit reason before this stage can be approved. ` +
+        `Send the stage back so the agent can complete VERIFY.`,
+      )
+    }
   }
   const attempts = state.stageAttempts.map(item => item.id === latestAttempt.id ? {
     ...item,
@@ -3777,6 +3792,28 @@ function attemptCodeChangeCoverage(attempt: StageAttempt): {
       : [],
     missing: Array.isArray(raw.missing) ? raw.missing.filter((x): x is string => typeof x === 'string') : [],
     hasRequiredCodeGap: raw.hasRequiredCodeGap === true,
+  }
+}
+
+/** M43 Slice 3 — read `correlation.verificationCoverage` shape emitted by
+ *  mcp-server when MCP_DETERMINISTIC_VERIFICATION_GATE_ENABLED=true. Returns
+ *  null when the field is absent (gate flag off, or pre-M43 mcp-server). */
+function attemptVerificationCoverage(attempt: StageAttempt): {
+  codeChanged: boolean
+  receiptsPresent: boolean
+  hasPassingReceipt: boolean
+  hasUnavailableReceipt: boolean
+  gap: boolean
+} | null {
+  const correlation = isRecord(attempt.correlation) ? attempt.correlation : {}
+  const raw = correlation.verificationCoverage
+  if (!isRecord(raw)) return null
+  return {
+    codeChanged: raw.codeChanged === true,
+    receiptsPresent: raw.receiptsPresent === true,
+    hasPassingReceipt: raw.hasPassingReceipt === true,
+    hasUnavailableReceipt: raw.hasUnavailableReceipt === true,
+    gap: raw.gap === true,
   }
 }
 
