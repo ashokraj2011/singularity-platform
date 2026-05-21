@@ -2024,7 +2024,7 @@ function buildBreadcrumbMessage(lines: string[]): ChatMessage {
   return { role: "user", content: `${BREADCRUMB_PREFIX}\n${lines.join("\n")}` };
 }
 
-function applySlidingWindow(state: LoopState): void {
+export function applySlidingWindow(state: LoopState): void {
   if (!state.maxHistoryMessages && !state.maxHistoryTokens) return;
 
   const beforeMessages = state.messages.length;
@@ -2045,6 +2045,12 @@ function applySlidingWindow(state: LoopState): void {
     ? candidates.filter((_, i) => i !== anchorIdx)
     : candidates;
 
+  const latestToolExchange = splitLatestToolExchange(rollingMessages);
+  let historicalRolling = latestToolExchange
+    ? rollingMessages.slice(0, latestToolExchange.start)
+    : rollingMessages;
+  const pinnedLatestExchange = latestToolExchange?.messages ?? [];
+
   // Always strip leading orphan tool messages from rolling. A tool message
   // without a preceding assistant tool_use produces an Anthropic 400:
   // "tool_result block must have a corresponding tool_use". Once we pin
@@ -2054,27 +2060,33 @@ function applySlidingWindow(state: LoopState): void {
   // no trim happened — because rolling can start with a tool message via
   // context-fabric history or via the resume path. If this empties rolling,
   // that's fine: anchor + breadcrumb still constitute a valid first message.
-  rollingMessages = dropLeadingOrphanToolMessages(rollingMessages);
+  historicalRolling = dropLeadingOrphanToolMessages(historicalRolling);
 
   if (state.maxHistoryMessages) {
-    // Reserve slots for the pinned anchor + breadcrumb so they don't eat the rolling budget.
-    const willHaveBreadcrumb = state.breadcrumbs.length > 0 || rollingMessages.length > state.maxHistoryMessages;
-    const reserved = (anchorMessage ? 1 : 0) + (willHaveBreadcrumb ? 1 : 0);
-    const rollingCap = Math.max(1, state.maxHistoryMessages - reserved);
-    if (rollingMessages.length > rollingCap) {
-      rollingMessages = dropLeadingOrphanToolMessages(rollingMessages.slice(-rollingCap));
+    // Reserve slots for the pinned anchor, breadcrumb, and newest tool exchange.
+    // The newest exchange is deliberately not counted as droppable history: if
+    // we remove the latest tool results, the model forgets what it just learned
+    // and tends to repeat the same discovery calls until max_steps.
+    const willHaveBreadcrumb = state.breadcrumbs.length > 0 ||
+      historicalRolling.length + pinnedLatestExchange.length > state.maxHistoryMessages;
+    const reserved = (anchorMessage ? 1 : 0) + (willHaveBreadcrumb ? 1 : 0) + pinnedLatestExchange.length;
+    const historicalCap = Math.max(0, state.maxHistoryMessages - reserved);
+    if (historicalRolling.length > historicalCap) {
+      historicalRolling = historicalCap > 0
+        ? dropLeadingOrphanToolMessages(historicalRolling.slice(-historicalCap))
+        : [];
     }
   }
 
   if (state.maxHistoryTokens) {
     const anchorArr = anchorMessage ? [anchorMessage] : [];
     const tentativeBreadcrumb = state.breadcrumbs.length > 0 ? [buildBreadcrumbMessage(state.breadcrumbs)] : [];
-    let combined = [...systemMessages, ...anchorArr, ...tentativeBreadcrumb, ...rollingMessages];
-    while (rollingMessages.length > 1 && estimateLoopInputTokens({ ...state, messages: combined }) > state.maxHistoryTokens) {
-      const candidate = dropLeadingOrphanToolMessages(rollingMessages.slice(1));
-      if (candidate.length === rollingMessages.length) break; // no progress
-      rollingMessages = candidate;
-      combined = [...systemMessages, ...anchorArr, ...tentativeBreadcrumb, ...rollingMessages];
+    let combined = [...systemMessages, ...anchorArr, ...tentativeBreadcrumb, ...historicalRolling, ...pinnedLatestExchange];
+    while (historicalRolling.length > 0 && estimateLoopInputTokens({ ...state, messages: combined }) > state.maxHistoryTokens) {
+      const candidate = dropLeadingOrphanToolMessages(historicalRolling.slice(1));
+      if (candidate.length === historicalRolling.length) break; // no progress
+      historicalRolling = candidate;
+      combined = [...systemMessages, ...anchorArr, ...tentativeBreadcrumb, ...historicalRolling, ...pinnedLatestExchange];
     }
   }
 
@@ -2082,7 +2094,7 @@ function applySlidingWindow(state: LoopState): void {
   // (tool_result whose tool_use_id isn't emitted by an earlier assistant
   // turn in this rolling window). These can leak in via context-fabric
   // history or after re-plan paths. Anthropic rejects them just as hard.
-  rollingMessages = removeOrphanedToolResults(rollingMessages);
+  rollingMessages = removeOrphanedToolResults([...historicalRolling, ...pinnedLatestExchange]);
 
   // Compute which non-pinned messages got dropped this pass and breadcrumb them.
   const survivingSet = new Set<ChatMessage>([
@@ -2126,6 +2138,43 @@ function applySlidingWindow(state: LoopState): void {
   }
 }
 
+function splitLatestToolExchange(messages: ChatMessage[]): { start: number; messages: ChatMessage[] } | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== "assistant") continue;
+    const ids = assistantToolCallIds(msg);
+    if (ids.length === 0) continue;
+
+    const expected = new Set(ids);
+    const exchange = [msg];
+    let sawToolResult = false;
+    let completeSuffix = true;
+    for (let j = i + 1; j < messages.length; j++) {
+      const next = messages[j];
+      if (next.role !== "tool" || !next.tool_call_id || !expected.has(next.tool_call_id)) {
+        completeSuffix = false;
+        break;
+      }
+      exchange.push(next);
+      sawToolResult = true;
+    }
+    if (completeSuffix && sawToolResult) return { start: i, messages: exchange };
+  }
+  return null;
+}
+
+function assistantToolCallIds(msg: ChatMessage): string[] {
+  try {
+    const parsed = JSON.parse(msg.content || "{}");
+    if (!parsed || !Array.isArray(parsed.tool_calls)) return [];
+    return parsed.tool_calls
+      .map((c: { id?: unknown }) => c.id)
+      .filter((id: unknown): id is string => typeof id === "string" && id.length > 0);
+  } catch {
+    return [];
+  }
+}
+
 function dropLeadingOrphanToolMessages(messages: ChatMessage[]): ChatMessage[] {
   let start = 0;
   while (start < messages.length && messages[start].role === "tool") start += 1;
@@ -2149,14 +2198,7 @@ function removeOrphanedToolResults(messages: ChatMessage[]): ChatMessage[] {
   const out: ChatMessage[] = [];
   for (const msg of messages) {
     if (msg.role === "assistant") {
-      try {
-        const parsed = JSON.parse(msg.content || "{}");
-        if (parsed && Array.isArray(parsed.tool_calls)) {
-          for (const c of parsed.tool_calls) {
-            if (c && typeof c.id === "string") knownIds.add(c.id);
-          }
-        }
-      } catch { /* assistant without tool_calls JSON — ignore */ }
+      for (const id of assistantToolCallIds(msg)) knownIds.add(id);
       out.push(msg);
       continue;
     }
