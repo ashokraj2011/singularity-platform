@@ -284,7 +284,7 @@ export async function runVerificationCommand(opts: {
   return runCommand(
     {
       command: opts.command,
-      argv: opts.args, // runCommand expects 'argv' or resolves command + argv inside normalizeInvocation
+      args: opts.args, // runCommand expects 'args' to normalize explicit arguments inside normalizeInvocation
       cwd: opts.cwd,
       timeout_ms: opts.timeout_ms,
       max_output_chars: opts.max_output_chars,

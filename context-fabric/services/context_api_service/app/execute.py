@@ -1194,9 +1194,10 @@ async def execute(req: ExecuteRequest):
             await asyncio.wait_for(subscriber_task, timeout=1.0)
         except Exception:
             pass
+        err_msg = str(exc) if str(exc).strip() else f"Internal error: {type(exc).__name__}"
         _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
-                         f"MCP invoke failed: {exc!s}", session_id, mcp_server_id=mcp_server_id)
-        raise HTTPException(status_code=502, detail=f"MCP invoke failed: {exc!s}")
+                         f"MCP invoke failed: {err_msg}", session_id, mcp_server_id=mcp_server_id)
+        raise HTTPException(status_code=502, detail=f"MCP invoke failed: {err_msg}")
 
     # Give the subscriber up to 500ms to drain trailing events that may
     # arrive AFTER /mcp/invoke returns (the run.event marker often lands

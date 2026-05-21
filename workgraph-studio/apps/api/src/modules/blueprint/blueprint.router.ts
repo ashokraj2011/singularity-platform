@@ -2942,7 +2942,7 @@ async function runLoopStageExecute(
     },
     limits: {
       maxSteps: isDeveloperStage ? WORKBENCH_DEVELOPER_MAX_STEPS : WORKBENCH_DEFAULT_MAX_STEPS,
-      timeoutSec: 180,
+      timeoutSec: 480,
       inputTokenBudget: limits.maxContextTokens,
       outputTokenBudget: limits.maxOutputTokens,
       maxHistoryMessages: 16,
@@ -4427,7 +4427,7 @@ async function runStage(
     },
     limits: {
       maxSteps: isDeveloperStage ? WORKBENCH_DEVELOPER_MAX_STEPS : WORKBENCH_DEFAULT_MAX_STEPS,
-      timeoutSec: 180,
+      timeoutSec: 480,
       inputTokenBudget: limits.maxContextTokens,
       outputTokenBudget: limits.maxOutputTokens,
       maxHistoryMessages: 16,
