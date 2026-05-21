@@ -995,7 +995,99 @@ function advancePhaseStepAndMaybeTransition(
   return target;
 }
 
+/**
+ * M49.B — Auto-baseline safety net. Runs the verifier-registry's top test
+ * command before the agent's first step. Tags the receipt as
+ * `verification_kind: "baseline"` so subsequent run_test calls auto-enrich
+ * with baseline_diff (M48). No-op when:
+ *   - phase machine isn't active (non-phased run / non-Developer stage)
+ *   - workspace isn't materialised (nothing to test against)
+ *   - a baseline receipt already exists in state (resume path or the agent
+ *     followed the v4.5 contract and called capture_test_baseline first)
+ *   - the verifier registry has no runnable test command (greenfield repo)
+ *
+ * Failures here never abort the loop — we emit a warning event and let
+ * the agent proceed. The agent's own run_test in VERIFY will still cover
+ * the post-edit state; the worst case is we miss pre-existing failure
+ * categorisation.
+ */
+async function maybeAutoCaptureBaseline(state: LoopState): Promise<void> {
+  if (!state.phaseMachine) return;
+  if (!state.workspace?.workspaceRoot) return;
+  // Already have a baseline?
+  if (state.verificationReceipts.some(r => r.verification_kind === "baseline")) return;
+
+  try {
+    const verifiers = await detectVerifiers(state.workspace.workspaceRoot);
+    const testVerifier = verifiers.find(v => v.kind === "test");
+    if (!testVerifier) {
+      emitAuditEvent({
+        trace_id: state.correlation.traceId,
+        source_service: "mcp-server",
+        kind: "agent.baseline.skipped",
+        capability_id: state.correlation.capabilityId,
+        severity: "info",
+        payload: { reason: "no test verifier detected in workspace" },
+      });
+      return;
+    }
+    log.info({ command: testVerifier.command, args: testVerifier.args }, "[M49.B] auto-baseline capture starting");
+    const started = Date.now();
+    const res = await runVerificationCommand({
+      command: testVerifier.command,
+      args: testVerifier.args,
+      timeout_ms: testVerifier.timeout_ms,
+    });
+    const elapsed = Date.now() - started;
+    // Re-tag as baseline (runVerificationCommand defaulted to "test").
+    const taggedOutput: Record<string, unknown> = { ...res.output, verification_kind: "baseline", auto_captured: true };
+    state.verificationReceipts.push({
+      ...taggedOutput,
+      toolName: "auto_baseline",
+      toolInvocationId: `auto-baseline-${state.correlation.mcpInvocationId}`,
+      capturedAt: new Date().toISOString(),
+    });
+    log.info({
+      passed: taggedOutput.passed,
+      exit_code: taggedOutput.exit_code,
+      elapsed_ms: elapsed,
+    }, "[M49.B] auto-baseline capture complete");
+    emitAuditEvent({
+      trace_id: state.correlation.traceId,
+      source_service: "mcp-server",
+      kind: "agent.baseline.auto_captured",
+      capability_id: state.correlation.capabilityId,
+      severity: "info",
+      payload: {
+        command: taggedOutput.command,
+        passed: taggedOutput.passed,
+        exit_code: taggedOutput.exit_code,
+        elapsed_ms: elapsed,
+      },
+    });
+  } catch (err) {
+    log.warn({ err: (err as Error).message }, "[M49.B] auto-baseline capture failed (non-fatal)");
+    emitAuditEvent({
+      trace_id: state.correlation.traceId,
+      source_service: "mcp-server",
+      kind: "agent.baseline.failed",
+      capability_id: state.correlation.capabilityId,
+      severity: "warn",
+      payload: { error: (err as Error).message },
+    });
+  }
+}
+
 async function runLoop(state: LoopState): Promise<LoopOutcome> {
+  // M49.B — Auto-baseline safety net. The v4.5 contract instructs the agent
+  // to call capture_test_baseline early in EXPLORE, but the model can skip
+  // it. Without a baseline, every failed test counts as a regression and
+  // the verification gate refuses approval. Run a baseline ONCE at loop
+  // entry when: phase machine active + workspace materialised + no baseline
+  // already in state (resume path). Failure here doesn't abort the run —
+  // we emit a warning and let the agent proceed.
+  await maybeAutoCaptureBaseline(state);
+
   while (state.stepIndex < state.maxSteps) {
     applySlidingWindow(state);
     // Governance checks run before each model turn. The requested governance
