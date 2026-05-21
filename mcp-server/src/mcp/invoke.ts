@@ -50,6 +50,11 @@ import { ensureWorkspaceSource, WorkspaceSourceStatus } from "../workspace/sourc
 import {
   gcWorkItemWorkspaces, sandboxRoot, withSandboxRoot, withWorkspaceLock, workspaceRootForRunContext,
 } from "../workspace/sandbox";
+// Phased Agent Reasoning Model (v4) — types only; the state machine is
+// driven from runLoop via the helpers in phases.ts and plan.ts.
+// PhaseLoopStateView will be imported when runLoop integration lands.
+import type { Phase, PhaseBudgets } from "./phases";
+import type { Plan, PlanProgress } from "./plan";
 
 const ToolDescSchema = z.object({
   name: z.string(),
@@ -119,6 +124,24 @@ const InvokeSchema = z.object({
     maxHistoryTokens: z.number().int().positive().optional(),
     compressToolResults: z.boolean().optional(),
     includeLocalTools: z.boolean().optional(),
+    // ── Phased Agent Reasoning Model (v4) ───────────────────────────────
+    // agentReasoningMode lets the caller (workgraph-api / context-fabric)
+    // explicitly opt the run into the phase machine. `"phased"` activates
+    // when MCP_AGENT_PHASES_ENABLED is also true at the server. `"flat"`
+    // forces the legacy single-loop behavior regardless of the env flag.
+    // Missing field is treated as "flat" for backward compatibility.
+    agentReasoningMode: z.enum(["phased", "flat"]).optional(),
+    // Per-phase step budgets. Without these in the Zod schema, the field
+    // would be stripped silently and the per-phase budgets would not reach
+    // the server. Missing keys fall back to DEFAULT_PHASE_BUDGETS.
+    phaseBudgets: z.object({
+      PLAN_DRAFT: z.number().int().positive().optional(),
+      EXPLORE: z.number().int().positive().optional(),
+      PLAN_CONFIRM: z.number().int().positive().optional(),
+      ACT: z.number().int().positive().optional(),
+      VERIFY: z.number().int().positive().optional(),
+      FINALIZE: z.number().int().positive().optional(),
+    }).optional(),
   }).default({}),
   governanceMode: z.enum(["fail_open", "fail_closed", "degraded", "human_approval_required"]).default("fail_open"),
   contextPlanHash: z.string().optional(),
@@ -210,6 +233,31 @@ interface LoopState {
   // Surfaces to the LLM as a pinned user message after the anchor so the
   // agent doesn't re-explore files it already touched.
   breadcrumbs: string[];
+
+  // ── Phased Agent Reasoning Model (v4) ─────────────────────────────────
+  // Populated only when agentReasoningMode === "phased" AND the server has
+  // MCP_AGENT_PHASES_ENABLED. Null/undefined means the legacy flat loop is
+  // active and the phase machine should not gate tool calls.
+  phaseMachine?: {
+    phase: Phase;
+    plan: Plan | null;
+    planProgress: PlanProgress;
+    /** Per-phase budgets (defaults filled in from DEFAULT_PHASE_BUDGETS). */
+    phaseBudgets: PhaseBudgets;
+    /** Steps consumed per phase so far. */
+    phaseStepUsage: Record<Phase, number>;
+    /** Per-phase repetition counters (count + last tool key) for the
+     *  phase-aware detector. Key includes args+output hash so a CONFLICT
+     *  retry that yields a different output does not increment. */
+    phaseRepetitionCounters: Record<Phase, { lastKey?: string; count: number }>;
+    /** Count of tool-call attempts the model made for tools NOT in the
+     *  current phase's allowlist. Bumped each time a gated rejection is
+     *  emitted; surfaces to audit so trace.sh can show the agent's hit-rate. */
+    phaseViolationCount: number;
+    /** True when PLAN_DRAFT exhausted its budget and we substituted a
+     *  fallback plan. Causes the path-coverage check to be vacuous. */
+    planFromFallback: boolean;
+  };
 }
 
 type LoopOutcome =
@@ -455,6 +503,312 @@ type DispatchToolResult = {
   };
 };
 
+// ─── Phased Agent Reasoning Model (v4) — runtime helpers ────────────────
+//
+// These functions bridge the pure logic in phases.ts / plan.ts with the
+// mutable LoopState the existing runLoop already manages. Each is small,
+// safe-when-phaseMachine-is-absent, and well-named so the runLoop
+// integration reads top-to-bottom.
+//
+// When state.phaseMachine is undefined (the default), every helper is a
+// no-op, so the flat-loop path is completely unaffected.
+
+import {
+  PHASE_REPETITION_RULES,
+  TOOL_ALLOWLISTS,
+  computeCodeChangeCoverage,
+  formatGatedToolError,
+  isToolAllowed as isPhaseToolAllowed,
+  nextPhase,
+  synthesizeFallbackPlan,
+  synthesizePhaseFrame,
+  DEFAULT_PHASE_BUDGETS,
+} from "./phases";
+import {
+  initialPlanProgress,
+  markEdited,
+  markRead,
+  parsePlanResponse,
+  diffPlans,
+} from "./plan";
+
+/** Initialise the phase-machine slot on a fresh LoopState. Returns the
+ *  populated machine, or undefined if phased mode isn't active. Called
+ *  exactly once per run at the bottom of executeInvokePayload, BEFORE the
+ *  first call to runLoop. Safe to no-op for resume — the resume path
+ *  rehydrates phaseMachine directly from the persisted envelope. */
+function initPhaseMachine(
+  agentReasoningMode: "phased" | "flat" | undefined,
+  phaseBudgets: PhaseBudgets | undefined,
+): LoopState["phaseMachine"] | undefined {
+  const phasedRequested = agentReasoningMode === "phased";
+  const phasedEnabled = config.MCP_AGENT_PHASES_ENABLED === true;
+  if (!phasedRequested || !phasedEnabled) return undefined;
+  const resolvedBudgets: PhaseBudgets = { ...DEFAULT_PHASE_BUDGETS, ...(phaseBudgets ?? {}) };
+  return {
+    phase: "PLAN_DRAFT",
+    plan: null,
+    planProgress: {},
+    phaseBudgets: resolvedBudgets,
+    phaseStepUsage: { PLAN_DRAFT: 0, EXPLORE: 0, PLAN_CONFIRM: 0, ACT: 0, VERIFY: 0, FINALIZE: 0 },
+    phaseRepetitionCounters: {
+      PLAN_DRAFT: { count: 0 }, EXPLORE: { count: 0 }, PLAN_CONFIRM: { count: 0 },
+      ACT: { count: 0 }, VERIFY: { count: 0 }, FINALIZE: { count: 0 },
+    },
+    phaseViolationCount: 0,
+    planFromFallback: false,
+  };
+}
+
+/** Build the augmented messages + filtered tool lists used for ONE LLM call.
+ *  Does not mutate state. When phaseMachine is absent, returns the original
+ *  state arrays unchanged (zero overhead). */
+function applyPhaseFilteringForLlmCall(state: LoopState): {
+  messages: ChatMessage[];
+  availableTools: ToolDescriptorForLlm[];
+  fullToolDescriptors: PendingToolDescriptor[];
+} {
+  if (!state.phaseMachine) {
+    return {
+      messages: state.messages,
+      availableTools: state.availableTools,
+      fullToolDescriptors: state.fullToolDescriptors,
+    };
+  }
+  const phase = state.phaseMachine.phase;
+  const allow = TOOL_ALLOWLISTS[phase];
+  const filteredAvail = state.availableTools.filter((t) => allow.has(t.name));
+  const filteredFull = state.fullToolDescriptors.filter((t) => allow.has(t.name));
+  const frame = synthesizePhaseFrame({
+    phase: state.phaseMachine.phase,
+    plan: state.phaseMachine.plan,
+    planProgress: state.phaseMachine.planProgress,
+    phaseStepUsage: state.phaseMachine.phaseStepUsage,
+    phaseBudgets: state.phaseMachine.phaseBudgets,
+    planFromFallback: state.phaseMachine.planFromFallback,
+  });
+  // Inject the frame as the LAST system message so the model reads it most
+  // recently. We append rather than mutate state.messages so the sliding
+  // window never sees an accumulating stack of phase frames.
+  const messages: ChatMessage[] = [...state.messages, { role: "system", content: frame }];
+  return { messages, availableTools: filteredAvail, fullToolDescriptors: filteredFull };
+}
+
+/** Attempt to parse a Plan from the assistant text response. Called after
+ *  every LLM call in PLAN_DRAFT and PLAN_CONFIRM phases. On success, mutates
+ *  state.phaseMachine to record the new plan (and emits audit events for
+ *  revisions). On failure, leaves state untouched — the run continues. */
+function tryParsePlanFromAssistant(state: LoopState, llmResp: LlmResponse): "parsed" | "no-json" | "invalid" {
+  if (!state.phaseMachine) return "no-json";
+  if (!llmResp.content) return "no-json";
+  const phase = state.phaseMachine.phase;
+  if (phase !== "PLAN_DRAFT" && phase !== "PLAN_CONFIRM") return "no-json";
+  const result = parsePlanResponse(llmResp.content);
+  if (!result.ok) return result.error.startsWith("No parseable JSON") ? "no-json" : "invalid";
+  const newPlan = result.plan;
+  if (phase === "PLAN_DRAFT") {
+    state.phaseMachine.plan = newPlan;
+    state.phaseMachine.planProgress = initialPlanProgress(newPlan);
+    state.phaseMachine.planFromFallback = false;
+    emitAuditEvent({
+      trace_id: state.correlation.traceId,
+      source_service: "mcp-server",
+      kind: "agent.plan.drafted",
+      capability_id: state.correlation.capabilityId,
+      severity: "info",
+      payload: {
+        targetCount: newPlan.targets.length,
+        requiredCount: newPlan.targets.filter((t) => t.required).length,
+      },
+    });
+  } else {
+    // PLAN_CONFIRM — diff against existing plan
+    const previous = state.phaseMachine.plan;
+    if (previous) {
+      const diff = diffPlans(previous, newPlan, state.phaseMachine.planProgress);
+      if (diff.dropped.length > 0 || diff.added.length > 0 || diff.intentChanged.length > 0 || diff.requiredFlipped.length > 0) {
+        emitAuditEvent({
+          trace_id: state.correlation.traceId,
+          source_service: "mcp-server",
+          kind: "agent.plan.revised",
+          capability_id: state.correlation.capabilityId,
+          severity: diff.hasUnjustifiedDrops ? "warn" : "info",
+          payload: {
+            droppedFiles: diff.dropped.map((t) => t.file),
+            addedFiles: diff.added.map((t) => t.file),
+            intentChangedFiles: diff.intentChanged.map((c) => c.file),
+            requiredFlipped: diff.requiredFlipped,
+            hasUnjustifiedDrops: diff.hasUnjustifiedDrops,
+          },
+        });
+      }
+    }
+    state.phaseMachine.plan = newPlan;
+    // Merge progress: keep edited/skipped statuses from previous; add new pending entries.
+    const merged: PlanProgress = { ...state.phaseMachine.planProgress };
+    for (const t of newPlan.targets) {
+      if (!merged[t.file]) merged[t.file] = { status: t.status };
+    }
+    state.phaseMachine.planProgress = merged;
+  }
+  return "parsed";
+}
+
+/** Decide whether a tool call is allowed in the current phase. Returns the
+ *  friendly error string if blocked, otherwise null. When phaseMachine is
+ *  absent, always returns null (no gating). */
+function phaseGateForToolCall(state: LoopState, toolName: string): string | null {
+  if (!state.phaseMachine) return null;
+  if (isPhaseToolAllowed(state.phaseMachine.phase, toolName)) return null;
+  state.phaseMachine.phaseViolationCount += 1;
+  const hint =
+    state.phaseMachine.phase === "PLAN_DRAFT"
+      ? "Emit a plan JSON object to advance to EXPLORE."
+      : state.phaseMachine.phase === "EXPLORE"
+        ? "Read each required plan target file to advance to PLAN_CONFIRM."
+        : state.phaseMachine.phase === "PLAN_CONFIRM"
+          ? "Emit a confirmed plan JSON to advance to ACT."
+          : state.phaseMachine.phase === "ACT"
+            ? "Apply each required target's edit (or mark skipped with reason) to advance to VERIFY."
+            : state.phaseMachine.phase === "VERIFY"
+              ? "Call run_test, run_command, or verification_unavailable to advance to FINALIZE."
+              : "Phase auto-finishes — emit a final summary text response.";
+  return formatGatedToolError(state.phaseMachine.phase, toolName, hint);
+}
+
+/** After a successful tool dispatch, update planProgress based on what the
+ *  tool touched. Tracks `read` (when a read-only tool inspects a target
+ *  file), `edited` (when a mutation tool touches one), and `skipped` (when
+ *  the agent emits a special `plan_skip` pseudo-tool — Phase-V5 placeholder,
+ *  not yet exposed). */
+function recordPhaseToolEffect(
+  state: LoopState,
+  toolName: string,
+  toolArgs: Record<string, unknown>,
+  codeChangePaths: string[],
+): void {
+  if (!state.phaseMachine || !state.phaseMachine.plan) return;
+  const READ_TOOLS = new Set(["read_file", "get_ast_slice", "get_symbol", "search_code", "list_directory"]);
+  if (READ_TOOLS.has(toolName) && typeof toolArgs.path === "string") {
+    state.phaseMachine.planProgress = markRead(state.phaseMachine.planProgress, toolArgs.path, state.stepIndex);
+  } else if (toolName === "get_ast_slice" && typeof toolArgs.filePath === "string") {
+    state.phaseMachine.planProgress = markRead(state.phaseMachine.planProgress, toolArgs.filePath, state.stepIndex);
+  }
+  for (const p of codeChangePaths) {
+    state.phaseMachine.planProgress = markEdited(state.phaseMachine.planProgress, p, state.stepIndex);
+  }
+}
+
+/** Phase-aware repetition detector. Returns the offending count when the
+ *  detector should fire, null otherwise. Uses PHASE_REPETITION_RULES.
+ *  Compares argsHash AND (optionally) outputHash so that a CONFLICT-then-
+ *  retry-with-new-hash does NOT trip in ACT. */
+function detectPhaseRepetition(
+  state: LoopState,
+  toolName: string,
+  argsHash: string,
+  outputDigest: string,
+): { count: number; threshold: number } | null {
+  if (!state.phaseMachine) return null;
+  const phase = state.phaseMachine.phase;
+  const rule = PHASE_REPETITION_RULES[phase];
+  const counter = state.phaseMachine.phaseRepetitionCounters[phase];
+  const key = rule.compareOutput ? `${toolName}|${argsHash}|${outputDigest}` : `${toolName}|${argsHash}`;
+  if (counter.lastKey === key) {
+    counter.count += 1;
+  } else {
+    counter.lastKey = key;
+    counter.count = 1;
+  }
+  if (counter.count >= rule.threshold) {
+    return { count: counter.count, threshold: rule.threshold };
+  }
+  return null;
+}
+
+/** Reset the current phase's repetition counter — called when the tool call
+ *  succeeded with a meaningful state change (mutation success, CONFLICT
+ *  error_code triggering a re-read, or any phase transition). */
+function resetPhaseRepetition(state: LoopState): void {
+  if (!state.phaseMachine) return;
+  state.phaseMachine.phaseRepetitionCounters[state.phaseMachine.phase] = { count: 0 };
+}
+
+/** Aggregate every code-change path touched so far in this run, derived from
+ *  state.planProgress's "edited" entries. Used by the ACT transition gate
+ *  and by computeCodeChangeCoverage at run completion. */
+function accumulatedCodeChangePaths(state: LoopState): ReadonlySet<string> {
+  if (!state.phaseMachine) return new Set();
+  const out = new Set<string>();
+  for (const [file, entry] of Object.entries(state.phaseMachine.planProgress)) {
+    if (entry.status === "edited") out.add(file);
+  }
+  return out;
+}
+
+/** Wrapper that pulls the phaseMachine state and delegates to phases.ts's
+ *  computeCodeChangeCoverage. Returns null if phaseMachine is absent. */
+function computeCodeChangeCoverageHelper(state: LoopState) {
+  if (!state.phaseMachine) {
+    return { required: [], covered: [], skipped: [], missing: [], hasRequiredCodeGap: false };
+  }
+  return computeCodeChangeCoverage(
+    state.phaseMachine.plan,
+    state.phaseMachine.planProgress,
+    accumulatedCodeChangePaths(state),
+  );
+}
+
+/** Increment the current phase's step counter and check for transition.
+ *  Called at the end of each loop iteration. Returns the new phase if a
+ *  transition happened, otherwise null. */
+function advancePhaseStepAndMaybeTransition(
+  state: LoopState,
+  accumulatedCodeChangePaths: ReadonlySet<string>,
+): Phase | null {
+  if (!state.phaseMachine) return null;
+  const cur = state.phaseMachine.phase;
+  state.phaseMachine.phaseStepUsage[cur] += 1;
+  const view = {
+    phase: state.phaseMachine.phase,
+    plan: state.phaseMachine.plan,
+    planProgress: state.phaseMachine.planProgress,
+    phaseStepUsage: state.phaseMachine.phaseStepUsage,
+    phaseBudgets: state.phaseMachine.phaseBudgets,
+    planFromFallback: state.phaseMachine.planFromFallback,
+  };
+  const target = nextPhase(view, accumulatedCodeChangePaths);
+  if (!target || target === cur) return null;
+  // Transitioning. If we were leaving PLAN_DRAFT without a plan, synthesize
+  // a fallback so downstream phases have something to anchor on.
+  if (cur === "PLAN_DRAFT" && !state.phaseMachine.plan) {
+    const languages = state.workspace?.changedPaths ?? [];  // rough heuristic; better signal lives in source-materializer
+    const fallback = synthesizeFallbackPlan(languages, /* goal */ state.messages.find((m) => m.role === "user")?.content ?? "");
+    state.phaseMachine.plan = fallback;
+    state.phaseMachine.planProgress = initialPlanProgress(fallback);
+    state.phaseMachine.planFromFallback = true;
+    emitAuditEvent({
+      trace_id: state.correlation.traceId,
+      source_service: "mcp-server",
+      kind: "agent.plan.fallback_synthesized",
+      capability_id: state.correlation.capabilityId,
+      severity: "warn",
+      payload: { reason: "PLAN_DRAFT budget exhausted without valid JSON" },
+    });
+  }
+  state.phaseMachine.phase = target;
+  resetPhaseRepetition(state);
+  emitAuditEvent({
+    trace_id: state.correlation.traceId,
+    source_service: "mcp-server",
+    kind: "agent.phase.transitioned",
+    capability_id: state.correlation.capabilityId,
+    severity: "info",
+    payload: { from: cur, to: target, stepIndex: state.stepIndex },
+  });
+  return target;
+}
+
 async function runLoop(state: LoopState): Promise<LoopOutcome> {
   while (state.stepIndex < state.maxSteps) {
     applySlidingWindow(state);
@@ -514,15 +868,23 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
         stepIndex: state.stepIndex,
         contextCompression: state.contextCompression,
         promptCache: state.modelConfig.promptCache,
+        phase: state.phaseMachine?.phase,
       },
     });
+
+    // ── Phased Agent Reasoning Model (v4) ─────────────────────────────
+    // When phaseMachine is set, filter the LLM-visible tools to the current
+    // phase's allowlist AND inject a phase frame as a trailing system
+    // message. When phaseMachine is undefined, returns state.* unchanged so
+    // the flat-loop path is bit-identical to its previous behavior.
+    const phasedView = applyPhaseFilteringForLlmCall(state);
 
     const llmResp = await llmRespond({
       model_alias: state.modelConfig.modelAlias,
       provider: state.modelConfig.provider,
       model: state.modelConfig.model,
-      messages: state.messages,
-      tools: state.availableTools,
+      messages: phasedView.messages,
+      tools: phasedView.availableTools,
       temperature: state.modelConfig.temperature,
       max_output_tokens: state.modelConfig.maxTokens,
       prompt_cache: state.modelConfig.promptCache,
@@ -567,11 +929,18 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
       // exactly what the model saw and what it emitted — see the
       // `bin/trace.sh` viewer.
       step_index: state.stepIndex,
+      phase: state.phaseMachine?.phase,
       prompt_messages_preview: buildPromptMessagesPreview(state.messages),
       response_text: captureResponseText(llmResp.content),
       response_tool_calls: buildResponseToolCallsPreview(llmResp.tool_calls),
     });
     state.llmCallIds.push(llmRec.id);
+
+    // ── Phased Agent Reasoning Model (v4) ─────────────────────────────
+    // After the LLM speaks, try to parse a plan from the assistant text if
+    // we're in PLAN_DRAFT or PLAN_CONFIRM. No-op for other phases / when
+    // phaseMachine is unset.
+    tryParsePlanFromAssistant(state, llmResp);
 
     // [diag] Per-step trace — one structured line per LLM turn so we can
     // see exactly what the agent did and why it hit max_steps. Enable/grep
@@ -906,6 +1275,34 @@ Please review the errors above, correct the code, and explain how you resolved t
       for (const tc of llmResp.tool_calls) {
         const desc = state.fullToolDescriptors.find((d) => d.name === tc.name);
         const handler = desc?.execution_target === "LOCAL" ? getLocalTool(tc.name) : undefined;
+
+        // ── Phased Agent Reasoning Model (v4) ───────────────────────────
+        // Block tool calls not in the current phase's allowlist BEFORE
+        // governance / approval gates. Append a friendly tool_result so the
+        // model can self-correct on the next turn, then SKIP dispatch.
+        const phaseGateError = phaseGateForToolCall(state, tc.name);
+        if (phaseGateError) {
+          emitAuditEvent({
+            trace_id: state.correlation.traceId,
+            source_service: "mcp-server",
+            kind: "agent.phase.tool_violation",
+            capability_id: state.correlation.capabilityId,
+            severity: "warn",
+            payload: {
+              phase: state.phaseMachine?.phase,
+              tool_name: tc.name,
+              violation_count: state.phaseMachine?.phaseViolationCount,
+            },
+          });
+          state.messages.push({
+            role: "tool",
+            content: JSON.stringify({ success: false, error: phaseGateError, kind: "phase_gated" }),
+            tool_call_id: tc.id,
+            tool_name: tc.name,
+          });
+          continue;
+        }
+
         if (state.governanceMode === "degraded" && !isDegradedToolAllowed(state, tc.name, desc)) {
           const reason = `degraded governance mode blocks tool ${tc.name}; only low-risk read-only local tools are allowed.`;
           emitAuditEvent({
@@ -969,6 +1366,10 @@ Please review the errors above, correct the code, and explain how you resolved t
         state.verificationReceipts.push(...verificationReceiptsFromOutput(result.record.output, result.record.id, tc.name));
         if (result.record.error_code === "CONFLICT") {
           state.rePlanDepth++;
+          // Phase repetition counter must reset on CONFLICT — a CONFLICT is a
+          // legitimate signal to re-read and retry; the next call won't be a
+          // pathological repeat even if args match.
+          resetPhaseRepetition(state);
           emitRePlan(state.correlation, {
             trigger: "conflict_detected",
             step_index: state.stepIndex,
@@ -993,7 +1394,25 @@ Please review the errors above, correct the code, and explain how you resolved t
           tool_name: tc.name,
         });
 
-        // M28 boot-1 — repetition detector.
+        // ── Phased Agent Reasoning Model (v4) ──────────────────────────
+        // Update planProgress so the phase machine knows which target files
+        // have been read or edited. No-op when phaseMachine is absent.
+        recordPhaseToolEffect(
+          state,
+          tc.name,
+          tc.args ?? {},
+          result.codeChange?.paths_touched ?? [],
+        );
+        // Reset the phase-aware repetition counter on a successful mutation;
+        // legit progress should clear the streak even if the same tool gets
+        // called again.
+        if (result.codeChange && result.record.success !== false) {
+          resetPhaseRepetition(state);
+        }
+
+        // M28 boot-1 — repetition detector. When phaseMachine is set, use the
+        // phase-aware detector (args+output identity in ACT) instead of the
+        // global threshold. Either route can produce a denied outcome.
         state.toolCallHistory.push({
           name: tc.name,
           argsHash: argsHash(tc.args),
@@ -1002,18 +1421,46 @@ Please review the errors above, correct the code, and explain how you resolved t
         if (state.toolCallHistory.length > LOOP_REPETITION_WINDOW * 2) {
           state.toolCallHistory.splice(0, state.toolCallHistory.length - LOOP_REPETITION_WINDOW * 2);
         }
-        const rep = detectRepetition(state.toolCallHistory);
-        if (rep) {
-          const reason = `LLM looped on ${rep.name} (${rep.count} consecutive identical calls, threshold=${LOOP_REPETITION_THRESHOLD}). Agent is not making progress.`;
+        const phaseRep = detectPhaseRepetition(
+          state,
+          tc.name,
+          argsHash(tc.args),
+          createHash("sha256").update(maskedOutput ?? "").digest("hex").slice(0, 16),
+        );
+        if (phaseRep) {
+          const reason = `LLM looped on ${tc.name} in phase ${state.phaseMachine?.phase} (${phaseRep.count} consecutive identical calls with identical outputs, threshold=${phaseRep.threshold}).`;
           emitAuditEvent({
-            trace_id:      state.correlation.traceId,
+            trace_id: state.correlation.traceId,
             source_service: "mcp-server",
-            kind:          "agent_loop.repetition_detected",
+            kind: "agent_loop.repetition_detected",
             capability_id: state.correlation.capabilityId,
-            severity:      "warn",
-            payload: { tool_name: rep.name, repetition_count: rep.count, threshold: LOOP_REPETITION_THRESHOLD, stepIndex: state.stepIndex },
+            severity: "warn",
+            payload: {
+              tool_name: tc.name,
+              repetition_count: phaseRep.count,
+              threshold: phaseRep.threshold,
+              stepIndex: state.stepIndex,
+              phase: state.phaseMachine?.phase,
+              detector: "phase_aware",
+            },
           });
-          return { kind: "denied", finishReason: "agent_loop_repetition", reason, check: "loop_repetition", details: { tool_name: rep.name, repetition_count: rep.count } };
+          return { kind: "denied", finishReason: "agent_loop_repetition", reason, check: "loop_repetition", details: { tool_name: tc.name, repetition_count: phaseRep.count, phase: state.phaseMachine?.phase } };
+        }
+        // Fall back to the legacy global detector when phaseMachine is absent.
+        if (!state.phaseMachine) {
+          const rep = detectRepetition(state.toolCallHistory);
+          if (rep) {
+            const reason = `LLM looped on ${rep.name} (${rep.count} consecutive identical calls, threshold=${LOOP_REPETITION_THRESHOLD}). Agent is not making progress.`;
+            emitAuditEvent({
+              trace_id:      state.correlation.traceId,
+              source_service: "mcp-server",
+              kind:          "agent_loop.repetition_detected",
+              capability_id: state.correlation.capabilityId,
+              severity:      "warn",
+              payload: { tool_name: rep.name, repetition_count: rep.count, threshold: LOOP_REPETITION_THRESHOLD, stepIndex: state.stepIndex, detector: "legacy" },
+            });
+            return { kind: "denied", finishReason: "agent_loop_repetition", reason, check: "loop_repetition", details: { tool_name: rep.name, repetition_count: rep.count } };
+          }
         }
       }
 
@@ -1140,6 +1587,8 @@ Please review the errors above, correct the code, and explain how you resolved t
         });
       }
 
+      // ── Phased Agent Reasoning Model (v4) — phase advancement ─────────
+      advancePhaseStepAndMaybeTransition(state, accumulatedCodeChangePaths(state));
       state.stepIndex += 1;
       continue;
     }
@@ -1160,7 +1609,36 @@ Please review the errors above, correct the code, and explain how you resolved t
           workspaceRoot: state.workspace?.workspaceRoot,
         },
       });
+      // ── Phased Agent Reasoning Model (v4) — phase advancement ─────────
+      advancePhaseStepAndMaybeTransition(state, accumulatedCodeChangePaths(state));
       continue;
+    }
+
+    // ── Phased Agent Reasoning Model (v4) — handle finish_reason="stop" ─
+    // For phased runs, a "stop" in PLAN_DRAFT/PLAN_CONFIRM/EXPLORE/ACT/VERIFY
+    // is NOT necessarily the end of the run — it might be the end of THIS
+    // phase. Advance the phase machine; if we've moved past FINALIZE or are
+    // now in FINALIZE with zero allowed tools, the run is genuinely done.
+    if (state.phaseMachine) {
+      const beforePhase = state.phaseMachine.phase;
+      const newPhase = advancePhaseStepAndMaybeTransition(state, accumulatedCodeChangePaths(state));
+      state.stepIndex += 1;
+      // If we just entered FINALIZE OR were already there OR transitioned
+      // multiple phases away, complete with the model's final text.
+      if (state.phaseMachine.phase === "FINALIZE" && beforePhase === "FINALIZE") {
+        return {
+          kind: "complete",
+          finalContent: llmResp.content,
+          finishReason: llmResp.finish_reason as "stop" | "length" | "error",
+        };
+      }
+      // If the phase advanced (or stayed but budget exhausted on a phase
+      // that returned null from nextPhase like VERIFY/PLAN_CONFIRM waiting
+      // on the loop body), keep looping so the next LLM call runs under the
+      // new phase's allowlist.
+      if (newPhase !== null || beforePhase !== "FINALIZE") {
+        continue;
+      }
     }
 
     return {
@@ -1658,6 +2136,23 @@ async function pauseForApproval(
     pii_token_map: Object.keys(state.piiTokenMap).length > 0 ? state.piiTokenMap : undefined,
     re_plan_depth: state.rePlanDepth,
     breadcrumbs: state.breadcrumbs.length > 0 ? state.breadcrumbs : undefined,
+    // ── Phased Agent Reasoning Model (v4) ──────────────────────────────
+    // Persist the phase machine across the approval pause so the resumed
+    // loop re-enters the same phase with its plan, planProgress, budgets,
+    // step usage, repetition counters, and fallback marker intact. Absent
+    // when the run is flat-loop — the resume path treats absence as
+    // "rehydrate to flat mode" for backward compatibility with legacy
+    // envelopes minted before this field existed.
+    phase_machine: state.phaseMachine ? {
+      phase: state.phaseMachine.phase,
+      plan: state.phaseMachine.plan,
+      planProgress: state.phaseMachine.planProgress,
+      phaseBudgets: state.phaseMachine.phaseBudgets as Record<string, number>,
+      phaseStepUsage: state.phaseMachine.phaseStepUsage as Record<string, number>,
+      phaseRepetitionCounters: state.phaseMachine.phaseRepetitionCounters as Record<string, { lastKey?: string; count: number }>,
+      phaseViolationCount: state.phaseMachine.phaseViolationCount,
+      planFromFallback: state.phaseMachine.planFromFallback,
+    } : undefined,
   });
   const payload = {
     continuation_token: env.continuation_token,
@@ -1866,6 +2361,33 @@ async function buildResponseBody(
     : "COMPLETED";
 
   const promptCache = promptCacheSummary(state);
+
+  // ── Phased Agent Reasoning Model (v4) — code-change coverage report ─
+  // Emit the path-coverage summary so workgraph-api's stage gate can
+  // reject a run whose code changes don't match the plan's required
+  // targets (the "lazy edit" failure mode where the agent edits README
+  // but skips the service file). When phaseMachine is absent, coverage
+  // fields are omitted so downstream consumers can detect "not a phased
+  // run" cleanly.
+  let codeChangeCoverage: ReturnType<typeof computeCodeChangeCoverageHelper> | undefined;
+  if (state.phaseMachine) {
+    codeChangeCoverage = computeCodeChangeCoverageHelper(state);
+    if (codeChangeCoverage.hasRequiredCodeGap) {
+      emitAuditEvent({
+        trace_id: state.correlation.traceId,
+        source_service: "mcp-server",
+        kind: "agent.plan.required_code_gap",
+        capability_id: state.correlation.capabilityId,
+        severity: "warn",
+        payload: {
+          required: codeChangeCoverage.required,
+          covered: codeChangeCoverage.covered,
+          missing: codeChangeCoverage.missing,
+        },
+      });
+    }
+  }
+
   const correlationOut: Record<string, unknown> = {
     mcpInvocationId: state.correlation.mcpInvocationId,
     traceId: state.correlation.traceId,
@@ -1879,6 +2401,7 @@ async function buildResponseBody(
     verificationReceipts: state.verificationReceipts,
     promptCache,
     finalArtifactId,
+    ...(codeChangeCoverage ? { codeChangeCoverage, agentReasoningMode: "phased" } : {}),
   };
 
   const out: Record<string, unknown> = {
@@ -2107,6 +2630,14 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     piiTokenMap: {},
     rePlanDepth: (body.runContext.dependencyState?.changed_paths?.length ?? 0) > 0 ? 1 : 0,
     breadcrumbs: [],
+    // ── Phased Agent Reasoning Model (v4) ─────────────────────────────
+    // Set only when both the caller opts in via body.limits.agentReasoningMode
+    // AND the server has MCP_AGENT_PHASES_ENABLED. Otherwise undefined and
+    // the runtime helpers all no-op.
+    phaseMachine: initPhaseMachine(
+      body.limits.agentReasoningMode,
+      body.limits.phaseBudgets as PhaseBudgets | undefined,
+    ),
   };
 
   if (state.rePlanDepth > 0) {
@@ -2238,6 +2769,24 @@ invokeRouter.post("/resume", async (req, res) => {
     piiTokenMap: env.pii_token_map ?? {},
     rePlanDepth: env.re_plan_depth ?? 0,
     breadcrumbs: env.breadcrumbs ?? [],
+    // ── Phased Agent Reasoning Model (v4) — rehydrate phase machine ──
+    // Backward-compat: if env.phase_machine is absent (legacy envelope
+    // minted before this field existed), keep phaseMachine undefined so
+    // the run resumes in flat-loop mode without crashing. If present,
+    // restore the typed shape so the loop can continue from its
+    // pre-pause phase + progress.
+    phaseMachine: env.phase_machine
+      ? {
+          phase: env.phase_machine.phase as Phase,
+          plan: env.phase_machine.plan as Plan | null,
+          planProgress: env.phase_machine.planProgress as PlanProgress,
+          phaseBudgets: (env.phase_machine.phaseBudgets ?? DEFAULT_PHASE_BUDGETS) as PhaseBudgets,
+          phaseStepUsage: env.phase_machine.phaseStepUsage as Record<Phase, number>,
+          phaseRepetitionCounters: env.phase_machine.phaseRepetitionCounters as Record<Phase, { lastKey?: string; count: number }>,
+          phaseViolationCount: env.phase_machine.phaseViolationCount,
+          planFromFallback: env.phase_machine.planFromFallback,
+        }
+      : undefined,
   };
   state.workspace = {
     ...(state.workspace ?? {}),

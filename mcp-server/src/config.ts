@@ -35,6 +35,15 @@ const schema = z.object({
   MAX_AGENT_STEPS: z.coerce.number().int().positive().default(12),
   TIMEOUT_SEC: z.coerce.number().int().positive().default(240),
 
+  // ── Phased Agent Reasoning Model (v4) ──────────────────────────────────
+  // Behind a flag for safe rollout. When false (default), runLoop uses the
+  // existing flat ReAct loop unchanged — zero risk. When true, runLoop wraps
+  // step iteration in a six-phase state machine (PLAN_DRAFT → EXPLORE →
+  // PLAN_CONFIRM → ACT → VERIFY → FINALIZE) with per-phase tool allowlists,
+  // path-coverage enforcement, and a pinned phase frame. See
+  // /Users/ashokraj/.claude/plans/immutable-sniffing-quiche.md for the design.
+  MCP_AGENT_PHASES_ENABLED: z.coerce.boolean().default(false),
+
   // M16 — sandbox root for the real fs/git tools. All paths must resolve
   // strictly inside this dir; absolute paths and `..` traversal are rejected.
   // Default is the workdir; ops can mount a host directory in via docker-compose

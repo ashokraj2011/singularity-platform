@@ -107,6 +107,21 @@ export interface PendingApproval {
   re_plan_depth?: number;
   /** Compressed run-history breadcrumbs preserved across approval pauses. */
   breadcrumbs?: string[];
+  /** Phased Agent Reasoning Model (v4) state persisted across approval
+   *  pauses so a resumed loop re-enters the same phase with its plan and
+   *  progress intact. ALL fields are optional so legacy (pre-phase)
+   *  envelopes deserialize cleanly — the resume path treats their absence
+   *  as "run in flat mode" (the safest backward-compatible default). */
+  phase_machine?: {
+    phase: string;
+    plan: unknown;          // typed by mcp/plan.ts; kept `unknown` here to avoid an import cycle
+    planProgress: Record<string, { status: string; skipReason?: string; changedAtStep?: number }>;
+    phaseBudgets?: Record<string, number>;
+    phaseStepUsage: Record<string, number>;
+    phaseRepetitionCounters: Record<string, { lastKey?: string; count: number }>;
+    phaseViolationCount: number;
+    planFromFallback: boolean;
+  };
 }
 
 export interface PendingToolDescriptor {

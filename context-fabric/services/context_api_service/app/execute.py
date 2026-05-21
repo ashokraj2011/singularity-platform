@@ -1066,6 +1066,21 @@ async def execute(req: ExecuteRequest):
                 if "includeLocalTools" in req.limits
                 else req.limits.get("include_local_tools", True)
             ),
+            # ── Phased Agent Reasoning Model (v4) ──────────────────────
+            # Plumb caller-supplied phase mode + per-phase budgets through
+            # to mcp-server's InvokeSchema.limits. Without these here, the
+            # body keys would be unknown to context-fabric's pass-through
+            # and silently dropped before reaching mcp-server. Both camelCase
+            # and snake_case lookups so workgraph-api or external callers
+            # using either convention are honored.
+            "agentReasoningMode": (
+                req.limits.get("agentReasoningMode")
+                or req.limits.get("agent_reasoning_mode")
+            ),
+            "phaseBudgets": (
+                req.limits.get("phaseBudgets")
+                or req.limits.get("phase_budgets")
+            ),
         }),
         "allowAutonomousMutation": req.allow_autonomous_mutation,
     }

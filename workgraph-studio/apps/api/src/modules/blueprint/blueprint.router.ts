@@ -57,6 +57,26 @@ const WORKBENCH_DEFAULT_MAX_STEPS = positiveIntEnv('WORKBENCH_MAX_STEPS', 8)
 // with the replace_text call already queued in step 15 (see trace from
 // 2026-05-21 10:11). 28 gives ~50% headroom over the observed need.
 const WORKBENCH_DEVELOPER_MAX_STEPS = positiveIntEnv('WORKBENCH_DEVELOPER_MAX_STEPS', 28)
+
+// ── Phased Agent Reasoning Model (v4) ────────────────────────────────────
+// When MCP_AGENT_PHASES_ENABLED is on at mcp-server AND we pass
+// `agentReasoningMode: "phased"` here, mcp-server runs a 6-phase state
+// machine (PLAN_DRAFT → EXPLORE → PLAN_CONFIRM → ACT → VERIFY → FINALIZE)
+// with per-phase tool allowlists and a path-coverage gate. We default to
+// `false` here — the flat ReAct loop stays the production default until the
+// flag is flipped on at deployment. Override via WORKBENCH_AGENT_PHASES_ENABLED.
+const WORKBENCH_AGENT_PHASES_ENABLED =
+  (process.env.WORKBENCH_AGENT_PHASES_ENABLED ?? '').toLowerCase() === 'true'
+// Per-phase budgets. Total = 23, with safety slack of 5 against the
+// absolute max-steps cap. Operators can tune via env vars per phase.
+const WORKBENCH_DEVELOPER_PHASE_BUDGETS = {
+  PLAN_DRAFT:   positiveIntEnv('WORKBENCH_DEVELOPER_BUDGET_PLAN_DRAFT', 2),
+  EXPLORE:      positiveIntEnv('WORKBENCH_DEVELOPER_BUDGET_EXPLORE', 6),
+  PLAN_CONFIRM: positiveIntEnv('WORKBENCH_DEVELOPER_BUDGET_PLAN_CONFIRM', 2),
+  ACT:          positiveIntEnv('WORKBENCH_DEVELOPER_BUDGET_ACT', 10),
+  VERIFY:       positiveIntEnv('WORKBENCH_DEVELOPER_BUDGET_VERIFY', 2),
+  FINALIZE:     positiveIntEnv('WORKBENCH_DEVELOPER_BUDGET_FINALIZE', 1),
+}
 const GOVERNANCE_MODES = ['fail_open', 'fail_closed', 'degraded', 'human_approval_required'] as const
 type GovernanceMode = typeof GOVERNANCE_MODES[number]
 const DEFAULT_WORKBENCH_EXECUTION_CONFIG = {
@@ -2502,6 +2522,21 @@ async function saveStageVerdict(
       'Code-changing stages need at least one passing MCP verification receipt before approval.',
     )
   }
+  // ── Phased Agent Reasoning Model (v4) — path-coverage gate ────────────
+  // When the run was a phased developer attempt, mcp-server's response
+  // includes `correlation.codeChangeCoverage`. If any `required: true` code
+  // target is missing AND wasn't explicitly skipped-with-reason, block the
+  // approval. This is the fix for the lazy-edit failure mode where the
+  // agent edits a docs file but skips the actual service code.
+  if (accepted) {
+    const coverage = attemptCodeChangeCoverage(latestAttempt)
+    if (coverage && coverage.hasRequiredCodeGap) {
+      throw new ValidationError(
+        `Plan-coverage gate: ${coverage.missing.length} required code target${coverage.missing.length === 1 ? '' : 's'} (${coverage.missing.join(', ')}) ${coverage.missing.length === 1 ? 'was' : 'were'} not edited in this attempt. ` +
+        `Send the stage back so the agent can complete the implementation, or revise the plan to mark ${coverage.missing.length === 1 ? 'that file' : 'those files'} skipped with an explicit reason.`,
+      )
+    }
+  }
   const attempts = state.stageAttempts.map(item => item.id === latestAttempt.id ? {
     ...item,
     status: verdictToAttemptStatus(body.verdict),
@@ -2951,6 +2986,17 @@ async function runLoopStageExecute(
       compressToolResults: true,
       maxToolResultChars: 8000,
       maxPromptChars: limits.maxPromptChars,
+      // ── Phased Agent Reasoning Model (v4) ──────────────────────────
+      // Only opted in for developer stages; read-only stages (PLAN, DESIGN,
+      // QA_REVIEW etc.) use the existing flat-loop path. Server still has
+      // to honor MCP_AGENT_PHASES_ENABLED; passing this here is a no-op
+      // unless both flags align.
+      ...(WORKBENCH_AGENT_PHASES_ENABLED && isDeveloperStage
+        ? {
+            agentReasoningMode: 'phased' as const,
+            phaseBudgets: WORKBENCH_DEVELOPER_PHASE_BUDGETS,
+          }
+        : {}),
     },
     allow_autonomous_mutation: isDeveloperStage,
     governance_mode: executionConfig?.governanceMode ?? 'fail_open',
@@ -3703,6 +3749,37 @@ function attemptHasActualCodeChange(attempt: StageAttempt): boolean {
   return Array.isArray(codeChangeIds) && codeChangeIds.some(id => typeof id === 'string' && id.trim().length > 0)
 }
 
+/** Phased Agent Reasoning Model (v4) — extract the code-change coverage
+ *  summary from a stage attempt's correlation payload. Returns null when
+ *  the run was NOT a phased run (correlation.codeChangeCoverage absent).
+ *  The shape mirrors mcp-server's `CodeChangeCoverage` type. */
+function attemptCodeChangeCoverage(attempt: StageAttempt): {
+  required: string[]
+  covered: string[]
+  skipped: Array<{ file: string; reason: string }>
+  missing: string[]
+  hasRequiredCodeGap: boolean
+} | null {
+  const correlation = isRecord(attempt.correlation) ? attempt.correlation : {}
+  const raw = correlation.codeChangeCoverage
+  if (!isRecord(raw)) return null
+  return {
+    required: Array.isArray(raw.required) ? raw.required.filter((x): x is string => typeof x === 'string') : [],
+    covered: Array.isArray(raw.covered) ? raw.covered.filter((x): x is string => typeof x === 'string') : [],
+    skipped: Array.isArray(raw.skipped)
+      ? raw.skipped
+          .filter(isRecord)
+          .map(s => ({
+            file: typeof s.file === 'string' ? s.file : '',
+            reason: typeof s.reason === 'string' ? s.reason : '',
+          }))
+          .filter(s => s.file.length > 0)
+      : [],
+    missing: Array.isArray(raw.missing) ? raw.missing.filter((x): x is string => typeof x === 'string') : [],
+    hasRequiredCodeGap: raw.hasRequiredCodeGap === true,
+  }
+}
+
 function attemptReceiptExitCode(receipt: Record<string, unknown>): number | undefined {
   return typeof receipt.exitCode === 'number'
     ? receipt.exitCode
@@ -4436,6 +4513,17 @@ async function runStage(
       compressToolResults: true,
       maxToolResultChars: 8000,
       maxPromptChars: limits.maxPromptChars,
+      // ── Phased Agent Reasoning Model (v4) ──────────────────────────
+      // Only opted in for developer stages; read-only stages (PLAN, DESIGN,
+      // QA_REVIEW etc.) use the existing flat-loop path. Server still has
+      // to honor MCP_AGENT_PHASES_ENABLED; passing this here is a no-op
+      // unless both flags align.
+      ...(WORKBENCH_AGENT_PHASES_ENABLED && isDeveloperStage
+        ? {
+            agentReasoningMode: 'phased' as const,
+            phaseBudgets: WORKBENCH_DEVELOPER_PHASE_BUDGETS,
+          }
+        : {}),
     },
     governance_mode: executionConfig?.governanceMode ?? 'fail_open',
   })

@@ -46,6 +46,10 @@ export interface LlmCallRecord {
   // [trace] step index in the agent loop, so a transcript-style viewer can
   // group LLM calls + tool invocations into per-step blocks.
   step_index?: number;
+  // [trace] phase name when the run is using the Phased Agent Reasoning
+  // Model (v4). Omitted for flat-loop runs. Mirrors step_index in pattern —
+  // bin/trace.sh can group consecutive same-phase calls into phase blocks.
+  phase?: string;
   // [trace] compact preview of the prompt — the last N messages with
   // role + content excerpt — to let an operator inspect what context the
   // model saw without dumping the entire transcript into the JSONL.
