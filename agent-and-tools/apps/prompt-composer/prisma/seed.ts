@@ -215,7 +215,15 @@ const loopDeveloperTask = [
   "Developer execution contract:",
   "- Treat captured stakeholder decisions and prior approved artifacts as implementation requirements.",
   "- Produce an actual MCP/git code change when a writable workspace is available; do not stop at design or planning text.",
-  "- Inspect with AST/search/read tools, then mutate partial edits with apply_patch, replace_text, or replace_range; use write_file only for full-file replacements. Finish with git_commit or finish_work_branch so Code Review receives a captured diff.",
+  "- Inspect with AST/search/read tools, then mutate partial edits with apply_patch, replace_text, or replace_range; use write_file only for full-file replacements.",
+  // M68 — Mandatory verification step. The formal-verifier gate at
+  // finish_work_branch will BLOCK any commit that lacks a passing
+  // verification receipt; skipping run_test wastes the entire stage's
+  // tokens on a guaranteed-fail finish. Sequence is non-negotiable.
+  "- MANDATORY ORDERING: after ANY code mutation (apply_patch, replace_text, replace_range, write_file), you MUST call run_test (or run_command for non-test verification) BEFORE finish_work_branch. The formal verifier blocks the commit if no passing receipt exists — skipping this step guarantees the stage fails.",
+  "- If no test target exists for this change (e.g. infrastructure-only edit), call verification_unavailable with a clear reason. Do NOT proceed to finish_work_branch without either a passing receipt or a verification_unavailable acknowledgement.",
+  "- Use the recommended_verification tool to discover which test/lint command applies, then RUN that command — do not just read its output.",
+  "- Finish with git_commit or finish_work_branch ONLY after the verification step above completes. Code Review then receives both the diff AND the verification evidence.",
   "- If the requested behavior already exists, add or update tests/docs that prove it and commit those changes.",
   "- Do not ask for a more specific task when prior approved artifacts define implementable behavior. Ask only when those artifacts are genuinely contradictory or unsafe.",
 ].join("\n");
@@ -238,8 +246,16 @@ const loopDeveloperExtraContext = [
   "Developer stage execution policy:",
   "- Prefer actual MCP local code tools over narrative-only output.",
   "- First verify the writable MCP workspace matches the requested source/repository before mutating files.",
-  "- Use AST/search/read tools to locate the correct source files, then use apply_patch, replace_text, or replace_range for partial edits; use write_file for complete file bodies. Finish with git_commit/finish_work_branch to create a real captured diff.",
-  "- Read the Source snapshot testing.detectedCommands. After code edits, run the most focused relevant command when a runnable test tool is available; use formal_verify when workflow/governance constraints need solver evidence. If no verifier is runnable, call verification_unavailable with the reason and inspected files.",
+  "- Use AST/search/read tools to locate the correct source files, then use apply_patch, replace_text, or replace_range for partial edits; use write_file for complete file bodies.",
+  // M68 — Stronger verification mandate. Previous soft guidance ("run the
+  // most focused relevant command WHEN a runnable test tool is available")
+  // let the agent skip tests routinely, blowing 4 retries and ~$0.85 on
+  // guaranteed-fail finish gates. The new rule is unconditional: produce
+  // a passing receipt OR an explicit verification_unavailable; never
+  // finish_work_branch with neither.
+  "- VERIFICATION IS MANDATORY. After ANY mutation (apply_patch/replace_text/replace_range/write_file), call run_test with the most focused command from testing.detectedCommands or recommended_verification BEFORE finish_work_branch. The formal-verifier gate at finish_work_branch will block the commit unless state.verificationReceipts contains a passing entry — there is no soft path.",
+  "- If testing.detectedCommands is empty AND recommended_verification cannot suggest a runnable command, you MAY emit verification_unavailable with the reason. This acknowledges the gap explicitly to the gate; without it, the gate blocks.",
+  "- Sequence: mutate → run_test (or run_command/verification_unavailable) → finish_work_branch. Do not swap the order. Do not skip the middle step.",
   "- If Goal is generic, derive the concrete implementation from Approved artifact context in the current task. If behavior already exists, add focused tests/docs that prove it.",
   "- Do not fabricate changed files or patch text. If the writable workspace is missing or does not match the source, say that no actual code change was captured.",
   "Requested source: {{sourceType}} {{sourceUri}}{{sourceRefSuffix}}",
@@ -391,7 +407,13 @@ OUTPUT: just the paragraph. No headers, no JSON, no preamble.`,
       "This is a Developer stage with a writable MCP workspace, but the previous answer did not call any tools.",
       "Use MCP tools now before answering in prose.",
       "Inspect the code with find_symbol, get_symbol, get_ast_slice, search_code, or read_file.",
-      "Apply partial edits with apply_patch, replace_text, or replace_range; use write_file only with complete replacement file contents. Then create code-change evidence with git_commit or finish_work_branch.",
+      "Apply partial edits with apply_patch, replace_text, or replace_range; use write_file only with complete replacement file contents.",
+      // M68 — Mid-loop reinforcement of the verification mandate. Without
+      // a passing run_test receipt, finish_work_branch hits the formal
+      // verifier gate and blocks the commit. Reminding the agent here
+      // catches cases where the developer prompt was lost mid-context.
+      "After mutations: call run_test (or run_command) BEFORE finish_work_branch so the formal-verifier gate has a passing verification receipt to inspect. Without it the gate WILL block your finish.",
+      "Then create code-change evidence with git_commit or finish_work_branch.",
       "Do not call prepare_work_branch; the workflow branch is already prepared.",
       "If the behavior already exists, add or update tests/documentation and commit that evidence.",
     ].join("\n"),
