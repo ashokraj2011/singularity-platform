@@ -85,9 +85,9 @@ export function LoopTheater({ traceIdPrefix, standalone = false }: LoopTheaterPr
           {scenes.length === 0 && (
             <div className="loop-theater__empty">
               {status === 'live'
-                ? 'Connected. Waiting for the agent to do something — start or resume a stage to see the conversation appear here.'
+                ? 'Connected. No activity yet for this session — start or resume a stage and the conversation will appear here.'
                 : status === 'connecting' || status === 'reconnecting'
-                  ? 'Connecting to the event stream…'
+                  ? 'Loading recent activity and connecting to the live stream…'
                   : 'Stream closed.'}
             </div>
           )}

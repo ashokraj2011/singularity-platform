@@ -59,6 +59,47 @@ export function useLiveLoopEventStream(opts: UseLiveLoopEventStreamOptions): Use
     let es: EventSource | undefined
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined
 
+    // Catch-up fetch — the standard "live tail" UX shows the most recent
+    // context before streaming new events. Without it, opening the
+    // Theater on an idle session shows an empty stage, which reads as
+    // "broken" even when everything is working. We pull the most recent
+    // 100 events for this trace, render them immediately, then the SSE
+    // path adds anything that fires after.
+    async function catchUp() {
+      try {
+        const res = await fetch(`${AUDIT_GOV_BASE}/api/v1/audit/search`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ traceIdPrefix, limit: 100 }),
+        })
+        if (closed || !res.ok) return
+        const data = await res.json() as { items?: AuditEvent[] }
+        const items = data.items ?? []
+        // Oldest first so they read chronologically.
+        items.sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
+        const built: SceneAction[] = []
+        for (const event of items) {
+          if (seenIds.current.has(event.id)) continue
+          const scene = eventToScene(event)
+          if (!scene) continue
+          seenIds.current.add(event.id)
+          if (scene.kind === 'tool-result') {
+            const call = deriveToolCallScene(scene)
+            if (call) built.push(call)
+          }
+          built.push(scene)
+        }
+        if (built.length > 0 && !closed) {
+          setScenes((prev) => {
+            const next = prev.concat(built)
+            return next.length > maxScenes ? next.slice(-maxScenes) : next
+          })
+        }
+      } catch {
+        // Catch-up is best-effort; live path will still connect.
+      }
+    }
+
     function connect() {
       if (closed) return
       // No traceId filter sent — audit-gov SSE only does exact match.
@@ -127,7 +168,12 @@ export function useLiveLoopEventStream(opts: UseLiveLoopEventStreamOptions): Use
       }
     }
 
-    connect()
+    // Order matters: catch-up first so the user sees context immediately,
+    // then SSE for new events. Catch-up populates seenIds so any event
+    // that the SSE replays from the broadcast buffer is deduped.
+    catchUp().then(() => {
+      if (!closed) connect()
+    })
 
     return () => {
       closed = true
