@@ -367,6 +367,31 @@ function ClarificationPrompt({
     },
   })
 
+  // M54.A — "Save & re-run with answers". The previous flow saved answers
+  // but left the existing (pre-answer) attempt as the one operators
+  // approved — wasting the answers as metadata. This chains save → run
+  // so the next attempt's task includes `capturedDecisions` (router.ts
+  // buildLoopStageVars:3393) and the agent produces a refined output the
+  // operator can then approve.
+  const saveAndRerunMutation = useMutation({
+    mutationFn: async () => {
+      if (!session || !stage) throw new Error('No Workbench session/stage selected')
+      const current = Object.fromEntries((session.decisionAnswers ?? []).map(answer => [answer.questionId, answer]))
+      const merged = { ...current, ...answers }
+      const afterSave = await api.saveDecisionAnswers(session.id, answerList(merged))
+      // Snapshot first if needed, mirroring runMutation in WorkbenchNeoFocus.
+      if (!afterSave.snapshots[0]) {
+        await api.snapshot(afterSave.id)
+      }
+      return api.runStage(afterSave.id, stage.key)
+    },
+    onSuccess: (updated) => {
+      setAnswers({})
+      onSession(updated)
+      setDismissedKey(promptKey)
+    },
+  })
+
   useEffect(() => {
     if (!open || !session) return
     setAnswers(Object.fromEntries((session.decisionAnswers ?? []).map(answer => [answer.questionId, answer])))
@@ -402,13 +427,36 @@ function ClarificationPrompt({
           ))}
         </div>
 
-        {saveMutation.isError && <p className="error-text">{saveMutation.error.message}</p>}
+        {(saveMutation.isError || saveAndRerunMutation.isError) && (
+          <p className="error-text">
+            {(saveMutation.error ?? saveAndRerunMutation.error)?.message}
+          </p>
+        )}
         <div className="clarification-actions">
           <span>{answeredCount}/{questions.length} answered</span>
           <button className="secondary-action" type="button" onClick={() => setDismissedKey(promptKey)}>Answer later</button>
-          <button className="primary-action compact" type="button" disabled={answeredCount === 0 || saveMutation.isPending} onClick={() => saveMutation.mutate()}>
+          {/* M54.A — "Save answers" alone leaves the existing pre-answer attempt
+              as what gets approved. Most operators want their answers to
+              actually shape the agent's output — that's "Save & re-run". */}
+          <button
+            className="secondary-action"
+            type="button"
+            disabled={answeredCount === 0 || saveMutation.isPending || saveAndRerunMutation.isPending}
+            onClick={() => saveMutation.mutate()}
+            title="Persist the answers without firing a new attempt. The current pre-answer attempt remains the one shown for approval."
+          >
             {saveMutation.isPending ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
             Save answers
+          </button>
+          <button
+            className="primary-action compact"
+            type="button"
+            disabled={answeredCount === 0 || saveMutation.isPending || saveAndRerunMutation.isPending}
+            onClick={() => saveAndRerunMutation.mutate()}
+            title="Persist the answers AND immediately re-run the stage so the agent generates a new attempt that reflects your decisions."
+          >
+            {saveAndRerunMutation.isPending ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
+            Save &amp; re-run with answers
           </button>
         </div>
       </section>
@@ -1442,18 +1490,38 @@ function NeoStageController({
       ? 'Approval resumes the same MCP loop with the saved continuation token.'
       : 'This attempt is paused but the continuation token is missing.'
   } else if (intent === 'approve') {
+    // M54.B — Staleness guard. If the operator answered (or edited) decision
+    // answers AFTER the current attempt finished, the attempt's output didn't
+    // see those answers — approving it would advance a stale artifact. Block
+    // approval and point them at "Re-run stage" or the clarification modal's
+    // "Save & re-run with answers" button.
+    const answersUpdatedAt = session.metadata?.decisionAnswersUpdatedAt
+    const attemptCompletedAt = latest?.completedAt
+    const answersStale = Boolean(
+      answersUpdatedAt &&
+      attemptCompletedAt &&
+      new Date(answersUpdatedAt).getTime() > new Date(attemptCompletedAt).getTime(),
+    )
     primaryAction = {
       label: 'Approve & advance',
       onClick: () => verdictMutation.mutate('PASS'),
       busy: verdictMutation.isPending,
+      disabled: answersStale,
     }
     secondaryActions = [
+      ...(answersStale ? [{
+        label: 'Re-run with answers',
+        onClick: () => runMutation.mutate(),
+        busy: runMutation.isPending,
+      }] : []),
       { label: 'Accept with risk', onClick: () => verdictMutation.mutate('ACCEPTED_WITH_RISK'), busy: verdictMutation.isPending },
       { label: 'Needs rework', onClick: () => verdictMutation.mutate('NEEDS_REWORK'), busy: verdictMutation.isPending },
     ]
-    helperText = requiredMissing.length > 0 && !acceptRisk
-      ? `${requiredMissing.length} required question${requiredMissing.length === 1 ? '' : 's'} still unanswered — tick "Accept risk" to override.`
-      : 'Verdict will be recorded in the audit trail.'
+    helperText = answersStale
+      ? 'You answered questions AFTER this attempt finished. Click "Re-run with answers" so the agent regenerates with your decisions — otherwise the next stage inherits the pre-answer output. "Accept with risk" still overrides if you really want to advance as-is.'
+      : requiredMissing.length > 0 && !acceptRisk
+        ? `${requiredMissing.length} required question${requiredMissing.length === 1 ? '' : 's'} still unanswered — tick "Accept risk" to override.`
+        : 'Verdict will be recorded in the audit trail.'
   } else if (intent === 'rework') {
     primaryAction = {
       label: session.snapshots[0] ? 'Re-run stage' : 'Snapshot + re-run',
