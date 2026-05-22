@@ -1414,10 +1414,35 @@ function NeoStageController({
         </div>
       )}
 
-      {stageAttemptCount >= maxLoopsForStage && intent !== 'completed' && (
+      {/* M58 — Loop-limit banner.
+            Previously suppressed for intent==='completed' (the last attempt
+            passed) under the assumption that operators wouldn't try to
+            re-run a passed stage. In practice they do — to regenerate with
+            new context, after sending back from a later stage, etc. — and
+            the server's "reached the max loop count (3)" rejection then
+            had no in-UI escape hatch. Surface Reset whenever the loop
+            limit is hit regardless of intent. */}
+      {stageAttemptCount >= maxLoopsForStage && (
         <div className="focus-loop-warning">
           <strong>Loop limit reached</strong>
           <p>This stage has used {stageAttemptCount}/{maxLoopsForStage} attempts. Reset to retry.</p>
+          <button
+            className="focus-secondary"
+            disabled={resetAttemptsMutation.isPending}
+            onClick={() => resetAttemptsMutation.mutate()}
+          >
+            {resetAttemptsMutation.isPending ? '↻ ' : '⟲ '}Reset this stage
+          </button>
+        </div>
+      )}
+      {/* M58 — Surface the loop-cap error inline next to the Reset button.
+            workgraph-api rejects re-runs with "Stage X reached the max loop
+            count (N)"; before this fix the error landed in a generic toast
+            with no contextual recovery action. */}
+      {runMutation.isError && /reached the max loop count/i.test(runMutation.error?.message ?? '') && stageAttemptCount < maxLoopsForStage * 2 && (
+        <div className="focus-loop-warning" role="alert">
+          <strong>{runMutation.error?.message}</strong>
+          <p>Reset this stage's attempts to start over with a clean slate.</p>
           <button
             className="focus-secondary"
             disabled={resetAttemptsMutation.isPending}
