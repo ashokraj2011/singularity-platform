@@ -6,6 +6,11 @@ import os
 
 class Settings(BaseSettings):
     context_memory_url: str = "http://localhost:8002"
+    # M65 Slice 1B — metrics-ledger sunset. The legacy URL stays as a
+    # config field so the deprecated /chat/respond writer (sunset
+    # 2026-07-01) compiles, but no live service answers at this
+    # address. New code uses audit_gov_url + the M65 Slice 1A
+    # /api/v1/savings/* endpoints instead.
     metrics_ledger_url: str = "http://localhost:8003"
 
     # IAM federation (M6+) — used to resolve MCP server registrations per capability.
@@ -44,10 +49,11 @@ class Settings(BaseSettings):
     # the whole workflow.
     agent_runtime_world_model_timeout_sec: float = 2.0
 
-    # M65 Slice 1A — audit-gov base URL. The /metrics/dashboard and
-    # /sessions/{id}/metrics proxies repoint to audit-gov when this
-    # is set, falling back to metrics_ledger_url otherwise. Empty
-    # string preserves the legacy behaviour.
+    # M65 Slice 1A/1B — audit-gov base URL. /metrics/dashboard and
+    # /sessions/{id}/metrics proxy here for token-savings analytics.
+    # As of Slice 1B, audit-gov is the ONLY source — those endpoints
+    # return 503 when this is unset (no silent fallback to metrics-ledger,
+    # which has been sunset).
     audit_gov_url: str = ""
 
     # M62 Slice E — prompt compression toggle for compose calls.

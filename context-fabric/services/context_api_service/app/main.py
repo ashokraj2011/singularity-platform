@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 import httpx
 import uuid
@@ -293,29 +293,23 @@ async def context_compare(req: CompareRequest):
 
 @app.get("/metrics/dashboard")
 async def metrics_dashboard():
-    # M65 Slice 1A — Repoint from metrics-ledger to audit-gov's
-    # /api/v1/savings/dashboard. The legacy metrics-ledger path stays
-    # available until Slice 1B sunsets the service entirely, but
-    # callers go through audit-gov from this commit onward.
-    audit_gov = (settings.audit_gov_url or settings.metrics_ledger_url).rstrip("/")
-    if settings.audit_gov_url:
-        return await get_json(f"{audit_gov}/api/v1/savings/dashboard")
-    return await get_json(f"{settings.metrics_ledger_url.rstrip('/')}/metrics/dashboard")
+    # M65 Slice 1B — audit-gov is the only source now. The legacy
+    # metrics-ledger fallback was removed when that service was
+    # sunset; if AUDIT_GOV_URL is unset the endpoint returns 503
+    # so a misconfiguration fails loud instead of silent-404.
+    if not settings.audit_gov_url:
+        raise HTTPException(status_code=503, detail="AUDIT_GOV_URL unset")
+    return await get_json(f"{settings.audit_gov_url.rstrip('/')}/api/v1/savings/dashboard")
 
 
 @app.get("/sessions/{session_id}/metrics")
 async def session_metrics(session_id: str):
-    # M65 Slice 1A — Same repoint pattern as /metrics/dashboard. The
-    # audit-gov shape is { session_id, runs[], aggregate }; the legacy
-    # metrics-ledger returned just the aggregate. Callers see the new
-    # shape; UI updates are deferred to the next session-detail page
-    # iteration since none of them inspect the missing aggregate-only
-    # case today.
-    if settings.audit_gov_url:
-        return await get_json(
-            f"{settings.audit_gov_url.rstrip('/')}/api/v1/savings/session/{session_id}"
-        )
-    return await get_json(f"{settings.metrics_ledger_url.rstrip('/')}/metrics/savings/session/{session_id}")
+    # M65 Slice 1B — same posture as /metrics/dashboard above.
+    if not settings.audit_gov_url:
+        raise HTTPException(status_code=503, detail="AUDIT_GOV_URL unset")
+    return await get_json(
+        f"{settings.audit_gov_url.rstrip('/')}/api/v1/savings/session/{session_id}"
+    )
 
 
 @app.get("/sessions/{session_id}/messages")

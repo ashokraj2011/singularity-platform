@@ -4,7 +4,8 @@
 #   - IAM (Postgres :5433 + iam-service :8100)
 #   - agent-and-tools (Postgres :5432 + agent-service :3001 + tool-service :3002
 #                      + agent-runtime :3003 + prompt-composer :3004 + web :3000)
-#   - context-fabric (api :8000 + llm-gateway :8001 + memory :8002 + metrics-ledger :8003)
+#   - context-fabric (api :8000 + llm-gateway :8001 + memory :8002)
+#     [M65: metrics-ledger sunset — savings analytics moved to audit-gov :8500]
 #   - workgraph-studio (Postgres :5434 + MinIO :9000/:9001 + api :8080 + web :5174 + workbench :5176)
 #   - UserAndCapabillity (:5175)
 #   - singularity-portal (:5180)
@@ -495,27 +496,14 @@ services:
           memory: 2G
           cpus: '1.0'
 
-  metrics-ledger:
-    build:
-      context: ./context-fabric
-      dockerfile: services/metrics_ledger_service/Dockerfile
-    container_name: singularity-metrics-ledger
-    # M33 — env_file removed. metrics-ledger is pure persistence — no LLM
-    # calls, no provider keys.
-    environment:
-      METRICS_LEDGER_DB: /data/metrics_ledger.db
-      AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
-      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
-    ports:
-      - "8003:8003"
-    volumes:
-      - ./context-fabric/data/metrics_ledger:/data
-    # M35.3 — resource limits (metrics persistence: 1G memory / 0.5 CPU)
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: '0.5'
+  # M65 Slice 1B — metrics-ledger removed.
+  #
+  # Token-savings analytics moved to audit-gov (M65 Slice 1A). The
+  # SQLite file under context-fabric/data/metrics_ledger/ is left on
+  # disk for one operator cycle in case any external scripts read it
+  # directly; deletion is a follow-up after no callers are observed.
+  # Source code stays in tree at context-fabric/services/metrics_ledger_service/
+  # marked deprecated; will be removed in M66.
 
   context-api:
     build:
@@ -526,7 +514,10 @@ services:
     # directly. LLM traffic routes through MCP.
     environment:
       CONTEXT_MEMORY_URL: http://context-memory:8002
-      METRICS_LEDGER_URL: http://metrics-ledger:8003
+      # M65 Slice 1B — METRICS_LEDGER_URL removed. /metrics/dashboard and
+      # /sessions/{id}/metrics now proxy to audit-gov (AUDIT_GOV_URL below).
+      # If a legacy caller still references this env var the proxy fall-back
+      # returns 404 — preferred over silently routing to a dead host.
       COMPOSER_URL: http://prompt-composer:3004
       IAM_BASE_URL: http://iam-service:8100/api/v1
       IAM_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
@@ -574,8 +565,7 @@ services:
         condition: service_healthy
       context-memory:
         condition: service_started
-      metrics-ledger:
-        condition: service_started
+      # M65 Slice 1B — metrics-ledger removed from depends_on.
       mcp-server-demo:
         condition: service_started
     # M35.3 — resource limits (orchestrator: 2G memory / 1 CPU)
