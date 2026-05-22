@@ -560,6 +560,11 @@ services:
       # Must exceed mcp-server's TIMEOUT_SEC (300) plus subscriber-drain
       # window (≈1s). 480s = 8 min headroom.
       CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC: ${CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC:-480}
+      # M65 Slice 1A — audit-gov is the canonical home for token-savings
+      # analytics. /metrics/dashboard and /sessions/{id}/metrics proxy
+      # here when set; legacy metrics-ledger remains as fallback during
+      # the M65 transition.
+      AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
     ports:
       - "8000:8000"
     depends_on:

@@ -57,11 +57,122 @@ export async function denormaliseLlmCall(eventId: string, traceId: string | null
     ],
   );
 
+  // M65 Slice 1A — Populate token_savings_runs when the payload carries
+  // prompt-cache or compression metrics. This used to live in
+  // metrics-ledger as a separate POST from the upstream caller; moving
+  // the denorm here means callers stop dual-writing and operators have
+  // one canonical store for savings analytics.
+  await maybeRecordSavings(eventId, capabilityId, tenantId, payloadIn, p, costUsd, rateCardId, inRateOrNull(rate), outRateOrNull(rate));
+
   // Best-effort: bump active budgets if any apply. Doesn't enforce; that's
   // the /governance/budget/check endpoint's job at decision-time.
   if (costUsd !== null) {
     await bumpBudgets(capabilityId, tenantId, total, costUsd);
   }
+}
+
+function inRateOrNull(rate: RateCardRow | null): number | null {
+  return rate ? parseFloat(rate.input_per_1k_usd) : null;
+}
+function outRateOrNull(rate: RateCardRow | null): number | null {
+  return rate ? parseFloat(rate.output_per_1k_usd) : null;
+}
+
+/**
+ * M65 Slice 1A — Derive a `token_savings_runs` row from an
+ * `llm.call.completed` audit event whose payload carries cache or
+ * compression metrics. Skip silently when the payload doesn't have
+ * those (the row stays absent — savings are only meaningful when
+ * there's an actual optimization to measure).
+ *
+ * Payload fields recognised:
+ *   - cached_input_tokens / cache_read_tokens / cache_write_tokens
+ *     → "cache" optimization_mode
+ *   - compression_original_tokens / compression_compressed_tokens
+ *     → "compression" optimization_mode
+ *   - session_id, agent_id, model_call_id, context_package_id, quality_score
+ *     → metadata fields carried through to the savings row
+ */
+async function maybeRecordSavings(
+  eventId: string,
+  capabilityId: string | null,
+  tenantId: string | null,
+  payloadIn: Record<string, unknown>,
+  p: { provider: string; model: string; input_tokens: number; output_tokens: number; latency_ms?: number | null },
+  costUsd: number | null,
+  rateCardId: string | null,
+  inRate: number | null,
+  outRate: number | null,
+): Promise<void> {
+  // Look for the optimization signal. We accept either flat fields
+  // (cache_read_tokens at top level) or nested under
+  // payload.optimization. Upstream emitters use both shapes today.
+  const opt = (payloadIn.optimization && typeof payloadIn.optimization === "object")
+    ? payloadIn.optimization as Record<string, unknown>
+    : payloadIn;
+
+  const cacheRead = numberOrZero(opt.cache_read_tokens ?? payloadIn.cache_read_tokens);
+  const cacheWrite = numberOrZero(opt.cache_write_tokens ?? payloadIn.cache_write_tokens);
+  const cachedInput = numberOrZero(opt.cached_input_tokens ?? payloadIn.cached_input_tokens);
+  const compOriginal = numberOrZero(opt.compression_original_tokens);
+  const compCompressed = numberOrZero(opt.compression_compressed_tokens);
+
+  const hasCache = cacheRead > 0 || cacheWrite > 0 || cachedInput > 0;
+  const hasCompression = compOriginal > 0 && compCompressed > 0 && compCompressed < compOriginal;
+  if (!hasCache && !hasCompression) return;
+
+  // Pick the mode. Both can be present; prefer compression (larger
+  // savings signal) but record cache numbers if that's what we have.
+  const mode = hasCompression ? "compression" : "cache";
+
+  // Raw vs optimized input tokens:
+  //  - compression: original vs compressed text
+  //  - cache: input_tokens + cache_read (would-be) vs input_tokens actual
+  const rawInput = hasCompression ? compOriginal : (p.input_tokens + cacheRead);
+  const optimizedInput = hasCompression ? compCompressed : p.input_tokens;
+  const tokensSaved = Math.max(0, rawInput - optimizedInput);
+  const percentSaved = rawInput > 0 ? (tokensSaved / rawInput) : 0;
+
+  const estimatedRawCost = inRate !== null
+    ? (rawInput / 1000) * inRate + (p.output_tokens / 1000) * (outRate ?? 0)
+    : 0;
+  const estimatedOptimizedCost = costUsd ?? 0;
+  const estimatedCostSaved = Math.max(0, estimatedRawCost - estimatedOptimizedCost);
+
+  // session_id / agent_id sourced from the payload top-level (the
+  // emitter sets them when the call is part of a workflow attempt).
+  const sessionId = typeof payloadIn.session_id === "string" ? payloadIn.session_id
+    : typeof payloadIn.run_id === "string" ? payloadIn.run_id
+    : "unknown";
+  const agentId = typeof payloadIn.agent_id === "string" ? payloadIn.agent_id : null;
+  const contextPackageId = typeof payloadIn.context_package_id === "string" ? payloadIn.context_package_id : null;
+  const modelCallId = typeof payloadIn.model_call_id === "string" ? payloadIn.model_call_id : null;
+  const qualityScore = typeof payloadIn.quality_score === "number" ? payloadIn.quality_score : null;
+
+  await query(
+    `INSERT INTO audit_governance.token_savings_runs
+       (audit_event_id, session_id, agent_id, context_package_id, model_call_id,
+        optimization_mode, raw_input_tokens, optimized_input_tokens, output_tokens,
+        tokens_saved, percent_saved, estimated_raw_cost, estimated_optimized_cost,
+        estimated_cost_saved, provider, model_name, latency_ms, quality_score,
+        capability_id, tenant_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+    [
+      eventId, sessionId, agentId, contextPackageId, modelCallId,
+      mode, rawInput, optimizedInput, p.output_tokens,
+      tokensSaved, percentSaved, estimatedRawCost, estimatedOptimizedCost,
+      estimatedCostSaved, p.provider, p.model, p.latency_ms ?? null, qualityScore,
+      capabilityId, tenantId,
+    ],
+  );
+  // rateCardId is intentionally not stored on the savings row — it's
+  // already on the matched llm_calls row; join via audit_event_id if
+  // an analyst needs it.
+  void rateCardId;
+}
+
+function numberOrZero(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
 }
 
 async function bumpBudgets(capabilityId: string | null, tenantId: string | null,

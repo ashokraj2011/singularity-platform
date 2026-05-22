@@ -32,6 +32,9 @@ import { searchRouter } from "./routes-search";
 // M63 Slice B — Server-Sent Events live-tail. Filtered by the same
 // kinds/severities/riskLevels/sources query params as search.
 import { streamRouter } from "./routes-stream";
+// M65 Slice 1A — Token-savings read endpoints, migrated from
+// metrics-ledger. Single source of truth for savings analytics.
+import { savingsRouter } from "./routes-savings";
 import { engineRouter } from "./engine/routes";
 import { startEngineSweep, stopEngineSweep } from "./engine/sweep";
 import { ensureEngineEvalTables } from "./db";
@@ -103,6 +106,8 @@ app.use("/api/v1",            queryRouter);
 app.use("/api/v1",            searchRouter);
 // M63 Slice B — GET /api/v1/audit/stream live-tail.
 app.use("/api/v1",            streamRouter);
+// M65 Slice 1A — GET /api/v1/savings/* (session, agent, best-mode, dashboard).
+app.use("/api/v1",            savingsRouter);
 app.use("/api/v1/engine",    engineRouter);
 
 // Error handler — translate ZodErrors and unknowns into JSON.

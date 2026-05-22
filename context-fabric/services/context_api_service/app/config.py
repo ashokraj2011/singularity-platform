@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # the whole workflow.
     agent_runtime_world_model_timeout_sec: float = 2.0
 
+    # M65 Slice 1A — audit-gov base URL. The /metrics/dashboard and
+    # /sessions/{id}/metrics proxies repoint to audit-gov when this
+    # is set, falling back to metrics_ledger_url otherwise. Empty
+    # string preserves the legacy behaviour.
+    audit_gov_url: str = ""
+
     # M62 Slice E — prompt compression toggle for compose calls.
     # When enabled, the compose request body carries a `compression`
     # block that tells prompt-composer to POST over-budget allowlisted
@@ -66,6 +72,8 @@ class Settings(BaseSettings):
         self.agent_runtime_url = os.getenv("AGENT_RUNTIME_URL", self.agent_runtime_url)
         # M62 Slice E
         self.compressor_url = os.getenv("COMPRESSOR_URL", self.compressor_url)
+        # M65 Slice 1A
+        self.audit_gov_url = os.getenv("AUDIT_GOV_URL", self.audit_gov_url)
 
 
 settings = Settings()
