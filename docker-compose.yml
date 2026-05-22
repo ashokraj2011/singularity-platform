@@ -615,6 +615,55 @@ services:
           cpus: '1.0'
 
   # ─────────────────────────────────────────────────────────────────────
+  # M62 — Prompt Compressor (LLMLingua-2 sidecar)
+  #
+  # Local prompt compression for verbose ambient layers (CLAUDE.md,
+  # RUNTIME_EVIDENCE) before they hit the LLM. ZERO runtime network:
+  # the llmlingua-2 BERT base model (~180MB) is baked into the image
+  # at build time, and the container runs with TRANSFORMERS_OFFLINE=1
+  # so a stale model name can't trigger an outbound HuggingFace fetch.
+  # Office / air-gapped friendly.
+  #
+  # Consumers:
+  #   - prompt-composer (M62 Slice D) — opt-in per-layer compression
+  #     against an explicit allowlist (CODE_AGENT_RULES, RUNTIME_EVIDENCE
+  #     by default). Layers not in the allowlist are never compressed.
+  #
+  # Reached at http://prompt-compressor:8011 from inside the network.
+  # COMPRESSION_ENABLED governs whether the compressor instance loads;
+  # the service itself starts regardless so /health is observable.
+  # ─────────────────────────────────────────────────────────────────────
+  prompt-compressor:
+    build:
+      context: ./context-fabric
+      dockerfile: services/prompt_compressor_service/Dockerfile
+    container_name: singularity-prompt-compressor
+    environment:
+      LOG_LEVEL: info
+      COMPRESSION_ENABLED: ${COMPRESSION_ENABLED:-true}
+      COMPRESSION_MODEL_NAME: ${COMPRESSION_MODEL_NAME:-microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank}
+      COMPRESSION_DEVICE: ${COMPRESSION_DEVICE:-cpu}
+      COMPRESSION_LAZY_LOAD: ${COMPRESSION_LAZY_LOAD:-true}
+      COMPRESSION_MIN_TARGET_TOKENS: ${COMPRESSION_MIN_TARGET_TOKENS:-20}
+      COMPRESSION_MAX_INPUT_CHARS: ${COMPRESSION_MAX_INPUT_CHARS:-200000}
+    ports:
+      - "8011:8011"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8011/health', timeout=2).status==200 else sys.exit(1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          # 2G covers BERT base (~600MB resident) + tokenizer state +
+          # request buffers with headroom. Bump to 3G if switching to
+          # llmlingua-2 BERT large.
+          memory: 2G
+          cpus: '1.0'
+
+  # ─────────────────────────────────────────────────────────────────────
   # M33 — LLM Gateway (the ONLY service that holds provider keys)
   # ─────────────────────────────────────────────────────────────────────
   llm-gateway:

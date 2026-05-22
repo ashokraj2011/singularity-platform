@@ -1,0 +1,13 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+# llmlingua-2 dependency stack. We pin torch to the CPU wheel index in
+# the Dockerfile (not here) so requirements.txt stays index-agnostic.
+llmlingua==0.2.2
+transformers==4.46.3
+# tiktoken comes from llmlingua transitively; pinning here makes the
+# pip resolver fast and reproducible.
+tiktoken==0.8.0
+pytest==8.3.4
+httpx==0.28.1
