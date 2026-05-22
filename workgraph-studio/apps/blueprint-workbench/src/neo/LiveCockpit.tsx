@@ -16,6 +16,7 @@
  * as LiveEventsPanel). Closes streams on unmount.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { BLUEPRINT_AUTH_INVALID_EVENT, clearToken } from '../api'
 
 interface CockpitEvent {
   id: string
@@ -196,6 +197,19 @@ export function LiveCockpit({
           if (r.status === 403 || r.status === 404) {
             setError(r.status === 403 ? 'workflow run not accessible' : 'workflow run not found')
             stopped = true
+            return
+          }
+          // M69 follow-up — 401 used to be retried forever with the same
+          // stale token, producing an apparent "infinite loop" of 401s in
+          // the workbench logs and keeping the page polling indefinitely.
+          // Treat 401 as terminal for the polling loop AND fire the
+          // auth-invalid event so App.tsx bounces the user to AuthGate
+          // for re-login.
+          if (r.status === 401) {
+            setError('session expired — please sign in again')
+            stopped = true
+            clearToken()
+            window.dispatchEvent(new Event(BLUEPRINT_AUTH_INVALID_EVENT))
             return
           }
           setError(`HTTP ${r.status}`)
