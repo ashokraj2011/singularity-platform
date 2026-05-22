@@ -5108,11 +5108,16 @@ button.focus-badge.link:hover {
  * Phase 3 adds the click-to-expand detail drawer and the scrubber.
  */
 .loop-theater {
-  min-height: 100vh;
+  /* Fits its container; the standalone wrapper in main.tsx adds 100vh
+   * sizing, and inside NeoOverlayShell the card already controls height. */
   display: flex; flex-direction: column;
+  flex: 1; min-height: 0;
   background: var(--bg, #0e1422);
   color: var(--text, #e5ebf6);
   font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+}
+.loop-theater--standalone {
+  min-height: 100vh;
 }
 .loop-theater__header {
   display: flex; align-items: center; justify-content: space-between;

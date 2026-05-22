@@ -61,6 +61,7 @@ import { FocusPane, computeFocusIntent, type FocusAction } from './neo/FocusPane
 import { NeoNotifier } from './neo/NeoNotifier'
 import { StageChat } from './neo/StageChat'
 import { LoopTrace } from './neo/LoopTrace'
+import { LoopTheater } from './loop-theater/LoopTheater'
 import { NeoThemePicker, lookClass, useNeoLook } from './neo/NeoThemePicker'
 import { MarkdownView } from './neo/MarkdownView'
 
@@ -72,7 +73,9 @@ const knownRoleMeta: Record<string, { label: string; icon: typeof Brain }> = {
 
 const defaultWorkbenchGoal = 'Create a governed planning, design, development, QA, and testing loop for this codebase.'
 
-type WorkbenchSection = 'workflow' | 'artifacts' | 'terminal' | 'loop' | 'replay'
+// M69 — 'theater' added: Loop Theater is the replay view that animates how
+// the LLM and agent talked to each other during a run. See loop-theater/.
+type WorkbenchSection = 'workflow' | 'artifacts' | 'terminal' | 'loop' | 'replay' | 'theater'
 
 const WORKGRAPH_WEB_ORIGIN = normalizeOrigin(import.meta.env.VITE_WORKGRAPH_WEB_ORIGIN)
   ?? `${window.location.protocol}//${window.location.hostname}:5174`
@@ -270,6 +273,9 @@ function WorkbenchCommandHeader({
           ['artifacts', 'Artifacts'],
           ['loop', 'Loop'],
           ['replay', 'Replay'],
+          // M69 — Loop Theater. Animates the LLM↔agent conversation
+          // for the current session by replaying audit-gov events.
+          ['theater', 'Theater'],
           ['terminal', 'Terminal'],
         ] as const).map(([section, label]) => (
           <button
@@ -993,7 +999,7 @@ function WorkbenchSetup({
   )
 }
 
-type NeoOverlayKind = 'none' | 'review' | 'artifacts' | 'terminal' | 'loop' | 'replay'
+type NeoOverlayKind = 'none' | 'review' | 'artifacts' | 'terminal' | 'loop' | 'replay' | 'theater'
 
 function WorkbenchNeo({
   session,
@@ -1047,7 +1053,8 @@ function WorkbenchNeo({
     else if (activeSection === 'terminal') setOverlay('terminal')
     else if (activeSection === 'loop') setOverlay('loop')
     else if (activeSection === 'replay') setOverlay('replay')
-    else if (overlay === 'artifacts' || overlay === 'terminal' || overlay === 'loop' || overlay === 'replay') setOverlay('none')
+    else if (activeSection === 'theater') setOverlay('theater')
+    else if (overlay === 'artifacts' || overlay === 'terminal' || overlay === 'loop' || overlay === 'replay' || overlay === 'theater') setOverlay('none')
   }, [activeSection])
 
   const activeStage = stages.find(stage => stage.key === activeStageKey) ?? stages[0]
@@ -1161,6 +1168,15 @@ function WorkbenchNeo({
       {overlay === 'replay' && (
         <NeoOverlayShell title="Workflow replay" onClose={() => closeOverlay()}>
           <WorkflowReplay session={session} stages={stages} />
+        </NeoOverlayShell>
+      )}
+      {overlay === 'theater' && (
+        // M69 — Loop Theater overlay. Subscribes to audit-gov for this
+        // session's trace and animates the LLM↔agent conversation.
+        // traceIdPrefix is `blueprint-<sessionId>` (matches what mcp-server
+        // emits as the trace_id on all events tied to this session).
+        <NeoOverlayShell title="Loop Theater · how the agent did this run" onClose={() => closeOverlay()}>
+          <LoopTheater traceIdPrefix={`blueprint-${session.id}`} />
         </NeoOverlayShell>
       )}
     </div>

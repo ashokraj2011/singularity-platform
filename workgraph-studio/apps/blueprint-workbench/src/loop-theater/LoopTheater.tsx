@@ -17,9 +17,14 @@ import type { SceneAction } from './eventToScene'
 
 interface LoopTheaterProps {
   traceIdPrefix: string
+  /** When true, the theater takes the full viewport. Used by the
+   * standalone ?theater=... URL mount in main.tsx. When false (default),
+   * the theater fits its container — used by the Theater tab inside the
+   * workbench, where NeoOverlayShell controls the height. */
+  standalone?: boolean
 }
 
-export function LoopTheater({ traceIdPrefix }: LoopTheaterProps) {
+export function LoopTheater({ traceIdPrefix, standalone = false }: LoopTheaterProps) {
   const { scenes, totalScenes, loading, error, done } = useLoopEventStream({
     traceIdPrefix,
     stepDelayMs: 220,
@@ -30,7 +35,7 @@ export function LoopTheater({ traceIdPrefix }: LoopTheaterProps) {
   const totalCost = useMemo(() => sumCost(scenes), [scenes])
 
   return (
-    <div className="loop-theater">
+    <div className={`loop-theater${standalone ? ' loop-theater--standalone' : ''}`}>
       <header className="loop-theater__header">
         <div className="loop-theater__title">
           <Activity size={18} />

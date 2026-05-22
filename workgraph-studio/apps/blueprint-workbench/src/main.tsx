@@ -20,7 +20,7 @@ function bootstrap() {
   const params = new URLSearchParams(window.location.search)
   const theaterTrace = params.get('theater')
   if (theaterTrace) {
-    return <LoopTheater traceIdPrefix={theaterTrace} />
+    return <LoopTheater traceIdPrefix={theaterTrace} standalone />
   }
   return <App />
 }
