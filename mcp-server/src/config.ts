@@ -3,6 +3,24 @@ import { z } from "zod";
 
 dotenv.config();
 
+// M68.3 — Env-var boolean parser. `z.coerce.boolean()` is BROKEN for
+// string inputs: it just calls `Boolean(x)` which treats ANY non-empty
+// string as true, so `FORMAL_VERIFICATION_ENABLED=false` got coerced to
+// `true` and the gate could not be turned off via env. This helper
+// preserves explicit string semantics: "true"/"1"/"yes"/"on" → true,
+// "false"/"0"/"no"/"off"/"" → false. Defaults to the provided value
+// when the env is unset. Use everywhere a env-string boolean is read.
+function envBool(defaultValue: boolean): z.ZodEffects<z.ZodOptional<z.ZodString>, boolean, string | undefined> {
+  return z.string().optional().transform((raw) => {
+    if (raw === undefined || raw === null) return defaultValue;
+    const trimmed = String(raw).trim().toLowerCase();
+    if (trimmed === "") return defaultValue;
+    if (["true", "1", "yes", "on"].includes(trimmed)) return true;
+    if (["false", "0", "no", "off"].includes(trimmed)) return false;
+    return defaultValue;
+  });
+}
+
 const schema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   PORT: z.coerce.number().default(7000),
@@ -42,7 +60,7 @@ const schema = z.object({
   // PLAN_CONFIRM → ACT → VERIFY → FINALIZE) with per-phase tool allowlists,
   // path-coverage enforcement, and a pinned phase frame. See
   // /Users/ashokraj/.claude/plans/immutable-sniffing-quiche.md for the design.
-  MCP_AGENT_PHASES_ENABLED: z.coerce.boolean().default(false),
+  MCP_AGENT_PHASES_ENABLED: envBool(false),
 
   // M43 Slice 3 — Deterministic verification gate. When enabled, runs that
   // produced code changes but no verification receipt (or explicit
@@ -51,7 +69,7 @@ const schema = z.object({
   // can then refuse approval (NEEDS_REWORK). Default off so the gate ships
   // as a signal first, becomes blocking once we have a feel for false
   // positives.
-  MCP_DETERMINISTIC_VERIFICATION_GATE_ENABLED: z.coerce.boolean().default(false),
+  MCP_DETERMINISTIC_VERIFICATION_GATE_ENABLED: envBool(false),
 
   // M16 — sandbox root for the real fs/git tools. All paths must resolve
   // strictly inside this dir; absolute paths and `..` traversal are rejected.
@@ -67,20 +85,20 @@ const schema = z.object({
   MCP_AST_MAX_SYMBOLS: z.coerce.number().int().positive().default(250_000),
   MCP_WORK_BRANCH_PREFIX: z.string().default("sg"),
   MCP_WORKITEM_WORKSPACES_ROOT: z.string().optional(),
-  MCP_WORK_BRANCH_PUSH_ON_FINISH: z.coerce.boolean().default(false),
+  MCP_WORK_BRANCH_PUSH_ON_FINISH: envBool(false),
   MCP_WORK_BRANCH_PUSH_REMOTE: z.string().default("origin"),
-  MCP_GIT_PUSH_ENABLED: z.coerce.boolean().default(false),
+  MCP_GIT_PUSH_ENABLED: envBool(false),
   MCP_GIT_AUTH_MODE: z.enum(["disabled", "ssh", "token"]).default("disabled"),
   MCP_GIT_PUSH_REMOTE: z.string().default("origin"),
   MCP_GIT_TOKEN_ENV: z.string().default("GITHUB_TOKEN"),
   MCP_GIT_TOKEN: z.string().optional(),
   MCP_GIT_USERNAME: z.string().default("x-access-token"),
   MCP_GIT_SSH_KEY_PATH: z.string().optional(),
-  MCP_AUTO_CHECKOUT_SOURCE: z.coerce.boolean().default(true),
+  MCP_AUTO_CHECKOUT_SOURCE: envBool(true),
   MCP_SOURCE_CACHE_ROOT: z.string().optional(),
   MCP_WORKSPACE_LOCK_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
   MCP_WORKSPACE_LOCK_STALE_MS: z.coerce.number().int().positive().default(30 * 60_000),
-  MCP_WORKSPACE_GC_ENABLED: z.coerce.boolean().default(true),
+  MCP_WORKSPACE_GC_ENABLED: envBool(true),
   MCP_WORKSPACE_GC_MAX_AGE_HOURS: z.coerce.number().int().positive().default(72),
   MCP_WORKSPACE_DISK_QUOTA_BYTES: z.coerce.number().int().nonnegative().default(0),
   MCP_AUDIT_LOG_PATH: z.string().optional(),
@@ -100,10 +118,10 @@ const schema = z.object({
   // Optional SMT/formal verifier hook. When enabled, finish_work_branch runs
   // a pre-commit proof over the code-change evidence and verification receipts
   // before committing or pushing.
-  FORMAL_VERIFICATION_ENABLED: z.coerce.boolean().default(false),
+  FORMAL_VERIFICATION_ENABLED: envBool(false),
   FORMAL_VERIFIER_URL: z.string().default("http://localhost:8010"),
   FORMAL_VERIFICATION_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
-  FORMAL_VERIFICATION_BLOCK_ON_UNKNOWN: z.coerce.boolean().default(true),
+  FORMAL_VERIFICATION_BLOCK_ON_UNKNOWN: envBool(true),
 
   // Context Fabric internal adapter used when the LLM selects a SERVER-target
   // tool. MCP remains the agent loop owner, but governed server tools still
