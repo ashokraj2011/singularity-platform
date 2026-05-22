@@ -10,9 +10,9 @@
  * Entry: rendered by App.tsx when `?theater=<traceIdPrefix>` is in the
  * URL. Replaces the normal workbench shell for that session.
  */
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Activity, Brain, Bot, CheckCircle2, GitCommit, Wrench, XCircle } from 'lucide-react'
-import { useLoopEventStream } from './useLoopEventStream'
+import { useLiveLoopEventStream } from './useLiveLoopEventStream'
 import type { SceneAction } from './eventToScene'
 
 interface LoopTheaterProps {
@@ -25,14 +25,19 @@ interface LoopTheaterProps {
 }
 
 export function LoopTheater({ traceIdPrefix, standalone = false }: LoopTheaterProps) {
-  const { scenes, totalScenes, loading, error, done } = useLoopEventStream({
-    traceIdPrefix,
-    stepDelayMs: 220,
-    paced: true,
-  })
-
+  const { scenes, status, error } = useLiveLoopEventStream({ traceIdPrefix })
   const phases = useMemo(() => collectPhases(scenes), [scenes])
   const totalCost = useMemo(() => sumCost(scenes), [scenes])
+
+  // Auto-scroll the bubble column to the latest scene as new events
+  // arrive. Without this the user has to chase the action manually,
+  // which kills the "live, watch the agent work" feel.
+  const bubblesRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    const el = bubblesRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [scenes.length])
 
   return (
     <div className={`loop-theater${standalone ? ' loop-theater--standalone' : ''}`}>
@@ -43,10 +48,10 @@ export function LoopTheater({ traceIdPrefix, standalone = false }: LoopTheaterPr
         </div>
         <div className="loop-theater__meta">
           <span>trace: <code>{traceIdPrefix}</code></span>
-          <span>scenes: {scenes.length}/{totalScenes}</span>
+          <span>scenes: {scenes.length}</span>
           <span>cost: ${totalCost.toFixed(4)}</span>
-          <span className={done ? 'loop-theater__status loop-theater__status--done' : 'loop-theater__status'}>
-            {loading ? 'loading…' : done ? 'replay complete' : 'replaying…'}
+          <span className={`loop-theater__status loop-theater__status--${status}`}>
+            {status === 'live' ? '● live' : status === 'reconnecting' ? '○ reconnecting…' : status === 'connecting' ? '○ connecting…' : '○ closed'}
           </span>
         </div>
       </header>
@@ -76,10 +81,14 @@ export function LoopTheater({ traceIdPrefix, standalone = false }: LoopTheaterPr
           </div>
         </div>
 
-        <div className="loop-theater__column loop-theater__column--bubbles">
-          {scenes.length === 0 && !loading && (
+        <div className="loop-theater__column loop-theater__column--bubbles" ref={bubblesRef}>
+          {scenes.length === 0 && (
             <div className="loop-theater__empty">
-              No scenes yet. Make sure FORMAL_VERIFICATION events have started — or check the trace ID matches a real run.
+              {status === 'live'
+                ? 'Connected. Waiting for the agent to do something — start or resume a stage to see the conversation appear here.'
+                : status === 'connecting' || status === 'reconnecting'
+                  ? 'Connecting to the event stream…'
+                  : 'Stream closed.'}
             </div>
           )}
           {scenes.map((scene) => (

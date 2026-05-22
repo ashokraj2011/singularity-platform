@@ -5138,7 +5138,21 @@ button.focus-badge.link:hover {
   background: rgba(255,255,255,0.04); color: #b6c4d8;
 }
 .loop-theater__status { padding: 2px 8px; border-radius: 999px; background: rgba(255,200,120,0.12); color: #e8b970; }
-.loop-theater__status--done { background: rgba(120,200,140,0.12); color: #86c79f; }
+.loop-theater__status--live {
+  background: rgba(120,200,140,0.12); color: #86c79f;
+  animation: loop-theater-pulse 2s ease-in-out infinite;
+}
+.loop-theater__status--connecting,
+.loop-theater__status--reconnecting {
+  background: rgba(255,200,120,0.12); color: #e8b970;
+}
+.loop-theater__status--closed {
+  background: rgba(255,255,255,0.04); color: var(--muted-low, #7c87a3);
+}
+@keyframes loop-theater-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(134,199,159,0); }
+  50%      { box-shadow: 0 0 0 4px rgba(134,199,159,0.18); }
+}
 .loop-theater__phases {
   display: flex; gap: 6px; padding: 8px 20px;
   border-bottom: 1px solid rgba(255,255,255,0.04);
