@@ -14,6 +14,10 @@ import { timingSafeEqual } from "node:crypto";
 import { query } from "./db";
 import { eventSchema, authzDecisionSchema } from "./types";
 import { denormaliseLlmCall } from "./cost-worker";
+// M63 Slice D — pure-function risk classifier mapping (kind, severity)
+// → low/medium/high/critical so the search UI can filter by blast radius
+// independently of "did the call succeed."
+import { classifyRisk } from "./risk-classifier";
 
 export const eventsRouter = Router();
 
@@ -113,11 +117,18 @@ async function ingestOne(input: unknown): Promise<{ id: string }> {
     throw Object.assign(new Error(`source_service '${parsed.source_service}' is not in AUDIT_GOV_ALLOWED_SOURCE_SERVICES`), { status: 403 });
   }
 
+  // M63 Slice D — Classify risk at ingest. Pure function, no I/O.
+  const riskLevel = classifyRisk({
+    kind: parsed.kind,
+    severity: parsed.severity,
+    payload: parsed.payload ?? null,
+  });
+
   const rows = await query<{ id: string }>(
     `INSERT INTO audit_governance.audit_events
        (trace_id, source_service, kind, subject_type, subject_id,
-        actor_id, capability_id, tenant_id, severity, payload)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+        actor_id, capability_id, tenant_id, severity, risk_level, payload)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
      RETURNING id`,
     [
       parsed.trace_id ?? null,
@@ -129,6 +140,7 @@ async function ingestOne(input: unknown): Promise<{ id: string }> {
       parsed.capability_id ?? null,
       parsed.tenant_id ?? null,
       parsed.severity ?? "info",
+      riskLevel,
       JSON.stringify(parsed.payload ?? {}),
     ],
   );
