@@ -14,9 +14,13 @@ from fastapi.responses import JSONResponse
 
 from .compressor import is_loaded, last_load_error, maybe_eager_load
 from .config import settings
+from .api import router as compress_router
 
 
 app = FastAPI(title="Singularity Prompt Compressor Service", version="0.1.0")
+
+# M62 Slice B — mount the /api/v1/compress + /api/v1/status routes.
+app.include_router(compress_router)
 
 
 @app.on_event("startup")
