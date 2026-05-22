@@ -193,6 +193,70 @@ model Capability {
   bootstrapRuns      CapabilityBootstrapRun[]
   learningCandidates CapabilityLearningCandidate[]
   executions         AgentExecution[]
+  worldModel         CapabilityWorldModel?
+}
+
+// M61 Slice A — CapabilityWorldModel
+//
+// First-class consolidation of the "what the agent should know up-front
+// about this capability" surface. Previously this knowledge was scattered
+// across CapabilityBootstrapRun.sourceSummary JSON, CapabilityLearningCandidate
+// (human-gated), the lazy mcp-server codeContextPackage rebuild, and the
+// re-derived verifier-registry detection on every workflow run.
+//
+// Read sites:
+//  - Code Context Budgeter (mcp-server/src/mcp/code-context.ts) — uses
+//    testCommands + agentRules + readmeSummary to seed the prompt.
+//  - Prompt Composer CODE_WORLD_MODEL layer (M61 Slice F) — renders
+//    a structured block above the existing CODE_* layers.
+//  - Drift detector (M61 Slice E) — compares repoFingerprint at
+//    workflow start.
+//
+// Write sites:
+//  - Capability bootstrap (M61 Slice C) — auto-populates agentRules
+//    from CLAUDE.md / AGENTS.md / .cursor/rules and writes the
+//    initial fingerprint + commands.
+//  - Tests & Build wizard (M61 Slice D) — operator-confirmed commands.
+//  - Async bootstrap workers (M61 Slice B) — fill astIndexedAt,
+//    readmeSummary, architectureSlice.
+model CapabilityWorldModel {
+  id                String   @id @default(uuid())
+  capabilityId      String   @unique
+  // sha256 of the sorted top-level entries + build-system files. Cheap
+  // to recompute at workflow start; mismatch triggers a refresh job.
+  repoFingerprint   String?
+  // Primary classification of the repo. Drives default tool selection
+  // and the choice of verifier in mcp-server's registry.
+  primaryLanguage   String?
+  buildSystem       String?
+  // Structured command tables — each entry: { kind, cmd, cwd?, expectedDurationSec?, requiresNetwork? }.
+  // kind ∈ unit | integration | e2e | smoke for tests; build | lint | typecheck for build;
+  // start | dev for run.
+  testCommands      Json     @default("[]")
+  buildCommands     Json     @default("[]")
+  runCommands       Json     @default("[]")
+  // Verbatim contents of CLAUDE.md / AGENTS.md / .cursor/rules / .windsurfrules.
+  // Each entry: { source: 'CLAUDE.md', content: '...', sha256: '...' }.
+  // Auto-promoted at bootstrap; the agent reads these as ambient
+  // system context, not as retrievable docs.
+  agentRules        Json     @default("[]")
+  // LLM-distilled summary of the repo README, capped at ~2KB. Empty
+  // until the P4 distillation worker has run.
+  readmeSummary     String?
+  // Top-level package map + public symbols (no method bodies). Mirrors
+  // the M43 repo_map output shape; cached here so workflow start
+  // doesn't have to re-walk the tree.
+  architectureSlice Json     @default("{}")
+  // AST index health — astIndexedAt is null until the P2 worker
+  // succeeds; astIndexFiles is a sanity-check budget input.
+  astIndexedAt      DateTime?
+  astIndexFiles     Int      @default(0)
+  generatedAt       DateTime @default(now())
+  refreshedAt       DateTime @updatedAt
+
+  capability Capability @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
+
+  @@index([refreshedAt])
 }
 
 model AgentCapabilityBinding {

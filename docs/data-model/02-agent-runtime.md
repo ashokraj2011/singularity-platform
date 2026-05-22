@@ -129,6 +129,24 @@ PROMOTED PROMOTED
     }
   
 
+  "CapabilityWorldModel" {
+    String id "🗝️"
+    String repoFingerprint "❓"
+    String primaryLanguage "❓"
+    String buildSystem "❓"
+    Json testCommands 
+    Json buildCommands 
+    Json runCommands 
+    Json agentRules 
+    String readmeSummary "❓"
+    Json architectureSlice 
+    DateTime astIndexedAt "❓"
+    Int astIndexFiles 
+    DateTime generatedAt 
+    DateTime refreshedAt 
+    }
+  
+
   "AgentCapabilityBinding" {
     String id "🗝️"
     String bindingName 
@@ -431,6 +449,7 @@ PROMOTED PROMOTED
     "AgentTemplateSkill" }o--|| "AgentSkill" : "skill"
     "Capability" |o--|| "EntityStatus" : "enum:status"
     "Capability" |o--|o "Capability" : "parent"
+    "CapabilityWorldModel" |o--|| "Capability" : "capability"
     "AgentCapabilityBinding" |o--|| "EntityStatus" : "enum:status"
     "AgentCapabilityBinding" }o--|| "AgentTemplate" : "agentTemplate"
     "AgentCapabilityBinding" }o--|| "Capability" : "capability"
