@@ -184,10 +184,21 @@ function collectVerificationReceipts(value: unknown, out: VerificationReceiptSum
   // in-session-only. Real run_test/run_command receipts (kind="test",
   // "command", etc.) still flow through.
   if (verificationKind === 'formal') return
+  // M70.5 — Reject "summary-shape" receipts that came back from M66
+  // cross-stage threading. Real receipts from mcp-server have an
+  // explicit `kind === "verification_result"`; the summaries we thread
+  // forward via priorVerificationReceipts only have
+  // {passed, command, source, exitCode, unavailable} — no `kind`,
+  // no `capturedAt`, no `verification_kind`. Without this guard the
+  // orchestrator re-collects them as if fresh, the summary gets
+  // re-persisted to verificationReceiptHistory, and a single failing
+  // receipt from attempt #1 propagates forever (witnessed on a
+  // 7-attempt RuleEngine session). Now the "kind"-less command-passed
+  // fallback is dropped — every real receipt from mcp-server has the
+  // kind set, so only those count toward the SUMMARY pipeline.
   const looksLikeVerification =
     kind === 'verification_result' ||
-    kind === 'test_result' ||
-    Boolean(record.command && ('exit_code' in record || 'exitCode' in record || 'passed' in record))
+    kind === 'test_result'
   if (looksLikeVerification) {
     const id = typeof record.id === 'string' ? record.id : undefined
     const key = id ?? JSON.stringify({
