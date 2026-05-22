@@ -93,6 +93,16 @@ capabilityRoutes.delete(
   capabilityController.deleteKnowledgeSource,
 );
 
+// M61 Wire 1 — GET CapabilityWorldModel. Returns the projected view
+// that the Slice F prompt-composer renderers consume. context-fabric
+// fetches this at workflow start and passes the body through to
+// /api/v1/compose-and-respond as `worldModel`. 404 when not yet
+// generated for the capability.
+capabilityRoutes.get(
+  "/:id/world-model",
+  capabilityController.getWorldModel,
+);
+
 // M61 Slice E — repo fingerprint drift detector. Body:
 //   { fingerprint: string, hashedBuildFiles?: string[], topLevelEntries?: string[] }
 // Idempotent: callers may safely re-POST every workflow start.

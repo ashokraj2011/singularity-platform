@@ -9,7 +9,9 @@ import { ok } from "../../shared/response";
 import { worldModelDriftService } from "./world-model-drift.service";
 // M61 Wire B P2 — AST index callback writes astIndexedAt + astIndexFiles
 // to the world-model row when mcp-server reports the index is built.
-import { upsertWorldModel } from "./world-model.service";
+// M61 Wire 1 — getWorldModel powers the new GET reader endpoint that
+// context-fabric calls at workflow start.
+import { upsertWorldModel, getWorldModel } from "./world-model.service";
 // M61 Wire D — Verify-now command probe powering the wizard's per-row
 // "Verify" button. Spawns the cmd in an isolated tmp dir with a 10s
 // timeout; returns exit code + capped stdout/stderr.
@@ -190,6 +192,21 @@ export const capabilityController = {
   // not require the caller to send the workspace contents — only the
   // hash — which keeps this endpoint cheap and free of file-system
   // assumptions.
+  // M61 Wire 1 — GET /capabilities/:id/world-model
+  //
+  // Returns the projected CapabilityWorldModelView for the capability,
+  // or 404 when no row exists yet (a capability that hasn't been
+  // bootstrapped under M61, or one whose Phase 1 worker hasn't seeded
+  // the row yet). The shape matches ComposeInput.worldModel exactly
+  // so context-fabric can pass the response body through as-is.
+  //
+  // Read-only. Idempotent. Safe to call on every workflow start.
+  async getWorldModel(req: Request, res: Response) {
+    const view = await getWorldModel(req.params.id);
+    if (!view) return res.status(404).json({ error: "world model not yet generated for this capability" });
+    return ok(res, view, 200);
+  },
+
   async checkWorldModelFingerprint(req: Request, res: Response) {
     const body = req.body as { fingerprint?: unknown; hashedBuildFiles?: unknown; topLevelEntries?: unknown };
     const fingerprint = typeof body.fingerprint === "string" ? body.fingerprint.trim() : "";
