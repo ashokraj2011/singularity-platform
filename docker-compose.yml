@@ -103,6 +103,13 @@ services:
       # init.sql provisions with singularity_iam DB and singularity role.
       at-postgres:
         condition: service_healthy
+      # M67 Slice 3A.1 — wait for the one-shot bootstrap to confirm the
+      # singularity_iam DB + singularity role exist. Operators upgrading
+      # through M67 Slice 3A have an existing PGDATA volume where init.sql
+      # never re-ran, so without this wait iam-service crashes on first
+      # boot with "password authentication failed for user singularity".
+      at-postgres-bootstrap:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8100/api/v1/health', timeout=2).status==200 else sys.exit(1)"]
       interval: 5s
@@ -144,6 +151,30 @@ services:
         limits:
           memory: 4G
           cpus: '2.0'
+
+  # M67 Slice 3A.1 — idempotent bootstrap for existing at-postgres volumes.
+  # init.sql only runs on FRESH PGDATA dirs, so operators upgrading through
+  # M67 Slice 3A miss the singularity_iam DB + singularity role additions
+  # and iam-service crashes with "password authentication failed". This
+  # one-shot container connects as the postgres superuser and idempotently
+  # ensures both exist. Runs on every `up -d`; exits 0 once done so
+  # dependents using service_completed_successfully can proceed.
+  at-postgres-bootstrap:
+    image: postgres:16-alpine
+    container_name: singularity-at-postgres-bootstrap
+    profiles: [full]
+    environment:
+      PGHOST: at-postgres
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: singularity
+    volumes:
+      - ./agent-and-tools/packages/db/bootstrap-existing-volume.sh:/bootstrap.sh:ro
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
+    depends_on:
+      at-postgres:
+        condition: service_healthy
+    restart: "no"
 
   agent-service:
     build:
