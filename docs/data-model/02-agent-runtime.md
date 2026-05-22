@@ -271,6 +271,8 @@ PROMOTED PROMOTED
     Json warnings 
     Json errors 
     String createdBy "❓"
+    String currentPhase "❓"
+    Json phaseProgress 
     DateTime startedAt 
     DateTime completedAt "❓"
     DateTime reviewedAt "❓"

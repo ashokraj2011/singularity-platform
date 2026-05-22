@@ -425,6 +425,13 @@ model CapabilityBootstrapRun {
   warnings          Json      @default("[]")
   errors            Json      @default("[]")
   createdBy         String?
+  // M61 Slice B — async-phase orchestration. currentPhase tracks which
+  // worker is active (phase0_setup | phase1_discovery | phase2_ast_index
+  // | phase3_distillation | done). phaseProgress is a JSON map keyed by
+  // phase name with { status, startedAt, completedAt, error?, stats? }.
+  // Nullable so existing rows pre-migration stay valid.
+  currentPhase      String?
+  phaseProgress     Json      @default("{}")
   startedAt         DateTime  @default(now())
   completedAt       DateTime?
   reviewedAt        DateTime?

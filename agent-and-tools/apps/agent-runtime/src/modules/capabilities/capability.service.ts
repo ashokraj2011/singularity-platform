@@ -13,6 +13,19 @@ import { syncIamCapabilityReference } from "./iam-capability-reference";
 // CODE_AGENT_RULES layer (Slice F) can render them directly without
 // waiting for human review of the corresponding CapabilityLearningCandidate.
 import { upsertWorldModel } from "./world-model.service";
+// M61 Slice B — Async bootstrap orchestration. The slow discovery
+// block runs as Phase 1 either inline (default) or fired off via
+// setImmediate when BOOTSTRAP_ASYNC=true. Phase progress is stamped
+// on CapabilityBootstrapRun.phaseProgress so the wizard UI can poll.
+import {
+  PHASE_KEYS,
+  isAsyncBootstrapEnabled,
+  markPhaseStarted,
+  markPhaseCompleted,
+  markPhaseFailed,
+  markPhaseSkipped,
+  patchPhase,
+} from "./bootstrap-phases";
 
 const BOOTSTRAP_AGENT_CATALOG = [
   {
@@ -281,11 +294,20 @@ export const capabilityService = {
     const governanceWarning = await ensureDefaultGovernanceLimits(capability.id);
     if (governanceWarning) warnings.push(governanceWarning);
 
+    // M61 Slice B — Phase 0: synchronous setup is now reflected in
+    // the BootstrapRun's currentPhase + phaseProgress. If async is
+    // enabled we return early after marking Phase 1 as "running" so
+    // the caller doesn't block on the slow discovery work.
+    const phase0Started = new Date().toISOString();
     const run = await prisma.capabilityBootstrapRun.create({
       data: {
         capabilityId: capability.id,
         status: "RUNNING",
         createdBy: userId,
+        currentPhase: PHASE_KEYS.P0,
+        phaseProgress: {
+          [PHASE_KEYS.P0]: { status: "running", startedAt: phase0Started },
+        },
         sourceSummary: {
           repositories: input.repositories?.length ?? 0,
           documentLinks: input.documentLinks?.length ?? 0,
@@ -293,6 +315,53 @@ export const capabilityService = {
         },
       },
     });
+    // Phase 0 is the synchronous prelude — capability row, IAM sync,
+    // governance defaults, BootstrapRun row. Everything above this
+    // point has already completed by the time we get here.
+    await markPhaseCompleted(run.id, PHASE_KEYS.P0, {
+      iamWarning: Boolean(iamWarning),
+      governanceWarning: Boolean(governanceWarning),
+    });
+
+    // M61 Slice B — async opt-in. When enabled, return the just-created
+    // run row immediately (status=RUNNING, currentPhase=phase1_discovery)
+    // and fire the heavy work via setImmediate. The UI polls
+    // GET /capabilities/:id/bootstrap-runs/:runId to render progress.
+    if (isAsyncBootstrapEnabled()) {
+      await patchPhase(run.id, PHASE_KEYS.P1, { status: "pending" }, { setCurrentPhase: PHASE_KEYS.P1 });
+      setImmediate(() => {
+        capabilityService.runBootstrapDiscoveryPhase({
+          capability,
+          run,
+          input,
+          userId,
+          warnings,
+          errors,
+          requestedChildCapabilityIds,
+        }).catch(async (err) => {
+          // Top-level catch: anything that escapes runBootstrapDiscoveryPhase
+          // means the worker itself crashed before it could mark its own
+          // failure. Stamp the run as FAILED so the UI doesn't spin forever.
+          // eslint-disable-next-line no-console
+          console.error(`[bootstrap.async] capabilityId=${capability.id} runId=${run.id} crashed: ${(err as Error).message}`);
+          try {
+            await markPhaseFailed(run.id, PHASE_KEYS.P1, err as Error);
+            await prisma.capabilityBootstrapRun.update({
+              where: { id: run.id },
+              data: { status: "FAILED", completedAt: new Date(), currentPhase: PHASE_KEYS.DONE },
+            });
+          } catch {
+            // Best-effort; the worker already crashed.
+          }
+        });
+      });
+      return run;
+    }
+
+    // M61 Slice B — Sync path: mark Phase 1 as started so both code
+    // paths produce consistent phaseProgress. The phase is closed at
+    // the end of the try block / failed in the catch.
+    await markPhaseStarted(run.id, PHASE_KEYS.P1);
 
     const generatedAgents: Array<{
       id: string;
@@ -486,7 +555,12 @@ export const capabilityService = {
         });
       }
 
-      return prisma.capabilityBootstrapRun.update({
+      // M61 Slice B — Capture the row first, then stamp phase
+      // closures, then return. Previously the original code returned
+      // the awaited update directly; we await + assign here so the
+      // sync path can mark phaseProgress identically to the async
+      // worker before handing control back to the controller.
+      const runResult = await prisma.capabilityBootstrapRun.update({
         where: { id: run.id },
         data: {
           status: "COMPLETED",
@@ -512,13 +586,239 @@ export const capabilityService = {
         },
         include: { candidates: true, capability: { include: { bindings: { include: { agentTemplate: true } }, repositories: true, knowledgeSources: true } } },
       });
+      await markPhaseCompleted(run.id, PHASE_KEYS.P1);
+      await markPhaseSkipped(run.id, PHASE_KEYS.P2, "deferred — mcp-server still builds AST index lazily at first workflow run");
+      await markPhaseSkipped(run.id, PHASE_KEYS.P3, "deferred — README distillation worker not yet implemented");
+      await patchPhase(run.id, PHASE_KEYS.DONE, { status: "completed", completedAt: new Date().toISOString() }, { setCurrentPhase: PHASE_KEYS.DONE });
+      return runResult;
     } catch (err) {
       errors.push((err as Error).message);
+      await markPhaseFailed(run.id, PHASE_KEYS.P1, err as Error);
       await prisma.capabilityBootstrapRun.update({
         where: { id: run.id },
-        data: { status: "FAILED", completedAt: new Date(), generatedAgentIds: generatedAgents as unknown as Prisma.InputJsonValue, warnings, errors },
+        data: { status: "FAILED", completedAt: new Date(), currentPhase: PHASE_KEYS.DONE, generatedAgentIds: generatedAgents as unknown as Prisma.InputJsonValue, warnings, errors },
       });
       throw err;
+    }
+  },
+
+  /**
+   * M61 Slice B — Async Phase 1 worker.
+   *
+   * Re-runs the discovery + agent-generation + candidate-insert +
+   * world-model-seed work outside the HTTP request. Called by
+   * setImmediate after the bootstrap row is created when
+   * BOOTSTRAP_ASYNC=true. The body is intentionally a minimal
+   * rebuild of the inline bootstrap path — long-term we want to
+   * extract one shared implementation, but for this slice we keep
+   * both paths so the sync default cannot regress.
+   *
+   * Phases 2 (AST index) and 3 (distillation) are stubbed as
+   * skipped — their workers land in follow-up commits. The
+   * phaseProgress entries are written so the wizard UI can render
+   * the full pipeline even before the workers exist.
+   */
+  async runBootstrapDiscoveryPhase(ctx: {
+    capability: { id: string; name: string; capabilityType?: string | null; appId?: string | null };
+    run: { id: string };
+    input: BootstrapInput;
+    userId?: string;
+    warnings: string[];
+    errors: string[];
+    requestedChildCapabilityIds: string[];
+  }): Promise<void> {
+    const { capability, run, input, userId, warnings, errors, requestedChildCapabilityIds } = ctx;
+    await markPhaseStarted(run.id, PHASE_KEYS.P1);
+
+    const generatedAgents: Array<{
+      id: string; key: string; roleType: string; bindingRole: string; label: string;
+      name: string; baseTemplateId?: string | null; bindingId?: string; locked: boolean;
+      activationRequired: boolean; learnsFromGit: boolean; grounding: string;
+    }> = [];
+    const discovered: DiscoveryDoc[] = [];
+    const repositoryProfiles: RepositoryProfile[] = [];
+
+    try {
+      const common = await prisma.agentTemplate.findMany({
+        where: { capabilityId: null, status: "ACTIVE" },
+        orderBy: { createdAt: "asc" },
+      });
+      const selectedAgents = selectBootstrapAgents(input);
+      for (const agent of selectedAgents) {
+        const base = common.find((t) => t.roleType === agent.baseRoleType);
+        if (!base) warnings.push(`No common ${agent.baseRoleType} base template found for ${agent.label}; created a draft placeholder.`);
+        const template = await prisma.agentTemplate.create({
+          data: {
+            name: `${capability.name} ${agent.label} Agent`,
+            roleType: agent.roleType,
+            description: capabilityAgentDescription(capability.name, agent, base?.description),
+            basePromptProfileId: base?.basePromptProfileId ?? undefined,
+            defaultToolPolicyId: base?.defaultToolPolicyId ?? undefined,
+            capabilityId: capability.id,
+            baseTemplateId: base?.id ?? undefined,
+            lockedReason: agent.locked ? `${agent.label} is a locked capability gate derived from the platform baseline.` : null,
+            status: "DRAFT",
+            createdBy: userId,
+          },
+        });
+        const binding = await prisma.agentCapabilityBinding.create({
+          data: {
+            capabilityId: capability.id,
+            agentTemplateId: template.id,
+            bindingName: `${agent.label} binding`,
+            roleInCapability: agent.bindingRole,
+            status: "DRAFT",
+            createdBy: userId,
+          },
+        });
+        generatedAgents.push({
+          id: template.id, key: agent.key, roleType: agent.roleType, bindingRole: agent.bindingRole,
+          label: agent.label, name: template.name, baseTemplateId: base?.id, bindingId: binding.id,
+          locked: agent.locked, activationRequired: agent.activationRequired,
+          learnsFromGit: agent.learnsFromGit, grounding: agent.grounding,
+        });
+      }
+
+      for (const repoInput of input.repositories ?? []) {
+        const repoName = repoInput.repoName?.trim() || repoNameFromUrl(repoInput.repoUrl);
+        const repo = await prisma.capabilityRepository.create({
+          data: {
+            capabilityId: capability.id, repoName, repoUrl: repoInput.repoUrl,
+            defaultBranch: repoInput.defaultBranch ?? "main",
+            repositoryType: repoInput.repositoryType ?? "GITHUB",
+            pollIntervalSec: null, status: "ACTIVE",
+          },
+        });
+        try {
+          const discovery = await discoverGitHubRepoWithProfile(repo.repoUrl, repo.defaultBranch ?? "main");
+          discovered.push(...discovery.docs);
+          repositoryProfiles.push(discovery.profile);
+        } catch (err) {
+          warnings.push(`Repository discovery skipped for ${repo.repoName}: ${(err as Error).message}`);
+        }
+      }
+
+      const requestedChildren = requestedChildCapabilityIds.filter((id) => id && id !== capability.id);
+      if (isCollectionCapabilityType(capability.capabilityType) && requestedChildren.length > 0) {
+        await prisma.capability.updateMany({
+          where: { id: { in: requestedChildren } },
+          data: { parentCapabilityId: capability.id },
+        });
+      }
+
+      for (const doc of input.documentLinks ?? []) {
+        await prisma.capabilityKnowledgeSource.create({
+          data: {
+            capabilityId: capability.id, url: doc.url, artifactType: doc.artifactType ?? "DOC",
+            title: doc.title, pollIntervalSec: null, status: "ACTIVE",
+          },
+        });
+        try {
+          discovered.push(await fetchDocumentLink(doc));
+        } catch (err) {
+          warnings.push(`Document discovery skipped for ${doc.url}: ${(err as Error).message}`);
+        }
+      }
+
+      if ((input.localFiles ?? []).length > 0) {
+        await prisma.capabilityRepository.create({
+          data: {
+            capabilityId: capability.id, repoName: "Local bootstrap source",
+            repoUrl: LOCAL_BOOTSTRAP_REF, defaultBranch: "local", repositoryType: "LOCAL",
+            pollIntervalSec: null, status: "ACTIVE",
+          },
+        });
+        discovered.push(...discoverLocalSignals(input.localFiles ?? []));
+      }
+
+      const architectureDiagram = buildCapabilityArchitectureDiagram(
+        capability as Parameters<typeof buildCapabilityArchitectureDiagram>[0],
+        input, generatedAgents, discovered, repositoryProfiles,
+      );
+
+      try {
+        const agentRules = extractAgentRules(discovered);
+        const primaryLanguage = pickPrimaryLanguage(repositoryProfiles);
+        const buildSystem = pickPrimaryBuildSystem(repositoryProfiles);
+        const testCommands = input.testCommands ?? [];
+        const buildCommands = input.buildCommands ?? [];
+        if (agentRules.length > 0 || primaryLanguage || buildSystem || testCommands.length > 0 || buildCommands.length > 0) {
+          await upsertWorldModel({
+            capabilityId: capability.id,
+            agentRules, primaryLanguage, buildSystem, testCommands, buildCommands,
+          });
+        }
+      } catch (err) {
+        warnings.push(`World-model seed skipped: ${(err as Error).message}`);
+      }
+
+      const candidates = [
+        buildArchitectureDiagramCandidate(capability.name, architectureDiagram),
+        ...buildPlatformInventoryCandidates(repositoryProfiles),
+        ...buildLearningCandidates(discovered),
+        ...buildAgentGroundingCandidates(capability.name, selectedAgents, discovered),
+      ];
+      for (const candidate of candidates) {
+        await prisma.capabilityLearningCandidate.create({
+          data: {
+            capabilityId: capability.id, bootstrapRunId: run.id,
+            groupKey: candidate.groupKey, groupTitle: candidate.groupTitle,
+            artifactType: candidate.artifactType, title: candidate.title, content: candidate.content,
+            sourceType: candidate.sourceType, sourceRef: candidate.sourceRef,
+            confidence: candidate.confidence, status: "PENDING",
+          },
+        });
+      }
+
+      await prisma.capabilityBootstrapRun.update({
+        where: { id: run.id },
+        data: {
+          status: "COMPLETED",
+          completedAt: new Date(),
+          generatedAgentIds: generatedAgents as unknown as Prisma.InputJsonValue,
+          warnings, errors,
+          sourceSummary: {
+            repositories: input.repositories?.length ?? 0,
+            documentLinks: input.documentLinks?.length ?? 0,
+            localFiles: input.localFiles?.length ?? 0,
+            discoveredSignals: discovered.length,
+            candidateGroups: candidates.length,
+            childCapabilityIds: requestedChildren,
+            sharedApplications: input.sharedApplications ?? [],
+            repositoryProfiles,
+            agentPreset: input.agentPreset ?? "governed_delivery",
+            operatingModel: buildOperatingModel(
+              capability as Parameters<typeof buildOperatingModel>[0],
+              input.targetWorkflowPattern, generatedAgents, candidates.length, architectureDiagram,
+              repositoryProfiles, { childCapabilityIds: requestedChildren, sharedApplications: input.sharedApplications ?? [] },
+            ),
+          },
+        },
+      });
+      await markPhaseCompleted(run.id, PHASE_KEYS.P1, {
+        agentsCreated: generatedAgents.length,
+        discoveredSignals: discovered.length,
+        candidateRows: candidates.length,
+        repositoryProfiles: repositoryProfiles.length,
+      });
+
+      // Phases 2 + 3 are stubs. The schema + UI surface exists; the
+      // workers themselves land in follow-up commits.
+      await markPhaseSkipped(run.id, PHASE_KEYS.P2, "deferred — mcp-server still builds AST index lazily at first workflow run");
+      await markPhaseSkipped(run.id, PHASE_KEYS.P3, "deferred — README distillation worker not yet implemented");
+      await patchPhase(run.id, PHASE_KEYS.DONE, { status: "completed", completedAt: new Date().toISOString() }, { setCurrentPhase: PHASE_KEYS.DONE });
+    } catch (err) {
+      errors.push((err as Error).message);
+      await markPhaseFailed(run.id, PHASE_KEYS.P1, err as Error);
+      await prisma.capabilityBootstrapRun.update({
+        where: { id: run.id },
+        data: {
+          status: "FAILED", completedAt: new Date(), currentPhase: PHASE_KEYS.DONE,
+          generatedAgentIds: generatedAgents as unknown as Prisma.InputJsonValue,
+          warnings, errors,
+        },
+      });
+      // Async path: do NOT rethrow — there's no caller to catch.
     }
   },
 
