@@ -33,6 +33,10 @@ import { emitRePlan } from "../audit/replan-telemetry";
 import { extractCodeChange } from "../audit/provenanceExtractor";
 import { events } from "../events/bus";
 import { emitAuditEvent } from "../lib/audit-gov-emit";
+// M63 Slice C — sibling audit event for filesystem-tool calls. Classifies
+// sensitive paths (.env / .ssh / credentials.*) so the Splunk-like UI
+// can highlight high-risk directory reads.
+import { emitFilesystemAccess } from "../audit/filesystem-access";
 import { checkBudget, checkRateLimit, GovernanceMode } from "../lib/audit-gov-check";
 import { isDegradedToolAllowedByPolicy, isRiskyToolByPolicy } from "../lib/governance-policy";
 import { persistApproval, consumeApproval } from "../lib/audit-gov-approvals";
@@ -4168,6 +4172,46 @@ async function dispatchToolCall(
         ...executionMetadata,
       },
     });
+
+    // M63 Slice C — Separate filesystem-access event for the
+    // Splunk-like UI's "Directory access" quick-filter. The existing
+    // ToolInvocation event is kept for backwards-compat consumers;
+    // this sibling adds the sensitive-path classification and lets
+    // operators filter directory reads without grepping payload.
+    // Routes to kind=tool.filesystem.access (low risk) OR
+    // kind=tool.filesystem.access.sensitive (high risk) depending
+    // on whether the path matches our sensitive pattern set.
+    const FS_TOOLS = new Set([
+      "read_file", "find_files", "file_stats", "grep_lines", "list_indexed_files",
+    ]);
+    if (FS_TOOLS.has(rec.tool_name)) {
+      const argsObj = (rec.args && typeof rec.args === "object" && !Array.isArray(rec.args))
+        ? rec.args as Record<string, unknown>
+        : {};
+      const pathArg = typeof argsObj.path === "string" ? argsObj.path : undefined;
+      const patternArg = typeof argsObj.pattern === "string" ? argsObj.pattern : undefined;
+      const outObj = (rec.output && typeof rec.output === "object" && !Array.isArray(rec.output))
+        ? rec.output as Record<string, unknown>
+        : {};
+      const bytes = typeof outObj.bytes === "number" ? outObj.bytes : undefined;
+      const matchCount = Array.isArray(outObj.matches) ? outObj.matches.length
+        : Array.isArray(outObj.files) ? outObj.files.length
+        : undefined;
+      emitFilesystemAccess({
+        trace_id: correlation.traceId,
+        capability_id: correlation.capabilityId,
+        // actor_id intentionally omitted — CorrelationIds doesn't carry
+        // it today; the trace_id + capability_id is sufficient to join
+        // back to the run on the audit-gov side.
+        tool: rec.tool_name,
+        path: pathArg,
+        pattern: patternArg,
+        match_count: matchCount,
+        bytes,
+        success: rec.success,
+        error: rec.error,
+      });
+    }
     return { record: rec };
   };
 
