@@ -10,6 +10,7 @@ import { assertProductionSecret } from "@agentandtools/shared";
 import { agentRoutes } from "./routes/agents";
 import { versionRoutes } from "./routes/versions";
 import { learningRoutes } from "./routes/learning";
+import { learningPatternsRoutes, ensureLearningSchema } from "./routes/learning-patterns";
 import { runtimeRoutes } from "./routes/runtime";
 import { errorHandler } from "./middleware/errorHandler";
 import { optionalAuth, requireAuth } from "./middleware/auth";
@@ -47,6 +48,11 @@ app.use(authOptional() ? optionalAuth : requireAuth);
 app.use("/api/v1/agents", agentRoutes);
 app.use("/api/v1/agents", versionRoutes);
 app.use("/api/v1/agents", learningRoutes);
+// M67 Slice 1A — folded-in learning-service routes. Path prefixes
+// (/failures, /patterns, /state, /similar-capabilities, /summarize) do not
+// overlap with the agent-service learning routes mounted above (which are
+// scoped under /agents/:uid/learning-profiles), so they coexist cleanly.
+app.use("/api/v1", learningPatternsRoutes);
 app.use("/api/v1", runtimeRoutes);
 // M11.e — event-bus subscription registry
 app.use("/api/v1/events/subscriptions", eventSubscriptionsRouter);
@@ -73,6 +79,14 @@ startSelfRegistration({
     { capability_key: "agent.versions", description: "Agent versioning + promotion" },
     { capability_key: "agent.learning", description: "Learning candidates + profiles pipeline" },
   ],
+});
+
+// M67 Slice 1A — Ensure the learning.* schema exists. Idempotent; safe to
+// run on every boot. Logged-and-tolerated on failure so a Postgres outage
+// at start doesn't block agent-service entirely — the learning routes
+// will surface the error on first query instead.
+void ensureLearningSchema().catch((err) => {
+  console.warn(`[agent-service] learning schema bootstrap failed: ${(err as Error).message}`);
 });
 
 app.listen(PORT, () => {
