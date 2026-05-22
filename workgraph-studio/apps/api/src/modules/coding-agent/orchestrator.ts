@@ -170,6 +170,20 @@ function collectVerificationReceipts(value: unknown, out: VerificationReceiptSum
   }
   const record = value as Record<string, unknown>
   const kind = String(record.kind ?? record.type ?? '').toLowerCase()
+  const verificationKind = String(record.verification_kind ?? '').toLowerCase()
+  // M68.1 — Exclude the formal-verifier's own block-result receipts from
+  // cross-stage threading. mcp-server's auto-finish at invoke.ts:2580
+  // pushes a `{verification_kind:"formal", passed:false, ...}` entry onto
+  // state.verificationReceipts whenever the gate blocks, so the agent's
+  // repair loop can see WHY it was blocked. That's useful in-session.
+  // But the summary gets saved into BlueprintSession.metadata
+  // .verificationReceiptHistory and threaded to every future stage as
+  // priorVerificationReceipts — and because the gate uses receipts.every(
+  // passed), a single blocked stage poisons every subsequent stage's
+  // gate forever. Filter formal-kind receipts here so they stay
+  // in-session-only. Real run_test/run_command receipts (kind="test",
+  // "command", etc.) still flow through.
+  if (verificationKind === 'formal') return
   const looksLikeVerification =
     kind === 'verification_result' ||
     kind === 'test_result' ||
