@@ -11,11 +11,21 @@
 #   - singularity-portal (:5180)
 #
 # Usage:
-#   docker compose up -d                   # start everything
+#   docker compose up -d                   # start everything (default; relies on
+#                                          # .env COMPOSE_PROFILES=full)
 #   docker compose up -d <service>         # start one
 #   docker compose stop <service>          # stop one
 #   docker compose down                    # tear everything down (keeps volumes)
 #   docker compose down -v                 # tear down + delete data volumes
+#
+# M65 Slice 2A — Compose profiles. Every service is tagged
+# (`profiles: [full, ...]` after `container_name:`). Operators can run
+# subsets instead of all-or-nothing:
+#   docker compose --profile full          up -d   # all 25 services (default)
+#   docker compose --profile gateway-only  up -d   # llm-gateway + at-postgres
+#   docker compose --profile composer-only up -d   # prompt-composer + gateway + postgres
+# .env's COMPOSE_PROFILES=full keeps plain `docker compose up -d` starting
+# everything for backward compatibility.
 #
 # Or use the wrapper:
 #   ./singularity.sh up                    # = docker compose up -d
@@ -42,6 +52,8 @@ services:
   iam-postgres:
     image: postgres:16-alpine
     container_name: singularity-iam-postgres
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       POSTGRES_USER: singularity
       POSTGRES_PASSWORD: singularity
@@ -67,6 +79,8 @@ services:
       context: ./singularity-iam-service
       dockerfile: Dockerfile
     container_name: singularity-iam-service
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       DATABASE_URL: postgresql+asyncpg://singularity:singularity@iam-postgres:5432/singularity_iam
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
@@ -98,6 +112,8 @@ services:
   at-postgres:
     image: pgvector/pgvector:pg16
     container_name: singularity-at-postgres
+    # M65 Slice 2A — compose profiles.
+    profiles: [full, gateway-only, composer-only]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: singularity
@@ -124,6 +140,8 @@ services:
       context: ./agent-and-tools
       dockerfile: apps/agent-service/Dockerfile
     container_name: singularity-agent-service
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       NODE_ENV: development
       AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
@@ -161,6 +179,8 @@ services:
       context: ./agent-and-tools
       dockerfile: apps/tool-service/Dockerfile
     container_name: singularity-tool-service
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       NODE_ENV: development
       AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
@@ -198,6 +218,8 @@ services:
       dockerfile: apps/agent-runtime/Dockerfile
       target: dev
     container_name: singularity-agent-runtime
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       NODE_ENV: development
       AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
@@ -255,6 +277,8 @@ services:
       dockerfile: apps/prompt-composer/Dockerfile
       target: dev
     container_name: singularity-prompt-composer
+    # M65 Slice 2A — compose profiles.
+    profiles: [full, composer-only]
     environment:
       NODE_ENV: development
       AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
@@ -312,6 +336,8 @@ services:
       dockerfile: apps/learning-service/Dockerfile
       target: dev
     container_name: singularity-learning-service
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       NODE_ENV: development
       AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
@@ -350,6 +376,8 @@ services:
       dockerfile: apps/code-foundry-api/Dockerfile
       target: dev
     container_name: singularity-code-foundry-api
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       NODE_ENV: development
       PORT: 3005
@@ -406,6 +434,8 @@ services:
       context: ./singularity-code-foundry
       dockerfile: apps/code-foundry-web/Dockerfile
     container_name: singularity-code-foundry-web
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       NODE_ENV: development
       VITE_FOUNDRY_API_URL: http://code-foundry-api:3005
@@ -432,6 +462,8 @@ services:
       context: ./agent-and-tools/web
       dockerfile: Dockerfile
     container_name: singularity-agent-web
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       NEXT_PUBLIC_AGENT_SERVICE_URL: http://localhost:3001
       NEXT_PUBLIC_TOOL_SERVICE_URL: http://localhost:3002
@@ -475,6 +507,8 @@ services:
       context: ./context-fabric
       dockerfile: services/context_memory_service/Dockerfile
     container_name: singularity-context-memory
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     # context-memory routes its summarizer through MCP, never hits a provider
     # or LLM gateway directly.
     environment:
@@ -510,6 +544,8 @@ services:
       context: ./context-fabric
       dockerfile: services/context_api_service/Dockerfile
     container_name: singularity-context-api
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     # context-api orchestrates but doesn't call providers or the LLM gateway
     # directly. LLM traffic routes through MCP.
     environment:
@@ -597,6 +633,8 @@ services:
       context: ./context-fabric
       dockerfile: services/formal_verifier_service/Dockerfile
     container_name: singularity-formal-verifier
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       LOG_LEVEL: info
       # Pydantic-settings reads these as snake_case fields, but env vars
@@ -645,6 +683,8 @@ services:
       context: ./context-fabric
       dockerfile: services/prompt_compressor_service/Dockerfile
     container_name: singularity-prompt-compressor
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       LOG_LEVEL: info
       COMPRESSION_ENABLED: ${COMPRESSION_ENABLED:-true}
@@ -684,6 +724,8 @@ services:
       context: ./context-fabric
       dockerfile: services/llm_gateway_service/Dockerfile
     container_name: singularity-llm-gateway
+    # M65 Slice 2A — compose profiles.
+    profiles: [full, gateway-only, composer-only]
     # M53 — Provider credentials are read from .env.llm-secrets via env_file
     # (NOT via ${...} shell substitution), so an empty `ANTHROPIC_API_KEY` in
     # the operator's shell can never shadow the real value during a
@@ -747,6 +789,8 @@ services:
   wg-postgres:
     image: postgres:16-alpine
     container_name: singularity-wg-postgres
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       POSTGRES_DB: workgraph
       POSTGRES_USER: workgraph
@@ -770,6 +814,8 @@ services:
   wg-minio:
     image: minio/minio:latest
     container_name: singularity-wg-minio
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: workgraph
@@ -797,6 +843,8 @@ services:
       dockerfile: apps/api/Dockerfile
       target: dev
     container_name: singularity-workgraph-api
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       NODE_ENV: development
       PORT: 8080
@@ -873,6 +921,8 @@ services:
       context: ./workgraph-studio
       dockerfile: apps/web/Dockerfile
     container_name: singularity-workgraph-web
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     ports:
       - "5174:80"
     # M35.3 — long-form depends_on with condition: service_healthy
@@ -891,6 +941,8 @@ services:
       context: ./workgraph-studio
       dockerfile: apps/blueprint-workbench/Dockerfile
     container_name: singularity-blueprint-workbench
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     ports:
       - "5176:80"
     # M35.3 — long-form depends_on with condition: service_healthy
@@ -912,6 +964,8 @@ services:
       context: ./UserAndCapabillity
       dockerfile: Dockerfile
     container_name: singularity-user-and-capability
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     ports:
       - "5175:80"
     depends_on:
@@ -939,6 +993,8 @@ services:
       dockerfile: Dockerfile
       target: sandbox-runner
     container_name: singularity-mcp-sandbox-runner
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     environment:
       NODE_ENV: production
       PORT: 7110
@@ -987,6 +1043,8 @@ services:
       dockerfile: Dockerfile
       target: dev
     container_name: singularity-mcp-server-demo
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     # M33 — env_file removed. Provider keys must only be passed to the
     # llm-gateway service. mcp-server reads zero provider credentials.
     environment:
@@ -1125,6 +1183,8 @@ services:
       context: ./singularity-portal
       dockerfile: Dockerfile
     container_name: singularity-portal
+    # M65 Slice 2A — compose profiles.
+    profiles: [full]
     ports:
       - "5180:80"
     # M35.3 — long-form depends_on with condition: service_healthy.
