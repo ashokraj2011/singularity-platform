@@ -132,6 +132,33 @@ function auditLogPath(): string {
   return config.MCP_AUDIT_LOG_PATH ?? path.join(config.MCP_SANDBOX_ROOT, ".singularity", "mcp-audit.jsonl");
 }
 
+/**
+ * M65 Slice 1C — Local JSONL store is sandbox-debug ONLY.
+ *
+ * The canonical audit record for every llm_call / tool_invocation /
+ * artifact / code_change lives in audit-governance-service. Each helper
+ * below (recordLlmCall, recordToolInvocation, …) calls emitAuditEvent
+ * to ship the structured event to audit-gov fire-and-forget AFTER it
+ * writes to the in-memory ring + this JSONL file.
+ *
+ * This file:
+ *   - is NOT retained across container recreates (it lives under
+ *     $MCP_SANDBOX_ROOT/.singularity/ which is mounted from the
+ *     workspace bind, not a named volume)
+ *   - is NOT exported to any UI; the workbench Loop tab + the M63
+ *     audit search both read from audit-gov, not from here
+ *   - serves two purposes only:
+ *     1. Hot reload of the in-memory ring after a process restart in
+ *        sandbox mode (so resources/read can serve recent records
+ *        immediately without re-querying audit-gov)
+ *     2. Operator debugging via `cat mcp-audit.jsonl` when audit-gov is
+ *        unavailable in a dev sandbox
+ *
+ * If you find yourself reading this file from another service, stop —
+ * query audit-gov instead. M66 will likely delete this JSONL writer
+ * once the agent-runtime / context-fabric / workbench paths are all
+ * confirmed to use audit-gov as the canonical source.
+ */
 function persistAuditRecord(kind: AuditKind, record: unknown): void {
   const filePath = auditLogPath();
   try {
@@ -139,7 +166,8 @@ function persistAuditRecord(kind: AuditKind, record: unknown): void {
     fs.appendFileSync(filePath, `${JSON.stringify({ kind, record })}\n`, "utf8");
   } catch {
     // Audit resources should not fail an agent run if the local journal is
-    // unavailable. The in-memory ring still serves the current process.
+    // unavailable. The in-memory ring still serves the current process,
+    // and audit-gov has the canonical record regardless.
   }
 }
 
@@ -182,8 +210,11 @@ function hydrateAuditJournal(): void {
       if (entry.kind === "code_change") codeChanges.push(entry.record);
     }
   } catch {
-    // Corrupt journal lines are ignored for the same reason writes are
-    // best-effort: the platform still has centralized audit-gov receipts.
+    // M65 Slice 1C — Corrupt journal lines are ignored. audit-gov is the
+    // authoritative store; this hydration just speeds up the first few
+    // resources/read calls after a process restart. Missing/corrupt
+    // entries mean the operator has to wait one tool call before the
+    // ring repopulates from live events — non-fatal.
   }
 }
 
