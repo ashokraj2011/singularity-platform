@@ -216,11 +216,20 @@ const loopDeveloperTask = [
   "- Treat captured stakeholder decisions and prior approved artifacts as implementation requirements.",
   "- Produce an actual MCP/git code change when a writable workspace is available; do not stop at design or planning text.",
   "- Inspect with AST/search/read tools, then mutate partial edits with apply_patch, replace_text, or replace_range; use write_file only for full-file replacements.",
+  // M70.4 — Test baseline. Upstream main branches often have pre-
+  // existing test failures unrelated to your change. The approval
+  // gate treats EVERY failing test in your post-edit run_test as a
+  // regression, so without a baseline a single pre-existing
+  // NullPointerException somewhere else in the test suite will block
+  // your perfectly-good edit. Captured this on the RuleEngine workflow
+  // (testIsNotNull / testIsNull both NPE on Map.of with null) — fixed
+  // by making the baseline call explicit in the prompt.
+  "- BASELINE THE TESTS FIRST: BEFORE any code edit, call capture_test_baseline with the same command you'll use for run_test later (e.g. `mvn test`). This records which tests are currently broken so they don't masquerade as regressions caused by your change. Skipping this turns every pre-existing test failure on main into a gate-blocking 'regression'.",
   // M68 — Mandatory verification step. The formal-verifier gate at
   // finish_work_branch will BLOCK any commit that lacks a passing
   // verification receipt; skipping run_test wastes the entire stage's
   // tokens on a guaranteed-fail finish. Sequence is non-negotiable.
-  "- MANDATORY ORDERING: after ANY code mutation (apply_patch, replace_text, replace_range, write_file), you MUST call run_test (or run_command for non-test verification) BEFORE finish_work_branch. The formal verifier blocks the commit if no passing receipt exists — skipping this step guarantees the stage fails.",
+  "- MANDATORY ORDERING: capture_test_baseline (in EXPLORE, before edits) → mutations (apply_patch/replace_text/replace_range/write_file) → run_test (with the same command as the baseline) → finish_work_branch. The formal verifier blocks the commit if no passing receipt exists, and the approval gate blocks if your post-edit run_test has failures not in the baseline.",
   "- If no test target exists for this change (e.g. infrastructure-only edit), call verification_unavailable with a clear reason. Do NOT proceed to finish_work_branch without either a passing receipt or a verification_unavailable acknowledgement.",
   "- Use the recommended_verification tool to discover which test/lint command applies, then RUN that command — do not just read its output.",
   "- Finish with git_commit or finish_work_branch ONLY after the verification step above completes. Code Review then receives both the diff AND the verification evidence.",
@@ -235,6 +244,7 @@ const loopDeveloperTask = [
   "  - 'The test filter matched ZERO methods' → your -Dtest filter is wrong. Either rename the filter to match a real method, or write the test method first before running the filter.",
   "  - 'Formal verifier: BLOCKED — no verification receipt' → you did not call run_test (or its output had no test results). Run the actual test for the change before finish_work_branch.",
   "  - 'Files claimed but NOT touched' → you mentioned editing files you never actually changed. Open those files and make the edit before finishing.",
+  "  - 'Tests run: N, Failures: 0, Errors: 2' or any non-zero failures/errors in tests UNRELATED to your change → these are pre-existing failures on main. Call capture_test_baseline EARLY in this attempt (in EXPLORE, before any edit), using the same command, to anchor them. The gate will then ignore pre-existing failures and only block on NEW regressions.",
   "Do NOT repeat the same approach that failed last time. State explicitly in your response what you are doing differently from the prior attempt.",
 ].join("\n");
 
