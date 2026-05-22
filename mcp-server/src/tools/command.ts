@@ -5,6 +5,117 @@ import { config } from "../config";
 import { resolveSandboxedPath, baseSandboxRoot } from "../workspace/sandbox";
 import { callSandboxRunner } from "./runner-client";
 
+/**
+ * M70.1 — Detect test runs that exited successfully but actually ran
+ * ZERO tests. Most runners return exit 0 when a test-filter matches no
+ * methods (e.g. `mvn test -Dtest=NoSuchClass#noSuchMethod`), which made
+ * the agent report passed:true with latency_ms around 700 — well below
+ * what a real test takes. Downstream gates (formal verifier, M66
+ * cross-stage threading) trusted that "passing" receipt and let bad
+ * code through.
+ *
+ * Returns:
+ *   - { noTests: true, reason } when the output is positively a "zero
+ *     tests ran" signal. Caller should override passed:false.
+ *   - { noTests: false } when the output looks like a real test run
+ *     (counted tests > 0) OR is genuinely ambiguous.
+ *
+ * Conservative on purpose: only return noTests:true when there's a
+ * specific phrase from a known runner. An unparseable test output is
+ * NOT flagged — better to under-flag than to mis-flag real passes.
+ *
+ * Covers Maven/JUnit, pytest, Python unittest, Jest, Vitest, Go test,
+ * Cargo test, dotnet test, mocha, RSpec.
+ */
+export function detectNoTestsRan(stdout: string, stderr: string): { noTests: true; reason: string } | { noTests: false } {
+  // Combine streams; runners scatter the count across either.
+  const blob = `${stdout}\n${stderr}`;
+  // Maven/JUnit: prints a per-module line like
+  //   "Tests run: 0, Failures: 0, Errors: 0, Skipped: 0"
+  // Maven Surefire's BUILD SUCCESS with `Tests run: 0` is the classic
+  // agent footgun: `-Dtest=foo#bar*` matched nothing.
+  const maven = blob.match(/Tests run:\s*(\d+)(?:,|\s)/i);
+  if (maven && Number(maven[1]) === 0) {
+    return { noTests: true, reason: "maven/junit: Tests run: 0 (filter matched no methods)" };
+  }
+  // Maven also prints "No tests to run." when surefire skips everything.
+  if (/no tests to run\.?/i.test(blob)) {
+    return { noTests: true, reason: "maven: 'No tests to run' — verify your -Dtest filter" };
+  }
+  // pytest: "collected 0 items" or "no tests ran in"
+  if (/collected\s+0\s+items?\b/.test(blob)) {
+    return { noTests: true, reason: "pytest: collected 0 items (no tests matched)" };
+  }
+  if (/no tests ran in/i.test(blob)) {
+    return { noTests: true, reason: "pytest: no tests ran" };
+  }
+  // Python unittest: "Ran 0 tests in"
+  if (/Ran\s+0\s+tests?\s+in/i.test(blob)) {
+    return { noTests: true, reason: "unittest: Ran 0 tests" };
+  }
+  // Jest / Vitest: print a summary "Tests: 0 total" (with optional
+  // failure/pass counts elsewhere). Use the explicit "0 total" anchor.
+  const jest = blob.match(/Tests?:[^,\n]*\b(\d+)\s+total/i);
+  if (jest && Number(jest[1]) === 0) {
+    return { noTests: true, reason: "jest/vitest: 0 total tests" };
+  }
+  // Jest "No tests found" / "No tests matched"
+  if (/no tests (?:found|matched|to run)/i.test(blob)) {
+    return { noTests: true, reason: "jest: no tests found/matched" };
+  }
+  // Go: `go test ./...` with no test files emits
+  //   "?   pkg/foo  [no test files]"
+  // and `-run X` with no matches emits
+  //   "testing: warning: no tests to run"
+  if (/no test files\b/.test(blob) && !/\bok\s/.test(blob)) {
+    return { noTests: true, reason: "go: no test files" };
+  }
+  if (/testing:\s*warning:\s*no tests to run/i.test(blob)) {
+    return { noTests: true, reason: "go: no tests matched -run filter" };
+  }
+  // Cargo: "running 0 tests" then "test result: ok. 0 passed"
+  if (/running\s+0\s+tests?\b/i.test(blob)) {
+    return { noTests: true, reason: "cargo: running 0 tests" };
+  }
+  // dotnet test: "Total tests: 0" or "No test is available"
+  if (/Total tests:\s*0\b/i.test(blob)) {
+    return { noTests: true, reason: "dotnet: Total tests: 0" };
+  }
+  if (/no test is available/i.test(blob)) {
+    return { noTests: true, reason: "dotnet: no test available" };
+  }
+  // Mocha: "0 passing" with no other test counts is suspicious
+  if (/^\s*0 passing\b/m.test(blob) && !/\d+ failing\b/i.test(blob) && !/\d+ pending\b/i.test(blob)) {
+    return { noTests: true, reason: "mocha: 0 passing, no failures or pending" };
+  }
+  // RSpec: "0 examples, 0 failures"
+  if (/\b0 examples?,\s*0 failures?\b/i.test(blob)) {
+    return { noTests: true, reason: "rspec: 0 examples" };
+  }
+  return { noTests: false };
+}
+
+/**
+ * M70.1 — Apply the no-tests-ran override to a raw receipt. Only acts
+ * when verification_kind is "test" (run_command is NOT a test and
+ * shouldn't be second-guessed). Returns the receipt unchanged when the
+ * runner output looks like a real test run or is genuinely ambiguous.
+ */
+function applyNoTestsOverride<T extends Record<string, unknown>>(receipt: T, verificationKind: string): T {
+  if (verificationKind !== "test") return receipt;
+  if (receipt.passed !== true) return receipt;  // already failed — nothing to flip
+  const stdout = typeof receipt.stdout_excerpt === "string" ? receipt.stdout_excerpt : "";
+  const stderr = typeof receipt.stderr_excerpt === "string" ? receipt.stderr_excerpt : "";
+  const check = detectNoTestsRan(stdout, stderr);
+  if (!check.noTests) return receipt;
+  return {
+    ...receipt,
+    passed: false,
+    no_tests_ran: true,
+    no_tests_ran_reason: check.reason,
+  };
+}
+
 const DEFAULT_TIMEOUT_MS = 120_000;
 // M44 — Lowered from 12_000 to 8_000 to align with the Workbench/MCP-default
 // max_tool_result_chars. Explicit caller `max_output_chars` still overrides.
@@ -222,12 +333,13 @@ async function runCommand(args: Record<string, unknown>, defaultKind: "command" 
       maxOutputChars,
       profile: typeof args.profile === "string" ? args.profile : undefined,
     });
+    // M70.1 — Override passed:true when the test runner reports zero
+    // tests ran. Otherwise `mvn test -Dtest=foo#wrongName*` returns
+    // exit 0 in 700ms and downstream gates trust the "passed" signal.
+    const withOverride = applyNoTestsOverride({ ...receipt, verification_kind: defaultKind }, defaultKind);
     return {
       success: true,
-      output: {
-        ...receipt,
-        verification_kind: defaultKind,
-      },
+      output: withOverride,
     };
   }
 
@@ -275,30 +387,32 @@ async function runCommand(args: Record<string, unknown>, defaultKind: "command" 
 
   const durationMs = Date.now() - started;
   const commandLine = [command, ...argv].join(" ");
-  return {
-    success: true,
-    output: {
-      kind: "verification_result",
-      verification_kind: defaultKind,
-      command: commandLine,
-      cwd: relativeCwd,
-      exit_code: result.exitCode,
-      signal: result.signal,
-      passed: result.exitCode === 0 && !result.timedOut,
-      timed_out: result.timedOut,
-      duration_ms: durationMs,
-      stdout_excerpt: truncateOutput(result.stdout, maxOutputChars),
-      stderr_excerpt: truncateOutput(result.stderr, maxOutputChars),
-      execution_mode: "process",
-      network_mode: "host-process",
-      isolation: {
-        runner: "mcp-process",
-        network: "host-process",
-        readonlyRoot: false,
-        noNewPrivileges: false,
-      },
+  // M70.1 — Same override here as in the container path. The process
+  // path is used in dev / when MCP_COMMAND_EXECUTION_MODE != container;
+  // both paths share the same "test exited 0 but ran zero tests"
+  // false-positive risk.
+  const output = applyNoTestsOverride({
+    kind: "verification_result",
+    verification_kind: defaultKind,
+    command: commandLine,
+    cwd: relativeCwd,
+    exit_code: result.exitCode,
+    signal: result.signal,
+    passed: result.exitCode === 0 && !result.timedOut,
+    timed_out: result.timedOut,
+    duration_ms: durationMs,
+    stdout_excerpt: truncateOutput(result.stdout, maxOutputChars),
+    stderr_excerpt: truncateOutput(result.stderr, maxOutputChars),
+    execution_mode: "process",
+    network_mode: "host-process",
+    isolation: {
+      runner: "mcp-process",
+      network: "host-process",
+      readonlyRoot: false,
+      noNewPrivileges: false,
     },
-  };
+  }, defaultKind);
+  return { success: true, output };
 }
 
 /**
