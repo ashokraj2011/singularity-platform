@@ -1696,6 +1696,53 @@ Please review the errors above, correct the code, and explain how you resolved t
         // came from the LLM which only saw masked tokens; the downstream
         // enterprise API needs the real values back.
         const toolArgs = applyArgsUnmaskIfNeeded(state, tc.args ?? {});
+
+        // M70.3 — Pre-flight check on finish_work_branch. If the agent
+        // wants to commit but hasn't read enough files to plausibly
+        // understand what it's editing, refuse with an actionable
+        // error that nudges it back to exploration. Catches the
+        // "agent edits 7 files in a 200-file repo without reading
+        // any of them" anti-pattern that produced our 4-retry waste
+        // on the RuleEngine workflow today.
+        if (tc.name === "finish_work_branch" && mutatedPaths.length > 0) {
+          const uniqueMutated = new Set(mutatedPaths).size;
+          // Read-shaped tools: anything that puts source CONTENT into
+          // the agent's context window. list_directory / repo_map /
+          // index_workspace intentionally NOT counted — they describe
+          // shape, not content. find_symbol and find_files describe
+          // location only; they're borderline. Including them keeps
+          // the threshold generous.
+          const READ_TOOLS = new Set([
+            "read_file", "get_ast_slice", "get_symbol",
+            "find_symbol", "search_code", "grep_lines",
+          ]);
+          const readCount = state.toolCallHistory.filter((c) => READ_TOOLS.has(c.name)).length;
+          if (readCount < uniqueMutated) {
+            const mutatedList = [...new Set(mutatedPaths)].slice(0, 8).join(", ");
+            const moreSuffix = uniqueMutated > 8 ? ` (+${uniqueMutated - 8} more)` : "";
+            const message = [
+              `Refusing finish_work_branch: you've edited ${uniqueMutated} file${uniqueMutated === 1 ? '' : 's'} but only made ${readCount} content-reading call${readCount === 1 ? '' : 's'} (read_file, get_ast_slice, find_symbol, get_symbol, search_code, grep_lines).`,
+              `Open the file${uniqueMutated === 1 ? '' : 's'} you're changing before committing. If the edits are correct you'll confirm fast; if not you'll catch the mistake here instead of at the verifier.`,
+              `Mutated paths: ${mutatedList}${moreSuffix}`,
+            ].join("\n");
+            state.messages.push({
+              role: "tool",
+              content: JSON.stringify({ success: false, error: message, kind: "finish_gate_premature" }),
+              tool_call_id: tc.id,
+              tool_name: tc.name,
+            });
+            // Match the existing toolCallHistory bookkeeping at the
+            // normal-dispatch path (line ~1820) so the repetition
+            // detector sees this turn.
+            state.toolCallHistory.push({
+              name: tc.name,
+              argsHash: argsHash(tc.args),
+              stepIndex: state.stepIndex,
+            });
+            continue;
+          }
+        }
+
         if (tc.name === "finish_work_branch") {
           toolArgs.verificationReceipts = state.verificationReceipts;
         }
