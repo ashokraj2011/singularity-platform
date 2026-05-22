@@ -52,6 +52,18 @@ from ..types import ChatMessage, ChatCompletionRequest, ChatCompletionResponse, 
 _call_counts: Dict[str, int] = defaultdict(int)
 
 
+def reset_call_counts() -> None:
+    """M65 Slice 3B — invoked by the chaos suite's setup fixture before
+    each test that depends on the "first N calls fail" semantics.
+    Exposed via a small admin endpoint added in app/main.py."""
+    _call_counts.clear()
+
+
+def call_counts_snapshot() -> Dict[str, int]:
+    """Operator diagnostic — what fail-N-N aliases have been used."""
+    return dict(_call_counts)
+
+
 def _mock_body_for_status(status: int, alias: str) -> str:
     """Approximate Anthropic / OpenAI error-body shapes per status so
     downstream error classifiers (mcp-server's GatewayError dispatch

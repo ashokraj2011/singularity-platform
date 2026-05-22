@@ -13,10 +13,32 @@ import os
 from fastapi import FastAPI
 
 from .router import router as llm_router
+from .providers import mock as mock_provider
 
 
 app = FastAPI(title="Singularity LLM Gateway", version="0.1.0")
 app.include_router(llm_router)
+
+
+# ── M65 Slice 3B — Mock admin endpoints for the chaos smoke harness ──────
+#
+# The mock provider keeps a per-process call counter for "first N calls
+# fail" aliases. Tests need to flush it between cases or they cross-
+# contaminate. The endpoints below are intentionally unprotected —
+# they're for the mock provider only and trigger no side effects on
+# real provider state.
+
+@app.post("/v1/mock/reset")
+def mock_reset() -> dict:
+    """Flush the mock-fail-N-K call counter. Idempotent."""
+    mock_provider.reset_call_counts()
+    return {"reset": True}
+
+
+@app.get("/v1/mock/counts")
+def mock_counts() -> dict:
+    """Diagnostic — show what counter state the mock is in."""
+    return {"counts": mock_provider.call_counts_snapshot()}
 
 
 @app.on_event("startup")
