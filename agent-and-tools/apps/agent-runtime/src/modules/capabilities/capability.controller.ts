@@ -10,6 +10,10 @@ import { worldModelDriftService } from "./world-model-drift.service";
 // M61 Wire B P2 — AST index callback writes astIndexedAt + astIndexFiles
 // to the world-model row when mcp-server reports the index is built.
 import { upsertWorldModel } from "./world-model.service";
+// M61 Wire D — Verify-now command probe powering the wizard's per-row
+// "Verify" button. Spawns the cmd in an isolated tmp dir with a 10s
+// timeout; returns exit code + capped stdout/stderr.
+import { probeCommand } from "./command-probe.service";
 // pdf-parse ships a CommonJS bundle whose root index.js triggers test code
 // when imported without a file path. Importing the lib subpath skips that.
 // @ts-expect-error — sub-path has no bundled types; we type the call shape locally below.
@@ -218,6 +222,26 @@ export const capabilityController = {
   // mcp-server.
   //
   // Idempotent: re-firing the call simply bumps astIndexedAt.
+  // M61 Wire D — POST /capabilities/:id/world-model/probe-command
+  // Body: { cmd, cwd? }
+  // Returns: { exitCode, signal, timedOut, durationMs, stdout, stderr, … }
+  //
+  // Spawns the command in an isolated tmp dir under /tmp. The :id
+  // capability route param is currently a soft anchor — the probe
+  // itself doesn't read any capability state — but we keep it on the
+  // URL so future expansions (probe inside the capability's cloned
+  // repo) don't have to change the wire shape.
+  async probeWorldModelCommand(req: Request, res: Response) {
+    const body = req.body as { cmd?: unknown; cwd?: unknown };
+    const cmd = typeof body.cmd === "string" ? body.cmd.trim() : "";
+    if (!cmd) return res.status(400).json({ error: "cmd is required" });
+    if (cmd.length > 500) return res.status(400).json({ error: "cmd too long (max 500)" });
+    const cwd = typeof body.cwd === "string" ? body.cwd.trim() : undefined;
+    if (cwd && cwd.length > 200) return res.status(400).json({ error: "cwd too long (max 200)" });
+    const result = await probeCommand({ cmd, cwd });
+    return ok(res, result, 200);
+  },
+
   async reportAstIndexBuilt(req: Request, res: Response) {
     const body = req.body as { astIndexFiles?: unknown };
     const n = typeof body.astIndexFiles === "number" && Number.isFinite(body.astIndexFiles)

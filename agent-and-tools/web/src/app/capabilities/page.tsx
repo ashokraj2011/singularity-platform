@@ -651,9 +651,21 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
  * parent's onChange fires on every keystroke so we don't need a
  * separate "save" step.
  *
- * Out-of-scope: the "Verify now" sandbox-runner integration. That's
- * a follow-up — Slice D's contract is wire + persist, not execute.
+ * M61 Wire D — Per-row "Verify" button runs the command in an isolated
+ * tmp dir via agent-runtime's probe endpoint and renders an inline
+ * chip with the exit code + duration. Pre-create the capabilityId is
+ * "_new_" (the route param is a soft anchor — the probe service
+ * doesn't read capability state).
  */
+type ProbeResult = {
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  durationMs: number;
+  stdout?: string;
+  stderr?: string;
+};
+
 function CommandTableEditor({
   title,
   hint,
@@ -661,6 +673,7 @@ function CommandTableEditor({
   commands,
   onChange,
   supportsTimingAndNetwork,
+  capabilityId,
 }: {
   title: string;
   hint: string;
@@ -668,7 +681,11 @@ function CommandTableEditor({
   commands: WizardCommand[];
   onChange: (next: WizardCommand[]) => void;
   supportsTimingAndNetwork?: boolean;
+  capabilityId?: string;
 }) {
+  const [probeResults, setProbeResults] = useState<Record<number, ProbeResult>>({});
+  const [probeRunning, setProbeRunning] = useState<Record<number, boolean>>({});
+
   const patch = (idx: number, change: Partial<WizardCommand>) => {
     const next = commands.slice();
     next[idx] = { ...next[idx], ...change };
@@ -681,6 +698,42 @@ function CommandTableEditor({
     const next = commands.slice();
     next.splice(idx, 1);
     onChange(next);
+    // Drop any stale probe result so a re-add doesn't display the
+    // old one (indices are reused after splice).
+    setProbeResults((prev) => {
+      const next: Record<number, ProbeResult> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        const n = Number(k);
+        if (n < idx) next[n] = v;
+        else if (n > idx) next[n - 1] = v;
+      }
+      return next;
+    });
+  };
+  const verify = async (idx: number) => {
+    const row = commands[idx];
+    if (!row || !row.cmd.trim()) return;
+    setProbeRunning((p) => ({ ...p, [idx]: true }));
+    try {
+      // capabilityId fallback "_new_" is what the wizard sends before
+      // the capability row exists. The probe endpoint ignores the
+      // param so this is fine.
+      const out = await runtimeApi.probeCommand(capabilityId ?? "_new_", {
+        cmd: row.cmd,
+        cwd: row.cwd,
+      }) as ProbeResult;
+      setProbeResults((p) => ({ ...p, [idx]: out }));
+    } catch (err) {
+      setProbeResults((p) => ({
+        ...p,
+        [idx]: {
+          exitCode: -1, signal: null, timedOut: false,
+          durationMs: 0, stderr: (err as Error).message,
+        },
+      }));
+    } finally {
+      setProbeRunning((p) => ({ ...p, [idx]: false }));
+    }
   };
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -699,65 +752,118 @@ function CommandTableEditor({
         </p>
       ) : (
         <div className="space-y-2">
-          {commands.map((cmd, idx) => (
-            <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-              <select
-                className={`${FIELD_CLASS} col-span-2 text-xs`}
-                value={cmd.kind}
-                onChange={(e) => patch(idx, { kind: e.target.value })}
-              >
-                {kinds.map((k) => (
-                  <option key={k} value={k}>{k}</option>
-                ))}
-              </select>
-              <input
-                className={`${FIELD_CLASS} col-span-${supportsTimingAndNetwork ? 4 : 6} text-xs font-mono`}
-                value={cmd.cmd}
-                placeholder="pnpm test"
-                onChange={(e) => patch(idx, { cmd: e.target.value })}
-              />
-              <input
-                className={`${FIELD_CLASS} col-span-2 text-xs font-mono`}
-                value={cmd.cwd ?? ""}
-                placeholder="cwd (opt)"
-                onChange={(e) => patch(idx, { cwd: e.target.value || undefined })}
-              />
-              {supportsTimingAndNetwork ? (
-                <>
+          {commands.map((cmd, idx) => {
+            const probe = probeResults[idx];
+            const running = probeRunning[idx];
+            // M61 Wire D — colour the chip by exit-code class:
+            //   0          → ok (green)
+            //   1-2 / 126  → warn (amber) — typical "would run in real repo"
+            //   127 / -1   → error (red) — binary missing or fetch failed
+            //   timeout    → amber
+            //   any other  → slate
+            const chipTone: "ok" | "warn" | "err" | "info" | "none" = !probe
+              ? "none"
+              : probe.timedOut
+                ? "warn"
+                : probe.exitCode === 0
+                  ? "ok"
+                  : probe.exitCode === -1 || probe.exitCode === 127
+                    ? "err"
+                    : probe.exitCode != null && probe.exitCode > 0 && probe.exitCode < 126
+                      ? "warn"
+                      : "info";
+            const chipClass = chipTone === "ok" ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+              : chipTone === "warn" ? "bg-amber-50 text-amber-700 border-amber-200"
+              : chipTone === "err" ? "bg-red-50 text-red-700 border-red-200"
+              : chipTone === "info" ? "bg-slate-50 text-slate-700 border-slate-200"
+              : "";
+            const chipLabel = !probe ? ""
+              : probe.timedOut ? `timeout · ${probe.durationMs}ms`
+              : probe.exitCode === null ? `signal ${probe.signal ?? "?"}`
+              : `exit ${probe.exitCode} · ${probe.durationMs}ms`;
+            return (
+              <div key={idx} className="space-y-1">
+                <div className="grid grid-cols-12 gap-2 items-center">
+                  <select
+                    className={`${FIELD_CLASS} col-span-2 text-xs`}
+                    value={cmd.kind}
+                    onChange={(e) => patch(idx, { kind: e.target.value })}
+                  >
+                    {kinds.map((k) => (
+                      <option key={k} value={k}>{k}</option>
+                    ))}
+                  </select>
                   <input
-                    className={`${FIELD_CLASS} col-span-1 text-xs`}
-                    type="number"
-                    min={1}
-                    max={3600}
-                    value={cmd.expectedDurationSec ?? ""}
-                    placeholder="sec"
-                    onChange={(e) => {
-                      const n = Number.parseInt(e.target.value, 10);
-                      patch(idx, {
-                        expectedDurationSec: Number.isFinite(n) && n > 0 ? n : undefined,
-                      });
-                    }}
+                    className={`${FIELD_CLASS} col-span-${supportsTimingAndNetwork ? 3 : 5} text-xs font-mono`}
+                    value={cmd.cmd}
+                    placeholder="pnpm test"
+                    onChange={(e) => patch(idx, { cmd: e.target.value })}
                   />
-                  <label className="col-span-2 inline-flex items-center gap-1 text-xs text-slate-600">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(cmd.requiresNetwork)}
-                      onChange={(e) => patch(idx, { requiresNetwork: e.target.checked })}
-                    />
-                    network
-                  </label>
-                </>
-              ) : null}
-              <button
-                type="button"
-                className="col-span-1 text-xs text-red-600 hover:underline"
-                onClick={() => remove(idx)}
-                aria-label="Remove row"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
+                  <input
+                    className={`${FIELD_CLASS} col-span-2 text-xs font-mono`}
+                    value={cmd.cwd ?? ""}
+                    placeholder="cwd (opt)"
+                    onChange={(e) => patch(idx, { cwd: e.target.value || undefined })}
+                  />
+                  {supportsTimingAndNetwork ? (
+                    <>
+                      <input
+                        className={`${FIELD_CLASS} col-span-1 text-xs`}
+                        type="number"
+                        min={1}
+                        max={3600}
+                        value={cmd.expectedDurationSec ?? ""}
+                        placeholder="sec"
+                        onChange={(e) => {
+                          const n = Number.parseInt(e.target.value, 10);
+                          patch(idx, {
+                            expectedDurationSec: Number.isFinite(n) && n > 0 ? n : undefined,
+                          });
+                        }}
+                      />
+                      <label className="col-span-1 inline-flex items-center gap-1 text-xs text-slate-600">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(cmd.requiresNetwork)}
+                          onChange={(e) => patch(idx, { requiresNetwork: e.target.checked })}
+                        />
+                        net
+                      </label>
+                    </>
+                  ) : null}
+                  <button
+                    type="button"
+                    className={`col-span-2 text-xs ${running ? "btn-secondary opacity-50" : "btn-secondary"}`}
+                    disabled={!cmd.cmd.trim() || running}
+                    onClick={() => verify(idx)}
+                    title="Spawn this command in an isolated tmp dir (10s cap) to sanity-check syntax."
+                  >
+                    {running ? "↻ Verifying..." : "▶ Verify"}
+                  </button>
+                  <button
+                    type="button"
+                    className="col-span-1 text-xs text-red-600 hover:underline"
+                    onClick={() => remove(idx)}
+                    aria-label="Remove row"
+                  >
+                    ✕
+                  </button>
+                </div>
+                {probe ? (
+                  <div className="pl-2 flex items-center gap-2">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono border ${chipClass}`}>
+                      {chipLabel}
+                    </span>
+                    {probe.stderr ? (
+                      <span className="text-[10px] text-slate-500 truncate font-mono" title={probe.stderr}>
+                        {probe.stderr.slice(0, 120)}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

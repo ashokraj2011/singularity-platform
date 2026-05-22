@@ -337,6 +337,16 @@ export const runtimeApi = {
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities/bootstrap`, { method: "POST", body: JSON.stringify(body) }),
   bootstrapAgentCatalog: () =>
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities/bootstrap-agent-catalog`),
+  // M61 Wire D — Verify-now probe. Returns the structured result
+  // (exitCode, signal, timedOut, durationMs, stdout, stderr, …).
+  // Used by the capabilities wizard's "Verify" button per command row.
+  // capabilityId is a soft anchor (no capability state read today);
+  // the wizard passes "_new_" pre-create.
+  probeCommand: (capabilityId: string, body: { cmd: string; cwd?: string }) =>
+    reqEnv<Row>(
+      `${RUNTIME_BASE}/capabilities/${encodeURIComponent(capabilityId)}/world-model/probe-command`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
   getBootstrapRun: (capabilityId: string, runId: string) =>
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/bootstrap-runs/${runId}`),
   reviewBootstrapRun: (capabilityId: string, runId: string, body: Row) =>

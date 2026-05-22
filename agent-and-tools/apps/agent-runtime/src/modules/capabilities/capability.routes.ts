@@ -110,3 +110,13 @@ capabilityRoutes.post(
   "/:id/world-model/ast-index-built",
   capabilityController.reportAstIndexBuilt,
 );
+
+// M61 Wire D — Verify-now probe. Body:
+//   { cmd: string, cwd?: string }
+// Spawns the command in an isolated tmp dir with a 10s timeout.
+// Returns { exitCode, signal, timedOut, durationMs, stdout, stderr, … }.
+// NOT a sandboxed test runner — just syntax-level verification.
+capabilityRoutes.post(
+  "/:id/world-model/probe-command",
+  capabilityController.probeWorldModelCommand,
+);
