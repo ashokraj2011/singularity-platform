@@ -39,7 +39,7 @@ export interface FinishBranchResult {
   pushed?: boolean;
   /** M27.5 — non-empty when the push attempt failed but the local commit succeeded. */
   pushError?: string;
-  pushBlockedCode?: "GIT_AUTH_MISSING" | "GIT_REMOTE_UNREACHABLE" | "GIT_PUSH_REJECTED" | "NO_COMMIT_TO_PUSH";
+  pushBlockedCode?: "GIT_AUTH_MISSING" | "GIT_AUTH_INSUFFICIENT_SCOPE" | "GIT_REMOTE_UNREACHABLE" | "GIT_PUSH_REJECTED" | "NO_COMMIT_TO_PUSH";
   pushFixCommands?: string[];
   pushRetryable?: boolean;
   pushRemote?: string;
@@ -124,7 +124,9 @@ function isPushResult(value: NodeJS.ProcessEnv | PushResult): value is PushResul
   return typeof (value as PushResult).pushed === "boolean";
 }
 
-function fixCommandsForPushBlock(code: PushBlockedCode, remote: string): string[] {
+// Exported for unit tests (test/classify-push-error.test.ts). Pure
+// functions — no I/O — safe to import directly.
+export function fixCommandsForPushBlock(code: PushBlockedCode, remote: string): string[] {
   if (code === "GIT_AUTH_MISSING") {
     if (config.MCP_GIT_AUTH_MODE === "ssh") {
       return [
@@ -138,6 +140,20 @@ function fixCommandsForPushBlock(code: PushBlockedCode, remote: string): string[
       "./singularity.sh config git --mode token --token-env GITHUB_TOKEN --remote " + remote,
       "./singularity.sh doctor git",
       "./singularity.sh restart mcp-server-demo",
+    ];
+  }
+  // M70.8 — Distinct guidance for "token works but doesn't have the right
+  // scope" vs. "no token at all". The classic GIT_AUTH_MISSING path
+  // implied 'set up auth from scratch'; that's wrong when the operator
+  // ALREADY has a token configured and GitHub is just refusing it. Now
+  // we point them at the specific token-edit page and explicit Contents:
+  // Write requirement instead of telling them to start over.
+  if (code === "GIT_AUTH_INSUFFICIENT_SCOPE") {
+    return [
+      "Your git token is authenticated but lacks Contents: Write on this repo.",
+      "Fine-grained PAT (token starts with github_pat_...): https://github.com/settings/tokens?type=beta — edit the token, ensure the repo is in 'Selected repositories', and set Repository permissions > Contents = Read and write.",
+      "Classic PAT: https://github.com/settings/tokens — regenerate with the `repo` scope (full).",
+      "./singularity.sh restart mcp-server-demo  # picks up the new token from .env",
     ];
   }
   if (code === "GIT_REMOTE_UNREACHABLE") {
@@ -159,8 +175,27 @@ function fixCommandsForPushBlock(code: PushBlockedCode, remote: string): string[
   ];
 }
 
-function classifyPushError(error: string): PushBlockedCode {
+export function classifyPushError(error: string): PushBlockedCode {
   const lower = error.toLowerCase();
+  // M70.8 — GitHub-specific "token authenticated, scope insufficient"
+  // path. The error string from `git push` to GitHub when the PAT
+  // lacks Contents: Write looks like:
+  //   remote: Permission to ashokraj2011/RuleEngine.git denied to ashokraj2011.
+  //   fatal: unable to access 'https://github.com/ashokraj2011/RuleEngine.git/': The requested URL returned error: 403
+  // The pre-M70.8 classifier looked for the contiguous string
+  // "permission denied" — but GitHub's wording is "Permission to X
+  // denied to Y", which doesn't match. So we fell through to the
+  // generic GIT_PUSH_REJECTED and the operator got "Inspect the
+  // remote rejection" — unhelpful. Detect the GitHub shape explicitly
+  // and route to the new GIT_AUTH_INSUFFICIENT_SCOPE code which has
+  // token-scope-specific fix steps.
+  if (
+    /permission to .+ denied to /i.test(error)
+    || (lower.includes("requested url returned error: 403") && lower.includes("github.com"))
+    || lower.includes("write access to the repository is not granted")
+  ) {
+    return "GIT_AUTH_INSUFFICIENT_SCOPE";
+  }
   if (
     lower.includes("could not read username")
     || lower.includes("authentication failed")

@@ -289,6 +289,18 @@ function pushFixCommands(code: string, remote: string): string[] {
       './singularity.sh restart mcp-server-demo',
     ]
   }
+  // M70.8 — Mirrors mcp-server's git-workspace.ts handling. When the
+  // operator's token is good enough to authenticate but doesn't carry
+  // Contents: Write, point them at the specific token-edit page
+  // instead of generic "review the error" advice.
+  if (code === 'GIT_AUTH_INSUFFICIENT_SCOPE') {
+    return [
+      'Your git token is authenticated but lacks Contents: Write on this repo.',
+      'Fine-grained PAT (token starts with github_pat_...): https://github.com/settings/tokens?type=beta — edit the token, ensure the repo is in "Selected repositories", and set Repository permissions > Contents = Read and write.',
+      'Classic PAT: https://github.com/settings/tokens — regenerate with the `repo` scope (full).',
+      './singularity.sh restart mcp-server-demo  # picks up the new token from .env',
+    ]
+  }
   if (code === 'GIT_REMOTE_UNREACHABLE') {
     return ['git remote -v', 'git remote set-url ' + remote + ' <ssh-or-https-repo-url>', './singularity.sh doctor git']
   }
