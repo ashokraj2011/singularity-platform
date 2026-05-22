@@ -2687,6 +2687,56 @@ pre {
   padding: 8px;
 }
 
+/* M56 — Per-phase token + cost strip on each evidence row.
+   Renders as a row of mini-cards (one per phase the attempt used) with
+   a sparkline bar and the phase's total tokens beneath. */
+.phase-tokens-strip {
+  grid-column: 3 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 6px;
+  padding: 6px 0 2px;
+  border-top: 1px dashed rgba(120, 130, 160, 0.18);
+}
+
+.phase-tokens-strip .phase-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 64px;
+  font-size: 11px;
+}
+
+.phase-tokens-strip .phase-bar em {
+  color: var(--primary);
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.phase-tokens-strip .phase-bar .bar {
+  background: linear-gradient(90deg, var(--primary), rgba(63, 200, 161, 0.4));
+  height: 4px;
+  border-radius: 2px;
+  margin: 3px 0;
+}
+
+.phase-tokens-strip .phase-bar small {
+  color: var(--muted-low);
+}
+
+.phase-tokens-strip .phase-total {
+  margin-left: auto;
+  align-self: center;
+  color: var(--accent, var(--primary));
+  font-weight: 700;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 .log-row.fail-block span {
   color: var(--danger);
 }

@@ -195,6 +195,31 @@ def resolve_alias(alias: str) -> Dict[str, Any]:
     raise ProviderConfigError(f"unknown model alias: {alias}")
 
 
+# M56 — Cost computation. The catalog optionally carries
+# inputPricePerMtok / outputPricePerMtok per model (USD per 1M tokens).
+# When both are present we return a real number; missing → None so the
+# caller surfaces it as null (no fake $0.00 in the UI).
+def compute_estimated_cost(
+    alias: Optional[str],
+    input_tokens: int,
+    output_tokens: int,
+) -> Optional[float]:
+    if not alias:
+        return None
+    try:
+        entry = resolve_alias(alias)
+    except ProviderConfigError:
+        return None
+    in_price = entry.get("inputPricePerMtok")
+    out_price = entry.get("outputPricePerMtok")
+    if not isinstance(in_price, (int, float)) or not isinstance(out_price, (int, float)):
+        return None
+    # Per-million-token rates. Round to 6 decimals (fraction of a cent
+    # precision is plenty for accounting and avoids float noise in JSON).
+    cost = (input_tokens * float(in_price) + output_tokens * float(out_price)) / 1_000_000.0
+    return round(cost, 6)
+
+
 def warnings() -> List[str]:
     return list(_warnings)
 

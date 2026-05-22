@@ -64,6 +64,11 @@ class ChatCompletionResponse(BaseModel):
     provider: str
     model: str
     model_alias: Optional[str] = None
+    # M56 — USD cost per call computed from the model catalog's
+    # inputPricePerMtok / outputPricePerMtok fields. None when the
+    # catalog has no prices for this model (so the workbench can show
+    # "—" rather than fake $0.00).
+    estimated_cost: Optional[float] = None
 
 
 class EmbeddingsRequest(BaseModel):

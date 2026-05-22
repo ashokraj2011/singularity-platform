@@ -27,7 +27,7 @@ import { detectVerifiers } from "../workspace/verifier-registry";
 import {
   CorrelationIds, recordLlmCall, recordToolInvocation, recordArtifact,
   recordCodeChange, ToolInvocationRecord, CodeChangeRecord,
-  LlmCallRecord,
+  LlmCallRecord, audit as auditStore,
 } from "../audit/store";
 import { emitRePlan } from "../audit/replan-telemetry";
 import { extractCodeChange } from "../audit/provenanceExtractor";
@@ -315,6 +315,44 @@ function detectRepetition(history: LoopState["toolCallHistory"]): { name: string
 function hasTool(state: LoopState, names: string[]): boolean {
   const available = new Set(state.fullToolDescriptors.map((tool) => tool.name));
   return names.some((name) => available.has(name));
+}
+
+/**
+ * M56 Slice B — Per-phase token + cost rollup.
+ *
+ * Walks every LLM call recorded during this run (by id, from
+ * state.llmCallIds), looks up the LlmCallRecord, and buckets by
+ * `phase`. Pure function — exported for testability.
+ *
+ * The result lands on `correlation.phaseTokens` so workgraph-api and the
+ * workbench can render a per-phase strip without re-walking audit logs.
+ * `unknown` is used for calls whose phase wasn't set (legacy / flat-loop
+ * runs); callers can show it under "Other" or fold into total.
+ */
+export interface PhaseUsageBucket {
+  input: number;
+  output: number;
+  cost: number;
+  calls: number;
+}
+
+export function computePhaseTokens(
+  llmCallIds: ReadonlyArray<string>,
+  lookup: (id: string) => Pick<LlmCallRecord, "input_tokens" | "output_tokens" | "estimated_cost" | "phase"> | undefined,
+): Record<string, PhaseUsageBucket> {
+  const buckets: Record<string, PhaseUsageBucket> = {};
+  for (const id of llmCallIds) {
+    const rec = lookup(id);
+    if (!rec) continue;
+    const phase = rec.phase ?? "unknown";
+    const b = buckets[phase] ?? { input: 0, output: 0, cost: 0, calls: 0 };
+    b.input += rec.input_tokens ?? 0;
+    b.output += rec.output_tokens ?? 0;
+    b.cost += typeof rec.estimated_cost === "number" ? rec.estimated_cost : 0;
+    b.calls += 1;
+    buckets[phase] = b;
+  }
+  return buckets;
 }
 
 /**
@@ -2739,6 +2777,10 @@ async function buildResponseBody(
     finalArtifactId,
     ...(codeChangeCoverage ? { codeChangeCoverage, agentReasoningMode: "phased" } : {}),
     ...(verificationCoverage ? { verificationCoverage } : {}),
+    // M56 Slice B — Per-phase token + cost rollup. Workgraph-api persists
+    // this on StageAttempt.metrics.phaseTokens; the workbench renders it
+    // as a 6-bar phase strip on each attempt card.
+    phaseTokens: computePhaseTokens(state.llmCallIds, (id) => auditStore.llmCalls.byId(id)),
   };
 
   const out: Record<string, unknown> = {

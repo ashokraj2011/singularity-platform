@@ -1616,6 +1616,12 @@ async def execute(req: ExecuteRequest):
             "astIndexStatus": workspace.get("astIndexStatus"),
             "astIndexedFiles": workspace.get("astIndexedFiles"),
             "astIndexedSymbols": workspace.get("astIndexedSymbols"),
+            # M56 — per-phase token + cost rollup from mcp-server. Drop-through
+            # so the workbench's PhaseTokensStrip can read it off the attempt's
+            # correlation without re-walking the audit ring.
+            "phaseTokens": correlation.get("phaseTokens"),
+            "codeChangeCoverage": correlation.get("codeChangeCoverage"),
+            "verificationCoverage": correlation.get("verificationCoverage"),
         },
         "workspace": workspace,
         "verificationReceipts": verification_receipts,
@@ -2097,6 +2103,12 @@ async def execute_resume(req: ResumeRequest):
             "astIndexStatus": workspace.get("astIndexStatus"),
             "astIndexedFiles": workspace.get("astIndexedFiles"),
             "astIndexedSymbols": workspace.get("astIndexedSymbols"),
+            # M56 — per-phase token + cost rollup from mcp-server. Drop-through
+            # so the workbench's PhaseTokensStrip can read it off the attempt's
+            # correlation without re-walking the audit ring.
+            "phaseTokens": correlation.get("phaseTokens"),
+            "codeChangeCoverage": correlation.get("codeChangeCoverage"),
+            "verificationCoverage": correlation.get("verificationCoverage"),
         },
         "workspace": workspace,
         "verificationReceipts": verification_receipts,

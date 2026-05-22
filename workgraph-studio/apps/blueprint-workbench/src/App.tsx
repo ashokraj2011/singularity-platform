@@ -2038,6 +2038,7 @@ function WorkbenchTerminal({ session }: { session: BlueprintSession }) {
             <span>[EVIDENCE]</span>
             <strong>{attempt.stageLabel}: {attempt.correlation?.cfCallId ?? attempt.correlation?.traceId ?? attempt.id}</strong>
             <small>{stageCostEvidence(attempt)}</small>
+            <PhaseTokensStrip attempt={attempt} />
           </div>
         ))}
         <div className="terminal-input"><span>TERMINAL &gt;</span><em>Waiting for developer approval...</em></div>
@@ -2048,14 +2049,81 @@ function WorkbenchTerminal({ session }: { session: BlueprintSession }) {
 
 function stageCostEvidence(attempt: StageAttempt) {
   const tokens = attempt.tokensUsed?.total
-    ? `${attempt.tokensUsed.total} actual tokens`
+    ? `${attempt.tokensUsed.total.toLocaleString()} actual tokens`
     : 'actual tokens pending'
+  // M56 — append $-cost when the gateway returned a non-null estimate.
+  // Null is shown as "—" rather than $0.00 to distinguish "we don't know"
+  // from "literally free" (mock provider).
+  const cost = attempt.tokensUsed?.estimatedCost
+  const costText = typeof cost === 'number' && cost > 0
+    ? ` · ${formatUsd(cost)}`
+    : ''
   const optimization = attempt.metrics?.contextOptimization
   if (optimization && typeof optimization === 'object' && 'tokens_saved' in optimization) {
     const saved = (optimization as { tokens_saved?: unknown }).tokens_saved
-    return `${tokens} · saved ${saved ?? 0}`
+    return `${tokens}${costText} · saved ${saved ?? 0}`
   }
-  return tokens
+  return `${tokens}${costText}`
+}
+
+// M56 — Format USD amounts at the right precision for an LLM agent run.
+// Most calls cost fractions of a cent; rolled-up stages tend to be in
+// $-cents to $-tens. Use 4 decimals below $0.01, 3 decimals below $1,
+// 2 decimals above. Surface "—" when the gateway returned null (catalog
+// has no prices for this model).
+function formatUsd(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+  if (value === 0) return '$0'
+  if (value < 0.01) return `$${value.toFixed(4)}`
+  if (value < 1) return `$${value.toFixed(3)}`
+  return `$${value.toFixed(2)}`
+}
+
+// M56 Slice C — Compact per-phase strip. Renders one mini-card per phase
+// the attempt actually used, with token sparkline + cost. Source of
+// truth: attempt.correlation.phaseTokens (set by mcp-server's
+// computePhaseTokens at runLoop exit).
+const PHASE_ORDER = ['PLAN_DRAFT', 'EXPLORE', 'PLAN_CONFIRM', 'ACT', 'VERIFY', 'FINALIZE'] as const
+const PHASE_LABEL: Record<string, string> = {
+  PLAN_DRAFT:  'Plan',
+  EXPLORE:     'Explore',
+  PLAN_CONFIRM:'Confirm',
+  ACT:         'Act',
+  VERIFY:      'Verify',
+  FINALIZE:    'Final',
+  unknown:     'Other',
+}
+
+function PhaseTokensStrip({ attempt }: { attempt: StageAttempt }) {
+  const phaseTokens = (attempt.correlation as { phaseTokens?: Record<string, { input: number; output: number; cost: number; calls: number }> } | undefined)?.phaseTokens
+  if (!phaseTokens || Object.keys(phaseTokens).length === 0) return null
+  // Use a stable order: known phases first (in canonical sequence), then
+  // anything else (just 'unknown' in practice) at the end.
+  const knownInUse = PHASE_ORDER.filter(p => phaseTokens[p])
+  const extras = Object.keys(phaseTokens).filter(p => !knownInUse.includes(p as typeof knownInUse[number]))
+  const ordered = [...knownInUse, ...extras]
+  const maxTotal = ordered.reduce((max, p) => {
+    const b = phaseTokens[p]
+    return Math.max(max, (b?.input ?? 0) + (b?.output ?? 0))
+  }, 1)  // 1 prevents div-by-zero on degenerate input
+  const totalCost = ordered.reduce((s, p) => s + (phaseTokens[p]?.cost ?? 0), 0)
+  return (
+    <div className="phase-tokens-strip" title="Token + cost breakdown per phase">
+      {ordered.map(p => {
+        const b = phaseTokens[p]
+        const t = (b.input + b.output)
+        const pct = Math.max(2, Math.round((t / maxTotal) * 100))  // 2% floor so non-zero bars are still visible
+        return (
+          <span key={p} className="phase-bar" title={`${PHASE_LABEL[p] ?? p}: ${b.input.toLocaleString()} in / ${b.output.toLocaleString()} out · ${b.calls} call${b.calls === 1 ? '' : 's'} · ${formatUsd(b.cost)}`}>
+            <em>{PHASE_LABEL[p] ?? p}</em>
+            <span className="bar" style={{ width: `${pct}%` }} />
+            <small>{t.toLocaleString()}</small>
+          </span>
+        )
+      })}
+      {totalCost > 0 && <span className="phase-total">{formatUsd(totalCost)} total</span>}
+    </div>
+  )
 }
 
 function AgentSelect({

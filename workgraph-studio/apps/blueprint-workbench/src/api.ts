@@ -75,9 +75,16 @@ export type BlueprintStageRun = {
     promptAssemblyId?: string
     mcpInvocationId?: string
     codeChangeIds?: string[]
+    // M56 — Per-phase token + cost rollup from mcp-server's
+    // computePhaseTokens. Keys are phase names (PLAN_DRAFT / EXPLORE / …)
+    // plus 'unknown' for legacy / flat-loop calls. Values are
+    // { input, output, cost, calls } sums.
+    phaseTokens?: Record<string, { input: number; output: number; cost: number; calls: number }>
     [key: string]: unknown
   }
-  tokensUsed?: { input?: number; output?: number; total?: number }
+  // M56 — Added estimatedCost alongside the existing total, so the
+  // workbench can show $ figures next to the token count.
+  tokensUsed?: { input?: number; output?: number; total?: number; estimatedCost?: number }
   startedAt?: string
   completedAt?: string
 }

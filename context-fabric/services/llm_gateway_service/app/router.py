@@ -162,7 +162,10 @@ async def chat_completions(
         raise HTTPException(status_code=400, detail=f"provider {provider} is not allowed by gateway config")
 
     if provider == "mock":
-        return await mock_provider.respond(req, resolved_model=model)
+        resp = await mock_provider.respond(req, resolved_model=model)
+        # Mock has no real cost; leave as zero (the mock provider already
+        # sets estimated_cost=0 on its responses).
+        return resp
 
     credential = settings.credential_for(provider)
     if not credential:
@@ -170,13 +173,15 @@ async def chat_completions(
 
     try:
         if provider in ("openai", "openrouter", "copilot"):
-            return await openai_provider.respond(
+            resp = await openai_provider.respond(
                 req, provider=provider, resolved_model=model, api_key=credential, model_alias=alias,
             )
-        if provider == "anthropic":
-            return await anthropic_provider.respond(
+        elif provider == "anthropic":
+            resp = await anthropic_provider.respond(
                 req, resolved_model=model, api_key=credential, model_alias=alias,
             )
+        else:
+            raise HTTPException(status_code=400, detail=f"unsupported provider {provider}")
     except anthropic_provider.AnthropicUpstreamError as exc:
         status = 429 if exc.status_code == 429 else 502
         raise HTTPException(status_code=status, detail=f"LLM_GATEWAY_UPSTREAM: {exc}")
@@ -184,7 +189,16 @@ async def chat_completions(
         raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"LLM_GATEWAY_UPSTREAM: {exc}")
-    raise HTTPException(status_code=400, detail=f"unsupported provider {provider}")
+
+    # M56 — attach USD cost based on the catalog's per-model price.
+    # Computed AFTER the provider call so we know the real token counts.
+    # Null when no price is configured (UI shows "—" rather than $0.00).
+    resp.estimated_cost = provider_config.compute_estimated_cost(
+        alias or req.model_alias,
+        resp.input_tokens,
+        resp.output_tokens,
+    )
+    return resp
 
 
 @router.post("/v1/embeddings", response_model=EmbeddingsResponse)
