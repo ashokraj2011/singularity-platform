@@ -181,6 +181,66 @@ JSON
     "maxOutputTokens": 800,
     "supportsTools": false,
     "costTier": "mock"
+  },
+  {
+    "id": "mock-fast",
+    "label": "Mock — fast happy path",
+    "provider": "mock",
+    "model": "mock-fast",
+    "default": false,
+    "maxOutputTokens": 4000,
+    "supportsTools": true,
+    "costTier": "free"
+  },
+  {
+    "id": "mock-fail-429",
+    "label": "Mock chaos — 429 rate-limited",
+    "provider": "mock",
+    "model": "mock-fast",
+    "default": false,
+    "maxOutputTokens": 4000,
+    "supportsTools": true,
+    "costTier": "free"
+  },
+  {
+    "id": "mock-fail-503",
+    "label": "Mock chaos — 503 unavailable",
+    "provider": "mock",
+    "model": "mock-fast",
+    "default": false,
+    "maxOutputTokens": 4000,
+    "supportsTools": true,
+    "costTier": "free"
+  },
+  {
+    "id": "mock-fail-529",
+    "label": "Mock chaos — 529 overloaded",
+    "provider": "mock",
+    "model": "mock-fast",
+    "default": false,
+    "maxOutputTokens": 4000,
+    "supportsTools": true,
+    "costTier": "free"
+  },
+  {
+    "id": "mock-fail-529-2",
+    "label": "Mock chaos — first 2 calls 529 then happy",
+    "provider": "mock",
+    "model": "mock-fast",
+    "default": false,
+    "maxOutputTokens": 4000,
+    "supportsTools": true,
+    "costTier": "free"
+  },
+  {
+    "id": "mock-timeout",
+    "label": "Mock chaos — sleep past UPSTREAM_TIMEOUT_SEC",
+    "provider": "mock",
+    "model": "mock-fast",
+    "default": false,
+    "maxOutputTokens": 4000,
+    "supportsTools": true,
+    "costTier": "free"
   }
 ]
 JSON
