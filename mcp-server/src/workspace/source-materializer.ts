@@ -206,8 +206,24 @@ async function ensureMirror(cloneUrl: string): Promise<string> {
   if (!hasHead) {
     await fs.promises.rm(mirror, { recursive: true, force: true });
     await gitRaw(["clone", "--mirror", cloneUrl, mirror], { cwd: cacheRoot, maxBuffer: 60 * 1024 * 1024 });
+    // M70.6 — `git clone --mirror` sets `remote.origin.mirror = true`,
+    // which is fine for fetching but BREAKS every subsequent
+    // `git push origin <refspec>` from any worktree of this repo:
+    //   fatal: --mirror can't be combined with refspecs
+    // The agent's finish_work_branch always pushes a specific branch
+    // refspec, so the workitem-level push fails until the bare repo's
+    // config is fixed. Unset the mirror flag here. The explicit
+    // `fetch = +refs/*:refs/*` we already configure still pulls every
+    // ref on subsequent fetches, so we keep the mirror-style fetch
+    // behavior without the push-time poison.
+    await gitBare(mirror, ["config", "--unset", "remote.origin.mirror"], { allowFail: true });
     return mirror;
   }
+  // Idempotent self-heal: even if this mirror was created by a prior
+  // (pre-M70.6) build that didn't unset the mirror flag, fix it now
+  // so the next push succeeds. allowFail covers the case where the
+  // flag is already unset.
+  await gitBare(mirror, ["config", "--unset", "remote.origin.mirror"], { allowFail: true });
   await gitBare(mirror, ["remote", "set-url", "origin", cloneUrl], { allowFail: true });
   await gitBare(mirror, ["fetch", "--prune", "origin"], { allowFail: true, maxBuffer: 60 * 1024 * 1024 });
   return mirror;
