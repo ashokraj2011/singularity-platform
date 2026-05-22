@@ -26,6 +26,10 @@ import {
   markPhaseSkipped,
   patchPhase,
 } from "./bootstrap-phases";
+// M61 Wire B P3 — README distillation + architecture slice worker.
+// Runs after Phase 1 completes (both sync and async paths) and writes
+// readmeSummary + architectureSlice.rootPackages to CapabilityWorldModel.
+import { runBootstrapDistillationPhase } from "./bootstrap-phase3-distill";
 
 const BOOTSTRAP_AGENT_CATALOG = [
   {
@@ -587,8 +591,19 @@ export const capabilityService = {
         include: { candidates: true, capability: { include: { bindings: { include: { agentTemplate: true } }, repositories: true, knowledgeSources: true } } },
       });
       await markPhaseCompleted(run.id, PHASE_KEYS.P1);
-      await markPhaseSkipped(run.id, PHASE_KEYS.P2, "deferred — mcp-server still builds AST index lazily at first workflow run");
-      await markPhaseSkipped(run.id, PHASE_KEYS.P3, "deferred — README distillation worker not yet implemented");
+      // Phase 2 is "deferred at bootstrap" — mcp-server builds the AST
+      // index lazily at first workflow run, then POSTs back to
+      // /world-model/ast-index-built (M61 Wire B P2), which stamps
+      // astIndexedAt + astIndexFiles on the WorldModel row. The
+      // phaseProgress entry shows skipped here so the wizard UI can
+      // render the bootstrap timeline without claiming work that
+      // hasn't happened yet.
+      await markPhaseSkipped(run.id, PHASE_KEYS.P2, "deferred to first workflow — mcp-server reports back via ast-index-built callback");
+      // M61 Wire B P3 — Run the distillation worker inline. It marks
+      // its own phaseProgress (started → completed / skipped / failed)
+      // so the wizard UI gets the same progress shape regardless of
+      // whether the worker found a README, no symbols, or errored.
+      await runBootstrapDistillationPhase({ capabilityId: capability.id, runId: run.id });
       await patchPhase(run.id, PHASE_KEYS.DONE, { status: "completed", completedAt: new Date().toISOString() }, { setCurrentPhase: PHASE_KEYS.DONE });
       return runResult;
     } catch (err) {
@@ -804,8 +819,19 @@ export const capabilityService = {
 
       // Phases 2 + 3 are stubs. The schema + UI surface exists; the
       // workers themselves land in follow-up commits.
-      await markPhaseSkipped(run.id, PHASE_KEYS.P2, "deferred — mcp-server still builds AST index lazily at first workflow run");
-      await markPhaseSkipped(run.id, PHASE_KEYS.P3, "deferred — README distillation worker not yet implemented");
+      // Phase 2 is "deferred at bootstrap" — mcp-server builds the AST
+      // index lazily at first workflow run, then POSTs back to
+      // /world-model/ast-index-built (M61 Wire B P2), which stamps
+      // astIndexedAt + astIndexFiles on the WorldModel row. The
+      // phaseProgress entry shows skipped here so the wizard UI can
+      // render the bootstrap timeline without claiming work that
+      // hasn't happened yet.
+      await markPhaseSkipped(run.id, PHASE_KEYS.P2, "deferred to first workflow — mcp-server reports back via ast-index-built callback");
+      // M61 Wire B P3 — Run the distillation worker inline. It marks
+      // its own phaseProgress (started → completed / skipped / failed)
+      // so the wizard UI gets the same progress shape regardless of
+      // whether the worker found a README, no symbols, or errored.
+      await runBootstrapDistillationPhase({ capabilityId: capability.id, runId: run.id });
       await patchPhase(run.id, PHASE_KEYS.DONE, { status: "completed", completedAt: new Date().toISOString() }, { setCurrentPhase: PHASE_KEYS.DONE });
     } catch (err) {
       errors.push((err as Error).message);
