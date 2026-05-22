@@ -4102,11 +4102,25 @@ function filterNewLlmOpenQuestions(incoming: LoopQuestion[], state: LoopState, s
   })
 }
 
-function extractLlmOpenQuestions(response: string, stage: LoopStageDefinition, attempt: StageAttempt): LoopQuestion[] {
+export function extractLlmOpenQuestions(response: string, stage: LoopStageDefinition, attempt: StageAttempt): LoopQuestion[] {
   const section = extractMarkdownSection(response, ['open questions', 'questions for user', 'clarifications', 'clarification questions'])
   if (!section) return []
   const questions: LoopQuestion[] = []
   for (const line of section.split('\n').map(item => item.trim()).filter(Boolean)) {
+    // M57 — Skip markdown-table syntax. Claude (and Anthropic models in
+    // general) sometimes render "Open Questions" as a status table:
+    //   | Assumption | Rationale | Validation |
+    //   |------------|------------|------------|
+    //   | Operator enum already registered | Confirmed in snapshot ... | ✓ |
+    // Earlier the parser stripped leading bullets but not table pipes,
+    // so every row became a phantom "question". Detect three table shapes:
+    //   1. Separator rows:  |---|---|---|  (pipes + dashes only)
+    //   2. Header / data rows starting with `|` (table border)
+    //   3. Lines that are pure pipes-and-whitespace (degenerate)
+    if (/^\|[\s|:\-]*\|?$/.test(line)) continue           // separator row
+    if (line.startsWith('|') && line.endsWith('|') && line.includes(' | ')) continue  // table data row
+    if (/^\|/.test(line) && !/\?/.test(line) && line.split('|').length >= 3) continue  // any pipe-delimited multi-col row
+
     const cleaned = line
       .replace(/^[-*]\s+/, '')
       .replace(/^\d+[.)]\s+/, '')
@@ -4114,6 +4128,10 @@ function extractLlmOpenQuestions(response: string, stage: LoopStageDefinition, a
       .trim()
     if (!cleaned || cleaned.length < 12) continue
     if (/^(none|n\/a|no open questions)/i.test(cleaned)) continue
+    // M57 — Final safety net: require at least one alphabetic chunk that
+    // looks like a real word (>=4 letters). Pure punctuation/pipes that
+    // slip past the table-syntax checks won't have one.
+    if (!/[a-zA-Z]{4,}/.test(cleaned)) continue
     const parsed = classifyOpenQuestion(cleaned)
     const index = questions.length + 1
     questions.push({
