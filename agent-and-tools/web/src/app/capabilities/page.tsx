@@ -36,6 +36,17 @@ type BootstrapAgentCatalog = {
   agents?: BootstrapCatalogAgent[];
 };
 
+// M61 Slice D — Operator-confirmed test/build commands captured in
+// the new wizard step. Same shape the agent-runtime bootstrap schema
+// accepts (capability.schemas.ts:testCommands/buildCommands).
+type WizardCommand = {
+  kind: string;
+  cmd: string;
+  cwd?: string;
+  expectedDurationSec?: number;
+  requiresNetwork?: boolean;
+};
+
 type BootstrapForm = {
   name: string;
   appId: string;
@@ -52,6 +63,9 @@ type BootstrapForm = {
   parentCapabilityId: string;
   childCapabilityIds: string[];
   sharedApplications: string;
+  // M61 Slice D
+  testCommands: WizardCommand[];
+  buildCommands: WizardCommand[];
 };
 
 const DEFAULT_FORM: BootstrapForm = {
@@ -70,6 +84,9 @@ const DEFAULT_FORM: BootstrapForm = {
   parentCapabilityId: "",
   childCapabilityIds: [],
   sharedApplications: "",
+  // M61 Slice D — start empty; operator fills in the wizard step.
+  testCommands: [],
+  buildCommands: [],
 };
 
 const BOOTSTRAP_AGENT_PREVIEW = [
@@ -215,6 +232,11 @@ export default function CapabilitiesPage() {
           : [],
         documentLinks,
         localFiles,
+        // M61 Slice D — Operator-confirmed commands flow straight into
+        // the bootstrap schema (testCommands / buildCommands). Server
+        // writes them into CapabilityWorldModel after creating the row.
+        testCommands: form.testCommands,
+        buildCommands: form.buildCommands,
       };
       const run = await runtimeApi.bootstrapCapability(body);
       const capability = run.capability as Record<string, unknown> | undefined;
@@ -273,8 +295,9 @@ export default function CapabilitiesPage() {
               note="Starter workflow and artifacts are staged for review." />
           </div>
 
-          <div className="grid grid-cols-4 gap-2 mb-6">
-            {["Details", "Sources", "Agents", "Review"].map((label, index) => (
+          <div className="grid grid-cols-5 gap-2 mb-6">
+            {/* M61 Slice D — Inserted "Tests & Build" between Sources and Agents. */}
+            {["Details", "Sources", "Tests & Build", "Agents", "Review"].map((label, index) => (
               <button
                 key={label}
                 type="button"
@@ -447,7 +470,37 @@ export default function CapabilitiesPage() {
             </div>
           )}
 
+          {/* M61 Slice D — Tests & Build. Captures the operator's authoritative
+                test/build commands. Heuristics from the verifier-registry still
+                run server-side; entries here are the explicit override. */}
           {step === 3 && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900">
+                Add the commands an agent should run to test, lint, type-check,
+                and build this capability. These are stored in the
+                CapabilityWorldModel and surface as ambient prompt context — the
+                agent stops discovering them per attempt and uses what you confirm
+                here. Leave empty to fall back to heuristic detection at runtime.
+              </div>
+              <CommandTableEditor
+                title="Test commands"
+                hint='Examples: pnpm test (unit), pnpm test:int (integration), mvn -q -DskipITs=false verify (integration).'
+                kinds={["unit", "integration", "e2e", "smoke", "lint", "typecheck"]}
+                commands={form.testCommands}
+                onChange={(testCommands) => setForm((f) => ({ ...f, testCommands }))}
+                supportsTimingAndNetwork
+              />
+              <CommandTableEditor
+                title="Build commands"
+                hint='Examples: pnpm build, mvn -q -DskipTests package, cargo build --release.'
+                kinds={["build", "package", "compile"]}
+                commands={form.buildCommands}
+                onChange={(buildCommands) => setForm((f) => ({ ...f, buildCommands }))}
+              />
+            </div>
+          )}
+
+          {step === 4 && (
             <div className="space-y-4">
               <Field label="Agent team preset">
                 <select className={FIELD_CLASS} value={form.agentPreset}
@@ -487,7 +540,8 @@ export default function CapabilitiesPage() {
             </div>
           )}
 
-          {step === 4 && (
+          {/* M61 Slice D — step number bumped from 4 to 5 to make room for Tests & Build. */}
+          {step === 5 && (
             <div className="space-y-4">
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
                 <SummaryCard icon={<Layers3 size={18} />} label="Learning packet"
@@ -528,8 +582,9 @@ export default function CapabilitiesPage() {
               onClick={() => setStep(s => Math.max(1, s - 1))}>
               Back
             </button>
-            {step < 4 ? (
-              <button type="button" className="btn-primary" onClick={() => setStep(s => Math.min(4, s + 1))}>
+            {/* M61 Slice D — Wizard max bumped from 4 to 5 (Tests & Build added). */}
+            {step < 5 ? (
+              <button type="button" className="btn-primary" onClick={() => setStep(s => Math.min(5, s + 1))}>
                 Continue <ChevronRight size={14} />
               </button>
             ) : (
@@ -578,6 +633,134 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="block text-sm font-medium text-slate-700 mb-1">{label}</span>
       {children}
     </label>
+  );
+}
+
+/**
+ * M61 Slice D — Editable table of test/build commands used in the
+ * Tests & Build wizard step.
+ *
+ * Per row: kind dropdown + cmd input + (optional) cwd + (optional)
+ * expectedDurationSec + (optional) requiresNetwork checkbox.
+ *
+ * `supportsTimingAndNetwork` toggles the last two columns; build
+ * commands don't need them, test commands do.
+ *
+ * The component is a controlled list — the parent owns the array.
+ * Clicking "Add" appends a row with kind=kinds[0] + empty cmd; the
+ * parent's onChange fires on every keystroke so we don't need a
+ * separate "save" step.
+ *
+ * Out-of-scope: the "Verify now" sandbox-runner integration. That's
+ * a follow-up — Slice D's contract is wire + persist, not execute.
+ */
+function CommandTableEditor({
+  title,
+  hint,
+  kinds,
+  commands,
+  onChange,
+  supportsTimingAndNetwork,
+}: {
+  title: string;
+  hint: string;
+  kinds: string[];
+  commands: WizardCommand[];
+  onChange: (next: WizardCommand[]) => void;
+  supportsTimingAndNetwork?: boolean;
+}) {
+  const patch = (idx: number, change: Partial<WizardCommand>) => {
+    const next = commands.slice();
+    next[idx] = { ...next[idx], ...change };
+    onChange(next);
+  };
+  const add = () => {
+    onChange([...commands, { kind: kinds[0] ?? "unit", cmd: "" }]);
+  };
+  const remove = (idx: number) => {
+    const next = commands.slice();
+    next.splice(idx, 1);
+    onChange(next);
+  };
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex items-center justify-between mb-2">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
+          <p className="text-xs text-slate-500 mt-0.5">{hint}</p>
+        </div>
+        <button type="button" className="btn-secondary text-xs" onClick={add}>
+          + Add row
+        </button>
+      </div>
+      {commands.length === 0 ? (
+        <p className="text-xs text-slate-400 py-2">
+          None — heuristic detection will run at first workflow.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {commands.map((cmd, idx) => (
+            <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+              <select
+                className={`${FIELD_CLASS} col-span-2 text-xs`}
+                value={cmd.kind}
+                onChange={(e) => patch(idx, { kind: e.target.value })}
+              >
+                {kinds.map((k) => (
+                  <option key={k} value={k}>{k}</option>
+                ))}
+              </select>
+              <input
+                className={`${FIELD_CLASS} col-span-${supportsTimingAndNetwork ? 4 : 6} text-xs font-mono`}
+                value={cmd.cmd}
+                placeholder="pnpm test"
+                onChange={(e) => patch(idx, { cmd: e.target.value })}
+              />
+              <input
+                className={`${FIELD_CLASS} col-span-2 text-xs font-mono`}
+                value={cmd.cwd ?? ""}
+                placeholder="cwd (opt)"
+                onChange={(e) => patch(idx, { cwd: e.target.value || undefined })}
+              />
+              {supportsTimingAndNetwork ? (
+                <>
+                  <input
+                    className={`${FIELD_CLASS} col-span-1 text-xs`}
+                    type="number"
+                    min={1}
+                    max={3600}
+                    value={cmd.expectedDurationSec ?? ""}
+                    placeholder="sec"
+                    onChange={(e) => {
+                      const n = Number.parseInt(e.target.value, 10);
+                      patch(idx, {
+                        expectedDurationSec: Number.isFinite(n) && n > 0 ? n : undefined,
+                      });
+                    }}
+                  />
+                  <label className="col-span-2 inline-flex items-center gap-1 text-xs text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(cmd.requiresNetwork)}
+                      onChange={(e) => patch(idx, { requiresNetwork: e.target.checked })}
+                    />
+                    network
+                  </label>
+                </>
+              ) : null}
+              <button
+                type="button"
+                className="col-span-1 text-xs text-red-600 hover:underline"
+                onClick={() => remove(idx)}
+                aria-label="Remove row"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

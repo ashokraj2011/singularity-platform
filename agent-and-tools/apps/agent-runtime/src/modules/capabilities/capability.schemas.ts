@@ -55,6 +55,22 @@ export const bootstrapCapabilitySchema = createCapabilitySchema.extend({
     pollIntervalSec: z.number().int().min(60).max(86400).nullable().optional(),
   })).max(20).default([]),
   localFiles: z.array(localFileSchema).max(500).default([]),
+  // M61 Slice D — operator-confirmed test + build commands, captured in
+  // the wizard's "Tests & Build" step. Written verbatim into the
+  // CapabilityWorldModel row after bootstrap completes. Heuristics from
+  // verifier-registry remain in place — these are the explicit override.
+  testCommands: z.array(z.object({
+    kind: z.string().min(1).max(40),
+    cmd: z.string().min(1).max(500),
+    cwd: z.string().max(200).optional(),
+    expectedDurationSec: z.number().int().min(1).max(3600).optional(),
+    requiresNetwork: z.boolean().optional(),
+  })).max(20).default([]),
+  buildCommands: z.array(z.object({
+    kind: z.string().min(1).max(40),
+    cmd: z.string().min(1).max(500),
+    cwd: z.string().max(200).optional(),
+  })).max(20).default([]),
 });
 
 export const reviewBootstrapSchema = z.object({

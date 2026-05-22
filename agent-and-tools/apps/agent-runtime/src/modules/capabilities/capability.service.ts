@@ -165,6 +165,11 @@ type BootstrapInput = {
   repositories?: BootstrapRepositoryInput[];
   documentLinks?: BootstrapDocumentInput[];
   localFiles?: InputFile[];
+  // M61 Slice D — Operator-confirmed test/build commands from the
+  // capabilities wizard's "Tests & Build" step. Written verbatim
+  // into the new CapabilityWorldModel row after bootstrap.
+  testCommands?: Array<{ kind: string; cmd: string; cwd?: string; expectedDurationSec?: number; requiresNetwork?: boolean }>;
+  buildCommands?: Array<{ kind: string; cmd: string; cwd?: string }>;
 };
 
 type DiscoveryDoc = {
@@ -435,12 +440,22 @@ export const capabilityService = {
         const agentRules = extractAgentRules(discovered);
         const primaryLanguage = pickPrimaryLanguage(repositoryProfiles);
         const buildSystem = pickPrimaryBuildSystem(repositoryProfiles);
-        if (agentRules.length > 0 || primaryLanguage || buildSystem) {
+        // M61 Slice D — operator-confirmed test/build commands from
+        // the wizard. Bootstrap schema accepts them as parsed arrays;
+        // empty arrays mean the operator skipped the step and we'll
+        // fall back to the runtime verifier-registry heuristics.
+        const testCommands = input.testCommands ?? [];
+        const buildCommands = input.buildCommands ?? [];
+        const hasAnything = agentRules.length > 0 || primaryLanguage || buildSystem
+          || testCommands.length > 0 || buildCommands.length > 0;
+        if (hasAnything) {
           await upsertWorldModel({
             capabilityId: capability.id,
             agentRules,
             primaryLanguage,
             buildSystem,
+            testCommands,
+            buildCommands,
           });
         }
       } catch (err) {
