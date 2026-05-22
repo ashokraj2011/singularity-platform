@@ -488,7 +488,12 @@ services:
       dockerfile: services/context_memory_service/Dockerfile
     container_name: singularity-context-memory
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    # M67 Slice 2A — routes folded into context-api. The standalone service
+    # is parked behind a `deprecated` profile so operators with explicit
+    # CONTEXT_MEMORY_URL=http://context-memory:8002 can still run it for
+    # one cycle:
+    #   `COMPOSE_PROFILES=full,deprecated docker compose up -d`
+    profiles: [deprecated]
     # context-memory routes its summarizer through MCP, never hits a provider
     # or LLM gateway directly.
     environment:
@@ -529,7 +534,16 @@ services:
     # context-api orchestrates but doesn't call providers or the LLM gateway
     # directly. LLM traffic routes through MCP.
     environment:
-      CONTEXT_MEMORY_URL: http://context-memory:8002
+      # M67 Slice 1C — context-memory's routes are now in-process inside
+      # context-api. Leaving CONTEXT_MEMORY_URL set so the one remaining
+      # internal proxy (/sessions/{id}/messages) hits a valid host; the
+      # localhost hop is cheap and a future cleanup can switch it to a
+      # direct function call.
+      CONTEXT_MEMORY_URL: http://localhost:8000
+      # M67 Slice 1C — was context-memory's own env. SQLite path for the
+      # bundled memory routes (insert_message, get_messages, etc).
+      CONTEXT_MEMORY_DB: /data/context_memory.db
+      SUMMARIZER_MODEL_ALIAS: ${SUMMARIZER_MODEL_ALIAS:-}
       # M65 Slice 1B — METRICS_LEDGER_URL removed. /metrics/dashboard and
       # /sessions/{id}/metrics now proxy to audit-gov (AUDIT_GOV_URL below).
       # If a legacy caller still references this env var the proxy fall-back
@@ -574,13 +588,18 @@ services:
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
     ports:
       - "8000:8000"
+    volumes:
+      # M67 Slice 1C — Mount context-memory's SQLite path so the folded-in
+      # memory routes share the same data directory the standalone service
+      # used. Existing context_memory.db file is preserved across the
+      # cutover (no data migration needed).
+      - ./context-fabric/data/context_memory:/data
     depends_on:
       iam-service:
         condition: service_healthy
       llm-gateway:
         condition: service_healthy
-      context-memory:
-        condition: service_started
+      # M67 Slice 1C — context-memory dep removed; routes are now in-process.
       # M65 Slice 1B — metrics-ledger removed from depends_on.
       mcp-server-demo:
         condition: service_started
