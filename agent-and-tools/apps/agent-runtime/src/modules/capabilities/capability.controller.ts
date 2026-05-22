@@ -2,6 +2,11 @@ import { Request, Response } from "express";
 import { capabilityService } from "./capability.service";
 import { syncKnowledgeSourceNow, syncRepositoryNow } from "./poll-worker";
 import { ok } from "../../shared/response";
+// M61 Slice E — repo-fingerprint drift detection. Exposed as a thin
+// REST endpoint so any caller with a workspace on disk (mcp-server,
+// workgraph-api, an operator script) can submit a fingerprint without
+// pulling in the world-model.service or Prisma client.
+import { worldModelDriftService } from "./world-model-drift.service";
 // pdf-parse ships a CommonJS bundle whose root index.js triggers test code
 // when imported without a file path. Importing the lib subpath skips that.
 // @ts-expect-error — sub-path has no bundled types; we type the call shape locally below.
@@ -165,5 +170,35 @@ export const capabilityController = {
     }
 
     return ok(res, { uploaded: created.length, skipped, items: created }, 201);
+  },
+
+  // M61 Slice E — POST /capabilities/:id/world-model/fingerprint
+  //
+  // Body: { fingerprint, hashedBuildFiles?, topLevelEntries? }
+  // Returns: { drift: bool, previousFingerprint, currentFingerprint, firstStamp }
+  //
+  // The caller (mcp-server at workspace setup, workgraph-api at
+  // workflow start, an operator script) computes the fingerprint
+  // locally using computeRepoFingerprint and submits it here. We do
+  // not require the caller to send the workspace contents — only the
+  // hash — which keeps this endpoint cheap and free of file-system
+  // assumptions.
+  async checkWorldModelFingerprint(req: Request, res: Response) {
+    const body = req.body as { fingerprint?: unknown; hashedBuildFiles?: unknown; topLevelEntries?: unknown };
+    const fingerprint = typeof body.fingerprint === "string" ? body.fingerprint.trim() : "";
+    if (!fingerprint) return res.status(400).json({ error: "fingerprint is required" });
+    const hashedBuildFiles = Array.isArray(body.hashedBuildFiles)
+      ? body.hashedBuildFiles.filter((s): s is string => typeof s === "string")
+      : undefined;
+    const topLevelEntries = Array.isArray(body.topLevelEntries)
+      ? body.topLevelEntries.filter((s): s is string => typeof s === "string")
+      : undefined;
+    const result = await worldModelDriftService.recordFingerprint(req.params.id, {
+      fingerprint,
+      hashedBuildFiles,
+      topLevelEntries,
+      actorId: req.user?.user_id,
+    });
+    return ok(res, result, 200);
   },
 };

@@ -92,3 +92,11 @@ capabilityRoutes.delete(
   "/:id/knowledge-sources/:sourceId",
   capabilityController.deleteKnowledgeSource,
 );
+
+// M61 Slice E — repo fingerprint drift detector. Body:
+//   { fingerprint: string, hashedBuildFiles?: string[], topLevelEntries?: string[] }
+// Idempotent: callers may safely re-POST every workflow start.
+capabilityRoutes.post(
+  "/:id/world-model/fingerprint",
+  capabilityController.checkWorldModelFingerprint,
+);
