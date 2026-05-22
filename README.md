@@ -4,9 +4,11 @@
 [![Status: Active development](https://img.shields.io/badge/status-active-brightgreen.svg)](#)
 [![Services: 11+](https://img.shields.io/badge/services-11%2B-blue.svg)](#service-inventory)
 
-An enterprise AI-agent platform composed of independently-deployable applications: identity, agent registry, prompt composition, LLM cost optimization, workflow orchestration, an MCP execution engine, a single central LLM gateway, a federated lookup + receipt + event-bus platform layer, and a unified portal that wraps them all.
+An enterprise AI-agent platform composed of independently-deployable applications: identity, agent registry, prompt composition, LLM cost optimization, workflow orchestration, an Agent Execution Runtime, a single central LLM gateway, a federated lookup + receipt + event-bus platform layer, and a unified portal that wraps them all.
 
 > **Published as a monorepo**: `https://github.com/ashokraj2011/singularity-platform`
+
+For the full architecture, capability, component, connection, installation, configuration, and operations guide, start with [docs/README.md](./docs/README.md), the [Singularity Platform Handbook](./docs/platform-handbook.md), or the [HTML handbook](./docs/platform-handbook.html).
 
 ---
 
@@ -34,7 +36,7 @@ cd singularity-platform
 ```
 
 This brings up:
-- **Master stack**: IAM + agent-and-tools + context-fabric + workgraph + mcp-server-demo + portal + user-and-capability
+- **Master stack**: IAM + agent-and-tools + context-fabric + workgraph + Agent Execution Runtime (`mcp-server-demo`) + portal + user-and-capability
 - **Audit & governance ledger** (port 8500): the cross-service event ledger every producer fires into
 
 First boot pulls images + builds web bundles. Wait ~3–5 minutes. Tail with `./singularity.sh logs workgraph-api -f` if you want to watch.
@@ -46,7 +48,7 @@ The local configuration flow is intentionally boring:
 - `./singularity.sh config write` generates the per-app env files.
 - Secrets stay in local ignored files, not in the Portal or git.
 - `./singularity.sh doctor` writes the masked setup report used by Portal `/operations`.
-- Operators only choose capability, workflow, budget preset, model alias, and MCP workspace; the platform resolves the service wiring.
+- Operators only choose capability, workflow, budget preset, model alias, and runtime workspace; the platform resolves the service wiring.
 
 ### 3. Apply baseline seeds
 ```bash
@@ -66,7 +68,7 @@ for u in \
   "http://localhost:7100/health" \
   "http://localhost:8000/health" \
   "http://localhost:8080/health" \
-  "http://localhost:3000/api/runtime/agents/templates?scope=common&limit=3" \
+  "http://localhost:3000/api/mcp/agents/templates?scope=common&limit=3" \
   "http://localhost:5174/" \
   "http://localhost:5176/"; do
   printf "%-65s %s\n" "$u" "$(curl -s -o /dev/null -w '%{http_code}' $u)"
@@ -77,7 +79,7 @@ You should see `200` for all eight.
 
 ### 5. The demo path — five clicks, five "wow" moments
 
-Start from the unified Control Plane at `http://localhost:3000/control-plane`. It is the operator shell for Agent Studio, Workgraph, WorkbenchNeo, IAM, and Operations. Context Fabric, MCP, and the LLM gateway remain separate runtime services behind that shell.
+Start from the unified Control Plane at `http://localhost:3000/control-plane`. It is the operator shell for Agent Studio, Workgraph, WorkbenchNeo, IAM, and Operations. Context Fabric, the Agent Execution Runtime, and the LLM Gateway remain separate runtime services behind that shell.
 
 The Control Plane also exposes first-class routes under `localhost:3000` so operators can stay in one app:
 `/workflows`, `/runs`, `/work-items`, `/workbench`, `/identity`, and `/operations`.
@@ -88,7 +90,7 @@ The Control Plane also exposes first-class routes under `localhost:3000` so oper
 | **2. Agent Studio** | `http://localhost:3000/agent-studio` → pick the seeded capability from the dropdown | Show the four **Locked** common baselines (Architect / Developer / QA / Governance), click **Derive →** on one, name it. Mention: "derived agents inherit prompt profile + tool policy, become editable by capability owners, audit-gov captures `agent.template.derived`" |
 | **3. Run a workflow** | `localhost:5174/runs` → click **Run a Workflow** → pick "Business Initiative Delivery" → start | The new run lands in `/runs/<id>`. Open a HUMAN_TASK node, attach a file, click Complete. Workflow advances. |
 | **4. Run Insights** | Click the green **Insights →** pill at the top of the run viewer | The M24 dashboard — total duration, per-step Gantt with precise timing (`startedAt`/`completedAt` columns), artifacts list, cost-by-model, full audit timeline keyed to the run. Mention: "every step duration is authoritative, not inferred" |
-| **5. Governance & cost** | `http://localhost:3000/audit` and `http://localhost:3000/cost` | Cross-service ledger. Show the recent `agent.template.derived`, `cf.execute.completed`, `tool.execution.success`, `llm.call.completed` rows. Then `/cost` for $$ + tokens, with model breakdown. Mention: "all four producers — mcp-server, workgraph-api, tool-service, context-fabric, agent-runtime — fire fire-and-forget events here; pre-flight budget/rate-limit checks happen inline." |
+| **5. Governance & cost** | `http://localhost:3000/audit` and `http://localhost:3000/cost` | Cross-service ledger. Show the recent `agent.template.derived`, `cf.execute.completed`, `tool.execution.success`, `llm.call.completed` rows. Then `/cost` for $$ + tokens, with model breakdown. Mention: "the runtime producers — Agent Execution Runtime (`mcp-server`), workgraph-api, tool-service, context-fabric, agent-runtime — fire fire-and-forget events here; pre-flight budget/rate-limit checks happen inline." |
 
 ### 6. Optional polish for the demo
 
@@ -99,7 +101,7 @@ The Control Plane also exposes first-class routes under `localhost:3000` so oper
     -d '{"scope_type":"capability","scope_id":"<cap-id>","period":"day","tokens_max":1}'
   ```
   Re-run any AGENT_TASK on that capability — `status:DENIED` returns instantly, no LLM dispatch. Open `/audit` → see `governance.denied` event.
-- **MCP smoke** (slick because it's the same call workflows make under the hood):
+- **Agent Execution Runtime smoke** (slick because it's the same call workflows make under the hood):
   ```bash
   curl -sS -X POST http://localhost:7100/mcp/invoke \
     -H 'authorization: Bearer demo-bearer-token-must-be-min-16-chars' \
@@ -135,7 +137,7 @@ Agent Runtime API        http://localhost:3003
 Tool Service API         http://localhost:3002
 Prompt Composer API      http://localhost:3004
 Context Fabric API       http://localhost:8000
-MCP Server               http://localhost:7100
+Agent Execution Runtime               http://localhost:7100
 IAM API                  http://localhost:8100/api/v1
 Audit & Governance API   http://localhost:8500
 ```
@@ -153,9 +155,40 @@ The narrative to lead with: *"Singularity is a governed agent platform — every
 
 ---
 
+## Per-component adoption (M65)
+
+The platform is monorepo-shipped but operators can adopt subsets:
+
+```bash
+docker compose --profile full          up -d   # all 25 services (default; see .env COMPOSE_PROFILES=full)
+docker compose --profile gateway-only  up -d   # llm-gateway + at-postgres only (managed LLM gateway with provider keys)
+docker compose --profile composer-only up -d   # gateway-only + prompt-composer (composer stack)
+```
+
+Each major service has its own `RELEASE.md` documenting API surface,
+env vars, dependencies, and M-numbered milestone history:
+
+| Service             | File                                                                          |
+|---------------------|-------------------------------------------------------------------------------|
+| llm-gateway         | [`context-fabric/services/llm_gateway_service/RELEASE.md`](./context-fabric/services/llm_gateway_service/RELEASE.md) |
+| prompt-composer     | [`agent-and-tools/apps/prompt-composer/RELEASE.md`](./agent-and-tools/apps/prompt-composer/RELEASE.md) |
+| audit-governance    | [`audit-governance-service/RELEASE.md`](./audit-governance-service/RELEASE.md) |
+| mcp-server          | [`mcp-server/RELEASE.md`](./mcp-server/RELEASE.md)                            |
+| prompt-compressor   | [`context-fabric/services/prompt_compressor_service/RELEASE.md`](./context-fabric/services/prompt_compressor_service/RELEASE.md) |
+| formal-verifier     | [`context-fabric/services/formal_verifier_service/RELEASE.md`](./context-fabric/services/formal_verifier_service/RELEASE.md) |
+
+Pinning a specific milestone build: any push of an `M*` git tag
+triggers `.github/workflows/build-images.yml`, which pushes images
+tagged `ghcr.io/<owner>/singularity-<service>:M64` (and `:latest`).
+Operators wanting reproducible deployments author a
+`docker-compose.pinned.yml` override that swaps `build:` for
+`image: ghcr.io/…:M64`.
+
+---
+
 ## Bare-metal alternative — single Postgres, no Docker
 
-For dev machines that already have Postgres and don't want Docker. Focused on the demo path; runs real IAM, agent-and-tools services, Workgraph API/web, audit-governance, context-api, and the local MCP server. It skips the optional context-fabric sibling services, MinIO, portal, and UserAndCapabillity SPA.
+For dev machines that already have Postgres and don't want Docker. Focused on the demo path; runs real IAM, agent-and-tools services, Workgraph API/web, audit-governance, context-api, and the local Agent Execution Runtime. It skips the optional context-fabric sibling services, MinIO, portal, and UserAndCapabillity SPA.
 
 ### Just run the script (recommended)
 
@@ -273,7 +306,7 @@ for url in \
   http://localhost:7100/health \
   http://localhost:8000/health \
   http://localhost:8080/health \
-  "http://localhost:3000/api/runtime/agents/templates?scope=common&limit=3" \
+  "http://localhost:3000/api/mcp/agents/templates?scope=common&limit=3" \
   http://localhost:5174/ \
   http://localhost:5176/ \
   ; do
@@ -294,7 +327,7 @@ psql postgres -c "DROP DATABASE singularity; DROP DATABASE workgraph; DROP DATAB
 
 | Skipped | Impact |
 |---|---|
-| llm-gateway, context-memory, metrics-ledger | None — context-api calls mcp-server directly; mcp-server's embedded LLM is mock |
+| llm-gateway, context-memory, metrics-ledger | None — context-api calls the Agent Execution Runtime (`mcp-server`) directly; the runtime's embedded LLM is mock |
 | MinIO | File uploads return 5xx; insights, Agent Studio, audit, cost all still work |
 | portal (`:5180`), user-and-capability (`:5175`) | Optional UI wrappers; `:5174` + `:3000` cover the demo path |
 
@@ -308,16 +341,16 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
 
 | Milestone | What it added | Verification |
 |---|---|---|
-| **M9.z** Approval pause/resume | MCP `/mcp/resume` + cf `/execute/resume` + workgraph `AgentRunStatus.PAUSED` + `POST /agent-runs/:id/approve`. Single-use continuation tokens, 24h TTL. | Full workflow → tool requires_approval → workgraph PAUSED → UI approve → MCP resumes loop → AWAITING_REVIEW |
+| **M9.z** Approval pause/resume | Agent Execution Runtime `/mcp/resume` + cf `/execute/resume` + workgraph `AgentRunStatus.PAUSED` + `POST /agent-runs/:id/approve`. Single-use continuation tokens, 24h TTL. | Full workflow → tool requires_approval → workgraph PAUSED → UI approve → Agent Execution Runtime resumes loop → AWAITING_REVIEW |
 | **M10** Federated lookups | workgraph `/api/lookup/*` proxies to IAM + agent-and-tools with user-JWT forwarding; NodeInspector pickers; Agent/Tool snapshot at AGENT_TASK start (`externalTemplateId`) | Picker dropdowns populated from real services; snapshot row written on first run, reused afterwards |
 | **M11.a** Service + Contract Registry | New `platform-registry` :8090 + Postgres :5435; per-service self-register helper (TS + Python); 11 services + 47 capabilities + contracts browsable | `GET :8090/api/v1/services` returns 12 (11 production + sample) |
 | **M11.b** Reference Resolver | `GET /api/lookup/:entity/:id` for 9 kinds; `POST /api/lookup/resolve` batch (200/207); write-time validation in workflow design POST/PATCH (422 on bad ref) | bogus refs → 422 with field-level failure; valid → 201 |
 | **M11.c** Snapshot provenance | `sourceHash`/`sourceVersion`/`fetchedBy` on snapshots; new `prompt_profile_snapshots` + `capability_snapshots` tables; canonical-JSON sha256 dedupe | 3 runs of same workflow → 1 capability snapshot row |
-| **M11.d** Unified Receipt envelope | cf `GET /receipts?trace_id=` + workgraph `GET /api/receipts?trace_id=` joins workgraph + cf + MCP audit | 14 receipts merged from 3 services in chronological order |
+| **M11.d** Unified Receipt envelope | cf `GET /receipts?trace_id=` + workgraph `GET /api/receipts?trace_id=` joins workgraph + cf + Agent Execution Runtime audit | 14 receipts merged from 3 services in chronological order |
 | **M11.e** Event Bus | `event_outbox` + `event_subscriptions` + `event_deliveries` in 5 publishers (IAM Python, workgraph TS, agent-runtime TS, tool-service TS, agent-service TS); Postgres LISTEN/NOTIFY dispatcher with 30s safety sweep, HMAC, 5-attempt retry; workgraph receiver at `POST /api/events/incoming`; canonical envelope shape across all publishers | Subscribe to `*.created` → trigger from any service → workgraph `event_log` captures with `incoming.<event_name>` |
 | **M11 follow-up** OTel + Jaeger | Auto-instrumentation in workgraph-api (TS), context-api (Python), tool-service (TS), agent-runtime (TS), agent-service (TS); Jaeger all-in-one in `platform-registry` compose; W3C `traceparent` propagated automatically | Single trace `1cc8ef8ac9a1207b` had **59 spans across 4 services**. UI: `http://localhost:16686` |
 | **M11 follow-up** Service-token auto-mint | IAM `POST /api/v1/auth/service-token` + workgraph + cf bootstrap + `IAM_BOOTSTRAP_USERNAME/PASSWORD` env. Replaces 60-min admin-JWT-passing-via-env. | Both services start with `IAM_SERVICE_TOKEN=""`, mint 30-day tokens on first call |
-| **M11 follow-up / M33 hardened** Central LLM gateway | `context-fabric/services/llm_gateway_service` is the only provider-calling service. MCP, Workgraph, Prompt Composer, Agent Runtime, and Context Memory send `model_alias` requests to `LLM_GATEWAY_URL`. | Missing non-mock provider config fails closed. `ALLOW_CALLER_PROVIDER_OVERRIDE=false` by default. The only implicit fallback is explicit mock mode. |
+| **M11 follow-up / M33 hardened** Central LLM gateway | `context-fabric/services/llm_gateway_service` is the only provider-calling service. Agent Execution Runtime, Workgraph, Prompt Composer, Agent Runtime, and Context Memory send `model_alias` requests to `LLM_GATEWAY_URL`. | Missing non-mock provider config fails closed. `ALLOW_CALLER_PROVIDER_OVERRIDE=false` by default. The only implicit fallback is explicit mock mode. |
 | **M42.7** Phased Agent Reasoning Model (v4) | Replaces the flat ReAct loop in mcp-server with an opt-in 6-phase state machine (`PLAN_DRAFT → EXPLORE → PLAN_CONFIRM → ACT → VERIFY → FINALIZE`). Per-phase tool allowlists, robust plan JSON extraction, path-coverage gate (lazy-edit fix), phase-aware repetition detection, backward-compatible approval pause/resume. See [Phased Agent Reasoning Model](#phased-agent-reasoning-model-v4) below. | Flip `MCP_AGENT_PHASES_ENABLED=true` + `WORKBENCH_AGENT_PHASES_ENABLED=true` in `.env`. `pnpm --filter @singularity/mcp-server test`: 137/139 passing (was 67; +70 new). `./bin/trace.sh --latest --stage develop` shows phase transitions. |
 
 ---
@@ -373,10 +406,10 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
 
 | App | Role | Stack | Ports |
 |-----|------|-------|-------|
-| **singularity-iam-service** | Identity, orgs, teams, roles, capabilities, skills, JWT, MCP server registry, service-token mint, event bus | Python · FastAPI · Postgres | `8100`, postgres `5433` |
+| **singularity-iam-service** | Identity, orgs, teams, roles, capabilities, skills, JWT, Agent Execution Runtime registry, service-token mint, event bus | Python · FastAPI · Postgres | `8100`, postgres `5433` |
 | **agent-and-tools** | Agent definitions, tool registry, prompt assembly, agent CRUD UI; per-service event bus + OTel | TypeScript monorepo · Express · Next.js · Prisma · Postgres+pgvector | `3000–3004`, postgres `5432` |
 | **context-fabric** | LLM cost optimizer (context compaction + token-saving ledger), `/execute` orchestrator, `/receipts` join, OTel | Python · 4× FastAPI · SQLite | `8000–8003` |
-| **mcp-server** | Per-tenant MCP execution engine + WS bridge. Customer-deployed, owns local tools/AST/branches, and calls the central LLM gateway by model alias. Ships with an opt-in [Phased Agent Reasoning Model](#phased-agent-reasoning-model-v4) (6-phase state machine with path-coverage gate) behind `MCP_AGENT_PHASES_ENABLED`. | TypeScript · Express · WebSocket | `7100` |
+| **mcp-server** | Agent Execution Runtime implementation and WS bridge. Customer-deployed, owns local tools/AST/branches, and calls the central LLM gateway by model alias. Ships with an opt-in [Phased Agent Reasoning Model](#phased-agent-reasoning-model-v4) (6-phase state machine with path-coverage gate) behind `MCP_AGENT_PHASES_ENABLED`. The service/package name is legacy. | TypeScript · Express · WebSocket | `7100` |
 | **workgraph-studio** | Visual DAG designer + workflow runtime, Blueprint Workbench stage loop, federated `/api/lookup/*`, snapshot layer, unified `/api/receipts`, event bus + receiver, OTel | React + ReactFlow + Zustand · Express + Prisma · MinIO | `5174` (web) / `5176` (workbench) / `8080` (api), postgres `5434`, minio `9000-9001` |
 | **platform-registry** | Service + Contract Registry: every service self-registers on startup with capabilities + OpenAPI/event/node contracts | TypeScript · Express · Postgres | `8090`, postgres `5435` |
 | **UserAndCapabillity** | Visual admin SPA for IAM | React 19 · Vite · Tailwind · Radix · Zustand | `5175` |
@@ -465,7 +498,7 @@ Wraps the master compose with friendlier subcommands. Useful for starting/stoppi
 ./singularity.sh down                      # stop all (keep data)
 ./singularity.sh nuke                      # stop + delete data volumes (confirms)
 ./singularity.sh login                     # smoke-test IAM /auth/local/login
-./singularity.sh doctor                    # validate DBs, endpoints, LLM keys, MCP
+./singularity.sh doctor                    # validate DBs, endpoints, LLM keys, Agent Execution Runtime
 ./singularity.sh config init --profile office-laptop
 ./singularity.sh config office-copilot-only
 ./singularity.sh fidelity-copilot-only     # Fidelity laptop: Copilot headless only
@@ -483,12 +516,12 @@ It configures:
 
 - Database URLs for IAM, agent-and-tools, and Workgraph.
 - IAM vs pseudo-IAM endpoints.
-- Service endpoints for Workgraph, prompt-composer, context-fabric, agent-runtime, tool-service, agent-service, and MCP.
+- Service endpoints for Workgraph, prompt-composer, context-fabric, agent-runtime, tool-service, agent-service, and Agent Execution Runtime.
 - LLM provider policy and model aliases for the central gateway. Provider policy lives in `.singularity/llm-providers.json`; secrets are passed only to the `llm-gateway` service.
 - Office/Fidelity-safe Copilot-only mode. `./singularity.sh config office-copilot-only` and `./singularity.sh fidelity-copilot-only` blank OpenAI/OpenRouter/Anthropic/Ollama access in canonical config and generated env files, write Copilot-only provider and model catalog files, and fence the gateway to the Copilot provider.
-- Default/local MCP runtime URL, bearer token, public URL, sandbox root, AST index path, and local work-branch defaults. MCP does **not** need to belong to a capability; capability-specific MCP registration is advanced-only.
-- Git push credentials for approved WorkItem branches. The canonical config stores only mode, remote name, token env name, or SSH key path; it never stores a token or key body. MCP is the only service that receives Git push credentials.
-- Gateway-owned model aliases. Workflows choose aliases; MCP forwards aliases and receives resolved provider/model in receipts.
+- Default/local Agent Execution Runtime URL, bearer token, public URL, sandbox root, AST index path, and local work-branch defaults. The Agent Execution Runtime does **not** need to belong to a capability; capability-specific Agent Execution Runtime registration is advanced-only.
+- Git push credentials for approved WorkItem branches. The canonical config stores only mode, remote name, token env name, or SSH key path; it never stores a token or key body. The Agent Execution Runtime is the only service that receives Git push credentials.
+- Gateway-owned model aliases. Workflows choose aliases; Agent Execution Runtime forwards aliases and receives resolved provider/model in receipts.
 - Balanced token budget defaults. Workgraph owns run budgets, Prompt Composer owns layer/retrieval budgeting, Context Fabric enforces execution limits, and the central gateway owns provider/model routing.
 - Governed artifact fetch for prompt assembly. Prompt Composer can fetch bounded text from Workgraph MinIO/document refs through `WORKGRAPH_ARTIFACT_FETCH_URL` using `WORKGRAPH_ARTIFACT_FETCH_TOKEN`; required artifacts fail closed if only a missing/unreadable ref is provided.
 - Optional formal verification. `formalVerification.enabled` maps to `FORMAL_VERIFICATION_ENABLED`; the default is `false`, so governance path controls are disabled/skipped unless an operator explicitly enables the SMT verifier.
@@ -514,14 +547,14 @@ Common commands:
 ./singularity.sh config export
 ```
 
-`show` masks secrets. `doctor` checks the canonical config, env drift, common ports, reachable service URLs, provider key presence, MCP token length, model-catalog readiness, Git push readiness, and tracked-file secret guardrails. `doctor git` focuses on workspace writability, remote, Git identity, and auth presence. `doctor secrets` scans tracked files for local-only config, credentialed remotes, provider keys, GitHub tokens, bearer tokens, JWT-like tokens, and private-key blocks. It also writes `singularity-portal/public/ops-doctor.json` so the Portal Setup Center can show the same status. For bare-metal runs, use `config export` to print shell exports without editing files.
+`show` masks secrets. `doctor` checks the canonical config, env drift, common ports, reachable service URLs, provider key presence, runtime token length, model-catalog readiness, Git push readiness, and tracked-file secret guardrails. `doctor git` focuses on workspace writability, remote, Git identity, and auth presence. `doctor secrets` scans tracked files for local-only config, credentialed remotes, provider keys, GitHub tokens, bearer tokens, JWT-like tokens, and private-key blocks. It also writes `singularity-portal/public/ops-doctor.json` so the Portal Setup Center can show the same status. For bare-metal runs, use `config export` to print shell exports without editing files.
 
 Git push credential boundary:
 
 - Default is disabled: `GIT_PUSH` nodes preserve branch/commit evidence and block with `GIT_AUTH_MISSING`.
 - SSH mode mounts only the selected key path or SSH agent socket into `mcp-server-demo`, read-only.
-- Token mode passes only the selected env var value, such as `GITHUB_TOKEN`, into MCP. Tokens are not written to `.singularity/config.local.json`.
-- MCP redacts credentialed remotes, GitHub PATs, provider keys, bearer tokens, private keys, and token-shaped values before returning output, writing audit events, or creating receipts.
+- Token mode passes only the selected env var value, such as `GITHUB_TOKEN`, into Agent Execution Runtime. Tokens are not written to `.singularity/config.local.json`.
+- Agent Execution Runtime redacts credentialed remotes, GitHub PATs, provider keys, bearer tokens, private keys, and token-shaped values before returning output, writing audit events, or creating receipts.
 - Workgraph shows `COMMITTED_NOT_PUSHED` when the local commit exists but publishing failed; use `Retry push` after fixing credentials so Workbench does not rerun.
 
 Office laptop / Copilot-only setup:
@@ -547,11 +580,11 @@ Fidelity laptop setup is stricter and should be used in that environment:
 ./singularity.sh doctor --fidelity-copilot-only
 ```
 
-Fidelity mode means no OpenAI, OpenRouter, Anthropic, Ollama, or OpenAI-compatible endpoint is allowed in `.singularity/config.local.json`, generated env files, provider catalogs, or MCP model catalogs. The only workflow-facing model alias is `copilot`; if the Copilot token is absent, `doctor --fidelity-copilot-only` still validates the fence and warns that only local `gh copilot` CLI/headless tools are usable until a Copilot token is provided.
+Fidelity mode means no OpenAI, OpenRouter, Anthropic, Ollama, or OpenAI-compatible endpoint is allowed in `.singularity/config.local.json`, generated env files, provider catalogs, or runtime model catalogs. The only workflow-facing model alias is `copilot`; if the Copilot token is absent, `doctor --fidelity-copilot-only` still validates the fence and warns that only local `gh copilot` CLI/headless tools are usable until a Copilot token is provided.
 
 ### Single LLM gateway configuration
 
-`context-fabric/services/llm_gateway_service` owns provider/model routing for workflow execution. Workgraph, Context Fabric, Prompt Composer, Context Memory, Agent Runtime, and MCP pass a model alias to `LLM_GATEWAY_URL`; only the gateway can hold provider credentials or open provider URLs. Raw provider/model caller overrides are disabled by default with `ALLOW_CALLER_PROVIDER_OVERRIDE=false`.
+`context-fabric/services/llm_gateway_service` owns provider/model routing for workflow execution. Workgraph, Context Fabric, Prompt Composer, Context Memory, Agent Runtime, and Agent Execution Runtime pass a model alias to `LLM_GATEWAY_URL`; only the gateway can hold provider credentials or open provider URLs. Raw provider/model caller overrides are disabled by default with `ALLOW_CALLER_PROVIDER_OVERRIDE=false`.
 
 The gateway reads two local JSON files:
 
@@ -618,7 +651,7 @@ Useful commands:
 # Write generated env files from .singularity/config.local.json.
 ./singularity.sh config write
 
-# Restart MCP so it reloads provider/model config.
+# Restart Agent Execution Runtime so it reloads provider/model config.
 ./singularity.sh restart mcp-server-demo
 ```
 
@@ -647,7 +680,7 @@ When disabled, Workgraph formal-analysis endpoints return `FORMAL_VERIFICATION_D
 
 The Operations Portal (`http://localhost:5180/operations`) is the command center for day-to-day governed delivery:
 
-- **Setup Center** — service health, DNS/reachability, config doctor summary, MCP/model readiness, and generated env drift.
+- **Setup Center** — service health, DNS/reachability, config doctor summary, runtime/model readiness, and generated env drift.
 - **Readiness** — capability readiness score from agent-runtime: identity/governance, agent team, knowledge/code, workflow readiness, and runtime readiness.
 - **Run Audit** — evidence-pack export for a workflow run with stage timings, tokens/cost, approvals, artifacts, receipts, Workbench stages, budget events, and gaps.
 - **WorkItems** — cross-capability WorkItem queue with child capability targets, claim/start actions, child run links, submitted consumables, approval, and rework.
@@ -670,7 +703,7 @@ The embedded Workbench at `http://localhost:5176` is now the **Story-to-Delivery
 
 Capability bootstrap in agent-and-tools web (`http://localhost:3000/capabilities`) acts as a **Capability Agent Team Factory**. It previews predefined PO/Architect/Developer/QA/Security/DevOps/Governance/Verifier-style agents, marks locked governance/verifier gates, shows Git-grounded roles, and keeps generated agents or learned knowledge draft/inactive until human activation.
 
-MCP local code intelligence indexes Python, TypeScript, TSX, JavaScript, JSX, Go, and Java files from `MCP_SANDBOX_ROOT`. Agents should prefer `find_symbol`, `get_symbol`, `get_ast_slice`, and `get_dependencies` before full-file `read_file`; this keeps local/private code local while giving the model compact symbol summaries, signatures, line ranges, imports, branches, and commit evidence.
+Agent Execution Runtime local code intelligence indexes Python, TypeScript, TSX, JavaScript, JSX, Go, and Java files from `MCP_SANDBOX_ROOT`. Agents should prefer `find_symbol`, `get_symbol`, `get_ast_slice`, and `get_dependencies` before full-file `read_file`; this keeps local/private code local while giving the model compact symbol summaries, signatures, line ranges, imports, branches, and commit evidence.
 
 ### Option C — per-app compose files
 
@@ -737,7 +770,7 @@ Open http://localhost:5180 → Sign in with `admin@singularity.local` / `Admin12
 
 The portal home shows four live tiles pulling from each backend:
 
-- **My open tasks** — counts + recent items from `workgraph /api/runtime/inbox`
+- **My open tasks** — counts + recent items from `workgraph /api/mcp/inbox`
 - **Workflow runs** — active and recent `WorkflowInstance`s across templates
 - **LLM cost & token savings** — total tokens saved + cost saved from `metrics-ledger`
 - **Your capabilities** — IAM capability list filtered to the signed-in user
@@ -876,10 +909,10 @@ Pass criteria:
 
 These are now implemented and should be checked during smoke tests:
 
-- **Live streaming:** MCP emits `llm.stream.delta`; Workgraph exposes
+- **Live streaming:** Agent Execution Runtime emits `llm.stream.delta`; Workgraph exposes
   `/api/workflow-instances/:id/events/stream`; Run Viewer and Run Insights show
   live transcript/events with polling fallback.
-- **Approval resume:** MCP pauses on `requires_approval` and SERVER-tool
+- **Approval resume:** Agent Execution Runtime pauses on `requires_approval` and SERVER-tool
   `waiting_approval`; Context Fabric resumes through `/execute/resume`;
   Workgraph Approvals shows paused agent tool calls, allows reason capture, and
   lets operators edit JSON tool arguments before approving.
@@ -907,10 +940,10 @@ build [service]     rebuild image(s)
 urls                printable URL cheatsheet
 ls                  list known service names
 login               smoke-test IAM /auth/local/login
-doctor              validate config, health, DBs, LLM keys, MCP
+doctor              validate config, health, DBs, LLM keys, Agent Execution Runtime
 fidelity-copilot-only
                     configure Fidelity laptop mode: Copilot headless only
-config <command>    configure DBs, keys, endpoints, LLMs, MCP
+config <command>    configure DBs, keys, endpoints, LLMs, Agent Execution Runtime
 help                usage
 ```
 
@@ -929,7 +962,7 @@ help                usage
 
 `/compose-and-respond` is now a direct/debug surface. Workgraph `AGENT_TASK`
 uses Context Fabric `/execute`; Context Fabric calls composer in
-`previewOnly=true` mode, then dispatches through the governed MCP/LLM path. A
+`previewOnly=true` mode, then dispatches through the governed runtime/LLM path. A
 non-preview composer call also delegates to `/execute`, not `/chat/respond`.
 
 1. Builds a substitution context from `workflowContext` (`{{instance.vars.x}}`, `{{node.priorOutputs.y}}`, `{{capability.metadata.z}}`, `{{artifacts.<label>.excerpt}}`, `{{task}}`)
@@ -942,11 +975,11 @@ non-preview composer call also delegates to `/execute`, not `/chat/respond`.
 8. Appends node-level `EXECUTION_OVERRIDE` layers (priority 9999)
 9. Sorts by priority, concatenates, hashes, persists `PromptAssembly` + `PromptAssemblyLayer` rows
 10. Calls `context-fabric /execute` with the assembled `system_prompt` and `task` as `message`
-11. Returns a unified response with `promptAssemblyId` plus Context Fabric/MCP correlation IDs
+11. Returns a unified response with `promptAssemblyId` plus Context Fabric/Agent Execution Runtime correlation IDs
 
 ### Workgraph wire (M5)
 
-`apps/api/src/modules/workflow/runtime/executors/AgentTaskExecutor.ts` does the M5 plumbing:
+`apps/api/src/modules/workflow/mcp/executors/AgentTaskExecutor.ts` does the M5 plumbing:
 
 - Reads `node.config` for `agentTemplateId`, `task`, optional `artifacts`/`overrides`/`modelOverrides`/`contextPolicy`
 - Reads `instance.context._vars` and `instance.context._globals`
@@ -1006,7 +1039,7 @@ Each was fixable in isolation; the shared root cause is that **the loop had no s
 
 Total developer budget: 2 + 6 + 2 + 10 + 2 + 1 = **23 steps**, with a hard cap of 28 for safety slack.
 
-> `finish_work_branch_auto` is the audit/provenance label MCP writes when it auto-finishes a successful run — it is **not** an LLM-callable tool. The LLM-callable tool is `finish_work_branch`; FINALIZE exposes neither so the model never has to make that choice.
+> `finish_work_branch_auto` is the audit/provenance label Agent Execution Runtime writes when it auto-finishes a successful run — it is **not** an LLM-callable tool. The LLM-callable tool is `finish_work_branch`; FINALIZE exposes neither so the model never has to make that choice.
 
 ### The plan artifact
 
@@ -1261,10 +1294,10 @@ docker compose down -v --remove-orphans  # raw equivalent
 These are real gaps, not nice-to-haves:
 
 - **SSO deployment mode** — IAM is the platform identity source. Workgraph supports `AUTH_PROVIDER=iam`; make sure deployed stacks do not leave Workgraph in local auth except for offline dev.
-- **AgentRun correlation columns** — `promptAssemblyId`, `modelCallId`, `contextPackageId`, `cfCallId`, and MCP IDs are still stored in `structuredPayload` JSON. Promote to dedicated columns for faster reporting.
+- **AgentRun correlation columns** — `promptAssemblyId`, `modelCallId`, `contextPackageId`, `cfCallId`, and runtime IDs are still stored in `structuredPayload` JSON. Promote to dedicated columns for faster reporting.
 - **M25 production hardening** — typed citations, compiled context, and hybrid retrieval exist, but still need benchmark enforcement, FTS migration/backfill checks, and quality comparison reviews before calling it production-grade.
 - **Hard tenant isolation** — tenant IDs are now propagated, persisted, and filterable. True isolation still needs tenant-scoped service tokens, row-level checks everywhere, and possibly database RLS/schema separation.
-- **Observability depth** — Jaeger is available and several services have OTel, but the full Workgraph → Context Fabric → MCP trace is not yet stitched as one distributed trace.
+- **Observability depth** — Jaeger is available and several services have OTel, but the full Workgraph → Context Fabric → Agent Execution Runtime trace is not yet stitched as one distributed trace.
 - **Deploy secrets** — Dockerfiles, CI image builds, and manual deploy workflow exist. The GitHub environment secrets must still be configured per target.
 
 ---

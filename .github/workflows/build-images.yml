@@ -1,0 +1,146 @@
+# M65 Slice 2C — Build + tag Docker images per milestone.
+#
+# Triggers on push of any tag matching `M*` (e.g. M64, M64.1, M65). For
+# each service with a build directive in docker-compose.yml, builds the
+# image and pushes it to GitHub Container Registry tagged with the
+# milestone, the commit SHA, AND `latest`.
+#
+# Operators can then pin a specific milestone for stability:
+#   docker compose -f docker-compose.yml -f docker-compose.pinned.yml up -d
+# where docker-compose.pinned.yml swaps `build: …` for `image: ghcr.io/…:M64`.
+#
+# Not in this commit: docker-compose.pinned.yml generation. Operators
+# author that per-deployment (or use Helm / Kustomize in a real env).
+
+name: Build images per milestone
+
+on:
+  push:
+    tags:
+      - 'M*'           # M64, M65.1, etc.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to build (override; defaults to git ref)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write       # required to push to GHCR
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ${{ github.repository_owner }}/singularity
+
+jobs:
+  build:
+    name: build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per service with a `build:` directive in
+        # docker-compose.yml. The `context` and `dockerfile` MUST match
+        # what compose declares; the image name is the matrix key.
+        #
+        # When you add or rename a service, update this matrix.
+        include:
+          - service: llm-gateway
+            context: ./context-fabric
+            dockerfile: services/llm_gateway_service/Dockerfile
+          - service: prompt-compressor
+            context: ./context-fabric
+            dockerfile: services/prompt_compressor_service/Dockerfile
+          - service: formal-verifier
+            context: ./context-fabric
+            dockerfile: services/formal_verifier_service/Dockerfile
+          - service: context-api
+            context: ./context-fabric
+            dockerfile: services/context_api_service/Dockerfile
+          - service: context-memory
+            context: ./context-fabric
+            dockerfile: services/context_memory_service/Dockerfile
+          - service: prompt-composer
+            context: ./agent-and-tools
+            dockerfile: apps/prompt-composer/Dockerfile
+          - service: agent-runtime
+            context: ./agent-and-tools
+            dockerfile: apps/agent-runtime/Dockerfile
+          - service: agent-service
+            context: ./agent-and-tools
+            dockerfile: apps/agent-service/Dockerfile
+          - service: tool-service
+            context: ./agent-and-tools
+            dockerfile: apps/tool-service/Dockerfile
+          - service: learning-service
+            context: ./agent-and-tools
+            dockerfile: apps/learning-service/Dockerfile
+          - service: agent-web
+            context: ./agent-and-tools/web
+            dockerfile: Dockerfile
+          - service: audit-governance
+            context: ./audit-governance-service
+            dockerfile: Dockerfile
+          - service: iam-service
+            context: ./singularity-iam-service
+            dockerfile: Dockerfile
+          - service: mcp-server
+            context: ./mcp-server
+            dockerfile: Dockerfile
+          - service: workgraph-api
+            context: ./workgraph-studio
+            dockerfile: apps/api/Dockerfile
+          - service: workgraph-web
+            context: ./workgraph-studio
+            dockerfile: apps/web/Dockerfile
+          - service: blueprint-workbench
+            context: ./workgraph-studio
+            dockerfile: apps/blueprint-workbench/Dockerfile
+          - service: portal
+            context: ./singularity-portal
+            dockerfile: Dockerfile
+          - service: user-and-capability
+            context: ./UserAndCapabillity
+            dockerfile: Dockerfile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          # Prefer workflow_dispatch input; otherwise extract from git ref.
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}-${{ matrix.service }}:${{ steps.tag.outputs.value }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}-${{ matrix.service }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}-${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+          # Optional build-args per service. For services with platform-
+          # specific knobs (prompt-compressor's COMPRESSION_BAKE_MODEL,
+          # formal-verifier model selection), extend this map and
+          # consume `inputs.build_args` in workflow_dispatch.
+          build-args: ${{ matrix.build_args || '' }}
