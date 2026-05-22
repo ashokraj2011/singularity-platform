@@ -18,6 +18,15 @@ app = FastAPI(title="Singularity Formal Verifier Service", version="0.1.0")
 class VerificationRequest(BaseModel):
     scope: str = "GENERAL"
     constraints: list[dict[str, Any]] = Field(default_factory=list)
+    # M68.2 — Previously missing from this model. Pydantic's model_dump()
+    # silently strips fields not declared here, so the `facts` payload that
+    # mcp-server's formalPayloadForFinish sends (codeChanged,
+    # verificationReceiptPresent, verificationReceiptPassed, etc.) never
+    # reached the Z3 solver. Result: every verify call ran against an
+    # empty fact set and Z3 always found a counterexample where
+    # codeChanged=true AND present=false AND passed=false — blocking
+    # every workflow finish since formal verification was enabled.
+    facts: dict[str, Any] = Field(default_factory=dict)
     query: dict[str, Any] = Field(default_factory=dict)
     options: dict[str, Any] = Field(default_factory=dict)
     artifactRefs: list[dict[str, Any]] = Field(default_factory=list)
