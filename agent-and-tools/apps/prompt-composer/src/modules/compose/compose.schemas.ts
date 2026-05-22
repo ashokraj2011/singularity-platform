@@ -188,6 +188,34 @@ export const composeSchema = z.object({
       extras: z.record(z.unknown()).optional(),
     }).optional(),
   }).optional(),
+  // M62 Slice D — LLMLingua-2 prompt compression. Opt-in per-layer.
+  //
+  // When `compression.enabled` is true, after all layers are assembled,
+  // we walk the layer array and for each layer whose `layerType` is in
+  // `layerKindsAllowed` AND whose estimated token count exceeds
+  // `perLayerBudgetTokens`, we POST the contentSnapshot to
+  // ${compressorUrl}/api/v1/compress with target_token=perLayerBudgetTokens.
+  // The returned text replaces contentSnapshot and a compressionReceipt
+  // stamp lands on the layer so consumers can audit.
+  //
+  // Default allowlist is intentionally narrow — compressing
+  // CODE_EDITABLE_SLICES would corrupt diffs, compressing TOOL_CONTRACT
+  // would scramble JSON schemas. Operators add layer kinds explicitly
+  // when they've validated quality.
+  //
+  // Compressor failures (timeout / 4xx / network) are best-effort:
+  // leave the layer untouched and surface a composer_warning. The
+  // workflow never blocks on the compressor being down.
+  compression: z.object({
+    enabled: z.boolean().default(false),
+    perLayerBudgetTokens: z.number().int().positive().max(8000).default(1500),
+    layerKindsAllowed: z.array(z.string()).default([
+      "CODE_AGENT_RULES",
+      "RUNTIME_EVIDENCE",
+    ]),
+    compressorUrl: z.string().optional(),
+    timeoutMs: z.number().int().positive().max(30_000).default(5_000),
+  }).optional(),
   // M44 Slice C — When true, the TOOL_CONTRACT layer omits the full JSON
   // input_schema dump because the same schema is already sent to the LLM
   // as a real tool descriptor (Anthropic/OpenAI `tools` parameter). Keeping

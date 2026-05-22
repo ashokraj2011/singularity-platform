@@ -97,6 +97,20 @@ function fuseAndRerank<R extends { id: string }, S extends { cosineSimilarity: n
   return shaped.slice(0, take);
 }
 
+// M62 Slice D — Audit stamp left on a layer whose contentSnapshot was
+// replaced by the LLMLingua-2 compressor. Lives on the layer (not in a
+// sidecar map) so downstream consumers — the workbench Loop tab, the
+// prompt-assembly DB row — can trivially render it next to the layer.
+interface CompressionReceipt {
+  receiptId: string;
+  originalTokens: number;
+  compressedTokens: number;
+  ratio: number;
+  model: string;
+  durationMs: number;
+  warning?: string;
+}
+
 interface AssembledLayer {
   promptLayerId?: string;
   promptLayerName?: string;
@@ -106,6 +120,9 @@ interface AssembledLayer {
   contentSnapshot: string;
   layerHash: string;
   isRequired?: boolean;
+  // M62 Slice D — Present when the layer was replaced by the compressor.
+  // Absent on layers that weren't in the allowlist OR were below budget.
+  compressionReceipt?: CompressionReceipt;
 }
 
 type MissingRequiredContext = {
@@ -883,6 +900,26 @@ export const composeService = {
 
     // 9. Sort + concat
     layers.sort((a, b) => a.priority - b.priority);
+
+    // M62 Slice D — LLMLingua-2 compression for over-budget allowlisted
+    // layers. Mutates `layers` in place: contentSnapshot + layerHash get
+    // replaced and a compressionReceipt is stamped. Runs AFTER sort so
+    // the layer order in the assembled prompt is stable regardless of
+    // whether compression fires. Best-effort — failures push warnings
+    // and leave layers untouched.
+    if (input.compression?.enabled && input.compression.compressorUrl) {
+      const compressionStarted = Date.now();
+      const { compressed, warnings: compressionWarnings } =
+        await compressAssembledLayers(layers, input.compression);
+      warnings.push(...compressionWarnings);
+      if (compressed > 0) {
+        logger.info({
+          compressedLayers: compressed,
+          ms: Date.now() - compressionStarted,
+        }, "[compose.compression] layers compressed");
+      }
+    }
+
     let finalPrompt = layers.map(l => `# ${humanLayer(l.layerType)}\n${l.contentSnapshot}`).join("\n\n");
     const budgetWarnings: string[] = [];
     if (finalPrompt.length > budget.maxPromptChars) {
@@ -1942,4 +1979,129 @@ export function appendWorldModelLayers(layers: AssembledLayer[], wm: WorldModelI
   };
   push("CODE_AGENT_RULES" as never, PRIORITY.CODE_AGENT_RULES, "capability world model — agent rules", renderCodeAgentRulesLayer(wm));
   push("CODE_WORLD_MODEL" as never, PRIORITY.CODE_WORLD_MODEL, "capability world model",              renderCodeWorldModelLayer(wm));
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// M62 Slice D — Prompt compression via LLMLingua-2 sidecar.
+//
+// Runs AFTER all layer appenders (appendCodeContextLayers, appendWorldModelLayers,
+// the legacy CODE_CONTEXT path, etc.) so every layer is visible. For each
+// layer whose layerType is in the operator-configured allowlist AND whose
+// estimated token count exceeds the budget, we POST the contentSnapshot to
+// the prompt-compressor-service, replace the snapshot with the compressed
+// text, and stamp a CompressionReceipt on the layer.
+//
+// Best-effort: a compressor failure (timeout / 4xx / 5xx / network) leaves
+// the layer untouched and pushes a warning to composerWarnings. The
+// workflow never blocks on the compressor being healthy.
+//
+// Exported for the contract test in compression.contract.test.ts.
+// ─────────────────────────────────────────────────────────────────────────
+
+export type CompressionConfig = NonNullable<ComposeInput["compression"]>;
+
+/**
+ * Cheap heuristic token count — same ~4 chars/token approximation used
+ * elsewhere in the composer. Within 10-15% of tiktoken for English prose,
+ * which is good enough to decide "over budget" vs "under budget".
+ */
+function estimateLayerTokens(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+/**
+ * POST one layer's content to the compressor. Resolves with the receipt
+ * on success, null on any failure (caller logs + skips). The 5s default
+ * timeout is well above the model's typical 100-500ms per layer but
+ * short enough that a hung peer doesn't dominate the request budget.
+ */
+async function compressOneLayer(
+  cfg: CompressionConfig,
+  layerType: string,
+  text: string,
+): Promise<{ compressedText: string; receipt: CompressionReceipt } | null> {
+  const url = `${cfg.compressorUrl!.replace(/\/+$/, "")}/api/v1/compress`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text,
+        target_token: cfg.perLayerBudgetTokens,
+        metadata: { layerType, source: "prompt-composer" },
+      }),
+      signal: AbortSignal.timeout(cfg.timeoutMs),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      // eslint-disable-next-line no-console
+      console.warn(`[compress] HTTP ${res.status} for layer ${layerType}: ${body.slice(0, 160)}`);
+      return null;
+    }
+    const body = await res.json() as Record<string, unknown>;
+    const compressed = typeof body.compressed_text === "string" ? body.compressed_text : null;
+    if (!compressed) return null;
+    return {
+      compressedText: compressed,
+      receipt: {
+        receiptId: String(body.receipt_id ?? ""),
+        originalTokens: Number(body.original_tokens ?? 0),
+        compressedTokens: Number(body.compressed_tokens ?? 0),
+        ratio: Number(body.ratio ?? 1),
+        model: String(body.model ?? "unknown"),
+        durationMs: Number(body.duration_ms ?? 0),
+        warning: typeof body.warning === "string" ? body.warning : undefined,
+      },
+    };
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[compress] layer ${layerType} failed: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * Walk the assembled-layer array, compressing every eligible layer in
+ * place. Mutates `layers`. Returns the number of layers actually
+ * compressed (for caller telemetry) plus the list of warning strings
+ * to push onto composerWarnings.
+ *
+ * Eligibility rules — a layer is compressed iff ALL hold:
+ *   1. config.enabled is true AND compressorUrl is set
+ *   2. layer.layerType is in config.layerKindsAllowed
+ *   3. estimateLayerTokens(layer.contentSnapshot) > config.perLayerBudgetTokens
+ *
+ * Rule 3 saves a network round-trip for short layers — the compressor
+ * would short-circuit them anyway (Slice B's < 100 chars guard) but
+ * we'd still pay the HTTP cost.
+ */
+export async function compressAssembledLayers(
+  layers: AssembledLayer[],
+  cfg: CompressionConfig | undefined,
+): Promise<{ compressed: number; warnings: string[] }> {
+  const warnings: string[] = [];
+  if (!cfg || !cfg.enabled || !cfg.compressorUrl) {
+    return { compressed: 0, warnings };
+  }
+  const allowlist = new Set(cfg.layerKindsAllowed);
+  let compressedCount = 0;
+  // Sequential, not parallel: the compressor is single-process; firing
+  // 5 simultaneous requests at a CPU-bound BERT inference is worse than
+  // serial for total latency AND it doesn't help us hit the request
+  // budget (timeoutMs caps each call individually).
+  for (const layer of layers) {
+    if (!allowlist.has(layer.layerType)) continue;
+    const tokens = estimateLayerTokens(layer.contentSnapshot);
+    if (tokens <= cfg.perLayerBudgetTokens) continue;
+    const out = await compressOneLayer(cfg, layer.layerType, layer.contentSnapshot);
+    if (!out) {
+      warnings.push(`compression.skipped: layer ${layer.layerType} (${tokens} tokens) — compressor unreachable or failed`);
+      continue;
+    }
+    layer.contentSnapshot = out.compressedText;
+    layer.layerHash = sha256(out.compressedText);
+    layer.compressionReceipt = out.receipt;
+    compressedCount += 1;
+  }
+  return { compressed: compressedCount, warnings };
 }
