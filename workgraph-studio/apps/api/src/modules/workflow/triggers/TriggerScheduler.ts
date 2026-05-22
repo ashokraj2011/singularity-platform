@@ -9,6 +9,15 @@ const EVENT_LOOKBACK_CAP_MS = 24 * 60 * 60 * 1000
 const EVENT_TRIGGER_BATCH_SIZE = 200
 const EVENT_TRIGGER_MAX_SCAN = 2_000
 
+const processedEventIds = new Set<string>()
+
+function markEventProcessed(id: string) {
+  processedEventIds.add(id)
+  if (processedEventIds.size > 10000) {
+    processedEventIds.clear()
+  }
+}
+
 /**
  * SCHEDULE-type triggers fire instances on a cron expression. EVENT-type
  * triggers subscribe to OutboxEvent rows whose `eventType` matches their
@@ -116,6 +125,7 @@ async function runWorkItemEventTriggers(): Promise<void> {
           data: { lastFiredAt: matched.createdAt },
         })
         trigger.lastFiredAt = matched.createdAt
+        markEventProcessed(matched.id)
         await routeWorkItem(workItem.id, null, { routingMode: trigger.routingMode })
       }
     }
@@ -238,6 +248,7 @@ async function runEventTriggers(): Promise<void> {
           data: { lastFiredAt: matched.createdAt },
         })
         t.lastFiredAt = matched.createdAt
+        markEventProcessed(matched.id)
       }
     }
   } catch (err) {
@@ -274,7 +285,8 @@ async function loadMatchingOutboxEvents(args: {
     cursor = batch[batch.length - 1].id
 
     for (const event of batch) {
-      if (args.lastFiredAt && event.createdAt <= args.lastFiredAt) continue
+      if (args.lastFiredAt && event.createdAt < args.lastFiredAt) continue
+      if (args.lastFiredAt && event.createdAt.getTime() === args.lastFiredAt.getTime() && processedEventIds.has(event.id)) continue
       if (!args.matchesEventType(event.eventType)) continue
       if (!matchesEventFilter((event.payload ?? {}) as Record<string, unknown>, args.filter)) continue
       matched.push(event)

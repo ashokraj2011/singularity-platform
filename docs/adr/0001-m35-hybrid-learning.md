@@ -19,4 +19,4 @@ Use a hybrid model:
 
 ## Consequences
 
-This keeps current Engine lessons compatible while giving the platform a dedicated learning API for SDK, MCP tools, and Run Insights. The merge order is explicit and avoids direct writes from learning-service into Prompt Composer-owned tables.
+This keeps current Engine lessons compatible while giving the platform a dedicated learning API for SDK, runtime tools, and Run Insights. The merge order is explicit and avoids direct writes from learning-service into Prompt Composer-owned tables.

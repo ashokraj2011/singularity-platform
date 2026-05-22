@@ -999,7 +999,7 @@ function ArtifactCard({
             : <ArrowUpFromLine size={10} style={{ color: accentColor }} />
           }
         </div>
-        <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: '#cbd5e1', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: '#0f172a', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {artifact.name || <span style={{ color: '#475569', fontStyle: 'italic' }}>Unnamed artifact</span>}
         </span>
         <span style={{
@@ -1151,7 +1151,7 @@ function ArtifactsTab({
         ))}
 		                </div>
 
-                <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+                <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
 
       {/* Output artifacts */}
       <div>
@@ -1389,7 +1389,7 @@ function WorkbenchTab({
         </p>
       </div>
 
-      <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+      <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px', gap: 8 }}>
         <div>
@@ -1416,9 +1416,9 @@ function WorkbenchTab({
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {stages.map((stage, stageIndex) => (
             <div key={`${stage.key}-${stageIndex}`} style={{
-              border: '1px solid rgba(255,255,255,0.08)',
+              border: '1px solid rgba(148, 163, 184, 0.2)',
               borderRadius: 10,
-              background: 'rgba(255,255,255,0.035)',
+              background: '#ffffff',
               padding: 10,
             }}>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 128px auto', gap: 7, alignItems: 'end' }}>
@@ -1453,8 +1453,8 @@ function WorkbenchTab({
                     onChange={event => updateStage(stageIndex, { next: event.target.value || null })}
                     style={selectStyle(stage.terminal === true)}
                   >
-                    <option value="" style={{ background: '#0f172a' }}>{stage.terminal ? 'Terminal' : 'Select next phase'}</option>
-                    {stageKeys.filter(key => key !== stage.key).map(key => <option key={key} value={key} style={{ background: '#0f172a' }}>{key}</option>)}
+                    <option value="">{stage.terminal ? 'Terminal' : 'Select next phase'}</option>
+                    {stageKeys.filter(key => key !== stage.key).map(key => <option key={key} value={key}>{key}</option>)}
                   </select>
                 </div>
                 <div>
@@ -1468,7 +1468,7 @@ function WorkbenchTab({
                     }}
                     style={{ ...selectStyle(false), minHeight: 62 }}
                   >
-                    {stageKeys.filter(key => key !== stage.key).map(key => <option key={key} value={key} style={{ background: '#0f172a' }}>{key}</option>)}
+                    {stageKeys.filter(key => key !== stage.key).map(key => <option key={key} value={key}>{key}</option>)}
                   </select>
                 </div>
               </div>
@@ -1687,9 +1687,9 @@ function miniButton(color: string): React.CSSProperties {
 function iconButton(disabled: boolean): React.CSSProperties {
   return {
     width: 28, height: 28, borderRadius: 7,
-    border: '1px solid rgba(255,255,255,0.10)',
-    background: disabled ? 'rgba(255,255,255,0.03)' : 'rgba(248,113,113,0.08)',
-    color: disabled ? '#334155' : '#f87171',
+    border: '1px solid rgba(148, 163, 184, 0.28)',
+    background: disabled ? 'rgba(15,23,42,0.03)' : 'rgba(239, 68, 68, 0.08)',
+    color: disabled ? '#94a3b8' : '#ef4444',
     cursor: disabled ? 'not-allowed' : 'pointer',
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
   }
@@ -1698,9 +1698,9 @@ function iconButton(disabled: boolean): React.CSSProperties {
 function selectStyle(disabled: boolean): React.CSSProperties {
   return {
     width: '100%', boxSizing: 'border-box',
-    background: disabled ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.05)',
-    border: '1px solid rgba(255,255,255,0.10)',
-    borderRadius: 8, padding: '6px 10px', fontSize: 11, color: '#e2e8f0',
+    background: disabled ? 'rgba(15,23,42,0.03)' : '#ffffff',
+    border: '1px solid rgba(148, 163, 184, 0.28)',
+    borderRadius: 8, padding: '6px 10px', fontSize: 11, color: '#0f172a',
     outline: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
   }
 }
@@ -1915,9 +1915,9 @@ function NodeAssignmentSection({
 
   const inputSt: React.CSSProperties = {
     width: '100%', boxSizing: 'border-box', padding: '6px 9px',
-    borderRadius: 6, fontSize: 11, color: '#cbd5e1',
-    border: '1px solid rgba(255,255,255,0.08)',
-    background: 'rgba(255,255,255,0.05)', outline: 'none',
+    borderRadius: 6, fontSize: 11, color: '#0f172a',
+    border: '1px solid rgba(148, 163, 184, 0.28)',
+    background: '#ffffff', outline: 'none',
     fontFamily: 'monospace',
   }
   const labelSt: React.CSSProperties = {
@@ -1976,7 +1976,7 @@ function NodeAssignmentSection({
             title={m.hint}
             style={{
               padding: '6px 4px', borderRadius: 6, cursor: 'pointer',
-              border: `1.5px solid ${mode === m.value ? m.color : 'rgba(255,255,255,0.08)'}`,
+              border: `1.5px solid ${mode === m.value ? m.color : 'rgba(148, 163, 184, 0.2)'}`,
               background: mode === m.value ? `${m.color}1a` : 'transparent',
               color: mode === m.value ? m.color : '#64748b',
               fontSize: 9, fontWeight: 700, letterSpacing: '0.04em',
@@ -1990,8 +1990,8 @@ function NodeAssignmentSection({
 
       {/* Mode hint */}
       <p style={{ fontSize: 10, color: '#94a3b8', marginBottom: 8, lineHeight: 1.5 }}>
-        Pick the <strong style={{ color: '#cbd5e1' }}>kind</strong> of assignee at design time. The actual identity
-        is resolved <strong style={{ color: '#cbd5e1' }}>at runtime</strong> from a workflow variable, team global,
+        Pick the <strong style={{ color: '#0f172a' }}>kind</strong> of assignee at design time. The actual identity
+        is resolved <strong style={{ color: '#0f172a' }}>at runtime</strong> from a workflow variable, team global,
         or upstream output.
       </p>
 
@@ -2048,7 +2048,7 @@ function NodeAssignmentSection({
       })()}
 
       {mode === 'AGENT' && (
-        <p style={{ fontSize: 10, color: '#64748b', fontStyle: 'italic', padding: '8px 10px', borderRadius: 6, border: '1px dashed rgba(255,255,255,0.08)' }}>
+        <p style={{ fontSize: 10, color: '#64748b', fontStyle: 'italic', padding: '8px 10px', borderRadius: 6, border: '1px dashed rgba(148, 163, 184, 0.28)' }}>
           Configure the agent below in the standard fields. The runtime won't enqueue this for human review.
         </p>
       )}
@@ -2088,9 +2088,9 @@ function VariableInsertMenu({
           style={{
             position: 'absolute', right: 0, top: 'calc(100% + 4px)', zIndex: 30,
             minWidth: 220, maxHeight: 260, overflowY: 'auto',
-            background: '#0b1220',
-            border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8,
-            boxShadow: '0 12px 32px rgba(0,0,0,0.4)',
+            background: '#ffffff',
+            border: '1px solid rgba(148, 163, 184, 0.28)', borderRadius: 8,
+            boxShadow: '0 12px 32px rgba(15,23,42,0.15)',
             padding: 6,
           }}
         >
@@ -2128,10 +2128,10 @@ function VarGroup({
           style={{
             display: 'block', width: '100%', textAlign: 'left',
             padding: '5px 8px', borderRadius: 5, border: 'none',
-            background: 'transparent', color: '#cbd5e1', cursor: 'pointer',
+            background: 'transparent', color: '#334155', cursor: 'pointer',
             fontSize: 11,
           }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(15,23,42,0.05)')}
           onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
         >
           <code style={{ fontFamily: 'monospace', color: '#22c55e' }}>{prefix}.{v.key}</code>
@@ -2206,7 +2206,7 @@ function NodeFormBuilder({
       ) : (
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
           {/* Left: widget list + add picker */}
-          <div style={{ width: 220, flexShrink: 0, padding: 10, borderRadius: 9, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+          <div style={{ width: 220, flexShrink: 0, padding: 10, borderRadius: 9, background: '#ffffff', border: '1px solid rgba(148, 163, 184, 0.2)' }}>
             <WidgetListEditor
               widgets={list}
               selectedId={selectedId}
@@ -2281,7 +2281,7 @@ function RuntimeFormSection({
 
   // ── Render states ────────────────────────────────────────────────────────
   return (
-    <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 14 }}>
+    <div style={{ borderTop: '1px solid rgba(148, 163, 184, 0.2)', paddingTop: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
         <FileCode size={11} style={{ color: accentColor }} />
         <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: accentColor }}>
@@ -2396,27 +2396,22 @@ function AgentPicker({ value, onChange, capabilityId }: { value: string; onChang
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
-        style={{
-          width: '100%', boxSizing: 'border-box',
-          background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)',
-          borderRadius: 8, padding: '6px 10px', fontSize: 11, color: '#e2e8f0',
-          outline: 'none', appearance: 'none', cursor: 'pointer',
-        }}
+        style={selectStyle(false)}
       >
-        <option value="" style={{ background: '#0f172a' }}>{empty}</option>
+        <option value="">{empty}</option>
         {capabilityAgents.length > 0 && (
-          <optgroup label="Capability Agents" style={{ background: '#0f172a' }}>
+          <optgroup label="Capability Agents">
             {capabilityAgents.map(a => (
-              <option key={a.id} value={a.id} style={{ background: '#0f172a' }}>
+              <option key={a.id} value={a.id}>
                 {a.name}{a.baseTemplateId ? ' [Derived]' : ' [Custom]'}{a.model ? ` · ${a.model}` : ''}
               </option>
             ))}
           </optgroup>
         )}
         {commonAgents.length > 0 && (
-          <optgroup label="Common Library (locked)" style={{ background: '#0f172a' }}>
+          <optgroup label="Common Library (locked)">
             {commonAgents.map(a => (
-              <option key={a.id} value={a.id} style={{ background: '#0f172a' }}>
+              <option key={a.id} value={a.id}>
                 {a.name} [Locked]{a.model ? ` · ${a.model}` : ''}
               </option>
             ))}
@@ -2502,18 +2497,13 @@ function CapabilityPicker({ value, onChange }: { value: string; onChange: (v: st
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
-        style={{
-          width: '100%', boxSizing: 'border-box',
-          background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)',
-          borderRadius: 8, padding: '6px 10px', fontSize: 11, color: '#e2e8f0',
-          outline: 'none', appearance: 'none', cursor: 'pointer',
-        }}
+        style={selectStyle(false)}
       >
-        <option value="" style={{ background: '#0f172a' }}>
+        <option value="">
           {isLoading ? 'Loading capabilities…' : isError ? 'Failed to load' : caps.length === 0 ? 'No capabilities' : 'Select a capability…'}
         </option>
         {caps.map(c => (
-          <option key={c.id} value={c.id} style={{ background: '#0f172a' }}>
+          <option key={c.id} value={c.id}>
             {c.name}{c.capability_type ? ` · ${c.capability_type}` : ''}
           </option>
         ))}
@@ -2539,18 +2529,13 @@ function ToolPicker({ value, onChange, capabilityId }: { value: string; onChange
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
-        style={{
-          width: '100%', boxSizing: 'border-box',
-          background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)',
-          borderRadius: 8, padding: '6px 10px', fontSize: 11, color: '#e2e8f0',
-          outline: 'none', appearance: 'none', cursor: 'pointer',
-        }}
+        style={selectStyle(false)}
       >
-        <option value="" style={{ background: '#0f172a' }}>
+        <option value="">
           {isLoading ? 'Loading tools…' : isError ? 'Failed to load tools' : tools.length === 0 ? 'No tools available' : 'Select a tool…'}
         </option>
         {tools.map(t => (
-          <option key={t.id} value={t.name} style={{ background: '#0f172a' }}>
+          <option key={t.id} value={t.name}>
             {t.name}{t.riskLevel ? ` · ${t.riskLevel}` : ''}
           </option>
         ))}
@@ -2594,18 +2579,13 @@ function TemplatePicker({ value, onChange }: { value: string; onChange: (v: stri
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
-        style={{
-          width: '100%', boxSizing: 'border-box',
-          background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)',
-          borderRadius: 8, padding: '6px 10px', fontSize: 11, color: '#e2e8f0',
-          outline: 'none', appearance: 'none', cursor: 'pointer',
-        }}
+        style={selectStyle(false)}
       >
-        <option value="" style={{ background: '#0f172a' }}>
+        <option value="">
           {isLoading ? 'Loading workflows…' : isError ? 'Failed to load workflows' : templates.length === 0 ? 'No workflows available' : 'Select a workflow…'}
         </option>
         {templates.map(t => (
-          <option key={t.id} value={t.id} style={{ background: '#0f172a' }}>
+          <option key={t.id} value={t.id}>
             {t.name} · v{t.currentVersion}
           </option>
         ))}
@@ -2634,24 +2614,24 @@ function WorkItemTargetsEditor({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {rows.map((target, index) => (
         <div key={target.id} style={{
-          border: '1px solid rgba(255,255,255,0.08)',
+          border: '1px solid rgba(148, 163, 184, 0.2)',
           borderRadius: 10,
           padding: 10,
-          background: 'rgba(255,255,255,0.035)',
+          background: '#ffffff',
           display: 'flex',
           flexDirection: 'column',
           gap: 8,
         }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <span style={{ fontSize: 10, color: '#c4b5fd', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+            <span style={{ fontSize: 10, color: '#8b5cf6', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
               Target {index + 1}
             </span>
             <button
               onClick={() => onChange(rows.filter(row => row.id !== target.id))}
               style={{
-                border: '1px solid rgba(248,113,113,0.24)',
-                background: 'rgba(248,113,113,0.08)',
-                color: '#fecaca',
+                border: '1px solid rgba(239, 68, 68, 0.24)',
+                background: 'rgba(239, 68, 68, 0.08)',
+                color: '#ef4444',
                 borderRadius: 7,
                 padding: '4px 7px',
                 cursor: 'pointer',
@@ -2687,9 +2667,9 @@ function WorkItemTargetsEditor({
       <button
         onClick={() => onChange([...rows, emptyWorkItemTarget()])}
         style={{
-          border: '1px dashed rgba(124,58,237,0.55)',
-          background: 'rgba(124,58,237,0.10)',
-          color: '#ddd6fe',
+          border: '1px dashed rgba(124,58,237,0.35)',
+          background: 'rgba(124,58,237,0.06)',
+          color: '#7c3aed',
           borderRadius: 10,
           padding: '8px 10px',
           cursor: 'pointer',
@@ -2730,8 +2710,8 @@ function ExecutionLocationSection({
               key={loc}
               onClick={() => onChange(loc)}
               style={{
-                padding: '8px 10px', borderRadius: 8, border: `1px solid ${active ? m.color : 'rgba(255,255,255,0.08)'}`,
-                background: active ? `${m.color}14` : 'rgba(255,255,255,0.03)',
+                padding: '8px 10px', borderRadius: 8, border: `1px solid ${active ? m.color : 'rgba(148, 163, 184, 0.2)'}`,
+                background: active ? `${m.color}14` : '#ffffff',
                 cursor: 'pointer', textAlign: 'left', transition: 'all 0.12s',
               }}
             >
@@ -3248,8 +3228,8 @@ function BranchRow({
   return (
     <div style={{
       borderRadius: 10,
-      border: `1px solid ${isDefault ? 'rgba(245,158,11,0.35)' : 'rgba(255,255,255,0.07)'}`,
-      background: isDefault ? 'rgba(245,158,11,0.06)' : 'rgba(255,255,255,0.03)',
+      border: `1px solid ${isDefault ? 'rgba(245,158,11,0.35)' : 'rgba(148, 163, 184, 0.2)'}`,
+      background: isDefault ? 'rgba(245,158,11,0.06)' : '#ffffff',
       padding: '10px 12px', marginBottom: 8,
     }}>
       {/* Branch header */}
@@ -3261,7 +3241,7 @@ function BranchRow({
           placeholder={isDefault ? 'Else (default branch)' : 'Branch label…'}
           style={{
             flex: 1, background: 'transparent', border: 'none', outline: 'none',
-            fontSize: 11, fontWeight: 600, color: '#e2e8f0',
+            fontSize: 11, fontWeight: 600, color: '#0f172a',
           }}
         />
         <span style={{ fontSize: 9, color: '#475569', fontFamily: 'monospace' }}>
@@ -3339,8 +3319,8 @@ function BranchRow({
             onChange={e => setCond(cond.id, { left: e.target.value })}
             placeholder="params.key or context.path"
             style={{
-              flex: 2, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
-              borderRadius: 6, padding: '4px 7px', fontSize: 10, color: '#cbd5e1', outline: 'none',
+              flex: 2, background: '#ffffff', border: '1px solid rgba(148, 163, 184, 0.28)',
+              borderRadius: 6, padding: '4px 7px', fontSize: 10, color: '#0f172a', outline: 'none',
             }}
           />
           <datalist id={`params-${cond.id}`}>
@@ -3352,8 +3332,8 @@ function BranchRow({
             value={cond.op}
             onChange={e => setCond(cond.id, { op: e.target.value as ConditionOp })}
             style={{
-              flex: 1, background: '#0f172a', border: '1px solid rgba(255,255,255,0.08)',
-              borderRadius: 6, padding: '4px 5px', fontSize: 10, color: '#94a3b8', outline: 'none', minWidth: 0,
+              flex: 1, background: '#ffffff', border: '1px solid rgba(148, 163, 184, 0.28)',
+              borderRadius: 6, padding: '4px 5px', fontSize: 10, color: '#0f172a', outline: 'none', minWidth: 0,
             }}
           >
             {CONDITION_OPS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -3366,8 +3346,8 @@ function BranchRow({
               onChange={e => setCond(cond.id, { right: e.target.value })}
               placeholder={cond.op === 'in' || cond.op === 'not_in' ? 'a,b,c' : 'value'}
               style={{
-                flex: 2, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
-                borderRadius: 6, padding: '4px 7px', fontSize: 10, color: '#cbd5e1', outline: 'none',
+                flex: 2, background: '#ffffff', border: '1px solid rgba(148, 163, 184, 0.28)',
+                borderRadius: 6, padding: '4px 7px', fontSize: 10, color: '#0f172a', outline: 'none',
               }}
             />
           )}
@@ -3390,7 +3370,7 @@ function BranchRow({
         <button
           onClick={addCond}
           style={{
-            fontSize: 9, padding: '3px 8px', borderRadius: 5, border: '1px dashed rgba(255,255,255,0.12)',
+            fontSize: 9, padding: '3px 8px', borderRadius: 5, border: '1px dashed rgba(148, 163, 184, 0.3)',
             background: 'transparent', color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
           }}
         >
@@ -3404,7 +3384,7 @@ function BranchRow({
                 onClick={() => update({ ...draft, logic: l })}
                 style={{
                   fontSize: 8, padding: '2px 7px', borderRadius: 4,
-                  border: `1px solid ${draft.logic === l ? 'rgba(34,197,94,0.4)' : 'rgba(255,255,255,0.08)'}`,
+                  border: `1px solid ${draft.logic === l ? 'rgba(34,197,94,0.4)' : 'rgba(148, 163, 184, 0.2)'}`,
                   background: draft.logic === l ? 'rgba(34,197,94,0.12)' : 'transparent',
                   color: draft.logic === l ? '#22c55e' : '#475569',
                   cursor: 'pointer', fontWeight: 700,
@@ -3501,7 +3481,7 @@ function BranchesTab({
         <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569' }}>
           {sorted.length} branch{sorted.length !== 1 ? 'es' : ''}
         </p>
-        <span style={{ marginLeft: 'auto', fontSize: 8, padding: '2px 7px', borderRadius: 4, border: '1px solid rgba(255,255,255,0.08)', color: '#64748b', fontWeight: 700, letterSpacing: '0.08em' }}>
+        <span style={{ marginLeft: 'auto', fontSize: 8, padding: '2px 7px', borderRadius: 4, border: '1px solid rgba(148, 163, 184, 0.2)', color: '#64748b', fontWeight: 700, letterSpacing: '0.08em' }}>
           {isDecisionGate ? 'XOR · first match wins' : isInclusiveGw ? 'OR · all matches fire' : 'fan-out'}
         </span>
       </div>
@@ -3729,13 +3709,13 @@ export function NodeInspector({
                   ].map(({ icon, label: l, value }) => (
                     <div key={l} style={{
                       padding: '8px 10px', borderRadius: 8,
-                      background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
+                      background: '#ffffff', border: '1px solid rgba(148, 163, 184, 0.28)',
                       display: 'flex', alignItems: 'center', gap: 7,
                     }}>
                       {icon}
                       <div>
                         <p style={{ fontSize: 9, color: '#475569', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{l}</p>
-                        <p style={{ fontSize: 14, fontWeight: 700, color: '#e2e8f0', fontFamily: 'monospace', lineHeight: 1.1 }}>{value}</p>
+                        <p style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', fontFamily: 'monospace', lineHeight: 1.1 }}>{value}</p>
                       </div>
                     </div>
                   ))}
@@ -3947,7 +3927,7 @@ export function NodeInspector({
                   )}
                 </div>
 
-	                <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+	                <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
 
 	                {node.data.nodeType === 'WORK_ITEM' && (
 	                  <>
@@ -3976,7 +3956,7 @@ export function NodeInspector({
 	                    <p style={{ fontSize: 9, color: '#64748b', marginTop: -10 }}>
 	                      Key = child input key · Value = parent context path or <code style={{ fontFamily: 'monospace' }}>{'{{vars.story}}'}</code>.
 	                    </p>
-	                    <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+	                    <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
 	                  </>
 	                )}
 
@@ -3994,7 +3974,7 @@ export function NodeInspector({
                   accentColor="#c084fc"
                 />
 
-                <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+                <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
 
                 {/* Execution location */}
                 <ExecutionLocationSection
@@ -4002,7 +3982,7 @@ export function NodeInspector({
                   onChange={loc => setConfig(c => ({ ...c, executionLocation: loc }))}
                 />
 
-                <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+                <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: -4 }}>
                   <Globe size={11} style={{ color: '#0ea5e9' }} />
@@ -4020,7 +4000,7 @@ export function NodeInspector({
                   Key = <code style={{ fontFamily: 'monospace' }}>globals.parallelTasks</code> or <code style={{ fontFamily: 'monospace' }}>parallelTasks</code>. Value may be literal JSON or <code style={{ fontFamily: 'monospace' }}>{'{{output.count}}'}</code>.
                 </p>
 
-                <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+                <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
 
                 {/* DATA_SINK config */}
                 {node.data.nodeType === 'DATA_SINK' && (
@@ -4029,7 +4009,7 @@ export function NodeInspector({
                       cfg={config.sinkConfig}
                       onChange={sc => setConfig(c => ({ ...c, sinkConfig: sc }))}
                     />
-                    <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+                    <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
                   </>
                 )}
 
@@ -4051,7 +4031,7 @@ export function NodeInspector({
                     <p style={{ fontSize: 9, color: '#64748b', marginTop: -4 }}>
                       Key = child context key · Value = parent context path (e.g. order.id)
                     </p>
-                    <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+                    <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
                   </>
                 )}
 
@@ -4073,7 +4053,7 @@ export function NodeInspector({
                     <p style={{ fontSize: 9, color: '#64748b', marginTop: -4 }}>
                       Key = context path (e.g. customer.tier) · Value = literal or {'{{'}context.path{'}}'}
                     </p>
-                    <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+                    <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
                   </>
                 )}
 
@@ -4083,7 +4063,7 @@ export function NodeInspector({
                   onChange={p => setConfig(c => ({ ...c, retryPolicy: p }))}
                 />
 
-                <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+                <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
 
                 {/* SAGA Compensation */}
                 <CompensationConfigSection
@@ -4099,7 +4079,7 @@ export function NodeInspector({
                   (node.data.nodeType === 'CUSTOM' &&
                     ['HUMAN_TASK','APPROVAL','CONSUMABLE_CREATION'].includes(customTypeDef?.baseType ?? ''))) && (
                   <>
-                    <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+                    <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
                     <NodeAssignmentSection
                       config={config}
                       capabilityId={templateCapabilityId ?? null}
@@ -4119,7 +4099,7 @@ export function NodeInspector({
                   node.data.nodeType === 'CONSUMABLE_CREATION' ||
                   (node.data.nodeType === 'CUSTOM' && (customTypeDef as { supportsForms?: boolean } | null)?.supportsForms)) && (
                   <>
-                    <div style={{ height: 1, background: 'rgba(255,255,255,0.06)' }} />
+                    <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
                     <NodeFormBuilder
                       widgets={config.formWidgets}
                       onChange={w => setConfig(c => ({ ...c, formWidgets: w }))}
@@ -4209,7 +4189,7 @@ export function NodeInspector({
       </div>
 
       {/* ── Footer / Save ───────────────────────────────────────────── */}
-      <div style={{ padding: '10px 14px', borderTop: '1px solid rgba(255,255,255,0.06)', flexShrink: 0 }}>
+      <div style={{ padding: '10px 14px', borderTop: '1px solid rgba(148, 163, 184, 0.2)', flexShrink: 0 }}>
         <button
           onClick={handleSave}
           disabled={saving || !label.trim() || workbenchErrors.length > 0}

@@ -206,6 +206,7 @@
 
   <h2>Get started</h2>
   <a href="#overview">Overview</a>
+  <a href="platform-handbook.html">Full platform handbook</a>
   <a href="#quickstart">Quickstart</a>
   <a href="#demo-path">Demo path</a>
 
@@ -231,7 +232,7 @@
 <div class="inner">
 
 <h1 class="page">Singularity Platform</h1>
-<p class="lead">An enterprise AI-agent platform of independently-deployable services — identity, agent registry, prompt composition, LLM cost optimization, workflow orchestration, MCP execution, and a unified portal — wired together by a federated lookup layer, a cross-service audit ledger, and inline governance gates.</p>
+<p class="lead">An enterprise AI-agent platform of independently-deployable services — identity, agent registry, prompt composition, LLM cost optimization, workflow orchestration, Agent Execution Runtime, and a unified portal — wired together by a federated lookup layer, a cross-service audit ledger, and inline governance gates.</p>
 
 <!-- ────────────────────────────────────────────────────────────────── -->
 <section id="overview">
@@ -242,7 +243,7 @@
 <ul>
   <li><strong>Design</strong> multi-agent workflows in a visual editor with 22+ node types</li>
   <li><strong>Govern</strong> agents through a derivation model — common locked baselines beget capability-scoped children</li>
-  <li><strong>Execute</strong> agent loops against any LLM via per-tenant MCP servers</li>
+  <li><strong>Execute</strong> agent loops against any LLM via per-tenant Agent Execution Runtimes</li>
   <li><strong>Observe</strong> per-step timing, cost, tokens, and artifacts on a single run insights dashboard</li>
   <li><strong>Enforce</strong> budgets and rate limits pre-flight, before any LLM call is dispatched</li>
 </ul>
@@ -260,7 +261,7 @@
     <tr><td>Backend services</td><td>19</td><td>master <code>docker-compose.yml</code> + 2 side stacks</td></tr>
     <tr><td>Workflow node types</td><td>22+</td><td>workgraph-studio <code>NodeType</code> enum</td></tr>
     <tr><td>Agent baselines (locked)</td><td>4</td><td>seed: ARCHITECT / DEVELOPER / QA / GOVERNANCE</td></tr>
-    <tr><td>Audit event producers</td><td>5</td><td>mcp-server, workgraph-api, tool-service, context-fabric, agent-runtime</td></tr>
+    <tr><td>Audit event producers</td><td>5</td><td>Agent Execution Runtime (<code>mcp-server</code>), workgraph-api, tool-service, context-fabric, agent-runtime</td></tr>
     <tr><td>Independent databases</td><td>4 PG + 3 SQLite</td><td>per-service isolation</td></tr>
   </tbody>
 </table>
@@ -301,7 +302,7 @@ cd singularity-platform</code></pre>
   "http://localhost:7100/health" \
   "http://localhost:8000/health" \
   "http://localhost:8080/health" \
-  "http://localhost:3000/api/runtime/agents/templates?scope=common&amp;limit=3" \
+  "http://localhost:3000/api/mcp/agents/templates?scope=common&amp;limit=3" \
   "http://localhost:5174/"; do
   printf "%-65s %s\n" "$u" "$(curl -s -o /dev/null -w '%{http_code}' $u)"
 done</code></pre>
@@ -415,7 +416,7 @@ curl -s -X POST http://localhost:8500/api/v1/governance/budgets \
 <tr><td><strong>llm-gateway</strong></td><td><code>:8001</code></td><td>Optimization</td><td>Provider proxy</td></tr>
 <tr><td><strong>context-memory</strong></td><td><code>:8002</code></td><td>Optimization</td><td>Conversation memory + summaries</td></tr>
 <tr><td><strong>metrics-ledger</strong></td><td><code>:8003</code></td><td>Optimization</td><td>Token savings ledger</td></tr>
-<tr><td><strong>mcp-server-demo</strong></td><td><code>:7100</code></td><td>Execution</td><td>Per-tenant agent loop runner</td></tr>
+<tr><td><strong>mcp-server-demo</strong></td><td><code>:7100</code></td><td>Execution</td><td>Agent Execution Runtime. The service name is legacy.</td></tr>
 <tr><td>iam-postgres</td><td><code>:5433</code></td><td>—</td><td><code>singularity_iam</code> DB</td></tr>
 <tr><td>at-postgres</td><td><code>:5432</code></td><td>—</td><td><code>singularity</code> DB (pgvector enabled)</td></tr>
 <tr><td>wg-postgres</td><td><code>:5434</code></td><td>—</td><td><code>workgraph</code> DB</td></tr>
@@ -458,7 +459,7 @@ context-fabric (context-api on :8000)
     │
     │ 2. context-memory/memory/search → relevant prior facts
     │
-    │ 3. POST mcp-server/mcp/invoke
+    │ 3. POST Agent Execution Runtime /mcp/invoke
     │      ↓ pre-flight: GET audit-gov/governance/budgets/check
     │      ↓ pre-flight: GET audit-gov/governance/rate-limits/check
     │      ↓ LOOP { llm call → tool call (via tool-service or local) }
@@ -535,7 +536,7 @@ workgraph-api persists results → next node fires
 
 <h3>UI surface</h3>
 <ul>
-  <li><strong>Capability picker</strong> (dropdown of capabilities from <code>/api/runtime/capabilities</code>) — UUID-validated</li>
+  <li><strong>Capability picker</strong> (dropdown of capabilities from <code>/api/mcp/capabilities</code>) — UUID-validated</li>
   <li><strong>Two grouped sections</strong>: Capability Agents (editable, lineage badge), Common Library (locked badge)</li>
   <li><strong>Right detail panel</strong>: lineage, scope, lock status, base prompt profile id with rendered <strong>prompt-layer tree</strong> (priority-sorted, layerType/scopeType badges)</li>
   <li><strong>Derive dialog</strong>: name + description override; creates a capability-scoped child inheriting role + prompt profile + tool policy</li>
@@ -590,13 +591,13 @@ model WorkflowNode {
 <section id="audit-governance">
 <h2>Audit &amp; Governance (M21–M22) <a class="anchor" href="#audit-governance">#</a></h2>
 
-<p>A standalone <strong>audit-governance-service</strong> (port 8500, own Postgres on 5436) is the cross-service ledger every producer fires into. Combined with inline pre-flight checks in mcp-server, it turns governance from passive observation into active enforcement.</p>
+<p>A standalone <strong>audit-governance-service</strong> (port 8500, own Postgres on 5436) is the cross-service ledger every producer fires into. Combined with inline pre-flight checks in the Agent Execution Runtime, it turns governance from passive observation into active enforcement.</p>
 
 <h3>The five producers</h3>
 <table>
 <thead><tr><th>Service</th><th>Trigger</th><th>Event kinds emitted</th></tr></thead>
 <tbody>
-<tr><td>mcp-server</td><td>Per LLM call / tool execution / approval</td><td><code>llm.call.completed</code>, <code>tool.invocation.completed</code>, <code>approval.wait.created</code>, <code>governance.denied</code></td></tr>
+<tr><td>Agent Execution Runtime (<code>mcp-server</code>)</td><td>Per LLM call / tool execution / approval</td><td><code>llm.call.completed</code>, <code>tool.invocation.completed</code>, <code>approval.wait.created</code>, <code>governance.denied</code></td></tr>
 <tr><td>workgraph-api</td><td>Every state transition via <code>publishOutbox</code></td><td><code>agent.run.*</code>, <code>workflow.instance.*</code>, <code>workflow.triggered</code></td></tr>
 <tr><td>tool-service</td><td>Each tool-execution terminal status</td><td><code>tool.execution.success</code> / <code>error</code> / <code>client_execution_required</code> / <code>browser_execution_required</code></td></tr>
 <tr><td>context-fabric</td><td>After every <code>call_log.insert</code> in <code>/execute</code></td><td><code>cf.execute.completed</code></td></tr>
@@ -613,13 +614,13 @@ model WorkflowNode {
 <tr><td><code>rate_card</code></td><td>Per-(provider,model) <code>input_per_1k</code> + <code>output_per_1k</code> seeded for OpenAI, Anthropic, Copilot, Mock</td></tr>
 <tr><td><code>budgets</code></td><td>(scope_type, scope_id, period) windows with auto-bumped <code>current_tokens</code> + <code>current_cost</code></td></tr>
 <tr><td><code>rate_limits</code></td><td>Sliding-window call caps with auto-reset</td></tr>
-<tr><td><code>approvals</code></td><td>Central approval authority (mirrored from mcp-server's in-memory ring)</td></tr>
+<tr><td><code>approvals</code></td><td>Central approval authority (mirrored from the Agent Execution Runtime in-memory ring)</td></tr>
 <tr><td><code>authz_decisions</code></td><td>Per-resource allow/deny audit trail</td></tr>
 </tbody>
 </table>
 
 <h3>Pre-flight enforcement</h3>
-<p>Before each LLM dispatch, the mcp-server agent loop awaits two parallel checks:</p>
+<p>Before each LLM dispatch, the Agent Execution Runtime loop awaits two parallel checks:</p>
 
 <pre><code class="block">// mcp-server/src/lib/audit-gov-check.ts
 const [budgetRes, rateRes] = await Promise.all([
@@ -701,7 +702,7 @@ if (!budgetRes.allowed) {
 <tr><td><code>GET /api/workflow-instances/:id</code></td><td>Run header + nodes</td></tr>
 <tr><td><code>GET /api/workflow-instances/:id/insights</code></td><td><strong>M24</strong> composite — run + steps + artifacts + cost + events</td></tr>
 <tr><td><code>POST /api/documents/upload</code></td><td>Multipart upload, returns presigned MinIO URL</td></tr>
-<tr><td><code>POST /api/agent-runs/:id/approve</code></td><td>Resume a PAUSED run after MCP approval</td></tr>
+<tr><td><code>POST /api/agent-runs/:id/approve</code></td><td>Resume a PAUSED run after Agent Execution Runtime approval</td></tr>
 <tr><td><code>GET /api/lookup/*</code></td><td>Federated pickers (capabilities, agents, tools, users, teams, roles, …)</td></tr>
 <tr><td><code>GET /api/agent-studio/*</code></td><td><strong>M23</strong> Studio facade (grouped agents, derive, prompt preview)</td></tr>
 </tbody>
@@ -744,13 +745,13 @@ if (!budgetRes.allowed) {
 <table>
 <thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
 <tbody>
-<tr><td><code>POST /execute</code></td><td>Orchestrator entry — composes prompt, enriches with memory, dispatches to MCP, persists CallLog</td></tr>
+<tr><td><code>POST /execute</code></td><td>Orchestrator entry — composes prompt, enriches with memory, dispatches to Agent Execution Runtime, persists CallLog</td></tr>
 <tr><td><code>POST /execute/resume</code></td><td>Resume a paused run after approval</td></tr>
-<tr><td><code>GET /internal/mcp/code-changes?cf_call_id=…</code></td><td>Proxy MCP's code-change resource for workgraph</td></tr>
+<tr><td><code>GET /internal/mcp/code-changes?cf_call_id=…</code></td><td>Proxy Agent Execution Runtime's code-change resource for workgraph</td></tr>
 </tbody>
 </table>
 
-<h3>mcp-server (<code>:7100</code>)</h3>
+<h3>Agent Execution Runtime (<code>mcp-server</code>, <code>:7100</code>)</h3>
 <table>
 <thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
 <tbody>
@@ -836,8 +837,8 @@ if (!budgetRes.allowed) {
 <thead><tr><th>Milestone</th><th>What it added</th></tr></thead>
 <tbody>
 <tr><td><strong>M5</strong></td><td>workgraph → composer → context-fabric wired end-to-end</td></tr>
-<tr><td><strong>M6–M9</strong></td><td>MCP server, WebSocket bridge, code-change observability</td></tr>
-<tr><td><strong>M9.z</strong></td><td>Approval pause/resume — MCP <code>/mcp/resume</code> + cf <code>/execute/resume</code> + workgraph PAUSED + UI approve</td></tr>
+<tr><td><strong>M6–M9</strong></td><td>Agent Execution Runtime, WebSocket bridge, code-change observability</td></tr>
+<tr><td><strong>M9.z</strong></td><td>Approval pause/resume — Agent Execution Runtime <code>/mcp/resume</code> + cf <code>/execute/resume</code> + workgraph PAUSED + UI approve</td></tr>
 <tr><td><strong>M10</strong></td><td>Federated lookups across all SPA pickers; user-JWT forwarding</td></tr>
 <tr><td><strong>M11</strong></td><td>Platform-registry, service-tokens, OpenTelemetry env wiring</td></tr>
 <tr><td><strong>M12</strong></td><td>Pseudo-IAM service — drop-in dev identity authority</td></tr>
@@ -887,7 +888,7 @@ if (!budgetRes.allowed) {
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">/api/runtime/inbox or /api/agent-studio 500</div>
+  <div class="callout-title">/api/mcp/inbox or /api/agent-studio 500</div>
   Workgraph-api's local <code>User</code> mirror has no row for the pseudo-IAM <code>sub</code>. <code>AUTH_PROVIDER=iam</code> triggers the lazy <code>mirrorIamUser</code> at first sight; if you cold-path it via a tool call, the mirror won't have run yet. Hard-refresh the SPA to mint a fresh JWT and have the auth middleware do its thing.
 </div>
 

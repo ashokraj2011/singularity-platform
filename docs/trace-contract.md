@@ -1,7 +1,7 @@
 # Singularity Trace Contract
 
 `traceId` is the cross-service evidence spine. Every prompt assembly, Context
-Fabric call, MCP invocation, audit event, budget event, and workflow evidence
+Fabric call, Agent Execution Runtime invocation, audit event, budget event, and workflow evidence
 record for the same execution path must carry the same `traceId`.
 
 Identifier ownership:
@@ -11,7 +11,7 @@ Identifier ownership:
 - `workflowNodeId`: Workgraph node identity inside a run.
 - `cfCallId`: Context Fabric execution call id.
 - `promptAssemblyId`: Prompt Composer assembly receipt id.
-- `mcpInvocationId`: MCP agent-loop invocation id.
+- `mcpInvocationId`: Agent Execution Runtime invocation id.
 - `agentRunId`: Workgraph agent run row id, when a node creates one.
 
 Rules:

@@ -59,7 +59,7 @@ erDiagram
 
 ## Client runners (local-machine execution)
 
-Used pre-M27 for client-local tool execution. Now mostly **superseded by mcp-server's local-tool registry** (which runs in-process on the laptop or VPC). Kept for legacy execution paths + audit history.
+Used pre-M27 for client-local tool execution. Now mostly **superseded by the Agent Execution Runtime local-tool registry** (implemented in `mcp-server`, running in-process on the laptop or VPC). Kept for legacy execution paths + audit history.
 
 ```mermaid
 erDiagram
@@ -135,7 +135,7 @@ erDiagram
 | Column | Used by |
 |---|---|
 | `tools.id` | `singularity.ToolGrant.toolId` (agent-runtime's grants reference these), `workgraph.tools.externalToolId` (snapshot) |
-| `tools.tool_name` | mcp-server invoke envelopes — the LLM picks tools by `tool_name`, not UUID |
+| `tools.tool_name` | Agent Execution Runtime invoke envelopes. The LLM picks tools by `tool_name`, not UUID. |
 | `tool_executions.trace_id` | joinable to `audit_governance.audit_events.trace_id` for full run reconstruction |
 | `client_runners.user_id` | `singularity_iam.users.id` (the owning operator) |
 

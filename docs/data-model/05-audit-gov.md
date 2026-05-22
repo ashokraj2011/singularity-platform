@@ -12,7 +12,7 @@ This is the **only DB you can SQL-join across all platform activity** — every 
 erDiagram
   audit_events {
     UUID    id PK
-    text    trace_id  "M28 spine-2 — joinable to mcp + composer + cf"
+    text    trace_id  "M28 spine-2 — joinable to runtime + composer + cf"
     text    source_service "mcp-server | context-fabric | prompt-composer | workgraph-api | agent-runtime | iam"
     text    kind     "e.g. llm.call.completed, governance.precheck.denied"
     text    subject_type
@@ -61,7 +61,7 @@ erDiagram
 
 ## Governance pre-flight tables
 
-These are read synchronously during cf `/execute` and mcp-server loop iterations to decide budget + rate + approval gates.
+These are read synchronously during cf `/execute` and Agent Execution Runtime loop iterations to decide budget + rate + approval gates.
 
 ```mermaid
 erDiagram
@@ -156,7 +156,7 @@ Used by the Singularity Engine to triage recurring failure patterns in the audit
 
 | Producer service | Writes to | Trigger |
 |---|---|---|
-| `mcp-server` | `audit_events`, `llm_calls` | every LLM call, every tool invocation, every approval pause, every code-change commit |
+| Agent Execution Runtime (`mcp-server`) | `audit_events`, `llm_calls` | every LLM call, every tool invocation, every approval pause, every code-change commit |
 | `context-fabric` | `audit_events` (incl. `governance.precheck.*`), `authz_decisions` | `/execute` orchestration |
 | `prompt-composer` | `audit_events` (`prompt.assembly.created`, `compose.capsule.compile.alert`) | every compose call |
 | `agent-runtime` | `audit_events` (`agent.template.derived`, `tool.grant.created`) | template + grant CRUD |
@@ -167,7 +167,7 @@ Used by the Singularity Engine to triage recurring failure patterns in the audit
 
 | Column | Read by |
 |---|---|
-| `audit_events.trace_id` | Workgraph Run Insights timeline, `bin/test-trace-spine.sh`, mcp-server `/mcp/resources/*?trace_id=…` |
+| `audit_events.trace_id` | Workgraph Run Insights timeline, `bin/test-trace-spine.sh`, Agent Execution Runtime `/mcp/resources/*?trace_id=...` |
 | `audit_events.capability_id` | governance pre-flights, Run Insights filtering |
 | `llm_calls.cost_estimate` | `budgets.usd_consumed` updates, metrics-ledger dashboards |
 | `approvals.id` | workgraph approval-router cross-reference |

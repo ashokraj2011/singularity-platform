@@ -6,6 +6,10 @@ Owner: `singularity-iam-service` (FastAPI · Python · SQLAlchemy 2.x · asyncpg
 
 IAM is the **identity + authorization source of truth**. Every other service either holds a UUID reference to an IAM row (via `capability_id`, `user_id`, `team_id`) or talks to IAM over HTTP. There is no FK enforcement between DBs.
 
+Naming note: the `McpServer` entity and `MCP_HTTP` / `MCP_WS` protocol
+values are legacy schema names. Product documentation should call this
+component **Agent Execution Runtime** or **Server Runtime**.
+
 ## Core entities
 
 ```mermaid
@@ -190,6 +194,6 @@ erDiagram
 | `User.id`                | every service via JWT `sub` claim |
 | `Capability.id`          | `singularity.Capability` (mirror), `singularity_composer.PromptAssembly.capabilityId`, `workgraph.capabilities` (cache), `audit_governance.audit_events.capability_id` |
 | `Team.id`                | `workgraph.teams.externalIamTeamId` |
-| `McpServer.id`           | `audit_governance.audit_events.payload.mcpServerId`, cf `/execute` response correlation |
+| `McpServer.id`           | Legacy Agent Execution Runtime registration id, used by `audit_governance.audit_events.payload.mcpServerId` and cf `/execute` response correlation |
 | `Skill.id`               | `workgraph.skills.externalIamSkillId` |
-| `UserDevice.id`          | M26 device-token JWT `device_id` claim; carried by laptop-mode mcp-server invokes |
+| `UserDevice.id`          | M26 device-token JWT `device_id` claim; carried by laptop-mode Agent Execution Runtime invokes |

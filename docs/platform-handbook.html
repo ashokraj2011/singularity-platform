@@ -1,0 +1,1393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Singularity Platform Handbook</title>
+<style>
+:root { color-scheme: light; --bg:#f7f8fb; --paper:#ffffff; --text:#111827; --muted:#64748b; --line:#e2e8f0; --soft:#f8fafc; --accent:#2563eb; --accent-soft:#eff6ff; --green:#047857; --green-soft:#ecfdf5; --code:#0f172a; --code-text:#dbeafe; }
+* { box-sizing:border-box; }
+html { scroll-behavior:smooth; }
+body { margin:0; font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); line-height:1.62; font-size:15px; }
+a { color:var(--accent); text-decoration:none; }
+a:hover { text-decoration:underline; }
+.shell { display:grid; grid-template-columns:320px minmax(0, 1fr); min-height:100vh; }
+aside { position:sticky; top:0; height:100vh; overflow:auto; padding:28px 22px; background:#0b1220; color:#cbd5e1; border-right:1px solid #1f2937; }
+aside .brand { color:#fff; font-weight:800; font-size:16px; letter-spacing:.02em; margin-bottom:6px; }
+aside .sub { color:#94a3b8; font-size:12px; margin-bottom:20px; }
+aside .nav-title { color:#64748b; font-size:11px; text-transform:uppercase; letter-spacing:.12em; font-weight:800; margin:24px 0 8px; }
+aside a { display:block; color:#cbd5e1; padding:5px 9px; border-radius:7px; font-size:13px; line-height:1.35; border-left:2px solid transparent; }
+aside a:hover { background:#172033; color:#fff; text-decoration:none; }
+aside a.toc-l3 { padding-left:22px; color:#94a3b8; font-size:12px; }
+main { padding:42px 54px 80px; min-width:0; }
+.article { max-width:1120px; margin:0 auto; background:var(--paper); border:1px solid var(--line); border-radius:18px; box-shadow:0 18px 50px rgba(15,23,42,.08); padding:52px 64px; }
+.topline { display:flex; gap:10px; align-items:center; flex-wrap:wrap; color:var(--muted); font-size:13px; margin-bottom:18px; }
+.badge { display:inline-flex; align-items:center; border:1px solid #bfdbfe; background:var(--accent-soft); color:#1d4ed8; font-weight:700; border-radius:999px; padding:3px 10px; font-size:12px; }
+h1 { font-size:40px; line-height:1.1; letter-spacing:-.035em; margin:0 0 18px; }
+h2 { font-size:26px; line-height:1.25; letter-spacing:-.02em; margin:54px 0 16px; padding-top:8px; border-top:1px solid var(--line); }
+h3 { font-size:19px; margin:32px 0 10px; }
+h4 { font-size:15px; margin:24px 0 8px; }
+p { margin:12px 0; }
+ul, ol { padding-left:24px; }
+li { margin:5px 0; }
+table { width:100%; border-collapse:separate; border-spacing:0; margin:18px 0 26px; font-size:13px; overflow:hidden; border:1px solid var(--line); border-radius:12px; }
+th, td { padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { background:var(--soft); color:#475569; font-size:11px; text-transform:uppercase; letter-spacing:.08em; text-align:left; }
+tr:last-child td { border-bottom:0; }
+tr:nth-child(even) td { background:#fcfdff; }
+code { font-family:"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size:.92em; background:#eef2ff; border:1px solid #dbe4ff; border-radius:5px; padding:1px 5px; color:#1e293b; }
+pre { overflow:auto; background:var(--code); color:var(--code-text); border-radius:14px; padding:16px 18px; border:1px solid #1e293b; box-shadow:inset 0 1px 0 rgba(255,255,255,.04); }
+pre code { background:transparent; border:0; color:inherit; padding:0; font-size:13px; }
+pre.mermaid { background:#fff; color:#0f172a; border:1px solid var(--line); }
+blockquote { margin:18px 0; padding:12px 16px; border-left:4px solid var(--accent); background:var(--accent-soft); color:#1e3a8a; border-radius:10px; }
+hr { border:0; border-top:1px solid var(--line); margin:36px 0; }
+.anchor { opacity:0; margin-left:8px; font-size:.7em; color:var(--muted); }
+h1:hover .anchor, h2:hover .anchor, h3:hover .anchor { opacity:1; text-decoration:none; }
+.footer { margin-top:64px; color:var(--muted); font-size:12px; border-top:1px solid var(--line); padding-top:18px; }
+@media (max-width: 980px) { .shell { grid-template-columns:1fr; } aside { position:relative; height:auto; } main { padding:22px; } .article { padding:30px 24px; border-radius:14px; } h1 { font-size:31px; } }
+@media print { body { background:#fff; } aside { display:none; } .shell { display:block; } main { padding:0; } .article { box-shadow:none; border:0; padding:0; max-width:none; } a { color:#111827; } }
+</style>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+</script>
+</head>
+<body>
+<div class="shell">
+<aside>
+  <div class="brand">Singularity Handbook</div>
+  <div class="sub">Standalone HTML generated from <code>docs/platform-handbook.md</code></div>
+  <div class="nav-title">Contents</div>
+  <a class="toc-l2" href="#contents">Contents</a>
+<a class="toc-l2" href="#1-executive-summary">1. Executive Summary</a>
+<a class="toc-l2" href="#2-core-concepts">2. Core Concepts</a>
+<a class="toc-l2" href="#3-high-level-architecture">3. High-Level Architecture</a>
+<a class="toc-l2" href="#4-runtime-rule-who-talks-to-the-llm">4. Runtime Rule: Who Talks To The LLM</a>
+<a class="toc-l2" href="#5-service-inventory">5. Service Inventory</a>
+<a class="toc-l3" href="#web-applications">Web Applications</a>
+<a class="toc-l3" href="#api-and-runtime-services">API and Runtime Services</a>
+<a class="toc-l3" href="#storage">Storage</a>
+<a class="toc-l2" href="#6-repository-layout">6. Repository Layout</a>
+<a class="toc-l2" href="#7-major-capabilities-and-features">7. Major Capabilities And Features</a>
+<a class="toc-l3" href="#7-1-identity-and-capability-management">7.1 Identity And Capability Management</a>
+<a class="toc-l3" href="#7-2-agent-studio">7.2 Agent Studio</a>
+<a class="toc-l3" href="#7-3-workitem-hub">7.3 WorkItem Hub</a>
+<a class="toc-l3" href="#7-4-metadata-registry">7.4 Metadata Registry</a>
+<a class="toc-l3" href="#7-5-workflow-designer">7.5 Workflow Designer</a>
+<a class="toc-l3" href="#7-6-workflow-runtime">7.6 Workflow Runtime</a>
+<a class="toc-l3" href="#7-7-blueprint-workbench-neo">7.7 Blueprint Workbench Neo</a>
+<a class="toc-l3" href="#7-8-context-fabric">7.8 Context Fabric</a>
+<a class="toc-l3" href="#7-9-prompt-composer">7.9 Prompt Composer</a>
+<a class="toc-l3" href="#7-10-agent-execution-runtime-server-runtime">7.10 Agent Execution Runtime / Server Runtime</a>
+<a class="toc-l3" href="#7-11-code-context-budgeter">7.11 Code Context Budgeter</a>
+<a class="toc-l3" href="#7-12-sandboxed-execution">7.12 Sandboxed Execution</a>
+<a class="toc-l3" href="#7-13-llm-gateway">7.13 LLM Gateway</a>
+<a class="toc-l3" href="#7-14-audit-governance-and-cost">7.14 Audit, Governance, And Cost</a>
+<a class="toc-l3" href="#7-15-learning-loop">7.15 Learning Loop</a>
+<a class="toc-l3" href="#7-16-laptop-cli-and-desktop">7.16 Laptop CLI And Desktop</a>
+<a class="toc-l2" href="#8-workitem-metadata-and-routing-model">8. WorkItem Metadata And Routing Model</a>
+<a class="toc-l3" href="#8-1-workitem-fields">8.1 WorkItem Fields</a>
+<a class="toc-l3" href="#8-2-workitem-type-metadata">8.2 WorkItem Type Metadata</a>
+<a class="toc-l3" href="#8-3-routing-policies">8.3 Routing Policies</a>
+<a class="toc-l3" href="#8-4-triggers">8.4 Triggers</a>
+<a class="toc-l2" href="#9-important-api-surfaces">9. Important API Surfaces</a>
+<a class="toc-l3" href="#9-1-workgraph-api">9.1 Workgraph API</a>
+<a class="toc-l3" href="#9-2-agent-execution-runtime-api">9.2 Agent Execution Runtime API</a>
+<a class="toc-l3" href="#9-3-context-fabric-api">9.3 Context Fabric API</a>
+<a class="toc-l3" href="#9-4-prompt-composer-api">9.4 Prompt Composer API</a>
+<a class="toc-l3" href="#9-5-agent-runtime-api">9.5 Agent Runtime API</a>
+<a class="toc-l3" href="#9-6-tool-service-api">9.6 Tool Service API</a>
+<a class="toc-l2" href="#10-installation">10. Installation</a>
+<a class="toc-l3" href="#10-1-prerequisites">10.1 Prerequisites</a>
+<a class="toc-l3" href="#10-2-clone">10.2 Clone</a>
+<a class="toc-l3" href="#10-3-initialize-local-config">10.3 Initialize Local Config</a>
+<a class="toc-l3" href="#10-4-start-the-stack">10.4 Start The Stack</a>
+<a class="toc-l3" href="#10-5-apply-seeds">10.5 Apply Seeds</a>
+<a class="toc-l3" href="#10-6-verify-health">10.6 Verify Health</a>
+<a class="toc-l3" href="#10-7-login">10.7 Login</a>
+<a class="toc-l2" href="#11-configuration">11. Configuration</a>
+<a class="toc-l3" href="#11-1-local-config-files">11.1 Local Config Files</a>
+<a class="toc-l3" href="#11-2-common-environment-areas">11.2 Common Environment Areas</a>
+<a class="toc-l3" href="#11-3-model-providers">11.3 Model Providers</a>
+<a class="toc-l2" href="#12-operations">12. Operations</a>
+<a class="toc-l3" href="#12-1-start">12.1 Start</a>
+<a class="toc-l3" href="#12-2-stop">12.2 Stop</a>
+<a class="toc-l3" href="#12-3-restart">12.3 Restart</a>
+<a class="toc-l3" href="#12-4-status-and-urls">12.4 Status And URLs</a>
+<a class="toc-l3" href="#12-5-logs">12.5 Logs</a>
+<a class="toc-l3" href="#12-6-destructive-reset">12.6 Destructive Reset</a>
+<a class="toc-l2" href="#13-common-runtime-flows">13. Common Runtime Flows</a>
+<a class="toc-l3" href="#13-1-manual-workitem-to-workflow">13.1 Manual WorkItem To Workflow</a>
+<a class="toc-l3" href="#13-2-event-to-auto-started-workitem">13.2 Event To Auto-Started WorkItem</a>
+<a class="toc-l3" href="#13-3-developer-stage-in-workbench">13.3 Developer Stage In Workbench</a>
+<a class="toc-l3" href="#13-4-laptop-copilot-invocation">13.4 Laptop Copilot Invocation</a>
+<a class="toc-l2" href="#14-governance-and-security">14. Governance And Security</a>
+<a class="toc-l3" href="#14-1-authentication">14.1 Authentication</a>
+<a class="toc-l3" href="#14-2-capability-scoping">14.2 Capability Scoping</a>
+<a class="toc-l3" href="#14-3-tenant-isolation">14.3 Tenant Isolation</a>
+<a class="toc-l3" href="#14-4-tool-risk">14.4 Tool Risk</a>
+<a class="toc-l3" href="#14-5-command-execution">14.5 Command Execution</a>
+<a class="toc-l2" href="#15-observability">15. Observability</a>
+<a class="toc-l3" href="#15-1-trace-ids">15.1 Trace IDs</a>
+<a class="toc-l3" href="#15-2-receipts">15.2 Receipts</a>
+<a class="toc-l3" href="#15-3-dashboards">15.3 Dashboards</a>
+<a class="toc-l2" href="#16-developer-extension-guide">16. Developer Extension Guide</a>
+<a class="toc-l3" href="#16-1-add-a-workitem-type">16.1 Add A WorkItem Type</a>
+<a class="toc-l3" href="#16-2-add-a-workflow-type">16.2 Add A Workflow Type</a>
+<a class="toc-l3" href="#16-3-add-a-node-type">16.3 Add A Node Type</a>
+<a class="toc-l3" href="#16-4-add-a-runtime-tool">16.4 Add A Runtime Tool</a>
+<a class="toc-l3" href="#16-5-add-a-prompt-layer">16.5 Add A Prompt Layer</a>
+<a class="toc-l3" href="#16-6-add-a-model-alias">16.6 Add A Model Alias</a>
+<a class="toc-l2" href="#17-troubleshooting">17. Troubleshooting</a>
+<a class="toc-l3" href="#17-1-port-already-in-use">17.1 Port Already In Use</a>
+<a class="toc-l3" href="#17-2-unknown-model-alias">17.2 Unknown Model Alias</a>
+<a class="toc-l3" href="#17-3-workspace-locked">17.3 Workspace Locked</a>
+<a class="toc-l3" href="#17-4-git-workspace-error">17.4 Git Workspace Error</a>
+<a class="toc-l3" href="#17-5-provider-rate-limit">17.5 Provider Rate Limit</a>
+<a class="toc-l3" href="#17-6-runner-unavailable">17.6 Runner Unavailable</a>
+<a class="toc-l3" href="#17-7-stale-ui">17.7 Stale UI</a>
+<a class="toc-l2" href="#18-release-checklist">18. Release Checklist</a>
+<a class="toc-l2" href="#19-existing-detailed-references">19. Existing Detailed References</a>
+</aside>
+<main>
+<article class="article">
+  <div class="topline"><span class="badge">Platform Docs</span><span>Generated 2026-05-22</span><span>Source: docs/platform-handbook.md</span></div>
+  <h1 id="singularity-platform-handbook">Singularity Platform Handbook<a class="anchor" href="#singularity-platform-handbook" aria-label="Link to Singularity Platform Handbook">#</a></h1>
+<p>Last verified from the local repository layout on 2026-05-22.</p>
+<p>This handbook documents the Singularity platform as a whole: capabilities, components, service connections, features, installation, configuration, operations, and common extension paths. It is intended for engineers, operators, and product owners who need a single detailed map of how the system works.</p>
+<h2 id="contents">Contents<a class="anchor" href="#contents" aria-label="Link to Contents">#</a></h2>
+<ul>
+<li><a href="#1-executive-summary">1. Executive Summary</a></li>
+<li><a href="#2-core-concepts">2. Core Concepts</a></li>
+<li><a href="#3-high-level-architecture">3. High-Level Architecture</a></li>
+<li><a href="#4-runtime-rule-who-talks-to-the-llm">4. Runtime Rule: Who Talks To The LLM</a></li>
+<li><a href="#5-service-inventory">5. Service Inventory</a></li>
+<li><a href="#6-repository-layout">6. Repository Layout</a></li>
+<li><a href="#7-major-capabilities-and-features">7. Major Capabilities And Features</a></li>
+<li><a href="#8-workitem-metadata-and-routing-model">8. WorkItem Metadata And Routing Model</a></li>
+<li><a href="#9-important-api-surfaces">9. Important API Surfaces</a></li>
+<li><a href="#10-installation">10. Installation</a></li>
+<li><a href="#11-configuration">11. Configuration</a></li>
+<li><a href="#12-operations">12. Operations</a></li>
+<li><a href="#13-common-runtime-flows">13. Common Runtime Flows</a></li>
+<li><a href="#14-governance-and-security">14. Governance And Security</a></li>
+<li><a href="#15-observability">15. Observability</a></li>
+<li><a href="#16-developer-extension-guide">16. Developer Extension Guide</a></li>
+<li><a href="#17-troubleshooting">17. Troubleshooting</a></li>
+<li><a href="#18-release-checklist">18. Release Checklist</a></li>
+<li><a href="#19-existing-detailed-references">19. Existing Detailed References</a></li>
+</ul>
+<h2 id="1-executive-summary">1. Executive Summary<a class="anchor" href="#1-executive-summary" aria-label="Link to 1. Executive Summary">#</a></h2>
+<p>Singularity is a governed enterprise agent platform. It brings together identity, capabilities, WorkItems, workflow orchestration, agent templates, prompt composition, context optimization, runtime tool execution, sandboxed command execution, audit governance, cost tracking, formal verification, and optional laptop-driven Copilot execution.</p>
+<p>The central design rule is:</p>
+<pre><code class="language-text">Business work starts as a WorkItem.
+Workflow runs are execution attempts attached to that WorkItem.
+Agentic work goes through Context Fabric and Agent Execution Runtime.
+The Agent Execution Runtime is the controlled runtime boundary for LLM and tool execution.
+Audit and receipts make the whole path observable.</code></pre>
+<p>The platform supports two execution modes:</p>
+<ul>
+<li><strong>Server runtime mode</strong>: Workgraph sends agent work to Context Fabric, Context Fabric invokes Agent Execution Runtime, Agent Execution Runtime calls the LLM Gateway and tools.</li>
+<li><strong>Laptop Copilot mode</strong>: a local CLI or desktop app runs Copilot directly, while Singularity records events, questions, token usage, audit receipts, and WorkItem status.</li>
+</ul>
+<h2 id="2-core-concepts">2. Core Concepts<a class="anchor" href="#2-core-concepts" aria-label="Link to 2. Core Concepts">#</a></h2>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Capability</td>
+<td>A business or technical domain that owns agents, workflows, WorkItems, policies, and memberships.</td>
+</tr>
+<tr>
+<td>WorkItem</td>
+<td>The first-class unit of business work. WorkItems can be created manually, from events, from schedules, or by parent workflows.</td>
+</tr>
+<tr>
+<td>WorkItem Type</td>
+<td>Metadata that describes what a WorkItem means, what fields it needs, how it routes, and which workflows can handle it. Examples: <code>BUG_FIX</code>, <code>FEATURE</code>, <code>INCIDENT</code>, <code>RESEARCH</code>, <code>GENERAL</code>.</td>
+</tr>
+<tr>
+<td>Workflow Template</td>
+<td>A reusable process definition made of nodes, edges, routing rules, and runtime policy.</td>
+</tr>
+<tr>
+<td>Workflow Type</td>
+<td>Metadata that describes what class of workflow this is and which WorkItem types it can handle.</td>
+</tr>
+<tr>
+<td>Workflow Instance</td>
+<td>One running execution of a workflow template.</td>
+</tr>
+<tr>
+<td>Node Type</td>
+<td>Runtime executor base plus metadata describing UI, config schema, validation, inputs, outputs, and edge rules.</td>
+</tr>
+<tr>
+<td>Agent Template</td>
+<td>A role-specific prompt, model, governance, and tool policy definition.</td>
+</tr>
+<tr>
+<td>Prompt Composer</td>
+<td>The service that owns prompt profiles, prompt layers, stage prompts, prompt assemblies, and reusable lessons.</td>
+</tr>
+<tr>
+<td>Context Fabric</td>
+<td>The orchestration layer for context assembly, optimized context packages, agent execution calls, receipts, and trace continuity.</td>
+</tr>
+<tr>
+<td>Agent Execution Runtime</td>
+<td>The local/server runtime surface for tools, code intelligence, editing, verification, discovery, session tokens, and LLM invocation.</td>
+</tr>
+<tr>
+<td>LLM Gateway</td>
+<td>Provider abstraction and model alias gateway. In the server runtime path, Agent Execution Runtime calls this gateway.</td>
+</tr>
+<tr>
+<td>Audit Governance</td>
+<td>Cross-service audit, receipts, budgets, rate limits, governance decisions, and cost evidence.</td>
+</tr>
+<tr>
+<td>Code Context Budgeter</td>
+<td>AST-first context selector that builds compact code-context packages for developer agents.</td>
+</tr>
+</tbody></table>
+<h2 id="3-high-level-architecture">3. High-Level Architecture<a class="anchor" href="#3-high-level-architecture" aria-label="Link to 3. High-Level Architecture">#</a></h2>
+<pre class="mermaid">flowchart LR
+  User["User / Operator"] --&gt; Portal["Portal and Web Apps"]
+  Portal --&gt; IAM["IAM Service"]
+  Portal --&gt; WGWeb["Workgraph Web"]
+  Portal --&gt; WB["Blueprint Workbench Neo"]
+  Portal --&gt; AgentWeb["Agent Web / Agent Studio"]
+
+  WGWeb --&gt; WGAPI["Workgraph API"]
+  WB --&gt; WGAPI
+  AgentWeb --&gt; AgentRuntime["Agent Runtime"]
+  AgentWeb --&gt; ToolService["Tool Service"]
+  AgentWeb --&gt; PromptComposer["Prompt Composer"]
+
+  WGAPI --&gt; ContextAPI["Context Fabric API"]
+  ContextAPI --&gt; PromptComposer
+  ContextAPI --&gt; AER["Agent Execution Runtime / Server Runtime"]
+  ContextAPI --&gt; ContextMemory["Context Memory"]
+
+  AER --&gt; LLMGateway["LLM Gateway"]
+  AER --&gt; Runner["Runtime Sandbox Runner"]
+  AER --&gt; ToolService
+  AER --&gt; FormalVerifier["Formal Verifier"]
+
+  WGAPI --&gt; MinIO["MinIO Artifacts"]
+  WGAPI --&gt; WGDB["Workgraph Postgres"]
+  IAM --&gt; IAMDB["IAM Postgres"]
+  AgentRuntime --&gt; ATDB["Agent Runtime Postgres"]
+  ToolService --&gt; ATDB
+  PromptComposer --&gt; ATDB
+  ContextAPI --&gt; CFDB["Context Fabric Stores"]
+
+  WGAPI --&gt; AuditGov["Audit Governance"]
+  ContextAPI --&gt; AuditGov
+  AER --&gt; AuditGov
+  ToolService --&gt; AuditGov
+  AgentRuntime --&gt; AuditGov
+  AuditGov --&gt; AuditDB["Audit Postgres"]
+  AuditGov --&gt; Metrics["Metrics Ledger"]
+
+  Laptop["sgl CLI / Desktop Copilot"] --&gt; WGAPI
+  Laptop --&gt; AuditGov
+  Laptop --&gt; AER</pre>
+<h2 id="4-runtime-rule-who-talks-to-the-llm">4. Runtime Rule: Who Talks To The LLM<a class="anchor" href="#4-runtime-rule-who-talks-to-the-llm" aria-label="Link to 4. Runtime Rule: Who Talks To The LLM">#</a></h2>
+<p>For server-side agentic execution, Singularity should preserve this rule:</p>
+<pre><code class="language-text">Workbench / Workgraph -&gt; Context Fabric -&gt; Agent Execution Runtime -&gt; LLM Gateway -&gt; Provider</code></pre>
+<p>Other services can request execution, assemble context, route WorkItems, and record audit events, but they should not call providers directly. This keeps cost, traceability, prompt policy, tool policy, and model alias resolution in one governed path.</p>
+<p>Laptop Copilot mode is intentionally different: Copilot runs on the user&#39;s machine, and Singularity records lifecycle events, audit evidence, questions, token usage, and completion status.</p>
+<h2 id="5-service-inventory">5. Service Inventory<a class="anchor" href="#5-service-inventory" aria-label="Link to 5. Service Inventory">#</a></h2>
+<p>Run <code>./singularity.sh urls</code> to print the current local endpoint map.</p>
+<h3 id="web-applications">Web Applications<a class="anchor" href="#web-applications" aria-label="Link to Web Applications">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Service</th>
+<th align="right">Local URL</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>portal</code></td>
+<td align="right"><code>http://localhost:5180</code></td>
+<td>Branded entry point and shell around the platform.</td>
+</tr>
+<tr>
+<td><code>user-and-capability</code></td>
+<td align="right"><code>http://localhost:5175</code></td>
+<td>IAM administration, users, teams, capabilities, roles, skills, and permissions.</td>
+</tr>
+<tr>
+<td><code>workgraph-web</code></td>
+<td align="right"><code>http://localhost:5174</code></td>
+<td>Workflow manager, workflow designer, WorkItem inbox, runs, approvals, metadata screens.</td>
+</tr>
+<tr>
+<td><code>blueprint-workbench</code></td>
+<td align="right"><code>http://localhost:5176</code></td>
+<td>Workbench Neo staged delivery loop for story-to-delivery execution.</td>
+</tr>
+<tr>
+<td><code>agent-web</code></td>
+<td align="right"><code>http://localhost:3000</code></td>
+<td>Agent Studio, operations, cost, audit, and control-plane routes.</td>
+</tr>
+<tr>
+<td><code>code-foundry-web</code></td>
+<td align="right">configured by compose</td>
+<td>Code Foundry UI for foundry runs and code generation workflows.</td>
+</tr>
+</tbody></table>
+<h3 id="api-and-runtime-services">API and Runtime Services<a class="anchor" href="#api-and-runtime-services" aria-label="Link to API and Runtime Services">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Service</th>
+<th align="right">URL</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>iam-service</code></td>
+<td align="right"><code>http://localhost:8100/api/v1</code></td>
+<td>Authentication, JWTs, users, teams, roles, capabilities, memberships, and permissions.</td>
+</tr>
+<tr>
+<td><code>workgraph-api</code></td>
+<td align="right"><code>http://localhost:8080/api</code></td>
+<td>WorkItems, workflows, workflow instances, tasks, approvals, metadata, triggers, artifact orchestration, and runs.</td>
+</tr>
+<tr>
+<td><code>agent-runtime</code></td>
+<td align="right"><code>http://localhost:3003/api/v1</code></td>
+<td>Agent templates, tools metadata, capabilities, execution records, memory APIs, and event subscriptions.</td>
+</tr>
+<tr>
+<td><code>agent-service</code></td>
+<td align="right"><code>http://localhost:3001/api/v1</code></td>
+<td>Agent application APIs and UI-facing agent service behavior.</td>
+</tr>
+<tr>
+<td><code>tool-service</code></td>
+<td align="right"><code>http://localhost:3002/api/v1</code></td>
+<td>Tool registry, internal tools, connector tools, runner routes, and tool discovery.</td>
+</tr>
+<tr>
+<td><code>prompt-composer</code></td>
+<td align="right"><code>http://localhost:3004/api/v1</code></td>
+<td>Prompt profiles, layers, assemblies, stage prompts, lessons, contracts, and compose/respond APIs.</td>
+</tr>
+<tr>
+<td><code>learning-service</code></td>
+<td align="right"><code>http://localhost:3006/api/v1</code></td>
+<td>Hybrid learning summaries and patterns that complement Prompt Composer lessons.</td>
+</tr>
+<tr>
+<td><code>context-api</code></td>
+<td align="right"><code>http://localhost:8000</code></td>
+<td>Context Fabric execution API, optimized context, laptop bridge, receipts, and Agent Execution Runtime orchestration.</td>
+</tr>
+<tr>
+<td><code>llm-gateway</code></td>
+<td align="right"><code>http://localhost:8001</code></td>
+<td>Provider abstraction, model aliases, chat completions, embeddings, model/provider listing.</td>
+</tr>
+<tr>
+<td><code>context-memory</code></td>
+<td align="right"><code>http://localhost:8002</code></td>
+<td>Conversation memory, summaries, semantic search, compiled context packages.</td>
+</tr>
+<tr>
+<td><code>metrics-ledger</code></td>
+<td align="right"><code>http://localhost:8003</code></td>
+<td>Metrics, token/cost rollups, optimization savings, operational dashboards.</td>
+</tr>
+<tr>
+<td><code>formal-verifier</code></td>
+<td align="right"><code>http://localhost:8010</code></td>
+<td>Formal verification service for constraints, policies, and verification receipts.</td>
+</tr>
+<tr>
+<td><code>mcp-server-demo</code></td>
+<td align="right"><code>http://localhost:7100</code></td>
+<td>Agent Execution Runtime, tools, resources, discovery, code context, invoke/resume, and token endpoints.</td>
+</tr>
+<tr>
+<td><code>mcp-sandbox-runner</code></td>
+<td align="right">internal compose network</td>
+<td>Docker-based command execution runner for <code>run_command</code> and <code>run_test</code>.</td>
+</tr>
+<tr>
+<td><code>code-foundry-api</code></td>
+<td align="right">configured by compose</td>
+<td>Code Foundry API for foundry-specific runs and artifacts.</td>
+</tr>
+<tr>
+<td><code>audit-governance-service</code></td>
+<td align="right">commonly <code>http://localhost:8500</code></td>
+<td>Audit events, governance budgets, receipts, cost evidence, hook ingestion.</td>
+</tr>
+</tbody></table>
+<h3 id="storage">Storage<a class="anchor" href="#storage" aria-label="Link to Storage">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Store</th>
+<th align="right">Local Port</th>
+<th>Owned Data</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>iam-postgres</code></td>
+<td align="right"><code>5433</code></td>
+<td>IAM users, teams, roles, capabilities, skills, permissions.</td>
+</tr>
+<tr>
+<td><code>at-postgres</code></td>
+<td align="right"><code>5432</code></td>
+<td>Agent runtime, tool service, prompt composer, and related agent/tool/prompt data.</td>
+</tr>
+<tr>
+<td><code>wg-postgres</code></td>
+<td align="right"><code>5434</code></td>
+<td>Workgraph workflows, WorkItems, workflow instances, metadata, triggers, questions, approvals.</td>
+</tr>
+<tr>
+<td><code>audit-governance-postgres</code></td>
+<td align="right">commonly <code>5436</code></td>
+<td>Audit events, budgets, governance and cost evidence.</td>
+</tr>
+<tr>
+<td>Context Fabric stores</td>
+<td align="right">service-specific</td>
+<td>Context memory and metrics stores depending on local config.</td>
+</tr>
+<tr>
+<td><code>wg-minio</code></td>
+<td align="right"><code>9000</code>, console <code>9001</code></td>
+<td>Artifacts, workflow attachments, generated documents, evidence packs.</td>
+</tr>
+</tbody></table>
+<h2 id="6-repository-layout">6. Repository Layout<a class="anchor" href="#6-repository-layout" aria-label="Link to 6. Repository Layout">#</a></h2>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>singularity.sh</code></td>
+<td>Local operator wrapper for config, compose up/down, logs, doctor, urls, and status.</td>
+</tr>
+<tr>
+<td><code>docker-compose.yml</code></td>
+<td>Main local stack definition.</td>
+</tr>
+<tr>
+<td><code>seed/</code></td>
+<td>Baseline seed SQL for IAM, agent runtime, Workgraph, and audit governance.</td>
+</tr>
+<tr>
+<td><code>workgraph-studio/apps/api</code></td>
+<td>Workgraph API.</td>
+</tr>
+<tr>
+<td><code>workgraph-studio/apps/web</code></td>
+<td>Workgraph web app and workflow designer.</td>
+</tr>
+<tr>
+<td><code>workgraph-studio/apps/blueprint-workbench</code></td>
+<td>Workbench Neo UI.</td>
+</tr>
+<tr>
+<td><code>workgraph-studio/apps/sgl-cli</code></td>
+<td>Laptop CLI for work, attach, questions, logs, doctor, and Copilot workflows.</td>
+</tr>
+<tr>
+<td><code>workgraph-studio/apps/desktop</code></td>
+<td>Electron desktop app for laptop-driven Copilot execution.</td>
+</tr>
+<tr>
+<td><code>workgraph-studio/packages/laptop-sdk</code></td>
+<td>Shared SDK used by CLI and desktop.</td>
+</tr>
+<tr>
+<td><code>agent-and-tools/apps/agent-runtime</code></td>
+<td>Agent templates, capabilities, execution, and memory APIs.</td>
+</tr>
+<tr>
+<td><code>agent-and-tools/apps/tool-service</code></td>
+<td>Tool registry and connector tool service.</td>
+</tr>
+<tr>
+<td><code>agent-and-tools/apps/prompt-composer</code></td>
+<td>Prompt profiles, layers, assemblies, lessons, and contracts.</td>
+</tr>
+<tr>
+<td><code>agent-and-tools/apps/learning-service</code></td>
+<td>Hybrid learning API.</td>
+</tr>
+<tr>
+<td><code>mcp-server</code></td>
+<td>Agent Execution Runtime implementation: code intelligence, editing tools, verification, discovery, code context, LLM invocation.</td>
+</tr>
+<tr>
+<td><code>mcp-sandbox-runner</code></td>
+<td>Sandboxed command execution service.</td>
+</tr>
+<tr>
+<td><code>context-fabric</code></td>
+<td>Context API, LLM gateway, memory, metrics, and formal verification services.</td>
+</tr>
+<tr>
+<td><code>singularity-iam-service</code></td>
+<td>IAM Python service.</td>
+</tr>
+<tr>
+<td><code>singularity-portal</code></td>
+<td>Portal web application.</td>
+</tr>
+<tr>
+<td><code>UserAndCapabillity</code></td>
+<td>User and capability management UI.</td>
+</tr>
+<tr>
+<td><code>singularity-code-foundry</code></td>
+<td>Code Foundry API and web applications.</td>
+</tr>
+<tr>
+<td><code>docs/</code></td>
+<td>Architecture, data model, discovery, trace, and platform documentation.</td>
+</tr>
+</tbody></table>
+<h2 id="7-major-capabilities-and-features">7. Major Capabilities And Features<a class="anchor" href="#7-major-capabilities-and-features" aria-label="Link to 7. Major Capabilities And Features">#</a></h2>
+<h3 id="7-1-identity-and-capability-management">7.1 Identity And Capability Management<a class="anchor" href="#7-1-identity-and-capability-management" aria-label="Link to 7.1 Identity And Capability Management">#</a></h3>
+<p>Identity is owned by <code>iam-service</code> and the User and Capability UI.</p>
+<p>Core features:</p>
+<ul>
+<li>Login and JWT issuance.</li>
+<li>Users, teams, roles, skills, permissions.</li>
+<li>Capability membership and ownership.</li>
+<li>Capability-scoped access decisions for WorkItems, workflows, agents, and metadata.</li>
+<li>IAM-backed default auth mode through <code>AUTH_PROVIDER=iam</code>.</li>
+</ul>
+<h3 id="7-2-agent-studio">7.2 Agent Studio<a class="anchor" href="#7-2-agent-studio" aria-label="Link to 7.2 Agent Studio">#</a></h3>
+<p>Agent Studio manages reusable and derived agent templates.</p>
+<p>Core features:</p>
+<ul>
+<li>Locked common baselines for roles such as Architect, Developer, QA, Product Owner, Security, DevOps, and Governance.</li>
+<li>Capability-derived templates.</li>
+<li>Prompt profile and tool policy attachment.</li>
+<li>Model alias selection.</li>
+<li>Audit events for derivation and updates.</li>
+</ul>
+<h3 id="7-3-workitem-hub">7.3 WorkItem Hub<a class="anchor" href="#7-3-workitem-hub" aria-label="Link to 7.3 WorkItem Hub">#</a></h3>
+<p>WorkItems are the business object the platform routes, schedules, starts, detaches, and audits.</p>
+<p>Core features:</p>
+<ul>
+<li>Manual WorkItem creation.</li>
+<li>Event-created WorkItems.</li>
+<li>Scheduled WorkItems using server time.</li>
+<li>Parent workflow delegated WorkItems.</li>
+<li>Routing modes: <code>MANUAL</code>, <code>AUTO_ATTACH</code>, <code>AUTO_START</code>, <code>SCHEDULED_START</code>.</li>
+<li>Routing states: <code>UNROUTED</code>, <code>ROUTED</code>, <code>ATTACHED</code>, <code>STARTED</code>, <code>ROUTE_FAILED</code>.</li>
+<li>Detach and attach workflows.</li>
+<li>WorkItem detail view with request packet, targets, child runs, route evidence, schedule, trigger source, and timeline.</li>
+</ul>
+<h3 id="7-4-metadata-registry">7.4 Metadata Registry<a class="anchor" href="#7-4-metadata-registry" aria-label="Link to 7.4 Metadata Registry">#</a></h3>
+<p>The metadata registry makes WorkItem types, workflow types, node types, event types, and trigger profiles configurable without schema changes for every business type.</p>
+<p>Definition kinds:</p>
+<ul>
+<li><code>WORK_ITEM_TYPE</code></li>
+<li><code>WORKFLOW_TYPE</code></li>
+<li><code>NODE_TYPE</code></li>
+<li><code>EVENT_TYPE</code></li>
+<li><code>TRIGGER_PROFILE</code></li>
+</ul>
+<p>Resolution scope:</p>
+<ul>
+<li><code>GLOBAL</code></li>
+<li><code>CAPABILITY</code></li>
+<li><code>WORKFLOW</code></li>
+<li><code>NODE</code></li>
+</ul>
+<p>Runtime objects store both metadata keys and snapshots so old runs do not change behavior when definitions evolve.</p>
+<h3 id="7-5-workflow-designer">7.5 Workflow Designer<a class="anchor" href="#7-5-workflow-designer" aria-label="Link to 7.5 Workflow Designer">#</a></h3>
+<p>The workflow designer builds workflow templates from nodes and edges.</p>
+<p>Core features:</p>
+<ul>
+<li>Miro-style large canvas direction.</li>
+<li>Workflow type metadata.</li>
+<li>Node type metadata.</li>
+<li>Node picker driven by metadata.</li>
+<li>Validation and issue panels.</li>
+<li>Design, Run, and Inspect concerns.</li>
+<li>Node configuration through inspector drawers.</li>
+<li>Routing, governance, inputs, outputs, retry, and advanced config sections.</li>
+</ul>
+<h3 id="7-6-workflow-runtime">7.6 Workflow Runtime<a class="anchor" href="#7-6-workflow-runtime" aria-label="Link to 7.6 Workflow Runtime">#</a></h3>
+<p>Workgraph executes workflow instances and manages tasks, artifacts, approvals, triggers, and WorkItems.</p>
+<p>Common node families:</p>
+<ul>
+<li>Start and end nodes.</li>
+<li>Human tasks.</li>
+<li>Agent tasks.</li>
+<li>Approval gates.</li>
+<li>Tool requests.</li>
+<li>Git push and release readiness nodes.</li>
+<li>Workbench nodes.</li>
+<li>Timer, event gateway, and trigger-aware nodes.</li>
+<li>Custom nodes mapped to runtime executor bases.</li>
+</ul>
+<h3 id="7-7-blueprint-workbench-neo">7.7 Blueprint Workbench Neo<a class="anchor" href="#7-7-blueprint-workbench-neo" aria-label="Link to 7.7 Blueprint Workbench Neo">#</a></h3>
+<p>Workbench Neo is the staged story-to-delivery loop for agent-driven delivery.</p>
+<p>Common stages:</p>
+<ul>
+<li>Story Intake.</li>
+<li>Plan.</li>
+<li>Design.</li>
+<li>Develop.</li>
+<li>Security Review.</li>
+<li>QA Review.</li>
+<li>Release Readiness.</li>
+<li>Test Certification.</li>
+</ul>
+<p>Core features:</p>
+<ul>
+<li>Per-stage agent templates.</li>
+<li>Manual or automated gates.</li>
+<li>Expected artifacts.</li>
+<li>Approval and send-back flows.</li>
+<li>Live Cockpit events.</li>
+<li>Run Insights, cost, model, tool, verification, and code-change receipts.</li>
+<li>Developer gate requiring actual runtime/git code-change receipt.</li>
+<li>QA and certification gates requiring verification receipt or accepted-risk override.</li>
+</ul>
+<h3 id="7-8-context-fabric">7.8 Context Fabric<a class="anchor" href="#7-8-context-fabric" aria-label="Link to 7.8 Context Fabric">#</a></h3>
+<p>Context Fabric coordinates context assembly and agent execution.</p>
+<p>Core features:</p>
+<ul>
+<li><code>/execute</code> and <code>/execute/resume</code>.</li>
+<li>Context optimization and comparison.</li>
+<li>Context memory, summaries, and semantic search.</li>
+<li>Trace propagation.</li>
+<li>Context packages and receipts.</li>
+<li>Dependency state context.</li>
+<li>Laptop bridge compatibility.</li>
+<li>Calls to Prompt Composer for prompt assembly.</li>
+<li>Calls to Agent Execution Runtime for actual agent runtime invocation.</li>
+</ul>
+<h3 id="7-9-prompt-composer">7.9 Prompt Composer<a class="anchor" href="#7-9-prompt-composer" aria-label="Link to 7.9 Prompt Composer">#</a></h3>
+<p>Prompt Composer owns reusable prompt construction.</p>
+<p>Core features:</p>
+<ul>
+<li>Prompt profiles.</li>
+<li>Prompt layers.</li>
+<li>Prompt assemblies.</li>
+<li>Stage prompts.</li>
+<li>System prompts.</li>
+<li>Event Horizon actions.</li>
+<li>Engine lessons and global lessons.</li>
+<li>Contracts.</li>
+<li>Compose and respond endpoints.</li>
+<li>Debug retrieval.</li>
+<li>Code-aware prompt layer rendering.</li>
+</ul>
+<h3 id="7-10-agent-execution-runtime-server-runtime">7.10 Agent Execution Runtime / Server Runtime<a class="anchor" href="#7-10-agent-execution-runtime-server-runtime" aria-label="Link to 7.10 Agent Execution Runtime / Server Runtime">#</a></h3>
+<p>The Agent Execution Runtime is the server runtime boundary for agentic coding and tools.</p>
+<p>Core features:</p>
+<ul>
+<li>Tool listing and tool calls.</li>
+<li>Discovery endpoint.</li>
+<li>Resources endpoint.</li>
+<li>Events endpoint.</li>
+<li>Session token minting and revocation.</li>
+<li>Invoke and resume.</li>
+<li>Code intelligence.</li>
+<li>Differential edits and full-file write safeguards.</li>
+<li>Sandboxed command execution through runner.</li>
+<li>Verification receipts.</li>
+<li>Formal verification integration.</li>
+<li>Code Context Budgeter.</li>
+<li>LLM calls through LLM Gateway.</li>
+</ul>
+<p>Important runtime tool families:</p>
+<ul>
+<li>File and code reading: <code>read_file</code>, <code>list_directory</code>, <code>search_code</code>.</li>
+<li>Code intelligence: <code>find_symbol</code>, <code>get_symbol</code>, <code>get_ast_slice</code>, <code>get_dependencies</code>, <code>find_references</code>, <code>find_tests</code>.</li>
+<li>Editing: <code>apply_patch</code>, <code>replace_text</code>, <code>replace_range</code>, <code>write_file</code>.</li>
+<li>Git and branch finishing: <code>finish_work_branch</code>, <code>finish_work_branch_auto</code>.</li>
+<li>Verification: <code>run_command</code>, <code>run_test</code>, <code>formal_verify</code>.</li>
+<li>Learning and memory: <code>query_learning_state</code>, <code>query_similar_capabilities</code>, <code>record_outcome_pattern</code>, <code>record_assumption</code>, <code>record_blocker</code>.</li>
+<li>Copilot advisory tools where enabled.</li>
+</ul>
+<h3 id="7-11-code-context-budgeter">7.11 Code Context Budgeter<a class="anchor" href="#7-11-code-context-budgeter" aria-label="Link to 7.11 Code Context Budgeter">#</a></h3>
+<p>The Code Context Budgeter reduces coding-agent token usage by making AST-first context the default.</p>
+<p>Target flow:</p>
+<pre><code class="language-text">Task -&gt; Intent Detection -&gt; Symbol Search -&gt; AST Slice -&gt; Dependency Expansion -&gt; Token Budgeting -&gt; Prompt Composer -&gt; Context Fabric -&gt; LLM</code></pre>
+<p>Core features:</p>
+<ul>
+<li>Code task classification.</li>
+<li>Target symbol resolution.</li>
+<li>Editable AST slices.</li>
+<li>Dependency slices.</li>
+<li>Relevant test slices.</li>
+<li>Type and interface contracts.</li>
+<li>Excluded context reasons.</li>
+<li>Token savings estimates.</li>
+<li>Full-file read policy and exception receipts.</li>
+</ul>
+<h3 id="7-12-sandboxed-execution">7.12 Sandboxed Execution<a class="anchor" href="#7-12-sandboxed-execution" aria-label="Link to 7.12 Sandboxed Execution">#</a></h3>
+<p><code>mcp-sandbox-runner</code> isolates command execution.</p>
+<p>Target isolation properties:</p>
+<ul>
+<li>Ephemeral Docker containers.</li>
+<li>No network by default.</li>
+<li>Read-only root filesystem.</li>
+<li>Capability drops.</li>
+<li>No new privileges.</li>
+<li>CPU, memory, and process limits.</li>
+<li>Workspace-only mount.</li>
+<li>No provider keys or arbitrary host environment.</li>
+</ul>
+<p><code>run_command</code> and <code>run_test</code> return verification receipts with command, exit code, excerpts, duration, pass/fail, timeout state, and isolation metadata.</p>
+<h3 id="7-13-llm-gateway">7.13 LLM Gateway<a class="anchor" href="#7-13-llm-gateway" aria-label="Link to 7.13 LLM Gateway">#</a></h3>
+<p>LLM Gateway abstracts providers and model aliases.</p>
+<p>Core features:</p>
+<ul>
+<li>Provider listing.</li>
+<li>Model listing.</li>
+<li>Chat completions.</li>
+<li>Embeddings.</li>
+<li>Alias resolution.</li>
+<li>Usage and cost reporting when provider data is available.</li>
+</ul>
+<p>Provider configuration is usually written from <code>.singularity/config.local.json</code> into local generated provider files.</p>
+<h3 id="7-14-audit-governance-and-cost">7.14 Audit, Governance, And Cost<a class="anchor" href="#7-14-audit-governance-and-cost" aria-label="Link to 7.14 Audit, Governance, And Cost">#</a></h3>
+<p>Audit Governance receives cross-service events and serves governance decisions.</p>
+<p>Core features:</p>
+<ul>
+<li>Audit event ingestion.</li>
+<li>Hook ingestion.</li>
+<li>Governance budgets.</li>
+<li>Rate limits.</li>
+<li>Denied-call evidence.</li>
+<li>Cost and token rollups.</li>
+<li>Receipts.</li>
+<li>Run and capability correlation.</li>
+<li>Events for Agent Execution Runtime, Context Fabric, Workgraph, Tool Service, and Agent Runtime.</li>
+</ul>
+<h3 id="7-15-learning-loop">7.15 Learning Loop<a class="anchor" href="#7-15-learning-loop" aria-label="Link to 7.15 Learning Loop">#</a></h3>
+<p>The learning architecture is hybrid:</p>
+<ul>
+<li><code>learning-service</code> owns summaries and pattern APIs.</li>
+<li>Prompt Composer <code>EngineLesson</code> remains the canonical prompt-lesson store.</li>
+<li>Prompt Composer merges learning summaries and patterns with existing global lessons.</li>
+<li>If the learning service is unavailable, prompt assembly should degrade gracefully.</li>
+</ul>
+<p>See <a href="./adr/0001-m35-hybrid-learning.md">M35 Hybrid Learning ADR</a>.</p>
+<h3 id="7-16-laptop-cli-and-desktop">7.16 Laptop CLI And Desktop<a class="anchor" href="#7-16-laptop-cli-and-desktop" aria-label="Link to 7.16 Laptop CLI And Desktop">#</a></h3>
+<p>Laptop mode supports direct Copilot execution from the user&#39;s machine.</p>
+<p>Core features:</p>
+<ul>
+<li><code>sgl</code> CLI.</li>
+<li>Electron desktop app.</li>
+<li>Auth.</li>
+<li>WorkItem picker.</li>
+<li>Embedded Copilot terminal.</li>
+<li>Events and questions.</li>
+<li>Heartbeats.</li>
+<li>Local retry queue for uploads.</li>
+<li>Hook callbacks.</li>
+<li>Token usage upload.</li>
+<li>Completion events.</li>
+<li>Diagnostics and Copilot CLI version checks.</li>
+</ul>
+<h2 id="8-workitem-metadata-and-routing-model">8. WorkItem Metadata And Routing Model<a class="anchor" href="#8-workitem-metadata-and-routing-model" aria-label="Link to 8. WorkItem Metadata And Routing Model">#</a></h2>
+<p>The WorkItem-first flow is:</p>
+<pre><code class="language-text">Event / Manual / Schedule
+  -&gt; WorkItem
+  -&gt; WorkItem Type Metadata
+  -&gt; Routing Policy
+  -&gt; Workflow Type
+  -&gt; Workflow Template
+  -&gt; Workflow Instance
+  -&gt; Nodes</code></pre>
+<h3 id="8-1-workitem-fields">8.1 WorkItem Fields<a class="anchor" href="#8-1-workitem-fields" aria-label="Link to 8.1 WorkItem Fields">#</a></h3>
+<p>Important WorkItem metadata fields:</p>
+<ul>
+<li><code>workItemTypeKey</code></li>
+<li><code>typeVersion</code></li>
+<li><code>typeSnapshot</code></li>
+<li><code>routingMode</code></li>
+<li><code>scheduledAt</code></li>
+<li><code>notBefore</code></li>
+<li><code>sourceEventTypeKey</code></li>
+<li><code>routingPolicyId</code></li>
+<li><code>routingState</code></li>
+</ul>
+<h3 id="8-2-workitem-type-metadata">8.2 WorkItem Type Metadata<a class="anchor" href="#8-2-workitem-type-metadata" aria-label="Link to 8.2 WorkItem Type Metadata">#</a></h3>
+<p>WorkItem type metadata defines:</p>
+<ul>
+<li>Required input fields.</li>
+<li>Default urgency, SLA, budget, and priority.</li>
+<li>Allowed source types: <code>MANUAL</code>, <code>EVENT</code>, <code>SCHEDULE</code>, <code>PARENT_WORKFLOW</code>.</li>
+<li>Allowed routing modes.</li>
+<li>Compatible workflow types.</li>
+<li>Assignment rules.</li>
+<li>Approval requirements.</li>
+<li>UI labels and forms.</li>
+</ul>
+<h3 id="8-3-routing-policies">8.3 Routing Policies<a class="anchor" href="#8-3-routing-policies" aria-label="Link to 8.3 Routing Policies">#</a></h3>
+<p><code>WorkItemRoutingPolicy</code> connects a WorkItem type to a workflow type or workflow template.</p>
+<p>Important fields:</p>
+<ul>
+<li><code>capabilityId</code></li>
+<li><code>workItemTypeKey</code></li>
+<li><code>workflowTypeKey</code></li>
+<li><code>workflowId</code></li>
+<li><code>routingMode</code></li>
+<li><code>priority</code></li>
+<li><code>selector</code></li>
+<li><code>isActive</code></li>
+</ul>
+<h3 id="8-4-triggers">8.4 Triggers<a class="anchor" href="#8-4-triggers" aria-label="Link to 8.4 Triggers">#</a></h3>
+<p><code>WorkItemTrigger</code> creates WorkItems from events, schedules, or webhooks.</p>
+<p>Important fields:</p>
+<ul>
+<li><code>triggerType</code>: <code>EVENT</code>, <code>SCHEDULE</code>, <code>WEBHOOK</code></li>
+<li><code>eventTypeKey</code></li>
+<li><code>capabilityId</code></li>
+<li><code>workItemTypeKey</code></li>
+<li><code>routingMode</code></li>
+<li><code>scheduleConfig</code></li>
+<li><code>payloadMapping</code></li>
+<li><code>dedupeKey</code></li>
+<li><code>isActive</code></li>
+</ul>
+<p>Scheduling uses server time and database locks for idempotency.</p>
+<h2 id="9-important-api-surfaces">9. Important API Surfaces<a class="anchor" href="#9-important-api-surfaces" aria-label="Link to 9. Important API Surfaces">#</a></h2>
+<h3 id="9-1-workgraph-api">9.1 Workgraph API<a class="anchor" href="#9-1-workgraph-api" aria-label="Link to 9.1 Workgraph API">#</a></h3>
+<p>Mounted under <code>http://localhost:8080/api</code>.</p>
+<p>Important route groups:</p>
+<ul>
+<li><code>/auth</code></li>
+<li><code>/users</code>, <code>/teams</code>, <code>/identity</code>, <code>/roles</code>, <code>/skills</code>, <code>/permissions</code></li>
+<li><code>/workflow-templates</code></li>
+<li><code>/workflows</code></li>
+<li><code>/workflow-instances</code></li>
+<li><code>/workflow-triggers</code></li>
+<li><code>/custom-node-types</code></li>
+<li><code>/triggers/webhook</code></li>
+<li><code>/tasks</code></li>
+<li><code>/metadata-definitions</code></li>
+<li><code>/work-item-routing-policies</code></li>
+<li><code>/work-item-triggers</code></li>
+<li><code>/work-items</code></li>
+<li><code>/laptop-invocations</code></li>
+<li><code>/questions</code></li>
+<li><code>/approvals</code></li>
+<li><code>/consumable-types</code>, <code>/consumables</code></li>
+<li><code>/agents</code>, <code>/agent-runs</code></li>
+<li><code>/tools</code>, <code>/tool-runs</code></li>
+<li><code>/audit</code>, <code>/connectors</code></li>
+<li><code>/artifact-templates</code></li>
+<li><code>/blueprint</code></li>
+<li><code>/event-horizon</code></li>
+<li><code>/contracts</code></li>
+<li><code>/documents</code></li>
+<li><code>/runtime</code>, <code>/runs</code>, <code>/llm</code>, <code>/notify</code></li>
+<li><code>/lookup</code></li>
+<li><code>/agent-studio</code></li>
+<li><code>/receipts</code></li>
+<li><code>/events/subscriptions</code>, <code>/events/incoming</code></li>
+<li><code>/admin/feature-flags</code>, <code>/internal/feature-flags</code></li>
+</ul>
+<h3 id="9-2-agent-execution-runtime-api">9.2 Agent Execution Runtime API<a class="anchor" href="#9-2-agent-execution-runtime-api" aria-label="Link to 9.2 Agent Execution Runtime API">#</a></h3>
+<p>Mounted under <code>http://localhost:7100</code>.</p>
+<p>Important endpoints:</p>
+<ul>
+<li><code>GET /health</code></li>
+<li><code>GET /healthz/strict</code></li>
+<li><code>GET /llm/providers</code></li>
+<li><code>GET /llm/models</code></li>
+<li><code>POST /mcp/tokens</code></li>
+<li><code>POST /mcp/tokens/:jti/revoke</code></li>
+<li><code>POST /mcp/invoke</code></li>
+<li><code>POST /mcp/resume</code></li>
+<li><code>GET /mcp/tools/list</code></li>
+<li><code>POST /mcp/tools/call</code></li>
+<li><code>GET /mcp/resources</code></li>
+<li><code>GET /mcp/events</code></li>
+<li><code>GET /mcp/discovery</code></li>
+<li><code>POST /mcp/embed</code></li>
+<li><code>POST /mcp/code-context/build</code></li>
+</ul>
+<h3 id="9-3-context-fabric-api">9.3 Context Fabric API<a class="anchor" href="#9-3-context-fabric-api" aria-label="Link to 9.3 Context Fabric API">#</a></h3>
+<p>Mounted under <code>http://localhost:8000</code>.</p>
+<p>Important endpoints:</p>
+<ul>
+<li><code>GET /health</code></li>
+<li><code>GET /healthz/strict</code></li>
+<li><code>POST /execute</code></li>
+<li><code>POST /execute/resume</code></li>
+<li><code>GET /execute/calls</code></li>
+<li><code>GET /execute/events</code></li>
+<li><code>GET /execute/events/stream</code></li>
+<li><code>POST /context/compare</code></li>
+<li><code>GET /metrics/dashboard</code></li>
+<li><code>GET /receipts</code></li>
+<li><code>/internal/mcp/...</code></li>
+<li><code>/api/laptop-bridge/connect</code></li>
+<li><code>/api/laptop-bridge/status</code></li>
+</ul>
+<h3 id="9-4-prompt-composer-api">9.4 Prompt Composer API<a class="anchor" href="#9-4-prompt-composer-api" aria-label="Link to 9.4 Prompt Composer API">#</a></h3>
+<p>Mounted under <code>http://localhost:3004/api/v1</code>.</p>
+<p>Important endpoints:</p>
+<ul>
+<li><code>/prompt-profiles</code></li>
+<li><code>/prompt-layers</code></li>
+<li><code>/prompt-assemblies</code></li>
+<li><code>/compose-and-respond</code></li>
+<li><code>/compose-and-respond/debug-retrieval</code></li>
+<li><code>/compiled-contexts</code></li>
+<li><code>/stage-prompts</code></li>
+<li><code>/system-prompts</code></li>
+<li><code>/event-horizon-actions</code></li>
+<li><code>/lessons</code></li>
+<li><code>/contracts</code></li>
+</ul>
+<h3 id="9-5-agent-runtime-api">9.5 Agent Runtime API<a class="anchor" href="#9-5-agent-runtime-api" aria-label="Link to 9.5 Agent Runtime API">#</a></h3>
+<p>Mounted under <code>http://localhost:3003/api/v1</code>.</p>
+<p>Important endpoints:</p>
+<ul>
+<li><code>/agents</code></li>
+<li><code>/tools</code></li>
+<li><code>/capabilities</code></li>
+<li><code>/executions</code></li>
+<li><code>/memory</code></li>
+<li><code>/events/subscriptions</code></li>
+</ul>
+<h3 id="9-6-tool-service-api">9.6 Tool Service API<a class="anchor" href="#9-6-tool-service-api" aria-label="Link to 9.6 Tool Service API">#</a></h3>
+<p>Mounted under <code>http://localhost:3002/api/v1</code>.</p>
+<p>Important endpoints:</p>
+<ul>
+<li><code>/tools</code></li>
+<li><code>/internal-tools</code></li>
+<li><code>/connector-tools</code></li>
+<li><code>/events/subscriptions</code></li>
+<li>runner routes under <code>/api/v1</code></li>
+</ul>
+<h2 id="10-installation">10. Installation<a class="anchor" href="#10-installation" aria-label="Link to 10. Installation">#</a></h2>
+<h3 id="10-1-prerequisites">10.1 Prerequisites<a class="anchor" href="#10-1-prerequisites" aria-label="Link to 10.1 Prerequisites">#</a></h3>
+<p>Install:</p>
+<ul>
+<li>Docker Desktop with Compose v2.</li>
+<li>Git.</li>
+<li>Curl.</li>
+<li>PostgreSQL client tools, optional but useful for seed and inspection.</li>
+<li>Node.js and pnpm for local package work.</li>
+<li>Python tooling for IAM and Context Fabric local development.</li>
+</ul>
+<p>Keep these ports available:</p>
+<pre><code class="language-text">3000, 3001, 3002, 3003, 3004, 3006
+5174, 5175, 5176, 5180
+7100
+8000, 8001, 8002, 8003, 8010
+8080, 8100, 8500
+5432, 5433, 5434, 5436
+9000, 9001</code></pre>
+<h3 id="10-2-clone">10.2 Clone<a class="anchor" href="#10-2-clone" aria-label="Link to 10.2 Clone">#</a></h3>
+<pre><code class="language-bash">git clone https://github.com/ashokraj2011/singularity-platform.git
+cd singularity-platform</code></pre>
+<h3 id="10-3-initialize-local-config">10.3 Initialize Local Config<a class="anchor" href="#10-3-initialize-local-config" aria-label="Link to 10.3 Initialize Local Config">#</a></h3>
+<pre><code class="language-bash">./singularity.sh config init --profile office-laptop
+./singularity.sh config mcp-catalog --default-alias mock
+./singularity.sh config write</code></pre>
+<p>Local config files live under <code>.singularity/</code> and generated env files are ignored by git. Keep provider keys and secrets local.</p>
+<h3 id="10-4-start-the-stack">10.4 Start The Stack<a class="anchor" href="#10-4-start-the-stack" aria-label="Link to 10.4 Start The Stack">#</a></h3>
+<pre><code class="language-bash">./singularity.sh up</code></pre>
+<p>This starts the main Docker Compose stack and the audit-governance side stack.</p>
+<h3 id="10-5-apply-seeds">10.5 Apply Seeds<a class="anchor" href="#10-5-apply-seeds" aria-label="Link to 10.5 Apply Seeds">#</a></h3>
+<pre><code class="language-bash">PGPASSWORD=singularity psql -h localhost -p 5433 -U singularity -d singularity_iam -f seed/00-iam.sql
+PGPASSWORD=singularity psql -h localhost -p 5432 -U postgres -d singularity -f seed/01-agent-runtime.sql
+PGPASSWORD=workgraph_secret psql -h localhost -p 5434 -U workgraph -d workgraph -f seed/02-workgraph.sql
+PGPASSWORD=audit psql -h localhost -p 5436 -U postgres -d audit_governance -f seed/03-audit-governance.sql</code></pre>
+<p>Seeds are designed to be safe to re-run.</p>
+<h3 id="10-6-verify-health">10.6 Verify Health<a class="anchor" href="#10-6-verify-health" aria-label="Link to 10.6 Verify Health">#</a></h3>
+<pre><code class="language-bash">./singularity.sh status
+./singularity.sh urls
+
+curl -fsS http://localhost:8080/health
+curl -fsS http://localhost:8100/api/v1/health
+curl -fsS http://localhost:8000/health
+curl -fsS http://localhost:7100/health</code></pre>
+<h3 id="10-7-login">10.7 Login<a class="anchor" href="#10-7-login" aria-label="Link to 10.7 Login">#</a></h3>
+<p>Use the seeded admin account:</p>
+<pre><code class="language-text">admin@singularity.local
+Admin1234!</code></pre>
+<p>Open:</p>
+<ul>
+<li><code>http://localhost:5175/login</code> for IAM.</li>
+<li><code>http://localhost:5174</code> for Workgraph.</li>
+<li><code>http://localhost:5176</code> for Workbench Neo.</li>
+<li><code>http://localhost:3000</code> for Agent Studio and Operations.</li>
+</ul>
+<h2 id="11-configuration">11. Configuration<a class="anchor" href="#11-configuration" aria-label="Link to 11. Configuration">#</a></h2>
+<h3 id="11-1-local-config-files">11.1 Local Config Files<a class="anchor" href="#11-1-local-config-files" aria-label="Link to 11.1 Local Config Files">#</a></h3>
+<p>Important local files:</p>
+<ul>
+<li><code>.singularity/config.local.json</code></li>
+<li><code>.singularity/llm-providers.json</code></li>
+<li><code>.singularity/mcp-models.json</code></li>
+<li>generated service env files created by <code>./singularity.sh config write</code></li>
+</ul>
+<h3 id="11-2-common-environment-areas">11.2 Common Environment Areas<a class="anchor" href="#11-2-common-environment-areas" aria-label="Link to 11.2 Common Environment Areas">#</a></h3>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>IAM</td>
+<td><code>AUTH_PROVIDER</code>, IAM base URLs, JWT secrets, service tokens.</td>
+</tr>
+<tr>
+<td>LLM</td>
+<td>provider keys, provider URLs, default model aliases, model catalog files.</td>
+</tr>
+<tr>
+<td>Agent Execution Runtime</td>
+<td>bearer token, model alias, LLM gateway URL, command execution mode, runner URL, runner token.</td>
+</tr>
+<tr>
+<td>Runner</td>
+<td>default image, image map, network mode, host workspace path.</td>
+</tr>
+<tr>
+<td>Context Fabric</td>
+<td>Agent Execution Runtime URL, Prompt Composer URL, Agent Runtime URL, LLM Gateway URL.</td>
+</tr>
+<tr>
+<td>Workgraph</td>
+<td>database URL, MinIO config, IAM config, feature flags.</td>
+</tr>
+<tr>
+<td>Audit</td>
+<td>audit DB URL, governance budgets, hook service auth.</td>
+</tr>
+</tbody></table>
+<h3 id="11-3-model-providers">11.3 Model Providers<a class="anchor" href="#11-3-model-providers" aria-label="Link to 11.3 Model Providers">#</a></h3>
+<p>Model aliases should be configured through the local catalog and gateway-facing provider config. Workbench stages should use model aliases, not raw provider strings.</p>
+<p>Common checks:</p>
+<pre><code class="language-bash">curl -fsS http://localhost:7100/llm/providers
+curl -fsS http://localhost:7100/llm/models
+curl -fsS http://localhost:8001/llm/providers
+curl -fsS http://localhost:8001/llm/models</code></pre>
+<p>If a run fails with <code>unknown model alias</code>, fix the alias in the stage config, runtime model catalog, or LLM Gateway config.</p>
+<h2 id="12-operations">12. Operations<a class="anchor" href="#12-operations" aria-label="Link to 12. Operations">#</a></h2>
+<h3 id="12-1-start">12.1 Start<a class="anchor" href="#12-1-start" aria-label="Link to 12.1 Start">#</a></h3>
+<pre><code class="language-bash">./singularity.sh up</code></pre>
+<h3 id="12-2-stop">12.2 Stop<a class="anchor" href="#12-2-stop" aria-label="Link to 12.2 Stop">#</a></h3>
+<pre><code class="language-bash">./singularity.sh down</code></pre>
+<p>This preserves data volumes.</p>
+<h3 id="12-3-restart">12.3 Restart<a class="anchor" href="#12-3-restart" aria-label="Link to 12.3 Restart">#</a></h3>
+<pre><code class="language-bash">./singularity.sh down
+./singularity.sh up</code></pre>
+<h3 id="12-4-status-and-urls">12.4 Status And URLs<a class="anchor" href="#12-4-status-and-urls" aria-label="Link to 12.4 Status And URLs">#</a></h3>
+<pre><code class="language-bash">./singularity.sh status
+./singularity.sh urls</code></pre>
+<h3 id="12-5-logs">12.5 Logs<a class="anchor" href="#12-5-logs" aria-label="Link to 12.5 Logs">#</a></h3>
+<pre><code class="language-bash">./singularity.sh logs workgraph-api -f
+./singularity.sh logs mcp-server-demo -f
+./singularity.sh logs context-api -f</code></pre>
+<h3 id="12-6-destructive-reset">12.6 Destructive Reset<a class="anchor" href="#12-6-destructive-reset" aria-label="Link to 12.6 Destructive Reset">#</a></h3>
+<pre><code class="language-bash">./singularity.sh nuke</code></pre>
+<p>Use only when you intend to delete local data volumes.</p>
+<h2 id="13-common-runtime-flows">13. Common Runtime Flows<a class="anchor" href="#13-common-runtime-flows" aria-label="Link to 13. Common Runtime Flows">#</a></h2>
+<h3 id="13-1-manual-workitem-to-workflow">13.1 Manual WorkItem To Workflow<a class="anchor" href="#13-1-manual-workitem-to-workflow" aria-label="Link to 13.1 Manual WorkItem To Workflow">#</a></h3>
+<pre class="mermaid">sequenceDiagram
+  participant U as User
+  participant W as Workgraph API
+  participant M as Metadata Registry
+  participant R as Routing Policy
+  participant WF as Workflow Runtime
+  participant A as Audit
+
+  U-&gt;&gt;W: Create WorkItem
+  W-&gt;&gt;M: Resolve WorkItem type snapshot
+  W-&gt;&gt;R: Select workflow by type and capability
+  R--&gt;&gt;W: Routing decision
+  W-&gt;&gt;WF: Attach or start workflow
+  W-&gt;&gt;A: Emit created, routed, attached, started events</pre>
+<h3 id="13-2-event-to-auto-started-workitem">13.2 Event To Auto-Started WorkItem<a class="anchor" href="#13-2-event-to-auto-started-workitem" aria-label="Link to 13.2 Event To Auto-Started WorkItem">#</a></h3>
+<pre class="mermaid">sequenceDiagram
+  participant E as Event Source
+  participant W as Workgraph API
+  participant T as WorkItem Trigger
+  participant S as Scheduler
+  participant WF as Workflow Runtime
+
+  E-&gt;&gt;W: Incoming event
+  W-&gt;&gt;T: Match event type and dedupe key
+  T-&gt;&gt;W: Create WorkItem
+  W-&gt;&gt;S: Route due item
+  S-&gt;&gt;WF: Auto-start workflow if policy allows</pre>
+<h3 id="13-3-developer-stage-in-workbench">13.3 Developer Stage In Workbench<a class="anchor" href="#13-3-developer-stage-in-workbench" aria-label="Link to 13.3 Developer Stage In Workbench">#</a></h3>
+<pre class="mermaid">sequenceDiagram
+  participant WB as Workbench Neo
+  participant WG as Workgraph API
+  participant CF as Context Fabric
+  participant PC as Prompt Composer
+  participant AER as Agent Execution Runtime
+  participant LLM as LLM Gateway
+  participant R as Sandbox Runner
+  participant AG as Audit Governance
+
+  WB-&gt;&gt;WG: Run Develop stage
+  WG-&gt;&gt;CF: /execute
+  CF-&gt;&gt;PC: Assemble stage prompt and code context
+  CF-&gt;&gt;AER: /mcp/invoke
+  AER-&gt;&gt;LLM: Chat completion via model alias
+  AER-&gt;&gt;AER: Read, slice, patch, verify
+  AER-&gt;&gt;R: run_test or run_command
+  AER-&gt;&gt;AG: Emit code-change and verification receipts
+  AER--&gt;&gt;CF: Outcome
+  CF--&gt;&gt;WG: Stage result
+  WG--&gt;&gt;WB: Live Cockpit and artifacts update</pre>
+<h3 id="13-4-laptop-copilot-invocation">13.4 Laptop Copilot Invocation<a class="anchor" href="#13-4-laptop-copilot-invocation" aria-label="Link to 13.4 Laptop Copilot Invocation">#</a></h3>
+<pre class="mermaid">sequenceDiagram
+  participant CLI as sgl CLI or Desktop
+  participant WG as Workgraph API
+  participant AER as Agent Execution Runtime Token API
+  participant CP as Copilot CLI
+  participant AG as Audit Governance
+
+  CLI-&gt;&gt;WG: Attach to WorkItem
+  CLI-&gt;&gt;AER: Request scoped session token
+  CLI-&gt;&gt;CP: Start Copilot local execution
+  CLI-&gt;&gt;AG: Upload hooks, token usage, completion
+  CLI-&gt;&gt;WG: Heartbeat and question events
+  WG--&gt;&gt;CLI: Answers and session state</pre>
+<h2 id="14-governance-and-security">14. Governance And Security<a class="anchor" href="#14-governance-and-security" aria-label="Link to 14. Governance And Security">#</a></h2>
+<h3 id="14-1-authentication">14.1 Authentication<a class="anchor" href="#14-1-authentication" aria-label="Link to 14.1 Authentication">#</a></h3>
+<p>User-facing APIs should require IAM authentication. Service-to-service APIs should require service tokens. Laptop session JWTs carry origin, client, scopes, and revocation metadata.</p>
+<h3 id="14-2-capability-scoping">14.2 Capability Scoping<a class="anchor" href="#14-2-capability-scoping" aria-label="Link to 14.2 Capability Scoping">#</a></h3>
+<p>New WorkItem, workflow, metadata, laptop, and question APIs should enforce capability membership even before strict tenant isolation.</p>
+<h3 id="14-3-tenant-isolation">14.3 Tenant Isolation<a class="anchor" href="#14-3-tenant-isolation" aria-label="Link to 14.3 Tenant Isolation">#</a></h3>
+<p>Non-strict mode is still authenticated and capability-scoped. Strict mode should add row-level tenant isolation and stricter service-token scoping.</p>
+<h3 id="14-4-tool-risk">14.4 Tool Risk<a class="anchor" href="#14-4-tool-risk" aria-label="Link to 14.4 Tool Risk">#</a></h3>
+<p>Mutating tools should be treated as risky by default:</p>
+<ul>
+<li>file edits</li>
+<li>command execution</li>
+<li>branch finishing</li>
+<li>connector mutation</li>
+<li>delegated service actions</li>
+</ul>
+<p>Risky tools should produce receipts and should be approval-gated where policy requires it.</p>
+<h3 id="14-5-command-execution">14.5 Command Execution<a class="anchor" href="#14-5-command-execution" aria-label="Link to 14.5 Command Execution">#</a></h3>
+<p>Command execution should prefer container mode. Process mode is a local/test escape hatch only.</p>
+<p>Allowed command classes:</p>
+<ul>
+<li>tests</li>
+<li>lint</li>
+<li>typecheck</li>
+<li>build</li>
+<li>read-only diagnostics</li>
+</ul>
+<p>Denied command classes:</p>
+<ul>
+<li>installs</li>
+<li>publishes</li>
+<li>deployments</li>
+<li>destructive filesystem operations</li>
+<li>shell operators</li>
+<li>absolute command paths</li>
+<li>secret environment access</li>
+</ul>
+<h2 id="15-observability">15. Observability<a class="anchor" href="#15-observability" aria-label="Link to 15. Observability">#</a></h2>
+<h3 id="15-1-trace-ids">15.1 Trace IDs<a class="anchor" href="#15-1-trace-ids" aria-label="Link to 15.1 Trace IDs">#</a></h3>
+<p>Every runtime path should carry correlation identifiers:</p>
+<ul>
+<li><code>traceId</code></li>
+<li><code>runId</code></li>
+<li><code>capabilityId</code></li>
+<li><code>workflowInstanceId</code></li>
+<li><code>workflowNodeId</code></li>
+<li><code>workItemId</code></li>
+<li><code>agentRunId</code></li>
+</ul>
+<h3 id="15-2-receipts">15.2 Receipts<a class="anchor" href="#15-2-receipts" aria-label="Link to 15.2 Receipts">#</a></h3>
+<p>Important receipt types:</p>
+<ul>
+<li>code change</li>
+<li>verification result</li>
+<li>formal verification</li>
+<li>approval wait</li>
+<li>approval decision</li>
+<li>context package</li>
+<li>full-file read exception</li>
+<li>LLM call completed</li>
+<li>governance denied</li>
+<li>route decision</li>
+<li>schedule fired</li>
+<li>WorkItem attached or detached</li>
+</ul>
+<h3 id="15-3-dashboards">15.3 Dashboards<a class="anchor" href="#15-3-dashboards" aria-label="Link to 15.3 Dashboards">#</a></h3>
+<p>Key places to inspect behavior:</p>
+<ul>
+<li>Workbench Live Cockpit.</li>
+<li>Workbench Run Insights.</li>
+<li>Workgraph Run Insights.</li>
+<li>Operations portal.</li>
+<li>Audit event stream.</li>
+<li>Cost dashboard.</li>
+<li>Metrics Ledger.</li>
+</ul>
+<h2 id="16-developer-extension-guide">16. Developer Extension Guide<a class="anchor" href="#16-developer-extension-guide" aria-label="Link to 16. Developer Extension Guide">#</a></h2>
+<h3 id="16-1-add-a-workitem-type">16.1 Add A WorkItem Type<a class="anchor" href="#16-1-add-a-workitem-type" aria-label="Link to 16.1 Add A WorkItem Type">#</a></h3>
+<ol>
+<li>Create or update a <code>MetadataDefinition</code> with kind <code>WORK_ITEM_TYPE</code>.</li>
+<li>Define schema, defaults, routing modes, compatible workflow types, UI form fields, and policy.</li>
+<li>Add a <code>WorkItemRoutingPolicy</code> for the capability.</li>
+<li>Optionally add a <code>WorkItemTrigger</code>.</li>
+<li>Create a WorkItem and verify the resolved type snapshot.</li>
+</ol>
+<h3 id="16-2-add-a-workflow-type">16.2 Add A Workflow Type<a class="anchor" href="#16-2-add-a-workflow-type" aria-label="Link to 16.2 Add A Workflow Type">#</a></h3>
+<ol>
+<li>Create a <code>MetadataDefinition</code> with kind <code>WORKFLOW_TYPE</code>.</li>
+<li>Set compatible WorkItem types.</li>
+<li>Mark default workflow templates where appropriate.</li>
+<li>Define governance and evidence expectations.</li>
+<li>Verify new WorkItems route to the intended workflow.</li>
+</ol>
+<h3 id="16-3-add-a-node-type">16.3 Add A Node Type<a class="anchor" href="#16-3-add-a-node-type" aria-label="Link to 16.3 Add A Node Type">#</a></h3>
+<ol>
+<li>Create <code>MetadataDefinition(kind=NODE_TYPE)</code>.</li>
+<li>Map it to a runtime executor base.</li>
+<li>Define config schema, display category, input/output contracts, and edge rules.</li>
+<li>Add node picker metadata.</li>
+<li>Add validation tests and a designer smoke test.</li>
+</ol>
+<h3 id="16-4-add-a-runtime-tool">16.4 Add A Runtime Tool<a class="anchor" href="#16-4-add-a-runtime-tool" aria-label="Link to 16.4 Add A Runtime Tool">#</a></h3>
+<ol>
+<li>Implement the tool in <code>mcp-server/src/tools</code>.</li>
+<li>Add schema, risk classification, and output envelope.</li>
+<li>Register it in the local tool registry.</li>
+<li>Add it to discovery output.</li>
+<li>Add tests for success, validation, policy, and receipt shape.</li>
+<li>Update Prompt Composer tool contracts if agents should prefer it.</li>
+</ol>
+<h3 id="16-5-add-a-prompt-layer">16.5 Add A Prompt Layer<a class="anchor" href="#16-5-add-a-prompt-layer" aria-label="Link to 16.5 Add A Prompt Layer">#</a></h3>
+<ol>
+<li>Add the layer in Prompt Composer.</li>
+<li>Decide where it is retrieved and in what order it renders.</li>
+<li>Add deterministic rendering tests.</li>
+<li>Add debug retrieval output.</li>
+<li>Verify Context Fabric receives and forwards the expected prompt package.</li>
+</ol>
+<h3 id="16-6-add-a-model-alias">16.6 Add A Model Alias<a class="anchor" href="#16-6-add-a-model-alias" aria-label="Link to 16.6 Add A Model Alias">#</a></h3>
+<ol>
+<li>Add provider configuration in local generated config.</li>
+<li>Add or update runtime model catalog alias.</li>
+<li>Verify through <code>/llm/models</code>.</li>
+<li>Select the alias in stage config or agent template.</li>
+<li>Run a small smoke stage and confirm usage/cost rolls up.</li>
+</ol>
+<h2 id="17-troubleshooting">17. Troubleshooting<a class="anchor" href="#17-troubleshooting" aria-label="Link to 17. Troubleshooting">#</a></h2>
+<h3 id="17-1-port-already-in-use">17.1 Port Already In Use<a class="anchor" href="#17-1-port-already-in-use" aria-label="Link to 17.1 Port Already In Use">#</a></h3>
+<pre><code class="language-bash">lsof -i :5174
+lsof -i :8080
+lsof -i :7100</code></pre>
+<p>Stop the conflicting process or change the port mapping.</p>
+<h3 id="17-2-unknown-model-alias">17.2 Unknown Model Alias<a class="anchor" href="#17-2-unknown-model-alias" aria-label="Link to 17.2 Unknown Model Alias">#</a></h3>
+<p>Symptom:</p>
+<pre><code class="language-text">LLM_GATEWAY_UPSTREAM 400: unknown model alias</code></pre>
+<p>Check:</p>
+<ul>
+<li>Workbench stage selected alias.</li>
+<li>runtime model catalog.</li>
+<li>LLM Gateway provider config.</li>
+<li><code>./singularity.sh config write</code> was run after config changes.</li>
+</ul>
+<h3 id="17-3-workspace-locked">17.3 Workspace Locked<a class="anchor" href="#17-3-workspace-locked" aria-label="Link to 17.3 Workspace Locked">#</a></h3>
+<p>Symptom:</p>
+<pre><code class="language-text">workspace is locked: /workspace</code></pre>
+<p>Usually a previous Agent Execution Runtime invocation is still holding the workspace lock or a run crashed before release. Check Agent Execution Runtime logs and running invocations before deleting lock files.</p>
+<h3 id="17-4-git-workspace-error">17.4 Git Workspace Error<a class="anchor" href="#17-4-git-workspace-error" aria-label="Link to 17.4 Git Workspace Error">#</a></h3>
+<p>Symptom:</p>
+<pre><code class="language-text">ENOTDIR: not a directory, open '/workspace/.../.git/info/exclude'</code></pre>
+<p>This usually means a workspace path is not a normal git checkout or <code>.git</code> is a file pointing elsewhere. Re-materialize the workspace or use a proper worktree-aware git path routine.</p>
+<h3 id="17-5-provider-rate-limit">17.5 Provider Rate Limit<a class="anchor" href="#17-5-provider-rate-limit" aria-label="Link to 17.5 Provider Rate Limit">#</a></h3>
+<p>Symptom:</p>
+<pre><code class="language-text">provider returned 429</code></pre>
+<p>Options:</p>
+<ul>
+<li>Reduce max input tokens.</li>
+<li>Use Code Context Budgeter.</li>
+<li>Lower history limits.</li>
+<li>Use a smaller or less rate-limited model alias.</li>
+<li>Retry after provider reset.</li>
+</ul>
+<h3 id="17-6-runner-unavailable">17.6 Runner Unavailable<a class="anchor" href="#17-6-runner-unavailable" aria-label="Link to 17.6 Runner Unavailable">#</a></h3>
+<p>Check:</p>
+<pre><code class="language-bash">curl -fsS http://localhost:7100/healthz/strict
+./singularity.sh logs mcp-sandbox-runner -f</code></pre>
+<p>If command execution mode is <code>container</code>, Agent Execution Runtime should not silently fall back to host process execution.</p>
+<h3 id="17-7-stale-ui">17.7 Stale UI<a class="anchor" href="#17-7-stale-ui" aria-label="Link to 17.7 Stale UI">#</a></h3>
+<p>If UI changes do not appear:</p>
+<pre><code class="language-bash">./singularity.sh logs workgraph-web -f
+./singularity.sh logs blueprint-workbench -f
+docker compose restart workgraph-web blueprint-workbench</code></pre>
+<p>Also hard-refresh the browser and confirm the browser is pointing at the expected port.</p>
+<h2 id="18-release-checklist">18. Release Checklist<a class="anchor" href="#18-release-checklist" aria-label="Link to 18. Release Checklist">#</a></h2>
+<p>Before a platform release:</p>
+<ul>
+<li>All services build.</li>
+<li>Unit tests pass for changed services.</li>
+<li>Health and strict-health endpoints pass.</li>
+<li>Seeds apply cleanly on a fresh stack.</li>
+<li>WorkItem creation works.</li>
+<li>WorkItem routing works.</li>
+<li>Workflow designer loads.</li>
+<li>Workbench Neo runs a small staged workflow.</li>
+<li>Runtime discovery lists expected tools.</li>
+<li>Agent Execution Runtime code edit and verification smoke passes.</li>
+<li>Audit events are visible.</li>
+<li>Cost usage is recorded.</li>
+<li>Context Fabric trace propagates through Agent Execution Runtime and audit.</li>
+<li>Laptop CLI doctor passes or reports actionable setup guidance.</li>
+<li>Documentation is updated for changed APIs, ports, metadata, and operational steps.</li>
+</ul>
+<h2 id="19-existing-detailed-references">19. Existing Detailed References<a class="anchor" href="#19-existing-detailed-references" aria-label="Link to 19. Existing Detailed References">#</a></h2>
+<ul>
+<li><a href="./data-model/00-platform-overview.md">Data Model Overview</a></li>
+<li><a href="./data-model/01-iam.md">IAM Data Model</a></li>
+<li><a href="./data-model/02-agent-runtime.md">Agent Runtime Data Model</a></li>
+<li><a href="./data-model/03-prompt-composer-owned.md">Prompt Composer Owned Tables</a></li>
+<li><a href="./data-model/03-prompt-composer-runtime-read.md">Prompt Composer Runtime Reads</a></li>
+<li><a href="./data-model/04-workgraph.md">Workgraph Data Model</a></li>
+<li><a href="./data-model/05-audit-gov.md">Audit Governance Data Model</a></li>
+<li><a href="./data-model/06-tool-service.md">Tool Service Data Model</a></li>
+<li><a href="./runtime-discovery.md">Runtime Discovery</a></li>
+<li><a href="./trace-contract.md">Trace Contract</a></li>
+<li><a href="./adr/0001-m35-hybrid-learning.md">M35 Hybrid Learning ADR</a></li>
+</ul>
+
+  <div class="footer">Generated from Markdown. Edit <code>docs/platform-handbook.md</code> as the source of truth, then regenerate this HTML file.</div>
+</article>
+</main>
+</div>
+</body>
+</html>
