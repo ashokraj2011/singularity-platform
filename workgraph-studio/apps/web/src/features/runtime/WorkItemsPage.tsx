@@ -1,16 +1,20 @@
-import { useMemo, useState, type CSSProperties } from 'react'
+import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
+  AlertCircle,
   ArrowRight,
   Archive,
   CalendarClock,
   CheckCircle2,
   ExternalLink,
+  GitBranch,
+  ListChecks,
   Network,
   Play,
   Plus,
   RefreshCw,
+  Route,
   Search,
   Unlink,
   Workflow,
@@ -84,6 +88,13 @@ export function WorkItemsPage() {
     : allWorkflowsQuery.data ?? []
   const missingCapabilityWorkflows = workflowsQuery.isError || (workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0)
   const usingFallbackWorkflows = Boolean(selectedTarget?.targetCapabilityId && missingCapabilityWorkflows && workflowOptions.length > 0)
+  const hubStats = useMemo(() => buildHubStats(filtered), [filtered])
+  const selectedNextAction = selected
+    ? describeNextAction(selected, selectedTarget, effectiveWorkflow, workflowOptions.length, selectedTargetCapability)
+    : null
+  const selectedFlow = selected
+    ? buildWorkItemFlow(selected, selectedTarget, selectedTargetCapability)
+    : []
 
   const claimMut = useMutation({
     mutationFn: ({ workItemId, targetId }: { workItemId: string; targetId: string }) =>
@@ -155,12 +166,13 @@ export function WorkItemsPage() {
   )
 
   return (
-    <div style={{ padding: 24, maxWidth: 1280, margin: '0 auto' }}>
+    <div style={{ padding: 24, maxWidth: 1440, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
         <div style={pageIconStyle}><Network size={18} /></div>
         <div>
+          <p style={eyebrowStyle}>Work Hub</p>
           <h1 style={pageTitleStyle}>WorkItems</h1>
-          <p style={pageSubStyle}>Select an existing capability WorkItem, attach a workflow, and start delivery from the WorkItem packet.</p>
+          <p style={pageSubStyle}>Route business work into the right workflow, monitor the current run, and keep the request packet and evidence together.</p>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button style={primaryButtonStyle} onClick={() => setCreateOpen(true)}>
@@ -171,6 +183,14 @@ export function WorkItemsPage() {
           </button>
         </div>
       </div>
+
+      <section style={hubStatsStyle}>
+        <HubStat icon={<ListChecks size={15} />} label="In this queue" value={String(hubStats.total)} tone="neutral" />
+        <HubStat icon={<Route size={15} />} label="Need routing" value={String(hubStats.needsRoute)} tone={hubStats.needsRoute ? 'warning' : 'neutral'} />
+        <HubStat icon={<Workflow size={15} />} label="Running" value={String(hubStats.running)} tone="primary" />
+        <HubStat icon={<CalendarClock size={15} />} label="Scheduled" value={String(hubStats.scheduled)} tone="neutral" />
+        <HubStat icon={<AlertCircle size={15} />} label="Blocked" value={String(hubStats.blocked)} tone={hubStats.blocked ? 'danger' : 'neutral'} />
+      </section>
 
       <section style={filterBarStyle}>
         <div style={{ minWidth: 260, flex: '1 1 320px' }}>
@@ -205,7 +225,7 @@ export function WorkItemsPage() {
         </div>
       </section>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 440px) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(340px, 460px) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
         <section style={listPanelStyle}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
             <h2 style={panelTitleStyle}>Existing WorkItems</h2>
@@ -240,7 +260,10 @@ export function WorkItemsPage() {
                       )}
                       <span>{item.originType === 'PARENT_DELEGATED' ? 'Parent delegated' : 'Local work'}</span>
                       <span>·</span>
-                      <span>{item.urgency ?? 'NORMAL'}</span>
+                      <span>{formatEnum(item.workItemTypeKey ?? 'GENERAL')}</span>
+                      <span>·</span>
+                      <span>{formatEnum(item.urgency ?? 'NORMAL')}</span>
+                      {item.routingState && <><span>·</span><span>{formatEnum(item.routingState)}</span></>}
                       {item.requiredBy && <><span>·</span><CalendarClock size={10} /><span>{new Date(item.requiredBy).toLocaleDateString()}</span></>}
                     </div>
                   </button>
@@ -300,9 +323,26 @@ export function WorkItemsPage() {
                 )}
               </div>
 
+              <WorkItemFlow stages={selectedFlow} />
+
+              {selectedNextAction && (
+                <section style={nextActionStyle(selectedNextAction.tone)}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    {selectedNextAction.icon}
+                    <div>
+                      <p style={{ margin: 0, fontSize: 10, color: selectedNextAction.color, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Next action</p>
+                      <h3 style={{ margin: '2px 0 0', color: '#0f172a', fontSize: 16 }}>{selectedNextAction.title}</h3>
+                    </div>
+                  </div>
+                  <p style={{ margin: '8px 0 0', color: '#475569', fontSize: 13, lineHeight: 1.5 }}>{selectedNextAction.detail}</p>
+                </section>
+              )}
+
               <div style={metricGridStyle}>
                 <Metric label="Target capability" value={selectedTargetCapability} />
-                <Metric label="Urgency" value={selected.urgency ?? 'NORMAL'} />
+                <Metric label="WorkItem type" value={formatEnum(selected.workItemTypeKey ?? 'GENERAL')} />
+                <Metric label="Routing" value={`${formatEnum(selected.routingMode ?? 'MANUAL')} · ${displayRoutingState(selected, selectedTarget)}`} />
+                <Metric label="Urgency" value={formatEnum(selected.urgency ?? 'NORMAL')} />
                 <Metric label="Required by" value={selected.requiredBy ? new Date(selected.requiredBy).toLocaleString() : 'Not set'} />
                 <Metric label="Details" value={selected.detailsLocked ? 'Locked packet' : 'Editable'} />
               </div>
@@ -311,8 +351,14 @@ export function WorkItemsPage() {
                 <div style={actionBoxStyle}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
                     <div>
-                      <h3 style={{ margin: 0, fontSize: 15, color: '#0f172a' }}>Attach workflow and run</h3>
-                      <p style={{ margin: '2px 0 0', color: '#64748b', fontSize: 12 }}>Workflow starts with `_workItem`, `workItemId`, details, budget, and target capability in run context.</p>
+                      <h3 style={{ margin: 0, fontSize: 15, color: '#0f172a' }}>
+                        {selectedTarget.childWorkflowInstanceId ? 'Current workflow run' : 'Attach workflow and run'}
+                      </h3>
+                      <p style={{ margin: '2px 0 0', color: '#64748b', fontSize: 12 }}>
+                        {selectedTarget.childWorkflowInstanceId
+                          ? 'This WorkItem already has an attached run. Open it for stage progress, evidence, and approvals.'
+                          : 'Workflow starts with `_workItem`, `workItemId`, details, budget, and target capability in run context.'}
+                      </p>
                     </div>
                     <StatusPill status={selectedTarget.status} />
                   </div>
@@ -342,7 +388,7 @@ export function WorkItemsPage() {
                       No workflow template is currently linked to {selectedTargetCapability}. Showing all templates so you can still attach one.
                     </p>
                   )}
-                  {!workflowsQuery.isLoading && !allWorkflowsQuery.isLoading && workflowOptions.length === 0 && (
+                  {!selectedTarget.childWorkflowInstanceId && !workflowsQuery.isLoading && !allWorkflowsQuery.isLoading && workflowOptions.length === 0 && (
                     <p style={{ margin: '8px 0 0', color: '#b91c1c', fontSize: 12 }}>
                       Create or publish a workflow for this capability in Workflow Manager, then refresh this page.
                     </p>
@@ -453,6 +499,9 @@ function CreateWorkItemDialog({
   const [targetCapabilityId, setTargetCapabilityId] = useState(defaultCapabilityId)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
+  const [workItemTypeKey, setWorkItemTypeKey] = useState('GENERAL')
+  const [routingMode, setRoutingMode] = useState('MANUAL')
+  const [scheduledAt, setScheduledAt] = useState('')
   const [urgency, setUrgency] = useState('NORMAL')
   const [requiredBy, setRequiredBy] = useState('')
   const [budgetNote, setBudgetNote] = useState('')
@@ -466,6 +515,9 @@ function CreateWorkItemDialog({
       return api.post('/work-items', {
         title: trimmedTitle,
         description: trimmedDescription || undefined,
+        workItemTypeKey,
+        routingMode,
+        scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined,
         originType: 'CAPABILITY_LOCAL',
         parentCapabilityId: targetCapabilityId,
         input: {
@@ -476,6 +528,9 @@ function CreateWorkItemDialog({
           title: trimmedTitle,
           source: 'runtime-worklist',
           description: trimmedDescription || trimmedTitle,
+          workItemTypeKey,
+          workflowTypeKey: workItemTypeKey,
+          routingMode,
         },
         budget: budgetNote.trim() ? { note: budgetNote.trim() } : undefined,
         urgency,
@@ -496,7 +551,7 @@ function CreateWorkItemDialog({
             </p>
             <h2 style={{ margin: '4px 0 0', color: '#0f172a', fontSize: 22 }}>Create child/local WorkItem</h2>
             <p style={{ margin: '4px 0 0', color: '#475569', fontSize: 13 }}>
-              This creates a WRK item in the selected capability queue. Attach a workflow after creation, or start it from the workflow catalog.
+              This creates the business object first. Routing can attach or start the right workflow automatically from the WorkItem type.
             </p>
           </div>
           <button style={iconButtonStyle} onClick={onClose}>×</button>
@@ -517,6 +572,32 @@ function CreateWorkItemDialog({
             WorkItem title
             <input value={title} onChange={event => setTitle(event.target.value)} placeholder="e.g. Implement Contains operator" style={inputStyle} />
           </label>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
+            <label style={labelStyle}>
+              WorkItem type
+              <select value={workItemTypeKey} onChange={event => setWorkItemTypeKey(event.target.value)} style={inputStyle}>
+                <option value="GENERAL">General</option>
+                <option value="BUG_FIX">Bug fix</option>
+                <option value="FEATURE">Feature</option>
+                <option value="INCIDENT">Incident</option>
+                <option value="RESEARCH">Research</option>
+                <option value="COMPLIANCE_REVIEW">Compliance review</option>
+              </select>
+            </label>
+            <label style={labelStyle}>
+              Routing
+              <select value={routingMode} onChange={event => setRoutingMode(event.target.value)} style={inputStyle}>
+                <option value="MANUAL">Manual</option>
+                <option value="AUTO_ATTACH">Auto attach</option>
+                <option value="AUTO_START">Auto start</option>
+                <option value="SCHEDULED_START">Scheduled start</option>
+              </select>
+            </label>
+            <label style={labelStyle}>
+              Server start time
+              <input type="datetime-local" value={scheduledAt} onChange={event => setScheduledAt(event.target.value)} style={inputStyle} />
+            </label>
+          </div>
           <label style={labelStyle}>
             Initial details / user story
             <textarea
@@ -610,8 +691,44 @@ function StatusPill({ status }: { status: string }) {
       letterSpacing: '0.06em',
       textTransform: 'uppercase',
     }}>
-      {status.replaceAll('_', ' ')}
+      {formatEnum(status)}
     </span>
+  )
+}
+
+function HubStat({ icon, label, value, tone }: { icon: ReactNode; label: string; value: string; tone: 'neutral' | 'primary' | 'warning' | 'danger' }) {
+  const palette = tone === 'primary'
+    ? { border: 'rgba(37,99,235,0.18)', bg: 'rgba(37,99,235,0.06)', fg: '#2563eb' }
+    : tone === 'warning'
+      ? { border: 'rgba(245,158,11,0.24)', bg: 'rgba(255,251,235,0.88)', fg: '#b45309' }
+      : tone === 'danger'
+        ? { border: 'rgba(220,38,38,0.22)', bg: 'rgba(254,242,242,0.85)', fg: '#b91c1c' }
+        : { border: 'var(--color-outline-variant)', bg: '#fff', fg: '#475569' }
+  return (
+    <div style={{ ...hubStatCardStyle, borderColor: palette.border, background: palette.bg }}>
+      <span style={{ ...hubStatIconStyle, color: palette.fg }}>{icon}</span>
+      <div>
+        <p style={{ margin: 0, color: '#64748b', fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</p>
+        <strong style={{ display: 'block', marginTop: 2, color: '#0f172a', fontSize: 21, lineHeight: 1 }}>{value}</strong>
+      </div>
+    </div>
+  )
+}
+
+function WorkItemFlow({ stages }: { stages: WorkItemFlowStage[] }) {
+  return (
+    <section style={flowStripStyle}>
+      {stages.map((stage, index) => (
+        <div key={stage.label} style={flowStageStyle}>
+          <div style={flowNodeStyle(stage.state)}>{stage.icon}</div>
+          <div style={{ minWidth: 0 }}>
+            <p style={{ margin: 0, color: '#0f172a', fontSize: 12, fontWeight: 900 }}>{stage.label}</p>
+            <p style={{ margin: '2px 0 0', color: '#64748b', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{stage.meta}</p>
+          </div>
+          {index < stages.length - 1 && <ArrowRight size={14} style={{ color: '#cbd5e1', flex: '0 0 auto' }} />}
+        </div>
+      ))}
+    </section>
   )
 }
 
@@ -644,6 +761,11 @@ type WorkItemRow = {
   title: string
   description?: string | null
   originType: string
+  workItemTypeKey?: string | null
+  routingMode?: string | null
+  routingState?: string | null
+  scheduledAt?: string | null
+  sourceEventTypeKey?: string | null
   status: string
   sourceWorkflowInstanceId?: string | null
   sourceWorkflowNodeId?: string | null
@@ -660,6 +782,219 @@ type WorkflowOption = {
   id: string
   name: string
   capabilityId?: string | null
+}
+
+type WorkItemFlowStage = {
+  label: string
+  meta: string
+  icon: ReactNode
+  state: 'done' | 'current' | 'waiting' | 'blocked'
+}
+
+type NextAction = {
+  title: string
+  detail: string
+  icon: ReactNode
+  tone: 'neutral' | 'primary' | 'warning' | 'danger'
+  color: string
+}
+
+function buildHubStats(items: WorkItemRow[]) {
+  return items.reduce((acc, item) => {
+    const target = item.targets[0]
+    acc.total += 1
+    if (
+      !target?.childWorkflowInstanceId &&
+      ['UNROUTED', 'ROUTE_FAILED'].includes(item.routingState ?? 'UNROUTED')
+    ) acc.needsRoute += 1
+    if (item.routingMode === 'SCHEDULED_START' || item.scheduledAt) acc.scheduled += 1
+    if (target?.childWorkflowInstanceId && !['COMPLETED', 'APPROVED', 'ARCHIVED'].includes(item.status)) acc.running += 1
+    if (item.routingState === 'ROUTE_FAILED' || item.status === 'REWORK_REQUESTED' || target?.status === 'REWORK_REQUESTED') acc.blocked += 1
+    return acc
+  }, { total: 0, needsRoute: 0, running: 0, scheduled: 0, blocked: 0 })
+}
+
+function describeNextAction(
+  item: WorkItemRow,
+  target: WorkItemTarget | null,
+  effectiveWorkflow: string,
+  workflowOptionCount: number,
+  targetCapabilityLabel: string,
+): NextAction {
+  if (item.status === 'ARCHIVED') {
+    return {
+      title: 'Archived',
+      detail: 'This WorkItem is hidden from normal queues. Restore or duplicate it before continuing delivery.',
+      icon: <Archive size={16} />,
+      tone: 'neutral',
+      color: '#64748b',
+    }
+  }
+  if (['APPROVED', 'COMPLETED'].includes(item.status)) {
+    return {
+      title: 'Review evidence',
+      detail: 'Delivery is complete. Open the run or evidence pack when you need audit details.',
+      icon: <CheckCircle2 size={16} />,
+      tone: 'primary',
+      color: '#2563eb',
+    }
+  }
+  if (item.scheduledAt && new Date(item.scheduledAt).getTime() > Date.now()) {
+    return {
+      title: 'Waiting for server schedule',
+      detail: `Server time will activate this WorkItem at ${new Date(item.scheduledAt).toLocaleString()}.`,
+      icon: <CalendarClock size={16} />,
+      tone: 'neutral',
+      color: '#64748b',
+    }
+  }
+  if (!target) {
+    return {
+      title: 'Add a target capability',
+      detail: 'This WorkItem needs a capability target before it can be routed into a workflow.',
+      icon: <Network size={16} />,
+      tone: 'warning',
+      color: '#b45309',
+    }
+  }
+  if (item.routingState === 'ROUTE_FAILED') {
+    return {
+      title: 'Fix routing policy',
+      detail: 'Routing failed. Check workflow type compatibility, default workflow flags, and active routing policies.',
+      icon: <AlertCircle size={16} />,
+      tone: 'danger',
+      color: '#b91c1c',
+    }
+  }
+  if (target.childWorkflowInstanceId) {
+    return {
+      title: 'Open current run',
+      detail: 'A workflow run is attached. Continue in the run view or inspect evidence from this WorkItem.',
+      icon: <GitBranch size={16} />,
+      tone: 'primary',
+      color: '#2563eb',
+    }
+  }
+  if (!target.childWorkflowTemplateId && ['UNROUTED', undefined, null].includes(item.routingState ?? undefined)) {
+    return {
+      title: 'Route to a workflow',
+      detail: `${formatEnum(item.workItemTypeKey ?? 'GENERAL')} work in ${targetCapabilityLabel} needs a compatible workflow template.`,
+      icon: <Route size={16} />,
+      tone: 'warning',
+      color: '#b45309',
+    }
+  }
+  if (target.status === 'QUEUED' && !target.claimedById) {
+    return {
+      title: 'Claim or auto-start',
+      detail: 'The WorkItem is in the capability queue. Claim it, or use routing policy to attach/start automatically.',
+      icon: <CheckCircle2 size={16} />,
+      tone: 'warning',
+      color: '#b45309',
+    }
+  }
+  if (target.status === 'CLAIMED' && !effectiveWorkflow) {
+    return {
+      title: 'Select workflow template',
+      detail: workflowOptionCount > 0
+        ? 'Choose a workflow template, then start the attached run.'
+        : 'No workflow templates are available for this capability yet.',
+      icon: <Workflow size={16} />,
+      tone: workflowOptionCount > 0 ? 'warning' : 'danger',
+      color: workflowOptionCount > 0 ? '#b45309' : '#b91c1c',
+    }
+  }
+  if (target.status === 'CLAIMED' && effectiveWorkflow) {
+    return {
+      title: 'Start workflow',
+      detail: 'The request packet and workflow template are ready. Start the run to move execution forward.',
+      icon: <Play size={16} />,
+      tone: 'primary',
+      color: '#2563eb',
+    }
+  }
+  return {
+    title: 'Review WorkItem packet',
+    detail: 'Confirm the request, target, routing state, and budget before moving the item forward.',
+    icon: <ListChecks size={16} />,
+    tone: 'neutral',
+    color: '#64748b',
+  }
+}
+
+function buildWorkItemFlow(item: WorkItemRow, target: WorkItemTarget | null, targetCapabilityLabel: string): WorkItemFlowStage[] {
+  const sourceLabel = item.sourceEventTypeKey
+    ? `Event: ${formatEnum(item.sourceEventTypeKey)}`
+    : item.scheduledAt
+      ? 'Server schedule'
+      : item.originType === 'PARENT_DELEGATED'
+        ? 'Parent workflow'
+        : 'Manual intake'
+  const routingState = target?.childWorkflowInstanceId || target?.childWorkflowTemplateId
+    ? 'done'
+    : item.routingState === 'ROUTE_FAILED'
+    ? 'blocked'
+    : ['ROUTED', 'ATTACHED', 'STARTED'].includes(item.routingState ?? '')
+      ? 'done'
+      : 'current'
+  const workflowState = target?.childWorkflowInstanceId
+    ? 'current'
+    : target?.childWorkflowTemplateId
+      ? 'done'
+      : 'waiting'
+  const evidenceState = ['APPROVED', 'COMPLETED'].includes(item.status)
+    ? 'done'
+    : target?.childWorkflowInstanceId
+      ? 'current'
+      : 'waiting'
+  return [
+    {
+      label: 'Source',
+      meta: sourceLabel,
+      icon: <Plus size={14} />,
+      state: 'done',
+    },
+    {
+      label: 'WorkItem',
+      meta: `${item.workCode ?? item.id.slice(0, 8)} · ${formatEnum(item.workItemTypeKey ?? 'GENERAL')}`,
+      icon: <Network size={14} />,
+      state: 'done',
+    },
+    {
+      label: 'Route',
+      meta: displayRoutingState(item, target),
+      icon: <Route size={14} />,
+      state: routingState,
+    },
+    {
+      label: 'Workflow',
+      meta: target?.childWorkflowInstanceId ? 'Run attached' : target?.childWorkflowTemplateId ? 'Template attached' : targetCapabilityLabel,
+      icon: <Workflow size={14} />,
+      state: workflowState,
+    },
+    {
+      label: 'Evidence',
+      meta: evidenceState === 'done' ? 'Ready' : 'Receipts pending',
+      icon: <CheckCircle2 size={14} />,
+      state: evidenceState,
+    },
+  ]
+}
+
+function displayRoutingState(item: WorkItemRow, target: WorkItemTarget | null) {
+  if (target?.childWorkflowInstanceId) return 'Run attached'
+  if (target?.childWorkflowTemplateId) return 'Template attached'
+  return formatEnum(item.routingState ?? 'UNROUTED')
+}
+
+function formatEnum(value?: string | null) {
+  if (!value) return 'Not set'
+  return value
+    .toLowerCase()
+    .split('_')
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
 }
 
 const pageIconStyle: CSSProperties = {
@@ -682,10 +1017,48 @@ const pageTitleStyle: CSSProperties = {
   letterSpacing: '-0.02em',
 }
 
+const eyebrowStyle: CSSProperties = {
+  margin: '0 0 2px',
+  color: '#7c3aed',
+  fontSize: 10,
+  fontWeight: 950,
+  textTransform: 'uppercase',
+  letterSpacing: '0.14em',
+}
+
 const pageSubStyle: CSSProperties = {
   margin: '2px 0 0',
   fontSize: 13,
   color: '#475569',
+}
+
+const hubStatsStyle: CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(5, minmax(140px, 1fr))',
+  gap: 10,
+  marginBottom: 14,
+}
+
+const hubStatCardStyle: CSSProperties = {
+  minHeight: 72,
+  padding: 12,
+  borderRadius: 14,
+  border: '1px solid var(--color-outline-variant)',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+}
+
+const hubStatIconStyle: CSSProperties = {
+  width: 34,
+  height: 34,
+  borderRadius: 10,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  background: 'rgba(255,255,255,0.72)',
+  border: '1px solid rgba(15,23,42,0.06)',
+  flex: '0 0 auto',
 }
 
 const filterBarStyle: CSSProperties = {
@@ -800,6 +1173,70 @@ const metricGridStyle: CSSProperties = {
   gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
   gap: 8,
   marginBottom: 14,
+}
+
+const flowStripStyle: CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+  gap: 8,
+  padding: 10,
+  borderRadius: 14,
+  border: '1px solid rgba(15,23,42,0.08)',
+  background: '#f8fafc',
+  marginBottom: 12,
+}
+
+const flowStageStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  minWidth: 0,
+}
+
+const flowNodeStyle = (state: WorkItemFlowStage['state']): CSSProperties => {
+  const palette = state === 'done'
+    ? { bg: 'rgba(22,163,74,0.10)', border: 'rgba(22,163,74,0.24)', fg: '#16a34a' }
+    : state === 'current'
+      ? { bg: 'rgba(37,99,235,0.10)', border: 'rgba(37,99,235,0.24)', fg: '#2563eb' }
+      : state === 'blocked'
+        ? { bg: 'rgba(220,38,38,0.10)', border: 'rgba(220,38,38,0.24)', fg: '#b91c1c' }
+        : { bg: '#fff', border: 'var(--color-outline-variant)', fg: '#94a3b8' }
+  return {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    border: `1px solid ${palette.border}`,
+    background: palette.bg,
+    color: palette.fg,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: '0 0 auto',
+  }
+}
+
+const nextActionStyle = (tone: NextAction['tone']): CSSProperties => {
+  const border = tone === 'primary'
+    ? 'rgba(37,99,235,0.22)'
+    : tone === 'warning'
+      ? 'rgba(245,158,11,0.26)'
+      : tone === 'danger'
+        ? 'rgba(220,38,38,0.24)'
+        : 'var(--color-outline-variant)'
+  const bg = tone === 'primary'
+    ? 'rgba(37,99,235,0.05)'
+    : tone === 'warning'
+      ? 'rgba(255,251,235,0.80)'
+      : tone === 'danger'
+        ? 'rgba(254,242,242,0.78)'
+        : '#fff'
+  return {
+    padding: 14,
+    borderRadius: 14,
+    border: `1px solid ${border}`,
+    background: bg,
+    marginBottom: 12,
+  }
 }
 
 const metricStyle: CSSProperties = {

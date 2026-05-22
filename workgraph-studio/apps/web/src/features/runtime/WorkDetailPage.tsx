@@ -96,6 +96,14 @@ function WorkItemDetail({ id }: { id: string }) {
     }).then(r => r.data as WorkItemRow),
     onSuccess: () => refetch(),
   })
+  const routeMut = useMutation({
+    mutationFn: () => api.post(`/work-items/${id}/route`, {
+      targetId: activeTarget?.id,
+      workflowTypeKey: workItem?.details?.workflowTypeKey,
+      routingMode: workItem?.routingMode === 'MANUAL' ? 'AUTO_ATTACH' : workItem?.routingMode,
+    }).then(r => r.data as WorkItemRow),
+    onSuccess: () => refetch(),
+  })
 
   const activeTarget = workItem?.targets.find(t => t.id === targetId) ?? workItem?.targets[0]
   const canClaim = activeTarget && ['QUEUED', 'REWORK_REQUESTED'].includes(activeTarget.status) && !activeTarget.claimedById
@@ -194,6 +202,29 @@ function WorkItemDetail({ id }: { id: string }) {
           </button>
         </section>
       )}
+
+      <section style={cardStyle}>
+        <h3 style={{ margin: '0 0 10px', fontSize: 15, color: 'var(--color-on-surface)' }}>Metadata and routing</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, marginBottom: 10 }}>
+          <KeyValue label="WorkItem type" value={workItem.workItemTypeKey ?? 'GENERAL'} />
+          <KeyValue label="Routing mode" value={workItem.routingMode ?? 'MANUAL'} />
+          <KeyValue label="Routing state" value={workItem.routingState ?? 'UNROUTED'} />
+          <KeyValue label="Source event" value={workItem.sourceEventTypeKey ?? 'None'} />
+          <KeyValue label="Scheduled at" value={workItem.scheduledAt ? new Date(workItem.scheduledAt).toLocaleString() : 'Not scheduled'} />
+          <KeyValue label="Not before" value={workItem.notBefore ? new Date(workItem.notBefore).toLocaleString() : 'No constraint'} />
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {activeTarget && !activeTarget.childWorkflowTemplateId && workItem.routingState !== 'STARTED' && (
+            <button style={secondaryButtonStyle} disabled={routeMut.isPending} onClick={() => routeMut.mutate()}>
+              <Route size={13} /> {routeMut.isPending ? 'Routing...' : 'Route / attach'}
+            </button>
+          )}
+          {workItem.routingPolicyId && <MetaChip label={`Policy ${workItem.routingPolicyId.slice(0, 8)}`} />}
+        </div>
+        {workItem.typeSnapshot && (
+          <pre style={{ ...preStyle, marginTop: 10 }}>{JSON.stringify(workItem.typeSnapshot, null, 2)}</pre>
+        )}
+      </section>
 
       <section style={cardStyle}>
         <h3 style={{ margin: '0 0 10px', fontSize: 15, color: 'var(--color-on-surface)' }}>Request packet</h3>
@@ -437,6 +468,24 @@ function KeyValue({ label, value }: { label: string; value: string }) {
       <span style={{ color: 'var(--color-outline)', fontWeight: 700 }}>{label}</span>
       <span style={{ color: 'var(--color-on-surface)', overflowWrap: 'anywhere' }}>{value}</span>
     </div>
+  )
+}
+
+function MetaChip({ label }: { label: string }) {
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      borderRadius: 999,
+      border: '1px solid rgba(99,102,241,0.24)',
+      background: 'rgba(99,102,241,0.08)',
+      color: '#4f46e5',
+      fontSize: 11,
+      fontWeight: 700,
+      padding: '5px 9px',
+    }}>
+      {label}
+    </span>
   )
 }
 
@@ -1252,6 +1301,15 @@ type WorkItemRow = {
   id: string
   workCode?: string
   originType?: 'PARENT_DELEGATED' | 'CAPABILITY_LOCAL'
+  workItemTypeKey?: string
+  typeVersion?: number
+  typeSnapshot?: Record<string, unknown> | null
+  routingMode?: string
+  routingState?: string
+  routingPolicyId?: string | null
+  scheduledAt?: string | null
+  notBefore?: string | null
+  sourceEventTypeKey?: string | null
   title: string
   description?: string | null
   status: string
@@ -1282,6 +1340,7 @@ type WorkflowTemplateRow = {
   id: string
   name: string
   capabilityId?: string | null
+  workflowTypeKey?: string | null
 }
 
 function unwrapItems<T>(data: unknown): T[] {

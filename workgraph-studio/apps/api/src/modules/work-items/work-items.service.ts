@@ -9,6 +9,7 @@ import { authzCheck } from '../../lib/iam/client'
 import { assertTemplatePermission } from '../../lib/permissions/workflowTemplate'
 import { cloneDesignToRun } from '../workflow/lib/cloneDesignToRun'
 import { getWorkflowBudgetOverview } from '../workflow/runtime/budget'
+import { normalizeMetadataKey, recordOf, resolveMetadataSnapshot } from '../metadata/metadata.service'
 
 type KVPair = { key?: string; path?: string; value?: string }
 
@@ -21,6 +22,12 @@ export type WorkItemTargetInput = {
 export type CreateWorkItemInput = {
   title: string
   description?: string
+  workItemTypeKey?: string
+  routingMode?: 'MANUAL' | 'AUTO_ATTACH' | 'AUTO_START' | 'SCHEDULED_START'
+  workflowTypeKey?: string
+  scheduledAt?: string | Date | null
+  notBefore?: string | Date | null
+  sourceEventTypeKey?: string | null
   parentCapabilityId?: string | null
   sourceWorkflowInstanceId?: string | null
   sourceWorkflowNodeId?: string | null
@@ -139,36 +146,68 @@ function normalizeTargets(cfg: Record<string, unknown>): WorkItemTargetInput[] {
 }
 
 export async function createWorkItem(input: CreateWorkItemInput, actorId?: string | null) {
-  if (input.targets.length === 0) throw new ValidationError('WorkItem requires at least one child capability target')
+  const targets = Array.isArray(input.targets) ? input.targets : []
+  if (targets.length === 0) throw new ValidationError('WorkItem requires at least one child capability target')
   const dueAt = input.dueAt ? new Date(input.dueAt) : undefined
   const requiredBy = input.requiredBy ? new Date(input.requiredBy) : dueAt
   const originType = input.originType ?? (input.sourceWorkflowInstanceId || input.parentCapabilityId ? 'PARENT_DELEGATED' : 'CAPABILITY_LOCAL')
   const workCode = await generateWorkCode()
+  const workItemTypeKey = normalizeMetadataKey(input.workItemTypeKey)
+  const typeMeta = await resolveMetadataSnapshot({
+    kind: 'WORK_ITEM_TYPE',
+    key: workItemTypeKey,
+    capabilityId: input.parentCapabilityId ?? targets[0]?.targetCapabilityId ?? null,
+  })
+  const typeDefaults = recordOf(typeMeta.snapshot?.defaults)
+  const routingMode = input.routingMode ?? (
+    ['MANUAL', 'AUTO_ATTACH', 'AUTO_START', 'SCHEDULED_START'].includes(String(typeDefaults.routingMode))
+      ? typeDefaults.routingMode as CreateWorkItemInput['routingMode']
+      : 'MANUAL'
+  )
+  const scheduledAt = input.scheduledAt ? new Date(input.scheduledAt) : undefined
+  const notBefore = input.notBefore ? new Date(input.notBefore) : undefined
+  const isFutureScheduled = routingMode === 'SCHEDULED_START'
+    && ((scheduledAt && scheduledAt.valueOf() > Date.now()) || (notBefore && notBefore.valueOf() > Date.now()))
+  const workflowTypeKey = normalizeMetadataKey(input.workflowTypeKey ?? workItemTypeKey)
 
   const workItem = await prisma.workItem.create({
     data: {
       workCode,
       originType,
+      workItemTypeKey,
+      typeVersion: typeMeta.version,
+      typeSnapshot: typeMeta.snapshot as Prisma.InputJsonValue,
+      routingMode,
+      scheduledAt,
+      notBefore,
+      sourceEventTypeKey: input.sourceEventTypeKey ? normalizeMetadataKey(input.sourceEventTypeKey) : undefined,
+      routingState: 'UNROUTED',
       title: input.title,
       description: input.description,
       parentCapabilityId: input.parentCapabilityId ?? undefined,
       sourceWorkflowInstanceId: input.sourceWorkflowInstanceId ?? undefined,
       sourceWorkflowNodeId: input.sourceWorkflowNodeId ?? undefined,
       input: (input.input ?? {}) as Prisma.InputJsonValue,
+      status: isFutureScheduled ? 'SCHEDULED' : 'QUEUED',
       details: (input.details ?? {
         title: input.title,
         description: input.description ?? null,
+        workItemTypeKey,
+        workflowTypeKey,
+        routingMode,
+        scheduledAt: scheduledAt?.toISOString() ?? null,
+        notBefore: notBefore?.toISOString() ?? null,
         input: input.input ?? {},
       }) as Prisma.InputJsonValue,
-      budget: (input.budget ?? {}) as Prisma.InputJsonValue,
-      urgency: normalizeUrgency(input.urgency),
+      budget: (input.budget ?? recordOf(typeDefaults.budget)) as Prisma.InputJsonValue,
+      urgency: normalizeUrgency(input.urgency ?? typeDefaults.urgency),
       requiredBy,
       detailsLocked: true,
-      priority: input.priority ?? 50,
+      priority: input.priority ?? Number(typeDefaults.priority ?? 50),
       dueAt,
       createdById: actorId ?? undefined,
       targets: {
-        create: input.targets.map(target => ({
+        create: targets.map(target => ({
           targetCapabilityId: target.targetCapabilityId,
           childWorkflowTemplateId: target.childWorkflowTemplateId,
           roleKey: target.roleKey,
@@ -183,12 +222,31 @@ export async function createWorkItem(input: CreateWorkItemInput, actorId?: strin
       workItemId: workItem.id,
       eventType: 'CREATED',
       actorId: actorId ?? undefined,
-      payload: { workCode: workItem.workCode, originType: workItem.originType, targetCount: workItem.targets.length } as Prisma.InputJsonValue,
+      payload: {
+        workCode: workItem.workCode,
+        originType: workItem.originType,
+        workItemTypeKey,
+        routingMode,
+        sourceEventTypeKey: workItem.sourceEventTypeKey,
+        targetCount: workItem.targets.length,
+      } as Prisma.InputJsonValue,
     },
   })
+  if (isFutureScheduled) {
+    await prisma.workItemEvent.create({
+      data: {
+        workItemId: workItem.id,
+        eventType: 'SCHEDULED',
+        actorId: actorId ?? undefined,
+        payload: { scheduledAt: scheduledAt?.toISOString(), notBefore: notBefore?.toISOString() } as Prisma.InputJsonValue,
+      },
+    })
+  }
   await logEvent('WorkItemCreated', 'WorkItem', workItem.id, actorId ?? undefined, {
     workCode: workItem.workCode,
     originType: workItem.originType,
+    workItemTypeKey,
+    routingMode,
     parentCapabilityId: input.parentCapabilityId,
     sourceWorkflowInstanceId: input.sourceWorkflowInstanceId,
     sourceWorkflowNodeId: input.sourceWorkflowNodeId,
@@ -669,6 +727,8 @@ export async function startWorkItemTarget(
     workItemId,
     workCode: target.workItem.workCode,
     workItemTargetId: targetId,
+    workItemTypeKey: target.workItem.workItemTypeKey,
+    routingMode: target.workItem.routingMode,
     parentCapabilityId: target.workItem.parentCapabilityId,
     targetCapabilityId: target.targetCapabilityId,
     workItemUrgency: target.workItem.urgency,
@@ -689,6 +749,8 @@ export async function startWorkItemTarget(
     id: workItemId,
     workCode: target.workItem.workCode,
     targetId,
+    workItemTypeKey: target.workItem.workItemTypeKey,
+    routingMode: target.workItem.routingMode,
     originType: target.workItem.originType,
     parentCapabilityId: target.workItem.parentCapabilityId,
     targetCapabilityId: target.targetCapabilityId,

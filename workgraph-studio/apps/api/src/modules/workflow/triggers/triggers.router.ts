@@ -4,6 +4,9 @@ import crypto from 'node:crypto'
 import { prisma } from '../../../lib/prisma'
 import { validate } from '../../../middleware/validate'
 import { logEvent, publishOutbox } from '../../../lib/audit'
+import { createWorkItem } from '../../work-items/work-items.service'
+import { routeWorkItem } from '../../work-items/work-item-routing.service'
+import { recordOf } from '../../metadata/metadata.service'
 
 export const triggersRouter: Router = Router()
 
@@ -63,7 +66,37 @@ webhookRouter.post('/:secret', async (req, res, next) => {
       return c.secret === req.params.secret
     })
     if (!match) {
-      res.status(404).json({ code: 'NOT_FOUND', message: 'No matching webhook trigger' })
+      const workItemTriggers = await prisma.workItemTrigger.findMany({
+        where: { triggerType: 'WEBHOOK', isActive: true },
+      })
+      const workItemMatch = workItemTriggers.find(t => recordOf(t.scheduleConfig).secret === req.params.secret || recordOf(t.payloadMapping).secret === req.params.secret)
+      if (!workItemMatch || !workItemMatch.capabilityId) {
+        res.status(404).json({ code: 'NOT_FOUND', message: 'No matching webhook trigger' })
+        return
+      }
+      const mapping = recordOf(workItemMatch.payloadMapping)
+      const title = typeof mapping.title === 'string' ? mapping.title : `${workItemMatch.workItemTypeKey} webhook work`
+      const workItem = await createWorkItem({
+        title,
+        description: typeof mapping.description === 'string' ? mapping.description : undefined,
+        workItemTypeKey: workItemMatch.workItemTypeKey,
+        routingMode: workItemMatch.routingMode,
+        sourceEventTypeKey: workItemMatch.eventTypeKey ?? 'WEBHOOK',
+        parentCapabilityId: workItemMatch.capabilityId,
+        input: { webhookPayload: req.body },
+        details: {
+          title,
+          description: typeof mapping.description === 'string' ? mapping.description : null,
+          source: 'work-item-webhook',
+          triggerId: workItemMatch.id,
+          input: { webhookPayload: req.body },
+        },
+        originType: 'CAPABILITY_LOCAL',
+        targets: [{ targetCapabilityId: workItemMatch.capabilityId }],
+      }, null)
+      await prisma.workItemTrigger.update({ where: { id: workItemMatch.id }, data: { lastFiredAt: new Date() } })
+      const routed = await routeWorkItem(workItem.id, null, { routingMode: workItemMatch.routingMode })
+      res.status(202).json({ workItemId: routed.id })
       return
     }
 

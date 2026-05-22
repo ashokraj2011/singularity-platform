@@ -17,6 +17,7 @@ import {
   requestWorkItemRework,
   startWorkItemTarget,
 } from './work-items.service'
+import { routeWorkItem } from './work-item-routing.service'
 
 export const workItemsRouter: Router = Router()
 
@@ -31,6 +32,7 @@ const WORK_ITEM_TARGET_STATUSES = [
 ] as const
 
 const WORK_ITEM_STATUSES = [
+  'SCHEDULED',
   'QUEUED',
   'IN_PROGRESS',
   'AWAITING_PARENT_APPROVAL',
@@ -48,6 +50,12 @@ const targetSchema = z.object({
 const createSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional(),
+  workItemTypeKey: z.string().optional(),
+  routingMode: z.enum(['MANUAL', 'AUTO_ATTACH', 'AUTO_START', 'SCHEDULED_START']).optional(),
+  workflowTypeKey: z.string().optional(),
+  scheduledAt: z.string().datetime().optional(),
+  notBefore: z.string().datetime().optional(),
+  sourceEventTypeKey: z.string().optional(),
   originType: z.enum(['PARENT_DELEGATED', 'CAPABILITY_LOCAL']).optional(),
   parentCapabilityId: z.string().optional(),
   sourceWorkflowInstanceId: z.string().uuid().optional(),
@@ -63,6 +71,23 @@ const createSchema = z.object({
 })
 
 const startTargetSchema = z.object({
+  childWorkflowTemplateId: z.string().uuid().optional(),
+}).default({})
+
+const routeSchemaBase = z.object({
+  targetId: z.string().uuid().optional(),
+  workflowId: z.string().uuid().optional(),
+  workflowTypeKey: z.string().optional(),
+  routingMode: z.enum(['MANUAL', 'AUTO_ATTACH', 'AUTO_START', 'SCHEDULED_START']).optional(),
+})
+
+const routeSchema = routeSchemaBase.default({})
+
+const attachSchema = routeSchemaBase.extend({
+  workflowId: z.string().uuid().optional(),
+}).default({})
+
+const startWorkItemSchema = routeSchemaBase.extend({
   childWorkflowTemplateId: z.string().uuid().optional(),
 }).default({})
 
@@ -85,8 +110,17 @@ const detachSchema = z.object({
 
 workItemsRouter.post('/', validate(createSchema), async (req, res, next) => {
   try {
-    const workItem = await createWorkItem(req.body as z.infer<typeof createSchema>, req.user!.userId)
-    res.status(201).json(workItem)
+    const body = req.body as z.infer<typeof createSchema>
+    const created = await createWorkItem(body, req.user!.userId)
+    if (body.routingMode && body.routingMode !== 'MANUAL') {
+      const routed = await routeWorkItem(created.id, req.user!.userId, {
+        workflowTypeKey: body.workflowTypeKey,
+        routingMode: body.routingMode,
+      })
+      res.status(201).json(routed)
+      return
+    }
+    res.status(201).json(created)
   } catch (err) {
     next(err)
   }
@@ -94,7 +128,7 @@ workItemsRouter.post('/', validate(createSchema), async (req, res, next) => {
 
 workItemsRouter.get('/', async (req, res, next) => {
   try {
-    const { targetCapabilityId, status, mine, cursor, sourceWorkflowInstanceId, sourceWorkflowNodeId, includeArchived, archived, available } = req.query as Record<string, string | undefined>
+    const { targetCapabilityId, status, mine, cursor, sourceWorkflowInstanceId, sourceWorkflowNodeId, includeArchived, archived, available, workItemTypeKey, routingMode, routingState, sourceEventTypeKey } = req.query as Record<string, string | undefined>
     const limit = Math.min(Math.max(Number(req.query.limit ?? 50) || 50, 1), 100)
     const targetWhere: Record<string, unknown> = {}
     const itemWhere: Record<string, unknown> = {}
@@ -105,6 +139,10 @@ workItemsRouter.get('/', async (req, res, next) => {
     }
     if (sourceWorkflowInstanceId) itemWhere.sourceWorkflowInstanceId = sourceWorkflowInstanceId
     if (sourceWorkflowNodeId) itemWhere.sourceWorkflowNodeId = sourceWorkflowNodeId
+    if (workItemTypeKey) itemWhere.workItemTypeKey = workItemTypeKey.toUpperCase()
+    if (routingMode) itemWhere.routingMode = routingMode.toUpperCase()
+    if (routingState) itemWhere.routingState = routingState.toUpperCase()
+    if (sourceEventTypeKey) itemWhere.sourceEventTypeKey = sourceEventTypeKey.toUpperCase()
     if (targetCapabilityId) targetWhere.targetCapabilityId = targetCapabilityId
     if (available === '1' || available === 'true') {
       itemWhere.status = { in: ['QUEUED', 'IN_PROGRESS'] }
@@ -191,6 +229,45 @@ workItemsRouter.post('/:id/detach', validate(detachSchema), async (req, res, nex
     const { reason } = req.body as z.infer<typeof detachSchema>
     const result = await detachWorkItemFromWorkflow(String(req.params.id), req.user!.userId, reason)
     res.json(result)
+  } catch (err) {
+    next(err)
+  }
+})
+
+workItemsRouter.post('/:id/route', validate(routeSchema), async (req, res, next) => {
+  try {
+    const body = req.body as z.infer<typeof routeSchema>
+    const workItem = await routeWorkItem(req.params.id, req.user!.userId, body)
+    res.json(workItem)
+  } catch (err) {
+    next(err)
+  }
+})
+
+workItemsRouter.post('/:id/attach', validate(attachSchema), async (req, res, next) => {
+  try {
+    const body = req.body as z.infer<typeof attachSchema>
+    const workItem = await routeWorkItem(req.params.id, req.user!.userId, {
+      ...body,
+      routingMode: body.routingMode ?? 'AUTO_ATTACH',
+    })
+    res.json(workItem)
+  } catch (err) {
+    next(err)
+  }
+})
+
+workItemsRouter.post('/:id/start', validate(startWorkItemSchema), async (req, res, next) => {
+  try {
+    const body = req.body as z.infer<typeof startWorkItemSchema>
+    const routed = await routeWorkItem(req.params.id, req.user!.userId, {
+      targetId: body.targetId,
+      workflowId: body.childWorkflowTemplateId ?? body.workflowId,
+      workflowTypeKey: body.workflowTypeKey,
+      routingMode: body.routingMode ?? 'AUTO_START',
+      startNow: true,
+    })
+    res.json(routed)
   } catch (err) {
     next(err)
   }

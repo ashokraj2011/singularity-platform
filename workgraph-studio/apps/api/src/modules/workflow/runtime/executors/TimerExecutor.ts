@@ -15,16 +15,23 @@ export async function activateTimer(
   _instance: WorkflowInstance,
 ): Promise<void> {
   const cfg = (node.config ?? {}) as Record<string, unknown>
+  const std = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard)
+    ? cfg.standard as Record<string, unknown>
+    : {}
+  const value = (key: string) => cfg[key] ?? std[key]
   let fireAt: Date | undefined
 
-  if (typeof cfg.until === 'string') {
-    const parsed = new Date(cfg.until)
+  const until = value('until')
+  const durationMs = value('durationMs')
+  const duration = value('duration')
+  if (typeof until === 'string') {
+    const parsed = new Date(until)
     if (!isNaN(parsed.valueOf())) fireAt = parsed
-  } else if (typeof cfg.durationMs === 'number' && cfg.durationMs >= 0) {
-    fireAt = new Date(Date.now() + cfg.durationMs)
-  } else if (typeof cfg.duration === 'string') {
+  } else if ((typeof durationMs === 'number' || typeof durationMs === 'string') && Number(durationMs) >= 0) {
+    fireAt = new Date(Date.now() + Number(durationMs))
+  } else if (typeof duration === 'string') {
     // Accept e.g. "30s", "5m", "2h"
-    const match = /^(\d+)\s*(s|m|h)$/.exec(cfg.duration.trim())
+    const match = /^(\d+)\s*(s|m|h)$/.exec(duration.trim())
     if (match) {
       const n = parseInt(match[1], 10)
       const unit = match[2]

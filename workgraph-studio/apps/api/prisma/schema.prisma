@@ -79,6 +79,7 @@ enum EdgeType {
 }
 
 enum WorkItemStatus {
+  SCHEDULED
   QUEUED
   IN_PROGRESS
   AWAITING_PARENT_APPROVAL
@@ -99,6 +100,12 @@ enum WorkItemTargetStatus {
 
 enum WorkItemEventType {
   CREATED
+  SCHEDULED
+  TRIGGERED
+  ROUTED
+  ATTACHED
+  AUTO_STARTED
+  ROUTE_FAILED
   CLAIMED
   STARTED
   SUBMITTED
@@ -115,6 +122,49 @@ enum WorkItemEventType {
 enum WorkItemOriginType {
   PARENT_DELEGATED
   CAPABILITY_LOCAL
+}
+
+enum WorkItemRoutingMode {
+  MANUAL
+  AUTO_ATTACH
+  AUTO_START
+  SCHEDULED_START
+}
+
+enum WorkItemRoutingState {
+  UNROUTED
+  ROUTED
+  ATTACHED
+  STARTED
+  ROUTE_FAILED
+}
+
+enum MetadataDefinitionKind {
+  WORK_ITEM_TYPE
+  WORKFLOW_TYPE
+  NODE_TYPE
+  EVENT_TYPE
+  TRIGGER_PROFILE
+}
+
+enum MetadataDefinitionStatus {
+  DRAFT
+  ACTIVE
+  DEPRECATED
+  ARCHIVED
+}
+
+enum MetadataScopeType {
+  GLOBAL
+  CAPABILITY
+  WORKFLOW
+  NODE
+}
+
+enum WorkItemTriggerType {
+  EVENT
+  SCHEDULE
+  WEBHOOK
 }
 
 enum WorkItemUrgency {
@@ -558,6 +608,12 @@ model Workflow {
   capabilityId   String?
   archivedAt     DateTime?
   metadata       Json?
+  workflowTypeKey String               @default("GENERAL")
+  typeVersion    Int                   @default(1)
+  typeSnapshot   Json?
+  eligibleWorkItemTypes Json           @default("[]")
+  isDefaultForType Boolean             @default(false)
+  defaultRoutingMode WorkItemRoutingMode @default(MANUAL)
   // Workflow-scoped variables: [{key, label, type, defaultValue, description, scope}]
   // scope: 'INPUT' (provided when starting a run) | 'CONSTANT' (workflow-baked default)
   variables      Json                  @default("[]")
@@ -569,6 +625,7 @@ model Workflow {
   designEdges    WorkflowDesignEdge[]
   versions       WorkflowVersion[]
   triggers       WorkflowTrigger[]
+  routingPolicies WorkItemRoutingPolicy[]
   permissions    WorkflowPermission[]
   instances      WorkflowInstance[]
   runSnapshots   RunSnapshot[]
@@ -577,6 +634,8 @@ model Workflow {
 
   @@index([teamId])
   @@index([capabilityId])
+  @@index([capabilityId, workflowTypeKey, status])
+  @@index([workflowTypeKey, isDefaultForType])
   @@index([status])
   @@map("workflow_templates")
 }
@@ -688,6 +747,9 @@ model WorkflowDesignNode {
   workflowId         String
   phaseId            String?
   nodeType           NodeType
+  nodeTypeKey        String?
+  nodeTypeVersion    Int?
+  nodeTypeSnapshot   Json?
   label              String
   config             Json                 @default("{}")
   compensationConfig Json?
@@ -841,6 +903,9 @@ model WorkflowNode {
   instanceId         String
   phaseId            String?
   nodeType           NodeType
+  nodeTypeKey        String?
+  nodeTypeVersion    Int?
+  nodeTypeSnapshot   Json?
   label              String
   status             NodeStatus         @default(PENDING)
   config             Json               @default("{}")
@@ -913,6 +978,15 @@ model WorkItem {
   id                      String           @id @default(uuid())
   workCode                String           @unique
   originType              WorkItemOriginType @default(CAPABILITY_LOCAL)
+  workItemTypeKey         String           @default("GENERAL")
+  typeVersion             Int              @default(1)
+  typeSnapshot            Json?
+  routingMode             WorkItemRoutingMode @default(MANUAL)
+  scheduledAt             DateTime?
+  notBefore               DateTime?
+  sourceEventTypeKey      String?
+  routingPolicyId         String?
+  routingState            WorkItemRoutingState @default(UNROUTED)
   title                   String
   description             String?
   parentCapabilityId      String?
@@ -933,6 +1007,7 @@ model WorkItem {
   parentApprovalRequestId String?
   sourceWorkflowInstance  WorkflowInstance? @relation("WorkItemSourceInstance", fields: [sourceWorkflowInstanceId], references: [id], onDelete: SetNull)
   sourceWorkflowNode      WorkflowNode?    @relation("WorkItemSourceNode", fields: [sourceWorkflowNodeId], references: [id], onDelete: SetNull)
+  routingPolicy           WorkItemRoutingPolicy? @relation(fields: [routingPolicyId], references: [id], onDelete: SetNull)
   targets                 WorkItemTarget[]
   events                  WorkItemEvent[]
   clarifications          WorkItemClarification[]
@@ -942,6 +1017,13 @@ model WorkItem {
 
   @@index([workCode])
   @@index([originType])
+  @@index([workItemTypeKey])
+  @@index([routingMode])
+  @@index([routingState])
+  @@index([scheduledAt])
+  @@index([notBefore])
+  @@index([sourceEventTypeKey])
+  @@index([routingPolicyId])
   @@index([parentCapabilityId])
   @@index([sourceWorkflowInstanceId])
   @@index([sourceWorkflowNodeId])
@@ -1015,6 +1097,76 @@ model WorkItemClarification {
   @@index([workItemId, status])
   @@index([targetId])
   @@map("work_item_clarifications")
+}
+
+model MetadataDefinition {
+  id            String                   @id @default(uuid())
+  kind          MetadataDefinitionKind
+  key           String
+  version       Int                      @default(1)
+  status        MetadataDefinitionStatus @default(ACTIVE)
+  scopeType     MetadataScopeType        @default(GLOBAL)
+  scopeId       String                   @default("*")
+  label         String
+  description   String?
+  icon          String?
+  color         String?
+  category      String?
+  schema        Json                     @default("{}")
+  defaults      Json                     @default("{}")
+  policy        Json                     @default("{}")
+  ui            Json                     @default("{}")
+  compatibility Json                     @default("{}")
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+
+  @@unique([kind, key, version, scopeType, scopeId])
+  @@index([kind, key, status])
+  @@index([scopeType, scopeId])
+  @@map("metadata_definitions")
+}
+
+model WorkItemRoutingPolicy {
+  id              String              @id @default(uuid())
+  capabilityId    String
+  workItemTypeKey String              @default("GENERAL")
+  workflowTypeKey String              @default("GENERAL")
+  workflowId      String?
+  routingMode     WorkItemRoutingMode @default(MANUAL)
+  priority        Int                 @default(100)
+  selector        Json                @default("{}")
+  isActive        Boolean             @default(true)
+  workflow        Workflow?           @relation(fields: [workflowId], references: [id], onDelete: SetNull)
+  workItems       WorkItem[]
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([capabilityId, workItemTypeKey, isActive])
+  @@index([workflowTypeKey])
+  @@index([workflowId])
+  @@map("work_item_routing_policies")
+}
+
+model WorkItemTrigger {
+  id              String              @id @default(uuid())
+  triggerType     WorkItemTriggerType
+  eventTypeKey    String?
+  capabilityId    String?
+  workItemTypeKey String              @default("GENERAL")
+  routingMode     WorkItemRoutingMode @default(MANUAL)
+  scheduleConfig  Json                @default("{}")
+  payloadMapping  Json                @default("{}")
+  dedupeKey       String?
+  isActive        Boolean             @default(true)
+  lastFiredAt     DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([triggerType, isActive])
+  @@index([eventTypeKey])
+  @@index([capabilityId, workItemTypeKey])
+  @@index([dedupeKey])
+  @@map("work_item_triggers")
 }
 
 // ─── TASKS ────────────────────────────────────────────────────────────────────

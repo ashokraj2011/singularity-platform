@@ -13,6 +13,7 @@ import { listAgentTemplates, type AgentTemplate } from '../../lib/agent-and-tool
 import { normalizeBudgetPolicy } from './runtime/budget'
 import { resolveTeamIdForWorkflow, tokenFromAuthorizationHeader } from '../../lib/iam/teamMirror'
 import { analyzeWorkflowTemplate } from './formal-verification'
+import { normalizeMetadataKey, resolveMetadataSnapshot } from '../metadata/metadata.service'
 
 export const workflowTemplatesRouter: Router = Router()
 
@@ -53,6 +54,8 @@ const variableDefSchema = z.object({
   scope:        z.enum(['INPUT', 'CONSTANT']).default('INPUT'),
 })
 
+const routingModes = ['MANUAL', 'AUTO_ATTACH', 'AUTO_START', 'SCHEDULED_START'] as const
+
 const createTemplateSchema = z.object({
   name:         z.string().min(1),
   description:  z.string().optional(),
@@ -60,6 +63,10 @@ const createTemplateSchema = z.object({
   // ID of the owning capability in Singularity IAM.  When set, this is the
   // authorization boundary for view/edit/start checks.
   capabilityId: z.string().optional(),
+  workflowTypeKey: z.string().optional(),
+  eligibleWorkItemTypes: z.array(z.string()).optional(),
+  isDefaultForType: z.boolean().optional(),
+  defaultRoutingMode: z.enum(routingModes).optional(),
   metadata:     metadataSchema,
   variables:    z.array(variableDefSchema).optional(),
   budgetPolicy: z.record(z.unknown()).optional(),
@@ -71,6 +78,10 @@ const updateTemplateSchema = z.object({
   description:  z.string().optional(),
   teamId:       z.string().optional(),
   capabilityId: z.string().nullable().optional(),
+  workflowTypeKey: z.string().optional(),
+  eligibleWorkItemTypes: z.array(z.string()).optional(),
+  isDefaultForType: z.boolean().optional(),
+  defaultRoutingMode: z.enum(routingModes).optional(),
   metadata:     metadataSchema,
   variables:    z.array(variableDefSchema).optional(),
   budgetPolicy: z.record(z.unknown()).nullable().optional(),
@@ -108,7 +119,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, res, next) => {
   try {
-    const { name, description, teamId, capabilityId, metadata, variables, budgetPolicy, starter } =
+    const { name, description, teamId, capabilityId, workflowTypeKey: rawWorkflowTypeKey, eligibleWorkItemTypes, isDefaultForType, defaultRoutingMode, metadata, variables, budgetPolicy, starter } =
       req.body as z.infer<typeof createTemplateSchema>
     if (starter === 'CAPABILITY_WORKBENCH_BRIDGE' && !capabilityId) {
       throw new ValidationError('Capability is required for the Workbench agent-team approval starter')
@@ -121,6 +132,12 @@ workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, re
     const normalizedVariables = starter === 'CAPABILITY_WORKBENCH_BRIDGE'
       ? withCapabilityWorkbenchInputs(variables)
       : (variables ?? [])
+    const workflowTypeKey = normalizeMetadataKey(rawWorkflowTypeKey ?? metadata?.workflowType)
+    const typeMeta = await resolveMetadataSnapshot({
+      kind: 'WORKFLOW_TYPE',
+      key: workflowTypeKey,
+      capabilityId: capabilityId ?? null,
+    })
 
     const template = await prisma.workflow.create({
       data: {
@@ -128,6 +145,12 @@ workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, re
         teamId:       ownerTeamId,
         capabilityId: capabilityId ?? null,
         createdById:  req.user!.userId,
+        workflowTypeKey,
+        typeVersion: typeMeta.version,
+        typeSnapshot: typeMeta.snapshot as any ?? undefined,
+        eligibleWorkItemTypes: (eligibleWorkItemTypes ?? []) as unknown as Prisma.InputJsonValue,
+        isDefaultForType: isDefaultForType ?? false,
+        defaultRoutingMode: defaultRoutingMode ?? 'MANUAL',
         metadata:     metadata as any ?? {},
         variables:    normalizedVariables as unknown as Prisma.InputJsonValue,
         budgetPolicy: normalizeBudgetPolicy(withTemplateGovernanceDefaults(budgetPolicy, metadata)) as unknown as Prisma.InputJsonValue,
@@ -625,6 +648,7 @@ workflowTemplatesRouter.post('/:id/publish-version', async (req, res, next) => {
       phases: phases.map(p => ({ id: p.id, name: p.name, displayOrder: p.displayOrder, color: p.color })),
       nodes:  nodes.map(n => ({
         id: n.id, phaseId: n.phaseId, nodeType: n.nodeType, label: n.label,
+        nodeTypeKey: n.nodeTypeKey, nodeTypeVersion: n.nodeTypeVersion, nodeTypeSnapshot: n.nodeTypeSnapshot,
         config: n.config, compensationConfig: n.compensationConfig,
         executionLocation: n.executionLocation, positionX: n.positionX, positionY: n.positionY,
       })),
@@ -662,6 +686,7 @@ workflowTemplatesRouter.get('/:id/design', async (req, res, next) => {
 const designNodeBodySchema = z.object({
   phaseId:           z.string().uuid().nullable().optional(),
   nodeType:          z.string(),
+  nodeTypeKey:       z.string().optional(),
   label:             z.string().min(1),
   config:            z.record(z.unknown()).optional(),
   compensationConfig: z.record(z.unknown()).nullable().optional(),
@@ -747,11 +772,16 @@ workflowTemplatesRouter.post('/:id/design/nodes', validate(designNodeBodySchema)
       }
     }
 
+    const nodeTypeKey = normalizeMetadataKey(body.nodeTypeKey ?? (body.config?._customTypeId as string | undefined) ?? body.nodeType, String(body.nodeType))
+    const nodeMeta = await resolveMetadataSnapshot({ kind: 'NODE_TYPE', key: nodeTypeKey, workflowId: id })
     const created = await prisma.workflowDesignNode.create({
       data: {
         workflowId:        id,
         phaseId:           body.phaseId ?? null,
         nodeType:          body.nodeType as any,
+        nodeTypeKey,
+        nodeTypeVersion:   nodeMeta.version,
+        nodeTypeSnapshot:  nodeMeta.snapshot as any ?? undefined,
         label:             body.label,
         config:            (body.config ?? {}) as Prisma.InputJsonValue,
         compensationConfig: body.compensationConfig as Prisma.InputJsonValue | undefined,
@@ -786,9 +816,25 @@ workflowTemplatesRouter.patch('/:id/design/nodes/:nodeId', validate(designNodeBo
       }
     }
 
+    let nodeMetadataPatch: Record<string, unknown> = {}
+    if (body.nodeType !== undefined || body.config !== undefined || body.nodeTypeKey !== undefined) {
+      const existing = await prisma.workflowDesignNode.findUnique({ where: { id: nodeId }, select: { nodeType: true, config: true } })
+      if (!existing) throw new NotFoundError('WorkflowDesignNode', nodeId)
+      const effectiveType = String(body.nodeType ?? existing.nodeType)
+      const effectiveConfig = (body.config !== undefined ? body.config : existing.config) as Record<string, unknown> | null
+      const nodeTypeKey = normalizeMetadataKey(body.nodeTypeKey ?? effectiveConfig?._customTypeId ?? effectiveType, effectiveType)
+      const nodeMeta = await resolveMetadataSnapshot({ kind: 'NODE_TYPE', key: nodeTypeKey, workflowId: id })
+      nodeMetadataPatch = {
+        nodeTypeKey,
+        nodeTypeVersion: nodeMeta.version,
+        nodeTypeSnapshot: nodeMeta.snapshot ?? Prisma.JsonNull,
+      }
+    }
+
     const updated = await prisma.workflowDesignNode.update({
       where: { id: nodeId },
       data: ({
+        ...nodeMetadataPatch,
         ...(body.phaseId           !== undefined ? { phaseId:           body.phaseId           } : {}),
         ...(body.nodeType          !== undefined ? { nodeType:          body.nodeType          } : {}),
         ...(body.label             !== undefined ? { label:             body.label             } : {}),
@@ -861,8 +907,9 @@ workflowTemplatesRouter.delete('/:id/design/edges/:edgeId', async (req, res, nex
 workflowTemplatesRouter.patch('/:id', validate(updateTemplateSchema), async (req, res, next) => {
   try {
     const id = req.params.id as string
-    await assertTemplatePermission(req.user!.userId, id, 'edit')
+    const existingWorkflow = await assertTemplatePermission(req.user!.userId, id, 'edit')
     const body = req.body as z.infer<typeof updateTemplateSchema>
+    const capabilityIdForMetadata = body.capabilityId !== undefined ? body.capabilityId : existingWorkflow.capabilityId
 
     const resolvedTeamId = body.teamId !== undefined
       ? await resolveTeamIdForWorkflow(body.teamId, tokenFromAuthorizationHeader(req.headers.authorization))
@@ -871,6 +918,14 @@ workflowTemplatesRouter.patch('/:id', validate(updateTemplateSchema), async (req
       ? await prisma.workflow.findUnique({ where: { id }, select: { metadata: true } })
       : null
     const metadataForBudgetDefaults = body.metadata ?? existingForBudgetDefaults?.metadata
+    const requestedWorkflowTypeKey = body.workflowTypeKey ?? body.metadata?.workflowType
+    const typeMeta = requestedWorkflowTypeKey
+      ? await resolveMetadataSnapshot({
+        kind: 'WORKFLOW_TYPE',
+        key: normalizeMetadataKey(requestedWorkflowTypeKey),
+        capabilityId: capabilityIdForMetadata ?? undefined,
+      })
+      : null
 
     const t = await prisma.workflow.update({
       where: { id },
@@ -879,6 +934,14 @@ workflowTemplatesRouter.patch('/:id', validate(updateTemplateSchema), async (req
         ...(body.description  !== undefined ? { description:  body.description }                                       : {}),
         ...(resolvedTeamId    !== undefined ? { teamId:       resolvedTeamId }                                        : {}),
         ...(body.capabilityId !== undefined ? { capabilityId: body.capabilityId }                                      : {}),
+        ...(requestedWorkflowTypeKey !== undefined ? {
+          workflowTypeKey: normalizeMetadataKey(requestedWorkflowTypeKey),
+          typeVersion: typeMeta?.version ?? 1,
+          typeSnapshot: typeMeta?.snapshot as any ?? Prisma.JsonNull,
+        } : {}),
+        ...(body.eligibleWorkItemTypes !== undefined ? { eligibleWorkItemTypes: body.eligibleWorkItemTypes as unknown as Prisma.InputJsonValue } : {}),
+        ...(body.isDefaultForType !== undefined ? { isDefaultForType: body.isDefaultForType } : {}),
+        ...(body.defaultRoutingMode !== undefined ? { defaultRoutingMode: body.defaultRoutingMode } : {}),
         ...(body.metadata     !== undefined ? { metadata:     body.metadata as any }                                   : {}),
         ...(body.variables    !== undefined ? { variables:    body.variables as unknown as Prisma.InputJsonValue }     : {}),
         ...(body.budgetPolicy !== undefined ? { budgetPolicy: normalizeBudgetPolicy(withTemplateGovernanceDefaults(body.budgetPolicy, metadataForBudgetDefaults)) as unknown as Prisma.InputJsonValue } : {}),
@@ -898,9 +961,13 @@ workflowTemplatesRouter.get('/', async (req, res, next) => {
     const capabilityId = typeof req.query.capabilityId === 'string' && req.query.capabilityId.trim()
       ? req.query.capabilityId.trim()
       : undefined
+    const workflowTypeKey = typeof req.query.workflowTypeKey === 'string' && req.query.workflowTypeKey.trim()
+      ? normalizeMetadataKey(req.query.workflowTypeKey)
+      : undefined
     const where: Prisma.WorkflowWhereInput = {
       archivedAt: showArchived ? { not: null } : null,
       ...(capabilityId ? { capabilityId } : {}),
+      ...(workflowTypeKey ? { workflowTypeKey } : {}),
     }
     const [templates, total] = await Promise.all([
       prisma.workflow.findMany({ where, skip: pg.skip, take: pg.take, orderBy: { name: 'asc' } }),

@@ -46,6 +46,7 @@ function resolveValue(raw: string, ctx: Record<string, unknown>): unknown {
   const match = raw.match(/^\{\{(.+?)\}\}$/)
   if (match) {
     const ref = match[1].trim()
+    if (ref.startsWith('server.')) return resolveServerRef(ref.slice('server.'.length))
     if (ref.startsWith('globals.')) return walk(ctx._globals as Record<string, unknown>, ref.slice('globals.'.length))
     if (ref.startsWith('vars.'))    return walk(ctx._vars    as Record<string, unknown>, ref.slice('vars.'.length))
     if (ref.startsWith('params.'))  return walk(ctx._params  as Record<string, unknown>, ref.slice('params.'.length))
@@ -56,6 +57,27 @@ function resolveValue(raw: string, ctx: Record<string, unknown>): unknown {
   }
   // Try JSON parse for booleans/numbers/objects; fall back to string
   try { return JSON.parse(raw) } catch { return raw }
+}
+
+function resolveServerRef(path: string): unknown {
+  const now = new Date()
+  switch (path) {
+    case 'now':
+    case 'iso':
+      return now.toISOString()
+    case 'epochMs':
+      return now.valueOf()
+    case 'epochSeconds':
+      return Math.floor(now.valueOf() / 1000)
+    case 'date':
+      return now.toISOString().slice(0, 10)
+    case 'time':
+      return now.toISOString().slice(11, 19)
+    case 'timezone':
+      return 'UTC'
+    default:
+      return undefined
+  }
 }
 
 // SET_CONTEXT merges assignments into the workflow instance context, then

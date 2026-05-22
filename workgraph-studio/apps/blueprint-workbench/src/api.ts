@@ -452,7 +452,9 @@ type PersistedAuth = { state?: { token?: string | null } }
 
 export const BLUEPRINT_AUTH_INVALID_EVENT = 'blueprintWorkbench.auth.invalid'
 const PSEUDO_IAM_LOGIN_URL = import.meta.env.VITE_PSEUDO_IAM_LOGIN_URL
-  ?? `${window.location.protocol}//${window.location.hostname}:8101/api/v1/auth/local/login`
+  ?? `${window.location.protocol}//${window.location.hostname}:8100/api/v1/auth/local/login`
+const PSEUDO_LOGIN_EMAIL = import.meta.env.VITE_PSEUDO_LOGIN_EMAIL ?? 'admin@singularity.local'
+const PSEUDO_LOGIN_PASSWORD = import.meta.env.VITE_PSEUDO_LOGIN_PASSWORD ?? 'Admin1234!'
 
 export function getToken() {
   try {
@@ -481,9 +483,9 @@ export async function pseudoLogin() {
   const res = await fetch(PSEUDO_IAM_LOGIN_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email: 'admin@pseudo.local', password: 'pseudo' }),
+    body: JSON.stringify({ email: PSEUDO_LOGIN_EMAIL, password: PSEUDO_LOGIN_PASSWORD }),
   })
-  if (!res.ok) throw new Error(`Pseudo-IAM login failed (${res.status})`)
+  if (!res.ok) throw new Error(`Workbench login failed against ${PSEUDO_IAM_LOGIN_URL} (${res.status})`)
   const body = await res.json() as { access_token: string }
   saveToken(body.access_token)
   return body.access_token

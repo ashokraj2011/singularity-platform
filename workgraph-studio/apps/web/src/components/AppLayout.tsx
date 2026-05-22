@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react'
 import {
   LayoutDashboard, FileText, GitBranch, ScrollText, Globe, Inbox,
   LogOut, Bell, Settings, ChevronLeft, ChevronRight, Puzzle, Link2, Activity, Play, Network,
-  Building2,
+  Building2, Database,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth.store'
 import { useActiveContextStore } from '../store/activeContext.store'
@@ -13,7 +13,7 @@ import { AppSwitcher } from './AppSwitcher'
 // Top-level (everyday) navigation — no design / authoring access required.
 const navItems = [
   { to: '/runtime',         label: 'Inbox',              icon: Inbox },
-  { to: '/work-items',      label: 'WorkItems',          icon: Network },
+  { to: '/work-items',      label: 'Work Hub',           icon: Network },
   { to: '/run',             label: 'Start Workflow',     icon: Play },
   { to: '/runs',            label: 'Runs',               icon: Activity },
   { to: '/dashboard',       label: 'Dashboard',          icon: LayoutDashboard },
@@ -24,6 +24,7 @@ const navItems = [
 // ignore it.
 const adminItems: { to: string; label: string; icon: typeof LayoutDashboard }[] = [
   { to: '/workflows',         label: 'Workflow Manager',  icon: GitBranch },
+  { to: '/metadata',          label: 'Metadata',          icon: Database },
   { to: '/artifacts',         label: 'Artifact Studio',   icon: ScrollText },
   { to: '/node-types',        label: 'Node Types',        icon: Puzzle },
   { to: '/global-variables',  label: 'Variables',         icon: Globe },

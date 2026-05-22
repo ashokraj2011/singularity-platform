@@ -9,14 +9,13 @@ import { useActiveContextStore, type Membership } from '../../store/activeContex
 const AUTH_PROVIDER  = (import.meta.env.VITE_AUTH_PROVIDER ?? 'iam') as 'local' | 'iam'
 const IAM_LOGIN_URL  = import.meta.env.VITE_IAM_LOGIN_URL  ?? 'http://localhost:5175/login'
 
-// M12 — pseudo-IAM auto-login support. When VITE_PSEUDO_IAM_URL is set, the
-// "Continue as super admin" button (and the auto-login effect when
-// VITE_AUTO_LOGIN=1) calls pseudo-IAM directly and stores the token.
-// Defaults: pseudo-IAM at :8101, auto-login disabled so real IAM remains the
-// default source of truth. Set VITE_AUTO_LOGIN=1 for pseudo-IAM smoke tests.
-const PSEUDO_IAM_URL    = import.meta.env.VITE_PSEUDO_IAM_URL    ?? 'http://localhost:8101/api/v1'
+// Local-dev shortcut support. When VITE_PSEUDO_IAM_URL is set, this can still
+// point at pseudo-IAM; otherwise the default follows the current compose stack's
+// real IAM service on :8100 so the primary button does not dead-end.
+const PSEUDO_IAM_URL    = import.meta.env.VITE_PSEUDO_IAM_URL    ?? 'http://localhost:8100/api/v1'
 const AUTO_LOGIN        = (import.meta.env.VITE_AUTO_LOGIN     ?? '0') !== '0'
-const PSEUDO_LOGIN_EMAIL = import.meta.env.VITE_PSEUDO_LOGIN_EMAIL ?? 'admin@pseudo.local'
+const PSEUDO_LOGIN_EMAIL = import.meta.env.VITE_PSEUDO_LOGIN_EMAIL ?? 'admin@singularity.local'
+const PSEUDO_LOGIN_PASSWORD = import.meta.env.VITE_PSEUDO_LOGIN_PASSWORD ?? 'Admin1234!'
 
 async function fetchMemberships(token: string): Promise<Membership[]> {
   try {
@@ -82,16 +81,15 @@ export function LoginPage() {
     navigate(ms.length > 0 ? '/context-picker' : '/dashboard')
   }
 
-  // M12 — one-click sign in via pseudo-IAM. Talks directly to pseudo-IAM
-  // (default :8101) which accepts ANY credentials and returns a JWT signed
-  // with the same JWT_SECRET as real IAM, so workgraph-api accepts it.
+  // M12 — one-click sign in for local development. It talks to whichever IAM
+  // endpoint is configured above and then verifies the token with Workgraph.
   async function pseudoLogin() {
     setError(''); setLoading(true)
     try {
       const res = await fetch(`${PSEUDO_IAM_URL.replace(/\/$/, '')}/auth/local/login`, {
         method:  'POST',
         headers: { 'content-type': 'application/json' },
-        body:    JSON.stringify({ email: PSEUDO_LOGIN_EMAIL, password: 'pseudo' }),
+        body:    JSON.stringify({ email: PSEUDO_LOGIN_EMAIL, password: PSEUDO_LOGIN_PASSWORD }),
       })
       if (!res.ok) {
         throw new Error(`pseudo-IAM ${res.status}: ${(await res.text()).slice(0, 200)}`)
@@ -104,7 +102,7 @@ export function LoginPage() {
         ?? (err as Error).message
       setError(
         msg.includes('IAM rejected token')
-          ? 'Pseudo-IAM is running, but Workgraph API is pointed at real IAM. Use Singularity IAM sign in, or restart Workgraph API with IAM_BASE_URL=http://host.docker.internal:8101/api/v1 for pseudo mode.'
+          ? `IAM returned a token, but Workgraph rejected it. Check that Workgraph IAM_BASE_URL points at ${PSEUDO_IAM_URL}.`
           : msg,
       )
       setLoading(false)
@@ -204,7 +202,7 @@ export function LoginPage() {
           <h2 className="text-lg font-semibold mb-1 text-center" style={{ color: 'var(--text-strong, #0A2240)' }}>Sign in</h2>
           <p className="text-sm mb-5 text-center" style={{ color: 'var(--text-muted, #64748b)' }}>Choose how you want to authenticate</p>
 
-          {/* M12 — one-click pseudo-IAM sign-in. Always visible so even if
+          {/* M12 — one-click local-dev sign-in. Always visible so even if
               auto-login is disabled or fails, a single click gets you in. */}
           <button
             onClick={() => void pseudoLogin()}
@@ -218,10 +216,10 @@ export function LoginPage() {
           >
             {loading
               ? <><Loader2 className="w-4 h-4 animate-spin" /> Signing in…</>
-              : <><ShieldCheck className="w-4 h-4" /> Continue as super admin (Pseudo IAM)</>}
+              : <><ShieldCheck className="w-4 h-4" /> Continue as super admin</>}
           </button>
           <p className="text-[11px] -mt-3 mb-5 text-center" style={{ color: 'var(--text-muted, #64748b)' }}>
-            For local dev — pseudo-IAM accepts any credentials.{' '}
+            Local dev shortcut using the configured IAM endpoint.{' '}
             <span style={{ color: 'var(--text-faint, #94a3b8)' }}>Auto-login: {AUTO_LOGIN ? 'on' : 'off'} · target: {PSEUDO_IAM_URL}</span>
           </p>
 

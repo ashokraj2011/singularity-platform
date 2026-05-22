@@ -11,6 +11,7 @@ import { AuditPage } from './features/audit/AuditPage'
 import { ConnectorsPage } from './features/connectors/ConnectorsPage'
 import { ArtifactDesignerPage } from './features/artifact/ArtifactDesignerPage'
 import { ArtifactEditorPage } from './features/artifact/ArtifactEditorPage'
+import { MetadataRegistryPage } from './features/metadata/MetadataRegistryPage'
 import { TeamVariablesPage } from './features/identity/TeamVariablesPage'
 import { InboxPage } from './features/runtime/InboxPage'
 import { WorkDetailPage } from './features/runtime/WorkDetailPage'
@@ -76,6 +77,7 @@ export default function App() {
           <Route path="audit"              element={<AuditPage />} />
           <Route path="artifacts"          element={<ArtifactDesignerPage />} />
           <Route path="artifacts/:id"      element={<ArtifactEditorPage />} />
+          <Route path="metadata"           element={<MetadataRegistryPage />} />
           <Route path="team-variables"     element={<TeamVariablesPage />} />
           <Route path="global-variables"   element={<TeamVariablesPage />} />
           <Route path="*"                  element={<Navigate to="/dashboard" replace />} />

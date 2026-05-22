@@ -212,7 +212,14 @@ export type NodeConfig = {
   skillKey?:     string   // SKILL_BASED → IAM skill key
 }
 
-export type NodeData = { label: string; nodeType: string; status: string; config?: NodeConfig }
+export type NodeData = {
+  label: string
+  nodeType: string
+  status: string
+  config?: NodeConfig
+  validationSeverity?: 'error' | 'warning'
+  validationMessage?: string
+}
 
 // ─── Workflow parameters ──────────────────────────────────────────────────────
 
@@ -303,10 +310,14 @@ const NODE_META: Record<string, {
 }> = {
   START: {
     label: 'Start', color: '#00843D', Icon: Play,
-    description: 'Entry point of the workflow. Execution begins here when the workflow is started. One Start node is required per workflow.',
+    description: 'Entry point of the workflow. Execution begins here manually, from a schedule, from a webhook, or from an event trigger. One Start node is required per workflow.',
     standardFields: [
-      { key: 'triggerType',  label: 'Trigger type',      placeholder: 'MANUAL | SCHEDULE | WEBHOOK | API' },
-      { key: 'triggerNote',  label: 'Trigger note',       placeholder: 'e.g. Runs every Monday at 09:00', multiline: false },
+      { key: 'triggerType',      label: 'Trigger type',      placeholder: 'MANUAL | SCHEDULE | EVENT | WEBHOOK | API' },
+      { key: 'scheduleCron',     label: 'Schedule cron',     placeholder: '0 9 * * 1' },
+      { key: 'scheduleTimezone', label: 'Schedule timezone', placeholder: 'UTC' },
+      { key: 'eventType',        label: 'Event type',        placeholder: 'workitem.created' },
+      { key: 'eventFilter',      label: 'Event filter JSON', placeholder: '{"capabilityId":"..."}', multiline: true },
+      { key: 'triggerNote',      label: 'Trigger note',      placeholder: 'e.g. Runs every Monday at 09:00', multiline: false },
     ],
   },
   END: {
@@ -525,6 +536,15 @@ const STATUS_COLOR: Record<string, string> = {
 const ARTIFACT_FORMATS = ['TEXT', 'JSON', 'MARKDOWN', 'BINARY'] as const
 const TABS = ['Overview', 'Workbench', 'Config', 'Branches', 'Actions', 'Artifacts', 'Runtime'] as const
 type Tab = typeof TABS[number]
+const TAB_LABELS: Record<Tab, string> = {
+  Overview: 'Basics',
+  Workbench: 'Workbench',
+  Config: 'Advanced',
+  Branches: 'Routing',
+  Actions: 'Governance',
+  Artifacts: 'Inputs / Outputs',
+  Runtime: 'Run',
+}
 
 const DECISION_NODE_TYPES = new Set(['DECISION_GATE', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY'])
 
@@ -830,10 +850,11 @@ function TabBtn({ label, active, onClick }: { label: string; active: boolean; on
     <button
       onClick={onClick}
       style={{
-        padding: '6px 12px', borderRadius: 8, fontSize: 11, fontWeight: 700,
-        textTransform: 'uppercase', letterSpacing: '0.1em', border: 'none', cursor: 'pointer',
-        background: active ? 'rgba(34,197,94,0.15)' : 'transparent',
-        color: active ? '#22c55e' : '#475569',
+        padding: '7px 11px', borderRadius: 999, fontSize: 11, fontWeight: 750,
+        border: '1px solid transparent', cursor: 'pointer',
+        background: active ? 'rgba(34,197,94,0.13)' : 'transparent',
+        color: active ? '#047857' : '#64748b',
+        borderColor: active ? 'rgba(34,197,94,0.24)' : 'transparent',
         transition: 'all 0.12s',
       }}
     >
@@ -855,8 +876,8 @@ function NeoInput({ value, onChange, placeholder, multiline = false }: {
 }) {
   const base: React.CSSProperties = {
     width: '100%', boxSizing: 'border-box',
-    background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)',
-    borderRadius: 9, padding: '9px 12px', fontSize: 13, lineHeight: 1.45, color: '#e2e8f0',
+    background: '#ffffff', border: '1px solid rgba(148,163,184,0.28)',
+    borderRadius: 9, padding: '9px 12px', fontSize: 13, lineHeight: 1.45, color: '#0f172a',
     outline: 'none', resize: 'vertical' as const, fontFamily: 'inherit',
     transition: 'border-color 0.12s',
   }
@@ -866,7 +887,7 @@ function NeoInput({ value, onChange, placeholder, multiline = false }: {
       onChange={e => onChange(e.target.value)}
       style={base}
       onFocus={e => (e.target.style.borderColor = 'rgba(34,197,94,0.4)')}
-      onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.10)')}
+      onBlur={e => (e.target.style.borderColor = 'rgba(148,163,184,0.28)')}
     />
   )
   return (
@@ -875,7 +896,7 @@ function NeoInput({ value, onChange, placeholder, multiline = false }: {
       onChange={e => onChange(e.target.value)}
       style={base}
       onFocus={e => (e.target.style.borderColor = 'rgba(34,197,94,0.4)')}
-      onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.10)')}
+      onBlur={e => (e.target.style.borderColor = 'rgba(148,163,184,0.28)')}
     />
   )
 }
@@ -893,14 +914,14 @@ function ModelAliasPicker({ value, onChange }: { value: string; onChange: (v: st
         onChange={e => onChange(e.target.value === '__workflow_default__' ? '' : e.target.value)}
         style={{
           width: '100%', boxSizing: 'border-box',
-          background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)',
-          borderRadius: 9, padding: '9px 12px', fontSize: 13, lineHeight: 1.45, color: '#e2e8f0',
+          background: '#ffffff', border: '1px solid rgba(148,163,184,0.28)',
+          borderRadius: 9, padding: '9px 12px', fontSize: 13, lineHeight: 1.45, color: '#0f172a',
           outline: 'none', cursor: 'pointer',
         }}
       >
-        <option value="__workflow_default__" style={{ background: '#0f172a' }}>Use workflow default</option>
+        <option value="__workflow_default__">Use workflow default</option>
         {(data?.models ?? []).map(model => (
-          <option key={model.id} value={model.id} disabled={model.ready === false} style={{ background: '#0f172a' }}>
+          <option key={model.id} value={model.id} disabled={model.ready === false}>
             {(model.label ?? model.id)}{model.ready === false ? ' - Missing key' : ''}{model.costTier ? ` - ${model.costTier}` : ''}
           </option>
         ))}
@@ -936,12 +957,12 @@ function NeoSelect({ value, onChange, options }: { value: string; onChange: (v: 
       value={value} onChange={e => onChange(e.target.value)}
       style={{
         width: '100%', boxSizing: 'border-box',
-        background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)',
-        borderRadius: 9, padding: '9px 12px', fontSize: 13, lineHeight: 1.45, color: '#e2e8f0',
+        background: '#ffffff', border: '1px solid rgba(148,163,184,0.28)',
+        borderRadius: 9, padding: '9px 12px', fontSize: 13, lineHeight: 1.45, color: '#0f172a',
         outline: 'none', appearance: 'none', cursor: 'pointer',
       }}
     >
-      {options.map(o => <option key={o} value={o} style={{ background: '#0f172a' }}>{o}</option>)}
+      {options.map(o => <option key={o} value={o}>{o}</option>)}
     </select>
   )
 }
@@ -1681,6 +1702,17 @@ function selectStyle(disabled: boolean): React.CSSProperties {
     border: '1px solid rgba(255,255,255,0.10)',
     borderRadius: 8, padding: '6px 10px', fontSize: 11, color: '#e2e8f0',
     outline: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
+  }
+}
+
+function standardFieldSelectStyle(): React.CSSProperties {
+  return {
+    width: '100%', boxSizing: 'border-box',
+    background: '#ffffff',
+    border: '1px solid rgba(148,163,184,0.28)',
+    borderRadius: 9, padding: '9px 12px',
+    fontSize: 13, lineHeight: 1.45, color: '#0f172a',
+    outline: 'none', cursor: 'pointer',
   }
 }
 
@@ -3598,7 +3630,7 @@ export function NodeInspector({
       {/* ── Header ─────────────────────────────────────────────────── */}
       <div style={{
         padding: '14px 16px 12px',
-        borderBottom: '1px solid rgba(255,255,255,0.06)',
+        borderBottom: '1px solid rgba(148,163,184,0.22)',
         flexShrink: 0,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -3611,11 +3643,11 @@ export function NodeInspector({
               <Icon style={{ width: 13, height: 13, color }} />
             </div>
             <div>
-              <p style={{ fontSize: 12, fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+              <p style={{ fontSize: 12, fontWeight: 800, color: '#0f172a' }}>
                 {meta.label}
               </p>
-              <p style={{ fontSize: 10, color: '#64748b', fontFamily: 'monospace', marginTop: 2 }}>
-                {node.id.slice(0, 12)}…
+              <p style={{ fontSize: 10, color: '#64748b', marginTop: 2, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {description}
               </p>
             </div>
           </div>
@@ -3646,7 +3678,7 @@ export function NodeInspector({
           {TABS
             .filter(t => t !== 'Branches' || DECISION_NODE_TYPES.has(node.data.nodeType))
             .filter(t => t !== 'Workbench' || node.data.nodeType === 'WORKBENCH_TASK')
-            .map(t => <TabBtn key={t} label={t} active={tab === t} onClick={() => setTab(t)} />)
+            .map(t => <TabBtn key={t} label={TAB_LABELS[t]} active={tab === t} onClick={() => setTab(t)} />)
           }
         </div>
       </div>
@@ -3734,7 +3766,13 @@ export function NodeInspector({
                     <p style={{ fontSize: 10, color: '#334155' }}>No standard fields for this node type.</p>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                      {standardFields.map(f => {
+                      {standardFields.filter(f => {
+                        if (node.data.nodeType !== 'START') return true
+                        const triggerType = String(config.standard.triggerType ?? 'MANUAL').toUpperCase()
+                        if ((f.key === 'scheduleCron' || f.key === 'scheduleTimezone') && triggerType !== 'SCHEDULE') return false
+                        if ((f.key === 'eventType' || f.key === 'eventFilter') && triggerType !== 'EVENT') return false
+                        return true
+                      }).map(f => {
                         // M10 — picker matching expanded for federated lookups.
                         const isAgentPicker      = node.data.nodeType === 'AGENT_TASK'   && (f.key === 'agentTemplateId' || f.key === 'agentId')
                         const isToolPicker       = node.data.nodeType === 'TOOL_REQUEST' && f.key === 'toolName'
@@ -3746,6 +3784,7 @@ export function NodeInspector({
                         const isPolicyEngine     = node.data.nodeType === 'POLICY_CHECK' && f.key === 'engine'
                         const isFormalProfile    = node.data.nodeType === 'POLICY_CHECK' && f.key === 'profile'
                         const isEvalScope        = node.data.nodeType === 'EVAL_GATE' && f.key === 'scope'
+                        const isTriggerType      = node.data.nodeType === 'START' && f.key === 'triggerType'
                         const isBooleanFlag      = (node.data.nodeType === 'EVAL_GATE' && f.key === 'blockOnMissingEvidence')
                           || (node.data.nodeType === 'GIT_PUSH' && f.key === 'requireApproval')
                         const isVariableAwareNumber = f.key === 'maxConcurrency' || f.key === 'expectedBranches'
@@ -3757,17 +3796,26 @@ export function NodeInspector({
                               <select
                                 value={config.standard[f.key] ?? 'MEDIUM'}
                                 onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
-                                style={{
-                                  width: '100%', boxSizing: 'border-box',
-                                  background: 'rgba(255,255,255,0.05)',
-                                  border: '1px solid rgba(255,255,255,0.10)',
-                                  borderRadius: 8, padding: '6px 10px',
-                                  fontSize: 11, color: '#e2e8f0',
-                                  outline: 'none', cursor: 'pointer',
-                                }}
+                                style={standardFieldSelectStyle()}
                               >
                                 {['CRITICAL','HIGH','MEDIUM','LOW'].map(p => (
-                                  <option key={p} value={p} style={{ background: '#0f172a' }}>{p}</option>
+                                  <option key={p} value={p}>{p}</option>
+                                ))}
+                              </select>
+                            ) : isTriggerType ? (
+                              <select
+                                value={config.standard[f.key] ?? 'MANUAL'}
+                                onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
+                                style={standardFieldSelectStyle()}
+                              >
+                                {[
+                                  ['MANUAL', 'Manual start'],
+                                  ['SCHEDULE', 'Schedule trigger'],
+                                  ['EVENT', 'Event type trigger'],
+                                  ['WEBHOOK', 'Webhook trigger'],
+                                  ['API', 'API start'],
+                                ].map(([value, label]) => (
+                                  <option key={value} value={value}>{label}</option>
                                 ))}
                               </select>
                             ) : isCapabilityPicker ? (
@@ -3796,14 +3844,7 @@ export function NodeInspector({
                               <select
                                 value={config.standard[f.key] ?? 'fail_open'}
                                 onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
-                                style={{
-                                  width: '100%', boxSizing: 'border-box',
-                                  background: 'rgba(255,255,255,0.05)',
-                                  border: '1px solid rgba(255,255,255,0.10)',
-                                  borderRadius: 8, padding: '7px 10px',
-                                  fontSize: 11, color: '#e2e8f0',
-                                  outline: 'none', cursor: 'pointer',
-                                }}
+                                style={standardFieldSelectStyle()}
                               >
                                 {[
                                   ['fail_open', 'Fail open (local/dev)'],
@@ -3811,88 +3852,60 @@ export function NodeInspector({
                                   ['degraded', 'Degraded read-only'],
                                   ['human_approval_required', 'Human approval required'],
                                 ].map(([value, label]) => (
-                                  <option key={value} value={value} style={{ background: '#0f172a' }}>{label}</option>
+                                  <option key={value} value={value}>{label}</option>
                                 ))}
                               </select>
                             ) : isPolicyEngine ? (
                               <select
                                 value={config.standard[f.key] ?? 'local_allow'}
                                 onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
-                                style={{
-                                  width: '100%', boxSizing: 'border-box',
-                                  background: 'rgba(255,255,255,0.05)',
-                                  border: '1px solid rgba(255,255,255,0.10)',
-                                  borderRadius: 8, padding: '7px 10px',
-                                  fontSize: 11, color: '#e2e8f0',
-                                  outline: 'none', cursor: 'pointer',
-                                }}
+                                style={standardFieldSelectStyle()}
                               >
                                 {[
                                   ['local_allow', 'Local allow (default)'],
                                   ['formal_verifier', 'Formal verifier (platform toggle)'],
                                 ].map(([value, label]) => (
-                                  <option key={value} value={value} style={{ background: '#0f172a' }}>{label}</option>
+                                  <option key={value} value={value}>{label}</option>
                                 ))}
                               </select>
                             ) : isFormalProfile ? (
                               <select
                                 value={config.standard[f.key] ?? 'blocking'}
                                 onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
-                                style={{
-                                  width: '100%', boxSizing: 'border-box',
-                                  background: 'rgba(255,255,255,0.05)',
-                                  border: '1px solid rgba(255,255,255,0.10)',
-                                  borderRadius: 8, padding: '7px 10px',
-                                  fontSize: 11, color: '#e2e8f0',
-                                  outline: 'none', cursor: 'pointer',
-                                }}
+                                style={standardFieldSelectStyle()}
                               >
                                 {[
                                   ['blocking', 'Blocking'],
                                   ['production', 'Production'],
                                   ['advisory', 'Advisory'],
                                 ].map(([value, label]) => (
-                                  <option key={value} value={value} style={{ background: '#0f172a' }}>{label}</option>
+                                  <option key={value} value={value}>{label}</option>
                                 ))}
                               </select>
                             ) : isEvalScope ? (
                               <select
                                 value={config.standard[f.key] ?? 'CURRENT_RUN'}
                                 onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
-                                style={{
-                                  width: '100%', boxSizing: 'border-box',
-                                  background: 'rgba(255,255,255,0.05)',
-                                  border: '1px solid rgba(255,255,255,0.10)',
-                                  borderRadius: 8, padding: '7px 10px',
-                                  fontSize: 11, color: '#e2e8f0',
-                                  outline: 'none', cursor: 'pointer',
-                                }}
+                                style={standardFieldSelectStyle()}
                               >
                                 {[
                                   ['CURRENT_RUN', 'Current run traces'],
                                   ['TRACE', 'Specific trace id'],
                                   ['DATASET', 'Eval dataset'],
                                 ].map(([value, label]) => (
-                                  <option key={value} value={value} style={{ background: '#0f172a' }}>{label}</option>
+                                  <option key={value} value={value}>{label}</option>
                                 ))}
                               </select>
                             ) : isBooleanFlag ? (
                               <select
                                 value={String(config.standard[f.key] ?? 'true')}
                                 onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
-                                style={{
-                                  width: '100%', boxSizing: 'border-box',
-                                  background: 'rgba(255,255,255,0.05)',
-                                  border: '1px solid rgba(255,255,255,0.10)',
-                                  borderRadius: 8, padding: '7px 10px',
-                                  fontSize: 11, color: '#e2e8f0',
-                                  outline: 'none', cursor: 'pointer',
-                                }}
+                                style={standardFieldSelectStyle()}
                               >
-                                <option value="true" style={{ background: '#0f172a' }}>
+                                <option value="true">
                                   {node.data.nodeType === 'GIT_PUSH' ? 'Require approved gate' : 'Block when evidence is missing'}
                                 </option>
-                                <option value="false" style={{ background: '#0f172a' }}>
+                                <option value="false">
                                   {node.data.nodeType === 'GIT_PUSH' ? 'Allow autonomous push' : 'Allow missing evidence'}
                                 </option>
                               </select>

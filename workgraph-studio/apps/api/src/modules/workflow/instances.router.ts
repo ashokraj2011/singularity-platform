@@ -341,8 +341,13 @@ workflowInstancesRouter.post('/:id/signals/:name', validate(signalSchema), async
     })
     const matched = candidates.filter(n => {
       const cfg = (n.config ?? {}) as Record<string, unknown>
-      if (cfg.signalName !== signalName) return false
-      if (correlationKey && cfg.correlationKey && cfg.correlationKey !== correlationKey) return false
+      const std = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard)
+        ? cfg.standard as Record<string, unknown>
+        : {}
+      const nodeSignalName = cfg.signalName ?? std.signalName
+      const nodeCorrelationKey = cfg.correlationKey ?? std.correlationKey
+      if (nodeSignalName !== signalName) return false
+      if (correlationKey && nodeCorrelationKey && nodeCorrelationKey !== correlationKey) return false
       return true
     })
 

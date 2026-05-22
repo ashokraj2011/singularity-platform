@@ -12,7 +12,7 @@ import {
   GitBranch, Play, Pause, Square, RotateCw, RotateCcw,
   User, Bot, CheckCircle, GitMerge, Package, Wrench, Shield,
   Clock, Radio, RadioTower, Workflow, Repeat, Shuffle, Zap,
-  Sun, Moon, Box, X, ArrowLeft, ZoomIn, ZoomOut, Maximize2, Layers,
+  Sun, Moon, Box, X, ArrowLeft, ZoomIn, ZoomOut, Maximize2,
   Star, Briefcase as BriefcaseIcon, Database, Globe, Mail, Phone,
   Calendar, AlertTriangle, Search, Filter, Activity, Coins,
   SlidersHorizontal, Plus, Trash2, GitFork, ShieldAlert,
@@ -56,6 +56,9 @@ const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType }> = 
   DATA_SINK:           { color: '#0ea5e9', Icon: Database },
   SET_CONTEXT:         { color: '#84cc16', Icon: SlidersHorizontal },
   ERROR_CATCH:         { color: '#ef4444', Icon: ShieldAlert },
+  SCHEDULED_START:     { color: '#2563eb', Icon: Calendar },
+  EVENT_TRIGGER_START: { color: '#f59e0b', Icon: Zap },
+  SERVER_TIME_INIT:    { color: '#0ea5e9', Icon: Clock },
 }
 
 const NODE_LABELS: Record<string, string> = {
@@ -68,6 +71,9 @@ const NODE_LABELS: Record<string, string> = {
   FOREACH: 'For Each', PARALLEL_FORK: 'Parallel Fork', PARALLEL_JOIN: 'Parallel Join',
   INCLUSIVE_GATEWAY: 'Inclusive GW', EVENT_GATEWAY: 'Event GW',
   DATA_SINK: 'Data Sink', SET_CONTEXT: 'Set Context', ERROR_CATCH: 'Error Catch',
+  SCHEDULED_START: 'Scheduled Start',
+  EVENT_TRIGGER_START: 'Event Trigger',
+  SERVER_TIME_INIT: 'Server Time Init',
 }
 
 const WORKBENCH_TASK_NODE_CONFIG = {
@@ -188,15 +194,64 @@ const GIT_PUSH_NODE_CONFIG = {
   message: '',
 }
 
+const SCHEDULED_START_NODE_CONFIG = {
+  description: 'Starts this workflow from the scheduler. Use the Triggers panel to create the active schedule.',
+  standard: {
+    triggerType: 'SCHEDULE',
+    scheduleCron: '0 9 * * 1',
+    scheduleTimezone: 'UTC',
+    triggerNote: 'Runs every Monday at 09:00 UTC',
+  },
+}
+
+const EVENT_TRIGGER_START_NODE_CONFIG = {
+  description: 'Starts this workflow when Workgraph sees a matching event type. Use the Triggers panel to register the event.',
+  standard: {
+    triggerType: 'EVENT',
+    eventType: 'workitem.created',
+    eventFilter: '{}',
+    triggerNote: 'Starts when the configured event type is observed',
+  },
+}
+
+const SERVER_TIME_INIT_NODE_CONFIG = {
+  description: 'Captures the server clock into workflow context for downstream scheduling, SLAs, and audit timestamps.',
+  assignments: [
+    { id: 'server-time-now', key: 'server.now', value: '{{server.now}}' },
+    { id: 'server-time-epoch-ms', key: 'server.epochMs', value: '{{server.epochMs}}' },
+    { id: 'server-time-date', key: 'server.date', value: '{{server.date}}' },
+    { id: 'server-time-timezone', key: 'server.timezone', value: '{{server.timezone}}' },
+  ],
+}
+
 const NODE_GROUPS: Array<{ label: string; types: string[] }> = [
-  { label: 'Boundary', types: ['START', 'END'] },
-  { label: 'Tasks', types: ['HUMAN_TASK', 'AGENT_TASK', 'APPROVAL', 'TOOL_REQUEST', 'GIT_PUSH'] },
-  { label: 'Agentic Workbench', types: ['WORKBENCH_TASK'] },
-  { label: 'Artifacts', types: ['CONSUMABLE_CREATION', 'DATA_SINK'] },
-  { label: 'Control Flow', types: ['DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY'] },
-  { label: 'Data', types: ['SET_CONTEXT'] },
-  { label: 'Async & Timing', types: ['TIMER', 'SIGNAL_WAIT', 'SIGNAL_EMIT'] },
-  { label: 'Advanced', types: ['WORK_ITEM', 'CALL_WORKFLOW', 'FOREACH', 'POLICY_CHECK', 'EVAL_GATE', 'ERROR_CATCH'] },
+  { label: 'Common', types: ['START', 'END', 'HUMAN_TASK', 'APPROVAL'] },
+  { label: 'Agentic', types: ['AGENT_TASK', 'WORKBENCH_TASK', 'TOOL_REQUEST', 'GIT_PUSH'] },
+  { label: 'Human', types: ['WORK_ITEM', 'CONSUMABLE_CREATION'] },
+  { label: 'Logic', types: ['DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'FOREACH'] },
+  { label: 'Data', types: ['SET_CONTEXT', 'DATA_SINK'] },
+  { label: 'Advanced', types: ['TIMER', 'SIGNAL_WAIT', 'SIGNAL_EMIT', 'CALL_WORKFLOW', 'POLICY_CHECK', 'EVAL_GATE', 'ERROR_CATCH'] },
+]
+
+const TRIGGER_PRESETS = [
+  {
+    type: 'SCHEDULED_START',
+    actualNodeType: 'START',
+    label: 'Scheduled Start',
+    payload: { label: 'Scheduled Start', config: SCHEDULED_START_NODE_CONFIG },
+  },
+  {
+    type: 'EVENT_TRIGGER_START',
+    actualNodeType: 'START',
+    label: 'Event Trigger',
+    payload: { label: 'Event Trigger', config: EVENT_TRIGGER_START_NODE_CONFIG },
+  },
+  {
+    type: 'SERVER_TIME_INIT',
+    actualNodeType: 'SET_CONTEXT',
+    label: 'Server Time Init',
+    payload: { label: 'Server Time Init', config: SERVER_TIME_INIT_NODE_CONFIG },
+  },
 ]
 
 // ─── Validation constants ──────────────────────────────────────────────────────
@@ -314,10 +369,23 @@ function validateWorkflow(
   // ── Warning rules ──
   for (const n of nodes) {
     const cfg = n.data.config ?? {}
-    if (n.data.nodeType === 'TOOL_REQUEST' && !cfg.toolId) {
+    const std = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard)
+      ? cfg.standard as Record<string, unknown>
+      : {}
+    const field = (key: string) => cfg[key] ?? std[key]
+    if (n.data.nodeType === 'START') {
+      const triggerType = String(field('triggerType') ?? 'MANUAL').toUpperCase()
+      if (triggerType === 'SCHEDULE' && !field('scheduleCron')) {
+        issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Scheduled Start) needs a cron expression. Also create the active workflow trigger from the Triggers panel.`, nodeId: n.id })
+      }
+      if (triggerType === 'EVENT' && !field('eventType')) {
+        issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Event Trigger) needs an event type. Also create the active workflow trigger from the Triggers panel.`, nodeId: n.id })
+      }
+    }
+    if (n.data.nodeType === 'TOOL_REQUEST' && !field('toolId') && !field('toolName')) {
       issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Tool Request) has no tool selected.`, nodeId: n.id })
     }
-    if (n.data.nodeType === 'AGENT_TASK' && !cfg.agentId) {
+    if (n.data.nodeType === 'AGENT_TASK' && !field('agentId') && !field('agentTemplateId')) {
       issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Agent Task) has no agent selected.`, nodeId: n.id })
     }
     if (n.data.nodeType === 'WORKBENCH_TASK') {
@@ -325,13 +393,13 @@ function validateWorkflow(
         issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Workbench Task) ${message}`, nodeId: n.id })
       }
     }
-    if (n.data.nodeType === 'TIMER' && !cfg.durationMs && !cfg.fireAt) {
+    if (n.data.nodeType === 'TIMER' && !field('duration') && !field('durationMs') && !field('until')) {
       issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Timer) has no duration or fire-at time configured.`, nodeId: n.id })
     }
-    if (n.data.nodeType === 'SIGNAL_WAIT' && !cfg.signalName) {
+    if (n.data.nodeType === 'SIGNAL_WAIT' && !field('signalName')) {
       issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Signal Wait) has no signal name configured.`, nodeId: n.id })
     }
-    if (n.data.nodeType === 'SIGNAL_EMIT' && !cfg.signalName) {
+    if (n.data.nodeType === 'SIGNAL_EMIT' && !field('signalName')) {
       issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Signal Emit) has no signal name configured.`, nodeId: n.id })
     }
     if (n.data.nodeType === 'DECISION_GATE') {
@@ -444,6 +512,9 @@ const NODE_DESCRIPTIONS: Record<string, string> = {
   DATA_SINK: 'Writes workflow data to an external system: Connector, DB event, or artifact.',
   SET_CONTEXT: 'Sets or overwrites variables in the workflow context for downstream nodes.',
   ERROR_CATCH: 'Catches failures from an upstream node via an ERROR_BOUNDARY edge.',
+  SCHEDULED_START: 'Workflow-level schedule trigger. Creates a Start configured for cron and pairs with the Triggers panel.',
+  EVENT_TRIGGER_START: 'Workflow-level event trigger. Starts the workflow when a matching event type is observed.',
+  SERVER_TIME_INIT: 'Set Context preset that writes the server clock into workflow context.',
 }
 
 const NODE_STATUS_COLOR: Record<string, string> = {
@@ -520,6 +591,8 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
 
   const statusColor = NODE_STATUS_COLOR[data.status] ?? '#475569'
   const showStatus  = data.status && data.status !== 'PENDING'
+  const validationSeverity = data.validationSeverity
+  const validationColor = validationSeverity === 'error' ? '#ef4444' : validationSeverity === 'warning' ? '#f59e0b' : null
   const inputs      = data.config?.inputArtifacts  ?? []
   const outputs     = data.config?.outputArtifacts ?? []
   const attachments = data.config?.attachments ?? []
@@ -536,11 +609,15 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
   const cardBg  = isLight ? '#ffffff' : 'rgba(7,17,31,0.96)'
   const cardBdr = selected
     ? `1.5px solid ${color}`
-    : isLight ? '1.5px solid rgba(15,23,42,0.08)' : '1.5px solid rgba(255,255,255,0.09)'
+    : validationColor
+      ? `1.5px solid ${validationColor}`
+      : isLight ? '1.5px solid rgba(15,23,42,0.10)' : '1.5px solid rgba(255,255,255,0.09)'
   const shadow  = selected
-    ? `0 0 0 3px ${color}30, 0 12px 36px rgba(2,6,23,0.34)`
+    ? `0 0 0 4px ${color}22, 0 16px 44px rgba(15,23,42,0.20)`
+    : validationColor
+      ? `0 0 0 4px ${validationColor}18, 0 10px 26px rgba(15,23,42,0.12)`
     : isLight
-      ? '0 8px 32px rgba(2,6,23,0.14), 0 1px 0 rgba(255,255,255,0.9) inset'
+      ? '0 10px 30px rgba(15,23,42,0.10), 0 1px 0 rgba(255,255,255,0.9) inset'
       : '0 8px 32px rgba(0,0,0,0.55)'
   const nameClr = isLight ? '#0f172a' : '#f1f5f9'
   const subClr  = isLight ? '#94a3b8' : '#475569'
@@ -550,23 +627,23 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
     <div
       style={{
         background: cardBg, border: cardBdr,
-        borderRadius: 22, minWidth: 232, maxWidth: 264,
+        borderRadius: 16, minWidth: 248, maxWidth: 288,
         boxShadow: shadow,
-        backdropFilter: 'blur(20px)',
+        backdropFilter: isLight ? 'none' : 'blur(20px)',
         overflow: 'visible', transition: 'border-color 0.15s, box-shadow 0.15s',
         position: 'relative',
       }}
     >
       {/* Accent strip */}
-      <div style={{ height: 3, background: `linear-gradient(90deg, ${color}, ${color}60, transparent)` }} />
+      <div style={{ height: 3, background: `linear-gradient(90deg, ${color}, ${color}55, transparent)`, borderTopLeftRadius: 16, borderTopRightRadius: 16 }} />
 
       <Handle type="target" position={Position.Left}
         style={{ background: color, width: 12, height: 12, border: `3px solid ${cardBg}`, left: -6, top: '50%' }} />
 
       {/* ── Header ── */}
-      <div style={{ padding: '10px 12px 8px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+      <div style={{ padding: '13px 14px 9px', display: 'flex', alignItems: 'flex-start', gap: 11 }}>
         <div style={{
-          width: 36, height: 36, borderRadius: 11, flexShrink: 0,
+          width: 40, height: 40, borderRadius: 12, flexShrink: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           background: `${color}16`, border: `1.5px solid ${color}30`,
         }}>
@@ -574,14 +651,14 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <p style={{
-            fontSize: 12, fontWeight: 700, color: nameClr, lineHeight: 1.3, marginBottom: 2,
+            fontSize: 14, fontWeight: 800, color: nameClr, lineHeight: 1.25, marginBottom: 4,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
             {data.label}
           </p>
           <div style={{ position: 'relative', display: 'inline-block' }}>
             <p
-              style={{ fontSize: 9, color: subClr, textTransform: 'uppercase', letterSpacing: '0.14em', fontWeight: 700, cursor: 'help', display: 'flex', alignItems: 'center', gap: 3 }}
+              style={{ fontSize: 10, color: subClr, fontWeight: 700, cursor: 'help', display: 'flex', alignItems: 'center', gap: 3 }}
               onMouseEnter={() => setShowNodeTypeTip(true)}
               onMouseLeave={() => setShowNodeTypeTip(false)}
             >
@@ -624,9 +701,19 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
 
       {/* ── Status + role ── */}
       <div style={{ padding: '0 12px 8px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5 }}>
+        {validationColor && (
+          <span title={data.validationMessage} style={{
+            fontSize: 8, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.12em',
+            padding: '3px 8px', borderRadius: 999,
+            background: `${validationColor}12`, color: validationColor, border: `1px solid ${validationColor}30`,
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+          }}>
+            <AlertTriangle size={9} /> {validationSeverity}
+          </span>
+        )}
         <span style={{
           fontSize: 8, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.14em',
-          padding: '3px 8px', borderRadius: 6,
+          padding: '3px 8px', borderRadius: 999,
           background: showStatus ? `${statusColor}14` : `${color}12`,
           color: showStatus ? statusColor : color,
           border: `1px solid ${showStatus ? `${statusColor}28` : `${color}28`}`,
@@ -846,70 +933,55 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
 
 const nodeTypes: NodeTypes = { wgNode: WGNode }
 
-// ─── Palette icon (draggable) ─────────────────────────────────────────────────
-
-function PaletteIcon({
+function NodePickerRow({
   nodeType, color, Icon, label, dragPayload, actualNodeType,
 }: {
   nodeType: string; color: string; Icon: React.ElementType
   label: string; dragPayload?: string
   actualNodeType?: string
 }) {
-  const [showTip, setShowTip] = useState(false)
-  const description = NODE_DESCRIPTIONS[nodeType] ?? ''
-
+  const description = NODE_DESCRIPTIONS[nodeType] ?? 'Add this step to the workflow.'
   const onDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData('application/wg-node-type', actualNodeType ?? nodeType)
     if (dragPayload) e.dataTransfer.setData('application/wg-node-payload', dragPayload)
     e.dataTransfer.effectAllowed = 'copy'
-    setShowTip(false)
   }
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-      <div
-        draggable onDragStart={onDragStart}
-        onMouseEnter={e => {
-          setShowTip(true)
-          ;(e.currentTarget as HTMLDivElement).style.background = `${color}26`
-          ;(e.currentTarget as HTMLDivElement).style.border = `1px solid ${color}55`
-        }}
-        onMouseLeave={e => {
-          setShowTip(false)
-          ;(e.currentTarget as HTMLDivElement).style.background = `${color}14`
-          ;(e.currentTarget as HTMLDivElement).style.border = `1px solid ${color}28`
-        }}
-        style={{
-          width: 40, height: 40, borderRadius: 12, cursor: 'grab',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: `${color}14`, border: `1px solid ${color}28`, transition: 'all 0.12s', position: 'relative',
-        }}
-      >
-        <Icon style={{ width: 16, height: 16, color }} />
-        {showTip && (
-          <div style={{
-            position: 'absolute', left: 48, top: '50%', transform: 'translateY(-50%)',
-            zIndex: 100, width: 220, pointerEvents: 'none',
-            background: '#1e293b', border: '1px solid #334155',
-            borderRadius: 10, padding: '8px 10px',
-            boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
-          }}>
-            <p style={{ fontSize: 11, fontWeight: 700, color: '#f1f5f9', marginBottom: description ? 4 : 0 }}>
-              {label}
-            </p>
-            {description && (
-              <p style={{ fontSize: 10, color: '#94a3b8', lineHeight: 1.5, margin: 0 }}>
-                {description}
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-      <span style={{
-        fontSize: 9, fontWeight: 600, color: '#94a3b8', textAlign: 'center',
-        maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    <div
+      draggable
+      onDragStart={onDragStart}
+      style={{
+        display: 'grid', gridTemplateColumns: '34px 1fr', gap: 10, alignItems: 'center',
+        padding: '9px 10px', borderRadius: 12, cursor: 'grab',
+        border: '1px solid rgba(148,163,184,0.20)',
+        background: '#ffffff',
+        boxShadow: '0 1px 0 rgba(15,23,42,0.02)',
+      }}
+      onMouseEnter={e => {
+        ;(e.currentTarget as HTMLDivElement).style.borderColor = `${color}55`
+        ;(e.currentTarget as HTMLDivElement).style.background = `${color}08`
+      }}
+      onMouseLeave={e => {
+        ;(e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(148,163,184,0.20)'
+        ;(e.currentTarget as HTMLDivElement).style.background = '#ffffff'
+      }}
+    >
+      <div style={{
+        width: 34, height: 34, borderRadius: 10,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: `${color}14`, border: `1px solid ${color}28`,
       }}>
-        {label}
-      </span>
+        <Icon style={{ width: 15, height: 15, color }} />
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <p style={{ margin: 0, color: '#0f172a', fontSize: 12, fontWeight: 800, lineHeight: 1.25 }}>{label}</p>
+        <p style={{
+          margin: '2px 0 0', color: '#64748b', fontSize: 10, lineHeight: 1.35,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {description}
+        </p>
+      </div>
     </div>
   )
 }
@@ -1094,8 +1166,8 @@ function ToolBtn({
         color: c, transition: 'all 0.12s',
       }}
       onMouseEnter={e => {
-        (e.currentTarget as HTMLButtonElement).style.background = active ? `${color ?? '#22c55e'}28` : 'rgba(255,255,255,0.07)'
-        ;(e.currentTarget as HTMLButtonElement).style.color = active ? c : '#e2e8f0'
+        ;(e.currentTarget as HTMLButtonElement).style.background = active ? `${color ?? '#22c55e'}28` : 'rgba(15,23,42,0.07)'
+        ;(e.currentTarget as HTMLButtonElement).style.color = active ? c : '#0f172a'
       }}
       onMouseLeave={e => {
         (e.currentTarget as HTMLButtonElement).style.background = active ? `${color ?? '#22c55e'}18` : 'transparent'
@@ -1111,6 +1183,15 @@ function ToolBtn({
 
 type ApiNode = { id: string; label: string; nodeType: string; status: string; positionX: number; positionY: number; config?: NodeConfig }
 type ApiEdge = { id: string; sourceNodeId: string; targetNodeId: string; edgeType: string; label?: string; condition?: Record<string, unknown> | null }
+type WorkflowTriggerRecord = {
+  id: string
+  templateId: string
+  type: 'WEBHOOK' | 'SCHEDULE' | 'EVENT'
+  isActive: boolean
+  config: Record<string, unknown>
+  lastFiredAt?: string | null
+  createdAt: string
+}
 
 // ─── Draggable + Resizable Inspector Panel ────────────────────────────────────
 
@@ -1356,6 +1437,257 @@ function DraggableResizablePanel({
           ...cornerDots,
         }}
       />
+    </motion.div>
+  )
+}
+
+// ─── Workflow Trigger Panel ───────────────────────────────────────────────────
+
+type TriggerForm = {
+  type: 'SCHEDULE' | 'EVENT' | 'WEBHOOK'
+  cron: string
+  timezone: string
+  eventType: string
+  filter: string
+}
+
+function WorkflowTriggersPanel({
+  templateId, isLight, glassPanel, panelText, panelMuted, panelBdr, onClose,
+}: {
+  templateId?: string
+  isLight: boolean
+  glassPanel: (l: boolean) => React.CSSProperties
+  panelText: string; panelMuted: string; panelBdr: string
+  onClose: () => void
+}) {
+  const qc = useQueryClient()
+  const [form, setForm] = useState<TriggerForm>({
+    type: 'SCHEDULE',
+    cron: '0 9 * * 1',
+    timezone: 'UTC',
+    eventType: 'workitem.created',
+    filter: '{}',
+  })
+  const [formError, setFormError] = useState<string | null>(null)
+  const queryKey = ['workflow-triggers', templateId]
+  const { data: triggers = [], isLoading } = useQuery<WorkflowTriggerRecord[]>({
+    queryKey,
+    queryFn: () => api.get('/workflow-triggers', { params: { templateId } }).then(r => r.data),
+    enabled: !!templateId,
+    staleTime: 10_000,
+  })
+  const createTrigger = useMutation({
+    mutationFn: (payload: { templateId: string; type: TriggerForm['type']; config: Record<string, unknown> }) =>
+      api.post('/workflow-triggers', payload).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey })
+      setFormError(null)
+    },
+  })
+  const deleteTrigger = useMutation({
+    mutationFn: (id: string) => api.delete(`/workflow-triggers/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey }),
+  })
+
+  const inputSt: React.CSSProperties = {
+    width: '100%', boxSizing: 'border-box', padding: '7px 9px', borderRadius: 8,
+    fontSize: 11, border: `1px solid ${panelBdr}`,
+    background: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)',
+    color: panelText, outline: 'none',
+  }
+
+  function submitTrigger() {
+    if (!templateId) return
+    let config: Record<string, unknown>
+    if (form.type === 'SCHEDULE') {
+      if (!form.cron.trim()) {
+        setFormError('Schedule triggers need a cron expression.')
+        return
+      }
+      config = { cron: form.cron.trim(), timezone: form.timezone.trim() || 'UTC' }
+    } else if (form.type === 'EVENT') {
+      if (!form.eventType.trim()) {
+        setFormError('Event triggers need an event type.')
+        return
+      }
+      let filter: unknown = undefined
+      if (form.filter.trim()) {
+        try { filter = JSON.parse(form.filter) }
+        catch {
+          setFormError('Event filter must be valid JSON.')
+          return
+        }
+      }
+      config = { eventType: form.eventType.trim(), ...(filter && typeof filter === 'object' ? { filter } : {}) }
+    } else {
+      config = {}
+    }
+    createTrigger.mutate({ templateId, type: form.type, config })
+  }
+
+  const describeTrigger = (trigger: WorkflowTriggerRecord) => {
+    const cfg = trigger.config ?? {}
+    if (trigger.type === 'SCHEDULE') return `${String(cfg.cron ?? 'no cron')} · ${String(cfg.timezone ?? 'UTC')}`
+    if (trigger.type === 'EVENT') return `${String(cfg.eventType ?? 'no event type')}`
+    if (trigger.type === 'WEBHOOK') return `Secret ${String(cfg.secret ?? '').slice(0, 8)}...`
+    return ''
+  }
+
+  return (
+    <motion.div
+      key="triggers-panel"
+      initial={{ opacity: 0, x: -16 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -16 }}
+      transition={{ duration: 0.18 }}
+      style={{
+        position: 'absolute', left: 68, top: 72, bottom: 12,
+        width: 380, zIndex: 25, pointerEvents: 'auto',
+        ...glassPanel(isLight),
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      }}
+    >
+      <div style={{ padding: '14px 16px 10px', borderBottom: `1px solid ${panelBdr}`, flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{
+              width: 26, height: 26, borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: 'rgba(14,165,233,0.14)', border: '1px solid rgba(14,165,233,0.3)',
+            }}>
+              <Calendar size={12} style={{ color: '#0ea5e9' }} />
+            </div>
+            <p style={{ fontSize: 11, fontWeight: 700, color: panelText }}>Workflow Triggers</p>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ width: 24, height: 24, borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: panelMuted }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+        <p style={{ fontSize: 10, color: panelMuted, marginTop: 6, lineHeight: 1.6 }}>
+          Schedule and event triggers are workflow-level entry points. Pair them with a Start node on the canvas.
+        </p>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px' }}>
+        <div style={{
+          borderRadius: 12, border: `1px solid ${panelBdr}`,
+          background: isLight ? 'rgba(255,255,255,0.66)' : 'rgba(255,255,255,0.03)',
+          padding: 12, marginBottom: 12,
+        }}>
+          <label style={{ display: 'grid', gap: 5, marginBottom: 8 }}>
+            <span style={{ fontSize: 10, fontWeight: 800, color: panelText }}>Trigger type</span>
+            <select
+              value={form.type}
+              onChange={e => setForm(f => ({ ...f, type: e.target.value as TriggerForm['type'] }))}
+              style={inputSt}
+            >
+              <option value="SCHEDULE">Schedule</option>
+              <option value="EVENT">Event type</option>
+              <option value="WEBHOOK">Webhook</option>
+            </select>
+          </label>
+          {form.type === 'SCHEDULE' && (
+            <div style={{ display: 'grid', gap: 8 }}>
+              <label style={{ display: 'grid', gap: 5 }}>
+                <span style={{ fontSize: 10, fontWeight: 800, color: panelText }}>Cron</span>
+                <input value={form.cron} onChange={e => setForm(f => ({ ...f, cron: e.target.value }))} placeholder="0 9 * * 1" style={inputSt} />
+              </label>
+              <label style={{ display: 'grid', gap: 5 }}>
+                <span style={{ fontSize: 10, fontWeight: 800, color: panelText }}>Timezone</span>
+                <input value={form.timezone} onChange={e => setForm(f => ({ ...f, timezone: e.target.value }))} placeholder="UTC" style={inputSt} />
+              </label>
+            </div>
+          )}
+          {form.type === 'EVENT' && (
+            <div style={{ display: 'grid', gap: 8 }}>
+              <label style={{ display: 'grid', gap: 5 }}>
+                <span style={{ fontSize: 10, fontWeight: 800, color: panelText }}>Event type</span>
+                <input value={form.eventType} onChange={e => setForm(f => ({ ...f, eventType: e.target.value }))} placeholder="workitem.created" style={inputSt} />
+              </label>
+              <label style={{ display: 'grid', gap: 5 }}>
+                <span style={{ fontSize: 10, fontWeight: 800, color: panelText }}>Filter JSON</span>
+                <textarea value={form.filter} onChange={e => setForm(f => ({ ...f, filter: e.target.value }))} placeholder="{}" rows={3} style={{ ...inputSt, resize: 'vertical', lineHeight: 1.45 }} />
+              </label>
+            </div>
+          )}
+          {form.type === 'WEBHOOK' && (
+            <p style={{ fontSize: 10, color: panelMuted, lineHeight: 1.6 }}>
+              The server generates a secret. The public receiver is <span style={{ fontFamily: 'monospace', color: '#0ea5e9' }}>/api/triggers/webhook/&lt;secret&gt;</span>.
+            </p>
+          )}
+          {formError && (
+            <p style={{ color: '#ef4444', fontSize: 10, lineHeight: 1.5, marginTop: 8 }}>{formError}</p>
+          )}
+          <button
+            onClick={submitTrigger}
+            disabled={!templateId || createTrigger.isPending}
+            style={{
+              marginTop: 10, width: '100%', padding: '8px 10px', borderRadius: 9,
+              border: '1.5px solid rgba(14,165,233,0.42)',
+              background: 'rgba(14,165,233,0.12)', color: '#0284c7',
+              fontSize: 11, fontWeight: 800, cursor: createTrigger.isPending ? 'wait' : 'pointer',
+              opacity: createTrigger.isPending ? 0.7 : 1,
+            }}
+          >
+            {createTrigger.isPending ? 'Creating...' : 'Create trigger'}
+          </button>
+        </div>
+
+        <p style={{ fontSize: 9, fontWeight: 900, color: panelMuted, textTransform: 'uppercase', letterSpacing: '0.12em', margin: '0 0 8px' }}>
+          Active definitions
+        </p>
+        {isLoading ? (
+          <p style={{ fontSize: 11, color: panelMuted }}>Loading triggers...</p>
+        ) : triggers.length === 0 ? (
+          <div style={{ padding: 16, borderRadius: 12, border: `1px dashed ${panelBdr}`, textAlign: 'center' }}>
+            <p style={{ fontSize: 11, color: panelMuted }}>No workflow triggers yet.</p>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gap: 8 }}>
+            {triggers.map(trigger => (
+              <div key={trigger.id} style={{
+                display: 'grid', gridTemplateColumns: '30px 1fr auto', alignItems: 'center', gap: 9,
+                padding: '9px 10px', borderRadius: 12, border: `1px solid ${panelBdr}`,
+                background: isLight ? 'rgba(255,255,255,0.72)' : 'rgba(255,255,255,0.03)',
+              }}>
+                <div style={{
+                  width: 30, height: 30, borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: trigger.type === 'SCHEDULE' ? 'rgba(37,99,235,0.12)' : trigger.type === 'EVENT' ? 'rgba(245,158,11,0.12)' : 'rgba(34,197,94,0.12)',
+                }}>
+                  {trigger.type === 'SCHEDULE'
+                    ? <Calendar size={13} style={{ color: '#2563eb' }} />
+                    : trigger.type === 'EVENT'
+                      ? <Zap size={13} style={{ color: '#f59e0b' }} />
+                      : <Globe size={13} style={{ color: '#22c55e' }} />}
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <p style={{ margin: 0, fontSize: 11, fontWeight: 850, color: panelText }}>{trigger.type}</p>
+                  <p style={{ margin: '2px 0 0', fontSize: 10, color: panelMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {describeTrigger(trigger)}
+                  </p>
+                  {trigger.lastFiredAt && (
+                    <p style={{ margin: '2px 0 0', fontSize: 9, color: panelMuted }}>
+                      Last fired {new Date(trigger.lastFiredAt).toLocaleString()}
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={() => deleteTrigger.mutate(trigger.id)}
+                  disabled={deleteTrigger.isPending}
+                  title="Delete trigger"
+                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: panelMuted, padding: 4, display: 'flex' }}
+                  onMouseEnter={e => ((e.currentTarget as HTMLButtonElement).style.color = '#ef4444')}
+                  onMouseLeave={e => ((e.currentTarget as HTMLButtonElement).style.color = panelMuted)}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </motion.div>
   )
 }
@@ -1808,15 +2140,18 @@ function numberOrNull(value: string): number | null {
 // ─── Glassmorphism card style helper ─────────────────────────────────────────
 
 const glassPanel = (isLight: boolean): React.CSSProperties => ({
-  background: isLight ? 'rgba(255,255,255,0.88)' : 'rgba(7,17,31,0.88)',
-  border: `1px solid ${isLight ? 'rgba(148,163,184,0.3)' : 'rgba(255,255,255,0.08)'}`,
-  borderRadius: 22,
-  backdropFilter: 'blur(20px)',
-  WebkitBackdropFilter: 'blur(20px)',
+  background: isLight ? 'rgba(255,255,255,0.96)' : 'rgba(7,17,31,0.88)',
+  border: `1px solid ${isLight ? 'rgba(148,163,184,0.24)' : 'rgba(255,255,255,0.08)'}`,
+  borderRadius: 18,
+  backdropFilter: isLight ? 'none' : 'blur(20px)',
+  WebkitBackdropFilter: isLight ? 'none' : 'blur(20px)',
   boxShadow: isLight
-    ? '0 20px 48px rgba(15,23,42,0.14)'
+    ? '0 16px 40px rgba(15,23,42,0.10)'
     : '0 20px 48px rgba(2,6,23,0.38)',
 })
+
+type DesignerView = 'design' | 'run' | 'inspect'
+const WORKFLOW_DESIGNER_THEME_KEY = 'workflow-designer-theme-v2'
 
 // ─── Main page ─────────────────────────────────────────────────────────────────
 
@@ -1838,14 +2173,17 @@ export function WorkflowStudioPage() {
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [selectedNode, setSelectedNode] = useState<Node<NodeData> | null>(null)
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false)
-  const [paletteOpen, setPaletteOpen] = useState(true)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [nodeSearch, setNodeSearch] = useState('')
+  const [designerView, setDesignerView] = useState<DesignerView>(() => isDesignMode ? 'design' : 'run')
+  const [overflowOpen, setOverflowOpen] = useState(false)
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    if (typeof window === 'undefined') return 'dark'
-    return (localStorage.getItem('workflow-theme') as 'light' | 'dark') || 'dark'
+    if (typeof window === 'undefined') return 'light'
+    return (localStorage.getItem(WORKFLOW_DESIGNER_THEME_KEY) as 'light' | 'dark') || 'light'
   })
   const isLight = theme === 'light'
 
-  useEffect(() => { localStorage.setItem('workflow-theme', theme) }, [theme])
+  useEffect(() => { localStorage.setItem(WORKFLOW_DESIGNER_THEME_KEY, theme) }, [theme])
   useEffect(() => {
     if (selectedNode) setInspectorCollapsed(false)
   }, [selectedNode?.id])
@@ -1855,6 +2193,7 @@ export function WorkflowStudioPage() {
   const [paramsOpen, setParamsOpen] = useState(false)
   const [variablesOpen, setVariablesOpen] = useState(false)
   const [budgetOpen, setBudgetOpen] = useState(false)
+  const [triggersOpen, setTriggersOpen] = useState(false)
   const [branchTest, setBranchTest] = useState<{ sourceNodeId: string; highlightEdgeId?: string } | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
   const [validateOpen, setValidateOpen] = useState(false)
@@ -1921,13 +2260,12 @@ export function WorkflowStudioPage() {
 
   // ── Canvas background tokens ──────────────────────────────────────────────
   const canvasBg = isLight
-    ? `radial-gradient(ellipse at top, rgba(14,165,233,0.06), transparent 36%),
-       linear-gradient(180deg, #f0f7ff, #eaf1fb 44%, #e4eef8)`
+    ? '#f7f8fb'
     : `radial-gradient(ellipse at top, rgba(34,197,94,0.10), transparent 28%),
        linear-gradient(180deg, #050e1c, #070f1f 44%, #0a1628)`
 
-  const edgeStroke = isLight ? 'rgba(100,116,139,0.45)' : 'rgba(100,116,139,0.4)'
-  const gridLine   = isLight ? 'rgba(148,163,184,0.16)' : 'rgba(148,163,184,0.06)'
+  const edgeStroke = isLight ? 'rgba(71,85,105,0.42)' : 'rgba(100,116,139,0.4)'
+  const gridLine   = isLight ? 'rgba(100,116,139,0.20)' : 'rgba(148,163,184,0.06)'
   const textMuted  = isLight ? '#64748b' : '#475569'
 
   // ── Queries ───────────────────────────────────────────────────────────────
@@ -2340,9 +2678,13 @@ export function WorkflowStudioPage() {
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node<NodeData>) => {
     setSelectedNode(node)
     setInspectorCollapsed(false)
+    setPaletteOpen(false)
   }, [])
 
-  const onPaneClick = useCallback(() => setSelectedNode(null), [])
+  const onPaneClick = useCallback(() => {
+    setSelectedNode(null)
+    setPaletteOpen(false)
+  }, [])
 
   const handleInspectorSave = useCallback((nodeId: string, label: string, config: NodeConfig) => {
     patchNode.mutate({ nodeId, label, config }, {
@@ -2438,12 +2780,61 @@ export function WorkflowStudioPage() {
   const failedCnt    = rfNodes.filter(n => n.data.status === 'FAILED').length
   const pendingCnt   = rfNodes.filter(n => n.data.status === 'PENDING').length
   const completedPct = totalNodes > 0 ? Math.round((completedCnt / totalNodes) * 100) : 0
-  const totalEdges   = rfEdges.length
 
   // ── Shared text/border tokens for floating panels ─────────────────────────
   const panelText   = isLight ? '#1e293b' : '#e2e8f0'
   const panelMuted  = isLight ? '#64748b' : '#475569'
   const panelBdr    = isLight ? 'rgba(148,163,184,0.28)' : 'rgba(255,255,255,0.07)'
+  const nodeSearchTerm = nodeSearch.trim().toLowerCase()
+  const filteredNodeGroups = NODE_GROUPS
+    .map(group => ({
+      ...group,
+      types: group.types.filter(type => {
+        const label = NODE_LABELS[type] ?? type
+        const description = NODE_DESCRIPTIONS[type] ?? ''
+        return !nodeSearchTerm
+          || label.toLowerCase().includes(nodeSearchTerm)
+          || type.toLowerCase().includes(nodeSearchTerm)
+          || description.toLowerCase().includes(nodeSearchTerm)
+          || group.label.toLowerCase().includes(nodeSearchTerm)
+      }),
+    }))
+    .filter(group => group.types.length > 0)
+  const filteredTriggerPresets = TRIGGER_PRESETS.filter(preset => {
+    const description = NODE_DESCRIPTIONS[preset.type] ?? ''
+    return !nodeSearchTerm
+      || preset.label.toLowerCase().includes(nodeSearchTerm)
+      || preset.type.toLowerCase().includes(nodeSearchTerm)
+      || description.toLowerCase().includes(nodeSearchTerm)
+      || 'triggers'.includes(nodeSearchTerm)
+  })
+  const filteredCustomNodeTypes = customNodeTypes.filter(ct => !nodeSearchTerm
+    || ct.label.toLowerCase().includes(nodeSearchTerm)
+    || ct.name.toLowerCase().includes(nodeSearchTerm)
+    || (ct.description ?? '').toLowerCase().includes(nodeSearchTerm))
+  const validationByNode = new Map<string, ValidationIssue>()
+  validationResult?.issues.forEach(issue => {
+    if (!issue.nodeId) return
+    const prev = validationByNode.get(issue.nodeId)
+    if (!prev || (prev.severity === 'warning' && issue.severity === 'error')) {
+      validationByNode.set(issue.nodeId, issue)
+    }
+  })
+  const canvasNodes = rfNodes.map(n => {
+    const issue = validationByNode.get(n.id)
+    if (!issue) return n
+    return {
+      ...n,
+      data: {
+        ...n.data,
+        validationSeverity: issue.severity,
+        validationMessage: issue.message,
+      },
+    }
+  })
+  const validationErrors = validationResult?.issues.filter(i => i.severity === 'error').length ?? 0
+  const validationWarnings = validationResult?.issues.filter(i => i.severity === 'warning').length ?? 0
+  const canValidateCanvas = rfNodes.length > 0
 
   return (
     <WFNodeContext.Provider value={{ onDelete: handleDeleteNode, onAddDecorator: handleAddDecorator, onRemoveDecorator: handleRemoveDecorator, theme }}>
@@ -2454,7 +2845,7 @@ export function WorkflowStudioPage() {
       }}>
         <div ref={reactFlowWrapper} style={{ position: 'absolute', inset: 0 }}>
           <ReactFlow
-            nodes={rfNodes} edges={rfEdges}
+            nodes={canvasNodes} edges={rfEdges}
             nodeTypes={nodeTypes}
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
             onConnect={onConnect} onDrop={onDrop} onDragOver={onDragOver}
@@ -2474,7 +2865,7 @@ export function WorkflowStudioPage() {
               labelBgBorderRadius: 5,
             }}
           >
-            <Background variant={BackgroundVariant.Lines} gap={24} size={0.5} color={gridLine} />
+            <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color={gridLine} />
 
             {/* Empty state overlay */}
             {rfNodes.length === 0 && (
@@ -2497,7 +2888,7 @@ export function WorkflowStudioPage() {
                     Empty canvas
                   </p>
                   <p style={{ fontSize: 11, color: panelMuted, lineHeight: 1.7 }}>
-                    Drag a node type from the left palette to start designing your workflow
+                    Use Add node to place the first step, then connect cards directly on the canvas.
                   </p>
                 </div>
               </div>
@@ -2511,12 +2902,12 @@ export function WorkflowStudioPage() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.22 }}
           style={{
-            position: 'absolute', top: 12, left: 68, right: inspectorCollapsed ? 16 : 332,
+            position: 'absolute', top: 16, left: 24, right: (inspectorCollapsed || (designerView === 'design' && !selectedNode)) ? 24 : 332,
             zIndex: 30, pointerEvents: 'auto',
             ...glassPanel(isLight),
-            borderRadius: 18,
+            borderRadius: 16,
             padding: '0 10px',
-            height: 48,
+            height: 52,
             display: 'flex', alignItems: 'center', gap: 8,
           }}
         >
@@ -2611,14 +3002,26 @@ export function WorkflowStudioPage() {
             )}
           </div>
 
-          {/* Counts */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-            <span style={{ fontSize: 10, color: panelMuted, display: 'flex', alignItems: 'center', gap: 3, fontWeight: 600 }}>
-              <Layers size={11} /> {totalNodes}
-            </span>
-            <span style={{ fontSize: 10, color: panelMuted, display: 'flex', alignItems: 'center', gap: 3, fontWeight: 600 }}>
-              <GitBranch size={11} /> {totalEdges}
-            </span>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0,
+            padding: 3, borderRadius: 999, border: `1px solid ${panelBdr}`,
+            background: isLight ? '#f8fafc' : 'rgba(255,255,255,0.04)',
+          }}>
+            {(['design', 'run', 'inspect'] as DesignerView[]).map(view => (
+              <button
+                key={view}
+                onClick={() => setDesignerView(view)}
+                style={{
+                  border: 'none', borderRadius: 999, padding: '6px 11px',
+                  background: designerView === view ? '#0f172a' : 'transparent',
+                  color: designerView === view ? '#ffffff' : panelMuted,
+                  fontSize: 11, fontWeight: 800, cursor: 'pointer',
+                  textTransform: 'capitalize',
+                }}
+              >
+                {view}
+              </button>
+            ))}
           </div>
 
           <div style={{ width: 1, height: 20, background: panelBdr, flexShrink: 0 }} />
@@ -2678,7 +3081,29 @@ export function WorkflowStudioPage() {
             </button>
           )}
 
-          {canValidate && (
+          {validationResult && (
+            <button
+              onClick={() => setValidateOpen(true)}
+              title="Show validation issues"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5,
+                padding: '5px 10px', borderRadius: 999, fontSize: 11, fontWeight: 800, flexShrink: 0,
+                background: validationErrors > 0 ? 'rgba(239,68,68,0.10)' : 'rgba(34,197,94,0.12)',
+                border: validationErrors > 0 ? '1px solid rgba(239,68,68,0.32)' : '1px solid rgba(34,197,94,0.32)',
+                color: validationErrors > 0 ? '#ef4444' : '#047857',
+                cursor: 'pointer',
+              }}
+            >
+              <AlertTriangle size={11} />
+              {validationErrors > 0
+                ? `${validationErrors} issue${validationErrors === 1 ? '' : 's'}`
+                : validationWarnings > 0
+                  ? `${validationWarnings} warning${validationWarnings === 1 ? '' : 's'}`
+                  : 'No issues'}
+            </button>
+          )}
+
+          {canValidateCanvas && (
             <button
               onClick={() => {
                 const result = validateWorkflow(rfNodes.map(n => ({
@@ -2692,25 +3117,25 @@ export function WorkflowStudioPage() {
                 display: 'inline-flex', alignItems: 'center', gap: 5,
                 padding: '5px 14px', borderRadius: 9, fontSize: 11, fontWeight: 700, flexShrink: 0,
                 background: validationResult !== null
-                  ? validationResult.issues.filter(i => i.severity === 'error').length === 0
+                  ? validationErrors === 0
                     ? 'rgba(34,197,94,0.18)' : 'rgba(239,68,68,0.14)'
                   : 'rgba(99,102,241,0.15)',
                 border: validationResult !== null
-                  ? validationResult.issues.filter(i => i.severity === 'error').length === 0
+                  ? validationErrors === 0
                     ? '1.5px solid rgba(34,197,94,0.4)' : '1.5px solid rgba(239,68,68,0.4)'
                   : '1.5px solid rgba(99,102,241,0.4)',
                 color: validationResult !== null
-                  ? validationResult.issues.filter(i => i.severity === 'error').length === 0
+                  ? validationErrors === 0
                     ? '#22c55e' : '#f87171'
                   : '#818cf8',
                 cursor: 'pointer', transition: 'all 0.12s',
               }}
             >
               <CheckCircle size={11} />
-              {validationResult === null ? 'Validate' : validationResult.issues.filter(i => i.severity === 'error').length === 0 ? 'Valid ✓' : `${validationResult.issues.filter(i => i.severity === 'error').length} error${validationResult.issues.filter(i => i.severity === 'error').length > 1 ? 's' : ''}`}
+              {validationResult === null ? 'Validate' : validationErrors === 0 ? 'Valid' : `${validationErrors} error${validationErrors > 1 ? 's' : ''}`}
             </button>
           )}
-          {((isDesignMode && designWorkflowId) || (!isDesignMode && runInstanceId)) && (
+          {designerView === 'inspect' && ((isDesignMode && designWorkflowId) || (!isDesignMode && runInstanceId)) && (
             <button
               onClick={() => formalAnalysisMut.mutate()}
               disabled={formalAnalysisMut.isPending}
@@ -2738,67 +3163,65 @@ export function WorkflowStudioPage() {
               {formalAnalysisMut.isPending ? 'Analyzing…' : 'Analyze Governance Paths'}
             </button>
           )}
-          {instance?.status === 'ACTIVE' && (
+          {designerView === 'run' && instance?.status === 'ACTIVE' && (
             <>
               <ToolBtn icon={Pause} title="Pause" color="#fbbf24" active onClick={() => pauseInstanceMut.mutate()} />
               <ToolBtn icon={Square} title="Cancel" color="#f87171" onClick={() => { if (confirm('Cancel this workflow?')) cancelInstanceMut.mutate(undefined) }} />
             </>
           )}
-          {instance?.status === 'PAUSED' && (
+          {designerView === 'run' && instance?.status === 'PAUSED' && (
             <>
               <ToolBtn icon={RotateCw} title="Resume" color="#22c55e" active onClick={() => resumeInstanceMut.mutate()} />
               <ToolBtn icon={Square} title="Cancel" color="#f87171" onClick={() => { if (confirm('Cancel this workflow?')) cancelInstanceMut.mutate(undefined) }} />
             </>
           )}
 
-          {/* Params panel toggle */}
-          <ToolBtn
-            icon={SlidersHorizontal}
-            title="Workflow parameters"
-            active={paramsOpen}
-            color="#a78bfa"
-            onClick={() => setParamsOpen(o => !o)}
-          />
-
-          {/* Variables panel toggle (template + globals) */}
-          <ToolBtn
-            icon={Braces}
-            title="Variables (workflow + team globals)"
-            active={variablesOpen}
-            color="#8b5cf6"
-            onClick={() => setVariablesOpen(o => !o)}
-          />
-
-          <ToolBtn
-            icon={Coins}
-            title="Workflow run budget"
-            active={budgetOpen}
-            color="#f59e0b"
-            onClick={() => setBudgetOpen(o => !o)}
-          />
-
-          {/* Export JSON */}
-          <ToolBtn
-            icon={Download}
-            title="Export canvas as JSON"
-            onClick={exportCanvasJson}
-          />
-
-          {/* Help */}
-          <ToolBtn
-            icon={HelpCircle}
-            title="Node reference guide"
-            active={helpOpen}
-            color="#a78bfa"
-            onClick={() => setHelpOpen(o => !o)}
-          />
-
-          {/* Theme toggle */}
-          <ToolBtn
-            icon={isLight ? Moon : Sun}
-            title={`Switch to ${isLight ? 'dark' : 'light'} theme`}
-            onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-          />
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <ToolBtn
+              icon={SlidersHorizontal}
+              title="More workflow tools"
+              active={overflowOpen}
+              color="#0f172a"
+              onClick={() => setOverflowOpen(o => !o)}
+            />
+            {overflowOpen && (
+              <div style={{
+                position: 'absolute', right: 0, top: 38, width: 220, zIndex: 80,
+                borderRadius: 14, border: `1px solid ${panelBdr}`,
+                background: isLight ? '#ffffff' : '#0f172a',
+                boxShadow: isLight ? '0 18px 44px rgba(15,23,42,0.16)' : '0 18px 44px rgba(0,0,0,0.45)',
+                padding: 8,
+              }}>
+                {[
+                  { label: 'Workflow parameters', Icon: SlidersHorizontal, onClick: () => setParamsOpen(o => !o), active: paramsOpen },
+                  { label: 'Triggers', Icon: Calendar, onClick: () => setTriggersOpen(o => !o), active: triggersOpen },
+                  { label: 'Variables', Icon: Braces, onClick: () => setVariablesOpen(o => !o), active: variablesOpen },
+                  { label: 'Run budget', Icon: Coins, onClick: () => setBudgetOpen(o => !o), active: budgetOpen },
+                  { label: 'Export JSON', Icon: Download, onClick: exportCanvasJson, active: false },
+                  { label: 'Node reference', Icon: HelpCircle, onClick: () => setHelpOpen(o => !o), active: helpOpen },
+                  { label: isLight ? 'Dark mode' : 'Light mode', Icon: isLight ? Moon : Sun, onClick: () => setTheme(t => t === 'dark' ? 'light' : 'dark'), active: false },
+                ].map(item => {
+                  const I = item.Icon
+                  return (
+                    <button
+                      key={item.label}
+                      onClick={() => { item.onClick(); setOverflowOpen(false) }}
+                      style={{
+                        width: '100%', display: 'flex', alignItems: 'center', gap: 9,
+                        padding: '9px 10px', borderRadius: 10, border: 'none',
+                        background: item.active ? 'rgba(34,197,94,0.10)' : 'transparent',
+                        color: item.active ? '#047857' : panelText,
+                        fontSize: 12, fontWeight: 750, cursor: 'pointer', textAlign: 'left',
+                      }}
+                    >
+                      <I size={14} style={{ color: item.active ? '#047857' : panelMuted }} />
+                      {item.label}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
         </motion.div>
 
         <AnimatePresence>
@@ -2847,134 +3270,175 @@ export function WorkflowStudioPage() {
           )}
         </AnimatePresence>
 
-        {/* ─── FLOATING LEFT PALETTE DOCK ───────────────────────────────────── */}
+        {/* ─── FLOATING ADD NODE MENU ───────────────────────────────────────── */}
         <motion.div
           initial={{ opacity: 0, x: -12 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.22, delay: 0.05 }}
           style={{
-            position: 'absolute', left: 12, top: 72, bottom: 12,
+            position: 'absolute', left: 24, top: 84,
             zIndex: 20, pointerEvents: 'auto',
-            display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6,
+            display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 10,
           }}
         >
-          {/* Icon dock */}
-          <div style={{
-            ...glassPanel(isLight),
-            borderRadius: 20, padding: 12,
-            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
-            overflowY: 'auto', maxHeight: '100%',
-            width: 76,
-          }}>
-            {/* Toggle button */}
-            <button
-              onClick={() => setPaletteOpen(p => !p)}
-              title={paletteOpen ? 'Collapse palette' : 'Expand palette'}
-              style={{
-                width: 40, height: 40, borderRadius: 11, border: `1px solid ${panelBdr}`,
-                background: 'transparent', cursor: 'pointer', marginBottom: 2,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: panelMuted, transition: 'all 0.12s',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = panelText }}
-              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = panelMuted }}
-            >
-              <Layers size={16} />
-            </button>
+          <button
+            onClick={() => setPaletteOpen(p => !p)}
+            title="Add a workflow node"
+            style={{
+              height: 44, padding: '0 18px', borderRadius: 999,
+              border: '1px solid rgba(15,23,42,0.10)',
+              background: '#0f172a', color: '#ffffff',
+              boxShadow: '0 14px 34px rgba(15,23,42,0.18)',
+              display: 'inline-flex', alignItems: 'center', gap: 9,
+              fontSize: 13, fontWeight: 850, cursor: 'pointer',
+            }}
+          >
+            <Plus size={16} /> Add node
+          </button>
 
-            <div style={{ width: 52, height: 1, background: panelBdr }} />
-
-            {/* Built-in node types - grouped by category */}
-            {NODE_GROUPS.map((group, gIdx) => (
-              <div key={group.label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%' }}>
-                {gIdx > 0 && <div style={{ width: 52, height: 1, background: panelBdr }} />}
-
-                <div style={{ fontSize: 7, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#64748b', opacity: 0.7 }}>
-                  {group.label}
+          <AnimatePresence>
+            {paletteOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: -8, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                style={{
+                  ...glassPanel(true),
+                  width: 360, maxHeight: 'calc(100vh - 150px)', overflow: 'hidden',
+                  borderRadius: 18, padding: 12,
+                }}
+              >
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '10px 12px', borderRadius: 12,
+                  border: '1px solid rgba(148,163,184,0.24)',
+                  background: '#f8fafc', marginBottom: 10,
+                }}>
+                  <Search size={15} style={{ color: '#64748b' }} />
+                  <input
+                    value={nodeSearch}
+                    onChange={e => setNodeSearch(e.target.value)}
+                    placeholder="Search nodes"
+                    style={{
+                      flex: 1, border: 'none', outline: 'none', background: 'transparent',
+                      color: '#0f172a', fontSize: 13, fontWeight: 650,
+                    }}
+                  />
                 </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, width: '100%' }}>
-                  {group.types.map(type => {
-                    const { color, Icon } = NODE_VISUAL[type] ?? { color: '#64748b', Icon: Box }
-                    if (type === 'WORKBENCH_TASK') {
-                      return (
-                        <PaletteIcon
-                          key={type}
-                          nodeType={type}
-                          color={color}
-                          Icon={Icon}
-                          label={NODE_LABELS[type] ?? type}
-                          dragPayload={JSON.stringify({
-                            label: 'Workbench Task',
-                            config: WORKBENCH_TASK_NODE_CONFIG,
-                          })}
-                        />
-                      )
-                    }
-                    if (type === 'EVAL_GATE') {
-                      return (
-                        <PaletteIcon
-                          key={type}
-                          nodeType={type}
-                          color={color}
-                          Icon={Icon}
-                          label={NODE_LABELS[type] ?? type}
-                          dragPayload={JSON.stringify({
-                            label: 'Eval Gate',
-                            config: EVAL_GATE_NODE_CONFIG,
-                          })}
-                        />
-                      )
-                    }
-                    if (type === 'GIT_PUSH') {
-                      return (
-                        <PaletteIcon
-                          key={type}
-                          nodeType={type}
-                          color={color}
-                          Icon={Icon}
-                          label={NODE_LABELS[type] ?? type}
-                          dragPayload={JSON.stringify({
-                            label: 'Git Push',
-                            config: GIT_PUSH_NODE_CONFIG,
-                          })}
-                        />
-                      )
-                    }
-                    return (
-                      <PaletteIcon
-                        key={type} nodeType={type} color={color} Icon={Icon}
-                        label={NODE_LABELS[type] ?? type}
-                      />
-                    )
-                  })}
+                <div style={{ maxHeight: 'calc(100vh - 230px)', overflowY: 'auto', paddingRight: 2 }}>
+                  {filteredTriggerPresets.length > 0 && (
+                    <div style={{ marginBottom: 14 }}>
+                      <p style={{
+                        margin: '0 0 7px', color: '#64748b', fontSize: 10, fontWeight: 900,
+                        textTransform: 'uppercase', letterSpacing: '0.12em',
+                      }}>
+                        Triggers
+                      </p>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                        {filteredTriggerPresets.map(preset => {
+                          const { color, Icon } = NODE_VISUAL[preset.type] ?? { color: '#64748b', Icon: Box }
+                          return (
+                            <NodePickerRow
+                              key={preset.type}
+                              nodeType={preset.type}
+                              actualNodeType={preset.actualNodeType}
+                              color={color}
+                              Icon={Icon}
+                              label={preset.label}
+                              dragPayload={JSON.stringify(preset.payload)}
+                            />
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  {filteredNodeGroups.map(group => (
+                    <div key={group.label} style={{ marginBottom: 14 }}>
+                      <p style={{
+                        margin: '0 0 7px', color: '#64748b', fontSize: 10, fontWeight: 900,
+                        textTransform: 'uppercase', letterSpacing: '0.12em',
+                      }}>
+                        {group.label}
+                      </p>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                        {group.types.map(type => {
+                          const { color, Icon } = NODE_VISUAL[type] ?? { color: '#64748b', Icon: Box }
+                          const payload = type === 'WORKBENCH_TASK'
+                            ? { label: 'Workbench Task', config: WORKBENCH_TASK_NODE_CONFIG }
+                            : type === 'EVAL_GATE'
+                              ? { label: 'Eval Gate', config: EVAL_GATE_NODE_CONFIG }
+                              : type === 'GIT_PUSH'
+                                ? { label: 'Git Push', config: GIT_PUSH_NODE_CONFIG }
+                                : null
+                          return (
+                            <NodePickerRow
+                              key={type}
+                              nodeType={type}
+                              color={color}
+                              Icon={Icon}
+                              label={NODE_LABELS[type] ?? type}
+                              dragPayload={payload ? JSON.stringify(payload) : undefined}
+                            />
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                  {filteredCustomNodeTypes.length > 0 && (
+                    <div style={{ marginBottom: 4 }}>
+                      <p style={{
+                        margin: '0 0 7px', color: '#64748b', fontSize: 10, fontWeight: 900,
+                        textTransform: 'uppercase', letterSpacing: '0.12em',
+                      }}>
+                        Custom
+                      </p>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                        {filteredCustomNodeTypes.map(ct => {
+                          const Icon = ALL_CUSTOM_ICONS[ct.icon] ?? Box
+                          return (
+                            <NodePickerRow
+                              key={ct.id}
+                              nodeType="CUSTOM"
+                              actualNodeType="CUSTOM"
+                              color={ct.color}
+                              Icon={Icon}
+                              label={ct.label}
+                              dragPayload={JSON.stringify({
+                                _baseType: ct.baseType, _customTypeId: ct.id,
+                                _customTypeName: ct.name, _customTypeLabel: ct.label,
+                                _customTypeColor: ct.color, _customTypeIcon: ct.icon,
+                              })}
+                            />
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  {filteredTriggerPresets.length === 0 && filteredNodeGroups.length === 0 && filteredCustomNodeTypes.length === 0 && (
+                    <p style={{ margin: '18px 8px 10px', color: '#64748b', fontSize: 12, lineHeight: 1.5 }}>
+                      No node types match that search.
+                    </p>
+                  )}
                 </div>
-              </div>
-            ))}
-
-            {/* Custom types */}
-            {customNodeTypes.length > 0 && (
-              <>
-                <div style={{ width: 28, height: 1, background: panelBdr, margin: '2px 0' }} />
-                {customNodeTypes.map(ct => {
-                  const Icon = ALL_CUSTOM_ICONS[ct.icon] ?? Box
-                  return (
-                    <PaletteIcon
-                      key={ct.id} nodeType="CUSTOM" color={ct.color} Icon={Icon}
-                      label={ct.label}
-                      dragPayload={JSON.stringify({
-                        _baseType: ct.baseType, _customTypeId: ct.id,
-                        _customTypeName: ct.name, _customTypeLabel: ct.label,
-                        _customTypeColor: ct.color, _customTypeIcon: ct.icon,
-                      })}
-                    />
-                  )
-                })}
-              </>
+              </motion.div>
             )}
-
-          </div>
+          </AnimatePresence>
         </motion.div>
+
+        {/* ─── FLOATING TRIGGERS PANEL ─────────────────────────────────────── */}
+        <AnimatePresence>
+          {triggersOpen && (
+            <WorkflowTriggersPanel
+              templateId={template?.id}
+              isLight={isLight}
+              glassPanel={glassPanel}
+              panelText={panelText}
+              panelMuted={panelMuted}
+              panelBdr={panelBdr}
+              onClose={() => setTriggersOpen(false)}
+            />
+          )}
+        </AnimatePresence>
 
         {/* ─── FLOATING PARAMS PANEL ───────────────────────────────────────── */}
         <AnimatePresence>
@@ -3070,10 +3534,10 @@ export function WorkflowStudioPage() {
 
         {/* ─── FLOATING RIGHT INSPECTOR ─────────────────────────────────────── */}
         <AnimatePresence>
-          {!inspectorCollapsed ? (
+          {!inspectorCollapsed && (selectedNode || designerView !== 'design') ? (
             <DraggableResizablePanel
               key="inspector-panel"
-              title={selectedNode ? 'Node Inspector' : 'Workflow'}
+              title={selectedNode ? 'Properties' : designerView === 'run' ? 'Run' : 'Inspect'}
               isLight={isLight}
               glassPanel={glassPanel}
               panelText={panelText}
@@ -3228,7 +3692,7 @@ export function WorkflowStudioPage() {
                 </div>
               )}
             </DraggableResizablePanel>
-          ) : (
+          ) : inspectorCollapsed ? (
             /* ── Collapsed inspector trigger ── */
             <motion.button
               key="inspector-collapsed"
@@ -3255,7 +3719,7 @@ export function WorkflowStudioPage() {
                 Inspect
               </span>
             </motion.button>
-          )}
+          ) : null}
         </AnimatePresence>
 
         {/* ─── VALIDATION PANEL ──────────────────────────────────────────────── */}

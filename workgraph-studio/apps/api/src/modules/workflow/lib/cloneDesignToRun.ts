@@ -62,6 +62,7 @@ type DesignWithGraph = {
   id: string
   phases: Array<{ id: string; name: string; displayOrder: number; color: string | null }>
   nodes:  Array<{ id: string; phaseId: string | null; nodeType: any; label: string;
+                  nodeTypeKey?: string | null; nodeTypeVersion?: number | null; nodeTypeSnapshot?: unknown;
                   config: unknown; compensationConfig: unknown; executionLocation: any;
                   positionX: number; positionY: number }>
   edges:  Array<{ id: string; sourceNodeId: string; targetNodeId: string;
@@ -87,6 +88,9 @@ function buildSnapshot(design: DesignWithGraph): {
     .sort((a, b) => a.id.localeCompare(b.id))
     .map(n => ({
       id: n.id, phaseId: n.phaseId, nodeType: n.nodeType, label: n.label,
+      nodeTypeKey: n.nodeTypeKey ?? n.nodeType,
+      nodeTypeVersion: n.nodeTypeVersion ?? 1,
+      nodeTypeSnapshot: n.nodeTypeSnapshot ?? null,
       config: sanitizeNodeConfig(n.config),
       compensationConfig: n.compensationConfig ?? null,
       executionLocation: n.executionLocation,
@@ -175,6 +179,7 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
     phases: designPhases.map(p => ({ id: p.id, name: p.name, displayOrder: p.displayOrder, color: p.color })),
     nodes:  designNodes.map(n => ({
       id: n.id, phaseId: n.phaseId, nodeType: n.nodeType, label: n.label,
+      nodeTypeKey: n.nodeTypeKey, nodeTypeVersion: n.nodeTypeVersion, nodeTypeSnapshot: n.nodeTypeSnapshot,
       config: n.config, compensationConfig: n.compensationConfig,
       executionLocation: n.executionLocation, positionX: n.positionX, positionY: n.positionY,
     })),
@@ -279,6 +284,9 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
           instanceId:         run.id,
           phaseId:            n.phaseId ? phaseIdMap.get(n.phaseId) ?? null : null,
           nodeType:           n.nodeType,
+          nodeTypeKey:        n.nodeTypeKey ?? String(n.nodeType),
+          nodeTypeVersion:    n.nodeTypeVersion ?? 1,
+          nodeTypeSnapshot:   n.nodeTypeSnapshot as Prisma.InputJsonValue | undefined,
           label:              n.label,
           status:             'PENDING',
           config:             sanitizeNodeConfig(n.config),

@@ -58,6 +58,10 @@ type WorkflowTemplate = {
   description?: string
   status?: string
   capabilityId?: string | null
+  workflowTypeKey?: string | null
+  eligibleWorkItemTypes?: string[]
+  isDefaultForType?: boolean
+  defaultRoutingMode?: string
   metadata?: TemplateMetadata
   createdAt: string
   archivedAt?: string
@@ -458,8 +462,18 @@ export function WorkflowsListPage() {
   })
 
   const createWorkflowMut = useMutation({
-    mutationFn: ({ name, description, metadata, capabilityId, teamId, starter }: { name: string; description: string; metadata: TemplateMetadata; capabilityId?: string; teamId?: string; starter: WorkflowStarter }) =>
-      api.post('/workflow-templates', { name, description, metadata, capabilityId, teamId, starter }).then(r => r.data as { id: string; designInstanceId?: string }),
+    mutationFn: ({ name, description, metadata, workflowTypeKey, eligibleWorkItemTypes, defaultRoutingMode, capabilityId, teamId, starter }: {
+      name: string
+      description: string
+      metadata: TemplateMetadata
+      workflowTypeKey?: string
+      eligibleWorkItemTypes?: string[]
+      defaultRoutingMode?: string
+      capabilityId?: string
+      teamId?: string
+      starter: WorkflowStarter
+    }) =>
+      api.post('/workflow-templates', { name, description, metadata, workflowTypeKey, eligibleWorkItemTypes, defaultRoutingMode, capabilityId, teamId, starter }).then(r => r.data as { id: string; designInstanceId?: string }),
     onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ['workflow-templates'] })
       setCreateOpen(false)
@@ -912,9 +926,10 @@ export function WorkflowsListPage() {
                     {/* Metadata badges */}
                     {tmpl.metadata && (
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
-                        {tmpl.metadata.workflowType && (
-                          <MetaBadge color="#6366f1">{TYPE_LABEL[tmpl.metadata.workflowType] ?? tmpl.metadata.workflowType}</MetaBadge>
+                        {(tmpl.workflowTypeKey || tmpl.metadata.workflowType) && (
+                          <MetaBadge color="#6366f1">{TYPE_LABEL[tmpl.workflowTypeKey ?? tmpl.metadata.workflowType ?? ''] ?? tmpl.workflowTypeKey ?? tmpl.metadata.workflowType}</MetaBadge>
                         )}
+                        {tmpl.isDefaultForType && <MetaBadge color="#00843D">Default route</MetaBadge>}
                         {tmpl.metadata.criticality && (
                           <MetaBadge color={CRITICALITY_COLOR[tmpl.metadata.criticality] ?? '#64748b'}>{tmpl.metadata.criticality}</MetaBadge>
                         )}
@@ -1406,7 +1421,17 @@ export function WorkflowsListPage() {
                   </button>
                 ) : (
                   <button
-                    onClick={() => createWorkflowMut.mutate({ name: createName.trim(), description: createDesc, metadata: createMeta, capabilityId: createCapabilityId || undefined, teamId: createTeamId || undefined, starter: createStarter })}
+                    onClick={() => createWorkflowMut.mutate({
+                      name: createName.trim(),
+                      description: createDesc,
+                      metadata: createMeta,
+                      workflowTypeKey: createMeta.workflowType ?? 'GENERAL',
+                      eligibleWorkItemTypes: createMeta.workflowType ? [createMeta.workflowType] : ['GENERAL'],
+                      defaultRoutingMode: 'MANUAL',
+                      capabilityId: createCapabilityId || undefined,
+                      teamId: createTeamId || undefined,
+                      starter: createStarter,
+                    })}
                     disabled={createWorkflowMut.isPending || !createName.trim() || starterRequiresCapability}
                     style={{
                       padding: '8px 18px', borderRadius: 8, border: 'none', background: '#00843D',

@@ -88,6 +88,7 @@ function walk(root: Record<string, unknown> | undefined, path: string): unknown 
 }
 
 function resolveRuntimeRef(context: Record<string, unknown>, path: string): unknown {
+  if (path.startsWith('server.')) return resolveServerRuntimeRef(path.slice('server.'.length))
   if (path.startsWith('globals.')) return walk(context._globals as Record<string, unknown>, path.slice('globals.'.length))
   if (path.startsWith('vars.')) return walk(context._vars as Record<string, unknown>, path.slice('vars.'.length))
   if (path.startsWith('params.')) return walk(context._params as Record<string, unknown>, path.slice('params.'.length))
@@ -95,6 +96,27 @@ function resolveRuntimeRef(context: Record<string, unknown>, path: string): unkn
     : path.startsWith('output.') ? path.slice('output.'.length)
     : path
   return walk(context, stripped)
+}
+
+function resolveServerRuntimeRef(path: string): unknown {
+  const now = new Date()
+  switch (path) {
+    case 'now':
+    case 'iso':
+      return now.toISOString()
+    case 'epochMs':
+      return now.valueOf()
+    case 'epochSeconds':
+      return Math.floor(now.valueOf() / 1000)
+    case 'date':
+      return now.toISOString().slice(0, 10)
+    case 'time':
+      return now.toISOString().slice(11, 19)
+    case 'timezone':
+      return 'UTC'
+    default:
+      return undefined
+  }
 }
 
 function resolveAssignmentValue(raw: unknown, context: Record<string, unknown>): unknown {
