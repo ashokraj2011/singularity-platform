@@ -71,7 +71,7 @@ const knownRoleMeta: Record<string, { label: string; icon: typeof Brain }> = {
 
 const defaultWorkbenchGoal = 'Create a governed planning, design, development, QA, and testing loop for this codebase.'
 
-type WorkbenchSection = 'workflow' | 'artifacts' | 'terminal' | 'loop'
+type WorkbenchSection = 'workflow' | 'artifacts' | 'terminal' | 'loop' | 'replay'
 
 const WORKGRAPH_WEB_ORIGIN = normalizeOrigin(import.meta.env.VITE_WORKGRAPH_WEB_ORIGIN)
   ?? `${window.location.protocol}//${window.location.hostname}:5174`
@@ -268,6 +268,7 @@ function WorkbenchCommandHeader({
           ['workflow', 'Workflow'],
           ['artifacts', 'Artifacts'],
           ['loop', 'Loop'],
+          ['replay', 'Replay'],
           ['terminal', 'Terminal'],
         ] as const).map(([section, label]) => (
           <button
@@ -991,7 +992,7 @@ function WorkbenchSetup({
   )
 }
 
-type NeoOverlayKind = 'none' | 'review' | 'artifacts' | 'terminal' | 'loop'
+type NeoOverlayKind = 'none' | 'review' | 'artifacts' | 'terminal' | 'loop' | 'replay'
 
 function WorkbenchNeo({
   session,
@@ -1044,7 +1045,8 @@ function WorkbenchNeo({
     if (activeSection === 'artifacts') setOverlay('artifacts')
     else if (activeSection === 'terminal') setOverlay('terminal')
     else if (activeSection === 'loop') setOverlay('loop')
-    else if (overlay === 'artifacts' || overlay === 'terminal' || overlay === 'loop') setOverlay('none')
+    else if (activeSection === 'replay') setOverlay('replay')
+    else if (overlay === 'artifacts' || overlay === 'terminal' || overlay === 'loop' || overlay === 'replay') setOverlay('none')
   }, [activeSection])
 
   const activeStage = stages.find(stage => stage.key === activeStageKey) ?? stages[0]
@@ -1155,6 +1157,169 @@ function WorkbenchNeo({
           />
         </NeoOverlayShell>
       )}
+      {overlay === 'replay' && (
+        <NeoOverlayShell title="Workflow replay" onClose={() => closeOverlay()}>
+          <WorkflowReplay session={session} stages={stages} />
+        </NeoOverlayShell>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// M59 — Workflow Replay (the "flight recorder").
+//
+// Stitches everything we already capture in session.metadata into a single
+// chronological view, no LLM calls required:
+//
+//   • stage attempts (verdict, duration, tokens, $cost, phaseTokens)
+//   • review events (verdicts, send-backs, attempt resets, chat)
+//   • artifacts produced per stage
+//   • for Developer attempts: drill into the existing LoopTrace component
+//     (M45) which already renders the per-phase ReAct breakdown.
+//
+// Pure read from session data + the existing /loop-trace endpoint. No new
+// server endpoints required.
+// ─────────────────────────────────────────────────────────────────────────
+
+function WorkflowReplay({ session, stages }: { session: BlueprintSession; stages: LoopStage[] }) {
+  const [expandedKey, setExpandedKey] = useState<string | null>(null)
+  const attempts = session.stageAttempts ?? []
+  const reviewEvents = session.reviewEvents ?? []
+  // Merge: every attempt becomes a row; review events get sorted in by createdAt.
+  // Send-backs and resets are surfaced as inline markers between stages.
+  const rowsByStage = useMemo(() => {
+    const grouped = new Map<string, StageAttempt[]>()
+    for (const a of attempts) {
+      const arr = grouped.get(a.stageKey) ?? []
+      arr.push(a)
+      grouped.set(a.stageKey, arr)
+    }
+    for (const arr of grouped.values()) {
+      arr.sort((a, b) => (a.startedAt ?? '').localeCompare(b.startedAt ?? ''))
+    }
+    return grouped
+  }, [attempts])
+
+  const totals = useMemo(() => {
+    let tokens = 0
+    let cost = 0
+    let calls = 0
+    for (const a of attempts) {
+      tokens += a.tokensUsed?.total ?? 0
+      const c = a.tokensUsed?.estimatedCost
+      if (typeof c === 'number') cost += c
+      calls += 1
+    }
+    return { tokens, cost, calls }
+  }, [attempts])
+
+  if (attempts.length === 0 && reviewEvents.length === 0) {
+    return <p className="cockpit-empty">No attempts yet — nothing to replay.</p>
+  }
+
+  return (
+    <div className="workflow-replay">
+      <div className="replay-summary">
+        <span><strong>{attempts.length}</strong> attempts</span>
+        <span><strong>{totals.tokens.toLocaleString()}</strong> tokens</span>
+        {totals.cost > 0 && <span><strong>{formatUsd(totals.cost)}</strong> spent</span>}
+        <span><strong>{reviewEvents.length}</strong> review events</span>
+      </div>
+      <ol className="replay-stage-list">
+        {stages.map(stage => {
+          const stageAttempts = rowsByStage.get(stage.key) ?? []
+          const stageReviewEvents = reviewEvents.filter(e => e.stageKey === stage.key)
+          const stageTokens = stageAttempts.reduce((s, a) => s + (a.tokensUsed?.total ?? 0), 0)
+          const stageCost = stageAttempts.reduce((s, a) => s + (typeof a.tokensUsed?.estimatedCost === 'number' ? a.tokensUsed.estimatedCost : 0), 0)
+          const lastAttempt = stageAttempts.at(-1)
+          const finalVerdict = lastAttempt?.verdict ?? null
+          return (
+            <li key={stage.key} className={`replay-stage ${finalVerdict?.toLowerCase() ?? 'pending'}`}>
+              <header>
+                <span className="stage-role">{stage.agentRole ?? '—'}</span>
+                <strong>{stage.label}</strong>
+                <span className="stage-meta">
+                  {stageAttempts.length} attempt{stageAttempts.length === 1 ? '' : 's'}
+                  {stageTokens > 0 && ` · ${stageTokens.toLocaleString()} tokens`}
+                  {stageCost > 0 && ` · ${formatUsd(stageCost)}`}
+                </span>
+                {finalVerdict && <span className={`verdict-badge ${finalVerdict.toLowerCase()}`}>{finalVerdict}</span>}
+              </header>
+              {stageAttempts.length === 0 && (
+                <p className="replay-empty">No attempts yet.</p>
+              )}
+              {stageAttempts.map(attempt => {
+                const key = `${stage.key}/${attempt.id}`
+                const expanded = expandedKey === key
+                const duration = attempt.completedAt && attempt.startedAt
+                  ? new Date(attempt.completedAt).getTime() - new Date(attempt.startedAt).getTime()
+                  : null
+                return (
+                  <article key={attempt.id} className={`replay-attempt ${expanded ? 'expanded' : ''}`}>
+                    <button type="button" className="replay-attempt-head" onClick={() => setExpandedKey(expanded ? null : key)}>
+                      <span className="attempt-num">#{attempt.attemptNumber}</span>
+                      <span className={`attempt-status ${attempt.status?.toLowerCase() ?? ''}`}>{attempt.status ?? '—'}</span>
+                      {attempt.verdict && <span className={`verdict-badge inline ${attempt.verdict.toLowerCase()}`}>{attempt.verdict}</span>}
+                      <span className="attempt-time">
+                        {attempt.startedAt && new Date(attempt.startedAt).toLocaleTimeString()}
+                        {duration !== null && ` · ${(duration / 1000).toFixed(1)}s`}
+                      </span>
+                      {(attempt.tokensUsed?.total ?? 0) > 0 && (
+                        <span className="attempt-tokens">{attempt.tokensUsed!.total!.toLocaleString()} tok</span>
+                      )}
+                      {typeof attempt.tokensUsed?.estimatedCost === 'number' && attempt.tokensUsed.estimatedCost > 0 && (
+                        <span className="attempt-cost">{formatUsd(attempt.tokensUsed.estimatedCost)}</span>
+                      )}
+                      <span className="caret">{expanded ? '▾' : '▸'}</span>
+                    </button>
+                    {expanded && (
+                      <div className="replay-attempt-body">
+                        <PhaseTokensStrip attempt={attempt} />
+                        {attempt.response && (
+                          <details>
+                            <summary>Final response ({attempt.response.length.toLocaleString()} chars)</summary>
+                            <pre className="replay-response">{attempt.response.slice(0, 2000)}{attempt.response.length > 2000 ? '\n…(truncated)' : ''}</pre>
+                          </details>
+                        )}
+                        {attempt.error && (
+                          <p className="replay-error"><strong>Error:</strong> {attempt.error}</p>
+                        )}
+                        {(attempt.artifactIds?.length ?? 0) > 0 && (
+                          <p className="replay-artifacts">
+                            <strong>Artifacts:</strong> {attempt.artifactIds!.length} produced
+                          </p>
+                        )}
+                        {(attempt.correlation as { traceId?: string } | undefined)?.traceId && isDeveloperStage(stage) && (
+                          <details className="replay-loop-trace">
+                            <summary>Show ReAct loop (phases, LLM calls, tool invocations)</summary>
+                            <LoopTrace
+                              sessionId={session.id}
+                              stage={stage}
+                              attemptStatus={attempt.status}
+                            />
+                          </details>
+                        )}
+                      </div>
+                    )}
+                  </article>
+                )
+              })}
+              {stageReviewEvents.length > 0 && (
+                <ul className="replay-review-events">
+                  {stageReviewEvents.map(ev => (
+                    <li key={ev.id} className={`review-event ${ev.type.toLowerCase().replaceAll('_', '-')}`}>
+                      <time>{new Date(ev.createdAt).toLocaleTimeString()}</time>
+                      <span className="ev-type">{ev.type.replaceAll('_', ' ')}</span>
+                      <span>{ev.message}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          )
+        })}
+      </ol>
     </div>
   )
 }

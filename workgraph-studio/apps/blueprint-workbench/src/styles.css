@@ -2737,6 +2737,190 @@ pre {
   font-variant-numeric: tabular-nums;
 }
 
+/* M59 — Workflow Replay (flight recorder) */
+.workflow-replay {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 2px 28px;
+  font-size: 13px;
+}
+
+.workflow-replay .replay-summary {
+  display: flex;
+  gap: 16px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(40, 48, 70, 0.4);
+  border: 1px solid rgba(120, 130, 160, 0.22);
+  flex-wrap: wrap;
+}
+.workflow-replay .replay-summary strong {
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.workflow-replay .replay-stage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.replay-stage {
+  border: 1px solid rgba(120, 130, 160, 0.2);
+  border-left-width: 3px;
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: rgba(28, 34, 52, 0.55);
+}
+.replay-stage.pass     { border-left-color: var(--success, #3fc8a1); }
+.replay-stage.needs_rework,
+.replay-stage.blocked  { border-left-color: var(--danger, #e26a6a); }
+.replay-stage.accepted_with_risk { border-left-color: #d8a64b; }
+.replay-stage.pending  { border-left-color: rgba(120, 130, 160, 0.4); }
+
+.replay-stage > header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.replay-stage > header .stage-role {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-low);
+}
+.replay-stage > header strong {
+  color: var(--text);
+  font-size: 14px;
+}
+.replay-stage > header .stage-meta {
+  color: var(--muted-low);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.verdict-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  background: rgba(63, 200, 161, 0.18);
+  color: var(--success, #3fc8a1);
+}
+.verdict-badge.needs_rework,
+.verdict-badge.blocked { background: rgba(226, 106, 106, 0.18); color: var(--danger, #e26a6a); }
+.verdict-badge.accepted_with_risk { background: rgba(216, 166, 75, 0.18); color: #d8a64b; }
+.verdict-badge.inline { font-size: 9px; padding: 1px 6px; }
+
+.replay-attempt {
+  margin-top: 8px;
+  border-top: 1px dashed rgba(120, 130, 160, 0.14);
+  padding-top: 8px;
+}
+.replay-attempt-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 4px 2px;
+  cursor: pointer;
+  color: var(--text);
+  text-align: left;
+}
+.replay-attempt-head:hover { background: rgba(50, 58, 80, 0.25); }
+.replay-attempt-head .attempt-num {
+  color: var(--primary);
+  font-weight: 700;
+}
+.replay-attempt-head .attempt-status {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted-low);
+}
+.replay-attempt-head .attempt-status.passed,
+.replay-attempt-head .attempt-status.completed { color: var(--success, #3fc8a1); }
+.replay-attempt-head .attempt-status.failed { color: var(--danger, #e26a6a); }
+.replay-attempt-head .attempt-time,
+.replay-attempt-head .attempt-tokens,
+.replay-attempt-head .attempt-cost {
+  font-size: 11px;
+  color: var(--muted-low);
+  font-variant-numeric: tabular-nums;
+}
+.replay-attempt-head .caret { margin-left: auto; color: var(--muted-low); }
+
+.replay-attempt-body {
+  padding: 10px 4px 4px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.replay-attempt-body details {
+  border: 1px solid rgba(120, 130, 160, 0.18);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: rgba(20, 26, 42, 0.5);
+}
+.replay-attempt-body details summary {
+  cursor: pointer;
+  color: var(--primary);
+  font-size: 12px;
+}
+.replay-response {
+  margin-top: 6px;
+  padding: 8px;
+  background: rgba(10, 14, 24, 0.7);
+  border-radius: 4px;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  max-height: 320px;
+  overflow: auto;
+}
+.replay-error {
+  color: var(--danger, #e26a6a);
+  font-size: 12px;
+}
+.replay-artifacts { color: var(--muted-low); font-size: 12px; }
+.replay-empty { color: var(--muted-low); font-style: italic; font-size: 12px; }
+
+.replay-review-events {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px dashed rgba(120, 130, 160, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.review-event {
+  display: grid;
+  grid-template-columns: 80px 140px 1fr;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted-low);
+}
+.review-event time { color: var(--muted-low); }
+.review-event .ev-type {
+  color: var(--primary);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.review-event.send-back .ev-type,
+.review-event.auto-send-back .ev-type { color: #d8a64b; }
+.review-event.stage-attempts-reset .ev-type { color: #b884e0; }
+
 .log-row.fail-block span {
   color: var(--danger);
 }
