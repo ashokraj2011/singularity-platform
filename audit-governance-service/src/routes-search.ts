@@ -46,6 +46,13 @@ const SearchRequestSchema = z.object({
   capabilityId: z.string().max(200).optional(),
   actorId: z.string().max(200).optional(),
   traceId: z.string().max(200).optional(),
+  // M69 — prefix match support for the Loop Theater. Sessions span
+  // multiple stage trace_ids (blueprint-<sessionId>-design,
+  // blueprint-<sessionId>-develop, etc.); a single prefix
+  // `blueprint-<sessionId>` lets the theater pull the whole session.
+  // Pattern is escaped at query time so SQL wildcards in the input
+  // don't leak through.
+  traceIdPrefix: z.string().max(200).optional(),
   since: z.string().datetime().optional(),
   until: z.string().datetime().optional(),
   limit: z.number().int().min(1).max(500).default(100),
@@ -125,6 +132,15 @@ searchRouter.post("/audit/search", async (req: Request, res: Response) => {
   if (input.traceId) {
     params.push(input.traceId);
     where.push(`trace_id = $${params.length}`);
+  }
+  if (input.traceIdPrefix) {
+    // M69 — Escape SQL LIKE wildcards (% and _) so a user-supplied
+    // prefix doesn't unintentionally match unrelated traces. Backslash
+    // serves as the ESCAPE char; the explicit ESCAPE clause makes the
+    // intent obvious and survives strict_mode toggles.
+    const escaped = input.traceIdPrefix.replace(/[\\%_]/g, '\\$&');
+    params.push(`${escaped}%`);
+    where.push(`trace_id LIKE $${params.length} ESCAPE '\\'`);
   }
   if (input.since) {
     params.push(input.since);

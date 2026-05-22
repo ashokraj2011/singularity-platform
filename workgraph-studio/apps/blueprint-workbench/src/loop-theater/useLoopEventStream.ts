@@ -66,9 +66,14 @@ export function useLoopEventStream(opts: UseLoopEventStreamOptions): UseLoopEven
     setScenes([])
 
     const url = `${AUDIT_GOV_BASE}/api/v1/audit/search`
+    // M69 — audit-gov's schema uses camelCase. The 500 cap is server-side;
+    // the theater paginates when a session exceeds that (rare —
+    // most stages emit ~50–100 events). traceIdPrefix is a server-side
+    // LIKE match added in M69: lets us pull every stage trace_id
+    // (blueprint-<sessionId>-{design,develop,…}) in one call.
     const body = JSON.stringify({
-      trace_id: traceIdPrefix,
-      limit: 1000,
+      traceIdPrefix,
+      limit: 500,
     })
 
     fetch(url, {
