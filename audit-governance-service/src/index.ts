@@ -29,6 +29,9 @@ import { queryRouter } from "./routes-query";
 // M63 Slice A — Splunk-like search across audit_events with FTS,
 // multi-value filters, cursor pagination, and a facets endpoint.
 import { searchRouter } from "./routes-search";
+// M63 Slice B — Server-Sent Events live-tail. Filtered by the same
+// kinds/severities/riskLevels/sources query params as search.
+import { streamRouter } from "./routes-stream";
 import { engineRouter } from "./engine/routes";
 import { startEngineSweep, stopEngineSweep } from "./engine/sweep";
 import { ensureEngineEvalTables } from "./db";
@@ -98,6 +101,8 @@ app.use("/api/v1",            queryRouter);
 // M63 Slice A — mounted on /api/v1 so the route lands at
 // POST /api/v1/audit/search alongside the existing /api/v1/audit/*.
 app.use("/api/v1",            searchRouter);
+// M63 Slice B — GET /api/v1/audit/stream live-tail.
+app.use("/api/v1",            streamRouter);
 app.use("/api/v1/engine",    engineRouter);
 
 // Error handler — translate ZodErrors and unknowns into JSON.

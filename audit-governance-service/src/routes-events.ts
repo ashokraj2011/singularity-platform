@@ -18,6 +18,10 @@ import { denormaliseLlmCall } from "./cost-worker";
 // → low/medium/high/critical so the search UI can filter by blast radius
 // independently of "did the call succeed."
 import { classifyRisk } from "./risk-classifier";
+// M63 Slice B — broadcast hook for SSE live-tail subscribers. No-op
+// when nobody's connected; non-blocking otherwise (just enqueues onto
+// each subscriber's bounded buffer).
+import { broadcastAuditEvent } from "./routes-stream";
 
 export const eventsRouter = Router();
 
@@ -170,6 +174,27 @@ async function ingestOne(input: unknown): Promise<{ id: string }> {
       );
     }
   }
+
+  // M63 Slice B — Push to SSE subscribers. Synchronous + non-blocking
+  // (subscribers' bounded queue absorbs the write). created_at on the
+  // emitted event is approximate; the canonical timestamp lives on the
+  // DB row but the broadcast doesn't re-read it to keep ingest fast.
+  broadcastAuditEvent({
+    id,
+    trace_id: parsed.trace_id ?? null,
+    source_service: parsed.source_service,
+    kind: parsed.kind,
+    subject_type: parsed.subject_type ?? null,
+    subject_id: parsed.subject_id ?? null,
+    actor_id: parsed.actor_id ?? null,
+    capability_id: parsed.capability_id ?? null,
+    tenant_id: parsed.tenant_id ?? null,
+    severity: parsed.severity ?? "info",
+    risk_level: riskLevel,
+    payload: parsed.payload ?? {},
+    created_at: new Date().toISOString(),
+  });
+
   return { id };
 }
 
