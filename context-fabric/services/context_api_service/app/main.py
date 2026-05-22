@@ -17,6 +17,15 @@ from .laptop_bridge import (
     start_sweep_task as start_laptop_sweep,
     stop_sweep_task as stop_laptop_sweep,
 )
+# M67 Slice 1C — context-memory folded into context-api. Routes
+# (/memory/*, /context/compile, /context/compare, /context/packages/*)
+# now served in-process. CONTEXT_MEMORY_URL defaults to context-api's own
+# URL so existing callers don't need to change anything.
+from services.context_memory_service.app.routes import (
+    router as memory_router,
+    ensure_memory_schema as ensure_context_memory_schema,
+    warm_system_prompts as warm_context_memory_prompts,
+)
 
 app = FastAPI(title="Context Fabric - Context API Service", version="0.1.0")
 
@@ -30,6 +39,12 @@ app.include_router(execute_router)
 app.include_router(receipts_router)
 # M26 — laptop-resident mcp-server bridge (WS endpoint + connection registry)
 app.include_router(laptop_bridge_router)
+# M67 Slice 1C — folded-in context-memory routes. Mounted at the same paths
+# the standalone service exposed, so the wire contract is unchanged. The
+# /context/compare proxy below this block can be deleted in a follow-up
+# now that the real handler runs in-process; left for one cycle as a
+# no-op double in case any caller does something exotic with the proxy.
+app.include_router(memory_router)
 
 
 @app.get("/health")
@@ -83,6 +98,19 @@ async def _register_with_platform() -> None:
 async def _start_laptop_sweep_task() -> None:
     # M26 — periodic sweep of stale laptop-bridge connections.
     start_laptop_sweep()
+
+
+@app.on_event("startup")
+def _bootstrap_context_memory_schema() -> None:
+    # M67 Slice 1C — was context-memory's own startup hook. Idempotent.
+    ensure_context_memory_schema()
+
+
+@app.on_event("startup")
+async def _warm_context_memory_prompts() -> None:
+    # M67 Slice 1C — was context-memory's own startup hook. Silently
+    # no-ops if composer is unreachable.
+    await warm_context_memory_prompts()
 
 
 @app.on_event("shutdown")
@@ -276,19 +304,10 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
     )
 
 
-class CompareRequest(BaseModel):
-    session_id: str
-    agent_id: str = "default-agent"
-    message: str
-    modes: list[str] = Field(default_factory=lambda: ["none", "conservative", "medium", "aggressive"])
-    max_context_tokens: int = 16000
-    provider: str = "mock"
-    model: str = "mock-fast"
-
-
-@app.post("/context/compare")
-async def context_compare(req: CompareRequest):
-    return await post_json(f"{settings.context_memory_url.rstrip('/')}/context/compare", req.model_dump())
+# M67 Slice 1C — the local CompareRequest model + /context/compare proxy
+# that previously sat here are now served in-process by memory_router
+# (services/context_memory_service/app/routes.py). Kept the file imports
+# clean — no behavior change for callers.
 
 
 @app.get("/metrics/dashboard")
