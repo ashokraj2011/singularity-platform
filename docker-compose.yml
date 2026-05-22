@@ -224,6 +224,14 @@ services:
     volumes:
       - ./agent-and-tools/apps/agent-runtime/src:/app/apps/agent-runtime/src
       - ./agent-and-tools/apps/agent-runtime/prisma:/app/apps/agent-runtime/prisma
+      # NOTE: generated/prisma-client is intentionally NOT bind-mounted.
+      # The Prisma engine binaries are platform-specific; the host
+      # (macOS) and container (Alpine linux-musl-arm64) need different
+      # ones. Operators who edit schema.prisma should re-run
+      # `prisma generate` INSIDE the container:
+      #   docker exec singularity-agent-runtime npx prisma generate
+      # then restart the container so ts-node-dev reloads the new
+      # client. The schema itself flows via the prisma/ bind mount.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # M35.3 — healthcheck so dependent services can use condition: service_healthy
@@ -278,6 +286,11 @@ services:
     volumes:
       - ./agent-and-tools/apps/prompt-composer/src:/app/apps/prompt-composer/src
       - ./agent-and-tools/apps/prompt-composer/prisma:/app/apps/prompt-composer/prisma
+      # Same caveat as agent-runtime: generated/prisma-client is not
+      # bind-mounted because the platform-specific engine binaries
+      # would conflict. Re-run prisma generate in-container after
+      # schema edits:
+      #   docker exec singularity-prompt-composer npx prisma generate
     # M35.3 — healthcheck so dependent services can use condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3004/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
@@ -527,10 +540,14 @@ services:
       # CapabilityWorldModel row. context-api fetches it (GET
       # /capabilities/:id/world-model) at /execute time and forwards
       # it to prompt-composer so the Slice F renderers can emit
-      # CODE_AGENT_RULES + CODE_WORLD_MODEL layers. Empty string
-      # disables the fetch silently — useful for ops who haven't
-      # bootstrapped any capability under M61 yet.
-      AGENT_RUNTIME_URL: ${AGENT_RUNTIME_URL:-http://agent-runtime:3003}
+      # CODE_AGENT_RULES + CODE_WORLD_MODEL layers.
+      #
+      # Hardcoded to the compose-internal hostname (not
+      # ${AGENT_RUNTIME_URL:-…}) so the host-side .env value
+      # `AGENT_RUNTIME_URL=http://localhost:3003` — meant for scripts
+      # running outside docker — doesn't leak in and resolve to
+      # context-api's own loopback inside the container.
+      AGENT_RUNTIME_URL: http://agent-runtime:3003
     ports:
       - "8000:8000"
     depends_on:
@@ -959,6 +976,10 @@ services:
       FORMAL_VERIFIER_URL:                http://formal-verifier:8010
       FORMAL_VERIFICATION_TIMEOUT_MS:     ${FORMAL_VERIFICATION_DEFAULT_TIMEOUT_MS:-3000}
       FORMAL_VERIFICATION_BLOCK_ON_UNKNOWN: ${FORMAL_VERIFICATION_BLOCK_ON_UNKNOWN:-true}
+      # ── M61 Wire E + Wire B P2 — best-effort CapabilityWorldModel
+      # callbacks from /mcp/code-context/build. Hardcoded compose-internal
+      # hostname for the same reason as FORMAL_VERIFIER_URL above.
+      AGENT_RUNTIME_URL:                  http://agent-runtime:3003
       # External catalog (display-only after M33 — the gateway is authoritative).
       MCP_ALLOWED_LLM_PROVIDERS: ${MCP_ALLOWED_LLM_PROVIDERS:-}
       MCP_LLM_PROVIDER_CONFIG_PATH: ${MCP_LLM_PROVIDER_CONFIG_CONTAINER_PATH:-/app/.singularity/llm-providers.json}
