@@ -551,6 +551,14 @@ services:
       context: ./context-fabric
       dockerfile: services/llm_gateway_service/Dockerfile
     container_name: singularity-llm-gateway
+    # M53 — Provider credentials are read from .env.llm-secrets via env_file
+    # (NOT via ${...} shell substitution), so an empty `ANTHROPIC_API_KEY` in
+    # the operator's shell can never shadow the real value during a
+    # `docker compose up --force-recreate`. The fix root-causes the recurring
+    # "Missing credential" 503s after every gateway recreate. The file is
+    # gitignored alongside .env and lives only on operator hosts.
+    env_file:
+      - .env.llm-secrets
     environment:
       LOG_LEVEL: info
       # External config files declare providers + model aliases. Mounted RO.
@@ -567,12 +575,14 @@ services:
       LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC: ${LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC:-75}
       # Provider credentials — passed ONLY to this service. Every other
       # service in the stack is enforced to NOT receive these keys (CI guard
-      # in M33.7). Empty values disable the corresponding provider; the
-      # gateway returns 503 on a routed request, not a silent mock fallback.
-      OPENAI_API_KEY:     ${OPENAI_API_KEY:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      ANTHROPIC_API_KEY:  ${ANTHROPIC_API_KEY:-}
-      COPILOT_TOKEN:      ${COPILOT_TOKEN:-}
+      # in M33.7).
+      #
+      # M53 — Sourced from .env.llm-secrets via env_file above (NOT shell
+      # ${VAR:-} substitution). docker compose's `environment:` block
+      # OVERRIDES `env_file:` values, so OPENAI_API_KEY / OPENROUTER_API_KEY /
+      # ANTHROPIC_API_KEY / COPILOT_TOKEN are intentionally absent here —
+      # do not re-add them. If you need to add a NEW provider key, add it
+      # to .env.llm-secrets only.
       ANTHROPIC_VERSION:  ${ANTHROPIC_VERSION:-2023-06-01}
       PUBLIC_BASE_URL:    http://llm-gateway:8001
       PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
