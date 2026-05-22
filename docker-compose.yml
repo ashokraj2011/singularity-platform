@@ -704,7 +704,12 @@ services:
       # explicit provider/model overrides and forces model_alias use.
       ALLOW_CALLER_PROVIDER_OVERRIDE: ${LLM_GATEWAY_ALLOW_OVERRIDE:-false}
       UPSTREAM_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-240}
-      LLM_GATEWAY_RATE_LIMIT_RETRIES: ${LLM_GATEWAY_RATE_LIMIT_RETRIES:-1}
+      # M62 hotfix — default bumped from 1 to 2 so Anthropic 529
+      # (overloaded_error) and 503 (upstream down) transient blips
+      # get absorbed transparently before they surface as
+      # MCP_INVOKE_FAILED → "send back to an earlier stage" in the
+      # workbench. Operators override via .env for noisier upstreams.
+      LLM_GATEWAY_RATE_LIMIT_RETRIES: ${LLM_GATEWAY_RATE_LIMIT_RETRIES:-2}
       LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC: ${LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC:-65}
       LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC: ${LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC:-75}
       # Provider credentials — passed ONLY to this service. Every other
