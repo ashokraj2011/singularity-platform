@@ -292,7 +292,8 @@ services:
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       CONTEXT_FABRIC_URL: http://context-api:8000
-      LEARNING_SERVICE_URL: http://learning-service:3006
+      # M67 Slice 1A — points at agent-service (learning-service was folded in)
+      LEARNING_SERVICE_URL: http://agent-service:3001
       WORKGRAPH_ARTIFACT_FETCH_URL: http://workgraph-api:8080/api/internal/artifacts/fetch
       WORKGRAPH_ARTIFACT_FETCH_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
@@ -330,39 +331,12 @@ services:
           memory: 2G
           cpus: '1.0'
 
-  learning-service:
-    build:
-      context: ./agent-and-tools
-      dockerfile: apps/learning-service/Dockerfile
-      target: dev
-    container_name: singularity-learning-service
-    # M65 Slice 2A — compose profiles.
-    profiles: [full]
-    environment:
-      NODE_ENV: development
-      AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
-      PORT: 3006
-      DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity_learning
-      LEARNING_SERVICE_TOKEN: ${LEARNING_SERVICE_TOKEN:-dev-learning-service-token}
-      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
-    ports:
-      - "3006:3006"
-    depends_on:
-      at-postgres:
-        condition: service_healthy
-    volumes:
-      - ./agent-and-tools/apps/learning-service/src:/app/apps/learning-service/src
-    healthcheck:
-      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3006/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 15s
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: '0.5'
+  # M67 Slice 1A — learning-service was folded into agent-service. The routes
+  # (/api/v1/failures, /patterns, /state, /similar-capabilities, /summarize)
+  # are now served by singularity-agent-service on :3001 against the
+  # `learning.*` schema in the `singularity` DB. The standalone code lives
+  # under agent-and-tools/apps/learning-service/ as a deprecation marker
+  # for one operator cycle.
 
   # ─────────────────────────────────────────────────────────────────────
   # Singularity Code Foundry — deterministic-first code generation layer.
@@ -377,7 +351,11 @@ services:
       target: dev
     container_name: singularity-code-foundry-api
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    # M67 Slice 2B — moved out of `full`. Code-foundry is an optional
+    # product surface; default deployments don't need it running. Depends
+    # on services in `full` (at-postgres, llm-gateway), so activate both:
+    #   `COMPOSE_PROFILES=full,code-foundry docker compose up -d`
+    profiles: [code-foundry]
     environment:
       NODE_ENV: development
       PORT: 3005
@@ -435,7 +413,9 @@ services:
       dockerfile: apps/code-foundry-web/Dockerfile
     container_name: singularity-code-foundry-web
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    # M67 Slice 2B — paired with code-foundry-api; lives behind the
+    # `code-foundry` opt-in profile.
+    profiles: [code-foundry]
     environment:
       NODE_ENV: development
       VITE_FOUNDRY_API_URL: http://code-foundry-api:3005
@@ -1044,6 +1024,10 @@ services:
       target: dev
     container_name: singularity-mcp-server-demo
     # M65 Slice 2A — compose profiles.
+    # NOTE: must stay in `full` — context-api depends on it as the default
+    # MCP endpoint in dev. The real (laptop-bridged) mcp-server runs OUTSIDE
+    # compose. Tried moving to a `demo` profile in M67 — the depends_on
+    # graph broke. Keep here unless context-api's dep is rewritten.
     profiles: [full]
     # M33 — env_file removed. Provider keys must only be passed to the
     # llm-gateway service. mcp-server reads zero provider credentials.
@@ -1136,7 +1120,8 @@ services:
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       CONTEXT_FABRIC_URL: http://context-api:8000
       CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
-      LEARNING_SERVICE_URL: http://learning-service:3006
+      # M67 Slice 1A — points at agent-service (learning-service was folded in)
+      LEARNING_SERVICE_URL: http://agent-service:3001
       # M36.7 — mcp-server fetches the "code-tool-use nudge" SystemPrompt
       # (key=mcp.code-tool-use-nudge) from prompt-composer at run time so
       # there are no inline prompts in mcp-server source. Required when

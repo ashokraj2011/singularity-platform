@@ -114,7 +114,10 @@ const schema = z.object({
   // Workstream 1: Durable Event Store
   MCP_EVENT_STORE_URL: z.string().optional(),
   MCP_EVENT_STORE_TOKEN: z.string().optional(),
-  LEARNING_SERVICE_URL: z.string().default("http://learning-service:3006"),
+  // M67 Slice 1A — learning-service was folded into agent-service. Default
+  // now points at agent-service; the route paths are identical so callers
+  // don't have to change anything else.
+  LEARNING_SERVICE_URL: z.string().default("http://agent-service:3001"),
   // M61 Wire — Optional agent-runtime URL. When set, /mcp/code-context/build
   // POSTs the workspace's repo fingerprint to
   //   ${AGENT_RUNTIME_URL}/capabilities/:id/world-model/fingerprint
