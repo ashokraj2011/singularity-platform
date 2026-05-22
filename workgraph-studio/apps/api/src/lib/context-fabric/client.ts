@@ -40,6 +40,12 @@ export interface ExecuteRequest {
   vars?: Record<string, unknown>
   globals?: Record<string, unknown>
   prior_outputs?: Record<string, unknown>
+  // M66 — Receipts from previously-completed stages in a multi-stage
+  // Blueprint Workbench workflow. Caller (blueprint.router) accumulates
+  // receipts from each runCodingStage result and threads the union into
+  // every subsequent stage so finish_work_branch's formal verifier sees the
+  // verification evidence. Empty/omitted for the first stage.
+  prior_verification_receipts?: Array<Record<string, unknown>>
   artifacts?: unknown[]
   overrides?: Record<string, unknown>
   model_overrides?: {

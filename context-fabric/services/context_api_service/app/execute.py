@@ -148,6 +148,13 @@ class ExecuteRequest(BaseModel):
     vars: dict[str, Any] = Field(default_factory=dict)
     globals: dict[str, Any] = Field(default_factory=dict)
     prior_outputs: dict[str, Any] = Field(default_factory=dict)
+    # M66 — Receipts from prior stages in a multi-stage Blueprint Workbench
+    # workflow. Each stage runs in its own /mcp/invoke session; without this
+    # field the QA stage's run_test receipt is lost before the developer
+    # stage's auto-finish reads state.verificationReceipts. Caller (workgraph-
+    # studio blueprint router) is responsible for accumulating receipts across
+    # stages and passing the union here.
+    prior_verification_receipts: list[dict[str, Any]] = Field(default_factory=list)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     overrides: dict[str, Any] = Field(default_factory=dict)
     model_overrides: dict[str, Any] = Field(default_factory=dict)
@@ -1417,6 +1424,11 @@ async def execute(req: ExecuteRequest):
         }),
         "allowAutonomousMutation": req.allow_autonomous_mutation,
     }
+    # M66 — Pass prior-stage receipts through to mcp-server's InvokeSchema so
+    # state.verificationReceipts starts populated. Only add the key when
+    # non-empty (mcp-server's Zod schema is optional + treats missing as []).
+    if req.prior_verification_receipts:
+        invoke_payload["priorVerificationReceipts"] = req.prior_verification_receipts
     if context_plan_hash is None:
         invoke_payload.pop("contextPlanHash", None)
     if compiled_system_prompt is not None:

@@ -282,6 +282,35 @@ def _recommendations(query_type: str, result: str, counterexample: dict[str, Any
     if result == "UNKNOWN":
         return ["Reduce the constraint set, increase timeout, or require human review before proceeding."]
     if result == "SAT" and counterexample:
+        # M66 — Domain-aware remediation. The default "tighten the policy"
+        # message is actively wrong for the most common counterexample we
+        # see in production: `codeChanged=True` paired with absent or
+        # failing verification receipts. The policy already excludes that
+        # state (that's why the solver returned SAT); the actual fix is to
+        # produce the evidence, not to constrain the model further. Detect
+        # that shape and return an actionable hint instead.
+        ce = counterexample
+        code_changed = bool(ce.get("codeChanged"))
+        receipt_present = bool(ce.get("verificationReceiptPresent"))
+        receipt_passed = bool(ce.get("verificationReceiptPassed"))
+        if code_changed and not receipt_present:
+            return [
+                "This code change has no verification receipt attached. "
+                "Run a test/lint/typecheck tool (e.g. run_test, run_command) "
+                "before finish_work_branch — its output gets recorded as "
+                "the verification receipt the formal verifier expects.",
+                "If verification is genuinely unavailable for this change "
+                "(e.g. infrastructure-only edit with no test target), "
+                "emit a `verification_unavailable` receipt to acknowledge "
+                "the gap explicitly.",
+            ]
+        if code_changed and receipt_present and not receipt_passed:
+            return [
+                "A verification receipt is attached but reports a failure "
+                "(passed=false or exit_code!=0). Investigate the failure, "
+                "fix the underlying issue, and re-run verification — the "
+                "policy requires a passing receipt before finishing.",
+            ]
         return ["Add or tighten a mandatory policy constraint that excludes this counterexample."]
     if query_type == "CONSISTENCY_CHECK" and result == "UNSAT":
         return ["Review the conflicting requirements or policies and remove the contradiction."]

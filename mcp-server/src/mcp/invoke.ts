@@ -151,6 +151,16 @@ const InvokeSchema = z.object({
   contextPlanHash: z.string().optional(),
   degradedActionsAllowed: z.array(z.string()).default([]),
   allowAutonomousMutation: z.boolean().optional(),
+  // M66 — Receipts carried over from a prior stage in a multi-stage workflow.
+  // Blueprint Workbench runs each stage in its own /mcp/invoke session, so a
+  // QA stage's run_test receipt would otherwise be lost before the next
+  // developer stage's auto-finish reads state.verificationReceipts (which
+  // determines whether finish_work_branch's formal verifier sees the
+  // verification evidence). Caller is responsible for accumulating receipts
+  // across stages and passing the union here. Existing resume-from-pause
+  // path threads receipts via env.verification_receipts (~3138 below) — this
+  // is the analogous knob for fresh invokes.
+  priorVerificationReceipts: z.array(z.record(z.unknown())).optional(),
 });
 
 const ResumeSchema = z.object({
@@ -2991,7 +3001,13 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     toolInvocationIds: [],
     artifactIds: [],
     codeChangeIds: [],
-    verificationReceipts: [],
+    // M66 — Seed with caller-supplied receipts from prior stages so the
+    // multi-stage Blueprint Workbench flow's finish gate can see them. Empty
+    // when not supplied; verificationReceiptsFromOutput / explicit pushes
+    // below still accumulate runs in the current session.
+    verificationReceipts: Array.isArray(body.priorVerificationReceipts)
+      ? body.priorVerificationReceipts.map((r) => ({ ...r }))
+      : [],
     promptCacheUsage: [],
     totalInputTokens: 0,
     totalOutputTokens: 0,

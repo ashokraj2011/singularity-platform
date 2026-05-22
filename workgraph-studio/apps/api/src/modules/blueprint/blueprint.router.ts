@@ -460,6 +460,15 @@ type LoopState = {
   reviewEvents: ReviewEvent[]
   decisionAnswers: DecisionAnswer[]
   finalPack?: FinalPack
+  // M66 — Receipts (test runs, lint runs, formal verifier results)
+  // accumulated across stages in this session. Each stage's /mcp/invoke
+  // runs in its own state.verificationReceipts array, so without this
+  // session-level accumulator the developer stage's auto-finish would see
+  // an empty receipt list even though an earlier QA stage ran tests. Bumped
+  // by appendVerificationReceipts() after every runCodingStage call; read
+  // by runLoopStageExecute and passed to context-fabric as
+  // prior_verification_receipts.
+  verificationReceiptHistory?: Array<Record<string, unknown>>
   intakeDefaults?: z.infer<typeof intakeDefaultsSchema>
   intakeOverrides?: z.infer<typeof intakeOverridesSchema>
   executionConfig?: {
@@ -1488,6 +1497,57 @@ function isGovernanceMode(value: unknown): value is GovernanceMode {
   return typeof value === 'string' && (GOVERNANCE_MODES as readonly string[]).includes(value)
 }
 
+// M66 — Append verification receipts from a just-completed stage to the
+// session-level rolling history. Called right after every runCodingStage /
+// resumeCodingStage so the next stage's runLoopStageExecute can read them
+// and thread into prior_verification_receipts. De-duplicates by
+// {command, exit_code, passed} so back-to-back stage runs against the same
+// session don't double-count when nothing new ran. Caps at 100 entries
+// (matches readLoopState's slice) so unbounded sessions don't blow up
+// metadata size.
+async function appendVerificationReceiptsToSession(
+  sessionId: string,
+  newReceipts: ReadonlyArray<Record<string, unknown>> | undefined | null,
+): Promise<void> {
+  if (!newReceipts || newReceipts.length === 0) return
+  const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
+  if (!session) return
+  const metadata = isRecord(session.metadata) ? session.metadata : {}
+  const existing = Array.isArray(metadata.verificationReceiptHistory)
+    ? (metadata.verificationReceiptHistory as unknown[])
+        .filter((r): r is Record<string, unknown> => isRecord(r))
+    : []
+  // Build a dedupe key — receipts carry an id when mcp-server enriched them;
+  // fall back to the command+exit+passed triple. Two stage runs of the same
+  // test should appear once, not twice, so policy lookups stay stable.
+  const keyFor = (r: Record<string, unknown>): string => {
+    if (typeof r.id === 'string' && r.id) return `id:${r.id}`
+    if (typeof r.toolInvocationId === 'string' && r.toolInvocationId) return `tii:${r.toolInvocationId}`
+    return JSON.stringify({
+      command: r.command,
+      exit: r.exit_code ?? r.exitCode,
+      passed: r.passed,
+    })
+  }
+  const seen = new Set(existing.map(keyFor))
+  for (const r of newReceipts) {
+    const key = keyFor(r)
+    if (seen.has(key)) continue
+    seen.add(key)
+    existing.push(r)
+  }
+  const trimmed = existing.slice(-100)
+  await prisma.blueprintSession.update({
+    where: { id: sessionId },
+    data: {
+      metadata: {
+        ...metadata,
+        verificationReceiptHistory: trimmed,
+      } as Prisma.InputJsonValue,
+    },
+  })
+}
+
 function readLoopState(session: LoopSessionSeed): LoopState {
   const metadata = isRecord(session.metadata) ? session.metadata : {}
   const loopDefinition = normalizeLoopDefinition(metadata.loopDefinition, session)
@@ -1508,6 +1568,15 @@ function readLoopState(session: LoopSessionSeed): LoopState {
     reviewEvents: Array.isArray(metadata.reviewEvents) ? (metadata.reviewEvents as unknown[]).filter(isReviewEvent) : [],
     decisionAnswers,
     finalPack: isFinalPack(metadata.finalPack) ? metadata.finalPack : undefined,
+    // M66 — Read accumulated receipts from prior stages. Defensive: cast
+    // through unknown and require each entry be a record. Caps growth at
+    // 100 receipts to bound metadata size; stages running test commands
+    // typically produce 1-3 receipts each, so 100 covers ~30 stages.
+    verificationReceiptHistory: Array.isArray(metadata.verificationReceiptHistory)
+      ? (metadata.verificationReceiptHistory as unknown[])
+          .filter((r): r is Record<string, unknown> => isRecord(r))
+          .slice(-100)
+      : undefined,
     executionConfig: readExecutionConfig(metadata.executionConfig),
   }
 }
@@ -1525,6 +1594,10 @@ function stateToMetadata(session: LoopSessionSeed, state: LoopState): Prisma.Inp
     reviewEvents: state.reviewEvents,
     decisionAnswers: state.decisionAnswers,
     finalPack: state.finalPack,
+    // M66 — Persist receipt history alongside the rest of loop state so
+    // every subsequent stage's runLoopStageExecute can read it and pass
+    // through to mcp-server's priorVerificationReceipts.
+    verificationReceiptHistory: state.verificationReceiptHistory,
     executionConfig: state.executionConfig,
     decisionAnswersUpdatedAt: current.decisionAnswersUpdatedAt,
   } as Prisma.InputJsonValue
@@ -2033,6 +2106,14 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
     const codingResult = await runLoopStageExecute(session, snapshot, stage, attempt, task, stageSystemPromptAppend, stageExtraContext)
     const result = codingResult.response
     await recordBlueprintBudgetUsage(session, result, stage.key, readLoopState(session).workflowNodeId)
+    // M66 — Persist receipts produced by this stage so the next stage's
+    // runLoopStageExecute can thread them as prior_verification_receipts.
+    // Runs before any branch-specific session.metadata update below so the
+    // rolling history is durable even if the run paused for approval.
+    await appendVerificationReceiptsToSession(
+      session.id,
+      codingResult.verificationReceipts as unknown as Array<Record<string, unknown>>,
+    )
     if (!isTerminalCodingResult(codingResult)) {
       await prisma.blueprintStageRun.update({
         where: { id: dbRun.id },
@@ -2340,6 +2421,14 @@ async function resumeLoopStageApproval(
   })
   const result = codingResult.response
   await recordBlueprintBudgetUsage(session, result, stage.key, state.workflowNodeId)
+  // M66 — Same persist-after-stage pattern as the fresh-execute path above.
+  // The resume path returns its own verificationReceipts (the resumed
+  // session may have run more tests after the approval pause), so persist
+  // them too so the next stage sees the complete picture.
+  await appendVerificationReceiptsToSession(
+    session.id,
+    codingResult.verificationReceipts as unknown as Array<Record<string, unknown>>,
+  )
 
   if (!isTerminalCodingResult(codingResult)) {
     await prisma.blueprintStageRun.update({
@@ -3024,6 +3113,14 @@ async function runLoopStageExecute(
       modelAlias,
       agentRole: stage.agentRole,
     },
+    // M66 — Thread accumulated receipts from prior stages so this stage's
+    // /mcp/invoke seeds state.verificationReceipts with them. Without this,
+    // each blueprint stage runs in a fresh invoke session with an empty
+    // receipt list, and finish_work_branch's formal verifier sees
+    // verificationReceiptPresent=False even when an earlier QA stage ran
+    // tests successfully. Receiving side: mcp-server/src/mcp/invoke.ts
+    // InvokeSchema.priorVerificationReceipts (M66 Slice C).
+    prior_verification_receipts: readLoopState(session).verificationReceiptHistory ?? [],
     artifacts: [
       {
         label: 'Source snapshot',
