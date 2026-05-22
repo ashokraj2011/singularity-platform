@@ -106,17 +106,100 @@ async function callGateway(body: GatewayChatRequest): Promise<GatewayChatRespons
   }
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (config.LLM_GATEWAY_BEARER) headers.authorization = `Bearer ${config.LLM_GATEWAY_BEARER}`;
-  const res = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(config.LLM_GATEWAY_TIMEOUT_SEC * 1000),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(config.LLM_GATEWAY_TIMEOUT_SEC * 1000),
+    });
+  } catch (err) {
+    // M64 — Classify the abort/timeout case explicitly. Without this,
+    // a gateway timeout surfaces as an opaque `AbortError` and the
+    // context-fabric wrapper labels it MCP_INVOKE_FAILED.
+    if ((err as Error).name === "TimeoutError" || (err as Error).name === "AbortError") {
+      throw makeGatewayError(
+        "LLM_GATEWAY_TIMEOUT",
+        `LLM gateway did not respond within ${config.LLM_GATEWAY_TIMEOUT_SEC}s. ` +
+          `If the gateway is mid-retry of an Anthropic 529, raise LLM_GATEWAY_TIMEOUT_SEC ` +
+          `above the gateway's retry envelope ` +
+          `(LLM_GATEWAY_RATE_LIMIT_RETRIES × LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC).`,
+        { upstreamStatus: null },
+      );
+    }
+    // Network errors (DNS fail, connection refused, etc.).
+    throw makeGatewayError("LLM_GATEWAY_UNREACHABLE", `LLM gateway unreachable: ${(err as Error).message}`, { upstreamStatus: null });
+  }
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`LLM_GATEWAY_UPSTREAM ${res.status}: ${text.slice(0, 500)}`);
+    // M64 — Map the HTTP status to a specific operator-actionable code.
+    // The gateway already classifies these statuses (529 = Anthropic
+    // overloaded, 503 = upstream down) AFTER its retry layer gave up.
+    // We just need to surface them through the chain so the workbench
+    // shows the operator the right "retry vs investigate vs escalate"
+    // action instead of generic MCP_INVOKE_FAILED.
+    let code = "LLM_GATEWAY_UPSTREAM";
+    if (res.status === 529 || /529/.test(text)) {
+      code = "LLM_PROVIDER_OVERLOADED";
+    } else if (res.status === 502 && /529/.test(text)) {
+      // The gateway wraps Anthropic 529 as its own 502 with the
+      // "anthropic returned 529" body — recover the original signal.
+      code = "LLM_PROVIDER_OVERLOADED";
+    } else if (res.status === 503) {
+      code = "LLM_PROVIDER_UNAVAILABLE";
+    } else if (res.status === 429) {
+      code = "LLM_PROVIDER_RATE_LIMITED";
+    } else if (res.status === 504) {
+      code = "LLM_GATEWAY_TIMEOUT";
+    }
+    throw makeGatewayError(code, `LLM gateway ${res.status}: ${text.slice(0, 500)}`, { upstreamStatus: res.status });
   }
   return JSON.parse(text) as GatewayChatResponse;
+}
+
+/**
+ * M64 — Structured gateway-error envelope. Extends AppError so the
+ * mcp-server errorMiddleware preserves the code through to the HTTP
+ * response body instead of collapsing to generic INTERNAL_ERROR.
+ *
+ * Code taxonomy (read by context-fabric → workbench → operator):
+ *   LLM_PROVIDER_OVERLOADED   — Anthropic 529 (or 502 wrapping a 529).
+ *                               Operator action: retry; if persistent,
+ *                               raise gateway retry count.
+ *   LLM_PROVIDER_UNAVAILABLE  — upstream 503. Investigate provider status.
+ *   LLM_PROVIDER_RATE_LIMITED — upstream 429 after gateway retries
+ *                               exhausted. Operator action: check budget /
+ *                               increase TPM tier / wait.
+ *   LLM_GATEWAY_TIMEOUT       — mcp-server's wait on the gateway hit
+ *                               LLM_GATEWAY_TIMEOUT_SEC. Usually means
+ *                               gateway is mid-retry and the timeout
+ *                               is shorter than the retry envelope.
+ *   LLM_GATEWAY_UNREACHABLE   — network error (DNS / ECONNREFUSED).
+ *   LLM_GATEWAY_UPSTREAM      — other non-200 (fallback).
+ */
+import { AppError } from "../shared/errors";
+
+const STATUS_BY_CODE: Record<string, number> = {
+  LLM_PROVIDER_OVERLOADED:   529,
+  LLM_PROVIDER_UNAVAILABLE:  503,
+  LLM_PROVIDER_RATE_LIMITED: 429,
+  LLM_GATEWAY_TIMEOUT:       504,
+  LLM_GATEWAY_UNREACHABLE:   502,
+  LLM_GATEWAY_UPSTREAM:      502,
+};
+
+export class GatewayError extends AppError {
+  readonly upstreamStatus: number | null;
+  constructor(code: string, message: string, upstreamStatus: number | null) {
+    super(message, STATUS_BY_CODE[code] ?? 502, code, { upstreamStatus });
+    this.name = "GatewayError";
+    this.upstreamStatus = upstreamStatus;
+  }
+}
+
+function makeGatewayError(code: string, message: string, opts: { upstreamStatus: number | null }): GatewayError {
+  return new GatewayError(code, message, opts.upstreamStatus);
 }
 
 function mockEmbedding(text: string, dim = 1536): number[] {

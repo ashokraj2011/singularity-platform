@@ -1502,10 +1502,19 @@ async def execute(req: ExecuteRequest):
                     "details": l_exc.details,
                 })
         else:
+            # M64 — Default MCP-invoke timeout bumped from 240 → 480
+            # via CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC. Must exceed
+            # mcp-server's own TIMEOUT_SEC (300) + the subscriber-drain
+            # window (~1s) so context-fabric doesn't abort a healthy
+            # mid-flight workflow. Caller can still override per-request
+            # via req.limits.timeoutSec.
+            _default_mcp_timeout = float(
+                os.getenv("CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC", "480"),
+            )
             mcp_resp = await _post(
                 f"{mcp_base_url}/mcp/invoke",
                 invoke_payload,
-                timeout=float(req.limits.get("timeoutSec", 240)),
+                timeout=float(req.limits.get("timeoutSec", _default_mcp_timeout)),
                 headers={"Authorization": f"Bearer {mcp_bearer}"},
             )
         mcp_latency_ms = int((time.time() - mcp_started) * 1000)
@@ -1528,6 +1537,33 @@ async def execute(req: ExecuteRequest):
             detail = exc.response.json()
         except Exception:
             detail = {"message": exc.response.text[:500]}
+        # M64 — Pass through structured LLM gateway error codes from
+        # mcp-server (LLM_PROVIDER_OVERLOADED / LLM_PROVIDER_UNAVAILABLE /
+        # LLM_PROVIDER_RATE_LIMITED / LLM_GATEWAY_TIMEOUT /
+        # LLM_GATEWAY_UNREACHABLE) instead of collapsing them to the
+        # generic MCP_INVOKE_FAILED. The workbench's retry/send-back
+        # button copy can then be specific ("Provider overloaded — retry
+        # in a minute" vs "Send back to an earlier stage").
+        _PASSTHROUGH_CODES = {
+            "LLM_PROVIDER_OVERLOADED",
+            "LLM_PROVIDER_UNAVAILABLE",
+            "LLM_PROVIDER_RATE_LIMITED",
+            "LLM_GATEWAY_TIMEOUT",
+            "LLM_GATEWAY_UNREACHABLE",
+        }
+        inner_code = None
+        if isinstance(detail, dict):
+            err = detail.get("error") or {}
+            if isinstance(err, dict):
+                inner_code = err.get("code")
+        if inner_code in _PASSTHROUGH_CODES:
+            _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
+                             f"{inner_code}: {detail}", session_id, mcp_server_id=mcp_server_id)
+            raise HTTPException(status_code=exc.response.status_code, detail={
+                "code": inner_code,
+                "message": (detail.get("error") or {}).get("message") if isinstance(detail, dict) else str(detail),
+                "details": detail,
+            })
         _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
                          f"MCP invoke failed: {detail}", session_id, mcp_server_id=mcp_server_id)
         raise HTTPException(status_code=exc.response.status_code, detail={

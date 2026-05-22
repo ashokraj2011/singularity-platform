@@ -556,6 +556,10 @@ services:
       COMPRESSOR_URL: http://prompt-compressor:8011
       COMPRESSION_ENABLED: ${COMPRESSION_ENABLED:-false}
       COMPRESSION_PER_LAYER_BUDGET_TOKENS: ${COMPRESSION_PER_LAYER_BUDGET_TOKENS:-1500}
+      # M64 — Wait time on /mcp/invoke before context-fabric aborts.
+      # Must exceed mcp-server's TIMEOUT_SEC (300) plus subscriber-drain
+      # window (≈1s). 480s = 8 min headroom.
+      CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC: ${CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC:-480}
     ports:
       - "8000:8000"
     depends_on:
@@ -703,7 +707,7 @@ services:
       # When ALLOW_CALLER_PROVIDER_OVERRIDE=false the gateway refuses
       # explicit provider/model overrides and forces model_alias use.
       ALLOW_CALLER_PROVIDER_OVERRIDE: ${LLM_GATEWAY_ALLOW_OVERRIDE:-false}
-      UPSTREAM_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-240}
+      UPSTREAM_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-300}
       # M62 hotfix — default bumped from 1 to 2 so Anthropic 529
       # (overloaded_error) and 503 (upstream down) transient blips
       # get absorbed transparently before they surface as
@@ -838,7 +842,7 @@ services:
       WORKBENCH_AGENT_PHASES_ENABLED: ${WORKBENCH_AGENT_PHASES_ENABLED:-false}
       # Legacy direct LLM calls now route through MCP. No gateway URL or
       # provider keys in this service.
-      LLM_GATEWAY_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-240}
+      LLM_GATEWAY_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-300}
     volumes:
       # Bind mounts for hot-reload via ts-node-dev. Edits to src/ or the
       # workspace packages take effect immediately without a rebuild.
@@ -1035,7 +1039,7 @@ services:
       # propagate. The only allowed fallback is the gateway's `mock` provider.
       LLM_GATEWAY_URL:        http://llm-gateway:8001
       LLM_GATEWAY_BEARER:     ${LLM_GATEWAY_BEARER:-}
-      LLM_GATEWAY_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-240}
+      LLM_GATEWAY_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-300}
       # ── M60 Slice 1 — Formal verification gate (Z3). Disabled by default.
       # Flip FORMAL_VERIFICATION_ENABLED=true in .env to make finish_work_branch
       # call the verifier. URL must use the compose-internal hostname so the
@@ -1053,7 +1057,11 @@ services:
       MCP_LLM_PROVIDER_CONFIG_PATH: ${MCP_LLM_PROVIDER_CONFIG_CONTAINER_PATH:-/app/.singularity/llm-providers.json}
       MCP_LLM_MODEL_CATALOG_PATH:  ${MCP_LLM_MODEL_CATALOG_CONTAINER_PATH:-/app/.singularity/mcp-models.json}
       MAX_AGENT_STEPS: 12
-      TIMEOUT_SEC: 240
+      # M64 — Overall agent-loop budget. Bumped 240 → 300 so a single
+      # LLM call with the gateway mid-retry of a 529 has time to
+      # complete before MCP gives up on its own loop. Must stay ≥
+      # LLM_GATEWAY_TIMEOUT_SEC + a few seconds of headroom.
+      TIMEOUT_SEC: 300
       # Workspace lock timeout — must exceed the worst-case time for a single
       # stage attempt (developer loop with 12 steps × Sonnet ≈ 60-180s) so a
       # user clicking "re-run" while another attempt is still running doesn't
