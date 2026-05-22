@@ -2956,6 +2956,26 @@ async function finalizeLoop(sessionId: string, actorId: string) {
   if (!session.workflowInstanceId && hasUnresolvedWorkflowLink(state)) {
     throw new ValidationError('This Workbench session was opened from a workflow link that could not be resolved, so it cannot publish consumables or advance the workflow. Start a new Workbench session from the active workflow run.')
   }
+  // M70.7 — Idempotent re-handoff path. When the parent workflow is
+  // restarted (NODE_RESTARTED on Start), the Workbench node bounces
+  // back to ACTIVE while the session keeps its prior `finalPack`. The
+  // operator needs a way to re-send the existing pack and advance the
+  // node without re-running every stage. If we already have a
+  // finalPack, skip the build-pack + publish-consumable steps and just
+  // re-call attachFinalPackToWorkflowNode → completeLinkedWorkbenchTask
+  // → advance(). attachFinalPackToWorkflowNode is already safe to
+  // re-run (it overwrites the node.config.workbench block), and
+  // completeLinkedWorkbenchTask no-ops on already-completed nodes.
+  if (state.finalPack && session.workflowInstanceId && state.workflowNodeId) {
+    await attachFinalPackToWorkflowNode(session, state.finalPack, actorId, session.artifacts)
+    await recordBlueprintAudit(session.id, 'BlueprintFinalizeReplayed', actorId, {
+      finalPackId: state.finalPack.id,
+      workflowInstanceId: session.workflowInstanceId,
+      workflowNodeId: state.workflowNodeId,
+      reason: 'workflow node re-activated after restart; re-attached existing pack',
+    })
+    return loadSession(session.id, actorId)
+  }
   if (!isLoopGreen(state)) {
     throw new ValidationError('All required loop stages must be passed or accepted with risk before finalizing')
   }

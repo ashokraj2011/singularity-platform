@@ -2204,13 +2204,33 @@ function FinalizeStrip({ session, onSession }: { session: BlueprintSession; onSe
   })
   const green = isLoopGreen(session)
   const workflowLinked = Boolean(session.workflowInstanceId && session.workflowNodeId)
-  const title = session.finalPack ? 'Final pack sent' : green ? 'Ready for final handoff' : 'Final handoff locked'
-  const summary = session.finalPack?.summary
-    ?? (green
-      ? workflowLinked
-        ? 'All required gates are green. Finalize sends artifacts, consumables, and the final pack back to the workflow, then advances the Workbench node.'
-        : 'All required gates are green. Finalize creates the final implementation pack for this standalone session.'
-      : 'Pass or accept risk on every required stage before sending the final pack back to the workflow.')
+  // M70.7 — When the parent workflow is RESTARTED (NODE_RESTARTED on
+  // Start), the Workbench node goes ACTIVE again even though the
+  // blueprint session is already APPROVED + finalPack is set. The old
+  // disable rule trapped the operator: "Finalize + send" was greyed out
+  // because finalPack existed, so they had no way to re-emit the
+  // handoff event and advance the workflow past Workbench. Now we keep
+  // the button enabled in this case with a "Re-send to workflow" label;
+  // the backend's idempotent finalize path re-attaches the existing
+  // pack and re-calls advance, which is the only thing the workflow
+  // needs to move on.
+  const hasPack = Boolean(session.finalPack)
+  const canReSend = hasPack && workflowLinked
+  const title = hasPack
+    ? canReSend ? 'Final pack ready — re-send to workflow if it was reset' : 'Final pack sent'
+    : green ? 'Ready for final handoff' : 'Final handoff locked'
+  const summary = canReSend
+    ? 'Your blueprint is already finalized. If the workflow node is still waiting on this Workbench (e.g. after a workflow restart), click below to re-attach the existing pack and advance the node.'
+    : session.finalPack?.summary
+      ?? (green
+        ? workflowLinked
+          ? 'All required gates are green. Finalize sends artifacts, consumables, and the final pack back to the workflow, then advances the Workbench node.'
+          : 'All required gates are green. Finalize creates the final implementation pack for this standalone session.'
+        : 'Pass or accept risk on every required stage before sending the final pack back to the workflow.')
+
+  const buttonLabel = canReSend
+    ? 'Re-send to workflow'
+    : workflowLinked ? 'Finalize + send' : 'Finalize'
 
   return (
     <>
@@ -2224,11 +2244,11 @@ function FinalizeStrip({ session, onSession }: { session: BlueprintSession; onSe
         </div>
         <button
           className="secondary-action approve"
-          disabled={!green || Boolean(session.finalPack) || finalizeMutation.isPending}
+          disabled={(!green && !canReSend) || finalizeMutation.isPending}
           onClick={() => finalizeMutation.mutate()}
         >
           {finalizeMutation.isPending ? <Loader2 className="spin" size={15} /> : <BadgeCheck size={15} />}
-          {workflowLinked ? 'Finalize + send' : 'Finalize'}
+          {buttonLabel}
         </button>
       </div>
       {finalizeMutation.isError && <p className="error-text">{finalizeMutation.error.message}</p>}
