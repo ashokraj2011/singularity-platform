@@ -169,6 +169,13 @@ const PRIORITY = {
   // capability-scoped memory but more than raw code excerpts.
   GLOBAL_LESSON: 280,
   MEMORY_CONTEXT: 300,
+  // M61 Slice F — CapabilityWorldModel layers. Render ABOVE the M52
+  // CODE_* layers so ambient capability-wide knowledge (agent rules,
+  // test commands, README summary, top-level package map) precedes
+  // the task-specific code slices. These are byte-stable across
+  // workflows targeting the same repo, making them cache-friendly.
+  CODE_AGENT_RULES:        305,
+  CODE_WORLD_MODEL:        308,
   // M52 — Code Context Budgeter slots. The 7 CODE_* layers sit between
   // MEMORY_CONTEXT (300) and the legacy CODE_CONTEXT (320). When a
   // codeContextPackage is supplied on the compose request, these layers
@@ -726,6 +733,16 @@ export const composeService = {
         // get_ast_slice) instead of paying tokens for top-N on every prompt.
         // Set PROMPT_INCLUDE_CODE_CONTEXT=true to bring back the legacy
         // behaviour for capabilities that pre-date M27.
+        // M61 Slice F — CapabilityWorldModel layers (CODE_AGENT_RULES +
+        // CODE_WORLD_MODEL). Ambient capability-wide context: agent rules
+        // (CLAUDE.md, etc.), test/build commands, README summary, top-level
+        // package map. These render ABOVE the M52 code-context layers so
+        // the agent has the capability profile before the per-task slices.
+        // Independent of codeContextPackage — non-code stages (Story Intake,
+        // Plan, Design) get these too.
+        if (input.worldModel) {
+          appendWorldModelLayers(layers, input.worldModel);
+        }
         // M52 — Code Context Budgeter fast-path. When mcp-server has already
         // built a token-budgeted slice package upstream (via Context Fabric →
         // /mcp/code-context/build), emit 7 deterministic CODE_* layers IN
@@ -1796,4 +1813,133 @@ export function appendCodeContextLayers(layers: AssembledLayer[], pkg: CodeConte
   push("CODE_TYPE_CONTRACTS" as never,     PRIORITY.CODE_TYPE_CONTRACTS,    "code context budgeter — types",renderCodeTypeContractsLayer(pkg));
   push("CODE_TEST_SLICES" as never,        PRIORITY.CODE_TEST_SLICES,       "code context budgeter — tests",renderCodeTestSlicesLayer(pkg));
   push("CODE_CONTEXT_RECEIPT" as never,    PRIORITY.CODE_CONTEXT_RECEIPT,   "code context budgeter — receipt", renderCodeContextReceiptLayer(pkg));
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// M61 Slice F — CapabilityWorldModel layers (CODE_AGENT_RULES + CODE_WORLD_MODEL).
+//
+// These sit ABOVE the M52 code-context layers (priority 305 / 308 vs
+// 310-316) so the agent sees ambient capability-wide context before
+// task-specific slices. The shape is intentionally narrow — the
+// renderer never trusts a free-form blob, only the fields the
+// CapabilityWorldModel row exposes.
+//
+// Layer contents are derived purely from the WorldModel input — no DB
+// or HTTP calls in here. The caller (Context Fabric or whoever assembles
+// the compose request) is responsible for fetching the row from
+// agent-runtime and passing it in.
+// ─────────────────────────────────────────────────────────────────────────
+
+type WorldModelInput = NonNullable<ComposeInput["worldModel"]>;
+
+/**
+ * CODE_AGENT_RULES — verbatim agent-rule files (CLAUDE.md, AGENTS.md,
+ * .cursor/rules, .windsurfrules, copilot-instructions). Each rule is
+ * fenced as its own block with the source path as a heading so the
+ * agent can attribute behavior to a specific rule file. Returns null
+ * when the world model has no rules (skip the layer entirely).
+ */
+export function renderCodeAgentRulesLayer(wm: WorldModelInput): string | null {
+  const rules = wm.agentRules ?? [];
+  if (rules.length === 0) return null;
+  const blocks = rules.map((rule) => {
+    // Rules can be long; we don't truncate here (we trust the bootstrap
+    // 32KB cap). But we strip surrounding whitespace so adjacent rule
+    // files don't visually run together.
+    return [
+      `### Rules from ${rule.source}`,
+      "",
+      rule.content.trim(),
+    ].join("\n");
+  });
+  return [
+    "## Capability Agent Rules",
+    "",
+    "The following rule files were authored for AI agents working in this",
+    "repository. Treat them as authoritative ambient policy — they override",
+    "general defaults but are themselves overridden by the explicit task",
+    "in this turn.",
+    "",
+    blocks.join("\n\n"),
+  ].join("\n");
+}
+
+/**
+ * CODE_WORLD_MODEL — structured capability profile: primary language,
+ * build system, test commands, README summary, top-level package map.
+ *
+ * Returns null when the world model is essentially empty (no signal at
+ * all) so we don't emit a heading with empty sections. A partial world
+ * model still renders — empty sub-sections are omitted, populated ones
+ * stay.
+ */
+export function renderCodeWorldModelLayer(wm: WorldModelInput): string | null {
+  const sections: string[] = [];
+
+  if (wm.primaryLanguage || wm.buildSystem) {
+    const facts: string[] = [];
+    if (wm.primaryLanguage) facts.push(`Primary language: ${wm.primaryLanguage}`);
+    if (wm.buildSystem) facts.push(`Build system: ${wm.buildSystem}`);
+    sections.push(["### Facts", "", ...facts].join("\n"));
+  }
+
+  if ((wm.testCommands ?? []).length > 0) {
+    const lines = wm.testCommands.map((c) => {
+      const cwd = c.cwd ? ` (cwd: ${c.cwd})` : "";
+      const dur = c.expectedDurationSec ? `, ~${c.expectedDurationSec}s` : "";
+      const net = c.requiresNetwork ? ", network" : "";
+      return `- ${c.kind}: \`${c.cmd}\`${cwd}${dur || net ? ` —${dur}${net}` : ""}`;
+    });
+    sections.push(["### Test commands", "", ...lines].join("\n"));
+  }
+
+  if ((wm.buildCommands ?? []).length > 0) {
+    const lines = wm.buildCommands.map((c) => {
+      const cwd = c.cwd ? ` (cwd: ${c.cwd})` : "";
+      return `- ${c.kind}: \`${c.cmd}\`${cwd}`;
+    });
+    sections.push(["### Build commands", "", ...lines].join("\n"));
+  }
+
+  const summary = (wm.readmeSummary ?? "").trim();
+  if (summary) {
+    sections.push(["### README summary", "", summary].join("\n"));
+  }
+
+  const pkgs = wm.architectureSlice?.rootPackages ?? [];
+  if (pkgs.length > 0) {
+    const lines = pkgs.map((p) => {
+      const lang = p.language ? ` (${p.language})` : "";
+      const sym = (p.publicSymbols ?? []).slice(0, 6).join(", ");
+      const more = (p.publicSymbols ?? []).length > 6
+        ? ` (+${(p.publicSymbols ?? []).length - 6} more)`
+        : "";
+      const symLine = sym ? ` — ${sym}${more}` : "";
+      return `- ${p.path}${lang}${symLine}`;
+    });
+    sections.push(["### Top-level package map", "", ...lines].join("\n"));
+  }
+
+  if (sections.length === 0) return null;
+  return ["## Capability World Model", "", sections.join("\n\n")].join("\n");
+}
+
+/**
+ * Push CODE_AGENT_RULES + CODE_WORLD_MODEL onto the assembly array
+ * when ComposeInput.worldModel is supplied. Mirror of
+ * appendCodeContextLayers; called from the main composer entry point.
+ */
+export function appendWorldModelLayers(layers: AssembledLayer[], wm: WorldModelInput): void {
+  const push = (layerType: AssembledLayer["layerType"], priority: number, reason: string, content: string | null) => {
+    if (!content) return;
+    layers.push({
+      layerType,
+      priority,
+      inclusionReason: reason,
+      contentSnapshot: content,
+      layerHash: sha256(content),
+    });
+  };
+  push("CODE_AGENT_RULES" as never, PRIORITY.CODE_AGENT_RULES, "capability world model — agent rules", renderCodeAgentRulesLayer(wm));
+  push("CODE_WORLD_MODEL" as never, PRIORITY.CODE_WORLD_MODEL, "capability world model",              renderCodeWorldModelLayer(wm));
 }

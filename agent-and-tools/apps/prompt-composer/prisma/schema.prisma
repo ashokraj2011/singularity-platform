@@ -83,6 +83,16 @@ enum PromptLayerType {
   CODE_TYPE_CONTRACTS
   CODE_TEST_SLICES
   CODE_CONTEXT_RECEIPT
+  // M61 Slice F — CapabilityWorldModel layers.
+  //
+  // Rendered ABOVE the M52 CODE_* layers so ambient capability-wide
+  // knowledge (agent rules, test commands, README summary, top-level
+  // package map) is the first thing the agent sees about this repo.
+  // These layers are scoped to the capability, not the specific task,
+  // and stay byte-stable across workflows targeting the same repo —
+  // they're cacheable.
+  CODE_AGENT_RULES
+  CODE_WORLD_MODEL
   OUTPUT_CONTRACT
   APPROVAL_POLICY
   DATA_ACCESS_POLICY

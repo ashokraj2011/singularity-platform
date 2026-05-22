@@ -146,6 +146,48 @@ export const composeSchema = z.object({
       percent_saved: z.number(),
     }),
   }).optional(),
+  // M61 Slice F — CapabilityWorldModel snapshot. Optional, capability-
+  // scoped, byte-stable across workflows targeting the same repo.
+  // When present, compose emits CODE_AGENT_RULES and CODE_WORLD_MODEL
+  // layers ABOVE the M52 code-context layers so ambient capability
+  // knowledge precedes the task-specific code slices.
+  //
+  // Caller is expected to pass exactly what's stored in agent-runtime's
+  // CapabilityWorldModel row (see capabilities/world-model.service.ts).
+  // The shape is intentionally narrow — we only render what's useful
+  // for the agent, not every column of the DB row.
+  worldModel: z.object({
+    capabilityId: z.string(),
+    primaryLanguage: z.string().nullable().optional(),
+    buildSystem: z.string().nullable().optional(),
+    testCommands: z.array(z.object({
+      kind: z.string(),
+      cmd: z.string(),
+      cwd: z.string().optional(),
+      expectedDurationSec: z.number().optional(),
+      requiresNetwork: z.boolean().optional(),
+    })).default([]),
+    buildCommands: z.array(z.object({
+      kind: z.string(),
+      cmd: z.string(),
+      cwd: z.string().optional(),
+    })).default([]),
+    agentRules: z.array(z.object({
+      source: z.string(),
+      content: z.string(),
+      sha256: z.string().optional(),
+    })).default([]),
+    readmeSummary: z.string().nullable().optional(),
+    // Mirrors agent-runtime's ArchitectureSlice shape (M61 Slice A).
+    architectureSlice: z.object({
+      rootPackages: z.array(z.object({
+        path: z.string(),
+        language: z.string().optional(),
+        publicSymbols: z.array(z.string()).optional(),
+      })).optional(),
+      extras: z.record(z.unknown()).optional(),
+    }).optional(),
+  }).optional(),
   // M44 Slice C — When true, the TOOL_CONTRACT layer omits the full JSON
   // input_schema dump because the same schema is already sent to the LLM
   // as a real tool descriptor (Anthropic/OpenAI `tools` parameter). Keeping
