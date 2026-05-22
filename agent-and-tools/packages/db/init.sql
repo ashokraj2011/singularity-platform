@@ -27,6 +27,26 @@ SELECT 'CREATE DATABASE singularity_codegen'
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 \connect singularity
 
+-- M67 Slice 3A — iam-service owns its OWN Postgres DB (`singularity_iam`),
+-- previously hosted on a standalone `iam-postgres` container. Folded in here
+-- so the default compose stack has one fewer container. iam-service connects
+-- via DATABASE_URL=postgresql+asyncpg://...:5432/singularity_iam. The
+-- existing `singularity` Postgres role (legacy iam-postgres user) is
+-- preserved by creating it on at-postgres too — keeps iam-service's
+-- credentials string identical to the old iam-postgres URL.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='singularity') THEN
+    CREATE ROLE singularity LOGIN PASSWORD 'singularity' SUPERUSER;
+  END IF;
+END$$;
+SELECT 'CREATE DATABASE singularity_iam OWNER singularity'
+ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_iam')\gexec
+\connect singularity_iam
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+GRANT ALL ON SCHEMA public TO singularity;
+\connect singularity
+
 -- ==================== AGENT SCHEMA ====================
 CREATE SCHEMA IF NOT EXISTS agent;
 
