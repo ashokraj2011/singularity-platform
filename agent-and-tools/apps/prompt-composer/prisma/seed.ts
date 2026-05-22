@@ -226,6 +226,16 @@ const loopDeveloperTask = [
   "- Finish with git_commit or finish_work_branch ONLY after the verification step above completes. Code Review then receives both the diff AND the verification evidence.",
   "- If the requested behavior already exists, add or update tests/docs that prove it and commit those changes.",
   "- Do not ask for a more specific task when prior approved artifacts define implementable behavior. Ask only when those artifacts are genuinely contradictory or unsafe.",
+  // M70.2 — Force the agent to actually consult the prior-attempt
+  // learnings block before doing anything. Without this nudge the
+  // model treated the section as decorative context and repeated the
+  // exact same failure across 4 retries (~$0.85 wasted per workflow).
+  "",
+  "If a 'Prior attempt learnings' section appears in this task: READ IT FIRST. It contains the actual failure reason from your previous attempt. Common patterns:",
+  "  - 'The test filter matched ZERO methods' → your -Dtest filter is wrong. Either rename the filter to match a real method, or write the test method first before running the filter.",
+  "  - 'Formal verifier: BLOCKED — no verification receipt' → you did not call run_test (or its output had no test results). Run the actual test for the change before finish_work_branch.",
+  "  - 'Files claimed but NOT touched' → you mentioned editing files you never actually changed. Open those files and make the edit before finishing.",
+  "Do NOT repeat the same approach that failed last time. State explicitly in your response what you are doing differently from the prior attempt.",
 ].join("\n");
 
 // QA/test/verify-specific extension to the loop task — preserves the focus

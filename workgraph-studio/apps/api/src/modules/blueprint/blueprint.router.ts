@@ -3576,10 +3576,21 @@ function buildLoopStageVars(
  * Capped at ~2_500 chars total so it never dominates the prompt.
  */
 function buildPriorAttemptLearnings(state: LoopState, currentStageKey: string): string {
+  // M70.2 — Broaden the failure filter to include BLOCKED verdicts (the
+  // formal-verifier blocking the auto-finish), not just NEEDS_REWORK /
+  // FAILED. Before, four straight formal-block attempts produced zero
+  // repair feedback because their verdict was BLOCKED and the filter
+  // missed them — the agent looped doing the same thing.
   const priorOfThisStage = state.stageAttempts
     .filter(attempt =>
       attempt.stageKey === currentStageKey &&
-      (attempt.verdict === 'NEEDS_REWORK' || attempt.status === 'FAILED' || attempt.status === 'NEEDS_REWORK'),
+      (
+        attempt.verdict === 'NEEDS_REWORK' ||
+        attempt.verdict === 'BLOCKED' ||
+        attempt.status === 'FAILED' ||
+        attempt.status === 'NEEDS_REWORK' ||
+        attempt.status === 'BLOCKED'
+      ),
     )
     .slice(-3) // most recent up to 3
   if (priorOfThisStage.length === 0) return ''
@@ -3609,6 +3620,9 @@ function buildPriorAttemptLearnings(state: LoopState, currentStageKey: string): 
     const failedReceipt = [...receipts].reverse().find(r => r.passed === false || (typeof r.exit_code === 'number' && r.exit_code !== 0))
     if (failedReceipt) {
       const cmd = typeof failedReceipt.command === 'string' ? failedReceipt.command : '(unknown command)'
+      // M70.1 — Surface the no-tests-ran reason so the agent learns its
+      // -Dtest filter was wrong, not that the test code itself failed.
+      const noTestsReason = typeof failedReceipt.no_tests_ran_reason === 'string' ? failedReceipt.no_tests_ran_reason : null
       // Extract a meaningful chunk of stderr/stdout — top 600 chars of the most error-y lines.
       const stdout = typeof failedReceipt.stdout_excerpt === 'string' ? failedReceipt.stdout_excerpt : ''
       const errorLines = stdout
@@ -3616,8 +3630,38 @@ function buildPriorAttemptLearnings(state: LoopState, currentStageKey: string): 
         .filter(l => /error|fail|exception|\[ERROR\]/i.test(l))
         .slice(0, 6)
         .join('\n')
-      lines.push(`- Last verification: ${cmd} → FAILED`)
-      if (errorLines) lines.push(`  Top error lines:\n${errorLines.split('\n').map(l => `    ${l}`).join('\n')}`)
+      if (noTestsReason) {
+        lines.push(`- Last verification: ${cmd} → FAILED (${noTestsReason})`)
+        lines.push(`  ⚠ The test filter matched ZERO methods. Either fix the filter to match real method names, or write the test first.`)
+      } else {
+        lines.push(`- Last verification: ${cmd} → FAILED`)
+        if (errorLines) lines.push(`  Top error lines:\n${errorLines.split('\n').map(l => `    ${l}`).join('\n')}`)
+      }
+    }
+
+    // M70.2 — Surface formal-verifier block reasons. The orchestrator's
+    // verificationReceiptsFrom strips formal-kind receipts from
+    // attempt.verificationReceipts (M68.1) to avoid poisoning cross-stage
+    // threading. But the raw response correlation still holds them, and
+    // the next attempt urgently needs to know WHY the gate blocked —
+    // otherwise it repeats the same finish without a real receipt.
+    const rawReceipts = Array.isArray(correlation.verificationReceipts) ? correlation.verificationReceipts as Array<Record<string, unknown>> : []
+    const formalBlock = [...rawReceipts].reverse().find(r =>
+      r.verification_kind === 'formal' && r.passed === false,
+    )
+    if (formalBlock) {
+      const explanation = typeof formalBlock.explanation === 'string' ? formalBlock.explanation : ''
+      const recommendations = Array.isArray(formalBlock.recommendations)
+        ? (formalBlock.recommendations as unknown[]).filter((x): x is string => typeof x === 'string')
+        : []
+      lines.push(`- Formal verifier: BLOCKED`)
+      if (explanation) lines.push(`  Why: ${explanation.slice(0, 240)}`)
+      if (recommendations.length > 0) {
+        lines.push(`  How to fix:`)
+        for (const rec of recommendations.slice(0, 2)) {
+          lines.push(`    - ${rec.slice(0, 220)}`)
+        }
+      }
     }
 
     const block = lines.join('\n')
