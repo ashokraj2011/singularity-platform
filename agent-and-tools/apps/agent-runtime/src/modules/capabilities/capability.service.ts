@@ -8,6 +8,11 @@ import {
 } from "@agentandtools/shared";
 import { summariseSymbol, fileSnippetFor } from "../../lib/llm/summarise";
 import { syncIamCapabilityReference } from "./iam-capability-reference";
+// M61 Slice C — Auto-promote CLAUDE.md / AGENTS.md into the
+// CapabilityWorldModel.agentRules JSONB so the prompt-composer's
+// CODE_AGENT_RULES layer (Slice F) can render them directly without
+// waiting for human review of the corresponding CapabilityLearningCandidate.
+import { upsertWorldModel } from "./world-model.service";
 
 const BOOTSTRAP_AGENT_CATALOG = [
   {
@@ -416,6 +421,32 @@ export const capabilityService = {
       }
 
       const architectureDiagram = buildCapabilityArchitectureDiagram(capability, input, generatedAgents, discovered, repositoryProfiles);
+
+      // M61 Slice C — Seed CapabilityWorldModel with the privileged
+      // agent-rule files (CLAUDE.md / AGENTS.md / .cursor/rules etc.)
+      // plus best-guess primary language + build system pulled from
+      // the repositoryProfiles. The Slice D wizard later overrides
+      // language/buildSystem if the operator confirms different values.
+      //
+      // Best-effort: a failure here must not break the whole bootstrap.
+      // Discovered rule docs still live in the CapabilityLearningCandidate
+      // table, so an operator can recover by approving them manually.
+      try {
+        const agentRules = extractAgentRules(discovered);
+        const primaryLanguage = pickPrimaryLanguage(repositoryProfiles);
+        const buildSystem = pickPrimaryBuildSystem(repositoryProfiles);
+        if (agentRules.length > 0 || primaryLanguage || buildSystem) {
+          await upsertWorldModel({
+            capabilityId: capability.id,
+            agentRules,
+            primaryLanguage,
+            buildSystem,
+          });
+        }
+      } catch (err) {
+        warnings.push(`World-model seed skipped: ${(err as Error).message}`);
+      }
+
       const candidates = [
         buildArchitectureDiagramCandidate(capability.name, architectureDiagram),
         ...buildPlatformInventoryCandidates(repositoryProfiles),
@@ -1887,6 +1918,121 @@ function isDiscoveryPath(p: string): boolean {
   if (/(\.codex\/skills\/|\/)?SKILL\.md$/i.test(normalized)) return true;
   if (/^docs\/.+\.md$/i.test(normalized)) return true;
   return false;
+}
+
+/**
+ * M61 Slice C — Privileged "agent rule" paths.
+ *
+ * A subset of isDiscoveryPath that captures files explicitly authored
+ * for agents (Claude Code, Cursor, Copilot, Windsurf, generic AGENTS.md).
+ * These are auto-promoted into CapabilityWorldModel.agentRules at
+ * bootstrap and surface as ambient system context via the Slice F
+ * CODE_AGENT_RULES prompt layer — they bypass the human-gated
+ * CapabilityLearningCandidate review path that arbitrary docs go through.
+ *
+ * Conservative on purpose: a stray docs/installation.md is not an
+ * "agent rule" even though it matches isDiscoveryPath. The litmus test
+ * is "would I want this prepended to the system prompt verbatim?"
+ */
+export function isAgentRulePath(p: string): boolean {
+  const normalized = p.replace(/\\/g, "/");
+  const name = normalized.split("/").pop() ?? normalized;
+  if (/^(CLAUDE|AGENTS)\.md$/i.test(name)) return true;
+  if (normalized === ".github/copilot-instructions.md") return true;
+  if (normalized.startsWith(".cursor/rules/")) return true;
+  if (name === ".cursorrules" || name === ".windsurfrules") return true;
+  if (normalized.startsWith(".claude/") && /\.(md|txt)$/i.test(name)) return true;
+  if (/(\.codex\/skills\/|\/)?SKILL\.md$/i.test(normalized)) return true;
+  return false;
+}
+
+/**
+ * M61 Slice C — Pull AgentRule[] out of the discovered-docs bag.
+ *
+ * We do NOT filter `discovered` in place — the rule docs continue to
+ * flow into buildLearningCandidates / candidates so an operator who
+ * wants to manage them via the existing review UI still can. The
+ * world-model copy is the privileged, auto-trusted ambient context.
+ *
+ * Each rule's content is capped here at 32KB. Anything larger is
+ * truncated with a trailing "[truncated]" marker — these files are
+ * meant to be terse instructions; multi-megabyte rule files are
+ * almost certainly a misfiling that would blow up the system prompt.
+ */
+const AGENT_RULE_CONTENT_CAP = 32 * 1024;
+
+export function extractAgentRules(discovered: DiscoveryDoc[]): Array<{ source: string; content: string; sha256: string }> {
+  const out: Array<{ source: string; content: string; sha256: string }> = [];
+  const seen = new Set<string>();
+  for (const doc of discovered) {
+    const path = doc.path ?? doc.title;
+    if (!path || !isAgentRulePath(path)) continue;
+    // Deduplicate by source path — a doc-link and a local-file can
+    // surface the same CLAUDE.md from two angles.
+    if (seen.has(path)) continue;
+    seen.add(path);
+    const raw = (doc.content ?? "").trim();
+    if (!raw) continue;
+    const content = raw.length > AGENT_RULE_CONTENT_CAP
+      ? `${raw.slice(0, AGENT_RULE_CONTENT_CAP).trimEnd()}\n\n[truncated — original ${raw.length} chars]`
+      : raw;
+    out.push({
+      source: path,
+      content,
+      sha256: sha256(content),
+    });
+  }
+  return out;
+}
+
+/**
+ * M61 Slice C — Best-guess primary language from RepositoryProfile[].
+ *
+ * Sums file counts across all repos by language and picks the largest.
+ * Returns null when no profile reported anything — the Slice D wizard
+ * gives the operator a chance to confirm.
+ */
+export function pickPrimaryLanguage(profiles: RepositoryProfile[]): string | null {
+  const totals = new Map<string, number>();
+  for (const p of profiles ?? []) {
+    for (const { language, files } of p.languages ?? []) {
+      if (!language) continue;
+      totals.set(language, (totals.get(language) ?? 0) + (files ?? 0));
+    }
+  }
+  if (totals.size === 0) return null;
+  let best: { lang: string; n: number } | null = null;
+  for (const [lang, n] of totals) {
+    if (!best || n > best.n) best = { lang, n };
+  }
+  return best?.lang ?? null;
+}
+
+/**
+ * M61 Slice C — Best-guess build system from RepositoryProfile[].
+ *
+ * Uses a priority order tuned to "which one drives the verifier" —
+ * pnpm beats npm beats yarn (since pnpm-workspace.yaml fully determines
+ * the workspace), Gradle/Maven for JVM, Cargo for Rust, etc.
+ */
+const BUILD_SYSTEM_PRIORITY = [
+  "bazel", "pnpm", "gradle", "maven", "cargo", "poetry", "go-modules",
+  "yarn", "npm", "make", "pip",
+];
+
+export function pickPrimaryBuildSystem(profiles: RepositoryProfile[]): string | null {
+  const seen = new Set<string>();
+  for (const p of profiles ?? []) {
+    for (const tool of p.buildTools ?? []) {
+      if (tool) seen.add(tool.toLowerCase());
+    }
+  }
+  for (const candidate of BUILD_SYSTEM_PRIORITY) {
+    if (seen.has(candidate)) return candidate;
+  }
+  // Fallback: first reported tool, if any.
+  const first = Array.from(seen)[0];
+  return first ?? null;
 }
 
 function selectBootstrapAgents(input: BootstrapInput): BootstrapAgentCatalogItem[] {
