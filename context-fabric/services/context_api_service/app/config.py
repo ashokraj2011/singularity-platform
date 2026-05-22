@@ -30,6 +30,20 @@ class Settings(BaseSettings):
 
     chat_respond_model_alias: str = ""
 
+    # M61 Wire 2 — agent-runtime base URL. context-fabric fetches the
+    # capability's CapabilityWorldModel from
+    #   GET ${agent_runtime_url}/capabilities/:id/world-model
+    # at /execute time and passes the result through to prompt-composer
+    # as ComposeInput.worldModel. Empty string disables the fetch
+    # silently (older deploys with no agent-runtime peer still work —
+    # they just don't get CODE_AGENT_RULES / CODE_WORLD_MODEL layers).
+    agent_runtime_url: str = ""
+    # Soft cap on world-model fetch latency. The default is short
+    # because the fetch sits on the critical path of /execute; if
+    # agent-runtime is slow we'd rather drop the layers than block
+    # the whole workflow.
+    agent_runtime_world_model_timeout_sec: float = 2.0
+
     class Config:
         env_prefix = ""
         extra = "ignore"
@@ -38,6 +52,8 @@ class Settings(BaseSettings):
         super().__init__(**kwargs)
         self.mcp_default_base_url = os.getenv("MCP_SERVER_URL", self.mcp_default_base_url)
         self.mcp_default_bearer_token = os.getenv("MCP_BEARER_TOKEN", self.mcp_default_bearer_token)
+        # M61 Wire 2 — same env-fallback pattern as the MCP block above.
+        self.agent_runtime_url = os.getenv("AGENT_RUNTIME_URL", self.agent_runtime_url)
 
 
 settings = Settings()

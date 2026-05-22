@@ -523,6 +523,14 @@ services:
       MCP_DEFAULT_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       MCP_DEFAULT_SERVER_ID: ${MCP_DEFAULT_SERVER_ID:-local-default-mcp}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
+      # M61 Wire 2 — agent-runtime is the source of truth for the
+      # CapabilityWorldModel row. context-api fetches it (GET
+      # /capabilities/:id/world-model) at /execute time and forwards
+      # it to prompt-composer so the Slice F renderers can emit
+      # CODE_AGENT_RULES + CODE_WORLD_MODEL layers. Empty string
+      # disables the fetch silently — useful for ops who haven't
+      # bootstrapped any capability under M61 yet.
+      AGENT_RUNTIME_URL: ${AGENT_RUNTIME_URL:-http://agent-runtime:3003}
     ports:
       - "8000:8000"
     depends_on:

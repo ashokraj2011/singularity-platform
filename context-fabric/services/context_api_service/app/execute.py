@@ -262,6 +262,54 @@ async def _build_code_context_package(
         return None, f"mcp.code_context.skipped: unexpected error {exc!s}"
 
 
+async def _fetch_capability_world_model(
+    agent_runtime_url: str,
+    capability_id: str,
+    timeout_sec: float,
+) -> tuple[Optional[dict], Optional[str]]:
+    """
+    M61 Wire 2 — GET ${agent_runtime_url}/capabilities/:id/world-model.
+
+    Returns (world_model_dict, warning). The body shape matches
+    ComposeInput.worldModel exactly (the prompt-composer Slice F
+    renderers consume it unmodified) so callers can forward without
+    transformation.
+
+    Best-effort: any failure (404 / network / timeout) returns
+    (None, warning_text). Compose then proceeds without the
+    CODE_AGENT_RULES / CODE_WORLD_MODEL layers — those layers are
+    additive context, not load-bearing for the workflow.
+
+    Never raises.
+    """
+    if not agent_runtime_url or not capability_id:
+        return None, None
+    url = f"{agent_runtime_url.rstrip('/')}/capabilities/{capability_id}/world-model"
+    try:
+        async with httpx.AsyncClient(timeout=timeout_sec) as client:
+            resp = await client.get(url)
+        if resp.status_code == 404:
+            # The capability exists but no world-model row has been
+            # seeded yet (pre-M61 bootstrap, or Phase 1 worker still
+            # running). Not a failure.
+            return None, "world_model.skipped: not yet generated (404)"
+        resp.raise_for_status()
+        body = resp.json()
+        # agent-runtime wraps responses in {success, data, requestId}.
+        # The view we want lives on `data`; tolerate both shapes for
+        # forward-compat (older test fixtures return the view directly).
+        wm = body.get("data") if isinstance(body, dict) and "data" in body else body
+        if not isinstance(wm, dict) or not wm.get("capabilityId"):
+            return None, "world_model.skipped: malformed response (missing capabilityId)"
+        return wm, None
+    except httpx.HTTPStatusError as exc:
+        return None, f"world_model.skipped: HTTP {exc.response.status_code} from {url}"
+    except (httpx.RequestError, asyncio.TimeoutError) as exc:
+        return None, f"world_model.skipped: transport error {exc!s}"
+    except Exception as exc:  # pylint: disable=broad-except
+        return None, f"world_model.skipped: unexpected error {exc!s}"
+
+
 async def _get(url: str, params: Optional[dict] = None, timeout: float = 30.0,
                headers: Optional[dict] = None) -> dict:
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -963,6 +1011,32 @@ async def execute(req: ExecuteRequest):
         except Exception as exc:  # pylint: disable=broad-except
             composer_warnings.append(f"mcp.code_context.skipped: resolve_mcp_record error {exc!s}")
 
+    # M61 Wire 2 — Fetch the capability's CapabilityWorldModel from
+    # agent-runtime and pass it through to prompt-composer as
+    # ComposeInput.worldModel. The Slice F renderers emit
+    # CODE_AGENT_RULES + CODE_WORLD_MODEL layers above the M52
+    # CODE_* layers so the agent sees CLAUDE.md / AGENTS.md, test
+    # commands, README summary, and the top-level package map as
+    # ambient context before any tool calls.
+    #
+    # Unlike the code-context budgeter (Dev stages only), the world
+    # model is useful for every stage that touches the capability —
+    # Story Intake reads agent rules, Plan reads the README summary,
+    # etc. So we fetch unconditionally when agent_runtime_url is set
+    # and we have a capability_id.
+    world_model: Optional[dict] = None
+    if settings.agent_runtime_url and req.run_context.capability_id:
+        try:
+            world_model, wm_warning = await _fetch_capability_world_model(
+                settings.agent_runtime_url,
+                req.run_context.capability_id,
+                settings.agent_runtime_world_model_timeout_sec,
+            )
+            if wm_warning:
+                composer_warnings.append(wm_warning)
+        except Exception as exc:  # pylint: disable=broad-except
+            composer_warnings.append(f"world_model.skipped: unexpected error {exc!s}")
+
     if req.run_context.agent_template_id:
         try:
             compose_payload = {
@@ -997,6 +1071,13 @@ async def execute(req: ExecuteRequest):
                 # instead of the legacy monolithic CODE_CONTEXT layer.
                 # Optional: absent → composer falls back to today's path.
                 **({"codeContextPackage": code_context_package} if code_context_package else {}),
+                # M61 Wire 2 — When agent-runtime returned a world model
+                # for the capability, attach it so Prompt Composer emits
+                # CODE_AGENT_RULES (priority 305) + CODE_WORLD_MODEL
+                # (308) above the M52 CODE_* layers. Optional: absent →
+                # composer skips those two layers and the agent reverts
+                # to discovering CLAUDE.md / test commands per run.
+                **({"worldModel": world_model} if world_model else {}),
                 "previewOnly": True,
             }
             composed = await _post(
