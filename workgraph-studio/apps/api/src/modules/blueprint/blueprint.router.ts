@@ -4327,11 +4327,36 @@ export function extractLlmOpenQuestions(response: string, stage: LoopStageDefini
       .replace(/^\[[ xX]\]\s+/, '')
       .trim()
     if (!cleaned || cleaned.length < 12) continue
-    if (/^(none|n\/a|no open questions)/i.test(cleaned)) continue
+    // M69 follow-up — Strip leading markdown emphasis BEFORE the "none"
+    // sentinel check. Models emit "**None.** ..." or "*None* ..." or
+    // even "_No clarifications needed_ ..." as a header-style negative
+    // answer; the previous regex only matched bare `none` and let the
+    // emphasised forms through, producing fake required questions that
+    // blocked the workflow at Story Intake every time. Pattern strips
+    // any combination of `*` / `_` / `~` at the head (markdown's three
+    // emphasis chars).
+    const stripped = cleaned.replace(/^[*_~`]+\s*/, '').trim()
+    // M69 — Broadened sentinel match. Catches the actual phrases models
+    // emit when they decided no clarification was needed:
+    //   **None.** ...   → after strip: "None. ..."
+    //   No clarifications needed.
+    //   No questions at this time.
+    //   The goal statement and stakeholder intent are sufficiently clear...
+    //   All ambiguities deferred to <Stage>.
+    if (/^(none|n\/a|no\b|nothing\b|all\b)/i.test(stripped)) continue
+    if (/^(the\s+(goal|story|spec|requirements|stakeholder)|all\s+(ambiguities|questions|clarifications))/i.test(stripped)) continue
+    if (/(sufficiently\s+clear|no\s+open\s+questions|no\s+clarifications?\s+(are\s+)?needed|deferred\s+to\s+\w+\s+stage)/i.test(stripped)) continue
     // M57 — Final safety net: require at least one alphabetic chunk that
     // looks like a real word (>=4 letters). Pure punctuation/pipes that
     // slip past the table-syntax checks won't have one.
     if (!/[a-zA-Z]{4,}/.test(cleaned)) continue
+    // M69 — Final shape gate: a real clarification question almost
+    // always contains either a `?` or one of the imperative verbs
+    // ("should", "must", "what", "which", "how", "when"). Without one,
+    // it's a statement masquerading as a question. Falls through to
+    // accept-anything when the model uses indirect phrasing on a real
+    // question, so keep this generous.
+    if (!/\?/.test(stripped) && !/\b(should|must|what|which|how|when|where|who|why|can|may|does|do|is|are|will|would|specify|confirm|clarify|decide|choose)\b/i.test(stripped)) continue
     const parsed = classifyOpenQuestion(cleaned)
     const index = questions.length + 1
     questions.push({
