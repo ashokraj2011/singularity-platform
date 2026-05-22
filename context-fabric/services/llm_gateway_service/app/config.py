@@ -31,9 +31,12 @@ class Settings(BaseSettings):
     # Request timeout for upstream provider calls (seconds).
     upstream_timeout_sec: int = 240
 
-    # Upstream provider 429 handling. A single retry is enough for TPM bucket
-    # resets without hiding persistent quota/capacity problems.
-    upstream_rate_limit_retries: int = 1
+    # Upstream provider transient-failure handling. Retries fire for
+    # 429 (rate limit), 503 (upstream down), and 529 (Anthropic
+    # overloaded_error). Default 2 retries (3 total attempts) cleanly
+    # absorbs ~2 min of upstream wobble; pure latency on healthy calls
+    # is unchanged since no retries fire when status==200.
+    upstream_rate_limit_retries: int = 2
     upstream_rate_limit_retry_delay_sec: float = 65.0
     upstream_rate_limit_max_sleep_sec: float = 75.0
 

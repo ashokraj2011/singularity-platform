@@ -112,12 +112,25 @@ async def respond(
         "anthropic-version": settings.anthropic_version,
     }
     start = time.time()
+    # M62 — Retryable upstream status codes. Originally only 429 (rate
+    # limit) was retried. Added 529 (Anthropic's overloaded_error —
+    # transient capacity shedding, distinct from rate limiting) and
+    # 503 (generic upstream-down) after operator hit a 529 mid-workflow
+    # which surfaced as MCP_INVOKE_FAILED → send-back recommendation
+    # in the workbench. Retry-After is honored if the provider sent one;
+    # otherwise we back off with the configured floor.
+    RETRYABLE_STATUS = {429, 503, 529}
     async with httpx.AsyncClient(timeout=settings.upstream_timeout_sec) as client:
         attempts = max(0, settings.upstream_rate_limit_retries) + 1
         for attempt in range(attempts):
             res = await client.post(url, headers=headers, json=body)
-            if res.status_code != 429 or attempt >= attempts - 1:
+            if res.status_code not in RETRYABLE_STATUS or attempt >= attempts - 1:
                 break
+            # 529 / 503 typically come WITHOUT a Retry-After header.
+            # _retry_after_seconds already falls back to the configured
+            # rate-limit delay (a reasonable backoff for overload — gives
+            # the upstream pool time to recover) so we get sensible
+            # behaviour for both 429 (with header) and 529/503 (without).
             delay = min(settings.upstream_rate_limit_max_sleep_sec, _retry_after_seconds(res))
             await asyncio.sleep(delay)
     if res.status_code != 200:
