@@ -5185,11 +5185,27 @@ button.focus-badge.link:hover {
 .loop-theater__row--agent { justify-content: flex-end; }
 .loop-theater__row--system { justify-content: center; }
 .loop-theater__bubble {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 12px; border-radius: 14px;
+  display: inline-flex; flex-direction: column; gap: 3px;
+  padding: 8px 14px; border-radius: 14px;
   max-width: 80%;
-  font-size: 12px; line-height: 1.4;
+  font-size: 13px; line-height: 1.45;
   border: 1px solid transparent;
+}
+.loop-theater__bubble-text {
+  display: flex; align-items: center; gap: 6px;
+  font-weight: 400;
+}
+.loop-theater__bubble-meta {
+  font: 10px/1 ui-monospace, monospace;
+  color: var(--muted-low, #7c87a3);
+  opacity: 0.6;
+  letter-spacing: 0.3px;
+}
+.loop-theater__bubble-meta-inline {
+  font: 10px/1 ui-monospace, monospace;
+  color: var(--muted-low, #7c87a3);
+  opacity: 0.6;
+  margin-left: 6px;
 }
 .loop-theater__bubble--llm {
   background: rgba(140,170,230,0.12);

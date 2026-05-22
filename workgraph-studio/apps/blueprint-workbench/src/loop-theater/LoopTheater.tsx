@@ -11,7 +11,7 @@
  * URL. Replaces the normal workbench shell for that session.
  */
 import { useMemo } from 'react'
-import { Activity, Brain, Bot, CheckCircle2, GitCommit, Sparkles, Wrench, XCircle } from 'lucide-react'
+import { Activity, Brain, Bot, CheckCircle2, GitCommit, Wrench, XCircle } from 'lucide-react'
 import { useLoopEventStream } from './useLoopEventStream'
 import type { SceneAction } from './eventToScene'
 
@@ -105,45 +105,56 @@ function SceneRow({ scene }: { scene: SceneAction }) {
       return (
         <div className="loop-theater__row loop-theater__row--llm">
           <div className="loop-theater__bubble loop-theater__bubble--llm">
-            <Sparkles size={12} /> {scene.preview}
-            {scene.tokens && (
-              <span className="loop-theater__tokens">
+            <div className="loop-theater__bubble-text">{scene.preview}</div>
+            {scene.tokens && (scene.tokens.input > 0 || scene.tokens.output > 0) && (
+              <div className="loop-theater__bubble-meta">
                 {scene.tokens.input}in / {scene.tokens.output}out
                 {scene.tokens.cost !== undefined && ` · $${scene.tokens.cost.toFixed(4)}`}
-              </span>
+              </div>
             )}
           </div>
         </div>
       )
     case 'tool-call':
+      // The narrative IS the message ("Let me read Operator.java"). The
+      // tool name moves to a small chip below so a debugger can still
+      // see what fired without making the bubble look like a function
+      // call signature.
       return (
         <div className="loop-theater__row loop-theater__row--agent">
           <div className="loop-theater__bubble loop-theater__bubble--call">
-            <Wrench size={12} /> <strong>{scene.toolName}</strong>
-            {scene.argPreview && <span className="loop-theater__args">  {scene.argPreview}</span>}
+            <div className="loop-theater__bubble-text">
+              <Wrench size={11} /> {scene.argPreview || `Using ${scene.toolName}`}
+            </div>
+            <div className="loop-theater__bubble-meta">{scene.toolName}</div>
           </div>
         </div>
       )
-    case 'tool-result':
+    case 'tool-result': {
+      const isOk = scene.passed === true || scene.success === true
+      const isFail = scene.passed === false || scene.success === false
       return (
         <div className="loop-theater__row loop-theater__row--agent">
-          <div className="loop-theater__bubble loop-theater__bubble--result">
-            {scene.passed === true || scene.success === true ? (
-              <CheckCircle2 size={12} color="#86c79f" />
-            ) : scene.passed === false || scene.success === false ? (
-              <XCircle size={12} color="#e57373" />
-            ) : (
-              <CheckCircle2 size={12} color="#7c87a3" />
-            )}{' '}
-            {scene.toolName} {scene.summary && <span className="loop-theater__args">→ {scene.summary}</span>}
+          <div className={`loop-theater__bubble loop-theater__bubble--result${isFail ? ' fail' : ''}`}>
+            <div className="loop-theater__bubble-text">
+              {isOk
+                ? <CheckCircle2 size={11} color="#86c79f" />
+                : isFail
+                  ? <XCircle size={11} color="#e57373" />
+                  : <CheckCircle2 size={11} color="#7c87a3" />}{' '}
+              {scene.summary || 'Done'}
+            </div>
           </div>
         </div>
       )
+    }
     case 'phase-change':
+      // Phase changes mark beats in the conversation. Lighter touch so
+      // they don't dominate the eye like a tool result.
       return (
         <div className="loop-theater__row loop-theater__row--system">
           <div className="loop-theater__bubble loop-theater__bubble--phase">
-            phase → {scene.phase}
+            entering {scene.phase.toLowerCase()} phase
           </div>
         </div>
       )
@@ -151,12 +162,11 @@ function SceneRow({ scene }: { scene: SceneAction }) {
       return (
         <div className="loop-theater__row loop-theater__row--system">
           <div className="loop-theater__bubble loop-theater__bubble--code">
-            <GitCommit size={12} /> code committed
+            <GitCommit size={12} /> {scene.paths.length > 0
+              ? `Committed ${scene.paths.length} file${scene.paths.length === 1 ? '' : 's'}`
+              : 'Committed the change'}
             {scene.commitSha && (
-              <span className="loop-theater__args">  {scene.commitSha.slice(0, 8)}</span>
-            )}
-            {scene.paths.length > 0 && (
-              <span className="loop-theater__args">  ({scene.paths.length} file{scene.paths.length === 1 ? '' : 's'})</span>
+              <span className="loop-theater__bubble-meta-inline">{scene.commitSha.slice(0, 8)}</span>
             )}
           </div>
         </div>
@@ -165,8 +175,10 @@ function SceneRow({ scene }: { scene: SceneAction }) {
       return (
         <div className="loop-theater__row loop-theater__row--system">
           <div className={`loop-theater__bubble loop-theater__bubble--finish ${scene.passed ? 'ok' : 'fail'}`}>
-            {scene.passed ? <CheckCircle2 size={12} /> : <XCircle size={12} />} {scene.passed ? 'finished' : 'blocked'}
-            {scene.reason && <span className="loop-theater__args">  {scene.reason}</span>}
+            {scene.passed ? <CheckCircle2 size={12} /> : <XCircle size={12} />}{' '}
+            {scene.passed
+              ? 'Finished — the change is in'
+              : `Blocked${scene.reason ? `: ${scene.reason}` : ''}`}
           </div>
         </div>
       )
