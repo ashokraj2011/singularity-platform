@@ -99,18 +99,49 @@ def test_qa_stage_excludes_mutation_tools():
     assert WORKFLOW_GROUNDING_TOOLS.issubset(n), f"QA missing grounding tools: {WORKFLOW_GROUNDING_TOOLS - n}"
 
 
-def test_non_code_stage_gets_grounding_only():
-    """PLAN / DESIGN stages — no verification, no mutation, only research tools."""
+RESEARCH_ONLY_TOOL_NAMES = {
+    "read_file", "search_code", "index_workspace",
+    "find_symbol", "get_symbol", "repo_map",
+}
+
+# M55 — path-walking / enumeration tools that should NOT be exposed to
+# non-code stages because those stages run at the platform sandbox root
+# and the tools invite path hallucination.
+PATH_WALKER_TOOL_NAMES = {
+    "find_files", "list_directory", "list_indexed_files",
+    "get_ast_slice", "get_dependencies", "file_stats", "grep_lines",
+}
+
+
+def test_non_code_stage_gets_research_only_subset():
+    """STORY_INTAKE / PLAN / DESIGN stages — tight research subset.
+    Excludes path-walking tools that caused trace-time hallucinations
+    (agent inventing `org/example/model/...` subdirs that don't exist)."""
     tools = _mandatory_local_tools_for_request(make_req(agent_role="ARCHITECT", task="design"))
     n = names(tools)
+    # Still excluded: verification, mutation, review (M43 baseline)
     assert n.isdisjoint(MUTATION_TOOL_NAMES)
     assert n.isdisjoint(VERIFY_TOOL_NAMES)
     assert n.isdisjoint(REVIEW_TOOL_NAMES)
-    # But base read/AST tools are always present
-    assert "read_file" in n
-    assert "search_code" in n
-    assert "index_workspace" in n
-    assert "find_symbol" in n
+    # The research-only set is EXACTLY these six tools.
+    assert n == RESEARCH_ONLY_TOOL_NAMES, (
+        f"non-code stage should expose exactly the research-only set; "
+        f"diff: extra={n - RESEARCH_ONLY_TOOL_NAMES}, missing={RESEARCH_ONLY_TOOL_NAMES - n}"
+    )
+    # Spot-check the explicit exclusions that were causing the bug.
+    assert n.isdisjoint(PATH_WALKER_TOOL_NAMES), (
+        f"path-walking tools must not be exposed to non-code stages "
+        f"(would re-introduce M55 hallucination): {n & PATH_WALKER_TOOL_NAMES}"
+    )
+
+
+def test_non_code_stage_classifier_covers_product_owner_and_architect():
+    """STORY_INTAKE (PRODUCT_OWNER) and DESIGN (ARCHITECT) both classify as
+    non-code. Both should get the tight research subset."""
+    for role in ("PRODUCT_OWNER", "ARCHITECT"):
+        tools = _mandatory_local_tools_for_request(make_req(agent_role=role))
+        n = names(tools)
+        assert n == RESEARCH_ONLY_TOOL_NAMES, f"{role} should get research-only set"
 
 
 def test_m43_tools_present_for_all_code_stages():

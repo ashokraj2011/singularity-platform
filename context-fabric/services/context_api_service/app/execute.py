@@ -479,8 +479,27 @@ def _mandatory_local_tools_for_request(req: ExecuteRequest) -> list[dict[str, An
     ]
 
     if not (is_dev or is_qa):
-        # Non-code stage (PLAN / DESIGN / etc.) — read-only research only
-        return base
+        # M55 — Non-code stages (STORY_INTAKE / PLAN / DESIGN) get a tighter
+        # "research-only" subset. Rationale: these stages run at the
+        # /workspace platform root (not inside a work-item checkout, see
+        # blueprint.router.ts:2918 — work_item_id is omitted for non-Dev),
+        # so any tool that walks paths invites the agent to invent ones
+        # that don't exist on disk (the most recent trace: agent did
+        # find_files → inferred `org/example/model/` and `org/example/
+        # service/` from convention → ENOENT on read_file). Stripping the
+        # path-enumeration tools eliminates the whole class of error;
+        # repo_map gives the topology overview, find_symbol+get_symbol
+        # give grounded code access, search_code handles textual hunts,
+        # read_file remains for README/config inspection.
+        research_only_names = {
+            "read_file",
+            "search_code",
+            "index_workspace",
+            "find_symbol",
+            "get_symbol",
+            "repo_map",
+        }
+        return [t for t in base if t.get("name") in research_only_names]
 
     # ── verification block — exposed to both DEV and QA ──
     verification = [
