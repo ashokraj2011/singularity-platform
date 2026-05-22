@@ -257,12 +257,31 @@ const verdictSchema = z.object({
   answers: z.array(decisionAnswerSchema).max(100).optional(),
 })
 
+// M60 Slice 2 — line-anchored operator annotations on send-back.
+// Optional sibling to `requiredChanges` (free text). When present, each
+// entry pins reviewer feedback to a specific file + line span on the
+// captured diff. They are persisted on the send-back review event and
+// fed back into the next attempt's task via the
+// `priorAttemptAnnotations` template var (see buildLoopStageVars).
+//
+// Exported for tests in apps/api/test/send-back-annotations.test.ts.
+export const sendBackAnnotationSchema = z.object({
+  file: z.string().min(1).max(500),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive().optional(),
+  comment: z.string().min(1).max(800),
+  severity: z.enum(['must-fix', 'suggestion', 'question']).optional(),
+})
+
 const sendBackSchema = z.object({
   targetStageKey: z.string().min(1).max(80),
   reason: z.string().min(3),
   requiredChanges: z.string().optional(),
   blockingQuestions: z.array(z.string()).max(20).optional(),
+  annotations: z.array(sendBackAnnotationSchema).max(50).optional(),
 })
+
+type SendBackAnnotation = z.infer<typeof sendBackAnnotationSchema>
 
 const stageApprovalSchema = z.object({
   decision: z.enum(['approved', 'rejected']),
@@ -2767,6 +2786,11 @@ async function sendStageBack(
         reason: body.reason,
         requiredChanges: body.requiredChanges,
         blockingQuestions: body.blockingQuestions ?? [],
+        // M60 Slice 2 — line-anchored annotations are persisted on the
+        // review event payload so they survive snapshot/replay and can
+        // be read back by buildLoopStageVars when assembling the next
+        // attempt's task.
+        annotations: body.annotations ?? [],
       }),
       // A second event so the UI can show what was cleared. Distinct type
       // from SEND_BACK keeps the dual-purpose nature explicit.
@@ -2816,6 +2840,10 @@ async function sendStageBack(
     reason: body.reason,
     requiredChanges: body.requiredChanges,
     blockingQuestions: body.blockingQuestions ?? [],
+    // M60 Slice 2 — annotation count only in audit (the structured
+    // payload lives on the review event); ledger consumers can join
+    // back to the SEND_BACK review event by attemptId.
+    annotationsCount: body.annotations?.length ?? 0,
     cleanedTargetAttempts: targetAttemptsToRemove.length,
     cleanedTargetArtifacts: targetArtifactIdsToRemove.length,
     clearedTargetChatThread: targetChatHadMessages,
@@ -3367,6 +3395,10 @@ function buildLoopStageVars(
   // done and avoid edits that already failed. Capped so it doesn't bloat
   // the prompt the way verbatim transcripts would.
   const priorAttemptLearnings = buildPriorAttemptLearnings(state, stage.key)
+  // M60 Slice 2 — pull line-anchored annotations from the most recent
+  // SEND_BACK whose targetStageKey matches this stage. Empty string when
+  // the operator didn't attach any.
+  const priorAttemptAnnotations = buildPriorAttemptAnnotations(state, stage.key)
   const implementationDirective = isDeveloperStage
     ? [
       'Use the approved artifact context as the implementation backlog for this attempt.',
@@ -3420,6 +3452,12 @@ function buildLoopStageVars(
     // M46.C — distilled learnings from prior attempts of the same stage.
     // Empty string when this is the first attempt.
     priorAttemptLearnings,
+    // M60 Slice 2 — line-anchored reviewer annotations from the most
+    // recent operator send-back targeting this stage. Empty string when
+    // none. Rendered as a structured "## Reviewer line annotations"
+    // block; loop-developer template can opt in by referencing
+    // {{priorAttemptAnnotations}}.
+    priorAttemptAnnotations,
   }
 }
 
@@ -3497,6 +3535,71 @@ function buildPriorAttemptLearnings(state: LoopState, currentStageKey: string): 
   return blocks.length > 0
     ? `Prior attempt learnings (use these to skip duplicate exploration AND avoid repeating mistakes):\n\n${blocks.join('\n\n')}`
     : ''
+}
+
+/**
+ * M60 Slice 2 — Render line-anchored operator annotations from the most
+ * recent SEND_BACK whose targetStageKey matches the current stage.
+ *
+ * The annotations are persisted on the review event payload by
+ * `sendStageBack`. We walk the reviewEvents newest-first to find the
+ * most recent send-back into this stage; if it has an annotations array,
+ * format each entry into the structured block below. Older send-backs
+ * are ignored — once a new attempt produces another diff, line numbers
+ * from older reviews are stale and would mislead the agent.
+ *
+ * Output shape (when present):
+ *
+ *   ## Reviewer line annotations (must address before re-running)
+ *   - path/to/File.java:142-148  (must-fix)
+ *     "comment text"
+ *   - path/to/Other.java:55  (suggestion)
+ *     "comment text"
+ *
+ * Returns '' when no annotations are attached.
+ */
+export function buildPriorAttemptAnnotations(state: LoopState, currentStageKey: string): string {
+  // Newest-first scan so we pick the latest review for this stage.
+  const event = [...state.reviewEvents]
+    .reverse()
+    .find(ev =>
+      (ev.type === 'SEND_BACK' || ev.type === 'AUTO_SEND_BACK') &&
+      isRecord(ev.payload) &&
+      ev.payload.targetStageKey === currentStageKey,
+    )
+  if (!event || !isRecord(event.payload)) return ''
+  const raw = event.payload.annotations
+  if (!Array.isArray(raw) || raw.length === 0) return ''
+
+  // Defensive parse — review-event payloads are JSON blobs, so trust
+  // nothing about the runtime shape.
+  const lines: string[] = []
+  for (const item of raw) {
+    if (!isRecord(item)) continue
+    const file = typeof item.file === 'string' ? item.file.trim() : ''
+    // Strict positive-integer check — startLine=0 is a degenerate payload
+    // from a buggy upstream and would render as ":0" in the prompt.
+    const startLine = typeof item.startLine === 'number' && Number.isFinite(item.startLine) && item.startLine > 0
+      ? Math.floor(item.startLine)
+      : null
+    const comment = typeof item.comment === 'string' ? item.comment.trim() : ''
+    if (!file || startLine === null || !comment) continue
+    const endLine = typeof item.endLine === 'number' && item.endLine > startLine
+      ? item.endLine
+      : null
+    const severity = typeof item.severity === 'string' ? item.severity : ''
+    const range = endLine ? `${startLine}-${endLine}` : String(startLine)
+    const severityTag = severity ? `  (${severity})` : ''
+    // Each annotation is two lines: location header, then the
+    // double-quoted comment indented for readability.
+    lines.push(`- ${file}:${range}${severityTag}`)
+    lines.push(`  "${comment.replace(/"/g, '\\"')}"`)
+  }
+  if (lines.length === 0) return ''
+  return [
+    '## Reviewer line annotations (must address before re-running)',
+    ...lines,
+  ].join('\n')
 }
 
 function buildPriorApprovedArtifactContext(

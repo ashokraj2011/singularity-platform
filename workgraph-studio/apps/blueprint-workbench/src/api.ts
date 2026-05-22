@@ -6,6 +6,16 @@ export type GateMode = 'manual' | 'auto'
 export type SnapshotMode = 'summary' | 'relevant_excerpts' | 'full_debug'
 export type GovernanceMode = 'fail_open' | 'fail_closed' | 'degraded' | 'human_approval_required'
 export type LoopVerdict = 'PASS' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_RISK'
+
+// M60 Slice 2 — line-anchored operator annotations on send-back. Mirror
+// of `sendBackAnnotationSchema` in workgraph-api's blueprint.router.ts.
+export type SendBackAnnotation = {
+  file: string
+  startLine: number
+  endLine?: number
+  comment: string
+  severity?: 'must-fix' | 'suggestion' | 'question'
+}
 export type LoopAttemptStatus =
   | 'PENDING'
   | 'RUNNING'
@@ -525,7 +535,7 @@ export const api = {
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/approval`, { method: 'POST', body: JSON.stringify(body) }),
   verdict: (id: string, stageKey: string, body: { verdict: LoopVerdict; feedback?: string; confidence?: number; acceptRisk?: boolean; answers?: DecisionAnswer[] }) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/verdict`, { method: 'POST', body: JSON.stringify(body) }),
-  sendBack: (id: string, stageKey: string, body: { targetStageKey: string; reason: string; requiredChanges?: string; blockingQuestions?: string[] }) =>
+  sendBack: (id: string, stageKey: string, body: { targetStageKey: string; reason: string; requiredChanges?: string; blockingQuestions?: string[]; annotations?: SendBackAnnotation[] }) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/send-back`, { method: 'POST', body: JSON.stringify(body) }),
   finalize: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/finalize`, { method: 'POST' }),
   approve: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/approve`, { method: 'POST' }),

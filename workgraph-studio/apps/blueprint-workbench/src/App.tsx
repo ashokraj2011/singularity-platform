@@ -46,6 +46,7 @@ import {
   type LookupAgent,
   type LookupCapability,
   type GovernanceMode,
+  type SendBackAnnotation,
   type SnapshotMode,
   type SourceType,
   type StageAttempt,
@@ -1379,6 +1380,13 @@ function NeoStageController({
   const [sendBackTarget, setSendBackTarget] = useState('')
   const [sendBackReason, setSendBackReason] = useState('')
   const [requiredChanges, setRequiredChanges] = useState('')
+  // M60 Slice 2 — Free-text annotations the operator pastes/types in the
+  // send-back panel. Parsed on submit into SendBackAnnotation[] (see
+  // parseSendBackAnnotations). One line per annotation:
+  //   path/to/File.ext:142          must-fix     Comment here
+  //   path/to/Other.ext:55-60       suggestion   Multi-line span
+  // Severity column is optional; comment runs to end of line.
+  const [annotationsText, setAnnotationsText] = useState('')
 
   // Hydrate answers from the session whenever the source-of-truth answers change.
   useEffect(() => {
@@ -1393,6 +1401,7 @@ function NeoStageController({
     setSendBackTarget(stage?.allowedSendBackTo?.[0] ?? '')
     setSendBackReason('')
     setRequiredChanges('')
+    setAnnotationsText('')
   }, [stage?.key])
 
   const runMutation = useMutation({
@@ -1417,6 +1426,7 @@ function NeoStageController({
     },
     onSuccess: onSession,
   })
+  const parsedAnnotations = parseSendBackAnnotations(annotationsText)
   const sendBackMutation = useMutation({
     mutationFn: () => {
       if (!stage) throw new Error('No stage selected')
@@ -1424,6 +1434,7 @@ function NeoStageController({
         targetStageKey: sendBackTarget,
         reason: sendBackReason,
         requiredChanges: requiredChanges.trim() || undefined,
+        annotations: parsedAnnotations.length > 0 ? parsedAnnotations : undefined,
       })
     },
     onSuccess: (next) => {
@@ -1568,6 +1579,31 @@ function NeoStageController({
           <label>
             <span>Required changes</span>
             <textarea rows={2} value={requiredChanges} onChange={e => setRequiredChanges(e.target.value)} placeholder="What must the earlier stage fix before coming back?" />
+          </label>
+          {/* M60 Slice 2 — Line-anchored annotations. One per line:
+                path/to/File.ext:142          must-fix     Comment text
+                path/to/File.ext:142-148      suggestion   Multi-line span
+              Severity column is optional. Parsed live; the counter below
+              reflects how many entries will be sent. */}
+          <label>
+            <span>
+              Line annotations <em className="focus-sendback-hint">(optional · one per line · <code>path:line[-end] [severity] comment</code>)</em>
+            </span>
+            <textarea
+              rows={3}
+              value={annotationsText}
+              onChange={e => setAnnotationsText(e.target.value)}
+              placeholder={'src/main/java/Foo.java:142  must-fix  Rewrite using a character-set ignore-case match.\nsrc/main/java/Bar.java:55-60  suggestion  Add negative test for null.'}
+              spellCheck={false}
+            />
+            {annotationsText.trim() && (
+              <small className="focus-sendback-hint">
+                {parsedAnnotations.length} annotation{parsedAnnotations.length === 1 ? '' : 's'} parsed
+                {parsedAnnotations.length !== annotationsText.trim().split(/\r?\n/).filter(l => l.trim()).length
+                  ? ` · ${annotationsText.trim().split(/\r?\n/).filter(l => l.trim()).length - parsedAnnotations.length} unparseable line(s) ignored`
+                  : ''}
+              </small>
+            )}
           </label>
           <button
             className="focus-sendback-submit"
@@ -2433,6 +2469,59 @@ function QuestionAnswerCard({
 
 function preferredAgent(agents: LookupAgent[], role: string) {
   return agents.find(agent => agent.name.toLowerCase().includes(role))
+}
+
+/**
+ * M60 Slice 2 — Parse the operator's free-text annotations into the
+ * structured shape the API expects.
+ *
+ * Each non-empty line is parsed as:
+ *   <path>:<startLine>[-<endLine>]  [severity]  <comment...>
+ *
+ * Whitespace between columns is flexible (one or more spaces/tabs).
+ * Severity is the literal token must-fix | suggestion | question; any
+ * other word is treated as the start of the comment.
+ *
+ * Lines that don't match (no colon-line-number) are silently dropped.
+ * The caller surfaces a count of unparseable lines to the operator.
+ */
+function parseSendBackAnnotations(text: string): SendBackAnnotation[] {
+  const out: SendBackAnnotation[] = []
+  if (!text) return out
+  const sevSet = new Set(['must-fix', 'suggestion', 'question'])
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line) continue
+    // Capture path + line span: "path:NN" or "path:NN-MM".
+    const m = line.match(/^(.+?):(\d+)(?:-(\d+))?\s+(.+)$/)
+    if (!m) continue
+    const file = m[1].trim()
+    const startLine = Number.parseInt(m[2], 10)
+    const endLine = m[3] ? Number.parseInt(m[3], 10) : undefined
+    const rest = m[4].trim()
+    if (!file || !Number.isFinite(startLine) || startLine <= 0) continue
+    // Pick off an optional severity token from the start of the rest.
+    let severity: SendBackAnnotation['severity'] | undefined
+    let comment = rest
+    const firstSpace = rest.search(/\s/)
+    if (firstSpace > 0) {
+      const head = rest.slice(0, firstSpace)
+      if (sevSet.has(head)) {
+        severity = head as SendBackAnnotation['severity']
+        comment = rest.slice(firstSpace).trim()
+      }
+    }
+    if (!comment) continue
+    out.push({
+      file,
+      startLine,
+      ...(endLine && endLine > startLine ? { endLine } : {}),
+      comment: comment.slice(0, 800),
+      ...(severity ? { severity } : {}),
+    })
+    if (out.length >= 50) break // server-side cap
+  }
+  return out
 }
 
 function attemptsFor(session: BlueprintSession, stageKey: string) {

@@ -4010,6 +4010,31 @@ button.focus-badge.link:hover {
   cursor: not-allowed;
 }
 
+/* M60 Slice 2 — Inline hint text in the send-back panel (e.g. line-
+   annotation format reminder and parse counter). Smaller, dimmed,
+   and italic to read as helper text rather than form copy. */
+.focus-sendback-hint {
+  font-size: 11px;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--neo-muted, rgba(255, 255, 255, 0.55));
+  display: inline;
+}
+
+.focus-sendback-hint code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-style: normal;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+.focus-sendback label small.focus-sendback-hint {
+  display: block;
+  margin-top: 4px;
+}
+
 .focus-loop-warning {
   border: 1px solid rgba(var(--neo-attention-rgb), 0.4);
   background: rgba(var(--neo-attention-rgb), 0.06);
