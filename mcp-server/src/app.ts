@@ -14,11 +14,19 @@ import { resourcesRouter } from "./mcp/resources";
 import { eventsRouter } from "./mcp/events";
 import { discoveryRouter } from "./mcp/discovery";
 import { buildCodeContextPackage } from "./mcp/code-context";
+// M61 Wire E + Wire B P2 — best-effort callbacks to agent-runtime's
+// CapabilityWorldModel: repo fingerprint (drift detector) + AST index
+// built (stamps astIndexedAt). Fired on every /mcp/code-context/build
+// call that carries a capability_id. No-op when AGENT_RUNTIME_URL is
+// unset.
+import { computeRepoFingerprint, reportFingerprintToAgentRuntime, reportAstIndexBuiltToAgentRuntime } from "./mcp/repo-fingerprint";
+import { statsForIndex } from "./workspace/ast-index";
 import { listConfiguredProviders, ensureFreshGatewayStatus, llmEmbed } from "./llm/client";
 import { modelCatalogResponse } from "./llm/model-catalog";
 import { configuredDefaultModel, configuredDefaultProvider, providerConfigSummary } from "./llm/provider-config";
 import { runInvariantChecks } from "./healthz-strict";
 import { AppError } from "./shared/errors";
+import { config } from "./config";
 
 export const app = express();
 
@@ -167,6 +175,43 @@ app.post("/mcp/code-context/build", async (req, res) => {
     throw new AppError("invalid /mcp/code-context/build payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
   }
   const pkg = await buildCodeContextPackage(parsed.data);
+  // M61 Wire E — Fire-and-forget repo-fingerprint report. We compute
+  // the hash inside this request (it's ~10-50ms on a typical workspace)
+  // but await NOTHING from agent-runtime; the drift event is purely
+  // observational and a slow / down peer must never block the agent.
+  if (parsed.data.capability_id && config.AGENT_RUNTIME_URL) {
+    const capabilityId = parsed.data.capability_id;
+    setImmediate(() => {
+      // Wire E — fingerprint report.
+      try {
+        const fp = computeRepoFingerprint(config.MCP_SANDBOX_ROOT);
+        if (fp.fingerprint) {
+          // Discard the promise — the helper logs internally on drift.
+          void reportFingerprintToAgentRuntime(config.AGENT_RUNTIME_URL, capabilityId, fp);
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(`[repo-fingerprint] compute failed: ${(err as Error).message}`);
+      }
+      // Wire B P2 — AST index built callback. statsForIndex runs three
+      // SELECT count(*) queries against the SQLite-backed index, so the
+      // file count is accurate even for large workspaces (unlike
+      // listIndexedFiles which clamps the limit to 1000).
+      void (async () => {
+        try {
+          const stats = await statsForIndex();
+          await reportAstIndexBuiltToAgentRuntime(
+            config.AGENT_RUNTIME_URL,
+            capabilityId,
+            stats.indexedFiles,
+          );
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(`[ast-index-built] stats failed: ${(err as Error).message}`);
+        }
+      })();
+    });
+  }
   res.json({ success: true, data: pkg, requestId: res.locals.requestId });
 });
 app.use("/mcp", invokeRouter);

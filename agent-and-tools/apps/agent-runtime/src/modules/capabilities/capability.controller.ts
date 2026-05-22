@@ -7,6 +7,9 @@ import { ok } from "../../shared/response";
 // workgraph-api, an operator script) can submit a fingerprint without
 // pulling in the world-model.service or Prisma client.
 import { worldModelDriftService } from "./world-model-drift.service";
+// M61 Wire B P2 — AST index callback writes astIndexedAt + astIndexFiles
+// to the world-model row when mcp-server reports the index is built.
+import { upsertWorldModel } from "./world-model.service";
 // pdf-parse ships a CommonJS bundle whose root index.js triggers test code
 // when imported without a file path. Importing the lib subpath skips that.
 // @ts-expect-error — sub-path has no bundled types; we type the call shape locally below.
@@ -200,5 +203,31 @@ export const capabilityController = {
       actorId: req.user?.user_id,
     });
     return ok(res, result, 200);
+  },
+
+  // M61 Wire B P2 — AST index callback.
+  //
+  // POST /capabilities/:id/world-model/ast-index-built
+  // Body: { astIndexFiles: number }
+  //
+  // mcp-server fires this after building (or refreshing) its tree-sitter
+  // AST index for the capability's workspace. We stamp astIndexedAt =
+  // now() + astIndexFiles on the world-model row so consumers (the
+  // Slice F CODE_WORLD_MODEL layer renderer, future Phase 2 worker
+  // observability) can tell the index is ready without polling
+  // mcp-server.
+  //
+  // Idempotent: re-firing the call simply bumps astIndexedAt.
+  async reportAstIndexBuilt(req: Request, res: Response) {
+    const body = req.body as { astIndexFiles?: unknown };
+    const n = typeof body.astIndexFiles === "number" && Number.isFinite(body.astIndexFiles)
+      ? Math.max(0, Math.floor(body.astIndexFiles))
+      : 0;
+    const out = await upsertWorldModel({
+      capabilityId: req.params.id,
+      astIndexedAt: new Date(),
+      astIndexFiles: n,
+    });
+    return ok(res, { astIndexedAt: out.astIndexedAt, astIndexFiles: out.astIndexFiles }, 200);
   },
 };

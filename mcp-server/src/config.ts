@@ -115,6 +115,14 @@ const schema = z.object({
   MCP_EVENT_STORE_URL: z.string().optional(),
   MCP_EVENT_STORE_TOKEN: z.string().optional(),
   LEARNING_SERVICE_URL: z.string().default("http://learning-service:3006"),
+  // M61 Wire — Optional agent-runtime URL. When set, /mcp/code-context/build
+  // POSTs the workspace's repo fingerprint to
+  //   ${AGENT_RUNTIME_URL}/capabilities/:id/world-model/fingerprint
+  // (best-effort, fire-and-forget) so the Slice E drift detector can
+  // compare against the stored CapabilityWorldModel.repoFingerprint.
+  // Empty string disables the report — useful for sandbox tests that
+  // don't have an agent-runtime peer.
+  AGENT_RUNTIME_URL: z.string().default(""),
 });
 
 const parsed = schema.safeParse(process.env);

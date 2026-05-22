@@ -100,3 +100,13 @@ capabilityRoutes.post(
   "/:id/world-model/fingerprint",
   capabilityController.checkWorldModelFingerprint,
 );
+
+// M61 Wire B P2 — AST index callback. Body:
+//   { astIndexFiles: number }
+// Fired by mcp-server after it builds (or refreshes) the workspace's
+// tree-sitter index. Stamps astIndexedAt + astIndexFiles on the
+// CapabilityWorldModel row. Idempotent.
+capabilityRoutes.post(
+  "/:id/world-model/ast-index-built",
+  capabilityController.reportAstIndexBuilt,
+);
