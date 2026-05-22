@@ -1078,6 +1078,25 @@ async def execute(req: ExecuteRequest):
                 # composer skips those two layers and the agent reverts
                 # to discovering CLAUDE.md / test commands per run.
                 **({"worldModel": world_model} if world_model else {}),
+                # M62 Slice E — Per-layer prompt compression. When
+                # enabled (operator flag), prompt-composer POSTs
+                # over-budget allowlisted layers (default
+                # CODE_AGENT_RULES + RUNTIME_EVIDENCE) to the
+                # prompt-compressor sidecar. Compressor sidecar default
+                # strategy is stopword removal (~0ms latency, no ML
+                # model). Set COMPRESSION_ENABLED=true in context-api
+                # env to activate.
+                **(
+                    {
+                        "compression": {
+                            "enabled": True,
+                            "perLayerBudgetTokens": settings.compression_per_layer_budget_tokens,
+                            "compressorUrl": settings.compressor_url,
+                        }
+                    }
+                    if settings.compression_enabled and settings.compressor_url
+                    else {}
+                ),
                 "previewOnly": True,
             }
             composed = await _post(

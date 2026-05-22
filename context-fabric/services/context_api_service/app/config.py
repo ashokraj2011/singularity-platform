@@ -44,6 +44,16 @@ class Settings(BaseSettings):
     # the whole workflow.
     agent_runtime_world_model_timeout_sec: float = 2.0
 
+    # M62 Slice E — prompt compression toggle for compose calls.
+    # When enabled, the compose request body carries a `compression`
+    # block that tells prompt-composer to POST over-budget allowlisted
+    # layers to the prompt-compressor sidecar. Default OFF — operator
+    # flips COMPRESSION_ENABLED=true in .env after observing the
+    # stack behaves correctly on the new layers.
+    compressor_url: str = ""
+    compression_enabled: bool = False
+    compression_per_layer_budget_tokens: int = 1500
+
     class Config:
         env_prefix = ""
         extra = "ignore"
@@ -54,6 +64,8 @@ class Settings(BaseSettings):
         self.mcp_default_bearer_token = os.getenv("MCP_BEARER_TOKEN", self.mcp_default_bearer_token)
         # M61 Wire 2 — same env-fallback pattern as the MCP block above.
         self.agent_runtime_url = os.getenv("AGENT_RUNTIME_URL", self.agent_runtime_url)
+        # M62 Slice E
+        self.compressor_url = os.getenv("COMPRESSOR_URL", self.compressor_url)
 
 
 settings = Settings()

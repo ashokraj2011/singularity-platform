@@ -548,6 +548,14 @@ services:
       # running outside docker — doesn't leak in and resolve to
       # context-api's own loopback inside the container.
       AGENT_RUNTIME_URL: http://agent-runtime:3003
+      # M62 Slice E — Per-layer prompt compression. When
+      # COMPRESSION_ENABLED=true, context-api adds a `compression`
+      # block to the compose request body so prompt-composer compresses
+      # over-budget allowlisted layers via the prompt-compressor sidecar.
+      # Default OFF — flip in .env to activate.
+      COMPRESSOR_URL: http://prompt-compressor:8011
+      COMPRESSION_ENABLED: ${COMPRESSION_ENABLED:-false}
+      COMPRESSION_PER_LAYER_BUDGET_TOKENS: ${COMPRESSION_PER_LAYER_BUDGET_TOKENS:-1500}
     ports:
       - "8000:8000"
     depends_on:
