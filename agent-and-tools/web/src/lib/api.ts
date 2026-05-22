@@ -466,4 +466,78 @@ export const auditGovApi = {
     req<Record<string, unknown>>(`${AUDIT_GOV_BASE}/governance/approvals/${id}/decide`, {
       method: "POST", body: JSON.stringify(body),
     }),
+
+  // M63 Slice A — Splunk-like search across audit_events.
+  auditSearch: (body: {
+    q?: string;
+    kinds?: string[];
+    severities?: ("info" | "warn" | "error" | "audit")[];
+    riskLevels?: ("low" | "medium" | "high" | "critical")[];
+    sources?: string[];
+    capabilityId?: string;
+    actorId?: string;
+    traceId?: string;
+    since?: string;
+    until?: string;
+    limit?: number;
+    cursor?: string;
+  }) => req<{
+    items: Array<AuditEventRow>;
+    nextCursor: string | null;
+    pageSize: number;
+    hasMore: boolean;
+  }>(`${AUDIT_GOV_BASE}/audit/search`, {
+    method: "POST", body: JSON.stringify(body),
+  }),
+
+  // M63 Slice A — Filter facets for the UI dropdowns.
+  auditFacets: () => req<{
+    kinds: Array<{ kind: string; count: number }>;
+    sources: Array<{ source_service: string; count: number }>;
+    severities: Array<{ severity: string; count: number }>;
+    riskLevels: Array<{ risk_level: string; count: number }>;
+  }>(`${AUDIT_GOV_BASE}/audit/search/facets`),
+
+  // M63 Slice B — SSE live-tail stream. Returns the absolute URL so
+  // the caller constructs the EventSource directly (EventSource can't
+  // share the `req` wrapper's auth headers since the browser API
+  // doesn't support custom headers).
+  auditStreamUrl: (filter: {
+    kinds?: string[];
+    severities?: string[];
+    riskLevels?: string[];
+    sources?: string[];
+    capabilityId?: string;
+    actorId?: string;
+    traceId?: string;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (filter.kinds?.length)      qs.set("kinds",      filter.kinds.join(","));
+    if (filter.severities?.length) qs.set("severities", filter.severities.join(","));
+    if (filter.riskLevels?.length) qs.set("riskLevels", filter.riskLevels.join(","));
+    if (filter.sources?.length)    qs.set("sources",    filter.sources.join(","));
+    if (filter.capabilityId)       qs.set("capabilityId", filter.capabilityId);
+    if (filter.actorId)            qs.set("actorId", filter.actorId);
+    if (filter.traceId)            qs.set("traceId", filter.traceId);
+    const search = qs.toString();
+    return `${AUDIT_GOV_BASE}/audit/stream${search ? `?${search}` : ""}`;
+  },
+};
+
+// M63 Slice E — Row shape returned by /audit/search. Exported for the
+// UI components to consume without duplicating the type.
+export type AuditEventRow = {
+  id: string;
+  trace_id: string | null;
+  source_service: string;
+  kind: string;
+  subject_type: string | null;
+  subject_id: string | null;
+  actor_id: string | null;
+  capability_id: string | null;
+  tenant_id: string | null;
+  severity: string;
+  risk_level: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
 };
