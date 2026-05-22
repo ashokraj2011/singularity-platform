@@ -16,33 +16,52 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app:/app/shared
 
-# Install torch CPU wheel separately — the GPU wheel is ~700MB heavier
-# and we run on CPU. Pin to the official PyTorch CPU index.
-RUN pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+# M62 Slice F — Strategy-aware build. The default strategy is
+# stopword removal which needs zero ML deps. Setting
+# COMPRESSION_BAKE_MODEL=skip in the build args produces a tiny
+# image (~200MB instead of ~3GB) suitable for production deployments
+# that use the stopwords strategy exclusively. Switch to a real
+# model id to bake LLMLingua-2 weights for the opt-in strategy.
+ARG COMPRESSION_BAKE_MODEL=skip
 
+# Always install the FastAPI + pydantic core. llmlingua + torch +
+# transformers are only added when COMPRESSION_BAKE_MODEL != "skip".
 COPY services/prompt_compressor_service/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN if [ "${COMPRESSION_BAKE_MODEL}" = "skip" ]; then \
+        echo "[build] stopwords-only build — skipping torch/llmlingua install"; \
+        # Install only the lean runtime: FastAPI + pydantic + tests deps.
+        pip install --no-cache-dir \
+            fastapi==0.115.6 \
+            'uvicorn[standard]==0.34.0' \
+            pydantic==2.10.4 \
+            pydantic-settings==2.7.1 \
+            pytest==8.3.4 \
+            httpx==0.28.1; \
+    else \
+        echo "[build] llmlingua build — installing torch CPU + transformers + llmlingua"; \
+        pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu && \
+        pip install --no-cache-dir -r /app/requirements.txt; \
+    fi
 
-# Bake the model into the image. The HF_HOME env locks the cache to a
-# known path that the runtime container reads. transformers + tokenizers
-# pull both the model weights and the tokenizer JSON.
-#
-# Override at build time:
-#   docker compose build --build-arg COMPRESSION_BAKE_MODEL=other/model prompt-compressor
-ARG COMPRESSION_BAKE_MODEL=microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank
+# Bake the model only when a real model id was supplied. The skip
+# branch produces a tiny image and the runtime container will use
+# the stopwords strategy.
 ENV HF_HOME=/opt/hf-cache
 ENV TRANSFORMERS_OFFLINE=0
-RUN python -c "\
+RUN if [ "${COMPRESSION_BAKE_MODEL}" != "skip" ]; then \
+        python -c "\
 from transformers import AutoTokenizer, AutoModelForTokenClassification; \
 name = '${COMPRESSION_BAKE_MODEL}'; \
 print(f'[bake] downloading tokenizer for {name}'); \
 AutoTokenizer.from_pretrained(name); \
 print(f'[bake] downloading model for {name}'); \
 AutoModelForTokenClassification.from_pretrained(name); \
-print('[bake] done')"
+print('[bake] done')"; \
+    fi
 
-# Now flip the runtime container to OFFLINE so a stale env or a code
-# bug can't accidentally trigger an outbound fetch.
+# Lock runtime to OFFLINE regardless — if llmlingua was baked, the cache
+# is sufficient; if it wasn't, transformers isn't imported so the env
+# vars are inert.
 ENV TRANSFORMERS_OFFLINE=1
 ENV HF_HUB_OFFLINE=1
 

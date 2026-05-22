@@ -641,6 +641,12 @@ services:
     environment:
       LOG_LEVEL: info
       COMPRESSION_ENABLED: ${COMPRESSION_ENABLED:-true}
+      # M62 Slice F — strategy switch. Default "stopwords" is the
+      # fast deterministic path with no ML deps; flip to "llmlingua"
+      # to use the BERT-based importance model (requires the
+      # COMPRESSION_BAKE_MODEL build-arg to be set to a real model id
+      # so the weights are present in the image — see Dockerfile).
+      COMPRESSION_STRATEGY: ${COMPRESSION_STRATEGY:-stopwords}
       COMPRESSION_MODEL_NAME: ${COMPRESSION_MODEL_NAME:-microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank}
       COMPRESSION_DEVICE: ${COMPRESSION_DEVICE:-cpu}
       COMPRESSION_LAZY_LOAD: ${COMPRESSION_LAZY_LOAD:-true}

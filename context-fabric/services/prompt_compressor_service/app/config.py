@@ -20,6 +20,16 @@ class Settings(BaseSettings):
     # bringing the container up in a degraded mode while debugging.
     compression_enabled: bool = True
 
+    # M62 Slice F — compression strategy. Default is the fast
+    # deterministic stopword-removal path (no model, microsecond
+    # latency, zero ML deps). LLMLingua-2 is opt-in via
+    # COMPRESSION_STRATEGY=llmlingua for operators who want
+    # model-derived token-importance compression and have spent the
+    # 30+ minute first image build to bake the BERT weights.
+    #
+    # Allowed: "stopwords" | "llmlingua"
+    compression_strategy: str = "stopwords"
+
     # HF model id. Defaults to the one baked into the Dockerfile.
     # Switching at runtime to a non-baked model requires outbound
     # network (TRANSFORMERS_OFFLINE=1 is set in the Dockerfile so

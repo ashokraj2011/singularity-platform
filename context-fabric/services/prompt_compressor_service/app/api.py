@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .compressor import is_loaded, load_compressor
 from .config import settings
+from .strategies import stopwords as stopwords_strategy
 
 log = logging.getLogger(__name__)
 
@@ -121,12 +122,27 @@ def compress(req: CompressRequest) -> CompressResponse:
             original_tokens=_rough_token_count(req.text),
             compressed_tokens=_rough_token_count(req.text),
             ratio=1.0,
-            model=settings.compression_model_name,
+            model=_model_label(),
             duration_ms=0,
             receipt_id=_receipt_id(),
             warning="text below 100 chars — compression skipped",
         )
 
+    # M62 Slice F — Strategy dispatch. Default is stopwords (fast,
+    # deterministic, no model). LLMLingua-2 is opt-in via
+    # COMPRESSION_STRATEGY=llmlingua.
+    if settings.compression_strategy == "stopwords":
+        return _compress_via_stopwords(req)
+    if settings.compression_strategy != "llmlingua":
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "INVALID_STRATEGY",
+                "message": f"unknown COMPRESSION_STRATEGY={settings.compression_strategy}",
+            },
+        )
+
+    # ----- LLMLingua-2 path -----------------------------------------------
     # Load the model (lazy). If loading fails, surface as 503 so the
     # caller's circuit breaker can react sensibly.
     try:
@@ -214,16 +230,101 @@ def status() -> dict[str, Any]:
     """
     return {
         "enabled": settings.compression_enabled,
-        "model": settings.compression_model_name,
+        # M62 Slice F — strategy switch. "stopwords" is the default
+        # zero-ML path; "llmlingua" routes through the BERT model below.
+        "strategy": settings.compression_strategy,
+        "model": _model_label(),
         "device": settings.compression_device,
-        "loaded": is_loaded(),
+        # `loaded` only meaningful for the llmlingua strategy. Always
+        # false (and ignored) when strategy=stopwords.
+        "loaded": is_loaded() if settings.compression_strategy == "llmlingua" else None,
         "lazy_load": settings.compression_lazy_load,
         "min_target_tokens": settings.compression_min_target_tokens,
         "max_input_chars": settings.compression_max_input_chars,
     }
 
 
+# ---------- Strategy: stopwords --------------------------------------------
+
+def _compress_via_stopwords(req: CompressRequest) -> CompressResponse:
+    """M62 Slice F — Default compression strategy.
+
+    Drops common English filler words. Operates in microseconds with
+    zero ML dependencies. Quality is lower than LLMLingua-2 but the
+    output stays human-readable (debugging win) and there's no model
+    cold-start.
+
+    Contract notes vs LLMLingua-2:
+      - target_token / rate are ADVISORY only. The stopword pass is
+        deterministic; we report the actual count and let the caller
+        decide whether to switch strategies.
+      - force_tokens is honoured (whole-word, case-sensitive match).
+      - instruction / question are pre-pended / appended verbatim to
+        match LLMLingua's call shape.
+    """
+    started = time.perf_counter()
+    body_compressed = stopwords_strategy.compress_text(
+        req.text,
+        force_tokens=req.force_tokens or None,
+    )
+    parts: list[str] = []
+    if req.instruction:
+        parts.append(req.instruction)
+    if body_compressed:
+        parts.append(body_compressed)
+    if req.question:
+        parts.append(req.question)
+    compressed_text = "\n\n".join(parts) if parts else body_compressed
+    took_ms = int((time.perf_counter() - started) * 1000)
+
+    original_tokens = _rough_token_count(req.text)
+    compressed_tokens = _rough_token_count(compressed_text)
+    ratio = (compressed_tokens / original_tokens) if original_tokens > 0 else 1.0
+    receipt = _receipt_id()
+
+    warning: Optional[str] = None
+    # If the caller asked for an absolute target the stopword pass
+    # missed by a wide margin, flag it — they may want to switch to
+    # COMPRESSION_STRATEGY=llmlingua for that workload.
+    if req.target_token is not None and compressed_tokens > req.target_token * 1.5:
+        warning = (
+            f"stopwords strategy yielded {compressed_tokens} tokens, "
+            f"target was {req.target_token}. Consider COMPRESSION_STRATEGY=llmlingua "
+            f"for tighter targets."
+        )
+
+    log.info(
+        "[compress.stopwords] receipt=%s tokens=%d→%d ratio=%.3f ms=%d meta=%s",
+        receipt,
+        original_tokens,
+        compressed_tokens,
+        ratio,
+        took_ms,
+        req.metadata or {},
+    )
+
+    return CompressResponse(
+        compressed_text=compressed_text,
+        original_tokens=original_tokens,
+        compressed_tokens=compressed_tokens,
+        ratio=round(ratio, 4),
+        model="stopwords-v1",  # NOT settings.compression_model_name (that's the LLMLingua one)
+        duration_ms=took_ms,
+        receipt_id=receipt,
+        warning=warning,
+    )
+
+
 # ---------- Helpers ---------------------------------------------------------
+
+def _model_label() -> str:
+    """The 'model' field in the response. For stopwords we report the
+    strategy version; for LLMLingua we report the loaded HF model id.
+    """
+    if settings.compression_strategy == "stopwords":
+        return "stopwords-v1"
+    return settings.compression_model_name
+
 
 def _receipt_id() -> str:
     return f"cmprx-{uuid.uuid4().hex[:12]}"

@@ -59,7 +59,13 @@ def load_compressor() -> Any:
         started = time.perf_counter()
         try:
             # Deferred import — keeps `from .compressor import is_loaded`
-            # cheap when the service starts up.
+            # cheap when the service starts up. ImportError here is
+            # expected for lean builds (M62 Slice F: COMPRESSION_BAKE_MODEL=skip
+            # produces an image with no llmlingua). The api layer
+            # short-circuits to the stopwords strategy before reaching
+            # here when COMPRESSION_STRATEGY=stopwords (the default),
+            # so this only fires when an operator explicitly opts in
+            # to llmlingua without a baked model.
             from llmlingua import PromptCompressor  # type: ignore
 
             log.info(
