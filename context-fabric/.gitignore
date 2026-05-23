@@ -5,3 +5,5 @@ __pycache__/
 data/
 .pytest_cache/
 .DS_Store
+# Vendor handoff snapshots — extract into tree, don't commit the archive
+*.zip
