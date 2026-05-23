@@ -323,6 +323,7 @@ async def governed_step(
                     next_phase,
                     receipt=receipt,
                     max_repair_attempts=policy.max_repair_attempts,
+                    max_plan_rewinds=policy.max_plan_rewinds,
                 )
             except ValueError as exc:
                 # Illegal transition or repair cap exceeded. Don't advance;

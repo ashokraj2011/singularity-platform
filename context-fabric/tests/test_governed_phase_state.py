@@ -106,6 +106,82 @@ def test_advance_phase_caps_repair_attempts():
         advance_phase(state, Phase.REPAIR, max_repair_attempts=3)
 
 
+# ── plan-rewind cap (M73-followup #5) ───────────────────────────────────────
+
+
+def test_advance_phase_caps_plan_rewinds():
+    """EXPLORE → PLAN re-routes must stop at max_plan_rewinds. The default
+    (2) lets the agent reroute twice (3 total PLANs across the run) before
+    being forced to commit to ACT. Past that, ValueError."""
+    state = PhaseState.fresh("loop.stage", "DEVELOPER")
+    # initial PLAN → EXPLORE (does NOT count as a rewind)
+    state = advance_phase(state, Phase.EXPLORE)
+    assert state.plan_rewinds == 0
+
+    # 1st rewind
+    state = advance_phase(state, Phase.PLAN, max_plan_rewinds=2)
+    assert state.plan_rewinds == 1
+    state = advance_phase(state, Phase.EXPLORE, max_plan_rewinds=2)
+
+    # 2nd rewind — still allowed
+    state = advance_phase(state, Phase.PLAN, max_plan_rewinds=2)
+    assert state.plan_rewinds == 2
+    state = advance_phase(state, Phase.EXPLORE, max_plan_rewinds=2)
+
+    # 3rd rewind — refused. The agent has to commit to ACT (or anything
+    # other than PLAN) from here.
+    with pytest.raises(ValueError, match="plan_rewinds would exceed"):
+        advance_phase(state, Phase.PLAN, max_plan_rewinds=2)
+
+
+def test_advance_phase_plan_to_plan_does_not_count_as_rewind():
+    """PLAN → PLAN (re-plan on same phase if output invalid) is a different
+    transition from EXPLORE → PLAN. The cap only fires on the latter."""
+    state = PhaseState.fresh("loop.stage", "DEVELOPER")
+    # PLAN → PLAN three times — wouldn't be allowed if the cap counted this.
+    state = advance_phase(state, Phase.PLAN, max_plan_rewinds=0)
+    state = advance_phase(state, Phase.PLAN, max_plan_rewinds=0)
+    state = advance_phase(state, Phase.PLAN, max_plan_rewinds=0)
+    assert state.plan_rewinds == 0  # never incremented
+
+
+def test_advance_phase_zero_plan_rewinds_means_no_reroute_allowed():
+    """Edge case: a policy that sets max_plan_rewinds=0 forces the agent
+    to commit on its first PLAN. The first EXPLORE → PLAN must refuse."""
+    state = PhaseState.fresh("loop.stage", "DEVELOPER")
+    state = advance_phase(state, Phase.EXPLORE)
+    with pytest.raises(ValueError, match="plan_rewinds would exceed"):
+        advance_phase(state, Phase.PLAN, max_plan_rewinds=0)
+
+
+def test_plan_rewinds_round_trips_through_to_from_dict():
+    """plan_rewinds must survive BlueprintSession.metadata persistence."""
+    state = PhaseState.fresh("loop.stage", "DEVELOPER")
+    state = advance_phase(state, Phase.EXPLORE)
+    state = advance_phase(state, Phase.PLAN, max_plan_rewinds=2)
+    payload = state.to_dict()
+    assert payload["plan_rewinds"] == 1
+    rehydrated = PhaseState.from_dict(payload)
+    assert rehydrated.plan_rewinds == 1
+
+
+def test_plan_rewinds_from_dict_defaults_zero_for_legacy_state():
+    """Pre-M73-followup state rows didn't have plan_rewinds. The from_dict
+    rehydrate must default to 0 rather than KeyError."""
+    legacy_payload = {
+        "stage_key": "loop.stage",
+        "agent_role": "DEVELOPER",
+        "current_phase": "EXPLORE",
+        "repair_attempts": 0,
+        # plan_rewinds missing
+        "receipts": {},
+        "history": [],
+        "approval_pending": False,
+    }
+    state = PhaseState.from_dict(legacy_payload)
+    assert state.plan_rewinds == 0
+
+
 # ── receipt persistence + approval flag ─────────────────────────────────────
 
 

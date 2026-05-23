@@ -74,6 +74,16 @@ class StagePolicy:
         """Convenience read of the limits field used by the phase machine."""
         return int(self.limits.get("max_repair_attempts", 3))
 
+    @property
+    def max_plan_rewinds(self) -> int:
+        """M73-followup #5 — cap on EXPLORE→PLAN re-routes. Symmetric to
+        max_repair_attempts. Default 2 means the agent can do
+        PLAN → EXPLORE → PLAN → EXPLORE → PLAN → EXPLORE → ACT (initial PLAN
+        + 2 reroutes) before having to commit to ACT. A pathological agent
+        without this cap can burn the entire turn budget oscillating between
+        PLAN and EXPLORE."""
+        return int(self.limits.get("max_plan_rewinds", 2))
+
 
 # Module-level cache: key = (stage_key, agent_role|None), value = (expires_at, StagePolicy)
 _cache: dict[tuple[str, str | None], tuple[float, StagePolicy]] = {}

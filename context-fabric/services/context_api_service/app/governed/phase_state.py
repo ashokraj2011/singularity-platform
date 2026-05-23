@@ -93,6 +93,11 @@ class PhaseState:
     agent_role: str | None
     current_phase: Phase = Phase.PLAN
     repair_attempts: int = 0
+    # M73-followup #5 — number of EXPLORE→PLAN re-routes consumed.
+    # Symmetric to repair_attempts; capped by max_plan_rewinds (default 2).
+    # A pathological agent without this cap can burn MAX_TURNS oscillating
+    # between PLAN and EXPLORE indefinitely.
+    plan_rewinds: int = 0
     # Receipts collected so far, keyed by phase name. Multiple repairs append
     # new receipts each pass.
     receipts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
@@ -109,6 +114,7 @@ class PhaseState:
             "agent_role": self.agent_role,
             "current_phase": self.current_phase.value,
             "repair_attempts": self.repair_attempts,
+            "plan_rewinds": self.plan_rewinds,
             "receipts": self.receipts,
             "history": self.history,
             "approval_pending": self.approval_pending,
@@ -116,12 +122,15 @@ class PhaseState:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PhaseState":
-        """Rehydrate from JSON storage. Unknown phase strings raise ValueError."""
+        """Rehydrate from JSON storage. Unknown phase strings raise ValueError.
+        Missing plan_rewinds defaults to 0 so pre-M73-followup state rows
+        rehydrate without explosion."""
         return cls(
             stage_key=str(payload.get("stage_key", "")),
             agent_role=payload.get("agent_role"),
             current_phase=Phase(payload.get("current_phase", Phase.PLAN.value)),
             repair_attempts=int(payload.get("repair_attempts", 0)),
+            plan_rewinds=int(payload.get("plan_rewinds", 0)),
             receipts={k: list(v) for k, v in (payload.get("receipts") or {}).items()},
             history=list(payload.get("history") or []),
             approval_pending=bool(payload.get("approval_pending", False)),
@@ -144,6 +153,7 @@ def advance_phase(
     *,
     receipt: dict[str, Any] | None = None,
     max_repair_attempts: int = 3,
+    max_plan_rewinds: int = 2,
 ) -> PhaseState:
     """Return a new PhaseState moved to `next_phase`.
 
@@ -152,6 +162,12 @@ def advance_phase(
       * Bumps `repair_attempts` when transitioning INTO REPAIR.
       * Refuses if `repair_attempts` would exceed `max_repair_attempts` —
         caller should treat this as a hard stage block.
+      * M73-followup #5 — bumps `plan_rewinds` when transitioning EXPLORE→PLAN.
+        Refuses if `plan_rewinds` would exceed `max_plan_rewinds` (default 2,
+        meaning the agent can do PLAN→EXPLORE→PLAN→EXPLORE→PLAN→EXPLORE→ACT
+        before being forced to commit). Symmetric to the repair cap. The
+        initial PLAN doesn't count toward this — only EXPLORE→PLAN
+        transitions do.
       * Sets `approval_pending=True` when entering SELF_REVIEW and the receipt
         carries `recommended_for_approval=True`.
       * Appends the receipt to `state.receipts[from_phase]` (so receipts are
@@ -170,6 +186,16 @@ def advance_phase(
     if new_repair > max_repair_attempts:
         raise ValueError(
             f"repair_attempts would exceed max_repair_attempts ({max_repair_attempts})"
+        )
+
+    is_plan_rewind = (
+        state.current_phase is Phase.EXPLORE and next_phase is Phase.PLAN
+    )
+    new_plan_rewinds = state.plan_rewinds + (1 if is_plan_rewind else 0)
+    if new_plan_rewinds > max_plan_rewinds:
+        raise ValueError(
+            f"plan_rewinds would exceed max_plan_rewinds ({max_plan_rewinds}) — "
+            f"the agent has been oscillating between PLAN and EXPLORE; force-commit to ACT"
         )
 
     receipts = {k: list(v) for k, v in state.receipts.items()}
@@ -195,6 +221,7 @@ def advance_phase(
         state,
         current_phase=next_phase,
         repair_attempts=new_repair,
+        plan_rewinds=new_plan_rewinds,
         receipts=receipts,
         history=history,
         approval_pending=approval_pending,
