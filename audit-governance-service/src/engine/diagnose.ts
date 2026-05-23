@@ -4,16 +4,23 @@
  * When an operator triggers diagnosis on an engine_issue, this module:
  *   1. Loads the issue's sample trace timelines from audit_events
  *   2. Builds a structured prompt for the LLM
- *   3. Calls MCP /mcp/invoke; MCP is the only LLM gateway caller
+ *   3. Calls llm-gateway directly (single-turn, no tools)
  *   4. Stores the diagnosis in engine_issues.root_cause
  *   5. Auto-generates a proposed fix based on the diagnosis
  *
- * No provider keys or gateway URLs live here.
+ * Routing note (2026-05-23): the original implementation POSTed to
+ * mcp-server's /mcp/invoke. After the M71 cutover that endpoint
+ * returns 410 GONE — every diagnose call has silently fallen back to
+ * the heuristic path since then. Re-pointed at llm-gateway following
+ * the M74 Phase 2A llm-judge.ts pattern: single-turn diagnosis isn't
+ * an agent loop, so the gateway is the right endpoint shape.
+ *
+ * No provider keys live here. Heuristic fallback kicks in iff the
+ * gateway is unreachable or returns a malformed payload.
  */
 import { query, queryOne } from "../db";
 
-const MCP_SERVER_URL     = (process.env.MCP_SERVER_URL ?? "http://mcp-server:7100").replace(/\/$/, "");
-const MCP_BEARER_TOKEN   = process.env.MCP_BEARER_TOKEN ?? "";
+const LLM_GATEWAY_URL    = (process.env.LLM_GATEWAY_URL ?? "http://host.docker.internal:8001").replace(/\/$/, "");
 const ENGINE_MODEL_ALIAS = process.env.ENGINE_MODEL_ALIAS?.trim();
 const ENGINE_TIMEOUT_MS  = Number(process.env.ENGINE_TIMEOUT_MS ?? 120_000);
 
@@ -104,44 +111,50 @@ async function getDiagnosisSystemPrompt(): Promise<string> {
 }
 
 async function callLlmForDiagnosis(prompt: string): Promise<DiagnosisResult> {
-  // LLM calls go through MCP. If MCP or its gateway dependency is unavailable,
-  // fall back to deterministic local heuristics rather than reaching for any
-  // provider SDK or API directly.
+  // Single-turn diagnosis: system prompt from prompt-composer + user
+  // prompt with the trace timelines, JSON response parsed out. No
+  // tool use, no multi-turn — so we call llm-gateway directly rather
+  // than running through the governed agent loop in context-fabric.
+  //
+  // Failure → heuristic fallback. Never throws: silent degradation is
+  // the right behaviour for an operator-triggered diagnose action
+  // (the heuristic answer is usually directionally correct, and the
+  // operator can re-run when the gateway comes back).
   try {
-    const headers: Record<string, string> = { "content-type": "application/json" };
-    if (MCP_BEARER_TOKEN) headers.authorization = `Bearer ${MCP_BEARER_TOKEN}`;
-    const llmRes = await fetch(`${MCP_SERVER_URL}/mcp/invoke`, {
+    const systemPrompt = await getDiagnosisSystemPrompt();
+    const res = await fetch(`${LLM_GATEWAY_URL}/v1/chat/completions`, {
       method: "POST",
-      headers,
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        systemPrompt: await getDiagnosisSystemPrompt(),
-        message: prompt,
-        tools: [],
-        modelConfig: {
-          ...(ENGINE_MODEL_ALIAS ? { modelAlias: ENGINE_MODEL_ALIAS } : {}),
-          temperature: 0,
-          maxTokens: 1500,
-        },
-        runContext: { traceId: `engine-diagnose-${Date.now()}` },
-        limits: {
-          maxSteps: 1,
-          timeoutSec: Math.ceil(ENGINE_TIMEOUT_MS / 1000),
-          compressToolResults: true,
-          includeLocalTools: false,
-        },
+        ...(ENGINE_MODEL_ALIAS ? { model_alias: ENGINE_MODEL_ALIAS } : {}),
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0,
+        max_output_tokens: 1500,
+        trace_id: `audit-gov-diagnose-${Date.now()}`,
       }),
       signal: AbortSignal.timeout(ENGINE_TIMEOUT_MS),
     });
-    if (llmRes.ok) {
-      const data = await llmRes.json() as { data?: { finalResponse?: string } };
-      const content = data.data?.finalResponse ?? "";
+    if (res.ok) {
+      const body = (await res.json()) as { content?: string };
+      const content = body.content ?? "";
+      // The diagnosis prompt instructs the model to emit a single
+      // JSON object. Tolerate a code-fence wrapper or a leading
+      // chatty preamble — we match the outermost {...} balanced
+      // span. Cheap regex (greedy) is fine because heuristic
+      // fallback catches malformed responses.
       const jsonMatch = content.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         return JSON.parse(jsonMatch[0]) as DiagnosisResult;
       }
     }
   } catch {
-    // Gateway unavailable — fall through to heuristic analysis.
+    // Gateway unreachable / non-JSON / parse failure — fall through
+    // to heuristic. Intentional swallow: the heuristic path is the
+    // documented degradation mode and the operator-visible status
+    // doesn't lie ("low" confidence on the heuristic branch).
   }
 
   // Heuristic fallback when LLM is not available.
@@ -206,6 +219,15 @@ export interface DiagnoseResult {
   };
   status:      string;
 }
+
+// ── Exported helpers for tests ─────────────────────────────────────────
+// Re-pointing the gateway call (the M71-cutover bug fix above) needed
+// focused unit coverage that doesn't drag the full Postgres path into
+// every test. Same pattern as llm-judge.ts:__test_internals.
+export const __test_internals = {
+  callLlmForDiagnosis,
+  heuristicDiagnosis,
+};
 
 export async function diagnoseIssue(issueId: string): Promise<DiagnoseResult> {
   const issue = await queryOne<Record<string, unknown>>(
