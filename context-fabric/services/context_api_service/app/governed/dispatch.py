@@ -64,8 +64,12 @@ async def dispatch_tool(
     work_item_id: str | None = None,
     run_context: dict[str, Any] | None = None,
     bearer: str | None = None,
+    laptop_user_id: str | None = None,
 ) -> ToolDispatchResult:
-    """POST a single tool invocation to mcp-server's /mcp/tool-run.
+    """Dispatch a single tool invocation. Default transport is HTTP
+    POST to mcp-server's /mcp/tool-run; when ``laptop_user_id`` is set
+    and the user has a live laptop-bridge connection, the call goes
+    over the WebSocket to their laptop's mcp-server instead.
 
     The caller has ALREADY cleared the policy check via
     `tool_gateway.check_tool_allowed()`. This function does NOT re-verify
@@ -81,13 +85,45 @@ async def dispatch_tool(
       run_context:   Optional correlation: traceId, runId, workflowInstanceId,
                      nodeId, branchName, capabilityId, etc. Flows into the
                      audit invocation record.
-      bearer:        Override the env-default MCP_BEARER_TOKEN — useful when
-                     a per-call session token is preferred (e.g. workgraph-api
-                     forwarding a user JWT scoped to the capability).
+      bearer:        Override the env-default MCP_BEARER_TOKEN. Ignored on
+                     the laptop path (the bridge handshake owns auth there).
+      laptop_user_id: M75 Slice 3 — when set, route via the laptop bridge
+                     instead of HTTP. The caller (loop.py) populates this
+                     from run_context.user_id when prefer_laptop is true
+                     and the user has a live bridge connection.
+                     Falls back to HTTP transparently if the laptop is
+                     no longer connected by the time dispatch fires
+                     (LaptopNotConnected → tries HTTP path).
 
     Raises:
-      ToolDispatchError on 4xx/5xx (with response body for triage).
+      ToolDispatchError on endpoint failure (HTTP 4xx/5xx or bridge
+      timeout / send failure / tool runner failure). Tool-level
+      failures (handler returned success=false) come back inside
+      ToolDispatchResult, not as throws.
     """
+    if laptop_user_id:
+        try:
+            return await _dispatch_via_laptop(
+                user_id=laptop_user_id,
+                tool_name=tool_name,
+                args=args,
+                workspace_id=workspace_id,
+                work_item_id=work_item_id,
+                run_context=run_context,
+            )
+        except _LaptopUnavailable as exc:
+            # Bridge isn't actually connected at dispatch time — fall
+            # through to the shared HTTP path rather than failing the
+            # whole turn. The orchestrator-level "require laptop"
+            # check is separate (see execute.py's prefer_laptop=True
+            # branch that refuses 503 MCP_NOT_CONNECTED upstream of
+            # this function).
+            log.info(
+                "laptop dispatch unavailable; falling back to HTTP tool=%s reason=%s",
+                tool_name,
+                exc,
+            )
+
     if not _MCP_URL:
         raise ToolDispatchError("MCP_SERVER_URL is not configured in context-fabric")
     token = bearer or _MCP_BEARER
@@ -148,4 +184,86 @@ async def dispatch_tool(
         tool_invocation_id=str(data.get("toolInvocationId", "")),
         tool_success=bool(data.get("toolSuccess", False)),
         tool_error=data.get("toolError"),
+    )
+
+
+# ── M75 Slice 3 — laptop-bridge transport ────────────────────────────────
+
+
+class _LaptopUnavailable(Exception):
+    """Internal signal — laptop isn't connected at dispatch time, fall
+    back to HTTP. Not raised to the caller (dispatch_tool catches and
+    falls through to the HTTP path). Distinct from ToolDispatchError so
+    the orchestrator doesn't conflate "no bridge" with "tool runner
+    failed."""
+
+
+async def _dispatch_via_laptop(
+    *,
+    user_id: str,
+    tool_name: str,
+    args: dict[str, Any],
+    workspace_id: str | None,
+    work_item_id: str | None,
+    run_context: dict[str, Any] | None,
+) -> ToolDispatchResult:
+    """Bridge-side counterpart to the HTTP dispatch_tool body. Sends a
+    tool-run frame via the laptop_registry and normalises the response
+    payload into the same ToolDispatchResult shape the HTTP path
+    returns.
+
+    Three failure modes mapped explicitly:
+      • LaptopNotConnected   → _LaptopUnavailable (caller falls back)
+      • LaptopSendFailed     → ToolDispatchError("LAPTOP_SEND_FAILED")
+      • LaptopInvokeTimeout  → ToolDispatchError("LAPTOP_TIMEOUT")
+      • LaptopInvokeError    → ToolDispatchError(code from frame)
+
+    The wire response shape comes from the laptop's runToolByName +
+    relay-client.ts mapping (Slice 2). Snake_case here matches what
+    that handler emits; the HTTP path uses camelCase for legacy
+    reasons.
+    """
+    # Lazy import to avoid pulling the WebSocket stack into this module
+    # at import time; matches the pattern in laptop_dispatcher.py.
+    from ..laptop_registry import (
+        REGISTRY,
+        LaptopInvokeError,
+        LaptopInvokeTimeout,
+        LaptopNotConnected,
+        LaptopSendFailed,
+    )
+
+    try:
+        body = await REGISTRY.dispatch_tool_via_laptop(
+            user_id=user_id,
+            tool_name=tool_name,
+            args=args or {},
+            run_context=run_context or {},
+            work_item_id=work_item_id,
+            workspace_id=workspace_id,
+            timeout=_TIMEOUT,
+        )
+    except LaptopNotConnected as exc:
+        raise _LaptopUnavailable(str(exc)) from exc
+    except LaptopSendFailed as exc:
+        raise ToolDispatchError(f"LAPTOP_SEND_FAILED: {exc}") from exc
+    except LaptopInvokeTimeout as exc:
+        raise ToolDispatchError(f"LAPTOP_TIMEOUT: {exc}") from exc
+    except LaptopInvokeError as exc:
+        raise ToolDispatchError(f"{exc.code}: {exc.message}") from exc
+
+    if not isinstance(body, dict):
+        raise ToolDispatchError(
+            f"laptop tool-run response was not a dict: {body!r}"
+        )
+
+    # Field names: snake_case per ToolRunResponsePayload (zod schema
+    # in mcp-server/src/laptop/envelopes.ts). HTTP path uses camelCase;
+    # both flow into the same ToolDispatchResult shape.
+    return ToolDispatchResult(
+        result=body.get("result"),
+        duration_ms=int(body.get("duration_ms", 0)),
+        tool_invocation_id=str(body.get("tool_invocation_id", "")),
+        tool_success=bool(body.get("tool_success", False)),
+        tool_error=body.get("tool_error"),
     )

@@ -89,7 +89,81 @@ class LaptopRegistry:
     # ── invoke routing ─────────────────────────────────────────────────────
     async def invoke(self, user_id: str, payload: dict[str, Any], timeout: float = INVOKE_TIMEOUT_SEC) -> dict[str, Any]:
         """Forward an /mcp/invoke payload to the user's laptop. Returns the
-        response body. Raises LaptopNotConnected if no live connection."""
+        response body. Raises LaptopNotConnected if no live connection.
+
+        Legacy frame type — carries the full agent-loop payload that the
+        laptop's executeInvokePayload() runs locally. M75 introduces
+        ``dispatch_tool_via_laptop()`` (below) for per-tool dispatch
+        under the governed loop; this method stays for backward compat
+        with laptops on the old protocol.
+        """
+        return await self._send_frame_await_response(
+            user_id=user_id,
+            frame_type="invoke",
+            payload=payload,
+            timeout=timeout,
+            request_label="invoke",
+        )
+
+    # ── M75 Slice 3 — per-tool dispatch over the bridge ───────────────────
+    async def dispatch_tool_via_laptop(
+        self,
+        *,
+        user_id: str,
+        tool_name: str,
+        args: dict[str, Any],
+        run_context: dict[str, Any] | None = None,
+        work_item_id: str | None = None,
+        workspace_id: str | None = None,
+        timeout: float = INVOKE_TIMEOUT_SEC,
+    ) -> dict[str, Any]:
+        """Send a single tool-run frame to the user's laptop and await
+        the response. Returns the response payload (matches the
+        ToolRunResponsePayload zod schema on the laptop side):
+
+          { "result": ..., "duration_ms": int, "tool_invocation_id": str,
+            "tool_success": bool, "tool_error": str | None }
+
+        Raises LaptopNotConnected when no laptop is online,
+        LaptopSendFailed on WebSocket write errors, LaptopInvokeTimeout
+        when the laptop doesn't respond within ``timeout``, and
+        LaptopInvokeError when the laptop dispatches the tool but the
+        runner itself failed (e.g. TOOL_RUN_FAILED).
+
+        The shape matches mcp-server's HTTP /mcp/tool-run response so
+        callers (``governed.dispatch.dispatch_tool``) can normalise
+        both transports to one ToolDispatchResult dataclass.
+        """
+        payload: dict[str, Any] = {
+            "tool_name": tool_name,
+            "args": args or {},
+            "run_context": run_context or {},
+        }
+        if work_item_id is not None:
+            payload["work_item_id"] = work_item_id
+        if workspace_id is not None:
+            payload["workspace_id"] = workspace_id
+        return await self._send_frame_await_response(
+            user_id=user_id,
+            frame_type="tool-run",
+            payload=payload,
+            timeout=timeout,
+            request_label=f"tool-run({tool_name})",
+        )
+
+    async def _send_frame_await_response(
+        self,
+        *,
+        user_id: str,
+        frame_type: str,
+        payload: dict[str, Any],
+        timeout: float,
+        request_label: str,
+    ) -> dict[str, Any]:
+        """Common request/response plumbing shared by ``invoke`` and
+        ``dispatch_tool_via_laptop``. Extracted so the per-frame logic
+        stays a one-liner and the lifecycle (lookup → register pending
+        future → send → wait → cleanup) is in one place."""
         conn = await self.any_for_user(user_id)
         if conn is None:
             raise LaptopNotConnected(f"no live laptop mcp-server for user {user_id}")
@@ -99,7 +173,7 @@ class LaptopRegistry:
         fut: asyncio.Future = loop.create_future()
         conn.pending[request_id] = fut
 
-        frame = {"type": "invoke", "request_id": request_id, "payload": payload}
+        frame = {"type": frame_type, "request_id": request_id, "payload": payload}
         try:
             await conn.ws.send_text(_dump_json(frame))
         except Exception as err:
@@ -110,7 +184,9 @@ class LaptopRegistry:
             return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
             conn.pending.pop(request_id, None)
-            raise LaptopInvokeTimeout(f"invoke {request_id} timed out after {timeout}s")
+            raise LaptopInvokeTimeout(
+                f"{request_label} {request_id} timed out after {timeout}s"
+            )
 
     async def deliver_response(self, user_id: str, device_id: str, request_id: str,
                                payload: Any, error: Optional[dict]) -> None:
