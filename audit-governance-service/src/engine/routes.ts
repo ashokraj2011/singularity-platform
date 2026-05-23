@@ -351,6 +351,66 @@ engineRouter.post("/datasets/:id/examples", async (req: Request, res: Response) 
   res.status(201).json(result);
 });
 
+// M74 Phase 2C — operator-curation gate. Mark an example as reviewed
+// (and optionally overwrite its expected_output / record notes).
+// Setting reviewed_at flips the gate: subsequent eval runs will score
+// against this example instead of refusing with "needs review."
+//
+//   PATCH /api/v1/engine/dataset-examples/:id
+//   body: {
+//     expected_output?: <json>,    // optional: overwrite the candidate
+//     reviewed_by:     "user@x",   // required
+//     review_notes?:   "fixed null case in expected"
+//   }
+//
+// Always sets reviewed_at = now(). Pass reviewed_by="(unreviewed)" via
+// the PUT path below to undo if needed; this endpoint cannot un-set.
+engineRouter.patch("/dataset-examples/:id", async (req: Request, res: Response) => {
+  const reviewedBy = typeof req.body?.reviewed_by === "string" && req.body.reviewed_by.trim()
+    ? req.body.reviewed_by.trim()
+    : "";
+  if (!reviewedBy) {
+    return res.status(400).json({ error: "reviewed_by is required" });
+  }
+  const reviewNotes = typeof req.body?.review_notes === "string"
+    ? req.body.review_notes
+    : null;
+  const setClauses: string[] = [
+    "reviewed_at = now()",
+    `reviewed_by = $${2}`,
+    `review_notes = $${3}`,
+  ];
+  const params: unknown[] = [req.params.id, reviewedBy, reviewNotes];
+  if (req.body?.expected_output !== undefined) {
+    setClauses.push(`expected_output = $${params.length + 1}::jsonb`);
+    params.push(JSON.stringify(req.body.expected_output));
+  }
+  const sql = `
+    UPDATE audit_governance.engine_dataset_examples
+    SET ${setClauses.join(", ")}
+    WHERE id = $1
+    RETURNING id, dataset_id, expected_output, reviewed_at, reviewed_by, review_notes
+  `;
+  const row = await queryOne(sql, params);
+  if (!row) return res.status(404).json({ error: "dataset example not found" });
+  res.json(row);
+});
+
+// GET helper for the operator-curation UI: list un-reviewed examples
+// in a dataset so the reviewer can prioritise. Cheap because of the
+// partial index added in m74_dataset_curation_gate.sql.
+engineRouter.get("/datasets/:id/unreviewed-examples", async (req: Request, res: Response) => {
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit ?? 50)));
+  const rows = await query(
+    `SELECT id, trace_id, input, expected_output, actual_output, metadata, created_at
+     FROM audit_governance.engine_dataset_examples
+     WHERE dataset_id = $1 AND reviewed_at IS NULL
+     ORDER BY created_at ASC LIMIT $2`,
+    [req.params.id, limit],
+  );
+  res.json({ count: rows.length, items: rows });
+});
+
 engineRouter.post("/datasets/from-issue/:id", async (req: Request, res: Response) => {
   try {
     const result = await buildDatasetFromIssue(req.params.id);

@@ -76,6 +76,15 @@ type DatasetExample = {
   actual_output: Record<string, unknown> | null;
   criteria: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
+  // M74 Phase 2C — operator-curation gate. NULL when no human has yet
+  // reviewed this example; the expected_output is then a "candidate"
+  // (typically just the actual_output from a prior trace), not truth.
+  // Evals refuse to score against un-reviewed examples by default;
+  // pass evaluator_config.allow_unreviewed=true to opt back in for
+  // non-critical evaluators.
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  review_notes: string | null;
 }
 
 // ── Factory: create evaluator from a diagnosed issue ──────────────────
@@ -348,6 +357,40 @@ async function evaluateDatasetExample(ev: EvaluatorRow, example: DatasetExample)
     ...((example.criteria ?? {}) as Record<string, unknown>),
     ...((ev.criteria ?? {}) as Record<string, unknown>),
   };
+
+  // M74 Phase 2C — operator curation gate. Datasets built directly from
+  // sweep traces (dataset-builder.ts) have expected_output = the actual
+  // trace output, which makes the eval a behavioural-consistency check,
+  // not a correctness check. Treating un-reviewed examples as truth
+  // means a previously-broken pattern becomes the gold standard.
+  //
+  // Refuse to score against un-reviewed examples by default. Pass
+  // evaluator_config.allow_unreviewed=true to opt back in (intended for
+  // non-critical evaluators or operators that knowingly trade rigour for
+  // coverage). Result is recorded as failed-with-reason "needs review"
+  // so the dashboard surfaces curation backlog without bloating actual
+  // failure counts.
+  const allowUnreviewed = config.allow_unreviewed === true;
+  if (!example.reviewed_at && !allowUnreviewed) {
+    return {
+      evaluator_id: evId,
+      trace_id: example.trace_id,
+      dataset_example_id: example.id,
+      passed: false,
+      score: 0,
+      reason:
+        "expected_output has not been reviewed by an operator yet. The eval " +
+        "is refusing to gate against an unreviewed dataset row (this is a " +
+        "candidate baseline, not truth). Open the dataset in the audit-gov " +
+        "UI, edit/confirm expected_output, then re-run.",
+      evidence: {
+        curation_status: "unreviewed",
+        dataset_example_id: example.id,
+        allow_unreviewed_override: false,
+      },
+    };
+  }
+
   let passed = true;
   let reason = "pass";
   let score = 1;
@@ -619,7 +662,10 @@ export async function runDatasetEvaluatorsPersisted(args: {
   const [evaluators, examples] = await Promise.all([
     loadEnabledEvaluators({ evaluatorIds: args.evaluatorIds, capabilityId: args.capabilityId }),
     query<DatasetExample>(
-      `SELECT id, trace_id, input, expected_output, actual_output, criteria, metadata
+      // M74 Phase 2C — load reviewed_at/by/notes so the per-example gate
+      // can refuse to evaluate against un-reviewed expected_output.
+      `SELECT id, trace_id, input, expected_output, actual_output, criteria, metadata,
+              reviewed_at, reviewed_by, review_notes
        FROM audit_governance.engine_dataset_examples
        WHERE dataset_id = $1
        ORDER BY created_at ASC`,
