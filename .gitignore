@@ -11,6 +11,12 @@
 .singularity/secrets/
 .singularity/keys/
 .singularity/git-credentials
+# M71 — operational audit log written by mcp-server's local sandbox-debug
+# JSONL writer (M65 1C). Never source-controlled; rotates per workitem.
+.singularity/mcp-audit.jsonl
+.singularity/workitems/
+.singularity/downloads/
+.singularity/source-cache/
 singularity-portal/public/ops-doctor.json
 *.pem
 *.key
