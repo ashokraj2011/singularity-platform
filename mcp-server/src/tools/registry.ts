@@ -277,3 +277,55 @@ export function listLocalTools(): ToolDescriptor[] {
 export function getLocalTool(name: string): ToolHandler | undefined {
   return REGISTRY.get(name);
 }
+
+/**
+ * Register an additional tool at runtime.
+ *
+ * Accepts either a full `ToolHandler` or a lighter `{name, description,
+ * inputSchema, execute}` shape (used by tests + future plugin loaders). When
+ * the lighter shape is passed we synthesize a sensible descriptor — risk
+ * defaults to LOW and requires_approval to false; pass a full ToolHandler
+ * if you need different settings.
+ *
+ * Idempotent: re-registering the same name replaces the prior entry.
+ */
+export function registerLocalTool(
+  input:
+    | ToolHandler
+    | {
+        name: string;
+        description: string;
+        inputSchema?: Record<string, unknown>;
+        outputSchema?: Record<string, unknown>;
+        riskLevel?: ToolDescriptor["risk_level"];
+        requiresApproval?: boolean;
+        execute: ToolHandler["execute"];
+      },
+): void {
+  if ("descriptor" in input && typeof (input as ToolHandler).execute === "function") {
+    REGISTRY.set((input as ToolHandler).descriptor.name, input as ToolHandler);
+    return;
+  }
+  const light = input as {
+    name: string;
+    description: string;
+    inputSchema?: Record<string, unknown>;
+    outputSchema?: Record<string, unknown>;
+    riskLevel?: ToolDescriptor["risk_level"];
+    requiresApproval?: boolean;
+    execute: ToolHandler["execute"];
+  };
+  const handler: ToolHandler = {
+    descriptor: {
+      name: light.name,
+      description: light.description,
+      natural_language: light.description,
+      input_schema: light.inputSchema ?? { type: "object" },
+      output_schema: light.outputSchema,
+      risk_level: light.riskLevel ?? "LOW",
+      requires_approval: light.requiresApproval ?? false,
+    },
+    execute: light.execute,
+  };
+  REGISTRY.set(light.name, handler);
+}

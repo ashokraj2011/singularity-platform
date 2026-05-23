@@ -9,6 +9,7 @@ import { errorMiddleware } from "./middleware/error";
 import { invokeRouter } from "./mcp/invoke";
 import { tokensRouter } from "./mcp/tokens";
 import { toolsRouter } from "./mcp/tools";
+import { toolRunRouter } from "./mcp/tool-run";
 import { workRouter } from "./mcp/work";
 import { resourcesRouter } from "./mcp/resources";
 import { eventsRouter } from "./mcp/events";
@@ -105,6 +106,11 @@ app.use("/mcp/invoke", requireMcpScope("invoke"));
 app.use("/mcp/resume", requireMcpScope("invoke"));
 app.use("/mcp/tools/list", requireMcpScope("tools:list"));
 app.use("/mcp/tools/call", requireMcpScope("tools:call"));
+// M71 Slice D — context-fabric's dumb tool-runner endpoint. Same scope as
+// /tools/call (caller is authorised to dispatch tools). All phase/policy
+// decisions happen UPSTREAM in context-fabric/app/governed/; mcp-server
+// just executes whatever the caller asked for.
+app.use("/mcp/tool-run", requireMcpScope("tools:call"));
 app.use("/mcp/resources", requireMcpScope("resources:read"));
 app.use("/mcp/events", requireMcpScope("events:read"));
 app.use("/mcp", discoveryRouter);
@@ -216,6 +222,8 @@ app.post("/mcp/code-context/build", async (req, res) => {
 });
 app.use("/mcp", invokeRouter);
 app.use("/mcp", toolsRouter);
+// M71 Slice D — purpose-built /mcp/tool-run for context-fabric-driven loops.
+app.use("/mcp", toolRunRouter);
 // M37.1 — purpose-built workflow-branch operations. Replaces the bypass
 // path where GitPushExecutor used to POST a hardcoded tool name to the
 // generic /mcp/tools/call endpoint.
