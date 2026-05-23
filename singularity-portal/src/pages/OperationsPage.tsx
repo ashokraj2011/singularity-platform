@@ -1670,7 +1670,12 @@ function CapabilitiesPanel() {
   const flags = useQuery({
     queryKey: ['ops', 'feature-flags'],
     queryFn: async () => {
-      const res = await workgraphApi.get('/api/admin/feature-flags')
+      // The workgraphApi axios client's baseURL is /api/wg (portal nginx
+      // rewrites /api/wg/* → /api/* before proxying to workgraph-api). So
+      // callers strip the leading /api/ — every other call in this file
+      // follows that convention. Including /api/ here would generate
+      // /api/wg/api/admin/feature-flags → /api/api/admin/feature-flags → 404.
+      const res = await workgraphApi.get('/admin/feature-flags')
       return (res.data?.items ?? []) as FeatureFlagRow[]
     },
     refetchInterval: 15_000,
@@ -1678,7 +1683,7 @@ function CapabilitiesPanel() {
 
   const toggle = useMutation({
     mutationFn: async ({ key, enabled }: { key: string; enabled: boolean }) => {
-      const res = await workgraphApi.put(`/api/admin/feature-flags/${encodeURIComponent(key)}`, { enabled })
+      const res = await workgraphApi.put(`/admin/feature-flags/${encodeURIComponent(key)}`, { enabled })
       return res.data as FeatureFlagRow
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['ops', 'feature-flags'] }),
