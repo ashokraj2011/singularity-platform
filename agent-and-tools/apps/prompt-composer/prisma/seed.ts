@@ -44,6 +44,7 @@ const IDS = {
     LOOP_DEFAULT:        "00000000-0000-0000-0000-0000000000f4",
     LOOP_DEVELOPER:      "00000000-0000-0000-0000-0000000000f5",
     LOOP_QA:             "00000000-0000-0000-0000-0000000000f6",
+    LOOP_INTAKE:         "00000000-0000-0000-0000-0000000000f7",
   },
   // M36.1 — StagePromptBinding rows. Stable UUIDs so re-seed is idempotent.
   // Convention: e1xx = blueprint.*, e2xx = loop.*
@@ -54,6 +55,17 @@ const IDS = {
     LOOP_DEFAULT:        "00000000-0000-0000-0000-0000000000e4",
     LOOP_DEVELOPER:      "00000000-0000-0000-0000-0000000000e5",
     LOOP_QA:             "00000000-0000-0000-0000-0000000000e6",
+    LOOP_INTAKE:         "00000000-0000-0000-0000-0000000000e7",
+    LOOP_PRODUCT_OWNER:  "00000000-0000-0000-0000-0000000000e8",
+  },
+  // M71 — StagePolicy rows. Stable UUIDs (71-74 mirrors the milestone) so
+  // re-seed is idempotent. One row per (stageKey, agentRole) covering the
+  // 4-stage workbench loop: STORY_INTAKE → DESIGN → DEVELOP → QA.
+  stagePolicies: {
+    INTAKE:    "00000000-0000-0000-0000-000000000071",
+    DESIGN:    "00000000-0000-0000-0000-000000000072",
+    DEVELOP:   "00000000-0000-0000-0000-000000000073",
+    QA:        "00000000-0000-0000-0000-000000000074",
   },
 } as const;
 
@@ -200,6 +212,40 @@ const loopDefaultTask = [
   "Return concise, structured workbench output with: decisions, risks, artifact updates for every expected artifact, only genuinely new open questions, and a gate recommendation of PASS, NEEDS_REWORK, or BLOCKED.",
 ].join("\n");
 
+const loopIntakeTask = [
+  "Run Workbench story intake: {{stageLabel}}",
+  "",
+  "Goal:",
+  "{{goal}}",
+  "",
+  "Stage policy:",
+  "- Context policy: {{stageContextPolicy}}",
+  "- Tool policy: {{stageToolPolicy}}",
+  "- Repo access: {{stageRepoAccess}}",
+  "",
+  "Stage description:",
+  "{{stageDescription}}",
+  "",
+  "Expected intake artifacts:",
+  "{{artifacts}}",
+  "",
+  "Configured intake questions:",
+  "{{questions}}",
+  "",
+  "Captured stakeholder decisions and clarifications:",
+  "{{capturedDecisions}}",
+  "",
+  "Operator guidance:",
+  "{{operatorChat}}",
+  "",
+  "Intake rules:",
+  "- Capture only the business story, user value, scope, acceptance criteria, priority, urgency, risks, and open clarification questions.",
+  "- Do not inspect, mention, infer, or request repository files, source snapshots, branches, code symbols, tests, package manifests, or tool output.",
+  "- If implementation details are needed, write them as questions for the Plan stage instead of guessing.",
+  "",
+  "Return concise, structured story intake output with: story brief, acceptance contract, in-scope/out-of-scope notes, assumptions, risks, open questions, and a gate recommendation of PASS, NEEDS_REWORK, or BLOCKED.",
+].join("\n");
+
 // Developer-specific extension to the loop task. Encodes the "you must
 // actually mutate files" execution contract that was hardcoded in
 // blueprint.router.ts:2335-2343.
@@ -283,6 +329,14 @@ const loopDeveloperExtraContext = [
 
 const loopDefaultExtraContext =
   "Produce governed workbench artifacts and evidence. Use Source snapshot testing.detectedCommands for Dev/QA verification planning. Do not mutate source files unless this is the Developer stage with a verified writable MCP workspace.";
+
+const loopIntakeExtraContext = [
+  "Story intake execution policy:",
+  "- This stage is intentionally story-only and repository-blind.",
+  "- Do not use code tools, source snapshots, repo instructions, AST context, code context packages, or world-model code rules.",
+  "- Focus on the WorkItem/story request, acceptance examples, constraints, scope boundaries, priority, risks, and missing product information.",
+  "- Handoff implementation questions to the Plan stage; do not solve them here.",
+].join("\n");
 
 function sha256(value: string): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -522,6 +576,471 @@ Respond ONLY in valid JSON matching this schema:
 }`,
   },
 ];
+
+// ─────────────────────────────────────────────────────────────
+// M71 — StagePolicy seed. One row per stage in the 4-stage workbench loop.
+// Each policy carries stage-wide config (approval model, limits, context
+// policy, edit policy, verification policy, risk policy) plus the per-phase
+// rows (allowedTools + requiredOutputSchema).
+//
+// context-fabric loads ONE of these per /execute call and uses the per-phase
+// allowedTools to refuse out-of-phase tool calls with PHASE_TOOL_FORBIDDEN.
+// The shape mirrors §8 of singularity_governed_coding_loop_spec.md.
+// ─────────────────────────────────────────────────────────────
+
+interface SeedPhasePolicy {
+  phase: "PLAN" | "EXPLORE" | "ACT" | "VERIFY" | "REPAIR" | "SELF_REVIEW" | "FINALIZE";
+  allowedTools: string[];
+  forbiddenTools?: string[];
+  requiredOutputSchema: Record<string, unknown>;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  maxToolCalls?: number;
+}
+
+interface SeedStagePolicy {
+  id: string;
+  stageKey: string;
+  agentRole: string | null;
+  description: string;
+  approvalModel: Record<string, unknown>;
+  limits: Record<string, unknown>;
+  contextPolicy: Record<string, unknown>;
+  editPolicy: Record<string, unknown>;
+  verificationPolicy: Record<string, unknown>;
+  riskPolicy: Record<string, unknown>;
+  phases: SeedPhasePolicy[];
+}
+
+const STAGE_POLICIES: SeedStagePolicy[] = [
+  // ── STORY_INTAKE — story-only, no repo or code tools ────────────────────
+  {
+    id: IDS.stagePolicies.INTAKE,
+    stageKey: "loop.stage.intake",
+    agentRole: "PRODUCT_OWNER",
+    description: "Story-only intake stage. Tool-free. Captures business intent before any repo access.",
+    approvalModel: {
+      stage_completion: "requires_evidence_approval",
+    },
+    limits: {
+      max_repair_attempts: 1,
+      max_context_tokens: 8000,
+      max_tool_calls: 0,
+    },
+    contextPolicy: { ast_first: false, full_file_read_requires_justification: true },
+    editPolicy: { patch_first: false, write_file_existing_file: "forbidden" },
+    verificationPolicy: { verification_required: false },
+    riskPolicy: { external_side_effects_blocked_by_default: true },
+    phases: [
+      {
+        phase: "PLAN",
+        allowedTools: [],
+        requiredOutputSchema: {
+          required: ["story_brief", "acceptance_criteria"],
+          properties: {
+            story_brief: { type: "string" },
+            acceptance_criteria: { type: "array", items: { type: "string" } },
+            open_questions: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
+      {
+        phase: "SELF_REVIEW",
+        allowedTools: [],
+        requiredOutputSchema: {
+          required: ["recommended_for_approval"],
+          properties: {
+            recommended_for_approval: { type: "boolean" },
+            risk_summary: { type: "object" },
+          },
+        },
+      },
+    ],
+  },
+
+  // ── DESIGN — read-only, architect produces solution architecture ────────
+  {
+    id: IDS.stagePolicies.DESIGN,
+    stageKey: "loop.stage",
+    agentRole: "ARCHITECT",
+    description: "Design stage. Read-only repo access. Produces solution architecture + spec draft.",
+    approvalModel: {
+      stage_completion: "requires_evidence_approval",
+    },
+    limits: {
+      max_repair_attempts: 2,
+      max_full_file_reads: 8,
+      max_context_tokens: 24000,
+      max_tool_calls: 40,
+    },
+    contextPolicy: {
+      ast_first: true,
+      full_file_read_requires_justification: true,
+      large_file_threshold_lines: 500,
+      require_context_receipt: true,
+    },
+    editPolicy: { patch_first: true, write_file_existing_file: "forbidden", require_anchor_hash: true },
+    verificationPolicy: { verification_required: false },
+    riskPolicy: { external_side_effects_blocked_by_default: true },
+    phases: [
+      {
+        phase: "PLAN",
+        allowedTools: ["repo_map", "symbol_search", "list_files", "read_repo_instructions", "read_workitem"],
+        requiredOutputSchema: {
+          required: ["target_files", "symbols_to_inspect", "risk_level"],
+          properties: {
+            target_files: { type: "array" },
+            symbols_to_inspect: { type: "array" },
+            risk_level: { type: "string", enum: ["low", "medium", "high"] },
+            external_side_effects_required: { type: "boolean" },
+          },
+        },
+      },
+      {
+        phase: "EXPLORE",
+        allowedTools: ["repo_map", "symbol_search", "find_symbol", "get_symbol", "get_ast_slice", "get_dependencies", "read_file", "read_test_file", "search_code", "grep_lines"],
+        requiredOutputSchema: {
+          required: ["context_used", "implementation_findings"],
+          properties: {
+            context_used: { type: "array" },
+            implementation_findings: { type: "array" },
+          },
+        },
+      },
+      {
+        phase: "SELF_REVIEW",
+        allowedTools: ["read_file"],
+        requiredOutputSchema: {
+          required: ["recommended_for_approval", "risk_summary"],
+          properties: {
+            recommended_for_approval: { type: "boolean" },
+            risk_summary: { type: "object" },
+            diff_summary: { type: "object" },
+          },
+        },
+      },
+    ],
+  },
+
+  // ── DEVELOP — full 7-phase loop, code mutation + verification ───────────
+  {
+    id: IDS.stagePolicies.DEVELOP,
+    stageKey: "loop.stage",
+    agentRole: "DEVELOPER",
+    description: "Developer stage. Full 7-phase loop. Patch-first edits + mandatory verification.",
+    approvalModel: {
+      local_sandbox_edits: "auto",
+      stage_completion: "requires_evidence_approval",
+      push: "requires_human_approval",
+      deploy: "requires_human_approval",
+      external_side_effects: "requires_human_approval",
+    },
+    limits: {
+      max_repair_attempts: 3,
+      max_full_file_reads: 5,
+      max_context_tokens: 24000,
+      max_tool_calls: 80,
+      max_changed_files_without_escalation: 10,
+      max_diff_lines_without_escalation: 800,
+    },
+    contextPolicy: {
+      ast_first: true,
+      full_file_read_requires_justification: true,
+      large_file_threshold_lines: 500,
+      require_context_receipt: true,
+    },
+    editPolicy: {
+      patch_first: true,
+      write_file_existing_file: "forbidden",
+      require_anchor_hash: true,
+      generated_file_requires_marker: true,
+    },
+    verificationPolicy: {
+      verification_required: true,
+      allow_unavailable_with_reason: true,
+      require_test_discovery: true,
+      require_fallback_if_no_tests: true,
+    },
+    riskPolicy: {
+      high_risk_requires_architect_review: true,
+      security_sensitive_requires_security_review: true,
+      external_side_effects_blocked_by_default: true,
+    },
+    phases: [
+      {
+        phase: "PLAN",
+        allowedTools: ["repo_map", "symbol_search", "list_files", "read_repo_instructions", "read_workitem"],
+        requiredOutputSchema: {
+          required: ["target_files", "expected_edits", "test_strategy", "risk_level"],
+          properties: {
+            target_files: { type: "array" },
+            expected_edits: { type: "array" },
+            symbols_to_inspect: { type: "array" },
+            test_strategy: {
+              type: "object",
+              required: ["commands"],
+              properties: {
+                commands: { type: "array", items: { type: "string" } },
+                reason: { type: "string" },
+              },
+            },
+            risk_level: { type: "string", enum: ["low", "medium", "high"] },
+            external_side_effects_required: { type: "boolean" },
+          },
+        },
+      },
+      {
+        phase: "EXPLORE",
+        allowedTools: ["repo_map", "symbol_search", "find_symbol", "get_symbol", "get_ast_slice", "get_dependencies", "read_file", "read_test_file", "search_code", "grep_lines", "capture_test_baseline"],
+        requiredOutputSchema: {
+          required: ["context_used", "implementation_findings"],
+          properties: {
+            context_used: { type: "array" },
+            implementation_findings: { type: "array" },
+            updated_target_files: { type: "array" },
+          },
+        },
+      },
+      {
+        phase: "ACT",
+        allowedTools: ["apply_patch", "replace_text", "replace_range", "create_file", "write_file", "read_file", "get_ast_slice"],
+        forbiddenTools: ["shell_unrestricted", "network_call", "push_branch", "deploy"],
+        requiredOutputSchema: {
+          required: ["edits"],
+          properties: {
+            edits: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["file", "edit_type", "reason"],
+                properties: {
+                  file: { type: "string" },
+                  edit_type: { type: "string", enum: ["apply_patch", "replace_text", "replace_range", "create_file", "write_file"] },
+                  reason: { type: "string" },
+                  anchor_hash: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        phase: "VERIFY",
+        allowedTools: ["run_test", "run_command", "verification_unavailable", "recommended_verification", "git_diff", "changed_files"],
+        requiredOutputSchema: {
+          required: ["verification_result"],
+          properties: {
+            verification_result: {
+              type: "object",
+              required: ["status"],
+              properties: {
+                status: { type: "string", enum: ["passed", "failed", "unavailable"] },
+                commands_run: { type: "array" },
+                coverage: { type: "object" },
+              },
+            },
+          },
+        },
+      },
+      {
+        phase: "REPAIR",
+        allowedTools: ["read_file", "get_ast_slice", "apply_patch", "replace_text", "replace_range", "run_test", "run_command"],
+        requiredOutputSchema: {
+          required: ["retry_number", "failure_summary", "repair_hypothesis"],
+          properties: {
+            retry_number: { type: "integer" },
+            failure_summary: { type: "string" },
+            repair_hypothesis: { type: "string" },
+            edits: { type: "array" },
+          },
+        },
+      },
+      {
+        phase: "SELF_REVIEW",
+        allowedTools: ["git_diff", "changed_files", "read_file"],
+        requiredOutputSchema: {
+          required: ["recommended_for_approval", "acceptance_criteria_check", "risk_summary", "verification_summary"],
+          properties: {
+            recommended_for_approval: { type: "boolean" },
+            acceptance_criteria_check: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["criterion", "status"],
+                properties: {
+                  criterion: { type: "string" },
+                  status: { type: "string", enum: ["met", "not_met", "uncertain"] },
+                  evidence: { type: "string" },
+                },
+              },
+            },
+            risk_summary: { type: "object" },
+            diff_summary: { type: "object" },
+            verification_summary: { type: "string" },
+          },
+        },
+      },
+      {
+        phase: "FINALIZE",
+        allowedTools: ["finish_work_branch", "git_commit", "prepare_pull_request"],
+        forbiddenTools: ["push_branch", "deploy"],
+        requiredOutputSchema: {
+          required: ["branch_name", "commit_sha"],
+          properties: {
+            branch_name: { type: "string" },
+            commit_sha: { type: "string" },
+            pull_request_url: { type: "string" },
+          },
+        },
+      },
+    ],
+  },
+
+  // ── QA — verification-focused, no mutation ──────────────────────────────
+  {
+    id: IDS.stagePolicies.QA,
+    stageKey: "loop.stage",
+    agentRole: "QA",
+    description: "QA stage. Verification + traceability. No code mutation; reads diffs and runs tests.",
+    approvalModel: {
+      stage_completion: "requires_evidence_approval",
+    },
+    limits: {
+      max_repair_attempts: 2,
+      max_full_file_reads: 10,
+      max_context_tokens: 24000,
+      max_tool_calls: 40,
+    },
+    contextPolicy: {
+      ast_first: true,
+      full_file_read_requires_justification: true,
+      require_context_receipt: true,
+    },
+    editPolicy: { patch_first: false, write_file_existing_file: "forbidden", require_anchor_hash: false },
+    verificationPolicy: {
+      verification_required: true,
+      allow_unavailable_with_reason: true,
+      require_test_discovery: true,
+    },
+    riskPolicy: { external_side_effects_blocked_by_default: true },
+    phases: [
+      {
+        phase: "PLAN",
+        allowedTools: ["repo_map", "symbol_search", "list_files", "read_repo_instructions", "read_workitem", "changed_files", "git_diff"],
+        requiredOutputSchema: {
+          required: ["target_files", "test_strategy"],
+          properties: {
+            target_files: { type: "array" },
+            test_strategy: {
+              type: "object",
+              required: ["commands"],
+              properties: {
+                commands: { type: "array", items: { type: "string" } },
+              },
+            },
+          },
+        },
+      },
+      {
+        phase: "EXPLORE",
+        allowedTools: ["read_file", "read_test_file", "get_ast_slice", "search_code", "grep_lines", "changed_files", "git_diff"],
+        requiredOutputSchema: {
+          required: ["context_used"],
+          properties: { context_used: { type: "array" } },
+        },
+      },
+      {
+        phase: "VERIFY",
+        allowedTools: ["run_test", "run_command", "recommended_verification", "verification_unavailable", "git_diff", "changed_files"],
+        requiredOutputSchema: {
+          required: ["verification_result"],
+          properties: {
+            verification_result: {
+              type: "object",
+              required: ["status"],
+              properties: {
+                status: { type: "string", enum: ["passed", "failed", "unavailable"] },
+                commands_run: { type: "array" },
+              },
+            },
+          },
+        },
+      },
+      {
+        phase: "SELF_REVIEW",
+        allowedTools: ["read_file", "git_diff", "changed_files"],
+        requiredOutputSchema: {
+          required: ["recommended_for_approval", "acceptance_criteria_check", "verification_summary"],
+          properties: {
+            recommended_for_approval: { type: "boolean" },
+            acceptance_criteria_check: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["criterion", "status"],
+                properties: {
+                  criterion: { type: "string" },
+                  status: { type: "string", enum: ["met", "not_met", "uncertain"] },
+                  evidence: { type: "string" },
+                },
+              },
+            },
+            verification_summary: { type: "string" },
+            traceability_matrix: { type: "object" },
+          },
+        },
+      },
+    ],
+  },
+];
+
+async function upsertStagePolicy(input: SeedStagePolicy): Promise<void> {
+  await prisma.stagePolicy.upsert({
+    where: { id: input.id },
+    update: {
+      stageKey:           input.stageKey,
+      agentRole:          input.agentRole,
+      status:             "ACTIVE",
+      description:        input.description,
+      approvalModel:      input.approvalModel as never,
+      limits:             input.limits as never,
+      contextPolicy:      input.contextPolicy as never,
+      editPolicy:         input.editPolicy as never,
+      verificationPolicy: input.verificationPolicy as never,
+      riskPolicy:         input.riskPolicy as never,
+    },
+    create: {
+      id:                 input.id,
+      stageKey:           input.stageKey,
+      agentRole:          input.agentRole,
+      version:            1,
+      status:             "ACTIVE",
+      description:        input.description,
+      approvalModel:      input.approvalModel as never,
+      limits:             input.limits as never,
+      contextPolicy:      input.contextPolicy as never,
+      editPolicy:         input.editPolicy as never,
+      verificationPolicy: input.verificationPolicy as never,
+      riskPolicy:         input.riskPolicy as never,
+    },
+  });
+  // Atomic replace of phase rows — every re-seed lands a clean set.
+  await prisma.stagePhasePolicy.deleteMany({ where: { stagePolicyId: input.id } });
+  if (input.phases.length > 0) {
+    await prisma.stagePhasePolicy.createMany({
+      data: input.phases.map((p) => ({
+        stagePolicyId:        input.id,
+        phase:                p.phase,
+        allowedTools:         p.allowedTools,
+        forbiddenTools:       p.forbiddenTools ?? [],
+        requiredOutputSchema: p.requiredOutputSchema as never,
+        maxInputTokens:       p.maxInputTokens ?? null,
+        maxOutputTokens:      p.maxOutputTokens ?? null,
+        maxToolCalls:         p.maxToolCalls ?? null,
+      })),
+    });
+  }
+}
 
 // ─────────────────────────────────────────────────────────────
 // M36.5 — EventHorizonAction catalog. Was duplicated across 3 SPA
@@ -923,6 +1442,16 @@ async function main() {
     extraContextTemplate: loopDefaultExtraContext,
   });
   await upsertStageProfile({
+    id: IDS.stageProfiles.LOOP_INTAKE,
+    name: "Blueprint Loop Intake Stage Profile",
+    description: "Story-only Workbench intake profile. It deliberately excludes repo/source/code-tool guidance.",
+    stageKey: "loop.stage.intake",
+    roleGate: "PRODUCT_OWNER",
+    taskTemplate: loopIntakeTask,
+    extraContextTemplate: loopIntakeExtraContext,
+    roleLayerId: IDS.layers.role.PRODUCT_OWNER,
+  });
+  await upsertStageProfile({
     id: IDS.stageProfiles.LOOP_DEVELOPER,
     name: "Blueprint Loop Developer Stage Profile",
     description: "Developer-role override for the Blueprint Loop runner. Encodes the actual-code-change execution contract.",
@@ -953,6 +1482,8 @@ async function main() {
   await linkLayer(IDS.stageProfiles.LOOP_DEFAULT,         IDS.layers.localCodeIntelligence, 200);
   await linkLayer(IDS.stageProfiles.LOOP_DEVELOPER,       IDS.layers.localCodeIntelligence, 200);
   await linkLayer(IDS.stageProfiles.LOOP_QA,              IDS.layers.localCodeIntelligence, 200);
+  // LOOP_INTAKE intentionally has no localCodeIntelligence layer: Intake is
+  // story/business-only and must not receive repo/source/code-tool guidance.
   // Only the real-mutation path gets the mutation policy.
   await linkLayer(IDS.stageProfiles.LOOP_DEVELOPER,       IDS.layers.developerCodeMutation, 210);
 
@@ -986,6 +1517,20 @@ async function main() {
     description: "Loop stage default — fallback when no role-specific binding matches.",
   });
   await upsertBinding({
+    id: IDS.stageBindings.LOOP_INTAKE,
+    stageKey: "loop.stage.intake",
+    agentRole: null,
+    promptProfileId: IDS.stageProfiles.LOOP_INTAKE,
+    description: "Loop stage — story-only Intake profile.",
+  });
+  await upsertBinding({
+    id: IDS.stageBindings.LOOP_PRODUCT_OWNER,
+    stageKey: "loop.stage",
+    agentRole: "PRODUCT_OWNER",
+    promptProfileId: IDS.stageProfiles.LOOP_INTAKE,
+    description: "Loop stage fallback — PRODUCT_OWNER role uses story-only Intake prompt unless a stage-specific binding overrides it.",
+  });
+  await upsertBinding({
     id: IDS.stageBindings.LOOP_DEVELOPER,
     stageKey: "loop.stage",
     agentRole: "DEVELOPER",
@@ -1010,6 +1555,13 @@ async function main() {
   // M36.5 — seed the EventHorizonAction catalog (was duplicated across 3 SPAs).
   for (const action of EVENT_HORIZON_ACTIONS) {
     await upsertEventHorizonAction(action);
+  }
+
+  // M71 — seed the 4 StagePolicies (intake/design/develop/qa). context-fabric
+  // loads these at /execute time and enforces them as hard refuses
+  // (PHASE_TOOL_FORBIDDEN). Atomic — each upsert replaces the phase rows.
+  for (const policy of STAGE_POLICIES) {
+    await upsertStagePolicy(policy);
   }
 
   console.log("[prompt-composer seed] done");

@@ -390,6 +390,109 @@ model StagePromptBinding {
   @@index([stageKey])
 }
 
+// ─────────────────────────────────────────────────────────────
+// M71 — StagePolicy: governance contract for a stage in the governed
+// coding loop. Owns per-phase tool allowlists, required-receipt schemas,
+// retry limits, risk policy. context-fabric loads these at runtime via
+// POST /api/v1/stage-policies/resolve and enforces them as HARD refuses
+// (PHASE_TOOL_FORBIDDEN). Replaces today's prompt-side phase nudges
+// (M68/M70.x) with a single chokepoint that any agent runtime hits.
+//
+// Spec: singularity_governed_coding_loop_spec.md §8 StagePolicy
+//       singularity_governed_coding_loop_spec.md §7 Phase Contracts
+// ─────────────────────────────────────────────────────────────
+
+model StagePolicy {
+  id            String   @id @default(uuid())
+  // Matches StagePromptBinding.stageKey ("loop.stage", "loop.stage.intake", etc.)
+  stageKey      String
+  // Role narrowing — same shape as StagePromptBinding.agentRole.
+  // NULL means "any role at this stageKey".
+  agentRole     String?
+  version       Int      @default(1)
+  status        String   @default("ACTIVE") // ACTIVE | DRAFT | RETIRED
+  description   String?
+
+  // §8 approval_model — which actions need human approval at which level.
+  // Shape: { local_sandbox_edits: "auto", stage_completion: "requires_evidence_approval", ... }
+  approvalModel      Json @default("{}")
+
+  // §8 limits — hard caps applied across all phases. Shape:
+  // { max_repair_attempts: 3, max_full_file_reads: 5, max_context_tokens: 24000,
+  //   max_tool_calls: 80, max_changed_files_without_escalation: 10,
+  //   max_diff_lines_without_escalation: 800 }
+  limits             Json @default("{}")
+
+  // §8 context_policy — AST-first, full-file justification rules. Shape:
+  // { ast_first: true, full_file_read_requires_justification: true,
+  //   large_file_threshold_lines: 500, require_context_receipt: true }
+  contextPolicy      Json @default("{}")
+
+  // §8 edit_policy — patch-first, anchor-hash, generated-file rules. Shape:
+  // { patch_first: true, write_file_existing_file: "forbidden",
+  //   require_anchor_hash: true, generated_file_requires_marker: true }
+  editPolicy         Json @default("{}")
+
+  // §8 verification_policy — mandatory test/lint/typecheck rules. Shape:
+  // { verification_required: true, allow_unavailable_with_reason: true,
+  //   require_test_discovery: true, require_fallback_if_no_tests: true }
+  verificationPolicy Json @default("{}")
+
+  // §8 risk_policy — escalation thresholds. Shape:
+  // { high_risk_requires_architect_review: true,
+  //   security_sensitive_requires_security_review: true,
+  //   external_side_effects_blocked_by_default: true }
+  riskPolicy         Json @default("{}")
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  phases        StagePhasePolicy[]
+
+  @@unique([stageKey, agentRole, version])
+  @@index([stageKey, status])
+}
+
+// Per-phase tool allowlist + required receipt schema. One row per
+// (StagePolicy, phase). Phases come from §6.1: PLAN, EXPLORE, ACT,
+// VERIFY, REPAIR, SELF_REVIEW, FINALIZE. context-fabric refuses any
+// tool call not in allowedTools (or explicitly in forbiddenTools) with
+// a PHASE_TOOL_FORBIDDEN error code listing the allowlist.
+
+model StagePhasePolicy {
+  id                   String   @id @default(uuid())
+  stagePolicyId        String
+  // Canonical phase name — see §6.1 for the full enum.
+  phase                String
+
+  // §7 allowed_tools — exact tool names the agent may call this phase.
+  // Empty array = no tools at all (e.g. PRODUCT_OWNER intake stage).
+  allowedTools         String[] @default([])
+  // §7 forbidden_tools — explicit deny list. Overrides allowedTools on conflict.
+  // Useful for "everything except X" patterns.
+  forbiddenTools       String[] @default([])
+
+  // §7 required_output schema — JSON-Schema-ish shape that the agent's
+  // phase output must satisfy. Used by context-fabric's receipt validator.
+  // Shape: { required: ["target_files", "test_strategy"],
+  //          properties: { target_files: {type:"array"}, ... } }
+  requiredOutputSchema Json     @default("{}")
+
+  // Optional per-phase token budget overrides. Fall back to StagePolicy.limits
+  // when null. Set when a phase needs tighter or looser caps than the stage default.
+  maxInputTokens       Int?
+  maxOutputTokens      Int?
+  maxToolCalls         Int?
+
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  stagePolicy          StagePolicy @relation(fields: [stagePolicyId], references: [id], onDelete: Cascade)
+
+  @@unique([stagePolicyId, phase])
+  @@index([phase])
+}
+
 model PromptAssemblyLayer {
   id               String  @id @default(uuid())
   promptAssemblyId String

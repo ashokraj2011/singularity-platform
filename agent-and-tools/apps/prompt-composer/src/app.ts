@@ -9,6 +9,7 @@ import { promptProfileRoutes, promptLayerRoutes, promptAssemblyRoutes } from "./
 import { composeRoutes, composeDebugRoutes } from "./modules/compose/compose.routes";
 import { compiledContextRoutes } from "./modules/compose/compiled-context.routes";
 import { stagePromptsRoutes } from "./modules/stage-prompts/stage-prompts.routes";
+import { stagePoliciesRoutes } from "./modules/stage-policies/stage-policies.routes";
 import { systemPromptsRoutes } from "./modules/system-prompts/system-prompts.routes";
 import { eventHorizonActionsRoutes } from "./modules/event-horizon-actions/event-horizon-actions.routes";
 import { lessonsRoutes } from "./modules/lessons/lessons.routes";
@@ -57,6 +58,12 @@ app.use("/api/v1/compiled-contexts", compiledContextRoutes);
 // M36.1 — stage-prompt resolver. workgraph-api blueprint runner POSTs to
 // /api/v1/stage-prompts/resolve so prompt text no longer lives in TS source.
 app.use("/api/v1/stage-prompts", stagePromptsRoutes);
+// M71 — stage-policy resolver. context-fabric POSTs to
+// /api/v1/stage-policies/resolve at the start of every /execute to load the
+// per-phase tool allowlist + required-receipt schemas. context-fabric then
+// enforces these as HARD refuses (PHASE_TOOL_FORBIDDEN), removing the prompt-
+// side phase nudges that lived in mcp-server (M68/M70.x).
+app.use("/api/v1/stage-policies", stagePoliciesRoutes);
 // M36.4 — single-shot SystemPrompt store. For services that need a single
 // named prompt (event-horizon, distillation, summarisation, capsule
 // compiler, audit-gov diagnose), not a layered agent assembly.
