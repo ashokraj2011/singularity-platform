@@ -43,8 +43,16 @@ async function findPolicy(
   stageKey: string,
   agentRole?: string,
 ): Promise<StagePolicyRow | null> {
+  // M72 — Universal `loop.stage` fallback. The user's workflow may use
+  // arbitrary stage keys like "story-intake", "develop", "qa-review" (kebab-
+  // case normalisation happens in workgraph-api when a starter loopDefinition
+  // gets saved). The previous narrow fallback only matched `loop.stage.*`,
+  // so freshly-normalised stages 404'd. Now ANY stage key that doesn't have
+  // its own policy falls through to the canonical `loop.stage` + agentRole
+  // policy. Operators who want a stage-specific override can still seed
+  // `loop.stage.<stagekey>` directly and it wins.
   const candidates = [stageKey];
-  if (stageKey.startsWith("loop.stage.") && stageKey !== "loop.stage") {
+  if (stageKey !== "loop.stage") {
     candidates.push("loop.stage");
   }
   for (const candidate of candidates) {

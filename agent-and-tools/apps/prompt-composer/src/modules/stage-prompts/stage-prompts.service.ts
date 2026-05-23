@@ -48,8 +48,15 @@ async function findBinding(
   agentRole?: string,
   phase?: string,
 ): Promise<BindingRow | null> {
+  // M72 — Universal `loop.stage` fallback. Mirror the broadened fallback in
+  // stage-policies.service.ts so prompt resolution and policy resolution
+  // walk the same ladder. Without this, freshly-normalised stage keys
+  // (`story-intake`, `develop`, …) hit the prompt ladder via the slug-strip
+  // path but the policy ladder 404'd, producing the asymmetry that
+  // surfaced as STAGE_POLICY_NOT_FOUND on the first run after a workitem
+  // detach + reattach.
   const candidates = [stageKey];
-  if (stageKey.startsWith("loop.stage.") && stageKey !== "loop.stage") {
+  if (stageKey !== "loop.stage") {
     candidates.push("loop.stage");
   }
   for (const candidate of candidates) {

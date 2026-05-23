@@ -1043,9 +1043,15 @@ interface SeedStagePolicy {
 
 const STAGE_POLICIES: SeedStagePolicy[] = [
   // ── STORY_INTAKE — story-only, no repo or code tools ────────────────────
+  // M72 — Aligned with the other roles on stageKey="loop.stage" so the
+  // universal `loop.stage` fallback in policy_loader resolves PRODUCT_OWNER
+  // for any normalised stage key ("story-intake", "intake", "STORY_INTAKE").
+  // Previously parked at "loop.stage.intake", which only resolved when the
+  // caller knew the explicit prefix — workflows that normalised their stage
+  // keys to kebab-case lost the resolution path and 404'd.
   {
     id: IDS.stagePolicies.INTAKE,
-    stageKey: "loop.stage.intake",
+    stageKey: "loop.stage",
     agentRole: "PRODUCT_OWNER",
     description: "Story-only intake stage. Tool-free. Captures business intent before any repo access.",
     approvalModel: {
