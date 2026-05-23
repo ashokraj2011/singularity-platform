@@ -114,6 +114,26 @@ async def dispatch_tool(
       failures (handler returned success=false) come back inside
       ToolDispatchResult, not as throws.
     """
+    # M75 Slice 6 — emergency rollback. LAPTOP_USE_LEGACY_INVOKE=true
+    # forces every dispatch onto the shared HTTP mcp-server even if
+    # the caller asked for laptop routing. Operators flip this when
+    # the new per-tool bridge path has a production-level bug and the
+    # safest move is to re-route all activity to the shared runner
+    # while a fix ships. No re-deploy required — just restart the CF
+    # container with the env set. Read at call time (not import time)
+    # so a config reload via `docker compose up -d` picks it up
+    # without rebuilding the image.
+    legacy_flag = os.environ.get("LAPTOP_USE_LEGACY_INVOKE", "").strip().lower()
+    legacy_active = legacy_flag in {"1", "true", "yes", "on"}
+    if legacy_active and laptop_user_id:
+        log.warning(
+            "LAPTOP_USE_LEGACY_INVOKE active — forcing HTTP for tool=%s "
+            "(would have routed to laptop user=%s)",
+            tool_name,
+            laptop_user_id,
+        )
+        laptop_user_id = None
+
     if laptop_user_id:
         try:
             return await _dispatch_via_laptop(

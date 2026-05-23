@@ -301,6 +301,97 @@ def test_dispatch_bridge_non_dict_response_raises():
             ))
 
 
+# ── M75 Slice 6 — emergency rollback flag ──────────────────────────────────
+
+
+def test_LAPTOP_USE_LEGACY_INVOKE_forces_http_even_with_user_id(monkeypatch):
+    """The emergency rollback env flag must short-circuit the laptop
+    path BEFORE the registry lookup. Asserted by: registry mock that
+    fails the test if touched, plus HTTP mock that asserts it was hit
+    with the right tool name. If the flag silently failed to engage,
+    we'd see the registry assertion fire instead.
+
+    Truthy values "1", "true", "yes", "on" all engage the flag. False
+    values (anything else, including "false", "0", empty string) leave
+    the laptop path active — same parsing model as the rest of CF's
+    boolean env vars (cf. config.py)."""
+    async def must_not_call(_kwargs):
+        raise AssertionError(
+            "registry should not be touched when LAPTOP_USE_LEGACY_INVOKE is active"
+        )
+
+    monkeypatch.setenv("LAPTOP_USE_LEGACY_INVOKE", "true")
+
+    with _patch_registry(must_not_call):
+        with patch(
+            "context_api_service.app.governed.dispatch.httpx.AsyncClient"
+        ) as mock_client_factory:
+            mock_client = mock_client_factory.return_value.__aenter__.return_value
+            seen_url: dict[str, str] = {}
+
+            async def fake_post(url, *args, **kwargs):
+                seen_url["url"] = url
+                return type("Resp", (), {
+                    "is_success": True,
+                    "status_code": 200,
+                    "text": "",
+                    "json": lambda self: {
+                        "success": True,
+                        "data": {
+                            "result": {"rollback": True},
+                            "durationMs": 7,
+                            "toolInvocationId": "ti-rollback",
+                            "toolSuccess": True,
+                        },
+                    },
+                })()
+
+            mock_client.post = fake_post
+
+            outcome = _run(dispatch_tool(
+                "read_file",
+                {"path": "x.py"},
+                laptop_user_id="user-with-bridge",
+                bearer="tok",
+            ))
+
+    assert outcome.served_by == "http"
+    assert outcome.tool_invocation_id == "ti-rollback"
+    assert "/mcp/tool-run" in seen_url["url"]
+
+
+@pytest.mark.parametrize("inactive_value", ["false", "0", "", "no", "off", "FaLsE"])
+def test_LAPTOP_USE_LEGACY_INVOKE_inactive_values_keep_laptop_path(
+    monkeypatch, inactive_value,
+):
+    """Negative cases for the rollback flag: anything that isn't one of
+    {"1","true","yes","on"} (case-insensitive) leaves bridge routing
+    enabled. "FaLsE" is the tricky one — strict casing on "true" would
+    accidentally engage the flag for anything non-empty."""
+    async def bridge_returns_ok(_kwargs):
+        return (
+            {
+                "result": {"branches": ["main"]},
+                "duration_ms": 1,
+                "tool_invocation_id": "ti-laptop-still",
+                "tool_success": True,
+                "tool_error": None,
+            },
+            {"device_id": "dev-x", "device_name": "n"},
+        )
+
+    monkeypatch.setenv("LAPTOP_USE_LEGACY_INVOKE", inactive_value)
+
+    with _patch_registry(bridge_returns_ok):
+        outcome = _run(dispatch_tool(
+            "repo_map",
+            {},
+            laptop_user_id="user-x",
+        ))
+    assert outcome.served_by == "laptop"
+    assert outcome.tool_invocation_id == "ti-laptop-still"
+
+
 def test_dispatch_bridge_bare_dict_response_still_routes():
     """Back-compat: pre-Slice-5 mocks (and any rogue registry
     implementation) that return a bare dict instead of (payload, meta)

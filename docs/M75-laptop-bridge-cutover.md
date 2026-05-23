@@ -324,18 +324,52 @@ arbitrary `kinds`, so operators can filter on
 search UI surfaces the new kind in the dropdown the first time it
 appears in the event stream.
 
-### Slice 6 — Cutover docs + flag (~half day)
+### Slice 6 — Cutover docs + flag (~half day) ✅ SHIPPED
 
-- `docs/M75-laptop-bridge-cutover.md` (this file) — update to
-  "Phase A complete" with a section pointing at Phase B/C
-  prerequisites.
-- `singularity-desktop/README.md` — note the new protocol is
-  default; operators on old binaries get a deprecation warning in
-  their logs.
-- env flag for emergency rollback:
-  `LAPTOP_USE_LEGACY_INVOKE=true` falls back to the old path. If
-  the new dispatch has a bug in production, operators can flip the
-  flag without a re-deploy.
+Status: ✅ landed 2026-05-23. Files touched:
+
+- `context-fabric/services/context_api_service/app/governed/dispatch.py`
+  — `LAPTOP_USE_LEGACY_INVOKE` env check at the top of
+  `dispatch_tool`. When truthy ({"1","true","yes","on"},
+  case-insensitive), forces every dispatch onto the shared HTTP
+  mcp-server even if `laptop_user_id` is set. Logs a warning per
+  bypassed call so an operator sees the flag is engaged. Read at
+  call time (not import time) so a `docker compose up -d
+  context-api` picks it up without a rebuild.
+- `context-fabric/tests/test_laptop_dispatch_routing.py` — two
+  new test groups: (a) flag active → registry not touched, HTTP
+  endpoint hit instead with the same tool name; (b) parameterised
+  inactive values ("false", "0", "", "no", "off", "FaLsE") leave
+  the laptop path active. Pinning the truthy/falsy parsing keeps
+  a refactor from accidentally engaging the kill-switch for any
+  non-empty value.
+- `singularity-desktop/README.md` — new "Laptop bridge protocol"
+  section documents the M75 hello-frame capability negotiation
+  (`supported_frame_types: ["invoke", "tool-run"]`), the per-tool
+  `tool-run` frame contract, and points the operator at the
+  rollback flag as a CF-side toggle (no desktop re-install).
+
+Operational impact: **Phase A complete.** The governed loop's tool
+dispatch now flows through the laptop bridge end-to-end with
+per-tool granularity, device-attributed audit events, and an
+operator-flippable emergency rollback. The legacy
+`executeInvokePayload` path is no longer the active laptop entry
+for governed stages — it remains in the tree as the `invoke` frame
+handler for back-compat with desktops on older binaries until those
+are forced to upgrade in a future milestone.
+
+Phase B/C prerequisites for the eventual `executeInvokePayload`
+deletion:
+- All in-flight pauses on the legacy protocol drained (the M71
+  cutover refuses to resume pre-M75 pauses; this just needs
+  calendar time).
+- Desktop binary version pin in the bridge handshake (M76 candidate):
+  CF rejects connections from any desktop missing
+  `tool-run` in `supported_frame_types`.
+- Final removal: delete the `invoke` frame handler in
+  `mcp-server/src/laptop/relay-client.ts` + the
+  `executeInvokePayload` code path in `mcp-server/src/mcp/invoke.ts`
+  (~2500 LOC). Net negative on the codebase.
 
 ## Cross-cutting decisions
 
