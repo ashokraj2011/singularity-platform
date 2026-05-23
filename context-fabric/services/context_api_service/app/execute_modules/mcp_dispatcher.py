@@ -1,34 +1,122 @@
 """
-M73 — MCP dispatch to the shared Agent Execution Runtime.
+M73 — shared-HTTP MCP dispatch + error classification.
 
-TODO(M73-followup): extract from execute.py:1380..1700.
+This module is the WHERE-to-POST and the WHAT-DOES-THE-ERROR-MEAN for
+the legacy ``/execute`` path. The agent loop runs inside mcp-server; we
+just hand it the assembled invoke payload and translate its responses.
 
-This is the call that makes the agent loop run. The orchestrator builds
-an invoke_payload (history, message, tools, system_prompt, limits, …) and
-POSTs it to {mcp_base_url}/mcp/invoke. Provider errors (rate limits,
-upstream 5xx, timeouts) come back with structured error codes that the
-caller maps to HTTP responses for workgraph-api.
+Two functions:
 
-Target shape:
+  dispatch_invoke(...) → dict
+      Thin httpx.post wrapper around ``POST {base}/mcp/invoke``. Raises
+      ``httpx.HTTPStatusError`` on non-2xx — the orchestrator turns
+      those into structured HTTP responses using ``classify_invoke_error``.
 
-  dispatch_invoke(record, payload, *, timeout_sec) → InvokeResponse
-      Wraps the httpx.post + error classification. Errors that map to
-      LLM_GATEWAY_TIMEOUT, LLM_PROVIDER_OVERLOADED, MCP_INVOKE_FAILED
-      get raised as ContextFabricInvokeError so the orchestrator can
-      decide whether to surface or retry.
+  classify_invoke_error(detail) → tuple[Optional[str], dict | str]
+      Pure function. Inspects the mcp-server error envelope and
+      decides whether to surface the inner LLM-gateway error code
+      (LLM_PROVIDER_OVERLOADED / LLM_GATEWAY_TIMEOUT / ...) or collapse
+      to the generic ``MCP_INVOKE_FAILED``. Workbench's retry/send-back
+      copy varies on the code, so the passthrough matters.
 
-  dispatch_resume(record, payload) → InvokeResponse
-      Same plumbing for the /mcp/resume continuation path.
+The /mcp/resume continuation has the same wire shape so it shares
+``dispatch_invoke``'s plumbing via ``dispatch_resume``.
 
-The corresponding "dumb runner" path for the new governed loop lives in
-mcp-server's /mcp/tool-run (Slice D) and is dispatched from
-context_api_service.app.governed.dispatch.dispatch_tool — NOT through
-this module. That separation is deliberate: the legacy /execute and the
-new /execute-governed-stage have different error-classification
-contracts and shouldn't share the dispatcher.
-
-Note that mcp-server's POST /mcp/invoke now returns 410 after the M71
-hard cutover. This dispatcher will need to be retired once all callers
-move to /execute-governed-stage. Track via the open task #81.
+Note: mcp-server's ``POST /mcp/invoke`` is the LEGACY path and returns
+410 after the M71 hard cutover. This module is here to support the
+``/execute`` route while it still exists; the new
+``/execute-governed-stage`` route uses ``app.governed.dispatch`` instead,
+which has a different error-classification contract (it raises typed
+``ContextFabricToolError`` rather than ``HTTPStatusError``).
 """
 from __future__ import annotations
+
+from typing import Any, Optional
+
+import httpx
+
+
+# Error codes from llm-gateway that mcp-server forwards verbatim. Workbench
+# surfaces these with retry-specific copy ("Provider overloaded — retry
+# in a minute" vs the generic MCP_INVOKE_FAILED "Send back to an earlier
+# stage"). Keep this set in sync with mcp-server's llm-gateway-client
+# error classifier and the workbench's retry-copy switch.
+PASSTHROUGH_INNER_CODES: set[str] = {
+    "LLM_PROVIDER_OVERLOADED",
+    "LLM_PROVIDER_UNAVAILABLE",
+    "LLM_PROVIDER_RATE_LIMITED",
+    "LLM_GATEWAY_TIMEOUT",
+    "LLM_GATEWAY_UNREACHABLE",
+}
+
+
+async def dispatch_invoke(
+    *,
+    mcp_base_url: str,
+    mcp_bearer: str,
+    payload: dict[str, Any],
+    timeout_sec: float,
+) -> dict[str, Any]:
+    """POST ``{mcp_base_url}/mcp/invoke`` with the bearer token.
+
+    Returns the parsed JSON body on 2xx. Raises ``httpx.HTTPStatusError``
+    on any non-2xx so the orchestrator can decide whether to persist a
+    FAILED call_log row + translate to its own HTTP code.
+    """
+    async with httpx.AsyncClient(timeout=timeout_sec) as client:
+        resp = await client.post(
+            f"{mcp_base_url.rstrip('/')}/mcp/invoke",
+            json=payload,
+            headers={"Authorization": f"Bearer {mcp_bearer}"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def dispatch_resume(
+    *,
+    mcp_base_url: str,
+    mcp_bearer: str,
+    payload: dict[str, Any],
+    timeout_sec: float,
+) -> dict[str, Any]:
+    """Sibling of ``dispatch_invoke`` for the /mcp/resume continuation
+    path used after a human-approval pause. Identical plumbing; the
+    payload shape differs (continuation_token instead of message)."""
+    async with httpx.AsyncClient(timeout=timeout_sec) as client:
+        resp = await client.post(
+            f"{mcp_base_url.rstrip('/')}/mcp/resume",
+            json=payload,
+            headers={"Authorization": f"Bearer {mcp_bearer}"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+def classify_invoke_error(
+    detail: dict[str, Any] | str,
+) -> tuple[Optional[str], Optional[str]]:
+    """Inspect a non-2xx body from /mcp/invoke and decide what code to
+    raise it as. Pure function — no I/O.
+
+    Returns ``(passthrough_code, message)``:
+
+      * If ``detail`` carries one of ``PASSTHROUGH_INNER_CODES`` under
+        ``detail.error.code``, returns ``("LLM_PROVIDER_OVERLOADED", "...")``
+        (or whichever code) so the orchestrator surfaces it unchanged.
+      * Otherwise returns ``(None, None)`` and the orchestrator falls
+        back to its generic ``MCP_INVOKE_FAILED`` envelope.
+
+    The orchestrator still owns: HTTP status code (passed through from
+    the original response), call_log persistence, subscriber teardown.
+    """
+    if not isinstance(detail, dict):
+        return None, None
+    err = detail.get("error") or {}
+    if not isinstance(err, dict):
+        return None, None
+    code = err.get("code")
+    if not isinstance(code, str) or code not in PASSTHROUGH_INNER_CODES:
+        return None, None
+    message = err.get("message")
+    return code, (message if isinstance(message, str) else None)

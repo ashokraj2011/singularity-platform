@@ -41,6 +41,8 @@ from .iam_service_token import get_iam_service_token, invalidate_iam_service_tok
 from .execute_modules import (
     event_collector as _events_mod,
     governance as _gov_mod,
+    laptop_dispatcher as _laptop_mod,
+    mcp_dispatcher as _mcp_mod,
     memory_context as _memory_mod,
     prompt_context as _prompt_mod,
     response_mapper as _response_mod,
@@ -691,26 +693,24 @@ async def execute(req: ExecuteRequest):
     #   • req.prefer_laptop == False → never use laptop (force HTTP path)
     #   • req.prefer_laptop is None  → auto-prefer laptop when one is connected
     user_id = req.run_context.user_id
-    use_laptop = False
-    laptop_device_id: Optional[str] = None
-    laptop_device_name: Optional[str] = None
-    if user_id and req.prefer_laptop is not False:
-        from .laptop_registry import REGISTRY as _LAPTOP_REGISTRY
-        conn = await _LAPTOP_REGISTRY.any_for_user(user_id)
-        if conn is not None:
-            use_laptop = True
-            laptop_device_id = conn.device_id
-            laptop_device_name = conn.device_name
-        elif req.prefer_laptop is True:
-            # Required but missing — fail fast (decision #2).
-            _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
-                             "MCP_NOT_CONNECTED: laptop mcp-server is not online for this user",
-                             session_id, mcp_server_id=mcp_server_id)
-            raise HTTPException(status_code=503, detail={
-                "code": "MCP_NOT_CONNECTED",
-                "message": "Your laptop mcp-server is not connected. Run `singularity-mcp start` and retry.",
-                "user_id": user_id,
-            })
+    # M73-followup Slice 3 — resolve_laptop_target() in laptop_dispatcher.py
+    # owns the "is a laptop bridge live for this user?" decision. It returns
+    # (False, None, None) when nothing is connected; we still need to handle
+    # the "required but missing" branch here because that error path also has
+    # to write a FAILED call_log row (which is orchestrator state).
+    use_laptop, laptop_device_id, laptop_device_name = await _laptop_mod.resolve_laptop_target(
+        user_id=user_id,
+        prefer_laptop=req.prefer_laptop,
+    )
+    if not use_laptop and req.prefer_laptop is True and user_id:
+        _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
+                         "MCP_NOT_CONNECTED: laptop mcp-server is not online for this user",
+                         session_id, mcp_server_id=mcp_server_id)
+        raise HTTPException(status_code=503, detail={
+            "code": "MCP_NOT_CONNECTED",
+            "message": "Your laptop mcp-server is not connected. Run `singularity-mcp start` and retry.",
+            "user_id": user_id,
+        })
 
     # M26 — emit a per-invoke event tying this run to the specific laptop
     # device. Workgraph Run Insights buckets these by trace_id to render the
@@ -736,12 +736,12 @@ async def execute(req: ExecuteRequest):
     try:
         mcp_started = time.time()
         if use_laptop:
-            from .laptop_registry import REGISTRY as _LAPTOP_REGISTRY, LaptopInvokeError, LaptopInvokeTimeout
+            from .laptop_registry import LaptopInvokeError, LaptopInvokeTimeout
             try:
-                mcp_data = await _LAPTOP_REGISTRY.invoke(
+                mcp_data = await _laptop_mod.dispatch_via_laptop(
                     user_id=user_id,  # type: ignore[arg-type]
                     payload=invoke_payload,
-                    timeout=float(req.limits.get("timeoutSec", 240)),
+                    timeout_sec=float(req.limits.get("timeoutSec", 240)),
                 )
                 # Wrap in mcp-server's standard envelope so downstream code
                 # treats this identically to an HTTP response.
@@ -765,11 +765,11 @@ async def execute(req: ExecuteRequest):
             _default_mcp_timeout = float(
                 os.getenv("CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC", "480"),
             )
-            mcp_resp = await _post(
-                f"{mcp_base_url}/mcp/invoke",
-                invoke_payload,
-                timeout=float(req.limits.get("timeoutSec", _default_mcp_timeout)),
-                headers={"Authorization": f"Bearer {mcp_bearer}"},
+            mcp_resp = await _mcp_mod.dispatch_invoke(
+                mcp_base_url=mcp_base_url,
+                mcp_bearer=mcp_bearer,
+                payload=invoke_payload,
+                timeout_sec=float(req.limits.get("timeoutSec", _default_mcp_timeout)),
             )
         mcp_latency_ms = int((time.time() - mcp_started) * 1000)
     except HTTPException:
@@ -791,31 +791,17 @@ async def execute(req: ExecuteRequest):
             detail = exc.response.json()
         except Exception:
             detail = {"message": exc.response.text[:500]}
-        # M64 — Pass through structured LLM gateway error codes from
-        # mcp-server (LLM_PROVIDER_OVERLOADED / LLM_PROVIDER_UNAVAILABLE /
-        # LLM_PROVIDER_RATE_LIMITED / LLM_GATEWAY_TIMEOUT /
-        # LLM_GATEWAY_UNREACHABLE) instead of collapsing them to the
-        # generic MCP_INVOKE_FAILED. The workbench's retry/send-back
-        # button copy can then be specific ("Provider overloaded — retry
-        # in a minute" vs "Send back to an earlier stage").
-        _PASSTHROUGH_CODES = {
-            "LLM_PROVIDER_OVERLOADED",
-            "LLM_PROVIDER_UNAVAILABLE",
-            "LLM_PROVIDER_RATE_LIMITED",
-            "LLM_GATEWAY_TIMEOUT",
-            "LLM_GATEWAY_UNREACHABLE",
-        }
-        inner_code = None
-        if isinstance(detail, dict):
-            err = detail.get("error") or {}
-            if isinstance(err, dict):
-                inner_code = err.get("code")
-        if inner_code in _PASSTHROUGH_CODES:
+        # M64 / M73-followup Slice 3 — classify_invoke_error() in
+        # mcp_dispatcher.py decides whether to surface mcp-server's inner
+        # LLM_* error code (so workbench can show specific retry copy) or
+        # collapse to the generic MCP_INVOKE_FAILED.
+        inner_code, inner_message = _mcp_mod.classify_invoke_error(detail)
+        if inner_code:
             _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
                              f"{inner_code}: {detail}", session_id, mcp_server_id=mcp_server_id)
             raise HTTPException(status_code=exc.response.status_code, detail={
                 "code": inner_code,
-                "message": (detail.get("error") or {}).get("message") if isinstance(detail, dict) else str(detail),
+                "message": inner_message,
                 "details": detail,
             })
         _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
@@ -1373,11 +1359,13 @@ async def execute_resume(req: ResumeRequest):
 
     try:
         mcp_started = time.time()
-        mcp_resp = await _post(
-            f"{mcp_base_url}/mcp/resume",
-            resume_payload,
-            timeout=240.0,
-            headers={"Authorization": f"Bearer {mcp_bearer}"},
+        # M73-followup Slice 3 — share dispatch plumbing with /mcp/invoke
+        # via mcp_dispatcher.dispatch_resume.
+        mcp_resp = await _mcp_mod.dispatch_resume(
+            mcp_base_url=mcp_base_url,
+            mcp_bearer=mcp_bearer,
+            payload=resume_payload,
+            timeout_sec=240.0,
         )
         mcp_latency_ms = int((time.time() - mcp_started) * 1000)
     except Exception as exc:
