@@ -24,6 +24,14 @@ export interface WorkspaceRootRequest {
   workItemCode?: string;
   branchName?: string;
   workspaceRoot?: string;
+  // M72 Slice C — Per-attempt isolation. When `attemptId` is supplied, the
+  // workspace root is scoped to `.singularity/workitems/<workItem>/<attemptId>/`
+  // so two concurrent attempts on the same WorkItem don't stomp on each
+  // other's checkouts, file edits, or commits. The source-materializer
+  // still creates a git worktree branching from the shared source-cache
+  // mirror, so disk + clone cost stays bounded.
+  // Backward compat: when attemptId is absent, the layout is unchanged.
+  attemptId?: string;
 }
 
 function safeWorkspaceSegment(value: string | undefined, fallback: string): string {
@@ -73,7 +81,17 @@ export function workspaceRootForRunContext(req: WorkspaceRootRequest): string {
     || (req.branchName?.trim() ? safeWorkspaceSegment(req.branchName, "") : "")
     || req.workItemId?.trim();
   if (!identity) return baseSandboxRoot();
-  return path.join(workItemWorkspacesRoot(), safeWorkspaceSegment(identity, "workitem"));
+  const base = path.join(workItemWorkspacesRoot(), safeWorkspaceSegment(identity, "workitem"));
+  // M72 Slice C — Append the attempt segment when caller supplied an
+  // attemptId so concurrent attempts on the same WorkItem land in
+  // separate directories. safeWorkspaceSegment strips path separators
+  // and unsafe chars; `attempts/` is hardcoded so the parent directory
+  // is grep-able for the janitor (M72C-followup) to enumerate.
+  const attempt = req.attemptId?.trim();
+  if (attempt) {
+    return path.join(base, "attempts", safeWorkspaceSegment(attempt, "attempt"));
+  }
+  return base;
 }
 
 export async function withSandboxRoot<T>(root: string, fn: () => Promise<T>): Promise<T> {

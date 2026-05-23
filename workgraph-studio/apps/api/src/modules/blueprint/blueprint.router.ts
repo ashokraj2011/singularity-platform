@@ -3242,6 +3242,12 @@ async function runLoopStageExecute(
       workflow_instance_id: session.workflowInstanceId ?? `blueprint-${session.id}`,
       workflow_node_id: readLoopState(session).workflowNodeId ?? session.phaseId ?? `blueprint-${stage.key}`,
       agent_run_id: isDeveloperStage ? attempt.id : undefined,
+      // M72 Slice C — pass attempt.id so mcp-server's
+      // workspaceRootForRunContext puts each concurrent attempt in its own
+      // .singularity/workitems/<workItem>/attempts/<attemptId>/ directory.
+      // Without this, two simultaneous attempts on the same WorkItem stomp
+      // on each other's git state.
+      attempt_id: attempt.id,
       work_item_id: isDeveloperStage ? linkedWorkItem.workItemId : undefined,
       work_item_code: isDeveloperStage ? linkedWorkItem.workItemCode : undefined,
       capability_id: session.capabilityId,

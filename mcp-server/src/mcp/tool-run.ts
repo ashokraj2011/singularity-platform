@@ -77,6 +77,11 @@ const ToolRunSchema = z.object({
       workspaceRoot: z.string().optional(),
       capabilityId: z.string().optional(),
       agentId: z.string().optional(),
+      // M72 Slice C — caller-supplied attempt id; per-attempt sandbox isolation.
+      // Accepts both snake_case (context-fabric's `attempt_id`) and camelCase
+      // (workgraph-api's `attemptId`) via the alias below.
+      attemptId: z.string().optional(),
+      attempt_id: z.string().optional(),
     })
     .default({}),
 });
@@ -105,11 +110,15 @@ toolRunRouter.post("/tool-run", async (req, res) => {
     mcpInvocationId: uuidv4(),
   };
 
+  // M72 Slice C — Accept attempt id from either casing so callers in Python
+  // (snake_case) and TS (camelCase) both work without a translation layer.
+  const attemptId = body.run_context.attemptId ?? body.run_context.attempt_id;
   const workspaceRoot = workspaceRootForRunContext({
     workItemId,
     workItemCode: body.run_context.workItemCode,
     branchName: body.run_context.branchName,
     workspaceRoot: body.run_context.workspaceRoot,
+    attemptId,
   });
 
   const start = Date.now();
