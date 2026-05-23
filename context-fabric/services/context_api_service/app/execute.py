@@ -41,6 +41,7 @@ from .iam_service_token import get_iam_service_token, invalidate_iam_service_tok
 from .execute_modules import (
     event_collector as _events_mod,
     governance as _gov_mod,
+    memory_context as _memory_mod,
     prompt_context as _prompt_mod,
     response_mapper as _response_mod,
     runtime_resolver as _runtime_mod,
@@ -860,41 +861,15 @@ async def execute(req: ExecuteRequest):
     verification_receipts = mcp_data.get("verificationReceipts") or correlation.get("verificationReceipts") or []
 
     # ── 6. Persist memory turn + summary + metrics ──────────────────────
-    try:
-        await _post(
-            f"{settings.context_memory_url.rstrip('/')}/memory/messages",
-            {
-                "session_id": session_id,
-                "agent_id": req.run_context.agent_template_id,
-                "role": "user",
-                "content": req.task,
-            },
-            timeout=10.0,
-        )
-        if final_response:
-            await _post(
-                f"{settings.context_memory_url.rstrip('/')}/memory/messages",
-                {
-                    "session_id": session_id,
-                    "agent_id": req.run_context.agent_template_id,
-                    "role": "assistant",
-                    "content": final_response,
-                },
-                timeout=10.0,
-            )
-        summary_every = _int_limit(req.limits, "summaryEveryMessages", "summary_every_messages", default=6) or 6
-        await _post(
-            f"{settings.context_memory_url.rstrip('/')}/memory/summaries/update",
-            {
-                "session_id": session_id,
-                "agent_id": req.run_context.agent_template_id,
-                "force": False,
-                "min_messages_since_last_summary": summary_every,
-            },
-            timeout=20.0,
-        )
-    except Exception:
-        pass  # best-effort
+    # M73-followup Slice 2 — body lives in execute_modules/memory_context.py.
+    # Best-effort: any context-memory failure is swallowed inside the helper.
+    await _memory_mod.persist_turn_and_maybe_summarise(
+        session_id=session_id,
+        agent_id=req.run_context.agent_template_id,
+        user_message=req.task,
+        assistant_response=final_response,
+        limits=req.limits,
+    )
 
     # ── 7. Drain MCP events for this trace (M9.x safety net for the
     #       live WS subscriber from M9.y; idempotent on event id) ──────
