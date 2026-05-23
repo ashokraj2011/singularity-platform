@@ -19,6 +19,10 @@ import WebSocket from "ws";
 import { randomUUID } from "node:crypto";
 import { log } from "../shared/log";
 import { executeInvokePayload } from "../mcp/invoke";
+// M75 Slice 2 — laptop bridge handles per-tool tool-run frames in addition
+// to the legacy full-loop invoke frame. runToolByName is the same code
+// path the platform's HTTP /mcp/tool-run route uses.
+import { runToolByName } from "../mcp/tool-run";
 import {
   decodeInbound,
   type HelloFrame, type HeartbeatFrame, type ResponseFrame,
@@ -200,6 +204,70 @@ export class LaptopRelayClient {
           error: {
             code: e.code ?? "INVOKE_FAILED",
             message: e.message ?? "invocation failed",
+            details: e.details,
+          },
+        });
+      } finally {
+        this.inflight--;
+      }
+      return;
+    }
+
+    // M75 Slice 2 — per-tool dispatch over the bridge. Counted against the
+    // SAME inflight gate as invoke for now (decision #2 in the M75 plan:
+    // keep serial in Phase A; pipelining is a future optimisation). The
+    // handler delegates to runToolByName — the same code path the
+    // platform's HTTP /mcp/tool-run route uses, so a tool that works on
+    // the platform works identically here.
+    if (frame.type === "tool-run") {
+      if (this.inflight >= this.maxConcurrent) {
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: { code: "BUSY", message: `laptop at max ${this.maxConcurrent} concurrent dispatches` },
+        });
+        return;
+      }
+      this.inflight++;
+      try {
+        log.info(
+          { request_id: frame.request_id, tool_name: frame.payload.tool_name },
+          "[laptop-relay] running tool-run",
+        );
+        const outcome = await runToolByName({
+          tool_name: frame.payload.tool_name,
+          args: frame.payload.args,
+          work_item_id: frame.payload.work_item_id,
+          workspace_id: frame.payload.workspace_id,
+          run_context: frame.payload.run_context as Parameters<typeof runToolByName>[0]["run_context"],
+        });
+        // Response payload shape matches ToolRunResponsePayload in
+        // envelopes.ts and the HTTP /tool-run response's `data` field.
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: {
+            result: outcome.result,
+            duration_ms: outcome.durationMs,
+            tool_invocation_id: outcome.toolInvocationId,
+            tool_success: outcome.toolSuccess,
+            tool_error: outcome.toolError,
+          },
+        });
+      } catch (err) {
+        const e = err as { code?: string; message?: string; details?: unknown };
+        log.warn(
+          { err: e.message, request_id: frame.request_id, tool_name: frame.payload.tool_name },
+          "[laptop-relay] tool-run failed",
+        );
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: {
+            code: e.code ?? "TOOL_RUN_FAILED",
+            message: e.message ?? "tool execution failed",
             details: e.details,
           },
         });

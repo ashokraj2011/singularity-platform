@@ -57,7 +57,7 @@ import { withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbo
 
 export const toolRunRouter = Router();
 
-const ToolRunSchema = z.object({
+export const ToolRunSchema = z.object({
   tool_name: z.string().min(1, "tool_name required"),
   args: z.record(z.unknown()).default({}),
   // Either `work_item_id` or `workspace_id` works. The sandbox resolver
@@ -86,23 +86,43 @@ const ToolRunSchema = z.object({
     .default({}),
 });
 
-toolRunRouter.post("/tool-run", async (req, res) => {
-  const parsed = ToolRunSchema.safeParse(req.body);
-  if (!parsed.success) {
-    throw new AppError("invalid /mcp/tool-run payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
-  }
-  const body = parsed.data;
+// M75 Slice 2 — outcome of one tool-run dispatch, in the shape both the
+// HTTP route and the WebSocket bridge expect to wrap (HTTP nests under
+// `data`; WS wraps inside ResponseFrame.payload). Either transport
+// translates this to its envelope; the runner itself is transport-
+// agnostic.
+export interface ToolRunOutcome {
+  result: unknown;
+  durationMs: number;
+  toolInvocationId: string;
+  toolSuccess: boolean;
+  toolError: string | null;
+}
 
-  // Find the tool. If it isn't in the local registry, this is the caller's
-  // bug (context-fabric should only dispatch tools that exist) — 404 lets
-  // the upstream surface a clear "this tool name is unknown" error.
+/**
+ * M75 Slice 2 — transport-neutral tool runner. Pulled out of the HTTP
+ * route so the laptop bridge (relay-client) can dispatch tool-run
+ * frames against the same code path. The HTTP route + WS handler
+ * become thin envelope-translators around this function.
+ *
+ * Throws AppError on validation / lookup failures. Throws on tool
+ * execution failure — the caller wraps as a 500 (HTTP) or an error
+ * ResponseFrame (WS). Tool-reported failures (where the tool
+ * executed but returned success=false) come back inside the
+ * ToolRunOutcome with toolSuccess=false + toolError populated, NOT
+ * as a throw.
+ *
+ * Accepts the parsed ToolRunSchema body (NOT raw JSON) so callers
+ * can run their own schema validation upstream — both the HTTP route
+ * (via ToolRunSchema.safeParse on req.body) and the WS handler (via
+ * ToolRunPayload.parse on the frame payload) do this.
+ */
+export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promise<ToolRunOutcome> {
   const handler = getLocalTool(body.tool_name);
   if (!handler) {
     throw new NotFoundError(`tool '${body.tool_name}' not in local registry`);
   }
 
-  // Build the correlation context that flows into audit + receipts.
-  // workspace_id is treated as an alias for work_item_id for sandbox routing.
   const workItemId = body.work_item_id ?? body.workspace_id ?? undefined;
   const correlation = {
     ...body.run_context,
@@ -110,8 +130,6 @@ toolRunRouter.post("/tool-run", async (req, res) => {
     mcpInvocationId: uuidv4(),
   };
 
-  // M72 Slice C — Accept attempt id from either casing so callers in Python
-  // (snake_case) and TS (camelCase) both work without a translation layer.
   const attemptId = body.run_context.attemptId ?? body.run_context.attempt_id;
   const workspaceRoot = workspaceRootForRunContext({
     workItemId,
@@ -124,8 +142,6 @@ toolRunRouter.post("/tool-run", async (req, res) => {
   const start = Date.now();
   try {
     const r = await withSandboxRoot(workspaceRoot, async () => {
-      // finish_work_branch needs the work branch prepared. Same logic as
-      // /mcp/tools/call so existing branch idempotency is preserved.
       const branchRequest = {
         workflowInstanceId: body.run_context.workflowInstanceId ?? body.run_context.runId,
         nodeId: body.run_context.nodeId ?? body.run_context.runStepId,
@@ -151,20 +167,13 @@ toolRunRouter.post("/tool-run", async (req, res) => {
       latency_ms: durationMs,
     });
 
-    res.json({
-      success: true,
-      data: {
-        result: r.output,
-        durationMs,
-        toolInvocationId: rec.id,
-        // Echo the success/error from the tool itself so context-fabric
-        // can distinguish "tool ran but reported failure" from "endpoint
-        // threw". Both are visible to the LLM.
-        toolSuccess: r.success,
-        toolError: r.error ?? null,
-      },
-      requestId: res.locals.requestId,
-    });
+    return {
+      result: r.output,
+      durationMs,
+      toolInvocationId: rec.id,
+      toolSuccess: r.success,
+      toolError: r.error ?? null,
+    };
   } catch (err) {
     const durationMs = Date.now() - start;
     const rec = recordToolInvocation({
@@ -181,4 +190,28 @@ toolRunRouter.post("/tool-run", async (req, res) => {
       toolInvocationId: rec.id,
     });
   }
+}
+
+toolRunRouter.post("/tool-run", async (req, res) => {
+  const parsed = ToolRunSchema.safeParse(req.body);
+  if (!parsed.success) {
+    throw new AppError("invalid /mcp/tool-run payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
+  }
+
+  // M75 Slice 2 — both transports share runToolByName. HTTP wraps the
+  // outcome in {success: true, data: ...}; the WS handler in
+  // relay-client wraps it inside a ResponseFrame.payload. The dispatch
+  // logic itself is identical.
+  const outcome = await runToolByName(parsed.data);
+  res.json({
+    success: true,
+    data: {
+      result: outcome.result,
+      durationMs: outcome.durationMs,
+      toolInvocationId: outcome.toolInvocationId,
+      toolSuccess: outcome.toolSuccess,
+      toolError: outcome.toolError,
+    },
+    requestId: res.locals.requestId,
+  });
 });
