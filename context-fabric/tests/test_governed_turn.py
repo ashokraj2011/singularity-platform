@@ -61,6 +61,36 @@ def _policy(allowed: list[str], phase: Phase = Phase.PLAN) -> StagePolicy:
     )
 
 
+def _multi_phase_policy(by_phase: dict[Phase, list[str]]) -> StagePolicy:
+    """Build a multi-phase policy. Used by the M72 cache-stability tests
+    to verify the descriptor union holds regardless of current phase."""
+    phases: dict[Phase, PhasePolicy] = {}
+    for phase, allowed in by_phase.items():
+        phases[phase] = PhasePolicy(
+            phase=phase,
+            allowed_tools=frozenset(allowed),
+            forbidden_tools=frozenset(),
+            required_output_schema={},
+            max_input_tokens=None,
+            max_output_tokens=None,
+            max_tool_calls=None,
+        )
+    return StagePolicy(
+        policy_id="t-multi",
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        version=1,
+        status="ACTIVE",
+        approval_model={},
+        limits={"max_repair_attempts": 3},
+        context_policy={},
+        edit_policy={},
+        verification_policy={},
+        risk_policy={},
+        phases=phases,
+    )
+
+
 def _prompt(task: str = "Do the thing.") -> ResolvedPrompt:
     return ResolvedPrompt(
         task=task,
@@ -181,6 +211,119 @@ def test_tool_descriptors_for_empty_allowlist():
     policy = _policy([], phase=Phase.PLAN)
     tools = _build_tool_descriptors(policy, Phase.PLAN)
     assert [t["name"] for t in tools] == [SUBMIT_PHASE_OUTPUT]
+
+
+# ── M72 Slice A — cache-stability invariant tests ──────────────────────────
+
+
+def test_tool_descriptors_cache_stable_across_phases():
+    """The CORE M72A invariant. The tool descriptor list must be IDENTICAL
+    regardless of which phase the caller is currently in — otherwise the
+    LLM provider's prompt cache prefix (which keys off tools[]) invalidates
+    on every phase transition. The union-of-all-phases design keeps the
+    tools block stable for the duration of a stage."""
+    policy = _multi_phase_policy({
+        Phase.PLAN:    ["repo_map", "symbol_search"],
+        Phase.EXPLORE: ["read_file", "get_ast_slice", "symbol_search"],
+        Phase.ACT:     ["apply_patch", "replace_text"],
+        Phase.VERIFY:  ["run_test", "run_command"],
+    })
+    # Build descriptors as if we were in each phase.
+    descriptors_by_phase = {
+        phase: _build_tool_descriptors(policy, phase)
+        for phase in (Phase.PLAN, Phase.EXPLORE, Phase.ACT, Phase.VERIFY)
+    }
+    # Same list of names, same order, in every phase. That's the cache key.
+    names_per_phase = {
+        phase: [t["name"] for t in desc]
+        for phase, desc in descriptors_by_phase.items()
+    }
+    canonical = names_per_phase[Phase.PLAN]
+    for phase, names in names_per_phase.items():
+        assert names == canonical, f"Phase {phase} produced different tool list — cache will invalidate"
+
+    # And the canonical list contains every tool from every phase, plus the
+    # meta-tool, deduped + sorted.
+    expected = sorted({
+        "repo_map", "symbol_search", "read_file", "get_ast_slice",
+        "apply_patch", "replace_text", "run_test", "run_command",
+    }) + [SUBMIT_PHASE_OUTPUT]
+    assert canonical == expected
+
+
+def test_tool_descriptors_include_phase_scope_in_description():
+    """Each tool's description must list the phases it's scoped to so the
+    LLM can pick the right tool without us having to filter the list.
+    `repo_map` is shared by PLAN+EXPLORE; `apply_patch` is ACT-only —
+    descriptions must reflect both."""
+    policy = _multi_phase_policy({
+        Phase.PLAN:    ["repo_map"],
+        Phase.EXPLORE: ["repo_map", "read_file"],
+        Phase.ACT:     ["apply_patch"],
+    })
+    descs = {t["name"]: t["description"] for t in _build_tool_descriptors(policy, Phase.PLAN)}
+    # repo_map shows BOTH phases.
+    assert "PLAN" in descs["repo_map"]
+    assert "EXPLORE" in descs["repo_map"]
+    # apply_patch shows only ACT.
+    assert "ACT" in descs["apply_patch"]
+    assert "PLAN" not in descs["apply_patch"]
+    # All phase-gated descriptions tell the LLM what happens on out-of-scope use.
+    # The submit_phase_output meta-tool is the exception — it's always allowed
+    # and doesn't carry the refusal warning.
+    for name, desc in descs.items():
+        if name == SUBMIT_PHASE_OUTPUT:
+            continue
+        assert "PHASE_TOOL_FORBIDDEN" in desc, f"{name!r} description missing refusal warning"
+
+
+def test_tool_descriptors_respect_forbidden_tools():
+    """forbidden_tools still wins over allowed_tools — deny takes priority
+    per spec §8. write_file appears in both lists for one phase but the
+    union must exclude it."""
+    pp = PhasePolicy(
+        phase=Phase.ACT,
+        allowed_tools=frozenset(["apply_patch", "write_file"]),
+        forbidden_tools=frozenset(["write_file"]),
+        required_output_schema={},
+        max_input_tokens=None,
+        max_output_tokens=None,
+        max_tool_calls=None,
+    )
+    policy = StagePolicy(
+        policy_id="t-forbid",
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        version=1,
+        status="ACTIVE",
+        approval_model={},
+        limits={"max_repair_attempts": 3},
+        context_policy={},
+        edit_policy={},
+        verification_policy={},
+        risk_policy={},
+        phases={Phase.ACT: pp},
+    )
+    names = [t["name"] for t in _build_tool_descriptors(policy, Phase.ACT)]
+    assert "apply_patch" in names
+    assert "write_file" not in names
+
+
+def test_tool_descriptors_shape_is_provider_compatible():
+    """Every descriptor must keep the strict three-field shape
+    {name, description, input_schema} so Anthropic/OpenAI/Gemini accept
+    it without schema-validation rejections. No phase_scope sibling field,
+    no scope arrays at the top level."""
+    policy = _multi_phase_policy({
+        Phase.PLAN: ["repo_map"],
+        Phase.ACT:  ["apply_patch"],
+    })
+    for desc in _build_tool_descriptors(policy, Phase.PLAN):
+        assert set(desc.keys()) <= {"name", "description", "input_schema"}, \
+            f"unexpected field on descriptor: {desc.keys()}"
+        assert isinstance(desc["name"], str)
+        assert isinstance(desc["description"], str)
+        assert isinstance(desc["input_schema"], dict)
 
 
 # ── _build_messages ─────────────────────────────────────────────────────────

@@ -108,24 +108,54 @@ def _build_messages(prompt: ResolvedPrompt, history: list[dict[str, Any]]) -> li
 
 
 def _build_tool_descriptors(policy: StagePolicy, phase: Phase) -> list[dict[str, Any]]:
-    """Tool descriptors handed to the LLM. Two layers:
+    """Tool descriptors handed to the LLM.
 
-      1. The phase's allowed tools (per StagePhasePolicy.allowedTools). The
-         agent sees what's actually callable AND nothing else, so refusals
-         are rare in steady state.
-      2. The synthetic `submit_phase_output` meta-tool — ALWAYS exposed.
-         Calling it signals "I'm done with this phase, advance me".
+    M72 Slice A — Cache-stable variant. The descriptor list is now the UNION
+    of every tool across all phases of the stage's StagePolicy. Each tool
+    carries a `phase_scope` hint in its description so the LLM can avoid
+    out-of-phase calls without us having to filter the tool list per turn.
+    The hard-refuse path (`tool_gateway.check_tool_allowed`) still catches
+    any actual out-of-phase dispatch server-side — we just stop invalidating
+    the LLM-provider prompt-cache prefix every time we transition phases.
 
-    Descriptors use a minimal shape (`name`, `description`, `input_schema`)
-    that the gateway translates to provider-native formats.
+    Before M72A: phase transitions changed the tools[] block →
+                 Anthropic/OpenAI prompt-cache prefix invalidated →
+                 every phase boundary paid a full re-ingestion cost.
+    After M72A:  tools[] stable across the whole stage →
+                 cache prefix persists through PLAN→EXPLORE→ACT→…→FINALIZE →
+                 cost-per-turn drops materially on cache-aware providers.
+
+    The synthetic `submit_phase_output` meta-tool is appended last, exactly
+    as before — calling it advances the phase machine.
     """
-    allowed = allowed_tools_for(policy, phase)
+    # Build the union of allowed tools across every phase row in the policy,
+    # subtracting any that the phase explicitly forbids. Sorted for stable
+    # ordering (cache hashes care about list order on some providers).
+    union: dict[str, set[str]] = {}  # tool_name → set of phases it's allowed in
+    for phase_policy in policy.phases.values():
+        deny = phase_policy.forbidden_tools
+        for tool_name in phase_policy.allowed_tools:
+            if tool_name in deny:
+                continue
+            union.setdefault(tool_name, set()).add(phase_policy.phase.value)
+
     descriptors: list[dict[str, Any]] = []
-    for tool_name in allowed:
+    for tool_name in sorted(union.keys()):
+        scopes = sorted(union[tool_name])
         descriptors.append({
             "name": tool_name,
-            "description": f"Local MCP tool '{tool_name}' (phase {phase.value}). "
-                           f"Args validated by mcp-server's local registry.",
+            # Scope hint lives in the description so cache stays stable —
+            # changing the description per phase would also invalidate the
+            # cache. We embed ALL scopes here; the LLM reads them to know
+            # when this tool is callable. Server-side enforcement is the
+            # real gate. Keeping the descriptor strictly to `{name,
+            # description, input_schema}` so Anthropic/OpenAI/Gemini schema
+            # validators accept it unchanged.
+            "description": (
+                f"MCP tool '{tool_name}'. Phase scope: {', '.join(scopes)}. "
+                f"Calling it outside its scope returns PHASE_TOOL_FORBIDDEN; "
+                f"choose a tool whose scope includes the current phase."
+            ),
             "input_schema": {"type": "object"},
         })
     # The meta-tool. The phase output schema lives in the prompt; we don't
