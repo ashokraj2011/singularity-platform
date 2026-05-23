@@ -123,6 +123,13 @@ export class LaptopRelayClient {
       device_name:   this.cfg.deviceName,
       agent_version: this.cfg.agentVersion,
       capabilities:  [],
+      // M75 Slice 1 — advertise both legacy invoke and the new per-tool
+      // tool-run frame. The bridge picks based on which it's configured
+      // to send; for the cutover the bridge sends invoke by default and
+      // graduates to tool-run as the platform-side dispatch lands
+      // (Slice 3). Old bridges that don't know about supported_frame_types
+      // just ignore it and keep sending invoke — which still works.
+      supported_frame_types: ["invoke", "tool-run"],
     };
     this.send(hello);
   }
