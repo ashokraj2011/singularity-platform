@@ -28,6 +28,7 @@ import { agentRunsRouter } from './modules/agent/agent-runs.router'
 import { toolsRouter } from './modules/tool/tools.router'
 import { toolRunsRouter } from './modules/tool/tool-runs.router'
 import { auditRouter } from './modules/audit/audit.router'
+import { curationRouter } from './modules/audit/curation.router'
 import { documentsRouter } from './modules/document/documents.router'
 import { runtimeRouter } from './modules/runtime/runtime.router'
 import { snapshotsRouter } from './modules/runtime/snapshots.router'
@@ -127,6 +128,10 @@ export function createApp(): Express {
   app.use('/api/tools', authMiddleware, toolsRouter)
   app.use('/api/tool-runs', authMiddleware, toolRunsRouter)
   app.use('/api/audit', authMiddleware, auditRouter)
+  // Operator curation gate (task #111) — proxies audit-gov's engine
+  // dataset endpoints. Mounted at /api/engine so the path mirrors
+  // audit-gov's /api/v1/engine/* shape (minus the version segment).
+  app.use('/api/engine', authMiddleware, curationRouter)
   // app.use('/api/documents', authMiddleware, documentsRouter) — out of scope
   app.use('/api/connectors', authMiddleware, connectorsRouter)
   app.use('/api/artifact-templates', authMiddleware, artifactTemplatesRouter)

@@ -63,6 +63,63 @@ export async function postJson<T>(path: string, body: unknown): Promise<T | null
   }
 }
 
+// Proxy helpers for the operator-curation UI (task #111). Unlike
+// getJson/postJson, these forward the upstream HTTP status so the UI
+// can distinguish "audit-gov is down" (502) from "this example was
+// deleted" (404) from "you forgot reviewed_by" (400). The composite
+// run-insights endpoint can afford to fail-soft; the curation UI
+// can't — the operator needs to see which write succeeded.
+export interface UpstreamResult<T> {
+  ok: boolean
+  status: number
+  data: T | null
+  errorText?: string
+}
+
+export async function getJsonStrict<T>(
+  path: string,
+  query: Record<string, string | undefined> = {},
+): Promise<UpstreamResult<T>> {
+  const url = new URL(path, config.AUDIT_GOV_URL.replace(/\/?$/, '/'))
+  for (const [k, v] of Object.entries(query)) if (v) url.searchParams.set(k, v)
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: authHeader(),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      return { ok: false, status: res.status, data: null, errorText: text.slice(0, 500) }
+    }
+    return { ok: true, status: res.status, data: (await res.json()) as T }
+  } catch (err) {
+    return { ok: false, status: 502, data: null, errorText: (err as Error).message }
+  }
+}
+
+export async function patchJsonStrict<T>(
+  path: string,
+  body: unknown,
+): Promise<UpstreamResult<T>> {
+  const url = new URL(path, config.AUDIT_GOV_URL.replace(/\/?$/, '/'))
+  try {
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', ...authHeader() },
+      body: JSON.stringify(body ?? {}),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      return { ok: false, status: res.status, data: null, errorText: text.slice(0, 500) }
+    }
+    return { ok: true, status: res.status, data: (await res.json()) as T }
+  } catch (err) {
+    return { ok: false, status: 502, data: null, errorText: (err as Error).message }
+  }
+}
+
 export interface AuditEvent {
   id: string
   trace_id: string | null

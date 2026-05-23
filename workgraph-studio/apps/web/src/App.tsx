@@ -8,6 +8,7 @@ import { WorkflowStudioPage } from './features/workflow/WorkflowStudioPage'
 import { WorkflowsListPage } from './features/workflow/WorkflowsListPage'
 import { CustomNodeTypesPage } from './features/workflow/CustomNodeTypesPage'
 import { AuditPage } from './features/audit/AuditPage'
+import { CurationPage } from './features/audit/CurationPage'
 import { ConnectorsPage } from './features/connectors/ConnectorsPage'
 import { ArtifactDesignerPage } from './features/artifact/ArtifactDesignerPage'
 import { ArtifactEditorPage } from './features/artifact/ArtifactEditorPage'
@@ -75,6 +76,7 @@ export default function App() {
           <Route path="play/:runId"          element={<RunPlayerPage />} />
           <Route path="connectors"         element={<ConnectorsPage />} />
           <Route path="audit"              element={<AuditPage />} />
+          <Route path="curation"           element={<CurationPage />} />
           <Route path="artifacts"          element={<ArtifactDesignerPage />} />
           <Route path="artifacts/:id"      element={<ArtifactEditorPage />} />
           <Route path="metadata"           element={<MetadataRegistryPage />} />
