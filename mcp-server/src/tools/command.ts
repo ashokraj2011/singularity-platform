@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import * as path from "node:path";
 import type { ToolHandler } from "./registry";
 import { config } from "../config";
+import { log } from "../shared/log";
 import { resolveSandboxedPath, baseSandboxRoot } from "../workspace/sandbox";
 import { callSandboxRunner } from "./runner-client";
 
@@ -337,9 +338,14 @@ async function runCommand(args: Record<string, unknown>, defaultKind: "command" 
     // tests ran. Otherwise `mvn test -Dtest=foo#wrongName*` returns
     // exit 0 in 700ms and downstream gates trust the "passed" signal.
     const withOverride = applyNoTestsOverride({ ...receipt, verification_kind: defaultKind }, defaultKind);
+    // M72 Slice D — Attach structured test report (JUnit XML / pytest
+    // json-report) when available. The container path's cwd is mapped to
+    // the workitem workspace on the host; we read from `cwd` directly
+    // because Maven/Gradle/pytest write their report artifacts there.
+    const withReport = await attachStructuredTestReport(withOverride, cwd, command, defaultKind);
     return {
       success: true,
-      output: withOverride,
+      output: withReport,
     };
   }
 
@@ -412,7 +418,51 @@ async function runCommand(args: Record<string, unknown>, defaultKind: "command" 
       noNewPrivileges: false,
     },
   }, defaultKind);
-  return { success: true, output };
+  // M72 Slice D — Same structured-report attachment as the container path.
+  const outputWithReport = await attachStructuredTestReport(output, cwd, command, defaultKind);
+  return { success: true, output: outputWithReport };
+}
+
+/**
+ * M72 Slice D — Look for JUnit XML / pytest json-report artifacts in `cwd`
+ * and attach a `parsed_tests` block to the receipt. Falls back silently
+ * when no structured report is found (caller uses stdout heuristic later).
+ *
+ * The structured parse is authoritative: downstream baseline-diff code
+ * checks for `parsed_tests` first and skips `parseTestRunnerOutput(stdout)`
+ * when it's present. That removes the regex fragility for Maven/Gradle/
+ * pytest while keeping legacy frameworks (Jest, Go, Cargo) on the stdout
+ * path until their adapters land.
+ */
+async function attachStructuredTestReport<T extends Record<string, unknown>>(
+  receipt: T,
+  cwd: string,
+  command: string,
+  defaultKind: "command" | "test" | "baseline",
+): Promise<T> {
+  // Only test/baseline kinds benefit from structured reports. Generic
+  // `command` runs don't write test artifacts.
+  if (defaultKind !== "test" && defaultKind !== "baseline") return receipt;
+  try {
+    const { findAndParseStructuredReport } = await import("./test-report-parser");
+    const parsed = await findAndParseStructuredReport(cwd, command);
+    if (parsed) {
+      return {
+        ...receipt,
+        parsed_tests: parsed,
+        // Helpful for downstream: explicit signal that the parse came from
+        // a real report file, not the stdout heuristic. Audit-gov + workbench
+        // can render this differently ("48 passed via surefire" vs
+        // "exit 0 — no structured report").
+        parsed_tests_source: "structured_report",
+      } as T;
+    }
+  } catch (err) {
+    // Never let report parsing fail the underlying command. Log + move on.
+    // The stdout heuristic in parseTestRunnerOutput still applies downstream.
+    log.warn({ err: (err as Error).message, command }, "structured test-report parse failed");
+  }
+  return receipt;
 }
 
 /**
