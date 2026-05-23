@@ -157,7 +157,9 @@ const services: ServiceCheck[] = [
   { id: 'context-api', name: 'Context Fabric', group: 'Optimization', endpoint: '/ops-health/context-api', description: 'Execution orchestration and memory packaging', critical: true },
   { id: 'llm-gateway', name: 'LLM Gateway', group: 'Optimization', endpoint: '/ops-health/llm-gateway', description: 'Provider routing and token usage' },
   { id: 'context-memory', name: 'Context Memory', group: 'Optimization', endpoint: '/ops-health/context-memory', description: 'Session history and summaries' },
-  { id: 'metrics-ledger', name: 'Metrics Ledger', group: 'Governance', endpoint: '/ops-health/metrics-ledger', description: 'Token and cost rollups' },
+  // M65 Slice 1B — metrics-ledger was sunsetted. Its token/cost rollups now
+  // live in audit-governance-service. Tile removed so this panel stops
+  // showing a perpetual 502.
   { id: 'formal-verifier', name: 'Formal Verifier', group: 'Governance', endpoint: '/ops-health/formal-verifier', description: 'Optional SMT governance path analyzer' },
   { id: 'agent-service', name: 'Agent Service', group: 'Agent & Tools', endpoint: '/ops-health/agent-service', description: 'Agent registry' },
   { id: 'tool-service', name: 'Tool Service', group: 'Agent & Tools', endpoint: '/ops-health/tool-service', description: 'Tool registry and policy' },

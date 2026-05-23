@@ -97,11 +97,9 @@ server {
     proxy_pass $upstream;
   }
 
-  location /ops-health/metrics-ledger {
-    set $upstream http://metrics-ledger:8003;
-    rewrite ^/ops-health/metrics-ledger$ /health break;
-    proxy_pass $upstream;
-  }
+  # M65 Slice 1B — metrics-ledger sunsetted; token/cost rollups now live
+  # in audit-governance-service. Proxy entry removed (the upstream
+  # hostname no longer resolves so nginx returned 502 on every probe).
 
   location /ops-health/formal-verifier {
     set $upstream http://formal-verifier:8010;
