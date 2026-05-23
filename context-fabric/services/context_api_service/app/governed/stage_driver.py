@@ -91,12 +91,27 @@ def _history_from_turn(turn: TurnResult) -> list[dict[str, Any]]:
     # the matched tool result message wires up correctly.
     tool_calls_block: list[dict[str, Any]] = []
     for outcome in turn.step.tool_outcomes:
+        # M73-followup #4 — JSON-serialize the original args the LLM emitted.
+        # Previously this was the empty string with a comment claiming "LLM
+        # has them in its memory" — true within a single live LLM session,
+        # but false the moment the stage pauses for human approval and
+        # resumes hours later from persisted history (the resumed LLM is
+        # restarted from message history alone). Cost is one JSON dump per
+        # call; correctness is unbounded.
+        try:
+            args_str = json.dumps(outcome.args, separators=(",", ":"), default=str)
+        except (TypeError, ValueError):
+            # Defensive: a tool arg that isn't JSON-serializable should
+            # never reach here (the LLM-side normalisation rejects them)
+            # but if it does, fall back to repr so we don't crash the
+            # whole turn over a logging detail.
+            args_str = json.dumps({"__unserializable__": repr(outcome.args)})
         tool_calls_block.append({
             "id": outcome.tool_invocation_id or f"refused:{outcome.tool_name}",
             "type": "function",
             "function": {
                 "name": outcome.tool_name,
-                "arguments": "",  # we don't keep the originals; LLM has them in its memory
+                "arguments": args_str,
             },
         })
 

@@ -131,6 +131,10 @@ async def test_allowed_tool_dispatches_and_records_result(monkeypatch):
     assert outcome.tool_success is True
     assert outcome.tool_invocation_id == "ti-001"
     assert outcome.result == {"branches": ["main", "feature/x"]}
+    # M73-followup #4 — the args the LLM emitted must round-trip through
+    # the outcome so stage_driver._history_from_turn can rebuild a faithful
+    # assistant message on pause/resume.
+    assert outcome.args == {"path": "."}
     assert result.phase_advanced is False  # no phase output, no advance
 
 

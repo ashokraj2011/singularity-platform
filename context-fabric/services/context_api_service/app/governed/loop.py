@@ -54,6 +54,14 @@ class ToolCallOutcome:
     tool_name: str
     phase: str
     allowed: bool
+    # M73-followup #4 — keep the args the LLM emitted on this call. Used by
+    # stage_driver._history_from_turn to re-construct the assistant message
+    # with FULL tool_calls (id + name + arguments). Without this, when a
+    # stage pauses for human approval and later resumes, the LLM is restarted
+    # from persisted history with empty arguments on prior tool calls — at
+    # which point "the LLM has them in its memory" is false by construction.
+    # Cost is one JSON-serializable dict per call; correctness is unbounded.
+    args: dict[str, Any] = field(default_factory=dict)
     refusal_reason: str | None = None
     allowed_tools: list[str] = field(default_factory=list)
     result: Any = None
@@ -177,11 +185,18 @@ async def governed_step(
             tool_name, args = _normalize_tool_call(raw)
         except ValueError as exc:
             log.warning("malformed tool call payload: %s", exc)
+            # Best-effort args grab for malformed calls — the LLM still
+            # needs to see something in the round-tripped history. If
+            # the payload is genuinely garbled, default-factory {} is fine.
+            raw_args = raw.get("args") or raw.get("arguments") or {}
+            if not isinstance(raw_args, dict):
+                raw_args = {}
             result.tool_outcomes.append(
                 ToolCallOutcome(
                     tool_name=str(raw.get("name") or raw.get("tool_name") or "<unknown>"),
                     phase=state.current_phase.value,
                     allowed=False,
+                    args=raw_args,
                     refusal_reason=f"malformed tool call: {exc}",
                 )
             )
@@ -201,6 +216,7 @@ async def governed_step(
                     tool_name=tool_name,
                     phase=state.current_phase.value,
                     allowed=False,
+                    args=args,
                     refusal_reason=refusal.reason,
                     allowed_tools=list(refusal.allowed_tools),
                 )
@@ -236,6 +252,7 @@ async def governed_step(
                     tool_name=tool_name,
                     phase=state.current_phase.value,
                     allowed=True,
+                    args=args,
                     result=outcome.result,
                     duration_ms=outcome.duration_ms,
                     tool_invocation_id=outcome.tool_invocation_id,
@@ -262,6 +279,7 @@ async def governed_step(
                     tool_name=tool_name,
                     phase=state.current_phase.value,
                     allowed=True,
+                    args=args,
                     dispatch_error=str(exc),
                 )
             )
