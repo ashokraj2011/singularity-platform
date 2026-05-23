@@ -61,6 +61,23 @@ def test_can_transition_repair_edges(from_phase: Phase, to_phase: Phase):
     assert can_transition(from_phase, to_phase) is True
 
 
+def test_can_transition_plan_directly_to_self_review():
+    """task #112 — non-coding stages (PRODUCT_OWNER, ARCHITECT) have a
+    2-phase policy: PLAN + SELF_REVIEW only. Their tool allowlists are
+    empty / read-only and they have no EXPLORE/ACT/VERIFY phases
+    defined, so the only way they can finish is by jumping straight
+    from PLAN to SELF_REVIEW. Coding stages still use the canonical
+    PLAN→EXPLORE→ACT→VERIFY→SELF_REVIEW path because their prompts
+    drive there; the new edge is additive.
+
+    Skipping VERIFY would be wrong for coding stages where mutations
+    happened — but for non-coding stages there's nothing to verify.
+    The policy + prompt are what steer; the phase machine just
+    permits the transition.
+    """
+    assert can_transition(Phase.PLAN, Phase.SELF_REVIEW) is True
+
+
 # ── illegal transitions ────────────────────────────────────────────────────
 
 

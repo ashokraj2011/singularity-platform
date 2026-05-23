@@ -62,6 +62,16 @@ PHASE_ORDER: tuple[Phase, ...] = (
 _ALLOWED_TRANSITIONS: set[tuple[Phase, Phase]] = {
     (Phase.PLAN, Phase.EXPLORE),
     (Phase.PLAN, Phase.PLAN),         # re-plan on same phase if output invalid
+    # task #112 — non-coding stages (PRODUCT_OWNER story-intake,
+    # ARCHITECT design) have a 2-phase policy: PLAN + SELF_REVIEW
+    # only, no EXPLORE/ACT/VERIFY/REPAIR. Without this edge they
+    # could never finish — the only path out of PLAN was via
+    # EXPLORE→ACT→VERIFY, which their policies don't define and
+    # whose tool allowlists they don't grant. Coding stages keep
+    # their canonical PLAN→EXPLORE→ACT→VERIFY→SELF_REVIEW path
+    # because their prompts + policies steer there; the edge is
+    # additive, not a re-route.
+    (Phase.PLAN, Phase.SELF_REVIEW),
     (Phase.EXPLORE, Phase.ACT),
     (Phase.EXPLORE, Phase.EXPLORE),
     (Phase.EXPLORE, Phase.PLAN),      # go back to plan if exploration reveals scope error
