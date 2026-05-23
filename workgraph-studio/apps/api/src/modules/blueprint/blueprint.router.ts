@@ -22,6 +22,7 @@ import {
   isTerminalCodingResult,
   resumeCodingStage,
   runCodingStage,
+  runCodingStageGoverned,
   stageRequiresVerification,
   type CodingRunResult,
 } from '../coding-agent/orchestrator'
@@ -297,6 +298,8 @@ type DecisionAnswer = z.infer<typeof decisionAnswerSchema> & { updatedAt?: strin
 type LoopAgentRole = string
 type LoopVerdict = 'PASS' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_RISK'
 type LoopAttemptStatus = 'PENDING' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'FAILED' | 'PASSED' | 'NEEDS_REWORK' | 'BLOCKED' | 'ACCEPTED_WITH_RISK'
+type StageContextPolicy = 'STORY_ONLY' | 'REPO_READ_ONLY' | 'CODE_EDIT' | 'VERIFY_ONLY' | 'EVIDENCE_REVIEW'
+type StageToolPolicy = 'NONE' | 'READ_ONLY' | 'MUTATION' | 'VERIFICATION'
 
 type LoopExpectedArtifact = {
   kind: string
@@ -331,6 +334,10 @@ type LoopStageDefinition = {
   expectedArtifacts?: LoopExpectedArtifact[]
   allowedSendBackTo?: string[]
   questions?: LoopQuestion[]
+  contextPolicy: StageContextPolicy
+  repoAccess: boolean
+  toolPolicy: StageToolPolicy
+  promptProfileKey?: string
 }
 
 type LoopDefinition = {
@@ -1722,9 +1729,12 @@ function normalizeLoopStage(raw: Record<string, unknown>, index: number, session
   const key = slug(typeof raw.key === 'string' ? raw.key : typeof raw.id === 'string' ? raw.id : `stage-${index + 1}`)
   if (!key) return null
   const agentRole = normalizeAgentRole(raw.agentRole ?? raw.role)
+  const label = typeof raw.label === 'string' ? raw.label : titleFromKey(key)
+  const contextPolicy = normalizeStageContextPolicy(raw.contextPolicy, { key, label, agentRole, terminal: raw.terminal === true })
+  const toolPolicy = normalizeStageToolPolicy(raw.toolPolicy, contextPolicy, { key, label, agentRole })
   return {
     key,
-    label: typeof raw.label === 'string' ? raw.label : titleFromKey(key),
+    label,
     agentRole,
     agentTemplateId: typeof raw.agentTemplateId === 'string' ? raw.agentTemplateId : defaultAgentTemplateForRole(session, agentRole),
     description: typeof raw.description === 'string' ? raw.description : undefined,
@@ -1735,7 +1745,56 @@ function normalizeLoopStage(raw: Record<string, unknown>, index: number, session
     expectedArtifacts: normalizeExpectedArtifacts(raw.expectedArtifacts),
     allowedSendBackTo: Array.isArray(raw.allowedSendBackTo) ? raw.allowedSendBackTo.filter((item): item is string => typeof item === 'string').map(slug) : [],
     questions: Array.isArray(raw.questions) ? raw.questions.filter(isRecord).map(normalizeQuestion).filter((q): q is LoopQuestion => Boolean(q)) : [],
+    contextPolicy,
+    repoAccess: typeof raw.repoAccess === 'boolean' ? raw.repoAccess : contextPolicy !== 'STORY_ONLY' && toolPolicy !== 'NONE',
+    toolPolicy,
+    promptProfileKey: typeof raw.promptProfileKey === 'string' && raw.promptProfileKey.trim() ? raw.promptProfileKey.trim() : undefined,
   }
+}
+
+function normalizeStageContextPolicy(
+  value: unknown,
+  stage: { key: string; label?: string; agentRole?: string; terminal?: boolean },
+): StageContextPolicy {
+  const normalized = String(value ?? '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+  if (normalized === 'STORY_ONLY' || normalized === 'REPO_READ_ONLY' || normalized === 'CODE_EDIT' || normalized === 'VERIFY_ONLY' || normalized === 'EVIDENCE_REVIEW') {
+    return normalized
+  }
+  const signature = `${stage.key} ${stage.label ?? ''} ${stage.agentRole ?? ''}`.toLowerCase()
+  if (signature.includes('intake') || signature.includes('story') || signature.includes('product_owner')) return 'STORY_ONLY'
+  if (signature.includes('develop') || signature.includes('developer') || signature.includes('engineer') || signature.includes('code')) return 'CODE_EDIT'
+  if (signature.includes('verify') || signature.includes('qa') || signature.includes('quality') || signature.includes('test')) return 'VERIFY_ONLY'
+  if (stage.terminal || signature.includes('review') || signature.includes('evidence')) return 'EVIDENCE_REVIEW'
+  return 'REPO_READ_ONLY'
+}
+
+function normalizeStageToolPolicy(
+  value: unknown,
+  contextPolicy: StageContextPolicy,
+  stage: { key: string; label?: string; agentRole?: string },
+): StageToolPolicy {
+  const normalized = String(value ?? '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+  if (normalized === 'NONE' || normalized === 'READ_ONLY' || normalized === 'MUTATION' || normalized === 'VERIFICATION') return normalized
+  if (contextPolicy === 'STORY_ONLY') return 'NONE'
+  if (contextPolicy === 'CODE_EDIT') return 'MUTATION'
+  if (contextPolicy === 'VERIFY_ONLY') return 'VERIFICATION'
+  const signature = `${stage.key} ${stage.label ?? ''} ${stage.agentRole ?? ''}`.toLowerCase()
+  if (signature.includes('develop') || signature.includes('developer') || signature.includes('engineer')) return 'MUTATION'
+  if (signature.includes('verify') || signature.includes('qa') || signature.includes('quality') || signature.includes('test')) return 'VERIFICATION'
+  return 'READ_ONLY'
+}
+
+function stageUsesRepoContext(stage: LoopStageDefinition): boolean {
+  return stage.repoAccess !== false && stage.contextPolicy !== 'STORY_ONLY' && stage.toolPolicy !== 'NONE'
+}
+
+function stageAllowsMutation(stage: LoopStageDefinition): boolean {
+  return stage.contextPolicy === 'CODE_EDIT' || stage.toolPolicy === 'MUTATION' || normalizeAgentRole(stage.agentRole).includes('DEV')
+}
+
+function stagePromptKey(stage: LoopStageDefinition): string {
+  if (stage.promptProfileKey?.trim()) return stage.promptProfileKey.trim()
+  return `loop.stage.${stage.key}`
 }
 
 function normalizeExpectedArtifacts(input: unknown): LoopExpectedArtifact[] {
@@ -1787,29 +1846,36 @@ function normalizeQuestion(raw: Record<string, unknown>): LoopQuestion | null {
 }
 
 function defaultLoopDefinition(session: AgentTemplateSeed): LoopDefinition {
+  // Canonical 4-stage Workbench loop: STORY_INTAKE → DESIGN → DEVELOP → QA.
+  // The terminal QA stage absorbs the previous "verify" and "review" responsibilities.
   return {
     version: 1,
-    name: 'Blueprint implementation loop',
+    name: 'Workflow-owned workbench loop',
     maxLoopsPerStage: 3,
-    maxTotalSendBacks: 8,
+    maxTotalSendBacks: 6,
     stages: [
       {
-        key: 'plan',
-        label: 'Plan',
-        agentRole: 'ARCHITECT',
+        key: 'intake',
+        label: 'Story Intake',
+        agentRole: 'PRODUCT_OWNER',
         agentTemplateId: firstAgentTemplate(session.architectAgentTemplateId),
-        description: 'Create the mental model, scope, risks, and planning questions.',
+        description: 'Capture the story, acceptance criteria, scope, priority, risks, and open business questions without repository access.',
         next: 'design',
         allowedSendBackTo: [],
         required: true,
         approvalRequired: true,
+        contextPolicy: 'STORY_ONLY',
+        repoAccess: false,
+        toolPolicy: 'NONE',
+        promptProfileKey: 'loop.stage.intake',
         expectedArtifacts: [
-          { kind: 'mental_model', title: 'Mental model', required: true, format: 'MARKDOWN' },
-          { kind: 'gaps', title: 'Gaps and open risks', required: true, format: 'MARKDOWN' },
+          { kind: 'story_brief', title: 'Story brief', required: true, format: 'MARKDOWN' },
+          { kind: 'acceptance_contract', title: 'Acceptance contract', required: true, format: 'MARKDOWN' },
+          { kind: 'clarification_questions', title: 'Clarification questions', required: false, format: 'MARKDOWN' },
         ],
         questions: [
-          { id: 'PLAN-001', question: 'What is the smallest valuable outcome for this change?', required: true, freeform: true },
-          { id: 'PLAN-002', question: 'Which constraints must not be violated?', required: false, freeform: true },
+          { id: 'INTAKE-001', question: 'What business behavior must change?', required: true, freeform: true },
+          { id: 'INTAKE-002', question: 'What acceptance examples prove the story is complete?', required: true, freeform: true },
         ],
       },
       {
@@ -1817,19 +1883,23 @@ function defaultLoopDefinition(session: AgentTemplateSeed): LoopDefinition {
         label: 'Design',
         agentRole: 'ARCHITECT',
         agentTemplateId: firstAgentTemplate(session.architectAgentTemplateId),
-        description: 'Turn the plan into solution architecture, contracts, and acceptance boundaries.',
+        description: 'Use the accepted story context plus read-only repository evidence to produce a solution design and implementation contract.',
         next: 'develop',
-        allowedSendBackTo: ['plan'],
+        allowedSendBackTo: ['intake'],
         required: true,
         approvalRequired: true,
+        contextPolicy: 'REPO_READ_ONLY',
+        repoAccess: true,
+        toolPolicy: 'READ_ONLY',
         expectedArtifacts: [
           { kind: 'solution_architecture', title: 'Solution architecture', required: true, format: 'MARKDOWN' },
           { kind: 'approved_spec_draft', title: 'Approved spec draft', required: true, format: 'MARKDOWN' },
+          { kind: 'gaps', title: 'Gaps and open risks', required: false, format: 'MARKDOWN' },
         ],
         questions: [
-          { id: 'DESIGN-001', question: 'Is the proposed design acceptable for implementation?', required: true, options: [
-            { label: 'Accept design', recommended: true, impact: 'Developer can produce the implementation task pack.' },
-            { label: 'Needs redesign', impact: 'Send back to planning or design with constraints.' },
+          { id: 'DESIGN-001', question: 'Is the design ready for development?', required: true, options: [
+            { label: 'Ready for development', recommended: true, impact: 'Developer can produce the code change.' },
+            { label: 'Needs design rework', impact: 'Run another design pass with constraints.' },
           ], freeform: true },
         ],
       },
@@ -1838,57 +1908,46 @@ function defaultLoopDefinition(session: AgentTemplateSeed): LoopDefinition {
         label: 'Develop',
         agentRole: 'DEVELOPER',
         agentTemplateId: firstAgentTemplate(session.developerAgentTemplateId),
-        description: 'Produce the proposed implementation plan, file changes, and read-only code-change evidence.',
-        next: 'qa-review',
-        allowedSendBackTo: ['design', 'plan'],
+        description: 'Produce the proposed implementation, file changes, and code-change evidence (commits on the work branch).',
+        next: 'qa',
+        allowedSendBackTo: ['intake', 'design'],
         required: true,
         approvalRequired: true,
+        contextPolicy: 'CODE_EDIT',
+        repoAccess: true,
+        toolPolicy: 'MUTATION',
         expectedArtifacts: [
           { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
           { kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence', required: true, format: 'MARKDOWN' },
         ],
         questions: [
-          { id: 'DEV-001', question: 'Is the implementation plan complete enough for QA to review?', required: true, options: [
+          { id: 'DEV-001', question: 'Is the implementation complete enough for QA to review?', required: true, options: [
             { label: 'Ready for QA', recommended: true, impact: 'Move into QA review.' },
             { label: 'Needs developer rework', impact: 'Run another developer iteration.' },
           ], freeform: true },
         ],
       },
       {
-        key: 'qa-review',
-        label: 'QA Review',
+        key: 'qa',
+        label: 'QA',
         agentRole: 'QA',
         agentTemplateId: firstAgentTemplate(session.qaAgentTemplateId),
-        description: 'Review implementation evidence against requirements, edge cases, and failure modes.',
-        next: 'test-certification',
-        allowedSendBackTo: ['develop', 'design'],
-        required: true,
-        approvalRequired: true,
-        expectedArtifacts: [
-          { kind: 'qa_task_pack', title: 'QA review pack', required: true, format: 'MARKDOWN' },
-        ],
-        questions: [
-          { id: 'QA-001', question: 'What must be proven before this can be certified?', required: true, freeform: true },
-        ],
-      },
-      {
-        key: 'test-certification',
-        label: 'Test Certification',
-        agentRole: 'QA',
-        agentTemplateId: firstAgentTemplate(session.qaAgentTemplateId),
-        description: 'Stamp the testing strategy, verification notes, traceability, and final certification readiness.',
+        description: 'Verify the change against acceptance criteria, run/inspect tests, build the traceability matrix, and decide whether the workflow can receive the final handoff.',
         next: null,
         terminal: true,
-        allowedSendBackTo: ['develop', 'qa-review', 'design'],
+        allowedSendBackTo: ['design', 'develop'],
         required: true,
         approvalRequired: true,
+        contextPolicy: 'VERIFY_ONLY',
+        repoAccess: true,
+        toolPolicy: 'VERIFICATION',
         expectedArtifacts: [
-          { kind: 'verification_rules', title: 'Verification rules', required: true, format: 'MARKDOWN' },
+          { kind: 'verification_receipt', title: 'Verification receipt', required: true, format: 'MARKDOWN' },
           { kind: 'traceability_matrix', title: 'Traceability matrix', required: true, format: 'MARKDOWN' },
-          { kind: 'certification_receipt', title: 'Certification receipt', required: true, format: 'MARKDOWN' },
+          { kind: 'final_handoff_notes', title: 'Final handoff notes', required: true, format: 'MARKDOWN' },
         ],
         questions: [
-          { id: 'TEST-001', question: 'Can this be finalized for workflow handoff?', required: true, options: [
+          { id: 'QA-001', question: 'Can this be finalized for workflow handoff?', required: true, options: [
             { label: 'Finalize', recommended: true, impact: 'Generate the final implementation pack.' },
             { label: 'Send back', impact: 'Return to the failing stage with feedback.' },
           ], freeform: true },
@@ -1992,13 +2051,12 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   })
   if (!session) throw new NotFoundError('BlueprintSession', sessionId)
   assertBlueprintAccess(session, actorId)
-  const snapshot = session.snapshots[0]
-  if (!snapshot || snapshot.status !== 'COMPLETED') {
-    throw new ValidationError('Create a successful source snapshot before running a loop stage')
-  }
-
   const state = readLoopState(session)
   const stage = findLoopStage(state, stageKey)
+  const snapshot = session.snapshots[0]?.status === 'COMPLETED' ? session.snapshots[0] : undefined
+  if (stageUsesRepoContext(stage) && !snapshot) {
+    throw new ValidationError('Create a successful source snapshot before running a repo-aware loop stage')
+  }
   const priorAttempts = state.stageAttempts.filter(attempt => attempt.stageKey === stage.key)
   const agentTemplateId = stage.agentTemplateId ?? defaultAgentTemplateForRole(session, stage.agentRole)
   if (!agentTemplateId) {
@@ -2010,8 +2068,9 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   // extraContext block. All three live in StagePromptBinding now.
   const stageVars = buildLoopStageVars(session, stage, state)
   const resolvedStage = await promptComposerClient.resolveStage({
-    stageKey: 'loop.stage',
+    stageKey: stagePromptKey(stage),
     agentRole: stage.agentRole ? normalizeAgentRole(stage.agentRole) : undefined,
+    promptProfileKey: stage.promptProfileKey,
     vars: stageVars,
   })
   // M46.C — Append prior-attempt learnings directly to the task string so it
@@ -2026,7 +2085,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
     : resolvedStage.task
   const stageSystemPromptAppend = resolvedStage.systemPromptAppend
   const stageExtraContext = resolvedStage.extraContext
-  const inputSignature = buildStageInputSignature(snapshot, stage, agentTemplateId, task, state)
+  const inputSignature = buildStageInputSignature(snapshot ?? { rootHash: null }, stage, agentTemplateId, task, state)
   const reusable = state.executionConfig?.reuseUnchangedAttempt === false ? undefined : [...priorAttempts].reverse().find(attempt =>
       attempt.inputSignature === inputSignature &&
       attempt.status !== 'RUNNING' &&
@@ -2360,13 +2419,12 @@ async function resumeLoopStageApproval(
   })
   if (!session) throw new NotFoundError('BlueprintSession', sessionId)
   assertBlueprintAccess(session, actorId)
-  const snapshot = session.snapshots[0]
-  if (!snapshot || snapshot.status !== 'COMPLETED') {
-    throw new ValidationError('Create a successful source snapshot before resuming a loop stage')
-  }
-
   const state = readLoopState(session)
   const stage = findLoopStage(state, stageKey)
+  const snapshot = session.snapshots[0]?.status === 'COMPLETED' ? session.snapshots[0] : undefined
+  if (stageUsesRepoContext(stage) && !snapshot) {
+    throw new ValidationError('Create a successful source snapshot before resuming a repo-aware loop stage')
+  }
   const latestAttempt = latestStageAttempt(state, stage.key)
   if (!latestAttempt || latestAttempt.status !== 'PAUSED') {
     throw new ValidationError(`${stage.label} is not paused for MCP approval`)
@@ -2390,6 +2448,8 @@ async function resumeLoopStageApproval(
     label: stage.label,
     agentRole: stage.agentRole,
     terminal: stage.terminal,
+    contextPolicy: stage.contextPolicy,
+    toolPolicy: stage.toolPolicy,
   })
   let dbRun = await prisma.blueprintStageRun.findFirst({
     where: {
@@ -3067,7 +3127,7 @@ async function finalizeLoop(sessionId: string, actorId: string) {
 
 async function runLoopStageExecute(
   session: Awaited<ReturnType<typeof prisma.blueprintSession.findUnique>> & { id: string },
-  snapshot: { id?: string; summary: Prisma.JsonValue; manifest: Prisma.JsonValue; rootHash: string | null },
+  snapshot: { id?: string; summary: Prisma.JsonValue; manifest: Prisma.JsonValue; rootHash: string | null } | undefined,
   stage: LoopStageDefinition,
   attempt: StageAttempt,
   task: string,
@@ -3080,33 +3140,105 @@ async function runLoopStageExecute(
   const executionConfig = readLoopState(session).executionConfig
   const modelAlias = stageModelAlias(executionConfig, stage.key, stage.label)
   const limits = workbenchExecutionLimits(executionConfig)
-  const isDeveloperStage = normalizeAgentRole(stage.agentRole).includes('DEV')
+  const isDeveloperStage = stageAllowsMutation(stage)
+  const usesRepoContext = stageUsesRepoContext(stage)
   const linkedWorkItem = await workflowWorkItemContext(session.workflowInstanceId)
   const agentTemplateId = attempt.agentTemplateId
-  const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
-    stageKey: stage.key,
-    stageLabel: stage.label,
-    task,
-    snapshotMode: executionConfig?.snapshotMode,
-    excerptBudgetChars: executionConfig?.excerptBudgetChars,
-  })
+  const executeArtifacts = usesRepoContext && snapshot
+    ? [{
+        label: 'Source snapshot',
+        role: 'CONTEXT',
+        mediaType: 'application/json',
+        content: encodeComposerArtifactContent(buildSnapshotExecuteArtifact(snapshot, {
+          stageKey: stage.key,
+          stageLabel: stage.label,
+          task,
+          snapshotMode: executionConfig?.snapshotMode,
+          excerptBudgetChars: executionConfig?.excerptBudgetChars,
+        })),
+      }]
+    : [{
+        label: 'Story intake context',
+        role: 'CONTEXT',
+        mediaType: 'application/json',
+        content: JSON.stringify({
+          goal: session.goal,
+          stageKey: stage.key,
+          stageLabel: stage.label,
+          contextPolicy: stage.contextPolicy,
+          repoAccess: false,
+          guidance: 'Story-only stage. Do not use repository/source context; capture business intent, acceptance criteria, scope, risks, and open questions.',
+        }),
+      }]
   const policy = classifyCodingStagePolicy({
     key: stage.key,
     label: stage.label,
     agentRole: stage.agentRole,
     terminal: stage.terminal,
+    contextPolicy: stage.contextPolicy,
+    toolPolicy: stage.toolPolicy,
   })
-  return runCodingStage({
-    sessionId: session.id,
+  // M71 Slice F — Governed-loop cutover.
+  //
+  // context-fabric now drives the entire stage server-side: it loads the
+  // StagePolicy from prompt-composer, resolves the per-phase prompt, calls
+  // llm-gateway, hard-refuses out-of-phase tool calls (PHASE_TOOL_FORBIDDEN),
+  // dispatches allowed calls to mcp-server /mcp/tool-run, validates phase
+  // receipts, and advances the state machine. The legacy /execute → mcp /invoke
+  // chain is retired (POST /mcp/invoke now returns 410 — see Slice I).
+  //
+  // Most of the old executeRequest fields are no longer needed:
+  //   - prior_verification_receipts: receipts persist in PhaseState.receipts
+  //   - overrides.systemPromptAppend/extraContext: resolved per-phase
+  //   - context_policy / limits: sourced from StagePolicy.{contextPolicy,limits}
+  //   - allow_autonomous_mutation: implied by StagePolicy.editPolicy
+  //   - governance_mode: future — wire when context-fabric exposes the knob
+  //
+  // What we still pass:
+  //   - vars (mustache substitution context for the per-phase prompt)
+  //   - run_context (workflow correlation for audit + sandbox routing)
+  //   - model_alias (forwarded to llm-gateway)
+  //
+  // Phase-state continuity: future iteration will read the saved
+  // BlueprintSession.metadata.phaseStateByStage[stageKey] here so a resumed
+  // stage picks up where it left off. For now each attempt starts from a
+  // fresh PLAN — context-fabric mints PhaseState.fresh() when phase_state
+  // is omitted.
+  //
+  // The pre-resolved `task`, `systemPromptAppend`, and `extraContext`
+  // arguments to this function are no longer needed under the governed
+  // path (prompt-composer is called per-phase server-side). They stay in
+  // the signature to keep older call sites in this router working without
+  // a sweep; we explicitly mark them used here to satisfy noUnusedLocals.
+  void executeArtifacts; void systemPromptAppend; void extraContext;
+  return runCodingStageGoverned({
     stageKey: stage.key,
-    stageLabel: stage.label,
-    attemptId: attempt.id,
-    actorId: session.createdById ?? undefined,
+    agentRole: stage.agentRole,
     policy,
-    executeRequest: {
-    trace_id: traceId,
-    idempotency_key: `${session.id}:${stage.key}:${Date.now()}`,
-    run_context: {
+    modelAlias,
+    vars: {
+      blueprintSessionId: session.id,
+      // Goal text — the per-phase prompts reference {{goal}}.
+      goal: session.goal ?? '',
+      stageKey: stage.key,
+      stageLabel: stage.label,
+      // The pre-rendered task body still flows through so prompt-composer's
+      // top-level loopDefaultTask vars resolve when a phase-specific binding
+      // doesn't exist. Phase-specific prompts (Slice E) use their own copy
+      // of stageDescription / artifacts etc. so they don't need this.
+      task,
+      stageDescription: stage.description ?? '',
+      agentRole: stage.agentRole ?? '',
+      stageContextPolicy: stage.contextPolicy,
+      stageToolPolicy: stage.toolPolicy,
+      stageRepoAccess: usesRepoContext,
+      promptProfileKey: stage.promptProfileKey ?? '',
+      sourceType: usesRepoContext ? session.sourceType : '',
+      sourceUri: usesRepoContext ? session.sourceUri : '',
+      sourceRef: usesRepoContext ? session.sourceRef : '',
+      modelAlias,
+    },
+    runContext: {
       workflow_instance_id: session.workflowInstanceId ?? `blueprint-${session.id}`,
       workflow_node_id: readLoopState(session).workflowNodeId ?? session.phaseId ?? `blueprint-${stage.key}`,
       agent_run_id: isDeveloperStage ? attempt.id : undefined,
@@ -3118,91 +3250,13 @@ async function runLoopStageExecute(
       trace_id: traceId,
       branch_base: isDeveloperStage ? session.sourceRef ?? undefined : undefined,
       branch_name: isDeveloperStage ? workbenchBranchName(session, stage, attempt) : undefined,
-      source_type: isDeveloperStage ? session.sourceType.toLowerCase() : undefined,
-      source_uri: isDeveloperStage ? session.sourceUri : undefined,
-      source_ref: isDeveloperStage ? session.sourceRef ?? undefined : undefined,
+      source_type: usesRepoContext ? session.sourceType.toLowerCase() : undefined,
+      source_uri: usesRepoContext ? session.sourceUri : undefined,
+      source_ref: usesRepoContext ? session.sourceRef ?? undefined : undefined,
     },
-    task,
-    vars: {
-      blueprintSessionId: session.id,
-      sourceType: session.sourceType,
-      sourceUri: session.sourceUri,
-      sourceRef: session.sourceRef,
-      stageKey: stage.key,
-      stageLabel: stage.label,
-      modelAlias,
-      agentRole: stage.agentRole,
-    },
-    // M66 — Thread accumulated receipts from prior stages so this stage's
-    // /mcp/invoke seeds state.verificationReceipts with them. Without this,
-    // each blueprint stage runs in a fresh invoke session with an empty
-    // receipt list, and finish_work_branch's formal verifier sees
-    // verificationReceiptPresent=False even when an earlier QA stage ran
-    // tests successfully. Receiving side: mcp-server/src/mcp/invoke.ts
-    // InvokeSchema.priorVerificationReceipts (M66 Slice C).
-    prior_verification_receipts: readLoopState(session).verificationReceiptHistory ?? [],
-    artifacts: [
-      {
-        label: 'Source snapshot',
-        role: 'CONTEXT',
-        mediaType: 'application/json',
-        content: encodeComposerArtifactContent(snapshotArtifact),
-      },
-    ],
-    overrides: {
-      // M36.2 / M36.6 — both systemPromptAppend AND extraContext now resolved
-      // by the caller via prompt-composer /api/v1/stage-prompts/resolve.
-      // Edit the templates in prompt-composer/prisma/seed.ts (loopDeveloperTask,
-      // loopDeveloperExtraContext, etc.) and re-seed — no workgraph-api redeploy.
-      systemPromptAppend,
-      extraContext,
-    },
-    model_overrides: {
-      ...(modelAlias ? { modelAlias } : {}),
-      temperature: 0.2,
-      maxOutputTokens: limits.maxOutputTokens,
-      promptCache: {
-        enabled: true,
-        strategy: 'provider_auto',
-        key: `${session.id}:${stage.key}:${session.sourceRef ?? 'default'}`,
-      },
-    },
-    context_policy: {
-      optimizationMode: 'code_aware',
-      maxContextTokens: limits.maxContextTokens,
-      compareWithRaw: false,
-      knowledgeTopK: 4,
-      memoryTopK: 2,
-      codeTopK: 5,
-      maxLayerChars: limits.maxLayerChars,
-      maxPromptChars: limits.maxPromptChars,
-    },
-    limits: {
-      maxSteps: isDeveloperStage ? WORKBENCH_DEVELOPER_MAX_STEPS : WORKBENCH_DEFAULT_MAX_STEPS,
-      timeoutSec: 480,
-      inputTokenBudget: limits.maxContextTokens,
-      outputTokenBudget: limits.maxOutputTokens,
-      maxHistoryMessages: 16,
-      maxHistoryTokens: Math.max(1000, Math.floor(limits.maxContextTokens * 0.75)),
-      summaryEveryMessages: 6,
-      compressToolResults: true,
-      maxToolResultChars: 8000,
-      maxPromptChars: limits.maxPromptChars,
-      // ── Phased Agent Reasoning Model (v4) ──────────────────────────
-      // Only opted in for developer stages; read-only stages (PLAN, DESIGN,
-      // QA_REVIEW etc.) use the existing flat-loop path. Server still has
-      // to honor MCP_AGENT_PHASES_ENABLED; passing this here is a no-op
-      // unless both flags align.
-      ...(WORKBENCH_AGENT_PHASES_ENABLED && isDeveloperStage
-        ? {
-            agentReasoningMode: 'phased' as const,
-            phaseBudgets: WORKBENCH_DEVELOPER_PHASE_BUDGETS,
-          }
-        : {}),
-    },
-    allow_autonomous_mutation: isDeveloperStage,
-    governance_mode: executionConfig?.governanceMode ?? 'fail_open',
-    },
+    // Mirror the existing per-stage step cap; the multi-turn driver respects
+    // it as a safety cap separate from StagePolicy.limits.max_tool_calls.
+    maxTurns: isDeveloperStage ? WORKBENCH_DEVELOPER_MAX_STEPS : WORKBENCH_DEFAULT_MAX_STEPS,
   })
 }
 
@@ -3249,14 +3303,14 @@ function workbenchBranchName(
 
 async function createLoopStageArtifacts(
   session: ArtifactSession,
-  snapshot: ArtifactSnapshot,
+  snapshot: ArtifactSnapshot | undefined,
   stage: LoopStageDefinition,
   attempt: StageAttempt,
   result: ExecuteResponse,
   gateRecommendation: GateRecommendation,
   actorId?: string,
 ): Promise<string[]> {
-  const ctx = buildSnapshotContext(snapshot)
+  const ctx = snapshot ? buildSnapshotContext(snapshot) : emptySnapshotContext()
   const response = isUsefulModelResponse(result.finalResponse) ? result.finalResponse ?? '' : ''
   const executionFallback = buildExecutionFallbackMarkdown(result)
   const commonPayload = {
@@ -3506,6 +3560,7 @@ function buildLoopStageVars(
         return `[${ts}] ${who}: ${m.content}`
       }).join('\n')
   const isDeveloperStage = normalizeAgentRole(stage.agentRole).includes('DEV')
+  const usesRepoContext = stageUsesRepoContext(stage)
   const priorApprovedArtifacts = buildPriorApprovedArtifactContext(session, state, stage.key)
   // M46.C — Carry learnings from prior failed attempts of the SAME stage
   // forward, so the new attempt can skip exploration that's already been
@@ -3557,12 +3612,16 @@ function buildLoopStageVars(
     implementationDirective,
     capturedDecisions,
     sendBacks,
+    stageContextPolicy: stage.contextPolicy,
+    stageToolPolicy: stage.toolPolicy,
+    stageRepoAccess: usesRepoContext ? 'true' : 'false',
+    promptProfileKey: stage.promptProfileKey ?? '',
     // M36.6 — source context vars consumed by loopDeveloperExtraContext template.
-    sourceType: session.sourceType,
-    sourceUri: session.sourceUri,
-    sourceRef: session.sourceRef ?? '',
+    sourceType: usesRepoContext ? session.sourceType : '',
+    sourceUri: usesRepoContext ? session.sourceUri : '',
+    sourceRef: usesRepoContext ? session.sourceRef ?? '' : '',
     // Helper for the "X @ Y" suffix without forcing the template to do conditionals.
-    sourceRefSuffix: session.sourceRef ? ` @ ${session.sourceRef}` : '',
+    sourceRefSuffix: usesRepoContext && session.sourceRef ? ` @ ${session.sourceRef}` : '',
     // M41.2 — operator → agent guidance thread. The prompt-composer renderer
     // performs simple var substitution, so provide an explicit empty-state line.
     operatorChat,
@@ -3844,6 +3903,12 @@ function buildStageInputSignature(
     rootHash: snapshot.rootHash,
     stageKey: stage.key,
     agentRole: stage.agentRole,
+    stagePolicy: {
+      contextPolicy: stage.contextPolicy,
+      repoAccess: stage.repoAccess,
+      toolPolicy: stage.toolPolicy,
+      promptProfileKey: stage.promptProfileKey,
+    },
     agentTemplateId,
     taskHash: sha256(task),
     accepted,
@@ -5548,6 +5613,19 @@ type SnapshotContext = {
   hasBetweenSwitch: boolean
   hasLengthCase: boolean
   hasLengthEnum: boolean
+}
+
+function emptySnapshotContext(): SnapshotContext {
+  return {
+    files: [],
+    sampledFiles: [],
+    languages: {},
+    keyFiles: [],
+    hasBetweenEnum: false,
+    hasBetweenSwitch: false,
+    hasLengthCase: false,
+    hasLengthEnum: false,
+  }
 }
 
 function buildSnapshotContext(snapshot: ArtifactSnapshot): SnapshotContext {
