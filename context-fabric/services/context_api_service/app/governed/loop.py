@@ -37,6 +37,7 @@ from typing import Any
 
 from .audit_emit import emit_governed_event
 from .dispatch import ToolDispatchError, ToolDispatchResult, dispatch_tool
+from .path_coverage import check_path_coverage
 from .phase_state import Phase, PhaseState, advance_phase
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
 from .tool_gateway import PhaseToolForbidden, check_tool_allowed
@@ -315,6 +316,37 @@ async def governed_step(
             return result
 
         result.receipt = receipt
+
+        # M74 Phase 1B — path-coverage check at ACT → VERIFY (and ACT → REPAIR,
+        # since both transitions imply "we're done editing this round"). Refuse
+        # the advance when the EditReceipt doesn't structurally cover the
+        # PlanReceipt.target_files AND the agent didn't declare them skipped.
+        # The check is a no-op when there's no prior plan or the plan had no
+        # target_files.
+        if (
+            state.current_phase is Phase.ACT
+            and next_phase is not None
+            and isinstance(receipt, dict)
+            and receipt.get("kind") == "edit_receipt"
+        ):
+            plan_receipts = state.receipts.get(Phase.PLAN.value) or []
+            latest_plan = plan_receipts[-1] if plan_receipts else None
+            gap = check_path_coverage(latest_plan, receipt)
+            if gap is not None:
+                log.info(
+                    "path coverage gap phase=ACT uncovered=%d",
+                    len(gap.uncovered),
+                )
+                result.validation_error = gap.as_error_payload()
+                await emit_governed_event(
+                    kind="governed.path_coverage_gap",
+                    state=state,
+                    policy=policy,
+                    run_context=run_context,
+                    payload=gap.as_error_payload(),
+                    severity="warn",
+                )
+                return result
 
         if next_phase is not None:
             try:

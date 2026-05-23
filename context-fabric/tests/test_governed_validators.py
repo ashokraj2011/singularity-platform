@@ -142,6 +142,81 @@ def test_verification_receipt_bad_status_fails():
         )
 
 
+# M74 Phase 1C — close the fake-pass loophole. status=passed/failed must
+# carry at least one command_run; status=unavailable must carry a reason.
+
+def test_verification_receipt_passed_with_empty_commands_refused():
+    """The old shape accepted {status: passed, commands_run: []} as
+    structurally valid because commands_run had a default. That meant an
+    agent could skip VERIFY entirely by submitting a clean-looking but
+    evidence-free receipt. Refuse it at the model boundary."""
+    with pytest.raises(PhaseOutputInvalid):
+        validate_phase_output(
+            Phase.VERIFY,
+            {"verification_result": {"status": "passed", "commands_run": []}},
+        )
+
+
+def test_verification_receipt_failed_with_empty_commands_refused():
+    """Symmetric: a "failed" verdict with no commands run is also nonsense.
+    Either a command failed (include it) or no command ran (status should
+    be 'unavailable' with a reason)."""
+    with pytest.raises(PhaseOutputInvalid):
+        validate_phase_output(
+            Phase.VERIFY,
+            {"verification_result": {"status": "failed", "commands_run": []}},
+        )
+
+
+def test_verification_receipt_unavailable_requires_reason():
+    """The 'unavailable' escape hatch must justify itself — reviewers
+    decide whether the gap is acceptable based on the reason text. Empty
+    or whitespace-only reason is refused."""
+    with pytest.raises(PhaseOutputInvalid):
+        validate_phase_output(
+            Phase.VERIFY,
+            {"verification_result": {"status": "unavailable"}},
+        )
+    with pytest.raises(PhaseOutputInvalid):
+        validate_phase_output(
+            Phase.VERIFY,
+            {"verification_result": {"status": "unavailable", "reason": "   "}},
+        )
+
+
+def test_verification_receipt_unavailable_with_reason_accepted():
+    """The legitimate use of 'unavailable' — verifier-registry returned
+    nothing for the changed paths — passes with a clear reason."""
+    parsed = validate_phase_output(
+        Phase.VERIFY,
+        {
+            "verification_result": {
+                "status": "unavailable",
+                "commands_run": [],
+                "reason": "no test framework configured for *.md changes",
+            }
+        },
+    )
+    assert parsed["verification_result"]["status"] == "unavailable"
+
+
+def test_verification_receipt_failed_with_commands_accepted():
+    """A genuine failure carries the failing commands. Sanity check the
+    validator doesn't refuse the case it's meant to allow."""
+    parsed = validate_phase_output(
+        Phase.VERIFY,
+        {
+            "verification_result": {
+                "status": "failed",
+                "commands_run": [
+                    {"command": "pytest", "exit_code": 1, "stderr": "2 tests failed"}
+                ],
+            }
+        },
+    )
+    assert parsed["verification_result"]["status"] == "failed"
+
+
 # ── ACT / EDIT ──────────────────────────────────────────────────────────────
 
 

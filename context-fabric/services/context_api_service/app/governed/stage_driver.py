@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -159,6 +160,59 @@ def _is_terminal_state(state: PhaseState) -> bool:
     return state.current_phase is Phase.FINALIZE
 
 
+# ── M74 Phase 1D — stagnant-phase helpers ──────────────────────────────────
+#
+# These are pulled out as pure functions so the detector logic is testable
+# without spinning up the whole async run_stage loop. The signatures are
+# (turn, recent_windows) → (set | bool); both are deterministic and
+# side-effect free.
+
+
+def _turn_tool_signatures(turn: TurnResult) -> set[str]:
+    """Compute the set of (tool_name, canonical_args) signatures for the
+    DISPATCHED tool calls in this turn. Refused calls are deliberately
+    excluded — a refused call is the exact signal that would otherwise
+    trip the stagnant guard, and counting it as "progress" would defeat
+    the purpose of the detector."""
+    sigs: set[str] = set()
+    for outcome in turn.step.tool_outcomes:
+        if not outcome.allowed:
+            continue
+        try:
+            args_canon = json.dumps(
+                outcome.args, sort_keys=True, separators=(",", ":"), default=str,
+            )
+        except (TypeError, ValueError):
+            # Unserialisable args shouldn't reach here (normalised at
+            # outcome construction) but fall back to repr defensively.
+            args_canon = repr(outcome.args)
+        sigs.add(f"{outcome.tool_name}:{args_canon}")
+    return sigs
+
+
+def _turn_made_progress(
+    turn_sigs: set[str],
+    recent_windows: "deque[set[str]]",
+) -> bool:
+    """A turn made progress if it introduced at least one tool-call
+    signature that's not in the recent window of prior turns. Empty
+    turns (no dispatched calls) are NOT progress — they didn't do
+    anything.
+
+    The window size is bounded by recent_windows.maxlen (set by the
+    caller). With maxlen=4, calling read_file(a) → read_file(b) →
+    read_file(c) → read_file(d) → read_file(e) all count as progress;
+    calling read_file(a) again on turn 6 also counts (a fell out of
+    the window). That's intentional — re-reading after long enough
+    might be legitimate (file changed) and we'd rather underrefuse
+    than overrefuse exploration.
+    """
+    if not turn_sigs:
+        return False
+    prior = set().union(*recent_windows) if recent_windows else set()
+    return bool(turn_sigs - prior)
+
+
 def _accumulate_totals(result: StageRunResult, turn: TurnResult) -> None:
     result.total_input_tokens += int(turn.llm.get("input_tokens") or 0)
     result.total_output_tokens += int(turn.llm.get("output_tokens") or 0)
@@ -203,8 +257,33 @@ async def run_stage(
     history = list(initial_history or [])
     result = StageRunResult(final_state=state)
 
+    # M74 Phase 1D — stagnant-phase detector.
+    #
+    # Old behaviour: 2 consecutive turns with the same phase and no advance
+    # tripped POLICY_BLOCKED. That conflates two failure modes:
+    #
+    #   * Real loop: the model keeps calling the same refused tool. Two
+    #     turns is plenty to detect.
+    #   * Slow progress: the model is reading files one at a time, taking
+    #     3-4 turns to gather enough context before submitting a phase
+    #     output. Counts as stagnant under the old rule even though work
+    #     is happening.
+    #
+    # New rule:
+    #   1. Threshold raised from 2 to 3 consecutive non-progressing turns.
+    #   2. A turn counts as progress when it dispatched at least one tool
+    #      whose (name, args) signature was NOT seen in the last
+    #      _STAGNANT_WINDOW_TURNS turns. Calling read_file on different
+    #      files counts as progress; calling apply_patch with identical
+    #      args twice doesn't.
+    #   3. Phase change / phase advance still reset the counter (unchanged).
+    _STAGNANT_THRESHOLD = 3
+    _STAGNANT_WINDOW_TURNS = 4
     stagnant_turns = 0
     prior_phase = state.current_phase
+    # Sliding window of per-turn tool signature sets. Used to decide
+    # whether the current turn introduced anything novel.
+    recent_signatures: deque[set[str]] = deque(maxlen=_STAGNANT_WINDOW_TURNS)
 
     for turn_idx in range(max_turns):
         try:
@@ -268,17 +347,21 @@ async def run_stage(
             result.stop_reason = "VALIDATION_BLOCKED"
             return result
 
-        # Stagnant-phase guard. If the LLM keeps trying the same refused
-        # tool, the phase doesn't advance + we burn turns. Two consecutive
-        # turns where nothing changed = give up and surface.
-        if state.current_phase is prior_phase and not turn.step.phase_advanced:
-            stagnant_turns += 1
-            if stagnant_turns >= 2:
-                result.stop_reason = "POLICY_BLOCKED"
-                return result
-        else:
+        # M74 Phase 1D — stagnant-phase guard with novelty exception.
+        # See the comment near _STAGNANT_THRESHOLD above for the design.
+        turn_signatures = _turn_tool_signatures(turn)
+        made_progress = _turn_made_progress(turn_signatures, recent_signatures)
+        recent_signatures.append(turn_signatures)
+
+        phase_changed = state.current_phase is not prior_phase
+        if phase_changed or turn.step.phase_advanced or made_progress:
             stagnant_turns = 0
             prior_phase = state.current_phase
+        else:
+            stagnant_turns += 1
+            if stagnant_turns >= _STAGNANT_THRESHOLD:
+                result.stop_reason = "POLICY_BLOCKED"
+                return result
 
     result.stop_reason = "MAX_TURNS"
     return result
