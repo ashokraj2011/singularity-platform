@@ -55,6 +55,22 @@ from .loop import (
     ToolCallOutcome,
     governed_step,
 )
+from .llm_client import (
+    ChatResponse,
+    ChatToolCall,
+    LLMGatewayError,
+    call_gateway_chat,
+)
+from .prompt_resolver import (
+    PromptNotFoundError,
+    ResolvedPrompt,
+    resolve_phase_prompt,
+)
+from .turn import (
+    SUBMIT_PHASE_OUTPUT,
+    TurnResult,
+    run_turn,
+)
 
 __all__ = [
     # phase_state
@@ -96,4 +112,17 @@ __all__ = [
     "GovernedStepResult",
     "ToolCallOutcome",
     "governed_step",
+    # llm_client
+    "ChatResponse",
+    "ChatToolCall",
+    "LLMGatewayError",
+    "call_gateway_chat",
+    # prompt_resolver
+    "PromptNotFoundError",
+    "ResolvedPrompt",
+    "resolve_phase_prompt",
+    # turn
+    "SUBMIT_PHASE_OUTPUT",
+    "TurnResult",
+    "run_turn",
 ]

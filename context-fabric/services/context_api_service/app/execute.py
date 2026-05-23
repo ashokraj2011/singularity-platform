@@ -2398,3 +2398,123 @@ async def execute_governed(req: GovernedStepRequest) -> dict[str, Any]:
         )
 
     return {"success": True, "data": outcome.to_dict()}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# M71 Slice C(b) — Single-turn LLM-driven governed endpoint.
+#
+# POST /api/v1/execute-governed-turn
+#
+# Same governance guarantees as /api/v1/execute-governed, except this version
+# also drives the LLM call. Per turn:
+#
+#   1. Load StagePolicy from prompt-composer.
+#   2. Resolve the per-phase prompt (StagePromptBinding ladder).
+#   3. POST llm-gateway /v1/chat/completions with tools = phase allowlist
+#      plus the synthetic `submit_phase_output` meta-tool.
+#   4. Parse tool_calls; split out submit_phase_output.
+#   5. governed_step() — hard-refuse out-of-phase tools, dispatch allowed
+#      tools via /mcp/tool-run, validate the phase output, advance the
+#      state machine when valid.
+#   6. Return next_state + tool_outcomes + LLM meta + prompt meta + policy
+#      summary.
+#
+# The caller (workgraph-api today, Slice F) persists `next_state` and calls
+# again until `step.phase_advanced` lands on FINALIZE, or
+# `step.next_state.approval_pending=true` indicates SELF_REVIEW asked for
+# human approval.
+# ─────────────────────────────────────────────────────────────────────────────
+
+from .governed import (  # noqa: E402
+    LLMGatewayError,
+    PromptNotFoundError,
+    run_turn,
+)
+
+
+class GovernedTurnRequest(BaseModel):
+    """Wire shape for /api/v1/execute-governed-turn."""
+
+    stage_key: str = Field(..., min_length=1)
+    agent_role: Optional[str] = None
+    phase_state: Optional[dict[str, Any]] = None
+    # Mustache vars for the per-phase prompt (goal, stageLabel, captured
+    # decisions, prior approved artifacts, etc.). Passed verbatim to
+    # prompt-composer's /resolve.
+    vars: dict[str, Any] = Field(default_factory=dict)
+    # OpenAI-style message history from prior turns in this phase. Empty
+    # on the first turn. Caller manages the history shape; we splice it
+    # after the system + user messages we compose from the prompt.
+    history: list[dict[str, Any]] = Field(default_factory=list)
+    # Optional model override; otherwise llm-gateway picks based on its
+    # rate-card default.
+    model_alias: Optional[str] = None
+    # Optional bearer override for upstream (prompt-composer / llm-gateway
+    # / mcp-server) calls. Lets workgraph-api forward a user JWT.
+    bearer: Optional[str] = None
+    run_context: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/api/v1/execute-governed-turn")
+async def execute_governed_turn(req: GovernedTurnRequest) -> dict[str, Any]:
+    """Run one governed LLM turn."""
+    if req.phase_state:
+        try:
+            state = PhaseState.from_dict(req.phase_state)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "PHASE_STATE_INVALID", "message": str(exc)},
+            )
+    else:
+        state = PhaseState.fresh(req.stage_key, req.agent_role)
+
+    try:
+        turn = await run_turn(
+            state=state,
+            stage_key=req.stage_key,
+            agent_role=req.agent_role,
+            vars=req.vars,
+            history=req.history,
+            model_alias=req.model_alias,
+            run_context=req.run_context,
+            bearer=req.bearer,
+        )
+    except PolicyNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "STAGE_POLICY_NOT_FOUND",
+                "stage_key": req.stage_key,
+                "agent_role": req.agent_role,
+                "message": str(exc),
+            },
+        )
+    except PromptNotFoundError as exc:
+        # The composer ladder fell all the way through. Either the caller
+        # is asking for a stage we haven't seeded (loop.stage.foo with no
+        # generic loop.stage default) or the seed wasn't applied.
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "STAGE_PROMPT_NOT_FOUND",
+                "stage_key": req.stage_key,
+                "agent_role": req.agent_role,
+                "phase": state.current_phase.value,
+                "message": str(exc),
+            },
+        )
+    except LLMGatewayError as exc:
+        # Surface the gateway's error_code so the caller (workgraph-api) can
+        # route specific recoveries: timeout → maybe retry with longer
+        # budget; rate-limit → back off; bad request → don't retry.
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": exc.error_code,
+                "upstream_status": exc.upstream_status,
+                "message": str(exc),
+            },
+        )
+
+    return {"success": True, "data": turn.to_dict()}
