@@ -377,6 +377,11 @@ model StagePromptBinding {
   // Optional role narrowing (e.g. "DEVELOPER", "QA", "ARCHITECT").
   // NULL means "any role at this stage".
   agentRole       String?
+  // M71 — Optional phase narrowing for per-phase prompts. NULL = stage-level
+  // binding, used by the resolver as a fallback when no phase-specific
+  // binding exists. Phase values match StagePhasePolicy.phase
+  // (PLAN, EXPLORE, ACT, VERIFY, REPAIR, SELF_REVIEW, FINALIZE).
+  phase           String?
   promptProfileId String
   isActive        Boolean  @default(true)
   // Notes for the prompt engineer.
@@ -386,8 +391,14 @@ model StagePromptBinding {
 
   promptProfile   PromptProfile @relation(fields: [promptProfileId], references: [id])
 
-  @@unique([stageKey, agentRole])
+  // M71 — (stageKey, agentRole, phase) is the natural key. NULLS NOT
+  // DISTINCT semantics (PG 15+) so two stage-level bindings with phase=NULL
+  // on the same (stageKey, agentRole) collide, which is the desired
+  // integrity behaviour. Set manually in the migration since Prisma
+  // doesn't yet emit the NULLS NOT DISTINCT clause.
+  @@unique([stageKey, agentRole, phase], map: "StagePromptBinding_stageKey_agentRole_phase_key")
   @@index([stageKey])
+  @@index([stageKey, agentRole])
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -115,6 +115,11 @@ export class PromptComposerError extends Error {
 export interface ResolveStageRequest {
   stageKey: string
   agentRole?: string
+  // M71 — optional phase narrowing. When set, prompt-composer prefers a
+  // (stageKey, agentRole, phase) binding; falls back to the stage-level row
+  // when no phase-specific override exists.
+  phase?: 'PLAN' | 'EXPLORE' | 'ACT' | 'VERIFY' | 'REPAIR' | 'SELF_REVIEW' | 'FINALIZE'
+  promptProfileKey?: string
   vars?: Record<string, unknown>
 }
 
@@ -129,6 +134,10 @@ export interface ResolveStageResponse {
   bindingId: string
   stageKey: string
   agentRole: string | null
+  // M71 — which phase the matched binding targets, or null when a stage-
+  // level (fallback) binding matched. Lets the caller log whether they got
+  // a phase-specific prompt or the stage default.
+  phase: string | null
 }
 
 // M36.4 — SystemPrompt in-process cache. Workgraph-api lives outside the

@@ -67,6 +67,38 @@ const IDS = {
     DEVELOP:   "00000000-0000-0000-0000-000000000073",
     QA:        "00000000-0000-0000-0000-000000000074",
   },
+  // M71 Slice E — Per-phase prompt profiles. One per (role, phase). UUID
+  // suffix: `7100<role><phase>` where role = d=DEVELOPER, q=QA, and phase =
+  // 1=PLAN, 2=EXPLORE, 3=ACT, 4=VERIFY, 5=REPAIR, 6=SELF_REVIEW, 7=FINALIZE.
+  phaseProfiles: {
+    DEV_PLAN:        "00000000-0000-0000-0000-0000071000d1",
+    DEV_EXPLORE:     "00000000-0000-0000-0000-0000071000d2",
+    DEV_ACT:         "00000000-0000-0000-0000-0000071000d3",
+    DEV_VERIFY:      "00000000-0000-0000-0000-0000071000d4",
+    DEV_REPAIR:      "00000000-0000-0000-0000-0000071000d5",
+    DEV_SELF_REVIEW: "00000000-0000-0000-0000-0000071000d6",
+    DEV_FINALIZE:    "00000000-0000-0000-0000-0000071000d7",
+    QA_PLAN:         "00000000-0000-0000-0000-0000071000f1",
+    QA_EXPLORE:      "00000000-0000-0000-0000-0000071000f2",
+    QA_VERIFY:       "00000000-0000-0000-0000-0000071000f4",
+    QA_SELF_REVIEW:  "00000000-0000-0000-0000-0000071000f6",
+  },
+  // M71 Slice E — Per-phase StagePromptBindings. Same suffix scheme as
+  // phaseProfiles, just shifted to the 7101 prefix to make them distinct
+  // when grepping audit logs.
+  phaseBindings: {
+    DEV_PLAN:        "00000000-0000-0000-0000-0000071010d1",
+    DEV_EXPLORE:     "00000000-0000-0000-0000-0000071010d2",
+    DEV_ACT:         "00000000-0000-0000-0000-0000071010d3",
+    DEV_VERIFY:      "00000000-0000-0000-0000-0000071010d4",
+    DEV_REPAIR:      "00000000-0000-0000-0000-0000071010d5",
+    DEV_SELF_REVIEW: "00000000-0000-0000-0000-0000071010d6",
+    DEV_FINALIZE:    "00000000-0000-0000-0000-0000071010d7",
+    QA_PLAN:         "00000000-0000-0000-0000-0000071010f1",
+    QA_EXPLORE:      "00000000-0000-0000-0000-0000071010f2",
+    QA_VERIFY:       "00000000-0000-0000-0000-0000071010f4",
+    QA_SELF_REVIEW:  "00000000-0000-0000-0000-0000071010f6",
+  },
 } as const;
 
 const platformConstitution = [
@@ -337,6 +369,401 @@ const loopIntakeExtraContext = [
   "- Focus on the WorkItem/story request, acceptance examples, constraints, scope boundaries, priority, risks, and missing product information.",
   "- Handoff implementation questions to the Plan stage; do not solve them here.",
 ].join("\n");
+
+// ─────────────────────────────────────────────────────────────
+// M71 Slice E — Per-phase prompt templates.
+//
+// Each template targets ONE phase of ONE role. Replaces the kitchen-sink
+// `loopDeveloperTask` (which mixed PLAN/EXPLORE/ACT/VERIFY/REPAIR/REVIEW
+// guidance into a single 40-line block) with focused, phase-appropriate
+// instructions. context-fabric's tool gateway will hard-refuse anything
+// outside the allowlist anyway, so the prompts stay declarative — they
+// say what to DO, not what to AVOID. The gateway is the enforcement.
+//
+// All templates render with Mustache vars matching loopDefaultTask:
+//   {{stageLabel}} {{goal}} {{stageKey}} {{agentRole}} {{stageDescription}}
+//   {{artifacts}} {{questions}} {{capturedDecisions}} {{sendBacks}}
+//   {{operatorChat}} {{latestAccepted}} {{priorApprovedArtifacts}}
+// ─────────────────────────────────────────────────────────────
+
+// ── DEVELOPER ────────────────────────────────────────────────────────────
+
+const loopDeveloperPlanTask = [
+  "Phase: PLAN — Developer stage",
+  "",
+  "Goal: {{goal}}",
+  "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
+  "",
+  "Approved artifact context:",
+  "{{priorApprovedArtifacts}}",
+  "",
+  "Operator guidance:",
+  "{{operatorChat}}",
+  "",
+  "Your task this turn: produce a structured PLAN receipt.",
+  "",
+  "Required output fields (validator will reject anything missing these):",
+  "- target_files: array of repo-relative paths you expect to touch (best guess; you'll refine in EXPLORE).",
+  "- expected_edits: brief description of each planned change.",
+  "- symbols_to_inspect: function/class names you'll read with AST tools next.",
+  "- test_strategy.commands: the test/lint command you'll run in VERIFY (e.g. ['mvn test', 'pytest tests/segment_test.py']).",
+  "- risk_level: low / medium / high — your honest assessment.",
+  "- external_side_effects_required: true only if this needs network/deploy/API calls beyond local repo work.",
+  "",
+  "Allowed tools: repo_map, symbol_search, list_files, read_repo_instructions, read_workitem.",
+  "DO NOT call read_file, apply_patch, run_test, or finish_work_branch — those belong to later phases. Tool gateway will refuse them.",
+].join("\n");
+
+const loopDeveloperExploreTask = [
+  "Phase: EXPLORE — Developer stage",
+  "",
+  "Goal: {{goal}}",
+  "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
+  "",
+  "Your PLAN this attempt is in the prior receipts. Now gather the code context you need to safely implement those edits.",
+  "",
+  "Required output fields:",
+  "- context_used: array of context items you fetched, each with {type, target, reason, token_estimate}. Type is one of repo_map, symbol, ast_slice, dependency_slice, file.",
+  "- implementation_findings: short bullet list of what you learned that shapes the edit.",
+  "- updated_target_files: revised file list if PLAN was wrong.",
+  "",
+  "Allowed tools: repo_map, symbol_search, find_symbol, get_symbol, get_ast_slice, get_dependencies, read_file, read_test_file, search_code, grep_lines, capture_test_baseline.",
+  "",
+  "Prefer AST slices over full-file reads. Justify any read_file with a one-line reason. Call capture_test_baseline NOW with the PLAN's test_strategy.commands so pre-existing failures don't masquerade as your regression in VERIFY.",
+  "",
+  "DO NOT call apply_patch / replace_text / write_file — that's ACT phase. Tool gateway will refuse.",
+].join("\n");
+
+const loopDeveloperActTask = [
+  "Phase: ACT — Developer stage",
+  "",
+  "Goal: {{goal}}",
+  "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
+  "",
+  "Your context is in the EXPLORE receipt. Now make the code changes.",
+  "",
+  "Required output fields:",
+  "- edits: array of {file, edit_type, reason, anchor_hash?, before_summary?, after_summary?}.",
+  "  edit_type ∈ {apply_patch, replace_text, replace_range, create_file, write_file}.",
+  "  Every edit MUST have a reason — one short sentence on why this change satisfies the goal.",
+  "",
+  "Allowed tools: apply_patch, replace_text, replace_range, create_file, write_file, read_file, get_ast_slice.",
+  "Forbidden: shell_unrestricted, network_call, push_branch, deploy.",
+  "",
+  "Prefer patches over full-file rewrites. Use write_file only when the file is brand-new OR you're replacing the entire contents intentionally (e.g. a generated file). Existing files: apply_patch or replace_range.",
+  "",
+  "DO NOT call run_test or finish_work_branch in this phase — that's VERIFY and FINALIZE. Tool gateway will refuse.",
+].join("\n");
+
+const loopDeveloperVerifyTask = [
+  "Phase: VERIFY — Developer stage",
+  "",
+  "Goal: {{goal}}",
+  "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
+  "",
+  "Edits landed in ACT. Now prove they work.",
+  "",
+  "Required output field:",
+  "- verification_result: {status, commands_run, coverage}.",
+  "  status ∈ {passed, failed, unavailable}.",
+  "  commands_run is an array of {command, exit_code, duration_ms, stdout_summary, stderr_summary}.",
+  "  coverage is {targeted_tests, full_tests, lint, typecheck, compile} — booleans.",
+  "  If status=unavailable, ALSO include a `reason` field explaining why no test could run.",
+  "",
+  "Allowed tools: run_test, run_command, recommended_verification, verification_unavailable, git_diff, changed_files.",
+  "",
+  "Strategy: run the test commands from your PLAN's test_strategy.commands. If they don't apply, call recommended_verification to discover what does. If the repo genuinely has no runnable test for this change, emit verification_unavailable with the reason — this is the ONLY way to get past VERIFY without a passing receipt.",
+  "",
+  "Compare your run against the baseline you captured in EXPLORE. NEW failures = regression. Pre-existing failures = leave them alone.",
+].join("\n");
+
+const loopDeveloperRepairTask = [
+  "Phase: REPAIR — Developer stage",
+  "",
+  "Goal: {{goal}}",
+  "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
+  "",
+  "VERIFY failed. Fix the regression.",
+  "",
+  "Required output fields:",
+  "- retry_number: which repair attempt this is (1, 2, 3 — capped at max_repair_attempts).",
+  "- failure_summary: one-sentence description of what broke.",
+  "- repair_hypothesis: what you think went wrong AND why your fix addresses it.",
+  "- files_to_reinspect: files you'll re-read before editing.",
+  "- edits: same shape as ACT phase — the new patches.",
+  "",
+  "Allowed tools: read_file, get_ast_slice, apply_patch, replace_text, replace_range, run_test, run_command.",
+  "",
+  "Read the failing test output carefully. Don't guess. State what changed between expected and actual, and what your fix does about it. Identical hypotheses across repair attempts = you're stuck; surface that explicitly and recommend BLOCKED.",
+].join("\n");
+
+const loopDeveloperSelfReviewTask = [
+  "Phase: SELF_REVIEW — Developer stage",
+  "",
+  "Goal: {{goal}}",
+  "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
+  "",
+  "Verification passed (or was explicitly unavailable). Now review your own work before human approval.",
+  "",
+  "Required output fields:",
+  "- recommended_for_approval: true ONLY if you'd ship this. False if anything in your diff makes you hesitate.",
+  "- acceptance_criteria_check: array of {criterion, status, evidence}. status ∈ {met, not_met, uncertain}. ONE entry per acceptance criterion in the WorkItem.",
+  "- risk_summary: {risk_level, risks, rollback_notes}.",
+  "- diff_summary: {files_changed, lines_added, lines_deleted, notable_changes}.",
+  "- verification_summary: short paragraph on what VERIFY proved.",
+  "",
+  "Allowed tools: git_diff, changed_files, read_file.",
+  "",
+  "If any criterion is `not_met` or `uncertain`, set recommended_for_approval=false and let the approver decide. False positives at this step waste human time; better to flag uncertainty.",
+].join("\n");
+
+const loopDeveloperFinalizeTask = [
+  "Phase: FINALIZE — Developer stage",
+  "",
+  "Goal: {{goal}}",
+  "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
+  "",
+  "Human approved the work. Finalize the local branch so the workflow can push it.",
+  "",
+  "Required output fields:",
+  "- branch_name: the work-branch name (mcp-server reports it back).",
+  "- commit_sha: the final commit SHA on the work branch.",
+  "- pull_request_url: present only if you opened a PR.",
+  "",
+  "Allowed tools: finish_work_branch, git_commit, prepare_pull_request.",
+  "Forbidden: push_branch, deploy — those are workflow-node operations, not agent operations.",
+  "",
+  "Call finish_work_branch. Don't push. Don't deploy. The GIT_PUSH workflow node handles the push after approval.",
+].join("\n");
+
+// ── QA ────────────────────────────────────────────────────────────────────
+
+const loopQaPlanTask = [
+  "Phase: PLAN — QA stage",
+  "",
+  "Goal: {{goal}}",
+  "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
+  "",
+  "Approved artifact context (the developer's work):",
+  "{{priorApprovedArtifacts}}",
+  "",
+  "Your task: plan QA coverage for the developer's diff.",
+  "",
+  "Required output fields:",
+  "- target_files: files you'll inspect (the developer's changed files + their tests).",
+  "- test_strategy.commands: the verification commands you'll run — should subsume the developer's PLAN.test_strategy.commands and add regression checks.",
+  "",
+  "Allowed tools: repo_map, symbol_search, list_files, read_repo_instructions, read_workitem, changed_files, git_diff.",
+  "",
+  "Read the developer's diff first (via git_diff or changed_files), then decide what additional coverage you need.",
+].join("\n");
+
+const loopQaExploreTask = [
+  "Phase: EXPLORE — QA stage",
+  "",
+  "Goal: {{goal}}",
+  "",
+  "Inspect the developer's changes + the surrounding test layer.",
+  "",
+  "Required output: context_used array (same shape as Developer EXPLORE).",
+  "",
+  "Allowed tools: read_file, read_test_file, get_ast_slice, search_code, grep_lines, changed_files, git_diff.",
+  "",
+  "Look for: untested edge cases, missing regression tests, traceability gaps between acceptance criteria and the diff.",
+].join("\n");
+
+const loopQaVerifyTask = [
+  "Phase: VERIFY — QA stage",
+  "",
+  "Goal: {{goal}}",
+  "",
+  "Run the full verification suite (not just the focused tests the developer ran).",
+  "",
+  "Required output field:",
+  "- verification_result: same shape as Developer VERIFY (status, commands_run, coverage).",
+  "",
+  "Allowed tools: run_test, run_command, recommended_verification, verification_unavailable, git_diff, changed_files.",
+  "",
+  "Strategy: run the full test suite (not just targeted tests) + lint + typecheck if available. coverage.full_tests should be true if you actually ran them. status=failed means a regression — flag it but DO NOT mutate code; QA is read-only.",
+].join("\n");
+
+const loopQaSelfReviewTask = [
+  "Phase: SELF_REVIEW — QA stage",
+  "",
+  "Goal: {{goal}}",
+  "",
+  "Verification done. Compose the QA certification.",
+  "",
+  "Required output fields:",
+  "- recommended_for_approval: true only if every acceptance criterion is met AND verification passed.",
+  "- acceptance_criteria_check: ONE entry per WorkItem acceptance criterion, with {status, evidence}. The evidence string must cite the verification command OR the file/line that proves the criterion.",
+  "- verification_summary: short paragraph on what passed and what (if anything) is concerning.",
+  "- traceability_matrix: object mapping acceptance_criteria → test_files (which test covers which criterion).",
+  "",
+  "Allowed tools: read_file, git_diff, changed_files.",
+  "",
+  "This is the certification step. Approver reads your output verbatim and decides whether to ship. Be precise about evidence. \"Tests pass\" is not evidence — \"mvn test passed 128/128 including the new SegmentEligibilityEvaluatorEmptyResponseTest\" is.",
+].join("\n");
+
+// PHASE_PROMPTS — the registry the seed loop iterates. Each entry creates one
+// PromptProfile + one StagePromptBinding row. Stable IDs come from
+// IDS.phaseProfiles and IDS.phaseBindings; templates come from the constants
+// above. The resolver in stage-prompts.service.ts prefers these over the
+// stage-level (NULL-phase) bindings when the caller passes a phase.
+interface PhasePromptEntry {
+  profileId: string;
+  bindingId: string;
+  stageKey: string;
+  agentRole: string;
+  phase: "PLAN" | "EXPLORE" | "ACT" | "VERIFY" | "REPAIR" | "SELF_REVIEW" | "FINALIZE";
+  profileName: string;
+  description: string;
+  taskTemplate: string;
+  roleLayerId: string;
+  // True for DEVELOPER ACT + REPAIR — the only two phases where the agent
+  // actually mutates files. Attaches the M36.3 developerCodeMutation policy
+  // layer to the profile so the system prompt carries the patch-first +
+  // anchor-hash + write-file rules. Other phases get localCodeIntelligence
+  // only (read-style policy).
+  attachMutationPolicy: boolean;
+}
+
+const PHASE_PROMPTS: PhasePromptEntry[] = [
+  // DEVELOPER — 7 phases.
+  {
+    profileId: IDS.phaseProfiles.DEV_PLAN,
+    bindingId: IDS.phaseBindings.DEV_PLAN,
+    stageKey: "loop.stage",
+    agentRole: "DEVELOPER",
+    phase: "PLAN",
+    profileName: "Developer PLAN phase profile",
+    description: "M71 — Developer in PLAN: identify target files + test strategy. Read-only tools.",
+    taskTemplate: loopDeveloperPlanTask,
+    roleLayerId: IDS.layers.role.DEVELOPER,
+    attachMutationPolicy: false,
+  },
+  {
+    profileId: IDS.phaseProfiles.DEV_EXPLORE,
+    bindingId: IDS.phaseBindings.DEV_EXPLORE,
+    stageKey: "loop.stage",
+    agentRole: "DEVELOPER",
+    phase: "EXPLORE",
+    profileName: "Developer EXPLORE phase profile",
+    description: "M71 — Developer in EXPLORE: AST/symbol context + capture_test_baseline.",
+    taskTemplate: loopDeveloperExploreTask,
+    roleLayerId: IDS.layers.role.DEVELOPER,
+    attachMutationPolicy: false,
+  },
+  {
+    profileId: IDS.phaseProfiles.DEV_ACT,
+    bindingId: IDS.phaseBindings.DEV_ACT,
+    stageKey: "loop.stage",
+    agentRole: "DEVELOPER",
+    phase: "ACT",
+    profileName: "Developer ACT phase profile",
+    description: "M71 — Developer in ACT: patch-first mutations. Mutation policy attached.",
+    taskTemplate: loopDeveloperActTask,
+    roleLayerId: IDS.layers.role.DEVELOPER,
+    attachMutationPolicy: true,
+  },
+  {
+    profileId: IDS.phaseProfiles.DEV_VERIFY,
+    bindingId: IDS.phaseBindings.DEV_VERIFY,
+    stageKey: "loop.stage",
+    agentRole: "DEVELOPER",
+    phase: "VERIFY",
+    profileName: "Developer VERIFY phase profile",
+    description: "M71 — Developer in VERIFY: run_test + compare against baseline.",
+    taskTemplate: loopDeveloperVerifyTask,
+    roleLayerId: IDS.layers.role.DEVELOPER,
+    attachMutationPolicy: false,
+  },
+  {
+    profileId: IDS.phaseProfiles.DEV_REPAIR,
+    bindingId: IDS.phaseBindings.DEV_REPAIR,
+    stageKey: "loop.stage",
+    agentRole: "DEVELOPER",
+    phase: "REPAIR",
+    profileName: "Developer REPAIR phase profile",
+    description: "M71 — Developer in REPAIR: react to VERIFY failure. Mutation policy attached.",
+    taskTemplate: loopDeveloperRepairTask,
+    roleLayerId: IDS.layers.role.DEVELOPER,
+    attachMutationPolicy: true,
+  },
+  {
+    profileId: IDS.phaseProfiles.DEV_SELF_REVIEW,
+    bindingId: IDS.phaseBindings.DEV_SELF_REVIEW,
+    stageKey: "loop.stage",
+    agentRole: "DEVELOPER",
+    phase: "SELF_REVIEW",
+    profileName: "Developer SELF_REVIEW phase profile",
+    description: "M71 — Developer in SELF_REVIEW: acceptance-criteria check + recommend.",
+    taskTemplate: loopDeveloperSelfReviewTask,
+    roleLayerId: IDS.layers.role.DEVELOPER,
+    attachMutationPolicy: false,
+  },
+  {
+    profileId: IDS.phaseProfiles.DEV_FINALIZE,
+    bindingId: IDS.phaseBindings.DEV_FINALIZE,
+    stageKey: "loop.stage",
+    agentRole: "DEVELOPER",
+    phase: "FINALIZE",
+    profileName: "Developer FINALIZE phase profile",
+    description: "M71 — Developer in FINALIZE: finish_work_branch. No push, no deploy.",
+    taskTemplate: loopDeveloperFinalizeTask,
+    roleLayerId: IDS.layers.role.DEVELOPER,
+    attachMutationPolicy: false,
+  },
+  // QA — 4 phases (matches the QA StagePolicy seed).
+  {
+    profileId: IDS.phaseProfiles.QA_PLAN,
+    bindingId: IDS.phaseBindings.QA_PLAN,
+    stageKey: "loop.stage",
+    agentRole: "QA",
+    phase: "PLAN",
+    profileName: "QA PLAN phase profile",
+    description: "M71 — QA in PLAN: plan verification coverage against the developer's diff.",
+    taskTemplate: loopQaPlanTask,
+    roleLayerId: IDS.layers.role.QA,
+    attachMutationPolicy: false,
+  },
+  {
+    profileId: IDS.phaseProfiles.QA_EXPLORE,
+    bindingId: IDS.phaseBindings.QA_EXPLORE,
+    stageKey: "loop.stage",
+    agentRole: "QA",
+    phase: "EXPLORE",
+    profileName: "QA EXPLORE phase profile",
+    description: "M71 — QA in EXPLORE: inspect the diff + surrounding tests.",
+    taskTemplate: loopQaExploreTask,
+    roleLayerId: IDS.layers.role.QA,
+    attachMutationPolicy: false,
+  },
+  {
+    profileId: IDS.phaseProfiles.QA_VERIFY,
+    bindingId: IDS.phaseBindings.QA_VERIFY,
+    stageKey: "loop.stage",
+    agentRole: "QA",
+    phase: "VERIFY",
+    profileName: "QA VERIFY phase profile",
+    description: "M71 — QA in VERIFY: full test/lint/typecheck run.",
+    taskTemplate: loopQaVerifyTask,
+    roleLayerId: IDS.layers.role.QA,
+    attachMutationPolicy: false,
+  },
+  {
+    profileId: IDS.phaseProfiles.QA_SELF_REVIEW,
+    bindingId: IDS.phaseBindings.QA_SELF_REVIEW,
+    stageKey: "loop.stage",
+    agentRole: "QA",
+    phase: "SELF_REVIEW",
+    profileName: "QA SELF_REVIEW phase profile",
+    description: "M71 — QA in SELF_REVIEW: certification + traceability matrix.",
+    taskTemplate: loopQaSelfReviewTask,
+    roleLayerId: IDS.layers.role.QA,
+    attachMutationPolicy: false,
+  },
+];
 
 function sha256(value: string): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -1209,6 +1636,9 @@ async function upsertBinding(input: {
   id: string;
   stageKey: string;
   agentRole: string | null;
+  // M71 — optional phase narrowing. NULL = stage-level binding (acts as
+  // the fallback for the (stageKey, agentRole, *) ladder in the resolver).
+  phase?: string | null;
   promptProfileId: string;
   description?: string;
 }) {
@@ -1217,6 +1647,7 @@ async function upsertBinding(input: {
     update: {
       stageKey: input.stageKey,
       agentRole: input.agentRole,
+      phase: input.phase ?? null,
       promptProfileId: input.promptProfileId,
       isActive: true,
       description: input.description ?? null,
@@ -1225,6 +1656,7 @@ async function upsertBinding(input: {
       id: input.id,
       stageKey: input.stageKey,
       agentRole: input.agentRole,
+      phase: input.phase ?? null,
       promptProfileId: input.promptProfileId,
       isActive: true,
       description: input.description ?? null,
@@ -1562,6 +1994,39 @@ async function main() {
   // (PHASE_TOOL_FORBIDDEN). Atomic — each upsert replaces the phase rows.
   for (const policy of STAGE_POLICIES) {
     await upsertStagePolicy(policy);
+  }
+
+  // M71 Slice E — Per-phase prompt profiles + bindings. One per (role, phase).
+  // Resolver in stage-prompts.service.ts picks the most-specific binding
+  // that matches: phase-specific (this seed) → stage-level (M36.1 seeds)
+  // → loop.stage fallback. Phase-specific prompts are tighter and let
+  // the model stay focused on the current phase's job.
+  for (const entry of PHASE_PROMPTS) {
+    await upsertStageProfile({
+      id: entry.profileId,
+      name: entry.profileName,
+      description: entry.description,
+      stageKey: entry.stageKey,
+      roleGate: entry.agentRole,
+      taskTemplate: entry.taskTemplate,
+      // extraContext intentionally left to the stage-level binding's value
+      // (loopDeveloperExtraContext / loopDefaultExtraContext). Phase-specific
+      // extraContext didn't show enough differentiation to justify a copy.
+      extraContextTemplate: undefined,
+      roleLayerId: entry.roleLayerId,
+    });
+    await linkLayer(entry.profileId, IDS.layers.localCodeIntelligence, 200);
+    if (entry.attachMutationPolicy) {
+      await linkLayer(entry.profileId, IDS.layers.developerCodeMutation, 210);
+    }
+    await upsertBinding({
+      id: entry.bindingId,
+      stageKey: entry.stageKey,
+      agentRole: entry.agentRole,
+      phase: entry.phase,
+      promptProfileId: entry.profileId,
+      description: `M71 phase-specific: ${entry.agentRole} ${entry.phase}.`,
+    });
   }
 
   console.log("[prompt-composer seed] done");

@@ -21,26 +21,66 @@ interface BindingRow {
   id: string;
   stageKey: string;
   agentRole: string | null;
+  phase: string | null;
   promptProfileId: string;
   isActive: boolean;
 }
 
 /**
- * Look up the most specific active binding for (stageKey, role).
- * Exact (stageKey, role) wins over (stageKey, null) fallback.
+ * Look up the most specific active binding.
+ *
+ * M71 — Specificity ladder (first match wins):
+ *
+ *   1. (stageKey,             agentRole, phase)   — most specific: e.g. DEVELOPER + ACT
+ *   2. (stageKey,             agentRole, NULL)    — stage-level for this role
+ *   3. (stageKey,             NULL,      phase)   — phase-level for any role
+ *   4. (stageKey,             NULL,      NULL)    — stage default
+ *   then strip the .intake/.develop suffix on `loop.stage.<key>` -> `loop.stage`
+ *   and try 1..4 again.
+ *
+ * The phase-specific layer means an LLM in DEVELOPER ACT phase gets ACT-
+ * focused guidance ("apply patches; mutate files; no exploration") while
+ * the same agent in DEVELOPER PLAN phase sees PLAN-focused guidance
+ * ("identify target files; declare test strategy; do NOT edit").
  */
-async function findBinding(stageKey: string, agentRole?: string): Promise<BindingRow | null> {
-  // Prefer exact role match first.
-  if (agentRole) {
-    const exact = await prisma.stagePromptBinding.findFirst({
-      where: { stageKey, agentRole, isActive: true },
-    });
-    if (exact) return exact;
+async function findBinding(
+  stageKey: string,
+  agentRole?: string,
+  phase?: string,
+): Promise<BindingRow | null> {
+  const candidates = [stageKey];
+  if (stageKey.startsWith("loop.stage.") && stageKey !== "loop.stage") {
+    candidates.push("loop.stage");
   }
-  // Fall back to the role-agnostic binding.
-  return await prisma.stagePromptBinding.findFirst({
-    where: { stageKey, agentRole: null, isActive: true },
-  });
+  for (const candidate of candidates) {
+    // 1. exact: stageKey + role + phase
+    if (agentRole && phase) {
+      const exact = await prisma.stagePromptBinding.findFirst({
+        where: { stageKey: candidate, agentRole, phase, isActive: true },
+      });
+      if (exact) return exact;
+    }
+    // 2. stage-level for this role: stageKey + role + NULL phase
+    if (agentRole) {
+      const roleFallback = await prisma.stagePromptBinding.findFirst({
+        where: { stageKey: candidate, agentRole, phase: null, isActive: true },
+      });
+      if (roleFallback) return roleFallback;
+    }
+    // 3. phase-level for any role: stageKey + NULL role + phase
+    if (phase) {
+      const phaseFallback = await prisma.stagePromptBinding.findFirst({
+        where: { stageKey: candidate, agentRole: null, phase, isActive: true },
+      });
+      if (phaseFallback) return phaseFallback;
+    }
+    // 4. stage default: stageKey + NULL role + NULL phase
+    const defaultFallback = await prisma.stagePromptBinding.findFirst({
+      where: { stageKey: candidate, agentRole: null, phase: null, isActive: true },
+    });
+    if (defaultFallback) return defaultFallback;
+  }
+  return null;
 }
 
 /**
@@ -79,7 +119,42 @@ async function loadSystemPromptFragment(profileId: string): Promise<string> {
 
 export const stagePromptsService = {
   async resolve(input: ResolveStageInput): Promise<ResolveStageResult> {
-    const binding = await findBinding(input.stageKey, input.agentRole);
+    if (input.promptProfileKey) {
+      const key = input.promptProfileKey;
+      const profile = await prisma.promptProfile.findFirst({
+        where: {
+          status: "ACTIVE",
+          OR: [
+            { id: key },
+            { stageKey: key },
+            { name: key },
+          ],
+        },
+      });
+      if (profile) {
+        const ctx = (input.vars ?? {}) as Record<string, unknown>;
+        const taskRendered = profile.taskTemplate?.trim()
+          ? renderMustache(profile.taskTemplate, ctx).rendered
+          : "";
+        const extraRendered = profile.extraContextTemplate?.trim()
+          ? renderMustache(profile.extraContextTemplate, ctx).rendered
+          : "";
+        return {
+          task: taskRendered,
+          systemPromptAppend: await loadSystemPromptFragment(profile.id),
+          extraContext: extraRendered,
+          promptProfileId: profile.id,
+          bindingId: `direct:${profile.id}`,
+          stageKey: profile.stageKey ?? input.stageKey,
+          agentRole: profile.roleGate ?? null,
+          // M71 — promptProfileKey takes a profile directly, bypassing the
+          // (stageKey, role, phase) ladder. The phase isn't resolved here.
+          phase: null,
+        };
+      }
+    }
+
+    const binding = await findBinding(input.stageKey, input.agentRole, input.phase);
     if (!binding) {
       throw new NotFoundError(
         `No StagePromptBinding for stageKey="${input.stageKey}"` +
@@ -137,6 +212,7 @@ export const stagePromptsService = {
       bindingId: binding.id,
       stageKey: binding.stageKey,
       agentRole: binding.agentRole,
+      phase: binding.phase,
     };
   },
 
@@ -145,12 +221,15 @@ export const stagePromptsService = {
     const rows = await prisma.stagePromptBinding.findMany({
       where: { isActive: true },
       include: { promptProfile: true },
-      orderBy: [{ stageKey: "asc" }, { agentRole: "asc" }],
+      // M71 — order by phase too so admin views group stage-level (NULL phase
+      // sorts first under asc-NULLS-FIRST in PG) before phase-specific overrides.
+      orderBy: [{ stageKey: "asc" }, { agentRole: "asc" }, { phase: "asc" }],
     });
     return rows.map((r) => ({
       id: r.id,
       stageKey: r.stageKey,
       agentRole: r.agentRole,
+      phase: r.phase,
       promptProfileId: r.promptProfileId,
       isActive: r.isActive,
       profileName: r.promptProfile?.name ?? null,

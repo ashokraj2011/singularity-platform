@@ -13,9 +13,28 @@
  */
 import { z } from "zod";
 
+// M71 Slice E — canonical phase enum, mirrors StagePhasePolicy.phase + the
+// PHASES const in stage-policies.schemas.ts. Kept here as a runtime check so
+// the resolver can't be asked for a garbage phase like "verify".
+export const PROMPT_PHASES = [
+  "PLAN",
+  "EXPLORE",
+  "ACT",
+  "VERIFY",
+  "REPAIR",
+  "SELF_REVIEW",
+  "FINALIZE",
+] as const;
+export type PromptPhase = (typeof PROMPT_PHASES)[number];
+
 export const resolveStageSchema = z.object({
   stageKey:  z.string().min(1, "stageKey required"),
   agentRole: z.string().min(1).optional(),
+  // M71 — optional phase narrowing. When set, the resolver prefers a
+  // (stageKey, agentRole, phase) binding; falls back to the stage-level
+  // (stageKey, agentRole, NULL) binding if no phase-specific row exists.
+  phase:     z.enum(PROMPT_PHASES).optional(),
+  promptProfileKey: z.string().min(1).optional(),
   // Free-form context for Mustache substitution. Values are coerced to
   // strings before injection; objects/arrays are JSON-stringified.
   vars:      z.record(z.unknown()).optional(),
@@ -42,4 +61,10 @@ export interface ResolveStageResult {
   /** Echo back the resolved stage key + role for clients to log. */
   stageKey: string;
   agentRole: string | null;
+  /**
+   * M71 — Which phase the bound binding targets. NULL when a stage-level
+   * (fallback) binding matched. Lets the caller log whether they got a
+   * phase-specific prompt or the stage default.
+   */
+  phase: string | null;
 }
