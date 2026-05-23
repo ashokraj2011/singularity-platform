@@ -203,6 +203,68 @@ def _render_auto_verify_message(synth: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _render_eval_feedback_message(feedback: Any) -> dict[str, Any] | None:
+    """M74 Phase 2B — render audit-gov's EvalFeedback shape as a user-
+    role message that lands in the FIRST turn's prompt. Returns None
+    when feedback is missing/empty (no closed-loop signal to inject).
+
+    Expected shape (matches audit-gov's getLatestEvalFeedbackForSession
+    response, see audit-governance-service/src/engine/evaluator-factory.ts):
+
+        {
+          "eval_run_id": "...",
+          "status": "FAILED",
+          "pass_rate": 0.4,
+          "created_at": "...",
+          "metadata": { "stageKey": "...", "attempt": 2 },
+          "failing_results": [
+            { "evaluator_kind": "llm_judge", "score": 2,
+              "reason": "<text>", "evidence": {...} },
+            ...
+          ]
+        }
+
+    Defensive: accepts None, non-dict, or empty failing_results — all
+    return None so the caller can no-op silently on first-attempt
+    or schema mismatch.
+    """
+    if not isinstance(feedback, dict):
+        return None
+    failing = feedback.get("failing_results")
+    if not isinstance(failing, list) or not failing:
+        return None
+
+    parts = [
+        "[QUALITY-GATE FEEDBACK] The previous attempt of this stage was "
+        f"blocked by the eval gate (pass_rate={feedback.get('pass_rate', 0)}, "
+        f"eval_run_id={feedback.get('eval_run_id', 'unknown')}).",
+        "",
+        "Failing evaluator results:",
+    ]
+    # Cap at top 5 to keep the prompt addition bounded. The full list
+    # remains accessible via the eval_run_id for ops follow-up.
+    for entry in failing[:5]:
+        if not isinstance(entry, dict):
+            continue
+        kind = entry.get("evaluator_kind") or "unknown"
+        score = entry.get("score")
+        reason = (entry.get("reason") or "").strip() or "(no reason text)"
+        score_str = f"score={score}" if score is not None else "score=n/a"
+        parts.append(f"  • {kind} [{score_str}]: {reason[:600]}")
+
+    if len(failing) > 5:
+        parts.append(f"  • … and {len(failing) - 5} more (see eval_run_id for full detail)")
+
+    parts.append("")
+    parts.append(
+        "Take this feedback into account. If the previous failure mode "
+        "was a specific missing case, a wrong assumption, or an unhandled "
+        "edge, address it explicitly in this attempt. Do NOT re-emit the "
+        "same output that already failed."
+    )
+    return {"role": "user", "content": "\n".join(parts)}
+
+
 def _is_terminal_state(state: PhaseState) -> bool:
     """The stage is done when the machine reaches FINALIZE — there's no
     way out of FINALIZE in the transition table."""
@@ -304,6 +366,19 @@ async def run_stage(
     gate can run between the two phases.
     """
     history = list(initial_history or [])
+
+    # M74 Phase 2B — closed-loop wiring. When workgraph-api launches a
+    # retry attempt after a prior failed eval gate, it threads structured
+    # judge feedback into vars.eval_feedback. We render it as a system-
+    # style user message at the head of history so the agent's first
+    # turn sees "the previous attempt scored 2/5 because <reason>". Pattern
+    # mirrors M74 Phase 1A's auto-verify injection — user role, not a
+    # synthetic tool_call/tool_result pair (the LLM didn't emit anything;
+    # faking provenance would lie to auditing).
+    feedback_message = _render_eval_feedback_message((vars or {}).get("eval_feedback"))
+    if feedback_message is not None:
+        history.insert(0, feedback_message)
+
     result = StageRunResult(final_state=state)
 
     # M74 Phase 1D — stagnant-phase detector.

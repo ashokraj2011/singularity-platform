@@ -690,6 +690,135 @@ export async function getEvalRun(id: string): Promise<PersistedEvalRun> {
   };
 }
 
+// ── M74 Phase 2B — Closed-loop lookup ──────────────────────────────────
+//
+// "What did the eval gate say about the last attempt of this blueprint
+// session?" Callers (workgraph-api on stage retry) use this to thread
+// structured judge feedback into the next ExecuteRequest so the agent
+// sees its previous failure mode in the first turn's prompt.
+//
+// Filters by `metadata->>'blueprintSessionId'` because the eval-run
+// schema doesn't have a foreign-key column for it (audit-gov stays
+// blueprint-agnostic; the linkage rides in the opaque metadata JSONB).
+// Callers that want closed-loop must include `metadata.blueprintSessionId`
+// (and optionally `metadata.attempt` / `metadata.stageKey`) when they
+// trigger evals via /evaluators/run-trace or /evaluators/run-dataset.
+
+export interface EvalFeedback {
+  /** The eval-run row id, for tracing-back. */
+  eval_run_id: string;
+  /** RUNNING | COMPLETED | FAILED. Caller filters on FAILED. */
+  status: string;
+  /** 0..1. Lower = more failures. */
+  pass_rate: number;
+  /** ISO timestamp of the eval run. */
+  created_at: string;
+  /**
+   * Free-form payload the caller used when triggering the eval —
+   * typically includes `stageKey` + `attempt` so the retry can decide
+   * whether to act on the feedback.
+   */
+  metadata: Record<string, unknown>;
+  /**
+   * Only the FAILED results. The orchestrator doesn't need passed
+   * detail to drive next-attempt feedback; passing it would just bloat
+   * the prompt. evaluator_kind is included so the agent can tell
+   * "judge said X" from "regex matched Y".
+   */
+  failing_results: Array<{
+    evaluator_id: string;
+    evaluator_kind: string;
+    score: number | null;
+    reason: string;
+    evidence: Record<string, unknown>;
+  }>;
+}
+
+/**
+ * Most recent eval run for a session/workflow, optionally filtered to
+ * FAILED status. Returns null when nothing matches — the typical first-
+ * attempt path. Used by workgraph-api on stage retry to fetch the
+ * structured feedback to inject into the next attempt's prompt.
+ *
+ * Joining key options (at least one required):
+ *   workflowInstanceId — matches `metadata->>'workflowInstanceId'`.
+ *     This is what EvalGateExecutor persists today; preferred when
+ *     available.
+ *   blueprintSessionId — matches `metadata->>'blueprintSessionId'`.
+ *     Forward-compat for callers that want session-level join even
+ *     across multiple workflow instances (e.g. detach + reattach).
+ *
+ * audit-gov stays blueprint/workgraph-agnostic at the schema level —
+ * the linkage rides in the opaque metadata JSONB and callers include
+ * whatever join key they have.
+ */
+export async function getLatestEvalFeedbackForSession(args: {
+  blueprintSessionId?: string;
+  workflowInstanceId?: string;
+  failedOnly?: boolean;
+  stageKey?: string;
+}): Promise<EvalFeedback | null> {
+  if (!args.blueprintSessionId && !args.workflowInstanceId) {
+    throw Object.assign(
+      new Error("blueprintSessionId or workflowInstanceId is required"),
+      { status: 400 },
+    );
+  }
+  await ensureEngineEvalTables();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (args.blueprintSessionId) {
+    params.push(args.blueprintSessionId);
+    conditions.push(`metadata->>'blueprintSessionId' = $${params.length}`);
+  }
+  if (args.workflowInstanceId) {
+    params.push(args.workflowInstanceId);
+    conditions.push(`metadata->>'workflowInstanceId' = $${params.length}`);
+  }
+  if (args.failedOnly !== false) {
+    // Default is failed-only; pass failedOnly:false to allow any status.
+    conditions.push("status = 'FAILED'");
+  }
+  if (args.stageKey) {
+    params.push(args.stageKey);
+    conditions.push(`metadata->>'stageKey' = $${params.length}`);
+  }
+  const run = await queryOne<Record<string, unknown>>(
+    `SELECT id, status, pass_rate, metadata, created_at
+     FROM audit_governance.engine_eval_runs
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    params,
+  );
+  if (!run) return null;
+
+  const failingResults = await query<Record<string, unknown>>(
+    `SELECT r.evaluator_id, r.score, r.reason, r.evidence,
+            COALESCE(e.evaluator_type, 'unknown') AS evaluator_kind
+     FROM audit_governance.engine_eval_results r
+     LEFT JOIN audit_governance.engine_evaluators e ON e.id = r.evaluator_id
+     WHERE r.eval_run_id = $1 AND r.passed = false
+     ORDER BY r.created_at ASC`,
+    [String(run.id)],
+  );
+
+  return {
+    eval_run_id: String(run.id),
+    status: String(run.status),
+    pass_rate: Number(run.pass_rate ?? 0),
+    created_at: isoString(run.created_at),
+    metadata: (run.metadata ?? {}) as Record<string, unknown>,
+    failing_results: failingResults.map((row) => ({
+      evaluator_id: String(row.evaluator_id),
+      evaluator_kind: String(row.evaluator_kind ?? "unknown"),
+      score: row.score == null ? null : Number(row.score),
+      reason: String(row.reason ?? ""),
+      evidence: (row.evidence ?? {}) as Record<string, unknown>,
+    })),
+  };
+}
+
 // ── Batch runner ───────────────────────────────────────────────────────
 
 export async function runEvaluatorsForRecentTraces(

@@ -10,11 +10,27 @@ import { config } from '../../config'
 
 const TIMEOUT_MS = 5_000
 
+// M74 Phase 2B — audit-gov's engine + events routes are gated by
+// requireServiceAuth (see audit-governance-service/src/routes-events.ts).
+// We send AUDIT_GOV_SERVICE_TOKEN on every request so the GET / POST
+// helpers actually authenticate. Without this, EvalGateExecutor's
+// run-trace POSTs were silently returning null (the helper logs but
+// the caller often treats null as "no eval data" rather than "auth
+// failed"), and the new closed-loop /eval-feedback GET was 401-ing.
+function authHeader(): Record<string, string> {
+  const token = process.env.AUDIT_GOV_SERVICE_TOKEN ?? ''
+  return token ? { authorization: `Bearer ${token}` } : {}
+}
+
 async function getJson<T>(path: string, query: Record<string, string | undefined>): Promise<T | null> {
   const url = new URL(path, config.AUDIT_GOV_URL.replace(/\/?$/, '/'))
   for (const [k, v] of Object.entries(query)) if (v) url.searchParams.set(k, v)
   try {
-    const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(TIMEOUT_MS) })
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: authHeader(),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
     if (!res.ok) {
       console.warn(`audit-gov ${path} → ${res.status}`)
       return null
@@ -31,7 +47,7 @@ export async function postJson<T>(path: string, body: unknown): Promise<T | null
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...authHeader() },
       body: JSON.stringify(body ?? {}),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
@@ -86,6 +102,53 @@ export async function fetchEventsForTrace(traceId: string, limit = 200): Promise
     limit: String(limit),
   })
   return body?.items ?? []
+}
+
+// M74 Phase 2B — closed-loop eval feedback. Fetches the most recent
+// FAILED eval-run for a workflow/session so the next-attempt prompt can
+// see "previous attempt scored 2/5 because <reason>". Fail-soft per the
+// rest of this client — a missing/erroring audit-gov returns null rather
+// than blocking the stage launch.
+//
+// Shape matches audit-gov's getLatestEvalFeedbackForSession response.
+
+export interface EvalFeedbackResult {
+  evaluator_id: string
+  evaluator_kind: string
+  score: number | null
+  reason: string
+  evidence: Record<string, unknown>
+}
+
+export interface EvalFeedback {
+  eval_run_id: string
+  status: string
+  pass_rate: number
+  created_at: string
+  metadata: Record<string, unknown>
+  failing_results: EvalFeedbackResult[]
+}
+
+export async function fetchEvalFeedback(args: {
+  workflowInstanceId?: string
+  blueprintSessionId?: string
+  stageKey?: string
+  failedOnly?: boolean
+}): Promise<EvalFeedback | null> {
+  if (!args.workflowInstanceId && !args.blueprintSessionId) {
+    return null
+  }
+  const params: Record<string, string | undefined> = {
+    workflowInstanceId: args.workflowInstanceId,
+    blueprintSessionId: args.blueprintSessionId,
+    stageKey: args.stageKey,
+    failedOnly: args.failedOnly === false ? 'false' : undefined,
+  }
+  const body = await getJson<{ feedback: EvalFeedback | null }>(
+    'api/v1/engine/eval-feedback',
+    params,
+  )
+  return body?.feedback ?? null
 }
 
 export interface CostTotals {

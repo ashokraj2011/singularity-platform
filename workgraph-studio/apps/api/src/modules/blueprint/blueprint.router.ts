@@ -10,6 +10,7 @@ import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { createReceipt, logEvent, publishOutbox } from '../../lib/audit'
 import { contextFabricClient, ContextFabricError, type ExecuteResponse } from '../../lib/context-fabric/client'
+import { fetchEvalFeedback } from '../../lib/audit-gov/client'
 import {
   attemptStatusFor,
   blueprintStageStatusFor,
@@ -3218,6 +3219,27 @@ async function runLoopStageExecute(
   // the signature to keep older call sites in this router working without
   // a sweep; we explicitly mark them used here to satisfy noUnusedLocals.
   void executeArtifacts; void systemPromptAppend; void extraContext;
+
+  // M74 Phase 2B — closed-loop wiring. Before launching this attempt,
+  // ask audit-gov whether the previous attempt of this stage was blocked
+  // by a quality-gate failure. If so, the structured feedback (judge
+  // score + reason + failing examples) rides into vars.eval_feedback,
+  // where context-fabric's stage_driver renders it as a user message at
+  // the head of the first turn's prompt. The agent then sees its prior
+  // failure mode and can address it explicitly.
+  //
+  // Fail-soft: audit-gov outage just returns null; the stage launches as
+  // a first-attempt would. The lookup is keyed on workflowInstanceId
+  // (EvalGateExecutor's join key) with stageKey as an optional narrower
+  // filter so we don't pull feedback from a sibling stage's gate.
+  const workflowInstanceIdForFeedback = session.workflowInstanceId ?? undefined
+  const evalFeedback = workflowInstanceIdForFeedback
+    ? await fetchEvalFeedback({
+        workflowInstanceId: workflowInstanceIdForFeedback,
+        stageKey: stage.key,
+      })
+    : null
+
   return runCodingStageGoverned({
     stageKey: stage.key,
     agentRole: stage.agentRole,
@@ -3225,6 +3247,10 @@ async function runLoopStageExecute(
     modelAlias,
     vars: {
       blueprintSessionId: session.id,
+      // M74 Phase 2B — present only when there's prior-attempt feedback to
+      // surface. context-fabric's stage_driver checks vars.eval_feedback and
+      // injects the synthetic prompt message only when this key is set.
+      ...(evalFeedback ? { eval_feedback: evalFeedback } : {}),
       // Goal text — the per-phase prompts reference {{goal}}.
       goal: session.goal ?? '',
       stageKey: stage.key,

@@ -29,6 +29,7 @@ import { diagnoseIssue } from "./diagnose";
 import {
   createEvaluatorFromIssue,
   getEvalRun,
+  getLatestEvalFeedbackForSession,
   runDatasetEvaluatorsPersisted,
   runEvaluatorsForRecentTraces,
   runTraceEvaluatorsPersisted,
@@ -277,6 +278,42 @@ engineRouter.post("/evaluators/run-dataset", async (req: Request, res: Response)
 engineRouter.get("/eval-runs/:id", async (req: Request, res: Response) => {
   const result = await getEvalRun(req.params.id);
   res.json(result);
+});
+
+// M74 Phase 2B — closed-loop lookup. workgraph-api calls this on stage
+// retry to fetch the structured judge feedback for the prior attempt.
+// Filters by metadata->>'workflowInstanceId' or 'blueprintSessionId'
+// (callers must include at least one). Returns {feedback: null} when
+// nothing matches — typical first-attempt path.
+//
+//   GET /api/v1/engine/eval-feedback?workflowInstanceId=X&stageKey=Y&failedOnly=true
+//   GET /api/v1/engine/eval-feedback?blueprintSessionId=X&stageKey=Y
+//
+// failedOnly defaults to true (only failed runs become next-attempt
+// feedback). Pass failedOnly=false to peek at the latest run regardless.
+engineRouter.get("/eval-feedback", async (req: Request, res: Response) => {
+  const blueprintSessionId = typeof req.query.blueprintSessionId === "string"
+    ? req.query.blueprintSessionId.trim()
+    : "";
+  const workflowInstanceId = typeof req.query.workflowInstanceId === "string"
+    ? req.query.workflowInstanceId.trim()
+    : "";
+  if (!blueprintSessionId && !workflowInstanceId) {
+    return res.status(400).json({
+      error: "blueprintSessionId or workflowInstanceId is required",
+    });
+  }
+  const stageKey = typeof req.query.stageKey === "string" && req.query.stageKey.trim()
+    ? req.query.stageKey.trim()
+    : undefined;
+  const failedOnly = req.query.failedOnly === "false" ? false : true;
+  const feedback = await getLatestEvalFeedbackForSession({
+    blueprintSessionId: blueprintSessionId || undefined,
+    workflowInstanceId: workflowInstanceId || undefined,
+    stageKey,
+    failedOnly,
+  });
+  res.json({ feedback });
 });
 
 // ── Datasets ──────────────────────────────────────────────────────────
