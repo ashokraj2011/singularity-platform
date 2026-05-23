@@ -32,13 +32,14 @@ to the operator and/or feed back into the LLM for the next turn.
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from .audit_emit import emit_governed_event
 from .dispatch import ToolDispatchError, ToolDispatchResult, dispatch_tool
 from .path_coverage import check_path_coverage
 from .phase_state import Phase, PhaseState, advance_phase
+from .pii_mask import mask_pii_in_result, unmask_pii_in_args
 from .verify_synthesis import synthesize_verifier_run
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
 from .tool_gateway import PhaseToolForbidden, check_tool_allowed
@@ -245,10 +246,24 @@ async def governed_step(
             continue
 
         # Allowed → dispatch to mcp-server's /mcp/tool-run.
+        #
+        # M73-followup #93 — multi-turn PII protection around the dispatch:
+        #   1. The LLM may have emitted tokens (e.g. {"to": "[EMAIL_1]"})
+        #      that came from a prior masked tool result. Unmask args
+        #      before sending to the tool — the downstream API expects
+        #      the real email, not the token literal.
+        #   2. The tool returns real PII in its output. Mask before the
+        #      result lands in ToolCallOutcome (which feeds the next
+        #      turn's prompt history) so the LLM never sees raw values.
+        #   3. Token map persists on state.pii_token_map across turns
+        #      AND across pause/resume (PhaseState.to_dict round-trips
+        #      it). Same (kind, value) gets the same token across the
+        #      whole stage so the LLM can reason about identity.
         try:
+            dispatch_args = unmask_pii_in_args(args, state.pii_token_map)
             outcome = await dispatch_tool(
                 tool_name=tool_name,
-                args=args,
+                args=dispatch_args,
                 work_item_id=(run_context or {}).get("work_item_id")
                 or (run_context or {}).get("workItemId"),
                 workspace_id=(run_context or {}).get("workspace_id")
@@ -256,13 +271,25 @@ async def governed_step(
                 run_context=run_context,
                 bearer=bearer,
             )
+            masked_result, new_token_map, mask_applied = mask_pii_in_result(
+                outcome.result, state.pii_token_map,
+            )
+            # PhaseState is frozen; update via dataclasses.replace so the
+            # subsequent tool call in this turn (if any) sees the new
+            # token map. Token map accumulates across every tool call —
+            # not gated by phase advance — so we update `state` here
+            # rather than waiting for advance_phase. Pause/resume picks
+            # up the latest via PhaseState.to_dict.
+            if new_token_map != state.pii_token_map:
+                state = replace(state, pii_token_map=new_token_map)
+                result.next_state = state
             result.tool_outcomes.append(
                 ToolCallOutcome(
                     tool_name=tool_name,
                     phase=state.current_phase.value,
                     allowed=True,
                     args=args,
-                    result=outcome.result,
+                    result=masked_result,
                     duration_ms=outcome.duration_ms,
                     tool_invocation_id=outcome.tool_invocation_id,
                     tool_success=outcome.tool_success,
@@ -281,6 +308,27 @@ async def governed_step(
                     "tool_success": outcome.tool_success,
                 },
             )
+            if mask_applied:
+                # M73-followup #93 — separate audit event so operators
+                # can search "show me every tool call that masked PII
+                # this run". Counts only, no values — value-bearing
+                # data stays in PhaseState.pii_token_map (deleted with
+                # the session) and never enters audit-gov.
+                await emit_governed_event(
+                    kind="governed.pii_masked",
+                    state=state,
+                    policy=policy,
+                    run_context=run_context,
+                    payload={
+                        "tool_name": tool_name,
+                        "tool_invocation_id": outcome.tool_invocation_id,
+                        "kinds": [
+                            {"kind": e["kind"], "count": e["count"]}
+                            for e in mask_applied
+                        ],
+                        "token_map_size": len(new_token_map),
+                    },
+                )
         except ToolDispatchError as exc:
             log.warning("tool dispatch failed tool=%s err=%s", tool_name, exc)
             result.tool_outcomes.append(

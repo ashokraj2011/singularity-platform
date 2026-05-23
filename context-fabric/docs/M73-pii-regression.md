@@ -1,7 +1,12 @@
 # M71 cutover regression: multi-turn PII masking
 
-**Status**: Confirmed regression. Fix design pending.
+**Status**: ✅ **FIXED.** CF-side mask landed via task #93. See
+`context-fabric/services/context_api_service/app/governed/pii_mask.py`
++ wiring in `governed/loop.py`. The legacy laptop-mode invoke loop
+keeps its own TS implementation until M75 Slice 4 retires it.
 **Investigated**: 2026-05-23.
+**Fixed**: 2026-05-23 (same day — short cycle because the design doc
+below picked the right option).
 **Source code searched at HEAD**: `main` (commit `12ef7b0` at time of report).
 
 ## TL;DR

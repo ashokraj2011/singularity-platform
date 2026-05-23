@@ -106,6 +106,18 @@ class PhaseState:
     # Set to True once SELF_REVIEW signals recommended_for_approval=True.
     # workgraph-api opens the approval gate only when this is True.
     approval_pending: bool = False
+    # M73-followup #93 — multi-turn PII mask. Maps `[KIND_N]` tokens that
+    # appear in masked tool output → real PII values. The same (kind,
+    # value) gets the same token across all turns of the stage so the LLM
+    # can reason about identity ("[EMAIL_1] is the same address from
+    # earlier"). Persists across pause/resume via to_dict/from_dict so
+    # operator-approval pauses don't lose the mapping.
+    #
+    # Mutated by governed_step's dispatch wrapper: pre-dispatch unmasks
+    # the args the LLM emitted (tokens → real values for the downstream
+    # tool); post-dispatch masks the result (real values → tokens for
+    # the next turn's LLM prompt).
+    pii_token_map: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise for JSON storage in BlueprintSession.metadata."""
@@ -118,13 +130,14 @@ class PhaseState:
             "receipts": self.receipts,
             "history": self.history,
             "approval_pending": self.approval_pending,
+            "pii_token_map": self.pii_token_map,
         }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PhaseState":
         """Rehydrate from JSON storage. Unknown phase strings raise ValueError.
-        Missing plan_rewinds defaults to 0 so pre-M73-followup state rows
-        rehydrate without explosion."""
+        Missing fields (plan_rewinds, pii_token_map) default safely so
+        pre-followup state rows rehydrate without explosion."""
         return cls(
             stage_key=str(payload.get("stage_key", "")),
             agent_role=payload.get("agent_role"),
@@ -134,6 +147,7 @@ class PhaseState:
             receipts={k: list(v) for k, v in (payload.get("receipts") or {}).items()},
             history=list(payload.get("history") or []),
             approval_pending=bool(payload.get("approval_pending", False)),
+            pii_token_map=dict(payload.get("pii_token_map") or {}),
         )
 
     @classmethod
