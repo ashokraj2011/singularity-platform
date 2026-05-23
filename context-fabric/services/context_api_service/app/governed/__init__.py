@@ -44,6 +44,17 @@ from .validators import (
     PhaseOutputInvalid,
     validate_phase_output,
 )
+from .dispatch import (
+    ToolDispatchError,
+    ToolDispatchResult,
+    dispatch_tool,
+)
+from .audit_emit import emit_governed_event
+from .loop import (
+    GovernedStepResult,
+    ToolCallOutcome,
+    governed_step,
+)
 
 __all__ = [
     # phase_state
@@ -75,4 +86,14 @@ __all__ = [
     # validators
     "PhaseOutputInvalid",
     "validate_phase_output",
+    # dispatch
+    "ToolDispatchError",
+    "ToolDispatchResult",
+    "dispatch_tool",
+    # audit_emit
+    "emit_governed_event",
+    # loop
+    "GovernedStepResult",
+    "ToolCallOutcome",
+    "governed_step",
 ]

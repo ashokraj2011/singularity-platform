@@ -2294,3 +2294,107 @@ def _on_startup() -> None:
     es_db = os.environ.get("EVENTS_STORE_DB", "/data/call_log_events.db")
     events_store.DB_PATH = es_db
     events_store.init_db()
+# ─────────────────────────────────────────────────────────────────────────────
+# M71 Slice C(a) — Governance oracle endpoint.
+#
+# POST /api/v1/execute-governed
+#
+# The governed-loop equivalent of /execute for a single turn. The caller
+# (workgraph-api today, the LLM wrapper from Slice C(b) later) supplies:
+#
+#   - current PhaseState (or null on the first turn — we mint a fresh PLAN)
+#   - stage_key + agent_role so we can look up the StagePolicy
+#   - tool_calls the LLM produced this turn (we hard-refuse out-of-phase ones)
+#   - phase_output the LLM produced (we validate against the receipt schema)
+#   - next_phase the LLM declared (we run the transition rules; refused if illegal)
+#
+# Response includes the next PhaseState (caller persists it), per-tool
+# outcomes, and the validated receipt. The old /execute endpoint is
+# untouched during this slice; Slice F switches workgraph-api to call this
+# new endpoint, and Slice I removes /execute.
+# ─────────────────────────────────────────────────────────────────────────────
+
+from .governed import (  # noqa: E402  — keep near the endpoint that uses them
+    GovernedStepResult,
+    PhaseState,
+    Phase,
+    PolicyNotFoundError,
+    governed_step,
+)
+
+
+class GovernedStepRequest(BaseModel):
+    """Wire shape for /api/v1/execute-governed. Mirrors the loop.governed_step
+    signature with permissive types so older callers can omit fields safely."""
+
+    stage_key: str = Field(..., min_length=1)
+    agent_role: Optional[str] = None
+    # Either supply the previous state for resumes, or omit for a fresh stage.
+    phase_state: Optional[dict[str, Any]] = None
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    phase_output: Optional[dict[str, Any]] = None
+    # Declared next phase — used only when phase_output is also present.
+    next_phase: Optional[str] = None
+    # Trace / correlation. Mirrors the existing /execute RunContext fields
+    # but isn't restricted to that schema so the LLM wrapper can pass extras.
+    run_context: dict[str, Any] = Field(default_factory=dict)
+    # Optional bearer override for the upstream mcp-server / prompt-composer
+    # calls (e.g. workgraph-api wants to forward a session JWT). Defaults to
+    # the env-loaded service token.
+    bearer: Optional[str] = None
+
+
+@router.post("/api/v1/execute-governed")
+async def execute_governed(req: GovernedStepRequest) -> dict[str, Any]:
+    """Run one governed turn.
+
+    Returns the result of `governed_step`, with the next PhaseState the
+    caller is expected to persist before the next turn.
+    """
+    # Construct or rehydrate the phase state.
+    if req.phase_state:
+        try:
+            state = PhaseState.from_dict(req.phase_state)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "PHASE_STATE_INVALID", "message": str(exc)},
+            )
+    else:
+        state = PhaseState.fresh(req.stage_key, req.agent_role)
+
+    next_phase_enum: Optional[Phase] = None
+    if req.next_phase:
+        try:
+            next_phase_enum = Phase(req.next_phase)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "PHASE_NAME_UNKNOWN", "message": str(exc)},
+            )
+
+    try:
+        outcome: GovernedStepResult = await governed_step(
+            state=state,
+            stage_key=req.stage_key,
+            agent_role=req.agent_role,
+            tool_calls=req.tool_calls,
+            phase_output=req.phase_output,
+            next_phase=next_phase_enum,
+            run_context=req.run_context,
+            bearer=req.bearer,
+        )
+    except PolicyNotFoundError as exc:
+        # No StagePolicy seeded for this (stage_key, role). Caller must
+        # provision one in prompt-composer before the stage can run.
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "STAGE_POLICY_NOT_FOUND",
+                "stage_key": req.stage_key,
+                "agent_role": req.agent_role,
+                "message": str(exc),
+            },
+        )
+
+    return {"success": True, "data": outcome.to_dict()}
