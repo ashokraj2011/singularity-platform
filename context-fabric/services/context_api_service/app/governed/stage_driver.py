@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .audit_emit import emit_governed_event
+from .history_compression import DEFAULT_RECENT_TURNS, compress_history
 from .llm_client import LLMGatewayError
 from .loop import GovernedStepResult, ToolCallOutcome
 from .phase_state import Phase, PhaseState
@@ -344,6 +345,7 @@ async def run_stage(
     run_context: dict[str, Any] | None = None,
     bearer: str | None = None,
     max_turns: int = DEFAULT_MAX_TURNS,
+    history_recent_turns: int = DEFAULT_RECENT_TURNS,
 ) -> StageRunResult:
     """Drive an entire stage by repeatedly calling `run_turn`.
 
@@ -463,6 +465,15 @@ async def run_stage(
         synth = turn.step.synthetic_verifier
         if synth:
             history.append(_render_auto_verify_message(synth))
+
+        # M74 Phase 3A — sliding-window history compression. Without this
+        # the message log grows linearly with turn count (25 turns × ~4
+        # messages = 100 messages, ~100KB by stage end). Anthropic prompt
+        # caching only covers stable prefix; every new turn invalidates
+        # the cache suffix. compress_history keeps the last
+        # history_recent_turns (default 8) verbatim and breadcrumbs older
+        # turns to one user-role message each.
+        history = compress_history(history, recent_turns=history_recent_turns)
 
         state = turn.next_state
         result.final_state = state

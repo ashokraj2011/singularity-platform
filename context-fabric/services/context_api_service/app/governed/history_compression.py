@@ -1,0 +1,205 @@
+"""
+M74 Phase 3A — history compression for long stages.
+
+A 25-turn stage with 3 tool calls per turn produces ~100 messages by
+the end. Anthropic's prompt cache covers the prefix; everything past
+the last verbatim message in the cache invalidates per turn. The cost
+per turn grows linearly without bound.
+
+Solution: keep the most recent N turns verbatim, compress everything
+older into one-line "breadcrumb" messages that record what was called
+(so the agent doesn't repeat the same lookup) but drop the full bodies.
+Matches invoke.ts's applySlidingWindow + buildBreadcrumbMessage pattern
+that the M71 cutover dropped.
+
+Receipts (PhaseState.receipts) stay verbatim because they're the audit
+trail of what the agent committed to per phase — compressing them
+would defeat the receipt contract. Only the LLM-facing message log
+compresses.
+
+Design choices:
+
+  • Turn boundary = assistant-role message. The history shape is
+    one assistant + N tool messages per turn (see stage_driver
+    _history_from_turn). The first assistant in the list is turn 1.
+
+  • Prelude (everything before the first assistant message) stays
+    verbatim. This is where Phase 2B's eval_feedback message lives,
+    plus any caller-provided initial_history. Compressing prelude
+    risks losing closed-loop signal.
+
+  • Auto-verify injection (Phase 1A) lands as a user message AFTER
+    a turn group. We attach it to the turn that came before it for
+    compression purposes — the auto-verify output is what shaped
+    the NEXT turn's decision, so dropping it without trace loses
+    important context.
+
+  • Breadcrumb format is one user-role message per compressed turn:
+        [TURN-N-RECAP] called: tool1, tool2(query=foo); produced: assistant text snippet
+    Bounded ~200 chars per breadcrumb; cheaper than the original
+    ~1KB tool results but enough to prevent re-calling the same
+    thing.
+"""
+from __future__ import annotations
+
+import json
+from typing import Any
+
+DEFAULT_RECENT_TURNS = 8
+"""Default sliding-window size. After the first 8 turns, each older
+turn collapses to a breadcrumb. Sized by inspection: 8 turns × ~3
+tool calls × ~1KB result = ~24KB verbatim, plus per-breadcrumb ~200
+bytes for the older N turns. A 25-turn stage compresses to roughly
+24KB + 17 × 200B = ~27KB instead of unbounded ~100KB."""
+
+_MAX_TOOL_ARGS_SUMMARY = 60
+"""Per-tool args preview length inside the breadcrumb."""
+
+_MAX_ASSISTANT_TEXT_SUMMARY = 120
+"""Per-turn assistant content preview length inside the breadcrumb."""
+
+
+def _is_assistant_start(msg: dict[str, Any]) -> bool:
+    """A turn group starts at the assistant message that closed
+    the prior LLM call. Anything else (user/system/tool) is either
+    prelude or part of the prior turn group."""
+    return isinstance(msg, dict) and msg.get("role") == "assistant"
+
+
+def _split_into_groups(
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
+    """Split a flat message list into (prelude, [turn_group, ...]).
+
+    Prelude = everything before the first assistant message (typically
+    eval_feedback + caller initial_history).
+
+    Each turn_group starts at an assistant message and extends until
+    the next assistant message. Tool messages and post-turn user
+    injections (auto-verify, etc.) get bundled with the assistant
+    they followed.
+    """
+    prelude: list[dict[str, Any]] = []
+    groups: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] | None = None
+
+    for msg in messages:
+        if _is_assistant_start(msg):
+            if current is not None:
+                groups.append(current)
+            current = [msg]
+        elif current is None:
+            prelude.append(msg)
+        else:
+            current.append(msg)
+
+    if current is not None:
+        groups.append(current)
+
+    return prelude, groups
+
+
+def _summarise_tool_args(args_str: str) -> str:
+    """Render a tool_calls.function.arguments JSON string as a
+    short, human-readable summary. The full args round-tripped
+    through M73-followup #4 are too verbose for breadcrumbs."""
+    if not args_str:
+        return ""
+    try:
+        parsed = json.loads(args_str)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return args_str[:_MAX_TOOL_ARGS_SUMMARY]
+    if not isinstance(parsed, dict):
+        return str(parsed)[:_MAX_TOOL_ARGS_SUMMARY]
+    # Pick the most informative single field — typically `path`,
+    # `query`, `file`, `command`, or the first available key.
+    for preferred in ("path", "query", "file", "command", "name"):
+        if preferred in parsed:
+            value = str(parsed[preferred])
+            if len(value) > _MAX_TOOL_ARGS_SUMMARY:
+                value = value[: _MAX_TOOL_ARGS_SUMMARY - 3] + "..."
+            return f"{preferred}={value}"
+    # Fall back to first key
+    if parsed:
+        key = next(iter(parsed))
+        value = str(parsed[key])[:_MAX_TOOL_ARGS_SUMMARY]
+        return f"{key}={value}"
+    return ""
+
+
+def _compress_group(
+    group: list[dict[str, Any]],
+    turn_index: int,
+) -> dict[str, Any]:
+    """Render one turn group as a single user-role breadcrumb. The
+    breadcrumb captures what tools the agent invoked and a snippet
+    of its text response — enough to prevent re-trying the same call,
+    not enough to reconstruct the full reasoning."""
+    assistant = group[0] if group else {}
+    tool_calls = assistant.get("tool_calls") or []
+    text_content = (assistant.get("content") or "").strip()
+
+    parts: list[str] = []
+    if tool_calls:
+        tool_summaries: list[str] = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+            name = (fn or {}).get("name") or "(unknown)"
+            args_summary = _summarise_tool_args(
+                (fn or {}).get("arguments") or "",
+            )
+            tool_summaries.append(
+                f"{name}({args_summary})" if args_summary else str(name),
+            )
+        if tool_summaries:
+            parts.append(f"called: {', '.join(tool_summaries)}")
+
+    if text_content:
+        snippet = text_content[:_MAX_ASSISTANT_TEXT_SUMMARY]
+        if len(text_content) > _MAX_ASSISTANT_TEXT_SUMMARY:
+            snippet = snippet.rstrip() + "..."
+        parts.append(f'said: "{snippet}"')
+
+    if not parts:
+        parts.append("(empty turn)")
+
+    return {
+        "role": "user",
+        "content": f"[TURN-{turn_index}-RECAP] " + "; ".join(parts),
+    }
+
+
+def compress_history(
+    messages: list[dict[str, Any]],
+    recent_turns: int = DEFAULT_RECENT_TURNS,
+) -> list[dict[str, Any]]:
+    """Sliding-window compression: keep the last `recent_turns` turn
+    groups verbatim; compress older groups to one breadcrumb each.
+
+    Idempotent on already-compressed history (re-running produces the
+    same shape; breadcrumbs don't start with assistant role, so they're
+    treated as user prelude on subsequent passes — but only the prelude
+    BEFORE the first verbatim assistant turn is preserved, which
+    matches what we want).
+
+    No-op when:
+      • messages is empty
+      • there are <= recent_turns turn groups
+      • recent_turns <= 0 (defensive — caller shouldn't pass this)
+    """
+    if not messages or recent_turns <= 0:
+        return messages
+    prelude, groups = _split_into_groups(messages)
+    if len(groups) <= recent_turns:
+        return messages
+
+    cutoff = len(groups) - recent_turns
+    out: list[dict[str, Any]] = list(prelude)
+    for idx, group in enumerate(groups[:cutoff]):
+        # turn_index is 1-based for human display in the breadcrumb
+        out.append(_compress_group(group, turn_index=idx + 1))
+    for group in groups[cutoff:]:
+        out.extend(group)
+    return out

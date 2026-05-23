@@ -42,6 +42,7 @@ from .llm_client import ChatResponse, ChatToolCall, LLMGatewayError, call_gatewa
 from .loop import GovernedStepResult, governed_step
 from .phase_state import Phase, PhaseState
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
+from .prompt_safety import safen_history
 from .prompt_resolver import (
     PromptNotFoundError,
     ResolvedPrompt,
@@ -92,8 +93,14 @@ def _build_messages(prompt: ResolvedPrompt, history: list[dict[str, Any]]) -> li
     History       = optional list of prior {role, content, tool_calls, tool_call_id}
                     entries from earlier turns this phase. Empty on the first turn.
 
-    History items are appended verbatim so the caller can implement multi-
-    turn loops without us inventing a history format.
+    M74 Phase 3B — tool-role messages in history are wrapped in
+    `<tool_result>...</tool_result>` delimiters via safen_history before
+    they reach the model. This defends against the basic
+    prompt-injection-via-tool-output attack class (a fetched README
+    containing "Ignore previous instructions" no longer parses as a
+    command to the model). The wrap is applied here, not at history
+    accumulation time, so stage_driver's bookkeeping (compression,
+    persistence) operates on the un-wrapped messages.
     """
     messages: list[dict[str, Any]] = []
     if prompt.system_prompt_append.strip():
@@ -103,7 +110,7 @@ def _build_messages(prompt: ResolvedPrompt, history: list[dict[str, Any]]) -> li
         body = f"{body}\n\n{prompt.extra_context}"
     if body:
         messages.append({"role": "user", "content": body})
-    messages.extend(history)
+    messages.extend(safen_history(history))
     return messages
 
 

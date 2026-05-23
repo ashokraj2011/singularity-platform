@@ -349,14 +349,24 @@ def test_build_messages_system_plus_user():
 
 
 def test_build_messages_appends_history():
-    """History items pass through verbatim after the system + user pair."""
+    """History items pass through after the system + user pair. Non-tool
+    messages are verbatim; tool messages are wrapped in <tool_result>
+    delimiters by M74 Phase 3B's safen_history."""
     prompt = _prompt()
     history = [
         {"role": "assistant", "content": "I'll use repo_map.", "tool_calls": [{"id": "c1", "name": "repo_map"}]},
         {"role": "tool", "tool_call_id": "c1", "content": "src/a.py\nsrc/b.py"},
     ]
     messages = _build_messages(prompt, history)
-    assert messages[-2:] == history
+    # Assistant message passes through verbatim
+    assert messages[-2] == history[0]
+    # Tool message is wrapped but otherwise structurally identical
+    wrapped_tool = messages[-1]
+    assert wrapped_tool["role"] == "tool"
+    assert wrapped_tool["tool_call_id"] == "c1"
+    assert wrapped_tool["content"].startswith("<tool_result>")
+    assert wrapped_tool["content"].endswith("</tool_result>")
+    assert "src/a.py\nsrc/b.py" in wrapped_tool["content"]
 
 
 # ── run_turn — happy path with mocks ────────────────────────────────────────
