@@ -26,6 +26,10 @@ from context_api_service.app.execute import (
     _classify_stage_role,
 )
 from context_api_service.app import execute as execute_module
+# M73 — `_build_code_context_package` and its `_post` collaborator now live in
+# execute_modules.prompt_context. Tests must patch the canonical module so the
+# stub is observed by the function's intra-module call (`await _post(...)`).
+from context_api_service.app.execute_modules import prompt_context as prompt_context_module
 
 
 def make_req(task: str = "Add validateEmail", capability_id: str = "cap-1") -> SimpleNamespace:
@@ -57,7 +61,7 @@ def test_returns_package_when_mcp_responds_with_success(monkeypatch: pytest.Monk
         assert payload["task_text"] == "Add validateEmail"
         return {"success": True, "data": fake_pkg}
 
-    monkeypatch.setattr(execute_module, "_post", fake_post)
+    monkeypatch.setattr(prompt_context_module, "_post", fake_post)
 
     pkg, warning = asyncio.run(_build_code_context_package(
         "http://mcp:7100", "tok", make_req(), trace_id="t1",
@@ -75,7 +79,7 @@ def test_returns_none_with_warning_on_http_error(monkeypatch: pytest.MonkeyPatch
         response = httpx.Response(503, request=request, text="upstream busy")
         raise httpx.HTTPStatusError("503", request=request, response=response)
 
-    monkeypatch.setattr(execute_module, "_post", fake_post)
+    monkeypatch.setattr(prompt_context_module, "_post", fake_post)
 
     pkg, warning = asyncio.run(_build_code_context_package(
         "http://mcp:7100", "tok", make_req(), trace_id=None,
@@ -91,7 +95,7 @@ def test_returns_none_with_warning_on_transport_error(monkeypatch: pytest.Monkey
     async def fake_post(url: str, payload: dict, timeout: float = 60.0, headers: Any = None) -> dict:
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(execute_module, "_post", fake_post)
+    monkeypatch.setattr(prompt_context_module, "_post", fake_post)
 
     pkg, warning = asyncio.run(_build_code_context_package(
         "http://mcp:7100", "tok", make_req(), trace_id=None,
@@ -107,7 +111,7 @@ def test_returns_none_with_warning_on_backend_failure(monkeypatch: pytest.Monkey
     async def fake_post(url: str, payload: dict, timeout: float = 60.0, headers: Any = None) -> dict:
         return {"success": False, "error": "ast index empty"}
 
-    monkeypatch.setattr(execute_module, "_post", fake_post)
+    monkeypatch.setattr(prompt_context_module, "_post", fake_post)
 
     pkg, warning = asyncio.run(_build_code_context_package(
         "http://mcp:7100", "tok", make_req(), trace_id=None,
