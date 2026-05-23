@@ -281,19 +281,48 @@ via the laptop WebSocket bridge instead of the shared mcp-server.
 HTTP fallback fires automatically when no bridge is connected
 (`_LaptopUnavailable` → HTTP path, per Slice 3).
 
-### Slice 5 — Audit + telemetry parity (~half day)
+### Slice 5 — Audit + telemetry parity (~half day) ✅ SHIPPED
 
-The legacy invoke loop emits `cf.invoke.via_laptop` audit events
-(per-invoke, with device_id + device_name). The new path needs
-per-tool-call audit so operators can still see "this tool ran on
-the user's laptop, not the shared runner."
+Status: ✅ landed 2026-05-23. Files touched:
 
-Files:
+- `context-fabric/services/context_api_service/app/laptop_registry.py`
+  — `_send_frame_await_response` now returns `(payload, conn)` and
+  `dispatch_tool_via_laptop` returns `(payload, {device_id,
+  device_name})`. The legacy `invoke()` caller discards the conn for
+  back-compat. Reading the conn off the lookup result (not via a
+  second `any_for_user` call) avoids a TOCTOU race with `reap_stale`
+  that could attribute a tool call to a different device.
+- `context-fabric/services/context_api_service/app/governed/dispatch.py`
+  — `ToolDispatchResult` gains `served_by: Literal["http", "laptop"]`
+  + `laptop_device_id` + `laptop_device_name` (defaults preserve back
+  compat). HTTP path stamps `served_by="http"`; laptop path threads
+  device meta through. Tolerates registry mocks that still return a
+  bare dict (older test shape) by defaulting device fields to None.
 - `context-fabric/services/context_api_service/app/governed/loop.py`
-  — when dispatching a laptop tool, emit
-  `governed.tool_dispatched_via_laptop` with device_id + tool_name.
-- audit-gov UI: add laptop-badge rendering on the per-tool view
-  (parity with the existing per-invoke badge).
+  — every `governed.tool_dispatched` event now carries `served_by` +
+  device fields. When `served_by == "laptop"` AND `device_id` is
+  present, also emits a dedicated `governed.tool_dispatched_via_laptop`
+  event matching the legacy `cf.invoke.via_laptop` shape (user_id,
+  device_id, device_name, workflow_instance_id, workflow_node_id).
+- `workgraph-studio/apps/api/src/modules/workflow/insights.router.ts`
+  — `LAPTOP_BADGE_KINDS` set accepts BOTH `cf.invoke.via_laptop` (old
+  path, kept for in-flight pre-cutover runs) AND
+  `governed.tool_dispatched_via_laptop` (new). The per-node
+  laptopDevice badge populates identically from either kind. Last-
+  write-wins is fine: one user has one bridge connection at a time,
+  so per-tool dispatch from the same node always reports the same
+  device.
+- Tests: `context-fabric/tests/test_laptop_dispatch_routing.py`
+  updated for the new tuple return shape; added explicit assertions
+  on served_by + laptop_device_id + laptop_device_name (success,
+  soft-fail, and HTTP paths); added a bare-dict back-compat
+  regression test.
+
+audit-gov side: no schema change. `routes-search.ts` already accepts
+arbitrary `kinds`, so operators can filter on
+`governed.tool_dispatched_via_laptop` directly. The Splunk-like
+search UI surfaces the new kind in the dropdown the first time it
+appears in the event stream.
 
 ### Slice 6 — Cutover docs + flag (~half day)
 

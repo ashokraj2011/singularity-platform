@@ -877,14 +877,28 @@ async function buildInsightsResponse(id: string): Promise<InsightsResponse | nul
     const eventsByNodeId = new Map<string, number>()
     // M26 — pluck out cf.invoke.via_laptop events so each AGENT_TASK can be
     // labelled with the laptop device it ran on.
+    //
+    // M75 Slice 5 — the governed loop emits per-tool
+    // `governed.tool_dispatched_via_laptop` events instead of the
+    // single per-invoke event (which was tied to the legacy invoke
+    // path). Both kinds populate the SAME map — the badge UI doesn't
+    // need to know which path served the run. When multiple events
+    // hit the same node we last-write-wins (per-tool dispatch on the
+    // governed path will fire many times per stage; the device is
+    // the same across all of them by construction since one user
+    // has one bridge connection at a time).
     const laptopByNodeId = new Map<string, NodeInsight['laptopDevice']>()
+    const LAPTOP_BADGE_KINDS = new Set([
+      'cf.invoke.via_laptop',
+      'governed.tool_dispatched_via_laptop',
+    ])
     for (const e of events) {
       const p = (e.payload && typeof e.payload === 'object'
         ? e.payload as Record<string, unknown>
         : {}) as Record<string, unknown>
       const nodeId = (p.nodeId ?? p.workflow_node_id) as string | undefined
       if (nodeId) eventsByNodeId.set(nodeId, (eventsByNodeId.get(nodeId) ?? 0) + 1)
-      if (e.kind === 'cf.invoke.via_laptop') {
+      if (LAPTOP_BADGE_KINDS.has(e.kind)) {
         const targetNode = (p.workflow_node_id ?? p.workflowNodeId ?? nodeId) as string | undefined
         if (targetNode) {
           laptopByNodeId.set(targetNode, {

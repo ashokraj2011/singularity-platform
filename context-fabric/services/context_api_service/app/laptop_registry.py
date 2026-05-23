@@ -97,13 +97,19 @@ class LaptopRegistry:
         under the governed loop; this method stays for backward compat
         with laptops on the old protocol.
         """
-        return await self._send_frame_await_response(
+        # _send_frame_await_response returns (payload, conn) since
+        # M75 Slice 5 so per-tool dispatch can surface device info; the
+        # legacy invoke caller (execute.py) gets device meta via the
+        # separate `resolve_laptop_target` lookup, so we discard the
+        # conn here for back-compat.
+        payload_out, _conn = await self._send_frame_await_response(
             user_id=user_id,
             frame_type="invoke",
             payload=payload,
             timeout=timeout,
             request_label="invoke",
         )
+        return payload_out
 
     # ── M75 Slice 3 — per-tool dispatch over the bridge ───────────────────
     async def dispatch_tool_via_laptop(
@@ -116,13 +122,21 @@ class LaptopRegistry:
         work_item_id: str | None = None,
         workspace_id: str | None = None,
         timeout: float = INVOKE_TIMEOUT_SEC,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], dict[str, str]]:
         """Send a single tool-run frame to the user's laptop and await
-        the response. Returns the response payload (matches the
-        ToolRunResponsePayload zod schema on the laptop side):
+        the response. Returns ``(payload, device_meta)`` where:
 
-          { "result": ..., "duration_ms": int, "tool_invocation_id": str,
-            "tool_success": bool, "tool_error": str | None }
+          payload    — matches the ToolRunResponsePayload zod schema:
+                        { "result": ..., "duration_ms": int,
+                          "tool_invocation_id": str, "tool_success": bool,
+                          "tool_error": str | None }
+          device_meta — { "device_id": str, "device_name": str } from
+                        the ActiveConnection that handled the frame.
+                        M75 Slice 5 — the audit emit in
+                        governed.loop.governed_step uses this to write
+                        `governed.tool_dispatched_via_laptop` with the
+                        specific device so per-tool laptop badges work
+                        the same way the legacy per-invoke badge did.
 
         Raises LaptopNotConnected when no laptop is online,
         LaptopSendFailed on WebSocket write errors, LaptopInvokeTimeout
@@ -130,9 +144,9 @@ class LaptopRegistry:
         LaptopInvokeError when the laptop dispatches the tool but the
         runner itself failed (e.g. TOOL_RUN_FAILED).
 
-        The shape matches mcp-server's HTTP /mcp/tool-run response so
-        callers (``governed.dispatch.dispatch_tool``) can normalise
-        both transports to one ToolDispatchResult dataclass.
+        The payload shape matches mcp-server's HTTP /mcp/tool-run
+        response so callers (``governed.dispatch.dispatch_tool``) can
+        normalise both transports to one ToolDispatchResult dataclass.
         """
         payload: dict[str, Any] = {
             "tool_name": tool_name,
@@ -143,13 +157,14 @@ class LaptopRegistry:
             payload["work_item_id"] = work_item_id
         if workspace_id is not None:
             payload["workspace_id"] = workspace_id
-        return await self._send_frame_await_response(
+        body, conn = await self._send_frame_await_response(
             user_id=user_id,
             frame_type="tool-run",
             payload=payload,
             timeout=timeout,
             request_label=f"tool-run({tool_name})",
         )
+        return body, {"device_id": conn.device_id, "device_name": conn.device_name}
 
     async def _send_frame_await_response(
         self,
@@ -159,11 +174,17 @@ class LaptopRegistry:
         payload: dict[str, Any],
         timeout: float,
         request_label: str,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], ActiveConnection]:
         """Common request/response plumbing shared by ``invoke`` and
         ``dispatch_tool_via_laptop``. Extracted so the per-frame logic
         stays a one-liner and the lifecycle (lookup → register pending
-        future → send → wait → cleanup) is in one place."""
+        future → send → wait → cleanup) is in one place.
+
+        Returns ``(payload, conn)``. The conn is returned so callers
+        that need per-device audit (M75 Slice 5) can read device_id /
+        device_name without doing a second `any_for_user` lookup
+        (which could race with reap_stale and pick a different
+        connection). The legacy `invoke` caller discards it."""
         conn = await self.any_for_user(user_id)
         if conn is None:
             raise LaptopNotConnected(f"no live laptop mcp-server for user {user_id}")
@@ -181,12 +202,13 @@ class LaptopRegistry:
             raise LaptopSendFailed(str(err)) from err
 
         try:
-            return await asyncio.wait_for(fut, timeout=timeout)
+            response = await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
             conn.pending.pop(request_id, None)
             raise LaptopInvokeTimeout(
                 f"{request_label} {request_id} timed out after {timeout}s"
             )
+        return response, conn
 
     async def deliver_response(self, user_id: str, device_id: str, request_id: str,
                                payload: Any, error: Optional[dict]) -> None:

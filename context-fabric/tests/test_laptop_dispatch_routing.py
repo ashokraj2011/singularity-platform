@@ -119,6 +119,11 @@ def test_dispatch_without_laptop_user_id_uses_http():
             ))
     assert outcome.tool_invocation_id == "ti-http"
     assert outcome.tool_success is True
+    # M75 Slice 5 — HTTP path always stamps served_by="http", leaves
+    # device fields None. The audit emit short-circuits on that.
+    assert outcome.served_by == "http"
+    assert outcome.laptop_device_id is None
+    assert outcome.laptop_device_name is None
 
 
 # ── Bridge path runs when laptop_user_id + live bridge ─────────────────────
@@ -127,18 +132,25 @@ def test_dispatch_without_laptop_user_id_uses_http():
 def test_dispatch_with_laptop_user_id_routes_via_bridge():
     """When a live bridge returns a tool-run response, the dispatcher
     normalises snake_case wire fields into the same ToolDispatchResult
-    shape the HTTP path produces."""
+    shape the HTTP path produces.
+
+    M75 Slice 5: dispatch_tool_via_laptop returns (payload, device_meta)
+    so the dispatcher can stamp served_by="laptop" + laptop_device_id /
+    laptop_device_name on the result for the audit emit downstream."""
     seen_call: dict[str, Any] = {}
 
     async def bridge_returns_ok(kwargs):
         seen_call.update(kwargs)
-        return {
-            "result": {"branches": ["main"]},
-            "duration_ms": 42,
-            "tool_invocation_id": "ti-laptop",
-            "tool_success": True,
-            "tool_error": None,
-        }
+        return (
+            {
+                "result": {"branches": ["main"]},
+                "duration_ms": 42,
+                "tool_invocation_id": "ti-laptop",
+                "tool_success": True,
+                "tool_error": None,
+            },
+            {"device_id": "dev-abc", "device_name": "ashok-mbp"},
+        )
 
     with _patch_registry(bridge_returns_ok):
         outcome = _run(dispatch_tool(
@@ -154,6 +166,10 @@ def test_dispatch_with_laptop_user_id_routes_via_bridge():
     assert outcome.duration_ms == 42
     assert outcome.tool_success is True
     assert outcome.result == {"branches": ["main"]}
+    # M75 Slice 5 — provenance threaded through to the result.
+    assert outcome.served_by == "laptop"
+    assert outcome.laptop_device_id == "dev-abc"
+    assert outcome.laptop_device_name == "ashok-mbp"
     # The registry call carried the tool name + args + work_item_id
     # + run_context through unchanged.
     assert seen_call["user_id"] == "user-42"
@@ -168,13 +184,16 @@ def test_dispatch_bridge_tool_soft_failure_passes_through():
     surfaces as tool_success=False on the result, NOT as a throw —
     matching the HTTP path contract."""
     async def bridge_returns_softfail(_kwargs):
-        return {
-            "result": None,
-            "duration_ms": 10,
-            "tool_invocation_id": "ti-soft",
-            "tool_success": False,
-            "tool_error": "patch did not apply cleanly",
-        }
+        return (
+            {
+                "result": None,
+                "duration_ms": 10,
+                "tool_invocation_id": "ti-soft",
+                "tool_success": False,
+                "tool_error": "patch did not apply cleanly",
+            },
+            {"device_id": "dev-soft", "device_name": "test-laptop"},
+        )
 
     with _patch_registry(bridge_returns_softfail):
         outcome = _run(dispatch_tool(
@@ -185,6 +204,11 @@ def test_dispatch_bridge_tool_soft_failure_passes_through():
 
     assert outcome.tool_success is False
     assert outcome.tool_error == "patch did not apply cleanly"
+    # M75 Slice 5 — even a soft tool failure carries laptop provenance
+    # so operators searching audit-gov for "all laptop activity" see
+    # the failed call too, not just the successful ones.
+    assert outcome.served_by == "laptop"
+    assert outcome.laptop_device_id == "dev-soft"
 
 
 # ── Fallback path: no bridge connected → HTTP ──────────────────────────────
@@ -275,3 +299,32 @@ def test_dispatch_bridge_non_dict_response_raises():
                 {"path": "a"},
                 laptop_user_id="user-x",
             ))
+
+
+def test_dispatch_bridge_bare_dict_response_still_routes():
+    """Back-compat: pre-Slice-5 mocks (and any rogue registry
+    implementation) that return a bare dict instead of (payload, meta)
+    must still produce a valid ToolDispatchResult. served_by stays
+    'laptop' so the routing decision is preserved, but the device
+    fields are None — the audit emit safely skips the
+    tool_dispatched_via_laptop event when device_id is missing."""
+    async def bridge_returns_bare_dict(_kwargs):
+        return {
+            "result": {"ok": True},
+            "duration_ms": 5,
+            "tool_invocation_id": "ti-bare",
+            "tool_success": True,
+            "tool_error": None,
+        }
+
+    with _patch_registry(bridge_returns_bare_dict):
+        outcome = _run(dispatch_tool(
+            "read_file",
+            {"path": "a.py"},
+            laptop_user_id="user-bare",
+        ))
+
+    assert outcome.tool_invocation_id == "ti-bare"
+    assert outcome.served_by == "laptop"
+    assert outcome.laptop_device_id is None
+    assert outcome.laptop_device_name is None

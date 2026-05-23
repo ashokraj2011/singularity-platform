@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 import httpx
 
@@ -47,6 +47,12 @@ class ToolDispatchResult:
     `tool_success` distinguishes a clean tool-level failure (rerun, fix,
     move on) from `ToolDispatchError` (network/auth/server crash — retry
     transparently or surface to the caller).
+
+    M75 Slice 5 adds the transport-provenance fields so the governed
+    loop's audit emit can write `governed.tool_dispatched_via_laptop`
+    with the specific device when the bridge handled the call. The
+    HTTP path leaves device fields None; readers should check
+    `served_by` before keying on them.
     """
 
     result: Any
@@ -54,6 +60,13 @@ class ToolDispatchResult:
     tool_invocation_id: str
     tool_success: bool
     tool_error: str | None
+    # M75 Slice 5 — provenance. "http" when the call went to the shared
+    # mcp-server, "laptop" when the user's bridge handled it. Defaults
+    # to "http" so older serialised callers (none today; defensive) keep
+    # the same wire shape.
+    served_by: Literal["http", "laptop"] = "http"
+    laptop_device_id: str | None = None
+    laptop_device_name: str | None = None
 
 
 async def dispatch_tool(
@@ -184,6 +197,7 @@ async def dispatch_tool(
         tool_invocation_id=str(data.get("toolInvocationId", "")),
         tool_success=bool(data.get("toolSuccess", False)),
         tool_error=data.get("toolError"),
+        served_by="http",
     )
 
 
@@ -234,7 +248,7 @@ async def _dispatch_via_laptop(
     )
 
     try:
-        body = await REGISTRY.dispatch_tool_via_laptop(
+        registry_response = await REGISTRY.dispatch_tool_via_laptop(
             user_id=user_id,
             tool_name=tool_name,
             args=args or {},
@@ -252,10 +266,24 @@ async def _dispatch_via_laptop(
     except LaptopInvokeError as exc:
         raise ToolDispatchError(f"{exc.code}: {exc.message}") from exc
 
+    # M75 Slice 5 — laptop_registry.dispatch_tool_via_laptop now returns
+    # (payload, device_meta). Older tests / call sites may still return
+    # a bare dict (defensive: tolerate both shapes). When meta is
+    # missing we keep served_by="laptop" but leave device fields None
+    # so consumers can still detect bridge transport even without the
+    # specific device name.
+    if isinstance(registry_response, tuple) and len(registry_response) == 2:
+        body, device_meta = registry_response
+    else:
+        body, device_meta = registry_response, {}
+
     if not isinstance(body, dict):
         raise ToolDispatchError(
             f"laptop tool-run response was not a dict: {body!r}"
         )
+
+    device_id = device_meta.get("device_id") if isinstance(device_meta, dict) else None
+    device_name = device_meta.get("device_name") if isinstance(device_meta, dict) else None
 
     # Field names: snake_case per ToolRunResponsePayload (zod schema
     # in mcp-server/src/laptop/envelopes.ts). HTTP path uses camelCase;
@@ -266,4 +294,7 @@ async def _dispatch_via_laptop(
         tool_invocation_id=str(body.get("tool_invocation_id", "")),
         tool_success=bool(body.get("tool_success", False)),
         tool_error=body.get("tool_error"),
+        served_by="laptop",
+        laptop_device_id=device_id,
+        laptop_device_name=device_name,
     )

@@ -294,6 +294,14 @@ async def governed_step(
                 bearer=bearer,
                 laptop_user_id=laptop_user_id,
             )
+            # M75 Slice 5 — read provenance off the dispatch result.
+            # Pre-Slice-5 ToolDispatchResult instances (defensive)
+            # default served_by="http" via the dataclass — so getattr
+            # is just extra safety for any monkeypatched fake in old
+            # tests that builds the dataclass without keyword args.
+            outcome_served_by = getattr(outcome, "served_by", "http")
+            outcome_laptop_device_id = getattr(outcome, "laptop_device_id", None)
+            outcome_laptop_device_name = getattr(outcome, "laptop_device_name", None)
             masked_result, new_token_map, mask_applied = mask_pii_in_result(
                 outcome.result, state.pii_token_map,
             )
@@ -319,6 +327,13 @@ async def governed_step(
                     tool_error=outcome.tool_error,
                 )
             )
+            # M75 Slice 5 — provenance on every tool_dispatched event so
+            # operators can filter "all laptop activity for this stage"
+            # via a single audit-gov query. The dedicated
+            # tool_dispatched_via_laptop event below stays as a separate
+            # kind because the workgraph-api insights router buckets
+            # those into per-node laptop badges (it doesn't read
+            # payload.served_by — the kind IS the filter).
             await emit_governed_event(
                 kind="governed.tool_dispatched",
                 state=state,
@@ -329,8 +344,40 @@ async def governed_step(
                     "tool_invocation_id": outcome.tool_invocation_id,
                     "duration_ms": outcome.duration_ms,
                     "tool_success": outcome.tool_success,
+                    "served_by": outcome_served_by,
+                    "laptop_device_id": outcome_laptop_device_id,
+                    "laptop_device_name": outcome_laptop_device_name,
                 },
             )
+            # M75 Slice 5 — emit the per-tool laptop badge event when
+            # the bridge handled the call. workgraph-api's insights
+            # router (insights.router.ts) aggregates these into a
+            # per-node "🖥 served by your laptop ({device})" badge,
+            # giving operators the same visibility the legacy
+            # cf.invoke.via_laptop per-invoke event provided — at the
+            # finer per-tool granularity the new path naturally
+            # produces. Device fields stay top-level (matches the
+            # legacy event shape) so the insights router needs no
+            # special-case parsing.
+            if outcome_served_by == "laptop" and outcome_laptop_device_id:
+                await emit_governed_event(
+                    kind="governed.tool_dispatched_via_laptop",
+                    state=state,
+                    policy=policy,
+                    run_context=run_context,
+                    payload={
+                        "tool_name": tool_name,
+                        "tool_invocation_id": outcome.tool_invocation_id,
+                        "duration_ms": outcome.duration_ms,
+                        "user_id": ctx_user_id,
+                        "device_id": outcome_laptop_device_id,
+                        "device_name": outcome_laptop_device_name,
+                        "workflow_instance_id": run_ctx.get("workflow_instance_id")
+                        or run_ctx.get("workflowInstanceId"),
+                        "workflow_node_id": run_ctx.get("workflow_node_id")
+                        or run_ctx.get("workflowNodeId"),
+                    },
+                )
             if mask_applied:
                 # M73-followup #93 — separate audit event so operators
                 # can search "show me every tool call that masked PII
