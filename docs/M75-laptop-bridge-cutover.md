@@ -253,20 +253,33 @@ to end. The legacy `executeInvokePayload` path is no longer the
 laptop entry — but it's still alive for backward compat with old
 laptops.
 
-### Slice 4 — Wire prefer_laptop into the governed flow (~half day)
+### Slice 4 — Wire prefer_laptop into the governed flow (~half day) ✅ SHIPPED
 
-Files:
+Status: ✅ landed 2026-05-23. Files touched:
+
 - `context-fabric/services/context_api_service/app/governed/loop.py`
-  — read `prefer_laptop` from run_context (already passed in via
-  `vars`), thread it into `dispatch_tool` calls.
+  — reads `prefer_laptop` from run_context, looks up `user_id` /
+  `userId`, threads a string `laptop_user_id` into `dispatch_tool`
+  when (and only when) `prefer_laptop is True` AND a user_id is
+  present. Strict `is True` check rejects truthy-but-not-bool
+  values ("true", 1, etc.) so a serialisation bug upstream cannot
+  silently flip routing.
 - `workgraph-studio/apps/api/src/modules/blueprint/blueprint.router.ts`
-  — when launching a stage, if the session's user has prefer_laptop
-  set, populate run_context.prefer_laptop. Today this is set via the
-  legacy `/execute` path; needs to flow into `/execute-governed-stage`.
+  — when launching a governed coding stage, reads
+  `session.metadata.preferLaptop` (operator toggle, no schema
+  migration) and conditionally spreads `prefer_laptop` into the
+  runContext object via `readPreferLaptopFlag()`. Key is omitted
+  entirely when undefined so dispatch.py's strict check stays tight.
+- Test: `context-fabric/tests/test_governed_loop_laptop_routing.py`
+  — 11 cases covering the routing decision matrix (True+user_id,
+  True+no user_id, False+user_id, missing, truthy-non-bool,
+  camelCase alias, int coercion, no run_context).
 
-End-to-end test: a stage launched with prefer_laptop=True dispatches
-every tool call via the laptop WebSocket bridge instead of the
-shared mcp-server.
+End-to-end behaviour: a stage launched with
+`session.metadata.preferLaptop=true` now dispatches every tool call
+via the laptop WebSocket bridge instead of the shared mcp-server.
+HTTP fallback fires automatically when no bridge is connected
+(`_LaptopUnavailable` → HTTP path, per Slice 3).
 
 ### Slice 5 — Audit + telemetry parity (~half day)
 

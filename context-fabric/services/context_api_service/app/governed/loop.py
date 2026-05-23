@@ -259,17 +259,40 @@ async def governed_step(
         #      AND across pause/resume (PhaseState.to_dict round-trips
         #      it). Same (kind, value) gets the same token across the
         #      whole stage so the LLM can reason about identity.
+        # M75 Slice 4 — route via laptop bridge when the caller asked for it.
+        # prefer_laptop semantics (lifted from legacy execute.py + pinned in
+        # docs/M75-laptop-bridge-cutover.md):
+        #   • True  → use the user's laptop bridge. If no bridge is
+        #             connected, dispatch.py's _LaptopUnavailable → HTTP
+        #             fallback fires (silent fallback; stricter "require
+        #             laptop" check lives upstream at the request entry
+        #             if a caller needs 503 on missing bridge).
+        #   • False → never use laptop; force HTTP. (Workgraph QA stages
+        #             explicitly set this so they hit the managed runtime
+        #             regardless of laptop availability.)
+        #   • None  → HTTP only. Auto-prefer-when-available is a future
+        #             optimisation that requires upstream "is bridge live?"
+        #             plumbing we don't have yet.
+        run_ctx = run_context or {}
+        prefer_laptop = run_ctx.get("prefer_laptop")
+        ctx_user_id = run_ctx.get("user_id") or run_ctx.get("userId")
+        laptop_user_id = (
+            str(ctx_user_id)
+            if prefer_laptop is True and ctx_user_id
+            else None
+        )
         try:
             dispatch_args = unmask_pii_in_args(args, state.pii_token_map)
             outcome = await dispatch_tool(
                 tool_name=tool_name,
                 args=dispatch_args,
-                work_item_id=(run_context or {}).get("work_item_id")
-                or (run_context or {}).get("workItemId"),
-                workspace_id=(run_context or {}).get("workspace_id")
-                or (run_context or {}).get("workspaceId"),
+                work_item_id=run_ctx.get("work_item_id")
+                or run_ctx.get("workItemId"),
+                workspace_id=run_ctx.get("workspace_id")
+                or run_ctx.get("workspaceId"),
                 run_context=run_context,
                 bearer=bearer,
+                laptop_user_id=laptop_user_id,
             )
             masked_result, new_token_map, mask_applied = mask_pii_in_result(
                 outcome.result, state.pii_token_map,

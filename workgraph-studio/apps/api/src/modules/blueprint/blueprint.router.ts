@@ -246,6 +246,23 @@ function readStageChatThread(metadata: unknown, stageKey: string): StageChatMess
   return readStageChats(metadata)[stageKey] ?? []
 }
 
+// M75 Slice 4 — read the operator-set laptop preference off the session.
+// Returns `{}` when the flag isn't set so the caller can `...spread` it
+// into runContext without polluting the object with `prefer_laptop:
+// undefined` (which serialises differently across JSON libs and could
+// trip the Python `is True` check on the other side).
+//
+// Only honors `true` or `false` — anything else (string "true", number 1,
+// missing) is treated as unset. Strict typing is the right call here:
+// dispatch.py reads this with `prefer_laptop is True`, so we don't want
+// truthy-but-not-boolean values to silently flip routing.
+function readPreferLaptopFlag(metadata: unknown): { prefer_laptop?: boolean } {
+  if (!isRecord(metadata)) return {}
+  const raw = metadata.preferLaptop
+  if (raw === true || raw === false) return { prefer_laptop: raw }
+  return {}
+}
+
 const stageActionParamsSchema = z.object({
   id: z.string().min(1),
   stageKey: z.string().min(1).max(80),
@@ -3292,6 +3309,20 @@ async function runLoopStageExecute(
       source_type: usesRepoContext ? session.sourceType.toLowerCase() : undefined,
       source_uri: usesRepoContext ? session.sourceUri : undefined,
       source_ref: usesRepoContext ? session.sourceRef ?? undefined : undefined,
+      // M75 Slice 4 — opt-in laptop bridge routing for governed stages.
+      // The legacy AgentTaskExecutor path reads this from cfg.preferLaptop
+      // on the workflow node; the governed coding stage doesn't have a
+      // per-node config, so we honor an operator toggle stashed on the
+      // BlueprintSession.metadata.preferLaptop instead. Semantics in cf:
+      //   true  → route via this user's laptop mcp-server (HTTP fallback
+      //           if the WS bridge has no live connection).
+      //   false → force HTTP (never use the laptop, even if connected).
+      //   unset → HTTP only — auto-prefer-when-available is a future
+      //           enhancement that needs upstream "is bridge live?" plumbing.
+      // Per docs/M75-laptop-bridge-cutover.md Slice 4. The key is omitted
+      // entirely when undefined so dispatch.py's `if prefer_laptop is True`
+      // short-circuit stays tight.
+      ...readPreferLaptopFlag(session.metadata),
     },
     // Mirror the existing per-stage step cap; the multi-turn driver respects
     // it as a safety cap separate from StagePolicy.limits.max_tool_calls.
