@@ -154,6 +154,55 @@ def _history_from_turn(turn: TurnResult) -> list[dict[str, Any]]:
     return messages
 
 
+def _render_auto_verify_message(synth: dict[str, Any]) -> dict[str, Any]:
+    """M74 Phase 1A — render a SyntheticVerifierResult (already
+    serialized to dict in loop.py) as a user-role message for the next
+    turn's prompt. Mirrors SyntheticVerifierResult.to_history_message in
+    verify_synthesis.py but works on the dict form so stage_driver
+    doesn't import the dataclass."""
+    kind = synth.get("kind")
+    if kind == "ran":
+        verdict = "PASSED" if synth.get("tool_success") else "FAILED"
+        parts = [
+            f"[AUTO-VERIFY] Automated verification ran on your edits: {verdict}.",
+            f"Command: {synth.get('command')}",
+        ]
+        if synth.get("exit_code") is not None:
+            parts.append(f"Exit code: {synth.get('exit_code')}")
+        stdout = synth.get("stdout_summary") or ""
+        if stdout:
+            parts.append(f"stdout: {stdout[:1500]}")
+        stderr = synth.get("stderr_summary") or ""
+        if stderr:
+            parts.append(f"stderr: {stderr[:1500]}")
+        parts.append(
+            "Include this command in your VerificationReceipt.commands_run "
+            "(don't re-run it; the result is above). If it FAILED, the next "
+            "phase should be REPAIR, not SELF_REVIEW."
+        )
+        return {"role": "user", "content": "\n".join(parts)}
+    if kind == "skipped":
+        reason = synth.get("reason") or "no runnable verifier"
+        return {
+            "role": "user",
+            "content": (
+                f"[AUTO-VERIFY] No runnable verifier was available ({reason}). "
+                "Call verification_unavailable with the same reason, or "
+                "run_test if you know an applicable command."
+            ),
+        }
+    # unavailable or unknown kind
+    reason = synth.get("reason") or "synthesis failed"
+    return {
+        "role": "user",
+        "content": (
+            f"[AUTO-VERIFY] Verification synthesis failed: {reason}. "
+            "You may need to call run_test yourself; the orchestrator "
+            "could not pick a command."
+        ),
+    }
+
+
 def _is_terminal_state(state: PhaseState) -> bool:
     """The stage is done when the machine reaches FINALIZE — there's no
     way out of FINALIZE in the transition table."""
@@ -328,6 +377,17 @@ async def run_stage(
         # Append this turn's assistant + tool messages to the history that
         # the next turn will see.
         history.extend(_history_from_turn(turn))
+
+        # M74 Phase 1A — when ACT advanced and the orchestrator auto-verified
+        # on the agent's behalf, inject a system-style user message with the
+        # verifier output so the LLM enters VERIFY with real evidence.
+        # Deliberately a user message (not a synthetic tool_call/tool_result
+        # pair) because the LLM didn't emit the call — faking provenance
+        # would lie to downstream auditing and break the args-roundtrip
+        # contract from M73-followup #4.
+        synth = turn.step.synthetic_verifier
+        if synth:
+            history.append(_render_auto_verify_message(synth))
 
         state = turn.next_state
         result.final_state = state

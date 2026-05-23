@@ -39,6 +39,7 @@ from .audit_emit import emit_governed_event
 from .dispatch import ToolDispatchError, ToolDispatchResult, dispatch_tool
 from .path_coverage import check_path_coverage
 from .phase_state import Phase, PhaseState, advance_phase
+from .verify_synthesis import synthesize_verifier_run
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
 from .tool_gateway import PhaseToolForbidden, check_tool_allowed
 from .validators import PhaseOutputInvalid, validate_phase_output
@@ -94,6 +95,12 @@ class GovernedStepResult:
     # the LLM wrapper (Slice C(b)) can format them as a tool-result message
     # for the next turn.
     validation_error: dict[str, Any] | None = None
+    # M74 Phase 1A — when the orchestrator auto-verified after an
+    # EditReceipt, the result lands here. stage_driver reads this and
+    # injects a system-style user message into the next turn's prompt
+    # so the LLM sees the verifier output before producing its
+    # VerificationReceipt. None on non-ACT advances or when no edits.
+    synthetic_verifier: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -104,6 +111,7 @@ class GovernedStepResult:
             "phase_advanced": self.phase_advanced,
             "tool_outcomes": [asdict(o) for o in self.tool_outcomes],
             "validation_error": self.validation_error,
+            "synthetic_verifier": self.synthetic_verifier,
         }
 
 
@@ -347,6 +355,43 @@ async def governed_step(
                     severity="warn",
                 )
                 return result
+
+            # M74 Phase 1A — auto-verify on mutation. After ACT produces an
+            # EditReceipt and coverage is satisfied, run a verifier on the
+            # agent's behalf before letting VERIFY proceed. The result is
+            # rendered as a system-injected user message in the next turn's
+            # prompt by stage_driver. Failure modes are non-blocking — the
+            # synthesis returns SyntheticVerifierResult(kind="skipped" |
+            # "unavailable") rather than raising, so the stage continues
+            # but the agent sees an honest record of what the orchestrator
+            # tried.
+            try:
+                synth = await synthesize_verifier_run(
+                    receipt,
+                    work_item_id=(run_context or {}).get("work_item_id")
+                    or (run_context or {}).get("workItemId"),
+                    workspace_id=(run_context or {}).get("workspace_id")
+                    or (run_context or {}).get("workspaceId"),
+                    run_context=run_context,
+                    bearer=bearer,
+                )
+                result.synthetic_verifier = synth.to_dict()
+                await emit_governed_event(
+                    kind="governed.auto_verify_completed",
+                    state=state,
+                    policy=policy,
+                    run_context=run_context,
+                    payload=synth.to_dict(),
+                    severity="info" if synth.kind == "ran" and synth.tool_success else "warn",
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                # synthesize_verifier_run is documented as never-raising;
+                # this is purely defensive against future refactors.
+                log.warning("auto-verify swallowed unexpected error: %s", exc)
+                result.synthetic_verifier = {
+                    "kind": "unavailable",
+                    "reason": f"orchestrator error: {exc!s}",
+                }
 
         if next_phase is not None:
             try:
