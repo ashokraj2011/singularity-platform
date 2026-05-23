@@ -225,3 +225,199 @@ function collectVerificationReceipts(value: unknown, out: VerificationReceiptSum
   }
   for (const item of Object.values(record)) collectVerificationReceipts(item, out, seen)
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// M71 Slice F — Governed-stage runner.
+//
+// Calls context-fabric's POST /api/v1/execute-governed-stage instead of the
+// legacy /execute → mcp-server /invoke chain. The response shape
+// (StageRunResult) is different from ExecuteResponse, so the adapter below
+// re-projects it into CodingRunResult — the same return type runCodingStage
+// has used since M66. Callers in blueprint.router.ts don't have to change.
+//
+// What we lose by going through the new path:
+//   - cf_call_id correlation (the new endpoint doesn't mint one yet; we
+//     synthesize a UUID-like value from the run_context.work_item_id +
+//     turn count so audit-gov searches still join). TODO: emit cf_call_id
+//     from run_stage so this round-trip is unnecessary.
+//
+// What we gain:
+//   - Hard-refuse policy enforcement at every tool dispatch (PHASE_TOOL_FORBIDDEN).
+//   - Per-phase prompts (so DEVELOPER PLAN sees PLAN guidance, not the kitchen
+//     sink loopDeveloperTask).
+//   - Structured phase-state persistence the Workbench UI can render.
+//   - The stage halt-conditions taxonomy (FINALIZED / APPROVAL_PENDING /
+//     POLICY_BLOCKED / etc.) which is more actionable than a single
+//     "completed/failed" boolean.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CodingStageGovernedRequest {
+  stageKey: string
+  agentRole?: string | null
+  policy: CodingStagePolicy
+  vars?: Record<string, unknown>
+  modelAlias?: string
+  bearer?: string
+  runContext?: Record<string, unknown>
+  // Persistable phase state from a prior run of the same stage attempt.
+  // Empty → context-fabric mints a fresh PLAN.
+  phaseState?: Record<string, unknown> | null
+  // Initial OpenAI-style message history. Usually empty on first run.
+  initialHistory?: unknown[]
+  // Safety cap on LLM turns. Unset = context-fabric's default (25).
+  maxTurns?: number
+}
+
+export async function runCodingStageGoverned(
+  input: CodingStageGovernedRequest,
+): Promise<CodingRunResult> {
+  const stageRequest: GovernedStageRequest = {
+    stage_key: input.stageKey,
+    agent_role: input.agentRole ?? undefined,
+    phase_state: input.phaseState ?? null,
+    vars: input.vars ?? {},
+    initial_history: input.initialHistory ?? [],
+    model_alias: input.modelAlias,
+    bearer: input.bearer,
+    run_context: input.runContext ?? {},
+    max_turns: input.maxTurns,
+  }
+  const response = await contextFabricClient.executeGovernedStage(stageRequest)
+  return adaptGovernedStageToCodingRun(response, input.policy)
+}
+
+/**
+ * Map StageRunResult → CodingRunResult so existing blueprint.router code
+ * paths keep working. Decisions:
+ *
+ *   - status: FINALIZED → COMPLETED. APPROVAL_PENDING → PAUSED (matches
+ *     today's pause-for-approval flow). VALIDATION_BLOCKED /
+ *     POLICY_BLOCKED / MAX_TURNS → FAILED. LLM_ERROR → FAILED.
+ *
+ *   - codeChangeIds: extracted from any tool outcome whose result carries
+ *     a recognizable code_change_id / changeId. Conservative; misses any
+ *     non-standard tool outputs but doesn't fabricate.
+ *
+ *   - verificationReceipts: extracted from tool outcomes whose tool_name
+ *     is run_test/run_command/verification_unavailable. Same heuristic
+ *     as the legacy normalizer's verification_result detection.
+ *
+ *   - modelUsage / tokensUsed: derived from totals.
+ *
+ *   - response (the legacy raw payload field): we stash the StageRunResult
+ *     under a synthetic ExecuteResponse-shaped wrapper so callers that
+ *     reach into `result.response.*` still find SOMETHING — but the new
+ *     fields are clearly tagged so downstream code can branch on them.
+ */
+export function adaptGovernedStageToCodingRun(
+  resp: GovernedStageResponse,
+  policy: CodingStagePolicy,
+): CodingRunResult {
+  const stopReason = resp.stop_reason
+  const status: CodingRunStatus =
+    stopReason === 'FINALIZED' ? 'COMPLETED'
+      : stopReason === 'APPROVAL_PENDING' ? 'PAUSED'
+        : 'FAILED'
+  const executeStatus: ExecuteResponse['status'] =
+    stopReason === 'FINALIZED' ? 'COMPLETED'
+      : stopReason === 'APPROVAL_PENDING' ? 'WAITING_APPROVAL'
+        : 'FAILED'
+
+  // Walk all turns and harvest tool-result payloads into the legacy slots.
+  const codeChangeIds: string[] = []
+  const verificationReceipts: VerificationReceiptSummary[] = []
+  const warnings: string[] = []
+  for (const turn of resp.turns) {
+    for (const outcome of turn.tool_outcomes) {
+      if (!outcome.allowed && outcome.refusal_reason) {
+        warnings.push(`Phase ${outcome.phase}: ${outcome.refusal_reason}`)
+        continue
+      }
+      const result = outcome.result
+      if (result && typeof result === 'object' && !Array.isArray(result)) {
+        const rec = result as Record<string, unknown>
+        // Code-change extraction: tools like apply_patch, replace_text,
+        // create_file, finish_work_branch all expose a code_change_id (or
+        // changeId) on the result envelope when they actually mutate.
+        const candidates = [rec.code_change_id, rec.codeChangeId, rec.changeId, rec.change_id]
+        for (const cid of candidates) {
+          if (typeof cid === 'string' && cid.length > 0) codeChangeIds.push(cid)
+        }
+        // Verification receipt extraction.
+        const kind = String(rec.kind ?? rec.type ?? '').toLowerCase()
+        if (kind === 'verification_result' || kind === 'test_result' || outcome.tool_name === 'run_test' || outcome.tool_name === 'run_command') {
+          verificationReceipts.push({
+            id: typeof rec.id === 'string' ? rec.id : undefined,
+            command: typeof rec.command === 'string' ? rec.command : undefined,
+            passed: typeof rec.passed === 'boolean' ? rec.passed : undefined,
+            exitCode: typeof rec.exit_code === 'number'
+              ? rec.exit_code as number
+              : (typeof rec.exitCode === 'number' ? rec.exitCode as number : undefined),
+            unavailable: rec.unavailable === true || rec.verification_kind === 'unavailable',
+            source: 'tool',
+          })
+        }
+      }
+      if (outcome.dispatch_error) {
+        warnings.push(`Tool ${outcome.tool_name}: ${outcome.dispatch_error}`)
+      }
+    }
+    if (turn.validation_error) {
+      const err = turn.validation_error as Record<string, unknown>
+      warnings.push(`Phase ${turn.from_phase} output invalid: ${err.reason ?? 'unknown'}`)
+    }
+  }
+
+  // Synthesize a minimum-viable ExecuteResponse shell so legacy readers
+  // don't crash on .response.X access. The interesting fields live in the
+  // adapter outputs above; this is just the envelope.
+  const syntheticResponse = {
+    status: executeStatus,
+    cfCallId: `governed:${resp.final_state.stage_key}:${resp.turns.length}`,
+    text: resp.turns.at(-1)?.llm?.content ?? '',
+    correlation: { codeChangeIds, verificationReceipts },
+    modelUsage: {
+      provider: resp.turns.at(-1)?.llm?.provider ?? 'unknown',
+      model: resp.turns.at(-1)?.llm?.model ?? 'unknown',
+      inputTokens: resp.totals.input_tokens,
+      outputTokens: resp.totals.output_tokens,
+      estimatedCost: 0,
+      latencyMs: resp.turns.reduce((sum, t) => sum + (t.llm?.latency_ms ?? 0), 0),
+    },
+    tokensUsed: {
+      input: resp.totals.input_tokens,
+      output: resp.totals.output_tokens,
+      total: resp.totals.input_tokens + resp.totals.output_tokens,
+    },
+    verificationReceipts,
+    warnings,
+    pendingApproval: resp.stop_reason === 'APPROVAL_PENDING'
+      ? { reason: 'SELF_REVIEW recommended approval', kind: 'self_review_approval' as const }
+      : null,
+    // M71 — extra fields the legacy ExecuteResponse type doesn't carry but
+    // downstream debug surfaces can read off `result.response.governed`.
+    governed: {
+      stopReason: resp.stop_reason,
+      errorCode: resp.error_code,
+      errorMessage: resp.error_message,
+      finalPhase: resp.final_state.current_phase,
+      totalTurns: resp.turns.length,
+      approvalPending: resp.final_state.approval_pending,
+      totals: resp.totals,
+    },
+  } as unknown as ExecuteResponse
+
+  return {
+    status,
+    executeStatus,
+    response: syntheticResponse,
+    policy,
+    pendingApproval: syntheticResponse.pendingApproval,
+    codeChangeIds,
+    verificationReceipts,
+    modelUsage: syntheticResponse.modelUsage,
+    tokensUsed: syntheticResponse.tokensUsed,
+    warnings,
+  }
+}

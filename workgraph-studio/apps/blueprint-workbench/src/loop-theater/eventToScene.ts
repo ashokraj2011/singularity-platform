@@ -307,6 +307,97 @@ export function eventToScene(event: AuditEvent): SceneAction | null {
       return { id, kind: 'phase-change', actor: 'system', at, phase, raw: event }
     }
 
+    // M71 Slice G — Governed-loop events. context-fabric (the new policy
+    // chokepoint) emits these per turn. Map them to the existing Theater
+    // scene kinds so operators see the same animation vocabulary regardless
+    // of which loop runner produced the event.
+    case 'governed.phase_completed': {
+      // A phase advance + receipt persisted. Render as the standard phase
+      // ribbon ("Now: ACT") so the operator knows where the agent moved to.
+      const toPhase = asString(payload.to_phase) || ''
+      const fromPhase = asString(payload.from_phase) || ''
+      if (!toPhase) return null
+      return {
+        id,
+        kind: 'phase-change',
+        actor: 'system',
+        at,
+        phase: toPhase,
+        // Stash from_phase in raw for the UI to render transition text
+        // like "PLAN → EXPLORE" rather than just "EXPLORE".
+        raw: { ...event, payload: { ...payload, from_phase: fromPhase, to_phase: toPhase } },
+      }
+    }
+
+    case 'governed.tool_refused': {
+      // Hard-refuse on out-of-phase tool call. Render as a tool-result
+      // that DIDN'T run — that maps cleanly to the existing UI.
+      const toolName = asString(payload.tool_name) || '?'
+      const reason = asString(payload.reason) || 'tool refused by phase policy'
+      return {
+        id,
+        kind: 'tool-result',
+        actor: 'agent',
+        at,
+        toolName,
+        passed: false,
+        success: false,
+        summary: `Refused: ${reason}`,
+        raw: event,
+      }
+    }
+
+    case 'governed.tool_dispatched': {
+      // Successful dispatch via /mcp/tool-run. The real result payload
+      // lands separately as a `tool.invocation.completed` event from
+      // audit-gov; this scene is the "we authorised this call" ping
+      // so the Theater shows action immediately rather than waiting
+      // for the result to round-trip.
+      const toolName = asString(payload.tool_name) || '?'
+      const ok = payload.tool_success !== false
+      return {
+        id,
+        kind: 'tool-result',
+        actor: 'agent',
+        at,
+        toolName,
+        passed: ok,
+        success: ok,
+        summary: ok ? `Ran ${toolName}` : `Ran ${toolName} (failed)`,
+        raw: event,
+      }
+    }
+
+    case 'governed.tool_dispatch_failed':
+    case 'governed.phase_transition_refused':
+    case 'governed.phase_output_invalid':
+    case 'governed.stage_aborted': {
+      // Failure modes — surface as a "finish" scene with passed=false so
+      // the operator notices. The reason flows through to the tooltip.
+      const reason =
+        asString(payload.reason)
+        ?? asString(payload.error_code)
+        ?? asString(payload.message)
+        ?? event.kind.replace('governed.', '')
+      return {
+        id,
+        kind: 'finish',
+        actor: 'agent',
+        at,
+        passed: false,
+        reason,
+        raw: event,
+      }
+    }
+
+    case 'governed.llm_request':
+    case 'governed.llm_response':
+      // Verbose per-turn audit events. Theater already renders the
+      // llm.call.completed event from the LLM call itself; suppressing
+      // these prevents double-rendering. They stay visible via the raw
+      // audit-gov search UI.
+      return null
+
     case 'code_change.applied':
     case 'code_change.detected': {
       const paths = Array.isArray(payload.paths_touched)

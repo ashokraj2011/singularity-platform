@@ -2518,3 +2518,88 @@ async def execute_governed_turn(req: GovernedTurnRequest) -> dict[str, Any]:
         )
 
     return {"success": True, "data": turn.to_dict()}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# M71 Slice F — Multi-turn governed stage endpoint.
+#
+# POST /api/v1/execute-governed-stage
+#
+# workgraph-api calls this ONCE to run an entire stage from PLAN through to
+# FINALIZE (or to the human-approval gate at SELF_REVIEW). context-fabric
+# drives the LLM loop server-side, threading history forward, so workgraph-
+# api doesn't need to keep state between turns.
+#
+# Halt conditions (see stage_driver.run_stage):
+#   * FINALIZED          — phase reached FINALIZE
+#   * APPROVAL_PENDING   — SELF_REVIEW set recommended_for_approval=true
+#   * VALIDATION_BLOCKED — LLM submitted a malformed receipt
+#   * POLICY_BLOCKED     — LLM stuck calling refused tools
+#   * MAX_TURNS          — safety cap
+#   * LLM_ERROR          — timeout / overloaded / etc.
+#
+# This is the endpoint Slice F switches workgraph-api to call instead of
+# the legacy /execute → mcp-server /invoke chain.
+# ─────────────────────────────────────────────────────────────────────────────
+
+from .governed import (  # noqa: E402
+    DEFAULT_MAX_TURNS,
+    StageRunResult,
+    run_stage,
+)
+
+
+class GovernedStageRequest(BaseModel):
+    """Wire shape for /api/v1/execute-governed-stage."""
+
+    stage_key: str = Field(..., min_length=1)
+    agent_role: Optional[str] = None
+    phase_state: Optional[dict[str, Any]] = None
+    vars: dict[str, Any] = Field(default_factory=dict)
+    initial_history: list[dict[str, Any]] = Field(default_factory=list)
+    model_alias: Optional[str] = None
+    bearer: Optional[str] = None
+    run_context: dict[str, Any] = Field(default_factory=dict)
+    # Safety cap on the number of LLM turns this call may consume. Defaults
+    # to the module constant; callers can pass a lower number for thin runs.
+    max_turns: int = Field(default=DEFAULT_MAX_TURNS, ge=1, le=200)
+
+
+@router.post("/api/v1/execute-governed-stage")
+async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
+    """Run a governed stage end-to-end (multi-turn)."""
+    if req.phase_state:
+        try:
+            state = PhaseState.from_dict(req.phase_state)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "PHASE_STATE_INVALID", "message": str(exc)},
+            )
+    else:
+        state = PhaseState.fresh(req.stage_key, req.agent_role)
+
+    try:
+        outcome: StageRunResult = await run_stage(
+            state=state,
+            stage_key=req.stage_key,
+            agent_role=req.agent_role,
+            vars=req.vars,
+            initial_history=req.initial_history,
+            model_alias=req.model_alias,
+            run_context=req.run_context,
+            bearer=req.bearer,
+            max_turns=req.max_turns,
+        )
+    except PolicyNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "STAGE_POLICY_NOT_FOUND", "message": str(exc)},
+        )
+    except PromptNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "STAGE_PROMPT_NOT_FOUND", "message": str(exc)},
+        )
+
+    return {"success": True, "data": outcome.to_dict()}

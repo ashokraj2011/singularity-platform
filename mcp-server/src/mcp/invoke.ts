@@ -38,7 +38,7 @@ import { emitAuditEvent } from "../lib/audit-gov-emit";
 // can highlight high-risk directory reads.
 import { emitFilesystemAccess } from "../audit/filesystem-access";
 import { checkBudget, checkRateLimit, GovernanceMode } from "../lib/audit-gov-check";
-import { isDegradedToolAllowedByPolicy, isRiskyToolByPolicy } from "../lib/governance-policy";
+import { isDegradedToolAllowedByPolicy, isMutationTool, isRiskyToolByPolicy } from "../lib/governance-policy";
 import { persistApproval, consumeApproval } from "../lib/audit-gov-approvals";
 import {
   savePending, takePending, peekPending, clearPending, PendingToolDescriptor,
@@ -329,6 +329,10 @@ function detectRepetition(history: LoopState["toolCallHistory"]): { name: string
 function hasTool(state: LoopState, names: string[]): boolean {
   const available = new Set(state.fullToolDescriptors.map((tool) => tool.name));
   return names.some((name) => available.has(name));
+}
+
+function isPushFinishToolCall(tc: ToolCall): boolean {
+  return tc.name === "finish_work_branch" && tc.args?.push === true;
 }
 
 /**
@@ -1675,11 +1679,33 @@ Please review the errors above, correct the code, and explain how you resolved t
           return { kind: "denied", finishReason: "governance_denied", reason, check: "tool_policy", details: { tool_name: tc.name, governanceMode: state.governanceMode } };
         }
 
+        if (isMutationTool(tc.name) && !state.allowAutonomousMutation) {
+          const reason = `stage tool policy blocks workspace mutation tool ${tc.name}; rerun in a CODE_EDIT/MUTATION stage instead of asking for per-file approval.`;
+          emitAuditEvent({
+            trace_id: state.correlation.traceId,
+            source_service: "mcp-server",
+            kind: "governance.denied",
+            capability_id: state.correlation.capabilityId,
+            severity: "warn",
+            payload: {
+              check: "tool_policy",
+              reason,
+              tool_name: tc.name,
+              execution_target: desc?.execution_target,
+              risk_level: desc?.risk_level,
+              governanceMode: state.governanceMode,
+              allowAutonomousMutation: state.allowAutonomousMutation,
+              contextPlanHash: state.contextPlanHash,
+            },
+          });
+          return { kind: "denied", finishReason: "governance_denied", reason, check: "tool_policy", details: { tool_name: tc.name, governanceMode: state.governanceMode } };
+        }
+
         const risky = isRiskyToolByPolicy(tc.name, desc);
         const requiresApproval =
+          isPushFinishToolCall(tc) ||
           desc?.requires_approval ||
           handler?.descriptor.requires_approval ||
-          (risky && !state.allowAutonomousMutation) ||
           (state.governanceMode === "human_approval_required" && risky && !state.allowAutonomousMutation);
 
         if (requiresApproval) {
@@ -1687,7 +1713,11 @@ Please review the errors above, correct the code, and explain how you resolved t
             state,
             tc,
             desc,
-            risky ? "Governance requires approval before risky or mutating tool execution." : undefined,
+            isPushFinishToolCall(tc)
+              ? "Governance requires approval before pushing a work branch upstream."
+              : risky
+                ? "Governance requires approval before risky tool execution."
+                : undefined,
           );
         }
 
@@ -2263,8 +2293,32 @@ async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome
         });
         return { kind: "denied", finishReason: "governance_denied", reason, check: "tool_policy", details: { tool_name: tc.name, governanceMode: state.governanceMode } };
       }
+
+      if (isMutationTool(tc.name) && !state.allowAutonomousMutation) {
+        const reason = `stage tool policy blocks workspace mutation tool ${tc.name}; rerun in a CODE_EDIT/MUTATION stage instead of asking for per-file approval.`;
+        emitAuditEvent({
+          trace_id: state.correlation.traceId,
+          source_service: "mcp-server",
+          kind: "governance.denied",
+          capability_id: state.correlation.capabilityId,
+          severity: "warn",
+          payload: {
+            check: "tool_policy",
+            reason,
+            tool_name: tc.name,
+            execution_target: desc?.execution_target,
+            risk_level: desc?.risk_level,
+            governanceMode: state.governanceMode,
+            allowAutonomousMutation: state.allowAutonomousMutation,
+            contextPlanHash: state.contextPlanHash,
+          },
+        });
+        return { kind: "denied", finishReason: "governance_denied", reason, check: "tool_policy", details: { tool_name: tc.name, governanceMode: state.governanceMode } };
+      }
+
       const risky = isRiskyToolByPolicy(tc.name, desc);
       const requiresApproval =
+        isPushFinishToolCall(tc) ||
         desc?.requires_approval ||
         handler?.descriptor.requires_approval ||
         (state.governanceMode === "human_approval_required" && risky && !state.allowAutonomousMutation);
@@ -2273,7 +2327,11 @@ async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome
           state,
           tc,
           desc,
-          risky ? "Governance requires approval before risky or mutating tool execution." : undefined,
+          isPushFinishToolCall(tc)
+            ? "Governance requires approval before pushing a work branch upstream."
+            : risky
+              ? "Governance requires approval before risky tool execution."
+              : undefined,
         );
       }
 
@@ -3107,7 +3165,43 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
   }));
 }
 
+// M71 Slice I — Deprecation shim for /mcp/invoke.
+//
+// context-fabric now drives the LLM loop server-side via POST
+// /api/v1/execute-governed-stage. mcp-server's role is reduced to a dumb
+// tool runner (POST /mcp/tool-run, Slice D). The agent-loop code below
+// (runLoop + executeInvokePayload + buildResponseBody) stays in this
+// file as dormant code so an emergency revert can resurrect it without
+// a redeploy — but the HTTP route returns 410 Gone with a migration
+// message so workgraph-api can't accidentally land here.
+//
+// To temporarily re-enable for incident recovery, set the env var
+//   MCP_LEGACY_INVOKE_ENABLED=true
+// before starting mcp-server. This is intentionally clunky — production
+// should never run with it set.
 invokeRouter.post("/invoke", async (req, res) => {
+  const legacyEnabled = (process.env.MCP_LEGACY_INVOKE_ENABLED ?? "").toLowerCase() === "true";
+  if (!legacyEnabled) {
+    res.status(410).json({
+      success: false,
+      error: {
+        code: "MCP_INVOKE_DEPRECATED",
+        message:
+          "POST /mcp/invoke was retired in M71. The LLM agent loop now lives in " +
+          "context-fabric. Call POST /api/v1/execute-governed-stage on context-fabric " +
+          "instead — context-fabric handles policy enforcement, phase advancement, " +
+          "and tool dispatch (which lands here at /mcp/tool-run per call). To revive " +
+          "this endpoint temporarily during incident recovery, set " +
+          "MCP_LEGACY_INVOKE_ENABLED=true and restart mcp-server.",
+        migration: {
+          new_endpoint: "POST /api/v1/execute-governed-stage on context-fabric",
+          docs: "singularity_governed_coding_loop_spec.md §24",
+        },
+      },
+      requestId: res.locals.requestId,
+    });
+    return;
+  }
   const data = await executeInvokePayload(req.body);
   res.json({
     success: true,
@@ -3119,6 +3213,29 @@ invokeRouter.post("/invoke", async (req, res) => {
 // ── POST /mcp/resume ─────────────────────────────────────────────────────
 
 invokeRouter.post("/resume", async (req, res) => {
+  // M71 Slice I — same deprecation as /invoke. The resume path was paired
+  // with the agent loop's pause-for-approval flow; context-fabric's
+  // governed-stage driver now halts on APPROVAL_PENDING and the caller
+  // (workgraph-api) re-invokes the stage with a refreshed PhaseState to
+  // continue past the human gate. Resume by re-running, not by sending
+  // a continuation token.
+  const legacyEnabled = (process.env.MCP_LEGACY_INVOKE_ENABLED ?? "").toLowerCase() === "true";
+  if (!legacyEnabled) {
+    res.status(410).json({
+      success: false,
+      error: {
+        code: "MCP_RESUME_DEPRECATED",
+        message:
+          "POST /mcp/resume was retired in M71. The governed-stage driver in " +
+          "context-fabric resumes by re-calling /api/v1/execute-governed-stage " +
+          "with the persisted PhaseState — no continuation token needed. To " +
+          "revive this endpoint temporarily, set MCP_LEGACY_INVOKE_ENABLED=true.",
+      },
+      requestId: res.locals.requestId,
+    });
+    return;
+  }
+
   const parsed = ResumeSchema.safeParse(req.body);
   if (!parsed.success) {
     throw new AppError("invalid /mcp/resume payload", 400, "VALIDATION_ERROR", parsed.error.flatten());

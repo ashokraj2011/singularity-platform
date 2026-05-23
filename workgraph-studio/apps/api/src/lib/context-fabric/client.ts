@@ -191,6 +191,91 @@ export interface ResumeRequest {
   args_override?: Record<string, unknown>
 }
 
+// M71 Slice F — Governed-stage request shape. Mirrors the GovernedStageRequest
+// Pydantic model in context-fabric's execute.py.
+export interface GovernedStageRequest {
+  stage_key: string
+  agent_role?: string
+  phase_state?: Record<string, unknown> | null
+  vars?: Record<string, unknown>
+  initial_history?: unknown[]
+  model_alias?: string
+  bearer?: string
+  run_context?: Record<string, unknown>
+  // Safety cap on LLM turns; defaults to context-fabric's DEFAULT_MAX_TURNS (25).
+  max_turns?: number
+}
+
+// M71 Slice F — Governed-stage response shape. Mirrors StageRunResult.to_dict()
+// in context-fabric. The adapter in coding-agent/orchestrator.ts maps this
+// into the existing CodingRunResult so the rest of workgraph-api doesn't
+// change shape.
+export interface GovernedStageToolOutcome {
+  tool_name: string
+  phase: string
+  allowed: boolean
+  refusal_reason: string | null
+  allowed_tools: string[]
+  // The tool's dispatched result envelope (whatever /mcp/tool-run returned).
+  // Null on refusal or dispatch_error.
+  result: unknown
+  duration_ms: number
+  tool_invocation_id: string | null
+  tool_success: boolean | null
+  tool_error: string | null
+  dispatch_error: string | null
+}
+
+export interface GovernedStageTurn {
+  turn_index: number
+  from_phase: string
+  to_phase: string
+  phase_advanced: boolean
+  tool_outcomes: GovernedStageToolOutcome[]
+  validation_error: Record<string, unknown> | null
+  llm: {
+    content?: string
+    finish_reason?: string
+    input_tokens?: number
+    output_tokens?: number
+    latency_ms?: number
+    provider?: string
+    model?: string
+    model_alias?: string | null
+    estimated_cost?: number | null
+    tool_call_count?: number
+  }
+  prompt: {
+    binding_id?: string
+    prompt_profile_id?: string
+    phase_used?: string | null
+    stage_key?: string
+    agent_role?: string | null
+  }
+}
+
+export interface GovernedStageResponse {
+  final_state: {
+    stage_key: string
+    agent_role: string | null
+    current_phase: string
+    repair_attempts: number
+    receipts: Record<string, Array<Record<string, unknown>>>
+    history: Array<Record<string, unknown>>
+    approval_pending: boolean
+  }
+  turns: GovernedStageTurn[]
+  stop_reason: 'FINALIZED' | 'APPROVAL_PENDING' | 'VALIDATION_BLOCKED' | 'POLICY_BLOCKED' | 'MAX_TURNS' | 'LLM_ERROR' | ''
+  error_code: string | null
+  error_message: string | null
+  totals: {
+    input_tokens: number
+    output_tokens: number
+    tool_calls: number
+    tools_refused: number
+  }
+}
+
 export interface CodeChangeRecord {
   id: string
   tool_name?: string
@@ -269,6 +354,42 @@ export const contextFabricClient = {
       )
     }
     return (await res.json()) as CodeChangeListResponse
+  },
+
+  // M71 Slice F — Multi-turn governed stage driver.
+  //
+  // Calls context-fabric's POST /api/v1/execute-governed-stage which loops
+  // LLM turns server-side until the stage finalizes or hits human approval.
+  // mcp-server's old /invoke is bypassed entirely; tool dispatch goes
+  // through /mcp/tool-run with hard-refuse policy enforcement.
+  async executeGovernedStage(input: GovernedStageRequest): Promise<GovernedStageResponse> {
+    const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/api/v1/execute-governed-stage`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+      // Multi-turn driver may run for a while; pad past the LLM timeout
+      // envelope. workgraph-api enforces its own per-attempt budget upstream.
+      signal: AbortSignal.timeout(900_000),
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      let parsedDetail: unknown
+      try {
+        const obj = JSON.parse(text) as { detail?: unknown }
+        parsedDetail = obj?.detail
+      } catch { /* leave undefined */ }
+      throw new ContextFabricError(
+        `context-fabric /execute-governed-stage returned ${res.status}: ${text.slice(0, 500)}`,
+        res.status,
+        parsedDetail,
+      )
+    }
+    const json = (await res.json()) as { success: boolean; data: GovernedStageResponse }
+    if (!json.success) {
+      throw new ContextFabricError('context-fabric returned success=false', 502, json)
+    }
+    return json.data
   },
 
   async resume(input: ResumeRequest): Promise<ExecuteResponse> {
