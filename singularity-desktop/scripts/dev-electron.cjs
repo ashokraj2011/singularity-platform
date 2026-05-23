@@ -2,7 +2,7 @@ const { spawn } = require('node:child_process')
 const http = require('node:http')
 const electron = require('electron')
 
-const rendererUrl = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5177'
+const rendererUrl = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5188'
 
 function bin(name) {
   return process.platform === 'win32' ? `${name}.cmd` : name
@@ -29,7 +29,7 @@ function waitForUrl(url, timeoutMs = 30_000) {
   })
 }
 
-const vite = spawn(bin('pnpm'), ['exec', 'vite', '--host', '0.0.0.0', '--port', '5177', '--strictPort'], {
+const vite = spawn(bin('pnpm'), ['exec', 'vite', '--host', '0.0.0.0', '--port', '5188', '--strictPort'], {
   stdio: 'inherit',
   cwd: process.cwd(),
   env: process.env,

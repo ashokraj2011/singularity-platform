@@ -1,5 +1,5 @@
 {
-  "name": "@singularity/desk",
+  "name": "singularity-desktop-workbench",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,8 +12,9 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@singularity/laptop-sdk": "workspace:*",
     "@vitejs/plugin-react": "^6.0.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "vite": "^8.0.10"
