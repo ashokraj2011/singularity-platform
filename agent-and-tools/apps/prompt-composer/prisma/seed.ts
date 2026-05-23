@@ -409,9 +409,11 @@ const loopDeveloperPlanTask = [
   "- test_strategy.commands: the test/lint command you'll run in VERIFY (e.g. ['mvn test', 'pytest tests/segment_test.py']).",
   "- risk_level: low / medium / high — your honest assessment.",
   "- external_side_effects_required: true only if this needs network/deploy/API calls beyond local repo work.",
+  "- config_inspected_files: OPTIONAL. If the repo's structure is unclear (multi-module Gradle/Maven, monorepo, workspace members), you may read ONE config file (e.g. settings.gradle.kts, pom.xml, pyproject.toml) and list it here. Validator refuses more than 1 — defer broader reads to EXPLORE.",
   "",
-  "Allowed tools: repo_map, symbol_search, list_files, read_repo_instructions, read_workitem.",
-  "DO NOT call read_file, apply_patch, run_test, or finish_work_branch — those belong to later phases. Tool gateway will refuse them.",
+  "Allowed tools: repo_map, symbol_search, list_files, read_repo_instructions, read_workitem, read_file (capped at 1 invocation for config discovery — M72B).",
+  "Soft budget: 4 tool calls total this phase. Use repo_map/symbol_search first; only fall back to read_file when the repo's layout genuinely blocks planning.",
+  "DO NOT call apply_patch, run_test, or finish_work_branch — those belong to later phases. Tool gateway will refuse them.",
 ].join("\n");
 
 const loopDeveloperExploreTask = [
@@ -1196,7 +1198,15 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
     phases: [
       {
         phase: "PLAN",
-        allowedTools: ["repo_map", "symbol_search", "list_files", "read_repo_instructions", "read_workitem"],
+        // M72 Slice B — adds `read_file` to the PLAN allowlist with a HARD
+        // cap of 4 tool calls and a SOFT cap of 1 config-file read tracked
+        // by the new `config_inspected_files` field below. Without this,
+        // multi-module repos (nested Gradle/Maven, pyproject + workspace
+        // members, etc.) couldn't reach a viable plan inside the previous
+        // implicit 2-step budget — the agent would burn turns on
+        // repo_map/list_files alone and the run halted POLICY_BLOCKED.
+        allowedTools: ["repo_map", "symbol_search", "list_files", "read_repo_instructions", "read_workitem", "read_file"],
+        maxToolCalls: 4,
         requiredOutputSchema: {
           required: ["target_files", "expected_edits", "test_strategy", "risk_level"],
           properties: {
@@ -1213,6 +1223,16 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
             },
             risk_level: { type: "string", enum: ["low", "medium", "high"] },
             external_side_effects_required: { type: "boolean" },
+            // M72B soft-cap: list the SINGLE config file you read during PLAN
+            // (e.g. `build.gradle.kts` to discover a multi-module layout).
+            // Validator refuses more than 1 entry; agents that need broader
+            // reads must move to EXPLORE.
+            config_inspected_files: {
+              type: "array",
+              maxItems: 1,
+              items: { type: "string" },
+              description: "Optional. Up to 1 config file the planner read to disambiguate a multi-module layout. Use sparingly.",
+            },
           },
         },
       },

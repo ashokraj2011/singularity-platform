@@ -79,6 +79,46 @@ def test_plan_receipt_empty_commands_fails():
         )
 
 
+def test_plan_receipt_accepts_one_config_file():
+    """M72B — multi-module repos can read ONE config to disambiguate layout."""
+    payload = {
+        "target_files": ["RuleEngine/src/.../Operator.java"],
+        "test_strategy": {"commands": ["mvn -pl RuleEngine test"]},
+        "risk_level": "low",
+        "config_inspected_files": ["RuleEngine/pom.xml"],
+    }
+    parsed = validate_phase_output(Phase.PLAN, payload)
+    assert parsed["config_inspected_files"] == ["RuleEngine/pom.xml"]
+
+
+def test_plan_receipt_rejects_two_config_files():
+    """M72B — the soft cap is 1. Two entries means the agent should have
+    moved to EXPLORE; the validator catches it before it becomes a habit."""
+    payload = {
+        "target_files": ["a.py"],
+        "test_strategy": {"commands": ["pytest"]},
+        "risk_level": "low",
+        "config_inspected_files": ["pom.xml", "build.gradle.kts"],
+    }
+    with pytest.raises(PhaseOutputInvalid) as exc:
+        validate_phase_output(Phase.PLAN, payload)
+    # The field-level error should mention the cap so the LLM knows what to fix.
+    fields = {d["field"] for d in exc.value.details}
+    assert any("config_inspected_files" in f for f in fields)
+
+
+def test_plan_receipt_config_files_default_empty():
+    """Backward-compat: PLAN receipts that don't mention config_inspected_files
+    still pass — the field is optional with default []."""
+    payload = {
+        "target_files": ["a.py"],
+        "test_strategy": {"commands": ["pytest"]},
+        "risk_level": "low",
+    }
+    parsed = validate_phase_output(Phase.PLAN, payload)
+    assert parsed["config_inspected_files"] == []
+
+
 # ── VERIFY ─────────────────────────────────────────────────────────────────
 
 

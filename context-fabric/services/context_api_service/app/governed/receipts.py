@@ -61,7 +61,14 @@ class TestStrategy(BaseModel):
 
 
 class PlanReceipt(_ReceiptBase):
-    """Spec §7.1 plan output."""
+    """Spec §7.1 plan output.
+
+    M72 Slice B — gains optional `config_inspected_files` (max 1 entry).
+    Used by multi-module-repo plans that legitimately need to peek at one
+    config file (settings.gradle.kts, pom.xml, pyproject.toml) to
+    disambiguate the layout before producing target_files. The validator
+    enforces the soft cap; broader reads belong in EXPLORE.
+    """
 
     kind: Literal[ReceiptKind.PLAN] = ReceiptKind.PLAN
     target_files: list[str] = Field(..., description="Files the agent expects to touch.")
@@ -72,6 +79,10 @@ class PlanReceipt(_ReceiptBase):
     external_side_effects_required: bool = False
     assumptions: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
+    # M72B — optional, capped at max_length=1. Field(default_factory=list)
+    # rather than Optional[...] keeps the validator-side check uniform with
+    # the StagePolicy.requiredOutputSchema (which uses maxItems: 1).
+    config_inspected_files: list[str] = Field(default_factory=list, max_length=1)
 
 
 # ─── CONTEXT (EXPLORE phase) ─────────────────────────────────────────────────
