@@ -32,6 +32,17 @@ services:
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       MCP_SERVER_URL: ${MCP_SERVER_URL:-http://host.docker.internal:7100}
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      # M74 Phase 2A — llm_judge evaluator posts to llm-gateway's
+      # /v1/chat/completions endpoint. Points at the platform's gateway
+      # which lives in the main compose; this container reaches it via
+      # host.docker.internal:8001 since audit-gov is in its own compose.
+      LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://host.docker.internal:8001}
+      # Optional override: model alias used for judge calls. When unset,
+      # the gateway picks its configured default. Recommend a cheaper
+      # tier (e.g. haiku-equivalent) since judge calls are 1 per eval
+      # and can spike under load.
+      JUDGE_MODEL_ALIAS: ${JUDGE_MODEL_ALIAS:-}
+      JUDGE_TIMEOUT_MS: ${JUDGE_TIMEOUT_MS:-30000}
     depends_on:
       audit-postgres:
         condition: service_healthy

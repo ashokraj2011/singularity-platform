@@ -12,6 +12,7 @@
  *   - llm_judge:  LLM-powered pass/fail scoring (Phase 2)
  */
 import { ensureEngineEvalTables, query, queryOne } from "../db";
+import { runJudge, type JudgeInput, type JudgeOutcome } from "./llm-judge";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -221,7 +222,7 @@ function configuredNeedles(config: Record<string, unknown>, criteria?: Record<st
   return [];
 }
 
-function evaluateTrace(ev: EvaluatorRow, facts: TraceFacts): EvalResult {
+async function evaluateTrace(ev: EvaluatorRow, facts: TraceFacts): Promise<EvalResult> {
   const evId = String(ev.id);
   const evType = String(ev.evaluator_type);
   const config = (ev.evaluator_config ?? {}) as Record<string, unknown>;
@@ -309,12 +310,26 @@ function evaluateTrace(ev: EvaluatorRow, facts: TraceFacts): EvalResult {
       }
       break;
     }
-    case "llm_judge":
-      passed = false;
-      score = 0;
-      reason = "llm_judge is disabled in the MVP evaluator runner";
-      evidence = { disabled: true };
+    case "llm_judge": {
+      // M74 Phase 2A — judge against a trace. We pull the "expected" from
+      // evaluator_config.expected_output (the operator's curated target);
+      // the "actual" is a textification of the trace's events + LLM calls.
+      // No expected_output? Falls through to a rubric-only review of the
+      // actual content, which is weaker but still better than the old
+      // "disabled" stub.
+      const judgeOutcome = await runJudgeFromConfig(config, criteria, {
+        expected: String(config.expected_output ?? ""),
+        actual: textFromValue({
+          events: facts.events.map((evt) => evt.payload),
+          llm_calls: facts.llmCalls,
+        }),
+      });
+      passed = judgeOutcome.passed;
+      score = judgeOutcome.score;
+      reason = judgeOutcome.reason;
+      evidence = judgeOutcome.evidence;
       break;
+    }
     default:
       passed = false;
       score = 0;
@@ -325,7 +340,7 @@ function evaluateTrace(ev: EvaluatorRow, facts: TraceFacts): EvalResult {
   return { evaluator_id: evId, trace_id: facts.traceId, passed, reason, score, evidence };
 }
 
-function evaluateDatasetExample(ev: EvaluatorRow, example: DatasetExample): EvalResult {
+async function evaluateDatasetExample(ev: EvaluatorRow, example: DatasetExample): Promise<EvalResult> {
   const evId = String(ev.id);
   const evType = String(ev.evaluator_type);
   const config = (ev.evaluator_config ?? {}) as Record<string, unknown>;
@@ -380,12 +395,23 @@ function evaluateDatasetExample(ev: EvaluatorRow, example: DatasetExample): Eval
       evidence = { evaluator_type: evType };
       break;
     }
-    case "llm_judge":
-      passed = false;
-      score = 0;
-      reason = "llm_judge is disabled in the MVP evaluator runner";
-      evidence = { disabled: true };
+    case "llm_judge": {
+      // M74 Phase 2A — judge against a dataset example. Both expected and
+      // actual come from the example row. The operator-curation gate
+      // (Phase 2C) will eventually refuse to run the judge on un-reviewed
+      // expected_output, but until then the judge still adds signal by
+      // catching cases where the actual diverges from the (possibly
+      // imperfect) reference in semantically meaningful ways.
+      const judgeOutcome = await runJudgeFromConfig(config, criteria, {
+        expected: textFromValue(example.expected_output),
+        actual: textFromValue(example.actual_output),
+      });
+      passed = judgeOutcome.passed;
+      score = judgeOutcome.score;
+      reason = judgeOutcome.reason;
+      evidence = judgeOutcome.evidence;
       break;
+    }
     default:
       passed = false;
       score = 0;
@@ -402,6 +428,55 @@ function evaluateDatasetExample(ev: EvaluatorRow, example: DatasetExample): Eval
     score,
     evidence,
   };
+}
+
+/**
+ * M74 Phase 2A — shared judge-config extractor. Both trace and dataset
+ * paths build the same JudgeInput from the evaluator's config + criteria;
+ * factoring it out keeps the two call sites honest about which knobs
+ * exist.
+ *
+ * Knobs (all optional):
+ *   stage_type        — for rubric catalog lookup (developer/qa/...)
+ *   rubric_text       — override the catalog rubric
+ *   judge_threshold   — 1-5; pass when score >= threshold (default 3)
+ *   judge_model_alias — gateway model alias; "" = gateway default
+ *   judge_timeout_ms  — hard timeout on the gateway call
+ *   fail_mode         — "open" | "closed" (default "closed")
+ */
+async function runJudgeFromConfig(
+  config: Record<string, unknown>,
+  criteria: Record<string, unknown>,
+  io: { expected: string; actual: string },
+): Promise<JudgeOutcome> {
+  const stageType = String(
+    config.stage_type ?? criteria.stage_type ?? "",
+  ).trim() || undefined;
+  const rubricText = String(
+    config.rubric_text ?? criteria.rubric_text ?? "",
+  ).trim() || undefined;
+  const thresholdRaw = config.judge_threshold ?? criteria.judge_threshold;
+  const threshold = typeof thresholdRaw === "number" && thresholdRaw > 0
+    ? thresholdRaw
+    : undefined;
+  const modelAlias = String(config.judge_model_alias ?? "").trim() || undefined;
+  const timeoutRaw = config.judge_timeout_ms;
+  const timeoutMs = typeof timeoutRaw === "number" && timeoutRaw > 0
+    ? timeoutRaw
+    : undefined;
+  const failMode = config.fail_mode === "open" ? "open" as const : "closed" as const;
+
+  const input: JudgeInput = {
+    stageType,
+    rubricText,
+    expected: io.expected,
+    actual: io.actual,
+    threshold,
+    modelAlias,
+    timeoutMs,
+    failMode,
+  };
+  return runJudge(input);
 }
 
 async function recordEvaluatorStats(results: EvalResult[]): Promise<void> {
@@ -437,7 +512,7 @@ export async function runEvaluatorsForTrace(
   const results: EvalResult[] = [];
 
   for (const ev of evaluators) {
-    results.push(evaluateTrace(ev, facts));
+    results.push(await evaluateTrace(ev, facts));
   }
 
   await recordEvaluatorStats(results);
@@ -524,7 +599,12 @@ export async function runTraceEvaluatorsPersisted(args: {
     metadata: args.metadata,
   });
   const facts = await loadTraceFacts(args.traceId);
-  const results = evaluators.map((ev) => evaluateTrace(ev, facts));
+  // M74 Phase 2A — evaluateTrace is now async (llm_judge can run); collect
+  // results sequentially to keep judge load on the gateway predictable.
+  const results: EvalResult[] = [];
+  for (const ev of evaluators) {
+    results.push(await evaluateTrace(ev, facts));
+  }
   await recordEvaluatorStats(results);
   await persistEvalRunResults(runId, results);
   return getEvalRun(runId);
@@ -554,7 +634,16 @@ export async function runDatasetEvaluatorsPersisted(args: {
     totalEvaluators: evaluators.length,
     metadata: args.metadata,
   });
-  const results = examples.flatMap((example) => evaluators.map((ev) => evaluateDatasetExample(ev, example)));
+  // M74 Phase 2A — evaluateDatasetExample is now async; iterate sequentially
+  // to keep the gateway load predictable. Parallel-by-example with
+  // limited concurrency is the natural next optimisation if this becomes
+  // hot enough to matter.
+  const results: EvalResult[] = [];
+  for (const example of examples) {
+    for (const ev of evaluators) {
+      results.push(await evaluateDatasetExample(ev, example));
+    }
+  }
   await recordEvaluatorStats(results);
   await persistEvalRunResults(runId, results);
   return getEvalRun(runId);
