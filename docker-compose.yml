@@ -928,6 +928,13 @@ services:
       # Legacy direct LLM calls now route through MCP. No gateway URL or
       # provider keys in this service.
       LLM_GATEWAY_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-300}
+      # M73-followup — Blueprint Workbench snapshots a GitHub repo before
+      # launching a session. Without GITHUB_TOKEN every container shares
+      # the 60-req/hr unauth bucket, so the second user trips a 403 or
+      # gets clipped by a transient GitHub 5xx. Set GITHUB_TOKEN=<pat>
+      # in .env (a fine-grained public-read token is enough — the
+      # snapshot path only does GETs).
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     volumes:
       # Bind mounts for hot-reload via ts-node-dev. Edits to src/ or the
       # workspace packages take effect immediately without a rebuild.

@@ -6574,12 +6574,59 @@ async function snapshotLocalDir(root: string, includeGlobs: string[], excludeGlo
   return summarizeSnapshot({ source: 'localdir', root: absoluteRoot }, manifest, totalBytes)
 }
 
+// M73-followup — GitHub fetch helper used by the snapshot path.
+//
+// Three things this gives us that bare fetch() didn't:
+//   1. Authorization — sends `Bearer ${GITHUB_TOKEN}` when the env is
+//      set, lifting the rate limit from 60/hr/IP to 5000/hr/token.
+//      Without this the snapshot service shares one 60/hr bucket across
+//      every Blueprint Workbench user hitting it.
+//   2. Single retry on 5xx — GitHub's tree/raw endpoints occasionally
+//      return 500/502/503 for entirely transient reasons. Retrying once
+//      with 750ms backoff eliminates ~all of them without inflating
+//      latency on the happy path.
+//   3. Diagnostic error message — includes the X-RateLimit-Remaining
+//      and X-GitHub-Request-Id headers so operators don't have to guess
+//      whether they hit the cap or GitHub had a hiccup.
+function githubAuthHeader(): Record<string, string> {
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
+  return token ? { authorization: `Bearer ${token}` } : {}
+}
+
+async function githubFetch(url: string, extraAccept?: string): Promise<Response> {
+  const headers: Record<string, string> = {
+    accept: extraAccept ?? 'application/vnd.github+json',
+    ...githubAuthHeader(),
+  }
+  let last: Response | null = null
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const resp = await fetch(url, { headers })
+    if (resp.ok) return resp
+    last = resp
+    // Only retry on 5xx — 4xx (404 missing repo, 401 bad token, 403 rate-limit)
+    // won't change on a second try.
+    if (resp.status < 500) return resp
+    if (attempt === 0) await new Promise(r => setTimeout(r, 750))
+  }
+  return last!
+}
+
+function githubErrorDetail(resp: Response): string {
+  const rl = resp.headers.get('x-ratelimit-remaining')
+  const reqId = resp.headers.get('x-github-request-id')
+  const auth = (process.env.GITHUB_TOKEN || process.env.GH_TOKEN) ? 'authenticated' : 'unauthenticated'
+  const bits = [`status=${resp.status}`, `auth=${auth}`]
+  if (rl !== null) bits.push(`rate_remaining=${rl}`)
+  if (reqId) bits.push(`req_id=${reqId}`)
+  return bits.join(' ')
+}
+
 async function snapshotGithub(sourceUri: string, sourceRef: string | undefined, includeGlobs: string[], excludeGlobs: string[]): Promise<SnapshotResult> {
   const parsed = parseGithubUrl(sourceUri)
   const branch = sourceRef || parsed.branch || await githubDefaultBranch(parsed.owner, parsed.repo)
   const treeUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`
-  const treeResp = await fetch(treeUrl, { headers: { accept: 'application/vnd.github+json' } })
-  if (!treeResp.ok) throw new ValidationError(`GitHub tree scan failed (${treeResp.status})`)
+  const treeResp = await githubFetch(treeUrl)
+  if (!treeResp.ok) throw new ValidationError(`GitHub tree scan failed (${githubErrorDetail(treeResp)})`)
   const treeJson = await treeResp.json() as { tree?: Array<{ path: string; type: string; size?: number; sha?: string }> }
   const prefix = parsed.path ? parsed.path.replace(/^\/+|\/+$/g, '') : ''
   const manifest: ManifestEntry[] = []
@@ -6597,8 +6644,11 @@ async function snapshotGithub(sourceUri: string, sourceRef: string | undefined, 
     const file: ManifestEntry = { path: rel, size, sha: item.sha, language: languageFor(rel) }
     totalBytes += size
     if ((excerptCount < MAX_EXCERPT_FILES || isRepoInstructionPath(rel)) && isTextPath(rel) && size <= MAX_EXCERPT_BYTES) {
+      // raw.githubusercontent.com accepts the same Bearer token as the
+      // API host; using githubFetch keeps the retry + auth treatment
+      // consistent with the tree call above.
       const raw = `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/${encodeURIComponent(branch)}/${itemPath.split('/').map(encodeURIComponent).join('/')}`
-      const rawResp = await fetch(raw)
+      const rawResp = await githubFetch(raw, '*/*')
       if (rawResp.ok) {
         file.excerpt = (await rawResp.text()).slice(0, MAX_EXCERPT_BYTES)
         if (!isRepoInstructionPath(rel)) excerptCount += 1
@@ -6651,8 +6701,8 @@ function parseGithubUrl(sourceUri: string): { owner: string; repo: string; branc
 }
 
 async function githubDefaultBranch(owner: string, repo: string): Promise<string> {
-  const res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers: { accept: 'application/vnd.github+json' } })
-  if (!res.ok) throw new ValidationError(`GitHub repository lookup failed (${res.status})`)
+  const res = await githubFetch(`https://api.github.com/repos/${owner}/${repo}`)
+  if (!res.ok) throw new ValidationError(`GitHub repository lookup failed (${githubErrorDetail(res)})`)
   const body = await res.json() as { default_branch?: string }
   return body.default_branch ?? 'main'
 }
