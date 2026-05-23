@@ -1221,7 +1221,20 @@ services:
       # controlled by `./singularity.sh config git`; /dev/null keeps compose
       # valid when push is disabled or token mode is used.
       - ${MCP_GIT_SSH_KEY_HOST_PATH:-/dev/null}:/run/secrets/singularity_git_ssh_key:ro
-      - ${SSH_AUTH_SOCK:-/dev/null}:/ssh-agent:ro
+      # M73-followup — Don't auto-inherit SSH_AUTH_SOCK from the operator's
+      # shell. On macOS the launchd-managed socket path
+      # (/var/run/com.apple.launchd.*/Listeners) cannot be bind-mounted into
+      # Docker Desktop containers — the daemon refuses with "operation not
+      # supported" and the container never leaves "Created" state. That
+      # outage cascades: no mcp-server-demo means no DNS entry for it, and
+      # every workgraph-api call to /api/llm/* returns 500 with
+      # "getaddrinfo ENOTFOUND mcp-server-demo".
+      #
+      # Use an opt-in variable instead: set
+      # SINGULARITY_SSH_AUTH_SOCK_HOST=$SSH_AUTH_SOCK in .env when you
+      # actually need ssh-agent forwarding inside the container. Default
+      # (/dev/null) is safe everywhere — git push via PAT still works.
+      - ${SINGULARITY_SSH_AUTH_SOCK_HOST:-/dev/null}:/ssh-agent:ro
     # M35.3 — resource limits (MCP demo: 2G memory / 1 CPU)
     deploy:
       resources:
