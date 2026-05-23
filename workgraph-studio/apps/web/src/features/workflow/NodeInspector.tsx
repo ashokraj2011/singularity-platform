@@ -135,6 +135,10 @@ type WorkbenchStage = {
   expectedArtifacts?: WorkbenchExpectedArtifact[]
   allowedSendBackTo: string[]
   questions?: WorkbenchQuestion[]
+  contextPolicy: 'STORY_ONLY' | 'REPO_READ_ONLY' | 'CODE_EDIT' | 'VERIFY_ONLY' | 'EVIDENCE_REVIEW'
+  repoAccess: boolean
+  toolPolicy: 'NONE' | 'READ_ONLY' | 'MUTATION' | 'VERIFICATION'
+  promptProfileKey?: string
 }
 
 type WorkbenchConfig = {
@@ -219,6 +223,34 @@ export type NodeData = {
   config?: NodeConfig
   validationSeverity?: 'error' | 'warning'
   validationMessage?: string
+}
+
+function normalizeStageContextPolicyInput(
+  value: unknown,
+  stage: { key?: string; label?: string; agentRole?: string; terminal?: boolean },
+): WorkbenchStage['contextPolicy'] {
+  const normalized = String(value ?? '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+  if (normalized === 'STORY_ONLY' || normalized === 'REPO_READ_ONLY' || normalized === 'CODE_EDIT' || normalized === 'VERIFY_ONLY' || normalized === 'EVIDENCE_REVIEW') {
+    return normalized
+  }
+  const signature = `${stage.key ?? ''} ${stage.label ?? ''} ${stage.agentRole ?? ''}`.toLowerCase()
+  if (signature.includes('intake') || signature.includes('story') || signature.includes('product_owner')) return 'STORY_ONLY'
+  if (signature.includes('develop') || signature.includes('developer') || signature.includes('engineer') || signature.includes('code')) return 'CODE_EDIT'
+  if (signature.includes('verify') || signature.includes('qa') || signature.includes('quality') || signature.includes('test')) return 'VERIFY_ONLY'
+  if (stage.terminal || signature.includes('review') || signature.includes('evidence')) return 'EVIDENCE_REVIEW'
+  return 'REPO_READ_ONLY'
+}
+
+function normalizeStageToolPolicyInput(
+  value: unknown,
+  contextPolicy: WorkbenchStage['contextPolicy'],
+): WorkbenchStage['toolPolicy'] {
+  const normalized = String(value ?? '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+  if (normalized === 'NONE' || normalized === 'READ_ONLY' || normalized === 'MUTATION' || normalized === 'VERIFICATION') return normalized
+  if (contextPolicy === 'STORY_ONLY') return 'NONE'
+  if (contextPolicy === 'CODE_EDIT') return 'MUTATION'
+  if (contextPolicy === 'VERIFY_ONLY') return 'VERIFICATION'
+  return 'READ_ONLY'
 }
 
 // ─── Workflow parameters ──────────────────────────────────────────────────────
@@ -593,37 +625,46 @@ function defaultWorkbenchConfig(): WorkbenchConfig {
     },
     loopDefinition: {
       version: 1,
-      name: 'Blueprint implementation loop',
+      name: 'Workflow-owned workbench loop',
       maxLoopsPerStage: 3,
       maxTotalSendBacks: 8,
       stages: [
+        {
+          key: 'INTAKE',
+          label: 'Intake',
+          agentRole: 'PRODUCT_OWNER',
+          agentTemplateId: '',
+          next: 'PLAN',
+          required: true,
+          approvalRequired: true,
+          contextPolicy: 'STORY_ONLY',
+          repoAccess: false,
+          toolPolicy: 'NONE',
+          promptProfileKey: 'loop.stage.intake',
+          allowedSendBackTo: [],
+          expectedArtifacts: [
+            { kind: 'story_brief', title: 'Story brief', required: true, format: 'MARKDOWN' },
+            { kind: 'acceptance_contract', title: 'Acceptance contract', required: true, format: 'MARKDOWN' },
+            { kind: 'clarification_questions', title: 'Clarification questions', required: false, format: 'MARKDOWN' },
+          ],
+          questions: [],
+        },
         {
           key: 'PLAN',
           label: 'Plan',
           agentRole: 'ARCHITECT',
           agentTemplateId: '',
-          next: 'DESIGN',
-          required: true,
-          approvalRequired: true,
-          allowedSendBackTo: [],
-          expectedArtifacts: [
-            { kind: 'mental_model', title: 'Mental model', required: true, format: 'MARKDOWN' },
-            { kind: 'gaps', title: 'Gaps and risks', required: true, format: 'MARKDOWN' },
-          ],
-          questions: [],
-        },
-        {
-          key: 'DESIGN',
-          label: 'Design',
-          agentRole: 'ARCHITECT',
-          agentTemplateId: '',
           next: 'DEVELOP',
           required: true,
           approvalRequired: true,
-          allowedSendBackTo: ['PLAN'],
+          contextPolicy: 'REPO_READ_ONLY',
+          repoAccess: true,
+          toolPolicy: 'READ_ONLY',
+          allowedSendBackTo: ['INTAKE'],
           expectedArtifacts: [
-            { kind: 'solution_architecture', title: 'Solution architecture', required: true, format: 'MARKDOWN' },
-            { kind: 'approved_spec_draft', title: 'Approved spec draft', required: true, format: 'MARKDOWN' },
+            { kind: 'mental_model', title: 'Mental model', required: true, format: 'MARKDOWN' },
+            { kind: 'implementation_plan', title: 'Implementation plan', required: true, format: 'MARKDOWN' },
+            { kind: 'gaps', title: 'Gaps and risks', required: true, format: 'MARKDOWN' },
           ],
           questions: [],
         },
@@ -632,10 +673,13 @@ function defaultWorkbenchConfig(): WorkbenchConfig {
           label: 'Develop',
           agentRole: 'DEVELOPER',
           agentTemplateId: '',
-          next: 'QA_REVIEW',
+          next: 'VERIFY',
           required: true,
           approvalRequired: true,
-          allowedSendBackTo: ['PLAN', 'DESIGN'],
+          contextPolicy: 'CODE_EDIT',
+          repoAccess: true,
+          toolPolicy: 'MUTATION',
+          allowedSendBackTo: ['INTAKE', 'PLAN'],
           expectedArtifacts: [
             { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
             { kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence', required: true, format: 'MARKDOWN' },
@@ -643,33 +687,39 @@ function defaultWorkbenchConfig(): WorkbenchConfig {
           questions: [],
         },
         {
-          key: 'QA_REVIEW',
-          label: 'QA Review',
+          key: 'VERIFY',
+          label: 'Verify',
           agentRole: 'QA',
           agentTemplateId: '',
-          next: 'TEST_CERTIFICATION',
+          next: 'REVIEW',
           required: true,
           approvalRequired: true,
-          allowedSendBackTo: ['DESIGN', 'DEVELOP'],
+          contextPolicy: 'VERIFY_ONLY',
+          repoAccess: true,
+          toolPolicy: 'VERIFICATION',
+          allowedSendBackTo: ['PLAN', 'DEVELOP'],
           expectedArtifacts: [
-            { kind: 'qa_task_pack', title: 'QA review pack', required: true, format: 'MARKDOWN' },
+            { kind: 'verification_receipt', title: 'Verification receipt', required: true, format: 'MARKDOWN' },
+            { kind: 'traceability_matrix', title: 'Traceability matrix', required: true, format: 'MARKDOWN' },
           ],
           questions: [],
         },
         {
-          key: 'TEST_CERTIFICATION',
-          label: 'Test Certification',
+          key: 'REVIEW',
+          label: 'Review',
           agentRole: 'QA',
           agentTemplateId: '',
           next: null,
           terminal: true,
           required: true,
           approvalRequired: true,
-          allowedSendBackTo: ['DESIGN', 'DEVELOP', 'QA_REVIEW'],
+          contextPolicy: 'EVIDENCE_REVIEW',
+          repoAccess: true,
+          toolPolicy: 'READ_ONLY',
+          allowedSendBackTo: ['PLAN', 'DEVELOP', 'VERIFY'],
           expectedArtifacts: [
-            { kind: 'verification_rules', title: 'Verification rules', required: true, format: 'MARKDOWN' },
-            { kind: 'traceability_matrix', title: 'Traceability matrix', required: true, format: 'MARKDOWN' },
-            { kind: 'certification_receipt', title: 'Certification receipt', required: true, format: 'MARKDOWN' },
+            { kind: 'review_summary', title: 'Review summary', required: true, format: 'MARKDOWN' },
+            { kind: 'final_handoff_notes', title: 'Final handoff notes', required: true, format: 'MARKDOWN' },
           ],
           questions: [],
         },
@@ -697,43 +747,54 @@ function normalizeWorkbenchConfig(raw: unknown): WorkbenchConfig {
   const rawStages = Array.isArray(loop.stages) ? loop.stages : fallback.loopDefinition.stages
   const stages = rawStages
     .filter((stage): stage is Record<string, unknown> => Boolean(stage) && typeof stage === 'object' && !Array.isArray(stage))
-    .map((stage, index): WorkbenchStage => ({
-      key: typeof stage.key === 'string' && stage.key.trim() ? stage.key.trim() : `STAGE_${index + 1}`,
-      label: typeof stage.label === 'string' ? stage.label : `Stage ${index + 1}`,
-      agentRole: typeof stage.agentRole === 'string' && stage.agentRole.trim() ? normalizeAgentRoleInput(stage.agentRole) : 'ARCHITECT',
-      agentTemplateId: typeof stage.agentTemplateId === 'string' ? stage.agentTemplateId : '',
-      next: typeof stage.next === 'string' ? stage.next : stage.next === null ? null : undefined,
-      terminal: stage.terminal === true,
-      required: stage.required !== false,
-      approvalRequired: stage.approvalRequired !== false,
-      expectedArtifacts: Array.isArray(stage.expectedArtifacts)
-        ? stage.expectedArtifacts
-            .filter((artifact): artifact is Record<string, unknown> => Boolean(artifact) && typeof artifact === 'object' && !Array.isArray(artifact))
-            .map((artifact, artifactIndex): WorkbenchExpectedArtifact => ({
-              kind: typeof artifact.kind === 'string' && artifact.kind.trim() ? artifact.kind.trim() : `artifact_${artifactIndex + 1}`,
-              title: typeof artifact.title === 'string' ? artifact.title : '',
-              description: typeof artifact.description === 'string' ? artifact.description : '',
-              required: artifact.required !== false,
-              format: artifact.format === 'TEXT' || artifact.format === 'JSON' || artifact.format === 'CODE' ? artifact.format : 'MARKDOWN',
+    .map((stage, index): WorkbenchStage => {
+      const key = typeof stage.key === 'string' && stage.key.trim() ? stage.key.trim() : `STAGE_${index + 1}`
+      const label = typeof stage.label === 'string' ? stage.label : `Stage ${index + 1}`
+      const agentRole = typeof stage.agentRole === 'string' && stage.agentRole.trim() ? normalizeAgentRoleInput(stage.agentRole) : 'ARCHITECT'
+      const contextPolicy = normalizeStageContextPolicyInput(stage.contextPolicy, { key, label, agentRole, terminal: stage.terminal === true })
+      const toolPolicy = normalizeStageToolPolicyInput(stage.toolPolicy, contextPolicy)
+      return {
+        key,
+        label,
+        agentRole,
+        agentTemplateId: typeof stage.agentTemplateId === 'string' ? stage.agentTemplateId : '',
+        next: typeof stage.next === 'string' ? stage.next : stage.next === null ? null : undefined,
+        terminal: stage.terminal === true,
+        required: stage.required !== false,
+        approvalRequired: stage.approvalRequired !== false,
+        contextPolicy,
+        repoAccess: typeof stage.repoAccess === 'boolean' ? stage.repoAccess : contextPolicy !== 'STORY_ONLY' && toolPolicy !== 'NONE',
+        toolPolicy,
+        promptProfileKey: typeof stage.promptProfileKey === 'string' ? stage.promptProfileKey : '',
+        expectedArtifacts: Array.isArray(stage.expectedArtifacts)
+          ? stage.expectedArtifacts
+              .filter((artifact): artifact is Record<string, unknown> => Boolean(artifact) && typeof artifact === 'object' && !Array.isArray(artifact))
+              .map((artifact, artifactIndex): WorkbenchExpectedArtifact => ({
+                kind: typeof artifact.kind === 'string' && artifact.kind.trim() ? artifact.kind.trim() : `artifact_${artifactIndex + 1}`,
+                title: typeof artifact.title === 'string' ? artifact.title : '',
+                description: typeof artifact.description === 'string' ? artifact.description : '',
+                required: artifact.required !== false,
+                format: artifact.format === 'TEXT' || artifact.format === 'JSON' || artifact.format === 'CODE' ? artifact.format : 'MARKDOWN',
+              }))
+          : [],
+        allowedSendBackTo: Array.isArray(stage.allowedSendBackTo) ? stage.allowedSendBackTo.filter((item): item is string => typeof item === 'string') : [],
+        questions: Array.isArray(stage.questions)
+          ? stage.questions.filter((q): q is Record<string, unknown> => Boolean(q) && typeof q === 'object' && !Array.isArray(q)).map((q, qIndex): WorkbenchQuestion => ({
+              id: typeof q.id === 'string' && q.id.trim() ? q.id.trim() : `Q-${index + 1}-${qIndex + 1}`,
+              question: typeof q.question === 'string' ? q.question : '',
+              required: q.required === true,
+              freeform: q.freeform !== false,
+              options: Array.isArray(q.options)
+                ? q.options.filter((option): option is Record<string, unknown> => Boolean(option) && typeof option === 'object' && !Array.isArray(option)).map(option => ({
+                    label: String(option.label ?? ''),
+                    impact: typeof option.impact === 'string' ? option.impact : undefined,
+                    recommended: option.recommended === true,
+                  })).filter(option => option.label.trim())
+                : [],
             }))
-        : [],
-      allowedSendBackTo: Array.isArray(stage.allowedSendBackTo) ? stage.allowedSendBackTo.filter((item): item is string => typeof item === 'string') : [],
-      questions: Array.isArray(stage.questions)
-        ? stage.questions.filter((q): q is Record<string, unknown> => Boolean(q) && typeof q === 'object' && !Array.isArray(q)).map((q, qIndex): WorkbenchQuestion => ({
-            id: typeof q.id === 'string' && q.id.trim() ? q.id.trim() : `Q-${index + 1}-${qIndex + 1}`,
-            question: typeof q.question === 'string' ? q.question : '',
-            required: q.required === true,
-            freeform: q.freeform !== false,
-            options: Array.isArray(q.options)
-              ? q.options.filter((option): option is Record<string, unknown> => Boolean(option) && typeof option === 'object' && !Array.isArray(option)).map(option => ({
-                  label: String(option.label ?? ''),
-                  impact: typeof option.impact === 'string' ? option.impact : undefined,
-                  recommended: option.recommended === true,
-                })).filter(option => option.label.trim())
-              : [],
-          }))
-        : [],
-    }))
+          : [],
+      }
+    })
   return {
     profile: 'blueprint',
     gateMode: r.gateMode === 'auto' ? 'auto' : 'manual',
@@ -1234,6 +1295,10 @@ function WorkbenchTab({
           approvalRequired: true,
           terminal: true,
           next: null,
+          contextPolicy: 'REPO_READ_ONLY',
+          repoAccess: true,
+          toolPolicy: 'READ_ONLY',
+          promptProfileKey: '',
           allowedSendBackTo: stageKeys,
           expectedArtifacts: [
             { kind: `stage_${stages.length + 1}_artifact`, title: `Stage ${stages.length + 1} artifact`, required: true, format: 'MARKDOWN' },
@@ -1444,6 +1509,54 @@ function WorkbenchTab({
                 <AgentPicker capabilityId={wb.capabilityId || null} value={stage.agentTemplateId ?? ''} onChange={agentTemplateId => updateStage(stageIndex, { agentTemplateId })} />
               </div>
 
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 120px', gap: 7, marginTop: 8, alignItems: 'end' }}>
+                <div>
+                  <FieldLabel>Context policy</FieldLabel>
+                  <NeoSelect
+                    value={stage.contextPolicy}
+                    onChange={value => {
+                      const contextPolicy = value as WorkbenchStage['contextPolicy']
+                      const toolPolicy = normalizeStageToolPolicyInput(undefined, contextPolicy)
+                      updateStage(stageIndex, {
+                        contextPolicy,
+                        toolPolicy,
+                        repoAccess: contextPolicy !== 'STORY_ONLY' && toolPolicy !== 'NONE',
+                        promptProfileKey: contextPolicy === 'STORY_ONLY' ? 'loop.stage.intake' : stage.promptProfileKey ?? '',
+                      })
+                    }}
+                    options={['STORY_ONLY', 'REPO_READ_ONLY', 'CODE_EDIT', 'VERIFY_ONLY', 'EVIDENCE_REVIEW']}
+                  />
+                </div>
+                <div>
+                  <FieldLabel>Tool policy</FieldLabel>
+                  <NeoSelect
+                    value={stage.toolPolicy}
+                    onChange={value => {
+                      const toolPolicy = value as WorkbenchStage['toolPolicy']
+                      updateStage(stageIndex, {
+                        toolPolicy,
+                        repoAccess: toolPolicy !== 'NONE' && stage.contextPolicy !== 'STORY_ONLY',
+                      })
+                    }}
+                    options={['NONE', 'READ_ONLY', 'MUTATION', 'VERIFICATION']}
+                  />
+                </div>
+                <label style={{ ...checkLabel(), paddingBottom: 9 }}>
+                  <input
+                    type="checkbox"
+                    checked={stage.repoAccess}
+                    disabled={stage.contextPolicy === 'STORY_ONLY' || stage.toolPolicy === 'NONE'}
+                    onChange={event => updateStage(stageIndex, { repoAccess: event.target.checked })}
+                  />
+                  Repo access
+                </label>
+              </div>
+
+              <div style={{ marginTop: 8 }}>
+                <FieldLabel>Prompt profile key</FieldLabel>
+                <NeoInput value={stage.promptProfileKey ?? ''} onChange={promptProfileKey => updateStage(stageIndex, { promptProfileKey })} placeholder="Optional, e.g. loop.stage.intake" />
+              </div>
+
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7, marginTop: 8 }}>
                 <div>
                   <FieldLabel>Next phase</FieldLabel>
@@ -1648,6 +1761,15 @@ function validateWorkbenchBuilder(config: WorkbenchConfig | undefined): string[]
     if (!stage.agentRole.trim()) errors.push(`${stage.key || 'Phase'} needs an agent role.`)
     if (!stage.agentTemplateId?.trim() && !fallbackAgentForStage(config, stage).trim()) {
       errors.push(`${stage.key || 'Phase'} needs a phase agent or matching default fallback.`)
+    }
+    if (stage.contextPolicy === 'STORY_ONLY' && (stage.repoAccess || stage.toolPolicy !== 'NONE')) {
+      errors.push(`${stage.key} story-only phases must disable repo access and use tool policy NONE.`)
+    }
+    if (stage.contextPolicy === 'CODE_EDIT' && stage.toolPolicy !== 'MUTATION') {
+      errors.push(`${stage.key} code-edit phases should use tool policy MUTATION.`)
+    }
+    if (stage.contextPolicy === 'VERIFY_ONLY' && stage.toolPolicy !== 'VERIFICATION') {
+      errors.push(`${stage.key} verify phases should use tool policy VERIFICATION.`)
     }
     if (!stage.terminal && stage.next && !keySet.has(stage.next)) errors.push(`${stage.key} has an invalid next phase.`)
     if (!stage.terminal && !stage.next) errors.push(`${stage.key} needs a next phase or must be terminal.`)

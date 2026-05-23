@@ -401,6 +401,28 @@ def _local_tool(name: str, description: str, input_schema: dict[str, Any],
     }
 
 
+def _stage_policy_value(req: ExecuteRequest, key: str) -> str:
+    value = req.vars.get(key)
+    if isinstance(value, str):
+        return value.strip().upper().replace("-", "_")
+    return ""
+
+
+def _stage_repo_access(req: ExecuteRequest) -> bool:
+    value = req.vars.get("stageRepoAccess")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return True
+
+
+def _stage_is_story_only(req: ExecuteRequest) -> bool:
+    context_policy = _stage_policy_value(req, "stageContextPolicy")
+    tool_policy = _stage_policy_value(req, "stageToolPolicy")
+    return context_policy == "STORY_ONLY" or tool_policy == "NONE" or not _stage_repo_access(req)
+
+
 def _classify_stage_role(req: ExecuteRequest) -> tuple[bool, bool]:
     """Return (is_dev_stage, is_qa_stage). Stages can be neither (e.g. PLAN /
     DESIGN — read-only research stages), but never both. Dev wins ties so that
@@ -409,6 +431,15 @@ def _classify_stage_role(req: ExecuteRequest) -> tuple[bool, bool]:
     M43 — previously these two were collapsed into is_code_stage which gave
     QA stages mutation tools they should never have had.
     """
+    context_policy = _stage_policy_value(req, "stageContextPolicy")
+    tool_policy = _stage_policy_value(req, "stageToolPolicy")
+    if context_policy == "STORY_ONLY" or tool_policy == "NONE":
+        return False, False
+    if context_policy == "CODE_EDIT" or tool_policy == "MUTATION":
+        return True, False
+    if context_policy == "VERIFY_ONLY" or tool_policy == "VERIFICATION":
+        return False, True
+
     signature = " ".join([
         str(req.vars.get("stageKey") or ""),
         str(req.vars.get("stageLabel") or ""),
@@ -430,6 +461,9 @@ def _mandatory_local_tools_for_request(req: ExecuteRequest) -> list[dict[str, An
     M43 — restructured into composable blocks (base / grounding / verify /
     review / mutation) so the QA branch can exclude exactly mutation without
     losing read-only AST tools or workflow-grounding tools."""
+    if _stage_is_story_only(req):
+        return []
+
     is_dev, is_qa = _classify_stage_role(req)
 
     # ── base: every stage gets these (PLAN, DESIGN, DEV, QA, etc.) ──
@@ -971,25 +1005,26 @@ async def execute(req: ExecuteRequest):
     # Context Fabric owns the run-level tool list. The same descriptors are
     # rendered into the prompt by Prompt Composer and sent to MCP for execution.
     tools_for_mcp: list[dict[str, Any]] = []
-    try:
-        discover = await _post(
-            f"{settings.tool_service_url.rstrip('/')}/api/v1/tools/discover",
-            {
-                "capability_id": req.run_context.capability_id,
-                "agent_uid": req.run_context.agent_template_id or "default-agent",
-                "query": req.task,
-                "risk_max": "high",
-                "limit": 8,
-            },
-            timeout=10.0,
-        )
-        for t in discover.get("tools", []):
-            normalized_tool, tool_warnings = _normalize_tool_for_mcp(t)
-            composer_warnings.extend(tool_warnings)
-            if normalized_tool:
-                tools_for_mcp.append(normalized_tool)
-    except Exception as exc:
-        composer_warnings.append(f"tool discovery unavailable: {exc!s}")
+    if not _stage_is_story_only(req):
+        try:
+            discover = await _post(
+                f"{settings.tool_service_url.rstrip('/')}/api/v1/tools/discover",
+                {
+                    "capability_id": req.run_context.capability_id,
+                    "agent_uid": req.run_context.agent_template_id or "default-agent",
+                    "query": req.task,
+                    "risk_max": "high",
+                    "limit": 8,
+                },
+                timeout=10.0,
+            )
+            for t in discover.get("tools", []):
+                normalized_tool, tool_warnings = _normalize_tool_for_mcp(t)
+                composer_warnings.extend(tool_warnings)
+                if normalized_tool:
+                    tools_for_mcp.append(normalized_tool)
+        except Exception as exc:
+            composer_warnings.append(f"tool discovery unavailable: {exc!s}")
 
     tools_for_mcp = _merge_mandatory_local_tools(tools_for_mcp, req)
 
@@ -1001,7 +1036,7 @@ async def execute(req: ExecuteRequest):
     # metadata is recorded in the audit event mcp-server emits.
     code_context_package: Optional[dict] = None
     is_dev_stage, _is_qa_stage = _classify_stage_role(req)
-    if is_dev_stage and req.task and req.task.strip():
+    if is_dev_stage and not _stage_is_story_only(req) and req.task and req.task.strip():
         try:
             mcp_record, mcp_warnings = await _resolve_mcp_record(
                 req.run_context.capability_id or "",
@@ -1032,7 +1067,7 @@ async def execute(req: ExecuteRequest):
     # etc. So we fetch unconditionally when agent_runtime_url is set
     # and we have a capability_id.
     world_model: Optional[dict] = None
-    if settings.agent_runtime_url and req.run_context.capability_id:
+    if settings.agent_runtime_url and req.run_context.capability_id and not _stage_is_story_only(req):
         try:
             world_model, wm_warning = await _fetch_capability_world_model(
                 settings.agent_runtime_url,
@@ -1191,7 +1226,7 @@ async def execute(req: ExecuteRequest):
                     "reason": message,
                     "context_plan_hash": context_plan_hash,
                     "required_context_status": required_context_status,
-                    "degraded_actions_allowed": ["read_file", "search_code", "index_workspace", "find_symbol", "get_symbol", "get_ast_slice", "get_dependencies"],
+                    "degraded_actions_allowed": [] if _stage_is_story_only(req) else ["read_file", "search_code", "index_workspace", "find_symbol", "get_symbol", "get_ast_slice", "get_dependencies"],
                 },
             )
         elif governance_mode == "human_approval_required":
@@ -1352,7 +1387,7 @@ async def execute(req: ExecuteRequest):
         "governanceMode": governance_mode,
         "contextPlanHash": context_plan_hash,
         "degradedActionsAllowed": (
-            ["read_file", "search_code", "index_workspace", "find_symbol", "get_symbol", "get_ast_slice", "get_dependencies"]
+            ([] if _stage_is_story_only(req) else ["read_file", "search_code", "index_workspace", "find_symbol", "get_symbol", "get_ast_slice", "get_dependencies"])
             if execution_posture == "degraded" else []
         ),
         "modelConfig": _strip_nones({
@@ -2294,6 +2329,8 @@ def _on_startup() -> None:
     es_db = os.environ.get("EVENTS_STORE_DB", "/data/call_log_events.db")
     events_store.DB_PATH = es_db
     events_store.init_db()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # M71 Slice C(a) — Governance oracle endpoint.
 #

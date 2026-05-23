@@ -47,6 +47,15 @@ type ModelRow = {
   warnings?: string[];
 };
 
+const consumerLabels: Record<string, string> = {
+  agentRuntimeUrl: "Agent Runtime URL",
+  promptComposerUrl: "Prompt Composer URL",
+  contextFabricUrl: "Context Fabric URL",
+  eventHorizonModelAlias: "Event Horizon Model Alias",
+  legacyEventHorizonProvider: "Legacy Event Horizon Provider",
+  legacyEventHorizonModel: "Legacy Event Horizon Model",
+};
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -298,10 +307,10 @@ export default function LlmSettingsPage() {
         <h2 className="text-lg font-semibold text-slate-900 mb-3">Consumers</h2>
         <div className="grid md:grid-cols-2 gap-3 text-sm">
           {Object.entries(settings?.consumers ?? {}).map(([key, value]) => (
-            <Field key={key} label={key} value={value ?? "-"} mono={key.toLowerCase().includes("url")} />
+            <Field key={key} label={consumerLabels[key] ?? key} value={value ?? "-"} mono={key.toLowerCase().includes("url")} />
           ))}
         </div>
-        {(settings?.consumers.eventHorizonProvider || settings?.consumers.eventHorizonModel) && (
+        {(settings?.consumers.legacyEventHorizonProvider || settings?.consumers.legacyEventHorizonModel) && (
           <p className="mt-4 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
             Event Horizon raw provider/model env vars are set. For the hardened single-gateway posture, keep these empty and route through Context Fabric / LLM Gateway aliases.
           </p>

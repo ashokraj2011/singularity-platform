@@ -20,14 +20,24 @@ from context_api_service.app.execute import (
 
 def make_req(*, agent_role: str = "", stage_key: str = "", stage_label: str = "",
              task: str = "", allow_autonomous_mutation: bool = False,
-             limits: dict | None = None) -> SimpleNamespace:
+             limits: dict | None = None,
+             stage_context_policy: str | None = None,
+             stage_tool_policy: str | None = None,
+             stage_repo_access: bool | None = None) -> SimpleNamespace:
     """Minimal stand-in for ExecuteRequest — only the fields the helper reads."""
+    vars = {
+        "agentRole": agent_role,
+        "stageKey": stage_key,
+        "stageLabel": stage_label,
+    }
+    if stage_context_policy is not None:
+        vars["stageContextPolicy"] = stage_context_policy
+    if stage_tool_policy is not None:
+        vars["stageToolPolicy"] = stage_tool_policy
+    if stage_repo_access is not None:
+        vars["stageRepoAccess"] = stage_repo_access
     return SimpleNamespace(
-        vars={
-            "agentRole": agent_role,
-            "stageKey": stage_key,
-            "stageLabel": stage_label,
-        },
+        vars=vars,
         task=task,
         allow_autonomous_mutation=allow_autonomous_mutation,
         limits=limits or {},
@@ -135,13 +145,45 @@ def test_non_code_stage_gets_research_only_subset():
     )
 
 
-def test_non_code_stage_classifier_covers_product_owner_and_architect():
-    """STORY_INTAKE (PRODUCT_OWNER) and DESIGN (ARCHITECT) both classify as
-    non-code. Both should get the tight research subset."""
-    for role in ("PRODUCT_OWNER", "ARCHITECT"):
+def test_non_code_stage_classifier_covers_architect():
+    """DESIGN (ARCHITECT) classifies as non-code and gets the tight
+    research subset unless workflow stage policy says STORY_ONLY."""
+    for role in ("ARCHITECT",):
         tools = _mandatory_local_tools_for_request(make_req(agent_role=role))
         n = names(tools)
         assert n == RESEARCH_ONLY_TOOL_NAMES, f"{role} should get research-only set"
+
+
+def test_story_only_stage_gets_no_tools():
+    tools = _mandatory_local_tools_for_request(make_req(
+        agent_role="PRODUCT_OWNER",
+        stage_key="intake",
+        stage_context_policy="STORY_ONLY",
+        stage_tool_policy="NONE",
+        stage_repo_access=False,
+    ))
+    assert names(tools) == set()
+
+
+def test_stage_policy_overrides_role_for_read_only_plan():
+    tools = _mandatory_local_tools_for_request(make_req(
+        agent_role="PRODUCT_OWNER",
+        stage_key="plan",
+        stage_context_policy="REPO_READ_ONLY",
+        stage_tool_policy="READ_ONLY",
+        stage_repo_access=True,
+    ))
+    assert names(tools) == RESEARCH_ONLY_TOOL_NAMES
+
+
+def test_stage_policy_overrides_role_for_code_edit():
+    is_dev, is_qa = _classify_stage_role(make_req(
+        agent_role="ARCHITECT",
+        stage_context_policy="CODE_EDIT",
+        stage_tool_policy="MUTATION",
+    ))
+    assert is_dev is True
+    assert is_qa is False
 
 
 def test_m43_tools_present_for_all_code_stages():

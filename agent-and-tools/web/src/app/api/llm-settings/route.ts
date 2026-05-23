@@ -52,6 +52,8 @@ function configuredPath(envKey: string, fallback: string): string {
 
 export async function GET() {
   const mcpUrl = trimTrailingSlash(process.env.MCP_SERVER_URL ?? "http://localhost:7100");
+  const rawEventHorizonProvider = process.env.EVENT_HORIZON_PROVIDER || process.env.NEXT_PUBLIC_EVENT_HORIZON_PROVIDER || null;
+  const rawEventHorizonModel = process.env.EVENT_HORIZON_MODEL || process.env.NEXT_PUBLIC_EVENT_HORIZON_MODEL || null;
   const [health, providers, models, workspaceStats] = await Promise.all([
     mcpGet("/health"),
     mcpGet("/llm/providers"),
@@ -72,8 +74,11 @@ export async function GET() {
       agentRuntimeUrl: process.env.AGENT_RUNTIME_URL ?? null,
       promptComposerUrl: process.env.PROMPT_COMPOSER_URL ?? null,
       contextFabricUrl: process.env.CONTEXT_FABRIC_URL ?? null,
-      eventHorizonProvider: process.env.EVENT_HORIZON_PROVIDER || process.env.NEXT_PUBLIC_EVENT_HORIZON_PROVIDER || null,
-      eventHorizonModel: process.env.EVENT_HORIZON_MODEL || process.env.NEXT_PUBLIC_EVENT_HORIZON_MODEL || null,
+      eventHorizonModelAlias: process.env.EVENT_HORIZON_MODEL_ALIAS || process.env.NEXT_PUBLIC_EVENT_HORIZON_MODEL_ALIAS || null,
+      ...(rawEventHorizonProvider || rawEventHorizonModel ? {
+        legacyEventHorizonProvider: rawEventHorizonProvider,
+        legacyEventHorizonModel: rawEventHorizonModel,
+      } : {}),
     },
     health,
     providers,

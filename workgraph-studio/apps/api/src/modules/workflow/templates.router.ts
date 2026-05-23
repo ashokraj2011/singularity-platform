@@ -70,6 +70,7 @@ const createTemplateSchema = z.object({
   metadata:     metadataSchema,
   variables:    z.array(variableDefSchema).optional(),
   budgetPolicy: z.record(z.unknown()).optional(),
+  // CAPABILITY_WORKBENCH_BRIDGE → 4-stage loop (Intake → Design → Develop → QA)
   starter:      z.enum(['EMPTY', 'CAPABILITY_WORKBENCH_BRIDGE']).optional(),
 })
 
@@ -392,6 +393,15 @@ function roleOfTemplate(t: AgentTemplate): string {
   return String(raw).toUpperCase().replace(/[^A-Z0-9]+/g, '_')
 }
 
+// Canonical Workbench loop — 4 stages: STORY_INTAKE → DESIGN → DEVELOP → QA.
+//
+// This was previously an 8-stage flow (Intake → Plan → Design → Develop →
+// Security Review → QA Review → Release Readiness → Test Certification). The
+// trimmed-down 4-stage version is now the only flow created by the starter,
+// because the extra stages (Plan/Security/Release/Cert) lack role-specific
+// prompts in prompt-composer and collapsed onto the generic loopDefaultTask,
+// which wasted ~4× the tokens and produced overlapping output that the next
+// stage rejected as duplicate.
 function buildWorkbenchConfig(
   capabilityId: string,
   bindings: StarterAgentBindings,
@@ -411,34 +421,20 @@ function buildWorkbenchConfig(
       version: 1,
       name: 'Capability implementation workbench loop',
       maxLoopsPerStage: 3,
-      maxTotalSendBacks: 8,
+      maxTotalSendBacks: 6,
       stages: [
         {
           key: 'STORY_INTAKE',
           label: 'Story Intake',
           agentRole: 'PRODUCT_OWNER',
           agentTemplateId: bindings.productOwnerAgentTemplateId || bindings.architectAgentTemplateId,
-          next: 'PLAN',
+          next: 'DESIGN',
           required: true,
           approvalRequired: true,
           allowedSendBackTo: [],
           expectedArtifacts: [
             { kind: 'story_brief', title: 'Story brief', required: true, format: 'MARKDOWN' },
             { kind: 'acceptance_contract', title: 'Acceptance contract', required: true, format: 'MARKDOWN' },
-          ],
-        },
-        {
-          key: 'PLAN',
-          label: 'Plan',
-          agentRole: 'ARCHITECT',
-          agentTemplateId: bindings.architectAgentTemplateId,
-          next: 'DESIGN',
-          required: true,
-          approvalRequired: true,
-          allowedSendBackTo: ['STORY_INTAKE'],
-          expectedArtifacts: [
-            { kind: 'mental_model', title: 'Mental model', required: true, format: 'MARKDOWN' },
-            { kind: 'gaps', title: 'Gaps and risks', required: true, format: 'MARKDOWN' },
           ],
         },
         {
@@ -449,7 +445,7 @@ function buildWorkbenchConfig(
           next: 'DEVELOP',
           required: true,
           approvalRequired: true,
-          allowedSendBackTo: ['STORY_INTAKE', 'PLAN'],
+          allowedSendBackTo: ['STORY_INTAKE'],
           expectedArtifacts: [
             { kind: 'solution_architecture', title: 'Solution architecture', required: true, format: 'MARKDOWN' },
             { kind: 'approved_spec_draft', title: 'Approved spec draft', required: true, format: 'MARKDOWN' },
@@ -460,69 +456,28 @@ function buildWorkbenchConfig(
           label: 'Develop',
           agentRole: 'DEVELOPER',
           agentTemplateId: bindings.developerAgentTemplateId,
-          next: 'SECURITY_REVIEW',
+          next: 'QA',
           required: true,
           approvalRequired: true,
-          allowedSendBackTo: ['STORY_INTAKE', 'PLAN', 'DESIGN'],
+          allowedSendBackTo: ['STORY_INTAKE', 'DESIGN'],
           expectedArtifacts: [
             { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
             { kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence', required: true, format: 'MARKDOWN' },
           ],
         },
         {
-          key: 'SECURITY_REVIEW',
-          label: 'Security Review',
-          agentRole: 'SECURITY',
-          agentTemplateId: bindings.securityAgentTemplateId || bindings.qaAgentTemplateId,
-          next: 'QA_REVIEW',
-          required: true,
-          approvalRequired: true,
-          allowedSendBackTo: ['PLAN', 'DESIGN', 'DEVELOP'],
-          expectedArtifacts: [
-            { kind: 'security_review', title: 'Security review', required: true, format: 'MARKDOWN' },
-            { kind: 'risk_acceptance_notes', title: 'Risk acceptance notes', required: false, format: 'MARKDOWN' },
-          ],
-        },
-        {
-          key: 'QA_REVIEW',
-          label: 'QA Review',
-          agentRole: 'QA',
-          agentTemplateId: bindings.qaAgentTemplateId,
-          next: 'RELEASE_READINESS',
-          required: true,
-          approvalRequired: true,
-          allowedSendBackTo: ['DESIGN', 'DEVELOP', 'SECURITY_REVIEW'],
-          expectedArtifacts: [
-            { kind: 'qa_task_pack', title: 'QA review pack', required: true, format: 'MARKDOWN' },
-          ],
-        },
-        {
-          key: 'RELEASE_READINESS',
-          label: 'Release Readiness',
-          agentRole: 'DEVOPS',
-          agentTemplateId: bindings.devopsAgentTemplateId || bindings.qaAgentTemplateId,
-          next: 'TEST_CERTIFICATION',
-          required: true,
-          approvalRequired: true,
-          allowedSendBackTo: ['DEVELOP', 'SECURITY_REVIEW', 'QA_REVIEW'],
-          expectedArtifacts: [
-            { kind: 'release_plan', title: 'Release plan', required: true, format: 'MARKDOWN' },
-            { kind: 'rollback_plan', title: 'Rollback plan', required: true, format: 'MARKDOWN' },
-          ],
-        },
-        {
-          key: 'TEST_CERTIFICATION',
-          label: 'Test Certification',
+          key: 'QA',
+          label: 'QA',
           agentRole: 'QA',
           agentTemplateId: bindings.qaAgentTemplateId,
           terminal: true,
           required: true,
           approvalRequired: true,
-          allowedSendBackTo: ['DESIGN', 'DEVELOP', 'SECURITY_REVIEW', 'QA_REVIEW', 'RELEASE_READINESS'],
+          allowedSendBackTo: ['DESIGN', 'DEVELOP'],
           expectedArtifacts: [
+            { kind: 'qa_task_pack', title: 'QA review pack', required: true, format: 'MARKDOWN' },
             { kind: 'verification_rules', title: 'Verification rules', required: true, format: 'MARKDOWN' },
             { kind: 'traceability_matrix', title: 'Traceability matrix', required: true, format: 'MARKDOWN' },
-            { kind: 'certification_receipt', title: 'Certification receipt', required: true, format: 'MARKDOWN' },
           ],
         },
       ],

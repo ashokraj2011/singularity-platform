@@ -258,10 +258,9 @@ export const finishWorkBranchTool: ToolHandler = {
         },
       },
     },
-    // M27.5 — pushing changes upstream is destructive vs the developer's
-    // remote so we mark this MCP-level call HIGH risk + approval-required
-    // when `push: true`. We keep the no-push path MEDIUM/no-approval to
-    // preserve the unchanged local-only behavior.
+    // M27.5 — local finish/commit stays no-approval. The agent loop adds a
+    // dynamic approval pause when this tool is called with push=true, so we
+    // avoid per-file approval while still gating upstream side effects.
     risk_level: "MEDIUM",
     requires_approval: false,
   },

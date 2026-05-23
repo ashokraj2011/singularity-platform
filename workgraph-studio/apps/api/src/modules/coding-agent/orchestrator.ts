@@ -3,6 +3,8 @@ import {
   contextFabricClient,
   type ExecuteRequest,
   type ExecuteResponse,
+  type GovernedStageRequest,
+  type GovernedStageResponse,
   type PendingApproval,
 } from '../../lib/context-fabric/client'
 
@@ -104,7 +106,13 @@ export function isTerminalCodingResult(result: CodingRunResult): boolean {
   return result.status !== 'PAUSED'
 }
 
-export function classifyCodingStagePolicy(input: { key?: string; label?: string; agentRole?: string; terminal?: boolean }): CodingStagePolicy {
+export function classifyCodingStagePolicy(input: { key?: string; label?: string; agentRole?: string; terminal?: boolean; contextPolicy?: string; toolPolicy?: string }): CodingStagePolicy {
+  const contextPolicy = String(input.contextPolicy ?? '').toUpperCase()
+  const toolPolicy = String(input.toolPolicy ?? '').toUpperCase()
+  if (contextPolicy === 'CODE_EDIT' || toolPolicy === 'MUTATION') return 'developer'
+  if (contextPolicy === 'VERIFY_ONLY' || toolPolicy === 'VERIFICATION') return 'qa'
+  if (contextPolicy === 'EVIDENCE_REVIEW') return 'certify'
+  if (contextPolicy === 'REPO_READ_ONLY') return 'planning'
   const signature = `${input.key ?? ''} ${input.label ?? ''} ${input.agentRole ?? ''}`.toLowerCase()
   if (signature.includes('develop') || signature.includes('developer') || signature.includes('engineer') || signature.includes('code')) return 'developer'
   if (signature.includes('certif') || signature.includes('signoff') || signature.includes('sign-off') || input.terminal) return 'certify'

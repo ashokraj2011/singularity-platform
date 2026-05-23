@@ -113,7 +113,7 @@ const STARTER_OPTIONS: Array<{
   {
     value: 'CAPABILITY_WORKBENCH_BRIDGE',
     title: 'Agent → Workbench → Human approval',
-    description: 'Creates a capability-scoped flow where an agent prepares context, the Workbench produces approved artifacts, and a human signs off.',
+    description: 'Creates a capability-scoped workflow whose Workbench runs the 4-stage loop: Story Intake → Design → Develop → QA, followed by a human sign-off and git push.',
     Icon: Braces,
     accent: '#7c3aed',
   },
