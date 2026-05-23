@@ -284,6 +284,12 @@ enum BlueprintSessionStatus {
   COMPLETED
   APPROVED
   FAILED
+  // Task #81 — terminal state used when the WorkItem the session was created
+  // for is detached from its source workflow. The session row stays for audit
+  // (it still holds receipts + stage history) but is excluded from the
+  // workbench session-discovery query so the next attach+start gets a fresh
+  // session instead of resuming a stale one tied to the old workflow run.
+  ABANDONED
 }
 
 enum BlueprintStage {

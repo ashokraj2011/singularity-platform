@@ -539,6 +539,31 @@ export async function detachWorkItemFromWorkflow(workItemId: string, userId: str
         output: Prisma.DbNull,
       },
     })
+    // Task #81 — mark BlueprintSessions tied to the source workflow as
+    // ABANDONED so the workbench's "pick up where you left off" discovery
+    // skips them. Only touches sessions still in pre-terminal states (DRAFT,
+    // SNAPSHOTTED, RUNNING) — sessions that completed, were approved, or
+    // failed already carry their final state for audit and shouldn't be
+    // retro-marked.
+    //
+    // Without this, the next time the operator attaches this WorkItem to a
+    // workflow and starts a run, the workbench loads the OLD session (latest
+    // by updatedAt) and shows stale agent output, partial receipts, and the
+    // pre-detach phase state. The user's bug report: "once i detach a
+    // workitem from a workflow and then attach back and start then the
+    // workbench should be new."
+    let abandonedSessionCount = 0
+    if (sourceWorkflowInstanceId) {
+      const abandoned = await tx.blueprintSession.updateMany({
+        where: {
+          workflowInstanceId: sourceWorkflowInstanceId,
+          status: { in: ['DRAFT', 'SNAPSHOTTED', 'RUNNING'] },
+        },
+        data: { status: 'ABANDONED' },
+      })
+      abandonedSessionCount = abandoned.count
+    }
+
     await tx.workItemEvent.create({
       data: {
         workItemId,
@@ -552,6 +577,7 @@ export async function detachWorkItemFromWorkflow(workItemId: string, userId: str
           sourceWorkflowNodeId,
           parentApprovalRequestId: workItem.parentApprovalRequestId,
           detachedAt,
+          abandonedSessionCount,
         } as Prisma.InputJsonValue,
       },
     })

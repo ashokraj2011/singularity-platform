@@ -512,7 +512,14 @@ blueprintRouter.get('/sessions', async (req, res, next) => {
   try {
     const createdById = req.user!.userId
     const sessions = await prisma.blueprintSession.findMany({
-      where: { createdById },
+      // Task #81 — exclude ABANDONED sessions from the discovery query.
+      // When a WorkItem is detached from its source workflow, the matching
+      // session is marked ABANDONED (see detachWorkItemFromWorkflow). Without
+      // this filter, re-attaching the WorkItem and starting a new run would
+      // resume the stale session (workbench frontend picks the latest match
+      // by updatedAt). The session row is preserved for audit; we just want
+      // it out of the "pick up where you left off" candidate pool.
+      where: { createdById, status: { not: 'ABANDONED' } },
       include: {
         snapshots: { orderBy: { createdAt: 'desc' }, take: 1 },
         stageRuns: { orderBy: { createdAt: 'desc' } },
