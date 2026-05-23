@@ -187,6 +187,75 @@ def test_self_review_rejects_invalid_acceptance_status():
         )
 
 
+# M73-followup #4 — recommended_for_approval must agree with the criteria.
+# A confidently-wrong agent can't self-certify when its own checks contradict
+# the recommendation.
+
+def test_self_review_rejects_approval_with_any_not_met():
+    """recommended_for_approval=True + any criterion not_met → refuse.
+    Hard structural rule, not advisory."""
+    with pytest.raises(PhaseOutputInvalid):
+        validate_phase_output(
+            Phase.SELF_REVIEW,
+            {
+                "recommended_for_approval": True,
+                "acceptance_criteria_check": [
+                    {"criterion": "tests pass", "status": "met"},
+                    {"criterion": "no regressions", "status": "not_met",
+                     "evidence": "two pre-existing tests now fail"},
+                ],
+            },
+        )
+
+
+def test_self_review_rejects_approval_with_two_uncertain():
+    """≥2 uncertain criteria → refuse approval recommendation. Two unknowns
+    is enough doubt that the agent shouldn't self-certify."""
+    with pytest.raises(PhaseOutputInvalid):
+        validate_phase_output(
+            Phase.SELF_REVIEW,
+            {
+                "recommended_for_approval": True,
+                "acceptance_criteria_check": [
+                    {"criterion": "performance baseline", "status": "uncertain"},
+                    {"criterion": "downstream impact", "status": "uncertain"},
+                ],
+            },
+        )
+
+
+def test_self_review_accepts_approval_with_one_uncertain():
+    """One uncertain is fine — that's a common state for soft criteria
+    (e.g. "matches design intent"). Two is where we refuse."""
+    parsed = validate_phase_output(
+        Phase.SELF_REVIEW,
+        {
+            "recommended_for_approval": True,
+            "acceptance_criteria_check": [
+                {"criterion": "tests pass", "status": "met"},
+                {"criterion": "matches design intent", "status": "uncertain"},
+            ],
+        },
+    )
+    assert parsed["recommended_for_approval"] is True
+
+
+def test_self_review_accepts_not_recommended_with_failures():
+    """The agent CAN still complete SELF_REVIEW when criteria fail — it
+    just has to flip recommended_for_approval to False. Verifying that
+    the validator doesn't refuse non-recommendation cases."""
+    parsed = validate_phase_output(
+        Phase.SELF_REVIEW,
+        {
+            "recommended_for_approval": False,
+            "acceptance_criteria_check": [
+                {"criterion": "tests pass", "status": "not_met"},
+            ],
+        },
+    )
+    assert parsed["recommended_for_approval"] is False
+
+
 # ── policy-schema overlay ──────────────────────────────────────────────────
 
 

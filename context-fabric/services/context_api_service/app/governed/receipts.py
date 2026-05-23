@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .phase_state import Phase
 
@@ -216,6 +216,42 @@ class SelfReviewReceipt(_ReceiptBase):
     diff_summary: DiffSummary = Field(default_factory=DiffSummary)
     verification_summary: str = ""
     recommended_for_approval: bool = False
+
+    # M73-followup #4 — confidently-wrong agents will mark their own work
+    # `recommended_for_approval=True` even when their own acceptance-criteria
+    # checks contradict that. The human-approval gate downstream is meant to
+    # catch this, but the model's recommendation is what the gate's pre-fill
+    # state and the workbench's "ready to approve" banner key off — so a
+    # falsely-true recommendation poisons the operator's first-impression UX.
+    #
+    # Refuse the receipt at the model boundary:
+    #   • If ANY criterion has status="not_met" → recommended_for_approval
+    #     MUST be False. Hard refuse.
+    #   • If >=2 criteria have status="uncertain" → ditto. Two unknowns is
+    #     enough doubt that the agent shouldn't be self-certifying.
+    #
+    # The agent can still complete SELF_REVIEW phase — it just has to flip
+    # the recommendation to False (and the workbench will render the partial
+    # evidence accordingly). This is structural, not advisory.
+    @model_validator(mode="after")
+    def _refuse_inconsistent_recommendation(self) -> "SelfReviewReceipt":
+        if not self.recommended_for_approval:
+            return self
+        not_met = [c.criterion for c in self.acceptance_criteria_check if c.status == "not_met"]
+        if not_met:
+            raise ValueError(
+                "SelfReviewReceipt: recommended_for_approval=True is forbidden "
+                f"when any acceptance criterion is not_met (failing: {not_met!r}). "
+                "Set recommended_for_approval=False and let the human gate decide."
+            )
+        uncertain = [c.criterion for c in self.acceptance_criteria_check if c.status == "uncertain"]
+        if len(uncertain) >= 2:
+            raise ValueError(
+                "SelfReviewReceipt: recommended_for_approval=True is forbidden "
+                f"when 2 or more acceptance criteria are uncertain (uncertain: {uncertain!r}). "
+                "Either provide evidence or set recommended_for_approval=False."
+            )
+        return self
 
 
 # ─── APPROVAL (workgraph-api stamps these, not the agent) ────────────────────
