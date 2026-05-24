@@ -1,0 +1,37 @@
+# systemd service template for the weekly capability-harness bench
+# run. Pair with weekly-bench.timer (sibling file in this dir).
+#
+# Install:
+#   sudo cp weekly-bench.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now weekly-bench.timer
+#
+# Logs:
+#   journalctl -u weekly-bench.service -f
+
+[Unit]
+Description=Singularity capability harness — weekly bench run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Adjust to wherever the singularity-platform checkout lives on the
+# host. The script is repo-relative.
+WorkingDirectory=/opt/singularity-platform
+EnvironmentFile=/etc/singularity/capability-harness.env
+ExecStart=/bin/sh tools/capability-harness/cron/weekly-bench.sh
+# 6h ceiling — a real bench against a 50-task corpus + LLM judge
+# at one-turn-per-task takes ~30min; the ceiling is for runaway
+# situations (LLM hang, CF wedged) where the harness's own
+# timeouts didn't fire.
+TimeoutStartSec=6h
+# Don't restart on failure — a regression alert is a "human looks
+# at it" signal, not a "retry forever" loop.
+Restart=no
+# StandardOutput defaults to journal; explicit for documentation.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

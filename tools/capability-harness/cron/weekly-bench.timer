@@ -1,0 +1,19 @@
+# Pairs with weekly-bench.service. Runs the bench every Monday 09:00
+# local time. Spec asks for "weekly cron"; Monday morning matches the
+# audit-gov dashboard cadence most operators check first thing.
+
+[Unit]
+Description=Trigger weekly capability-harness bench every Monday 09:00
+
+[Timer]
+# OnCalendar: Mon 09:00 local. Operators on UTC can swap to "Mon 09:00 UTC".
+OnCalendar=Mon 09:00
+# If the box was off when the trigger fired (laptop ops machine), catch
+# up on the next boot. Avoids missing a week silently.
+Persistent=true
+# Random jitter prevents thundering-herd when the bench runs across a
+# fleet of operator machines.
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target
