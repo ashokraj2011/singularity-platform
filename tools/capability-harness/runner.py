@@ -39,6 +39,11 @@ from typing import Any
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
+from audit_publisher import (  # noqa: E402
+    publish_run_completed,
+    publish_run_started,
+    publish_task_completed,
+)
 from cf_client import (  # noqa: E402 — sys.path tweak above
     CapabilityHarnessHttpError,
     GovernedStageResponse,
@@ -118,8 +123,18 @@ def run_corpus(
     model_alias: str | None = None,
     dry_run: bool = False,
     results_dir: str | Path | None = None,
+    publish_to_audit_gov: bool = False,
+    audit_gov_url: str | None = None,
+    audit_gov_token: str | None = None,
 ) -> CorpusRunResult:
-    """Run the harness end-to-end. See module docstring for CLI."""
+    """Run the harness end-to-end. See module docstring for CLI.
+
+    publish_to_audit_gov (Slice 3): when True, emit
+    `capability.bench_run_started/_task_completed/_run_completed`
+    audit events. Best-effort — publish failures are logged but don't
+    abort the run (telemetry should not block science). Disabled by
+    default so dry-runs don't pollute the events stream.
+    """
     tasks = load_corpus(corpus_path)
     if task_filter:
         tasks = [t for t in tasks if t.task_id == task_filter]
@@ -128,6 +143,9 @@ def run_corpus(
 
     started = time.monotonic()
     started_iso = datetime.now(timezone.utc).isoformat()
+    # Shared trace_id ties every emitted event to one bench run.
+    # Operators grep audit-gov by this for the run's full timeline.
+    bench_trace_id = f"capability-harness-{started_iso}"
     result = CorpusRunResult(
         corpus_path=str(corpus_path),
         started_at=started_iso,
@@ -135,6 +153,19 @@ def run_corpus(
         model_alias=model_alias,
         dry_run=dry_run,
     )
+
+    if publish_to_audit_gov:
+        pr = publish_run_started(
+            trace_id=bench_trace_id,
+            corpus_path=str(corpus_path),
+            task_count=len(tasks),
+            model_alias=model_alias,
+            audit_gov_url=audit_gov_url,
+            service_token=audit_gov_token,
+        )
+        if not pr.success:
+            print(f"warning: audit-gov run_started publish failed: {pr.error}",
+                  flush=True)
 
     for task in tasks:
         record = _run_single_task(
@@ -157,8 +188,47 @@ def run_corpus(
             f"({record.duration_ms}ms, stop={record.stop_reason or 'n/a'})",
             flush=True,
         )
+        if publish_to_audit_gov:
+            oracle_scores = (
+                [
+                    {"name": o.name, "passed": o.passed, "score": o.score}
+                    for o in record.score.oracles
+                ]
+                if record.score else []
+            )
+            pr = publish_task_completed(
+                trace_id=bench_trace_id,
+                task_id=record.task_id,
+                passed=bool(record.score and record.score.passed),
+                duration_ms=record.duration_ms,
+                stop_reason=record.stop_reason,
+                turn_count=record.turn_count,
+                oracle_scores=oracle_scores,
+                model_alias=model_alias,
+                dispatch_error=record.dispatch_error,
+                audit_gov_url=audit_gov_url,
+                service_token=audit_gov_token,
+            )
+            if not pr.success:
+                print(f"warning: audit-gov task_completed publish failed for "
+                      f"{record.task_id}: {pr.error}", flush=True)
 
     result.duration_ms = int((time.monotonic() - started) * 1000)
+
+    if publish_to_audit_gov:
+        pr = publish_run_completed(
+            trace_id=bench_trace_id,
+            pass_count=result.pass_count,
+            fail_count=result.fail_count,
+            pass_rate=result.pass_rate,
+            duration_ms=result.duration_ms,
+            model_alias=model_alias,
+            audit_gov_url=audit_gov_url,
+            service_token=audit_gov_token,
+        )
+        if not pr.success:
+            print(f"warning: audit-gov run_completed publish failed: {pr.error}",
+                  flush=True)
 
     if results_dir is None:
         results_dir = _HERE / "results" / started_iso.replace(":", "-")
@@ -169,6 +239,8 @@ def run_corpus(
         f"rate={result.pass_rate * 100:.1f}%",
         flush=True,
     )
+    if publish_to_audit_gov:
+        print(f"audit-gov trace_id={bench_trace_id}", flush=True)
     return result
 
 
@@ -382,6 +454,18 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Output directory (default: tools/capability-harness/results/<timestamp>/).",
     )
+    parser.add_argument(
+        "--publish-audit-gov",
+        action="store_true",
+        help="Emit capability.bench_* events to audit-gov. Off by default "
+             "so dry-runs don't pollute the events stream.",
+    )
+    parser.add_argument(
+        "--audit-gov-url",
+        default=None,
+        help="Override audit-gov base URL (defaults to $AUDIT_GOV_URL or "
+             "http://localhost:8500).",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -394,6 +478,8 @@ def main(argv: list[str] | None = None) -> int:
             model_alias=args.model_alias,
             dry_run=args.dry_run,
             results_dir=args.results_dir,
+            publish_to_audit_gov=args.publish_audit_gov,
+            audit_gov_url=args.audit_gov_url,
         )
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
