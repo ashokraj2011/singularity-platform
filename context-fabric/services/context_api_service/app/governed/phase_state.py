@@ -128,6 +128,19 @@ class PhaseState:
     # tool); post-dispatch masks the result (real values → tokens for
     # the next turn's LLM prompt).
     pii_token_map: dict[str, str] = field(default_factory=dict)
+    # Code-review fix #2 (2026-05-23) — EditReceipt provenance binding.
+    #
+    # Maps normalised file path → list of code_change_ids produced by
+    # successful mutating-tool outcomes (apply_patch, replace_text,
+    # create_file, write_file, finish_work_branch). Accumulated across
+    # every turn of a stage. The ACT→VERIFY validator in loop.py uses
+    # this to refuse an EditReceipt that claims to have edited a file
+    # the agent never actually dispatched a mutating tool against —
+    # closes the "self-declared receipt" loophole the reviewer flagged.
+    #
+    # Persists across pause/resume via to_dict/from_dict so an
+    # approval pause doesn't lose the evidence trail.
+    produced_code_changes: dict[str, list[str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise for JSON storage in BlueprintSession.metadata."""
@@ -141,13 +154,15 @@ class PhaseState:
             "history": self.history,
             "approval_pending": self.approval_pending,
             "pii_token_map": self.pii_token_map,
+            "produced_code_changes": self.produced_code_changes,
         }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PhaseState":
         """Rehydrate from JSON storage. Unknown phase strings raise ValueError.
-        Missing fields (plan_rewinds, pii_token_map) default safely so
-        pre-followup state rows rehydrate without explosion."""
+        Missing fields (plan_rewinds, pii_token_map, produced_code_changes)
+        default safely so pre-followup state rows rehydrate without
+        explosion."""
         return cls(
             stage_key=str(payload.get("stage_key", "")),
             agent_role=payload.get("agent_role"),
@@ -158,6 +173,10 @@ class PhaseState:
             history=list(payload.get("history") or []),
             approval_pending=bool(payload.get("approval_pending", False)),
             pii_token_map=dict(payload.get("pii_token_map") or {}),
+            produced_code_changes={
+                str(k): [str(x) for x in (v or [])]
+                for k, v in (payload.get("produced_code_changes") or {}).items()
+            },
         )
 
     @classmethod

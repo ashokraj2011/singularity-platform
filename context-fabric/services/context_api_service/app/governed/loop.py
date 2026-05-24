@@ -134,6 +134,163 @@ def _normalize_tool_call(raw: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return name, args
 
 
+# Tools that legitimately mutate code. Mirrors the EditEntry.edit_type
+# Literal in receipts.py — the receipt validator restricts edit_type to
+# this same set so a future addition is caught at both layers.
+_MUTATING_TOOLS = frozenset({
+    "apply_patch",
+    "replace_text",
+    "replace_range",
+    "create_file",
+    "write_file",
+    "finish_work_branch",
+})
+
+
+def _normalise_change_path(path: str) -> str:
+    """Normalise a file path the same way path_coverage does so the
+    EditReceipt validator's set comparison sees the same canonical
+    form on both sides."""
+    p = (path or "").strip().replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
+def _extract_code_changes(
+    *,
+    tool_name: str,
+    result: Any,
+    tool_success: bool | None,
+) -> list[tuple[str, str]]:
+    """Pull (file_path, change_id) pairs from a successful mutating
+    tool's result envelope. Returns [] when the tool isn't mutating,
+    didn't succeed, or didn't surface a change_id.
+
+    Recognised aliases on the result dict mirror what workgraph-api's
+    orchestrator.ts:adaptGovernedStageToCodingRun already scans for
+    (code_change_id / codeChangeId / changeId / change_id) plus the
+    file field variants (file / path / file_path / target_file).
+
+    Multiple files per call (e.g. a batch apply_patch) are picked up
+    via an optional `files` / `changed_files` list on the envelope.
+    """
+    if tool_name not in _MUTATING_TOOLS:
+        return []
+    # `tool_success is False` blocks; `tool_success is None` (older
+    # tools don't always set the flag) is treated as ok so we don't
+    # silently drop a legitimately-edited file.
+    if tool_success is False:
+        return []
+    if not isinstance(result, dict):
+        return []
+
+    change_id = (
+        result.get("code_change_id")
+        or result.get("codeChangeId")
+        or result.get("changeId")
+        or result.get("change_id")
+    )
+    if not isinstance(change_id, str) or not change_id:
+        # No change_id surfaced — can't bind. Returning [] here means
+        # the receipt validator will reject the file as unbacked. That's
+        # the intended safety behavior: if the tool didn't emit a
+        # change_id we can't prove the edit happened.
+        return []
+
+    # Pull the file path(s). Single-file shape first.
+    single = (
+        result.get("file")
+        or result.get("path")
+        or result.get("file_path")
+        or result.get("target_file")
+    )
+    paths: list[str] = []
+    if isinstance(single, str) and single.strip():
+        paths.append(single)
+    # Batch shape: a list of file paths on `files` or `changed_files`.
+    for batch_key in ("files", "changed_files"):
+        batch = result.get(batch_key)
+        if isinstance(batch, list):
+            paths.extend(p for p in batch if isinstance(p, str) and p.strip())
+
+    if not paths:
+        return []
+    return [(_normalise_change_path(p), change_id) for p in paths]
+
+
+def _truncate_oversize_strings(
+    value: Any, max_chars: int,
+) -> tuple[Any, int]:
+    """Walk an arbitrary JSON-like value; replace any string longer
+    than max_chars with `prefix + "...[truncated N chars by policy]"`
+    where prefix is the first (max_chars - marker_len) characters.
+
+    Returns (truncated_value, total_bytes_truncated). When
+    total_bytes_truncated == 0 the input was untouched and the
+    caller can skip the audit event.
+
+    Mirrors mask_pii_in_result's recursive walk so the cap reaches
+    string leaves at any depth in the result envelope (nested
+    `lines: [...]`, `content`, etc.). Lists and dicts are walked
+    structurally; non-string leaves pass through.
+    """
+    total_truncated = 0
+
+    def _walk(v: Any) -> Any:
+        nonlocal total_truncated
+        if isinstance(v, str):
+            if len(v) <= max_chars:
+                return v
+            marker = f"\n...[truncated {len(v) - max_chars} chars by policy]"
+            total_truncated += len(v) - max_chars
+            keep = max_chars - len(marker)
+            if keep < 0:
+                # max_chars is smaller than the marker itself; pathological
+                # but possible. Just emit the marker alone.
+                return marker
+            return v[:keep] + marker
+        if isinstance(v, list):
+            return [_walk(x) for x in v]
+        if isinstance(v, dict):
+            return {k: _walk(x) for k, x in v.items()}
+        return v
+
+    truncated = _walk(value)
+    return truncated, total_truncated
+
+
+def _check_edit_receipt_provenance(
+    *,
+    receipt: dict[str, Any],
+    produced_changes: dict[str, list[str]],
+) -> list[str]:
+    """Return the list of edit-receipt file paths that have NO backing
+    code_change_id from a successful mutating-tool dispatch.
+
+    Empty list = every claim is backed by evidence → receipt accepted.
+    Non-empty = the receipt is over-claiming → reject with
+    PHASE_EDIT_UNBACKED.
+
+    skipped_targets entries are exempt — the agent explicitly declared
+    those as "decided not to edit", which doesn't need a code_change_id.
+    """
+    edits = receipt.get("edits") or []
+    if not isinstance(edits, list):
+        return []
+    unbacked: list[str] = []
+    for entry in edits:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("file") or entry.get("path")
+        if not isinstance(path, str) or not path.strip():
+            continue
+        canonical = _normalise_change_path(path)
+        if canonical not in produced_changes or not produced_changes[canonical]:
+            unbacked.append(path)
+    return unbacked
+
+
 async def governed_step(
     *,
     state: PhaseState,
@@ -314,6 +471,77 @@ async def governed_step(
             if new_token_map != state.pii_token_map:
                 state = replace(state, pii_token_map=new_token_map)
                 result.next_state = state
+
+            # Code-review fix #4 (2026-05-23) — server-side cap on
+            # per-tool result size. Without this an agent can `read_file`
+            # an entire monorepo and blow its context window in one
+            # call. policy.context_policy.max_chars_per_read sets the
+            # ceiling; results that exceed it get truncated + an audit
+            # event fires so operators see the overflow. Truncation is
+            # the right knob (vs hard refuse) because most read tools
+            # don't surface a length kwarg the gateway could enforce
+            # before dispatch — truncating the result has the same
+            # structural effect (the agent can't see more than the cap)
+            # without breaking any tool's contract.
+            max_chars = None
+            ctx_policy = policy.context_policy if policy else None
+            if isinstance(ctx_policy, dict):
+                raw_cap = ctx_policy.get("max_chars_per_read")
+                if isinstance(raw_cap, int) and raw_cap > 0:
+                    max_chars = raw_cap
+            if max_chars is not None:
+                outcome_result, truncated_bytes = _truncate_oversize_strings(
+                    outcome.result, max_chars,
+                )
+                if truncated_bytes > 0:
+                    # Mutate the outcome's result; the mask + state
+                    # update below sees the trimmed value, so the
+                    # truncation propagates into history.
+                    outcome = ToolDispatchResult(
+                        result=outcome_result,
+                        duration_ms=outcome.duration_ms,
+                        tool_invocation_id=outcome.tool_invocation_id,
+                        tool_success=outcome.tool_success,
+                        tool_error=outcome.tool_error,
+                        served_by=outcome.served_by,
+                        laptop_device_id=outcome.laptop_device_id,
+                        laptop_device_name=outcome.laptop_device_name,
+                    )
+                    await emit_governed_event(
+                        kind="governed.read_truncated",
+                        state=state,
+                        policy=policy,
+                        run_context=run_context,
+                        payload={
+                            "tool_name": tool_name,
+                            "max_chars_per_read": max_chars,
+                            "truncated_bytes": truncated_bytes,
+                            "tool_invocation_id": outcome.tool_invocation_id,
+                        },
+                        severity="warn",
+                    )
+
+            # Code-review fix #2 (2026-05-23) — EditReceipt provenance
+            # binding. When a mutating tool (apply_patch / replace_text /
+            # create_file / write_file / finish_work_branch) succeeds it
+            # returns a result envelope carrying a code_change_id and
+            # the file path it touched. Accumulate those into PhaseState
+            # so the ACT→VERIFY EditReceipt validator can check that
+            # every claimed edit has a backing tool dispatch (closes
+            # the "self-declared receipt" loophole).
+            new_changes = _extract_code_changes(
+                tool_name=tool_name,
+                result=outcome.result,
+                tool_success=outcome.tool_success,
+            )
+            if new_changes:
+                merged = {
+                    k: list(v) for k, v in state.produced_code_changes.items()
+                }
+                for file_path, change_id in new_changes:
+                    merged.setdefault(file_path, []).append(change_id)
+                state = replace(state, produced_code_changes=merged)
+                result.next_state = state
             result.tool_outcomes.append(
                 ToolCallOutcome(
                     tool_name=tool_name,
@@ -474,6 +702,42 @@ async def governed_step(
                 )
                 return result
 
+            # Code-review fix #2 (2026-05-23) — EditReceipt provenance.
+            # Cross-check that every file the receipt claims to have
+            # edited has at least one backing code_change_id from a
+            # real mutating-tool dispatch (accumulated on
+            # state.produced_code_changes across all turns of the
+            # stage). Closes the loophole where an agent could submit
+            # `{file: "foo.py", edit_type: "apply_patch"}` without
+            # ever actually calling apply_patch.
+            unbacked = _check_edit_receipt_provenance(
+                receipt=receipt,
+                produced_changes=state.produced_code_changes,
+            )
+            if unbacked:
+                err_payload = {
+                    "error_code": "PHASE_EDIT_UNBACKED",
+                    "phase": "ACT",
+                    "reason": (
+                        f"EditReceipt claims edits on file(s) {unbacked!r} "
+                        "but no successful mutating-tool dispatch produced "
+                        "a code_change_id for them in this stage. Either "
+                        "actually dispatch the mutating tool, or remove "
+                        "the file from edits[]."
+                    ),
+                    "unbacked_files": unbacked,
+                }
+                result.validation_error = err_payload
+                await emit_governed_event(
+                    kind="governed.edit_receipt_unbacked",
+                    state=state,
+                    policy=policy,
+                    run_context=run_context,
+                    payload=err_payload,
+                    severity="warn",
+                )
+                return result
+
             # M74 Phase 1A — auto-verify on mutation. After ACT produces an
             # EditReceipt and coverage is satisfied, run a verifier on the
             # agent's behalf before letting VERIFY proceed. The result is
@@ -510,6 +774,58 @@ async def governed_step(
                     "kind": "unavailable",
                     "reason": f"orchestrator error: {exc!s}",
                 }
+
+        # Code-review fix #6 (2026-05-23) — gate VERIFY → SELF_REVIEW on
+        # an actually-passing verification. The Phase 1C validator already
+        # requires `reason` for status='unavailable', but nothing in the
+        # phase machine blocked an unverified stage from sliding to
+        # SELF_REVIEW — operators caught it manually or not at all.
+        #
+        # New rule: when transitioning VERIFY → SELF_REVIEW, the
+        # VerificationReceipt's status MUST be 'passed' unless the
+        # stage's risk_policy.allow_unverified is True (explicit
+        # operator opt-out for stages that have no verifier — e.g. pure
+        # documentation edits).
+        if (
+            state.current_phase is Phase.VERIFY
+            and next_phase is Phase.SELF_REVIEW
+            and isinstance(receipt, dict)
+            and receipt.get("kind") == "verification_receipt"
+        ):
+            allow_unverified = bool(
+                (policy.risk_policy or {}).get("allow_unverified", False)
+            )
+            verify_payload = receipt.get("verification_result") or {}
+            status = (
+                verify_payload.get("status")
+                if isinstance(verify_payload, dict)
+                else None
+            )
+            if not allow_unverified and status != "passed":
+                err_payload = {
+                    "error_code": "PHASE_VERIFY_NOT_PASSED",
+                    "phase": "VERIFY",
+                    "reason": (
+                        f"VerificationReceipt.status={status!r} cannot "
+                        "advance to SELF_REVIEW. Either: (a) advance to "
+                        "REPAIR and fix the verifier output, or (b) set "
+                        "risk_policy.allow_unverified=true on the stage "
+                        "policy if this stage legitimately has nothing "
+                        "to verify."
+                    ),
+                    "status": status,
+                    "allow_unverified": allow_unverified,
+                }
+                result.validation_error = err_payload
+                await emit_governed_event(
+                    kind="governed.verify_not_passed",
+                    state=state,
+                    policy=policy,
+                    run_context=run_context,
+                    payload=err_payload,
+                    severity="warn",
+                )
+                return result
 
         if next_phase is not None:
             try:
