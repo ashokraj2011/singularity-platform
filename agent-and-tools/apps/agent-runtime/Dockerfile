@@ -45,13 +45,19 @@ EXPOSE 3003
 # DB). agent-runtime's schema is applied out-of-band by `bin/bare-metal.sh`
 # or `bin/demo-up.sh` BEFORE either container boots (they call
 # `prisma db push` against the workspace DB once, with the correct order).
-# Containers only run post-push.sql + seed at startup.
 #
-# If you're running `docker compose up` standalone (no bare-metal launcher),
-# agent-runtime tables are still created by composer's first push because
-# composer reads them (Capability, AgentTemplate, etc.) — composer's schema
-# carries the full superset of read-models too.
-CMD ["sh", "-c", "until pg_isready -d \"$DATABASE_URL\" >/dev/null 2>&1; do echo '[agent-runtime] waiting for database...'; sleep 2; done; psql \"$DATABASE_URL\" -f prisma/post-push.sql && npx prisma db seed && npm run dev"]
+# task #113 — `bin/startup.sh` replaces the inline shell to close
+# two drift modes that bit this session (DB missing M40's contractHash
+# column the client expected; client-vs-schema drift when schema.prisma
+# was edited without a rebuild). It applies hand-written .sql
+# migrations (idempotent via IF NOT EXISTS) so additive schema changes
+# land safely in the shared-DB topology, then regenerates the client.
+# RUN_SEED=true tells the wrapper to also run prisma db seed (was
+# unconditional before; dev only now).
+COPY apps/agent-runtime/bin/startup.sh /usr/local/bin/startup.sh
+RUN chmod +x /usr/local/bin/startup.sh
+ENV RUN_SEED=true
+CMD ["/usr/local/bin/startup.sh", "npm", "run", "dev"]
 
 # ── builder ───────────────────────────────────────────────────────────────
 FROM base AS builder
@@ -69,7 +75,14 @@ WORKDIR /app/apps/agent-runtime
 COPY --from=builder /app/apps/agent-runtime/dist ./dist
 COPY --from=builder /app/apps/agent-runtime/prisma ./prisma
 COPY --from=builder /app/apps/agent-runtime/package.json ./package.json
+COPY --from=builder /app/apps/agent-runtime/bin ./bin
 COPY --from=builder /app/node_modules ../../node_modules
 COPY --from=builder /app/packages ../../packages
 EXPOSE 3003
-CMD ["sh", "-c", "until pg_isready -d \"$DATABASE_URL\" >/dev/null 2>&1; do echo '[agent-runtime] waiting for database...'; sleep 2; done; npx prisma db push --skip-generate --accept-data-loss && psql \"$DATABASE_URL\" -f prisma/post-push.sql && node dist/server.js"]
+# task #113 — production stage. RUN_SEED unset (default false) so the
+# wrapper skips `prisma db seed`. We deliberately drop the prior
+# `prisma db push` here too — it was unsafe in the shared-DB topology
+# (would drop composer's tables) and we now rely on the hand-written
+# additive .sql migrations applied by the wrapper.
+RUN chmod +x bin/startup.sh
+CMD ["./bin/startup.sh", "node", "dist/server.js"]

@@ -20,6 +20,10 @@ RUN cd apps/prompt-composer && npx prisma generate --schema=prisma/schema.prisma
 RUN cd apps/prompt-composer && npx prisma generate --schema=prisma/runtime-read.prisma --generator client
 
 FROM base AS dev
+# psql is needed at runtime to apply hand-written .sql migrations
+# from bin/startup.sh (Prisma db push would drop agent-runtime's
+# tables — we use plain psql + IF NOT EXISTS guards instead).
+RUN apk add --no-cache postgresql-client
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/packages ./packages
 COPY package.json package-lock.json* ./
@@ -37,12 +41,17 @@ EXPOSE 3004
 # M29 — DO NOT push schema at startup. Prisma `db push` drops any table not
 # in the active schema, and the shared-DB topology means composer's push
 # would drop agent-runtime's tables (event_outbox, AgentExecution, etc.) and
-# vice-versa. Operators apply both schemas in order via:
-#   bin/bare-metal.sh up   (for bare-metal dev)
-#   bin/apply-schemas.sh   (for the docker stack, one-shot per-volume)
-# On every subsequent container restart, the DB shape is already correct and
-# no pushes are needed.
-CMD ["sh", "-c", "npm run dev"]
+# vice-versa.
+#
+# task #113 — `bin/startup.sh` replaces the bare `npm run dev` to close
+# two drift modes that bit this session (DB missing a column that the
+# client expects; client missing a column the schema defines). It
+# applies hand-written .sql migrations (each guarded with IF NOT EXISTS
+# so the shared-DB topology stays safe) and regenerates the client
+# before launching. See the script header for details.
+COPY apps/prompt-composer/bin/startup.sh /usr/local/bin/startup.sh
+RUN chmod +x /usr/local/bin/startup.sh
+CMD ["/usr/local/bin/startup.sh", "npm", "run", "dev"]
 
 FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
@@ -56,13 +65,20 @@ RUN npx prisma generate --schema=prisma/schema.prisma --generator client \
 
 FROM base AS runner
 ENV NODE_ENV=production
+RUN apk add --no-cache postgresql-client
 WORKDIR /app/apps/prompt-composer
 COPY --from=builder /app/apps/prompt-composer/dist ./dist
 COPY --from=builder /app/apps/prompt-composer/prisma ./prisma
 # M29 — runtime stage needs the generated per-service Prisma client too.
 COPY --from=builder /app/apps/prompt-composer/generated ./generated
 COPY --from=builder /app/apps/prompt-composer/package.json ./package.json
+COPY --from=builder /app/apps/prompt-composer/bin ./bin
 COPY --from=builder /app/node_modules ../../node_modules
 COPY --from=builder /app/packages ../../packages
 EXPOSE 3004
-CMD ["node", "dist/server.js"]
+# task #113 — same anti-drift wrapper as the dev stage. Prod path
+# benefits because the runtime image bundles the pre-built generated
+# client; if anyone edits schema.prisma without rebuilding the image
+# the startup regenerate keeps the running app honest.
+RUN chmod +x bin/startup.sh
+CMD ["./bin/startup.sh", "node", "dist/server.js"]
