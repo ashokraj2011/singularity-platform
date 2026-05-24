@@ -39,6 +39,10 @@ from typing import Any
 
 from .audit_emit import emit_governed_event
 from .llm_client import ChatResponse, ChatToolCall, LLMGatewayError, call_gateway_chat
+from .code_context import (
+    build_code_context_for_governed_turn,
+    package_markdown,
+)
 from .loop import GovernedStepResult, governed_step
 from .phase_state import Phase, PhaseState
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
@@ -255,9 +259,70 @@ async def run_turn(
                               The caller decides whether to retry or surface.
     """
     history = history or []
+    # Use a local copy so we don't mutate the caller's dict when we
+    # inject the code-context-package below.
+    vars = dict(vars or {})
 
     # 1. Policy.
     policy = await load_stage_policy(stage_key, agent_role, bearer=bearer)
+
+    # Architecture gap #5 (2026-05-23) — code-context-package
+    # integration. When the stage opts in via
+    # context_policy.include_code_context_package, fetch the AST-
+    # budgeted package from mcp-server and surface its markdown to
+    # the per-phase prompt via vars["code_context_package"]. The
+    # legacy /execute path has had this since M52; without this
+    # injection the governed loop was strictly weaker for code-edit
+    # stages.
+    #
+    # Opt-in (not default) so existing policies don't suddenly start
+    # making an mcp-server round-trip on every turn. Fail-soft —
+    # any error degrades to the existing prompt without breaking
+    # the loop.
+    ctx_policy = policy.context_policy if policy else {}
+    if isinstance(ctx_policy, dict) and ctx_policy.get("include_code_context_package"):
+        goal_text = ""
+        if isinstance(vars.get("goal"), str):
+            goal_text = vars["goal"]
+        elif isinstance(vars.get("task"), str):
+            goal_text = vars["task"]
+        capability_id = None
+        if isinstance(run_context, dict):
+            capability_id = (
+                run_context.get("capability_id")
+                or run_context.get("capabilityId")
+            )
+        pkg, reason = await build_code_context_for_governed_turn(
+            task_text=goal_text,
+            capability_id=capability_id,
+            run_context=run_context,
+        )
+        if pkg is not None:
+            md = package_markdown(pkg)
+            if md:
+                vars["code_context_package"] = md
+                vars["code_context_package_id"] = pkg.get("context_package_id", "")
+                await emit_governed_event(
+                    kind="governed.code_context_attached",
+                    state=state,
+                    policy=policy,
+                    run_context=run_context,
+                    payload={
+                        "context_package_id": pkg.get("context_package_id"),
+                        "markdown_bytes": len(md),
+                    },
+                )
+        else:
+            # Surfaces the reason in audit-gov so operators see the
+            # degradation without it changing agent behavior.
+            await emit_governed_event(
+                kind="governed.code_context_skipped",
+                state=state,
+                policy=policy,
+                run_context=run_context,
+                payload={"reason": reason or "unknown"},
+                severity="warn",
+            )
 
     # 2. Prompt — phase-specific if a binding exists, falls back via the
     # composer's ladder otherwise.

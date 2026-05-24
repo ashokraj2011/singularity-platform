@@ -274,6 +274,29 @@ export async function activateAgentTask(
     governance_mode: governanceMode,
   }
 
+  // Architecture gap #1 (2026-05-23) — feature-flagged governed
+  // migration scaffold. When the node design sets
+  // useGovernedExecutor:true, the workflow path will route to
+  // context-fabric's /api/v1/execute-governed-stage (matching what
+  // blueprint.router.ts already does). For now we PARSE the flag
+  // but fail-fast — the response-shape adapter that lets the rest
+  // of this executor consume a GovernedStageResponse hasn't landed
+  // yet (tracked as task #119). Refusing loudly is safer than
+  // silently running the legacy path when an operator THINKS they
+  // turned the flag on.
+  //
+  // Migration sequence documented in
+  // docs/governed-migration-strategy.md. When that work ships, the
+  // throw below becomes `return await runViaGovernedExecutor(...)`.
+  if (cfg.useGovernedExecutor === true) {
+    await failRun(run.id, 'governed-executor-not-implemented',
+      'cfg.useGovernedExecutor=true requested but the workflow→governed ' +
+      'response-shape adapter has not landed (task #119). Set the flag ' +
+      'back to false or undefined to use the legacy path; see ' +
+      'docs/governed-migration-strategy.md for the migration plan.')
+    return
+  }
+
   // 4. Call context-fabric /execute.
   let result: Awaited<ReturnType<typeof contextFabricClient.execute>>
   try {
