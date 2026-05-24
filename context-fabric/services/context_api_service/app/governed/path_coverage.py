@@ -27,8 +27,19 @@ from typing import Any
 def _normalise(path: str) -> str:
     """Compare paths case-sensitively but strip surrounding whitespace
     and leading ``./``. Aligned with how mcp-server's sandbox paths
-    are normalised before AST indexing."""
+    are normalised before AST indexing.
+
+    Fix (review issue #4, 2026-05-23) — convert Windows backslashes
+    to forward slashes so a plan that says ``src/foo.py`` matches
+    an edit emitted as ``src\\foo.py`` (or vice versa). Without this
+    a Windows operator or repo with native backslash paths triggers
+    false-positive PHASE_COVERAGE_GAP blocks even when the right
+    files were edited.
+    """
     p = (path or "").strip()
+    # Normalise Windows-style backslashes first so ".\\foo" → "./foo"
+    # → "foo" via the strip loop below.
+    p = p.replace("\\", "/")
     while p.startswith("./"):
         p = p[2:]
     return p

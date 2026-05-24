@@ -20,7 +20,10 @@ from context_api_service.app.governed.dispatch import (
     ToolDispatchError,
     ToolDispatchResult,
 )
-from context_api_service.app.governed.stage_driver import _render_auto_verify_message
+from context_api_service.app.governed.stage_driver import (
+    _render_auto_verify_message,
+    _render_validation_error_message,
+)
 from context_api_service.app.governed.verify_synthesis import (
     _changed_paths_from_edit_receipt,
     _first_runnable,
@@ -76,10 +79,20 @@ def test_first_runnable_returns_none_on_empty_list():
 
 
 def test_summarise_truncates_long_text():
+    """Updated for review fix #2 (2026-05-23). Old test asserted
+    `len(out) <= max_len` against a head-truncating impl. The new
+    impl keeps the tail and adds a leading marker like
+    `...[truncated 1500 earlier chars]\n`, so the final length is
+    `max_len + len(marker)`. The pin we care about now: the LAST
+    max_len chars of the input are present in the output (where
+    tracebacks live)."""
     text = "a" * 2000
     out = _summarise(text, max_len=500)
-    assert len(out) <= 500
-    assert "truncated from 2000 chars" in out
+    # Tail of the input must be present in full.
+    assert out.endswith("a" * 500)
+    # And the marker tells the operator something was dropped.
+    assert "[truncated" in out
+    assert "1500" in out  # 2000 - 500 dropped chars
 
 
 def test_summarise_passes_through_short_text():
@@ -322,3 +335,138 @@ def test_render_unknown_kind_falls_back_to_unavailable_template():
     msg = _render_auto_verify_message(synth)
     assert msg["role"] == "user"
     assert msg["content"]
+
+
+# ── Review fix #2 (2026-05-23) — _summarise keeps tail, not head ────────────
+
+
+def test_summarise_short_text_returned_verbatim():
+    """Below the threshold, no truncation. Pin in case the impl
+    is refactored to always-truncate."""
+    s = "short string"
+    assert _summarise(s, max_len=1500) == s
+
+
+def test_summarise_preserves_tail_where_tracebacks_live():
+    """REGRESSION GUARD for review fix #2.
+
+    Before the fix, _summarise kept the HEAD of the buffer. That
+    discarded the actual pytest/jest assertion failure (which is
+    always near the END of the output) and only showed the setup
+    logs. The LLM saw "the run failed" but no reason, so self-
+    repair couldn't engage.
+
+    Now _summarise keeps the TAIL. The test simulates pytest
+    output: lots of innocuous setup chatter, then a clear failure
+    line at the bottom. The summary MUST include the failure line.
+    """
+    setup_noise = "rootdir: /work\n" * 500  # ~7KB of innocuous head
+    failure = (
+        "FAILED tests/test_x.py::test_basic\n"
+        "AssertionError: expected 5, got -1\n"
+        "  assert add(2, 3) == 5\n"
+        "1 failed in 0.04s\n"
+    )
+    text = setup_noise + failure
+    summary = _summarise(text, max_len=1500)
+
+    assert "AssertionError" in summary, (
+        "Tail not preserved — _summarise has regressed to head-truncation. "
+        "Test failures live at the END of the output buffer; the LLM cannot "
+        "self-repair without seeing them."
+    )
+    assert "FAILED tests/test_x.py" in summary
+    assert "1 failed in 0.04s" in summary
+    # And the truncation marker should be at the START, signalling
+    # "we dropped earlier content" rather than "we dropped later content".
+    assert summary.startswith("...[truncated")
+
+
+def test_summarise_truncation_marker_includes_dropped_count():
+    """The marker tells the operator how much was discarded, useful
+    when grepping for "tail-only" outputs in JSONL dumps."""
+    text = "x" * 5000
+    summary = _summarise(text, max_len=1500)
+    assert "[truncated" in summary
+    # 5000 - 1500 = 3500 chars dropped from the head.
+    assert "3500" in summary
+
+
+def test_summarise_handles_none() -> None:
+    assert _summarise(None) == ""
+
+
+def test_summarise_coerces_non_string_input() -> None:
+    """Verifier might pass an int exit_code or dict — must not crash."""
+    assert _summarise(42, max_len=1500) == "42"
+    assert "key" in _summarise({"key": "value"}, max_len=1500)
+
+
+# ── Review fix #3 (2026-05-23) — _render_validation_error_message ───────────
+
+
+def test_render_validation_error_includes_phase_and_reason() -> None:
+    """The message must carry phase + reason so the LLM knows which
+    receipt to fix."""
+    err = {
+        "phase": "PLAN",
+        "reason": "missing required field 'target_files'",
+        "details": [],
+    }
+    msg = _render_validation_error_message(err)
+    assert msg["role"] == "user"
+    assert "PLAN" in msg["content"]
+    assert "missing required field" in msg["content"]
+    assert "submit_phase_output" in msg["content"]
+
+
+def test_render_validation_error_lists_per_field_details() -> None:
+    """When the validator returns structured per-field errors, the
+    rendered message must list them so the LLM can fix each one."""
+    err = {
+        "phase": "PLAN",
+        "reason": "schema violations",
+        "details": [
+            {"loc": "target_files", "msg": "field required"},
+            {"loc": "test_strategy.commands", "msg": "must be non-empty"},
+        ],
+    }
+    msg = _render_validation_error_message(err)
+    assert "target_files" in msg["content"]
+    assert "field required" in msg["content"]
+    assert "test_strategy.commands" in msg["content"]
+
+
+def test_render_validation_error_warns_about_retry_budget() -> None:
+    """The message tells the LLM it has one retry attempt — gives
+    the model a fair chance to allocate its remaining tokens to a
+    correct submission rather than re-burning them on the broken
+    shape."""
+    msg = _render_validation_error_message({"phase": "PLAN", "reason": "x"})
+    assert "one retry" in msg["content"]
+    assert "VALIDATION_BLOCKED" in msg["content"]
+
+
+def test_render_validation_error_handles_non_dict_gracefully() -> None:
+    """Defensive: a future error shape we don't recognise shouldn't
+    crash the loop. Renders a generic fallback message."""
+    msg = _render_validation_error_message("string error")
+    assert msg["role"] == "user"
+    assert "string error" in msg["content"]
+    assert "Re-submit" in msg["content"]
+
+
+def test_render_validation_error_caps_detail_count() -> None:
+    """An overzealous validator could return hundreds of per-field
+    errors; the message caps at 10 to keep the prompt bounded."""
+    err = {
+        "phase": "PLAN",
+        "reason": "many errors",
+        "details": [{"loc": f"field_{i}", "msg": "bad"} for i in range(50)],
+    }
+    msg = _render_validation_error_message(err)
+    # Detail lines start with "  - "; count them.
+    detail_lines = [
+        line for line in msg["content"].splitlines() if line.startswith("  - ")
+    ]
+    assert len(detail_lines) == 10

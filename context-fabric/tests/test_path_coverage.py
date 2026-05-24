@@ -168,3 +168,50 @@ def test_error_payload_shape():
     assert payload["phase"] == "ACT"
     assert "reason" in payload
     assert payload["uncovered_targets"] == ["a.py", "b.py"]
+
+
+# ── Review fix #4 (2026-05-23) — Windows backslash normalisation ────────────
+
+
+def test_windows_backslash_paths_match_forward_slash_plan():
+    """REGRESSION GUARD for review fix #4.
+
+    Before the fix, _normalise didn't convert ``\\`` → ``/``, so a
+    plan that listed ``src/foo.py`` and an EditReceipt that emitted
+    ``src\\foo.py`` (from a Windows operator or a repo using
+    native backslashes) failed the path-set comparison and tripped
+    PHASE_COVERAGE_GAP even though the right file was edited.
+
+    Now the normaliser flips backslashes first, so the two forms
+    compare equal.
+    """
+    plan = {"target_files": ["src/foo.py", "src/bar.py"]}
+    edit = {
+        "edits": [
+            {"file": "src\\foo.py", "edit_type": "apply_patch", "reason": "x"},
+            {"file": "src\\bar.py", "edit_type": "apply_patch", "reason": "y"},
+        ]
+    }
+    gap = check_path_coverage(plan, edit)
+    assert gap is None, (
+        "PHASE_COVERAGE_GAP triggered on Windows-style backslash paths "
+        "that match the planned forward-slash paths — _normalise has "
+        "regressed."
+    )
+
+
+def test_mixed_slashes_normalise_to_match():
+    """Reverse direction: plan uses backslashes, edit uses forward
+    slashes. Same equality requirement."""
+    plan = {"target_files": ["src\\app\\main.py"]}
+    edit = {"edits": [{"file": "src/app/main.py", "edit_type": "apply_patch", "reason": "x"}]}
+    assert check_path_coverage(plan, edit) is None
+
+
+def test_dot_slash_with_backslash_strips_correctly():
+    """`.\\foo.py` should normalise to `foo.py`. Tests that the
+    backslash → forward-slash replacement runs BEFORE the `./` strip
+    loop, so `.\\foo.py` → `./foo.py` → `foo.py`."""
+    plan = {"target_files": ["foo.py"]}
+    edit = {"edits": [{"file": ".\\foo.py", "edit_type": "apply_patch", "reason": "x"}]}
+    assert check_path_coverage(plan, edit) is None

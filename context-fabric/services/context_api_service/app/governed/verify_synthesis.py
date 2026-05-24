@@ -156,14 +156,23 @@ def _first_runnable(recommended: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def _summarise(text: Any, *, max_len: int = 1500) -> str:
-    """Coerce + truncate. Verifier outputs are routinely 100KB+; we
-    only want the head for the LLM prompt."""
+    """Coerce + truncate verifier output for the LLM prompt.
+
+    Fix (review issue #2, 2026-05-23) — we used to truncate from the
+    end (keep head). That blinded the LLM to pytest/jest tracebacks
+    and AssertionError details because every test framework prints
+    setup logs first and the actual failure last. The LLM saw "the
+    run failed" but never saw WHY, so self-repair couldn't engage.
+    Now we keep the TAIL and drop the head — tracebacks land near
+    the end of the buffer and that's what the LLM needs to read.
+    """
     if text is None:
         return ""
     s = str(text)
     if len(s) <= max_len:
         return s
-    return s[: max_len - 80].rstrip() + f"\n...[truncated from {len(s)} chars]"
+    dropped = len(s) - max_len
+    return f"...[truncated {dropped} earlier chars]\n" + s[-max_len:]
 
 
 async def synthesize_verifier_run(

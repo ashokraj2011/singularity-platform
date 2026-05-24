@@ -59,6 +59,26 @@ _MAX_ASSISTANT_TEXT_SUMMARY = 120
 """Per-turn assistant content preview length inside the breadcrumb."""
 
 
+_BREADCRUMB_MARKER = "[TURN-"
+_BREADCRUMB_TAIL = "-RECAP]"
+
+
+def _count_breadcrumbs(prelude: list[dict[str, Any]]) -> int:
+    """Count "[TURN-N-RECAP]" messages in a prelude slice. Used to
+    preserve monotonic turn-index numbering across multiple
+    compression passes (see review fix #1)."""
+    count = 0
+    for msg in prelude:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content") or ""
+        if isinstance(content, str) and content.startswith(_BREADCRUMB_MARKER) and _BREADCRUMB_TAIL in content:
+            count += 1
+    return count
+
+
 def _is_assistant_start(msg: dict[str, Any]) -> bool:
     """A turn group starts at the assistant message that closed
     the prior LLM call. Anything else (user/system/tool) is either
@@ -195,11 +215,28 @@ def compress_history(
     if len(groups) <= recent_turns:
         return messages
 
+    # Fix (review issue #1, 2026-05-23) — turn_index reset bug.
+    #
+    # compress_history is called every turn. After the first call, the
+    # previously-emitted "[TURN-N-RECAP]" breadcrumbs are user-role
+    # messages, so _split_into_groups classifies them into `prelude`
+    # rather than as their own assistant-headed groups. Without
+    # accounting for that, the next compression run starts numbering
+    # at 1 again — operators (and the LLM) see multiple
+    # "[TURN-1-RECAP]" entries with no chronological order.
+    #
+    # Count existing breadcrumbs in the prelude and offset new
+    # indices past them so the breadcrumb stream stays monotonic
+    # across compression passes.
+    existing_breadcrumbs = _count_breadcrumbs(prelude)
+
     cutoff = len(groups) - recent_turns
     out: list[dict[str, Any]] = list(prelude)
     for idx, group in enumerate(groups[:cutoff]):
-        # turn_index is 1-based for human display in the breadcrumb
-        out.append(_compress_group(group, turn_index=idx + 1))
+        # turn_index is 1-based for human display in the breadcrumb.
+        # +existing_breadcrumbs preserves chronological numbering
+        # across multiple compression passes.
+        out.append(_compress_group(group, turn_index=existing_breadcrumbs + idx + 1))
     for group in groups[cutoff:]:
         out.extend(group)
     return out

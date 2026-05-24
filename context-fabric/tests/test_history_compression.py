@@ -233,3 +233,97 @@ def test_default_recent_turns_exported_for_callers():
     """stage_driver's signature defaults to this; tests pin the value
     so an accidental change in the constants module surfaces here."""
     assert DEFAULT_RECENT_TURNS == 8
+
+
+# ── Review fix #1 (2026-05-23) — turn-index preservation ─────────────────────
+
+
+def test_breadcrumb_turn_index_preserved_across_compression_passes():
+    """Regression test for the turn-index reset bug.
+
+    Before the fix: stage_driver calls compress_history every turn.
+    On the second call, the previous "[TURN-N-RECAP]" breadcrumbs
+    were user-role messages, so they got swept into `prelude` and
+    the new compression run started numbering at 1 again — operators
+    saw multiple "[TURN-1-RECAP]" entries with no chronological
+    ordering, which confused both the LLM and post-hoc debuggers.
+
+    After the fix: _count_breadcrumbs offsets the new indices past
+    any pre-existing breadcrumbs, so the stream stays monotonic.
+    """
+    # Build a 20-turn history (10 old + 10 new), compress in two
+    # passes, and check the breadcrumb numbering is monotonic.
+    first_batch: list[dict] = []
+    for i in range(14):
+        first_batch.extend(_turn("read_file", {"path": f"old{i}.py"}, text=f"old {i}"))
+
+    # Pass 1: compress with recent_turns=4 → 10 breadcrumbs + 4 verbatim.
+    pass1 = compress_history(first_batch, recent_turns=4)
+    breadcrumbs_pass1 = [m for m in pass1 if isinstance(m.get("content"), str)
+                        and m["content"].startswith("[TURN-")]
+    assert len(breadcrumbs_pass1) == 10
+    # Pass 1 numbering: 1..10.
+    for i, bc in enumerate(breadcrumbs_pass1):
+        assert f"[TURN-{i + 1}-RECAP]" in bc["content"]
+
+    # Now simulate 6 more turns happening and compress again.
+    second_batch = list(pass1)
+    for i in range(6):
+        second_batch.extend(_turn("read_file", {"path": f"new{i}.py"}, text=f"new {i}"))
+
+    pass2 = compress_history(second_batch, recent_turns=4)
+    breadcrumbs_pass2 = [m for m in pass2 if isinstance(m.get("content"), str)
+                        and m["content"].startswith("[TURN-")]
+    # Pass 1: 14 turns → 10 breadcrumbs + 4 verbatim.
+    # Pass 2 input: 10 breadcrumbs (prelude) + 4 verbatim + 6 new = 10
+    # breadcrumbs + 10 verbatim turn groups. With recent_turns=4 we keep
+    # 4 verbatim and demote 6 → 10 + 6 = 16 total breadcrumbs.
+    assert len(breadcrumbs_pass2) == 16
+
+    # CRITICAL — every TURN-N must be unique and monotonic. Before
+    # the fix, the 6 newly-demoted breadcrumbs would re-use indices
+    # 1..6, duplicating the existing 1..10 prelude entries.
+    seen_indices: list[int] = []
+    for bc in breadcrumbs_pass2:
+        # Extract the N from "[TURN-N-RECAP]".
+        content = bc["content"]
+        n_str = content[len("[TURN-"):content.index("-RECAP]")]
+        seen_indices.append(int(n_str))
+    assert seen_indices == list(range(1, 17)), (
+        f"Expected monotonic indices 1..16, got {seen_indices}. "
+        "If this fails with duplicates like [1, 2, ..., 10, 1, 2, ..., 6], "
+        "the turn-index reset bug has regressed."
+    )
+
+
+def test_breadcrumb_turn_index_preserved_across_three_passes():
+    """Stronger version — three compression passes in a row. Each
+    pass should pick up where the previous left off."""
+    msgs: list[dict] = []
+    for i in range(10):
+        msgs.extend(_turn("read_file", {"path": f"f{i}.py"}))
+
+    pass1 = compress_history(msgs, recent_turns=4)
+    # Add 4 more turns.
+    for i in range(10, 14):
+        pass1.extend(_turn("read_file", {"path": f"f{i}.py"}))
+    pass2 = compress_history(pass1, recent_turns=4)
+    # Add 4 more turns.
+    for i in range(14, 18):
+        pass2.extend(_turn("read_file", {"path": f"f{i}.py"}))
+    pass3 = compress_history(pass2, recent_turns=4)
+
+    breadcrumbs = [m for m in pass3 if isinstance(m.get("content"), str)
+                  and m["content"].startswith("[TURN-")]
+    indices = [
+        int(m["content"][len("[TURN-"):m["content"].index("-RECAP]")])
+        for m in breadcrumbs
+    ]
+    # All indices must be distinct.
+    assert len(indices) == len(set(indices)), (
+        f"breadcrumb indices have duplicates: {indices}"
+    )
+    # And monotonically increasing.
+    assert indices == sorted(indices), (
+        f"breadcrumb indices not monotonic: {indices}"
+    )

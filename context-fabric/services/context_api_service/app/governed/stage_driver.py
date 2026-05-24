@@ -204,6 +204,51 @@ def _render_auto_verify_message(synth: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _render_validation_error_message(validation_error: Any) -> dict[str, Any]:
+    """Review fix #3 (2026-05-23) — render a phase_output validation
+    error as a user-role message so the LLM can see exactly what
+    was wrong with its receipt and fix it on the next turn.
+
+    `validation_error` is the dict returned by PhaseOutputInvalid.
+    to_dict() (see loop.py / validators.py); fields include `phase`,
+    `reason`, and `details` (a list of per-field problems).
+    """
+    if not isinstance(validation_error, dict):
+        # Defensive: if the shape isn't what we expect, still emit a
+        # message — losing the structured detail is better than the
+        # LLM seeing nothing and guessing.
+        return {
+            "role": "user",
+            "content": (
+                "[VALIDATION-ERROR] Your last phase_output failed "
+                f"validation: {validation_error}. Re-submit the receipt "
+                "with the correct shape."
+            ),
+        }
+    phase = validation_error.get("phase") or "?"
+    reason = validation_error.get("reason") or "shape did not match the required schema"
+    parts = [
+        f"[VALIDATION-ERROR] Your last {phase} phase_output failed validation.",
+        f"Reason: {reason}",
+    ]
+    details = validation_error.get("details") or []
+    if isinstance(details, list) and details:
+        parts.append("Per-field errors:")
+        for d in details[:10]:  # cap so a verbose error doesn't blow the prompt
+            if isinstance(d, dict):
+                loc = d.get("loc") or d.get("field") or "?"
+                msg = d.get("msg") or d.get("message") or str(d)
+                parts.append(f"  - {loc}: {msg}")
+            else:
+                parts.append(f"  - {d}")
+    parts.append(
+        "Fix the receipt shape and submit submit_phase_output again. "
+        "You have one retry attempt before the stage aborts with "
+        "VALIDATION_BLOCKED."
+    )
+    return {"role": "user", "content": "\n".join(parts)}
+
+
 def _render_eval_feedback_message(feedback: Any) -> dict[str, Any] | None:
     """M74 Phase 2B — render audit-gov's EvalFeedback shape as a user-
     role message that lands in the FIRST turn's prompt. Returns None
@@ -411,6 +456,32 @@ async def run_stage(
     # whether the current turn introduced anything novel.
     recent_signatures: deque[set[str]] = deque(maxlen=_STAGNANT_WINDOW_TURNS)
 
+    # Fix (review issue #3, 2026-05-23) — validation self-correction.
+    #
+    # Old behaviour: any validation_error returned VALIDATION_BLOCKED
+    # on the FIRST occurrence, contradicting loop.py's documented
+    # design ("the caller is expected to surface the structured
+    # details to the LLM so it can fix the receipt and retry the
+    # same phase"). A missing field in PlanReceipt aborted the whole
+    # stage and required an external retry — typically the most
+    # recoverable failure mode in the loop.
+    #
+    # New rule:
+    #   • Allow up to _VALIDATION_RETRY_BUDGET CONSECUTIVE validation
+    #     errors before aborting. Default 1 = one self-correction
+    #     attempt, matching the reviewer's "at least one attempt"
+    #     recommendation while preserving the safety property that
+    #     a stuck LLM doesn't burn the full turn budget.
+    #   • On a validation error we inject a user-role message into
+    #     next-turn history carrying the structured error details so
+    #     the LLM can actually see what to fix. Without this the
+    #     loop would just keep failing the same way.
+    #   • Counter resets on ANY successful step (phase advance or a
+    #     non-validation turn) — a transient error doesn't poison
+    #     a long-running session.
+    _VALIDATION_RETRY_BUDGET = 1
+    consecutive_validation_errors = 0
+
     for turn_idx in range(max_turns):
         try:
             turn = await run_turn(
@@ -488,10 +559,28 @@ async def run_stage(
             return result
 
         if turn.step.validation_error and not turn.step.phase_advanced:
-            # The LLM submitted a malformed receipt. Letting the loop run
-            # will burn turns on the same broken output. Surface to caller.
-            result.stop_reason = "VALIDATION_BLOCKED"
-            return result
+            consecutive_validation_errors += 1
+            if consecutive_validation_errors > _VALIDATION_RETRY_BUDGET:
+                # Retries exhausted. Original safety property preserved:
+                # surface to the caller rather than burn the entire turn
+                # budget on a stuck LLM.
+                result.stop_reason = "VALIDATION_BLOCKED"
+                return result
+            # Inject the structured validation error as a user-role
+            # message so the LLM sees what was wrong on the next turn.
+            # Without this the LLM has no feedback signal and would
+            # almost certainly fail the same way.
+            history.append(_render_validation_error_message(turn.step.validation_error))
+            # Don't reset on this branch — we want consecutive errors
+            # to accumulate. The other halt-condition resets below
+            # only fire on success paths, so this counter naturally
+            # zeroes when the next turn validates.
+            continue
+        else:
+            # Reset the counter on any non-validation step. A single
+            # bad receipt in the middle of an otherwise-healthy session
+            # shouldn't be remembered forever.
+            consecutive_validation_errors = 0
 
         # M74 Phase 1D — stagnant-phase guard with novelty exception.
         # See the comment near _STAGNANT_THRESHOLD above for the design.

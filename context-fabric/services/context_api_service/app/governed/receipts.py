@@ -196,6 +196,26 @@ class VerificationResultPayload(BaseModel):
                 "been executed to substantiate the verdict. If no verifier "
                 "could be run, set status='unavailable' with a `reason`."
             )
+        # Fix (review issue #5, 2026-05-23) — close the
+        # "confidently-wrong" loophole. The Phase 1C validator above
+        # only checked that commands_run was non-empty; it didn't
+        # check the exit codes. A model could submit
+        # status='passed' alongside a CommandResult with exit_code=1
+        # and the receipt would validate, letting it bypass the
+        # verification gate and advance to SELF_REVIEW with failing
+        # tests. Now: if status is 'passed', every command in
+        # commands_run must have exit_code == 0. If any failed, the
+        # correct status is 'failed' (which advances to REPAIR
+        # under the phase machine's verify→repair edge).
+        if self.status == "passed":
+            failed = [c.command for c in self.commands_run if c.exit_code != 0]
+            if failed:
+                raise ValueError(
+                    "VerificationResultPayload: status cannot be 'passed' when "
+                    f"underlying verifiers returned non-zero exit codes for: "
+                    f"{failed!r}. Either set status='failed' (advances to REPAIR), "
+                    "or fix the failing commands and re-run."
+                )
         if self.status == "unavailable" and not (self.reason and self.reason.strip()):
             raise ValueError(
                 "VerificationResultPayload: status='unavailable' requires a "
