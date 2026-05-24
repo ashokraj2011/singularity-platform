@@ -6663,16 +6663,31 @@ async function githubFetch(url: string, extraAccept?: string): Promise<Response>
     ...githubAuthHeader(),
   }
   let last: Response | null = null
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const resp = await fetch(url, { headers })
-    if (resp.ok) return resp
-    last = resp
-    // Only retry on 5xx — 4xx (404 missing repo, 401 bad token, 403 rate-limit)
-    // won't change on a second try.
-    if (resp.status < 500) return resp
-    if (attempt === 0) await new Promise(r => setTimeout(r, 750))
+  let lastError: unknown = null
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const resp = await fetch(url, { headers })
+      if (resp.ok) return resp
+      last = resp
+      // Only retry on 5xx — 4xx (404 missing repo, 401 bad token, 403 rate-limit)
+      // won't change on a second try.
+      if (resp.status < 500) return resp
+    } catch (err) {
+      // Network throw (undici "fetch failed", DNS, TLS, ECONNRESET).
+      // Without this catch the per-file excerpt loop in snapshotGithub
+      // crashed the whole snapshot on a single transient blip — fixed
+      // 2026-05-24 after a repeatable repro that left the session in
+      // FAILED with no actual repo error from GitHub.
+      lastError = err
+    }
+    // Exponential-ish backoff: 750ms, 1500ms. Keeps a flaky raw.githubusercontent
+    // request from racing back into the same DNS cache miss.
+    if (attempt < 2) await new Promise(r => setTimeout(r, 750 * (attempt + 1)))
   }
-  return last!
+  if (last) return last
+  // All three attempts were network throws — re-raise the last one so the
+  // snapshot route's catch block records a clean "fetch failed" with cause.
+  throw lastError
 }
 
 function githubErrorDetail(resp: Response): string {
