@@ -51,6 +51,7 @@ operator surface for "what is happening across services."
 - **M35.1** — anonymous-mode opt-in only (`AUDIT_GOV_ALLOW_ANONYMOUS_DEV=1`). Per-source-service allowlist.
 - **M35.3** — resource limits + healthcheck so dependent services can use `condition: service_healthy`.
 - **M63 Slice A** — `/audit/search` Splunk-like endpoint with Postgres tsvector FTS, multi-value filters, cursor pagination. New `search_vector` generated column with GIN index.
+- **Observability logs v1** — `/logs` ingest, `/logs/search`, `/logs/facets`, and `/traces/:traceId/timeline`; raw logs persist as NDJSON to filesystem storage by default with S3-compatible storage behind `LOG_STORAGE_BACKEND=s3`.
 - **M63 Slice B** — `/audit/stream` SSE live-tail.
 - **M63 Slice C** — `tool.filesystem.access` and `.sensitive` event kinds added (emitted by mcp-server).
 - **M63 Slice D** — `risk_level` column (low/medium/high/critical) classified at ingest. Backfill UPDATE on existing 7K rows.

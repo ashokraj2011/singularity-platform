@@ -77,7 +77,8 @@ def validate_phase_output(
     Passing `policy=None` skips the policy-schema layer; pass the loaded
     StagePolicy to also enforce stage-specific required-field overrides.
     """
-    model_cls = receipt_for_phase(phase)
+    agent_role = policy.agent_role if policy is not None else None
+    model_cls = receipt_for_phase(phase, agent_role=agent_role)
     if model_cls is None:
         # FINALIZE has no canonical receipt; nothing to validate beyond what
         # the loop already enforces (allowlist + finalize artifacts). Echo

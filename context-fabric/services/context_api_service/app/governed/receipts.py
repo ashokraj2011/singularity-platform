@@ -31,6 +31,11 @@ class ReceiptKind(str, Enum):
     REPAIR = "repair_receipt"
     SELF_REVIEW = "self_review_receipt"
     APPROVAL = "approval_receipt"
+    # Non-code stages run under the same governed loop but produce wholly
+    # different artifacts. Story intake (PRODUCT_OWNER) writes a narrative
+    # brief + acceptance criteria, not file edits.
+    STORY_INTAKE = "story_intake_receipt"
+    STORY_INTAKE_REVIEW = "story_intake_review_receipt"
 
 
 class _ReceiptBase(BaseModel):
@@ -336,6 +341,90 @@ class ApprovalReceipt(_ReceiptBase):
     blocked_actions: list[str] = Field(default_factory=list)
 
 
+# ─── Story-intake receipts (PRODUCT_OWNER stage) ─────────────────────────────
+
+
+class StoryIntakeReceipt(_ReceiptBase):
+    """Spec §17 — PRODUCT_OWNER intake output.
+
+    Runs in the PLAN phase slot but produces a wholly different shape from
+    the code-stage PlanReceipt: a narrative story brief, acceptance
+    criteria, and clarification questions. No code, no file targets, no
+    test strategy. Used by `validators.py` when the stage's agent_role is
+    PRODUCT_OWNER.
+
+    The 2026-05-24 RCA caught this gap: the loop validator was always
+    routing PLAN payloads to PlanReceipt, so PRODUCT_OWNER stages couldn't
+    advance no matter how well-formed the intake output was.
+    """
+
+    kind: Literal[ReceiptKind.STORY_INTAKE] = ReceiptKind.STORY_INTAKE
+    story_brief: str = Field(
+        ...,
+        min_length=1,
+        description="Markdown narrative of the user story, value, scope.",
+    )
+    acceptance_criteria: list[str] = Field(
+        ...,
+        min_length=1,
+        description="Discrete pass/fail conditions for the feature.",
+    )
+    open_questions: list[str] = Field(
+        default_factory=list,
+        description="Clarification questions that block planning.",
+    )
+
+
+class StoryIntakeReviewReceipt(_ReceiptBase):
+    """PRODUCT_OWNER's SELF_REVIEW output.
+
+    Smaller than the developer SelfReviewReceipt — the intake reviewer
+    only attests that the brief is ready (or not) for the planning stage
+    to consume.
+
+    Accepts BOTH the canonical `recommended_for_approval: bool` AND the
+    legacy `gate_recommendation: "PASS" | "NEEDS_REWORK" | "BLOCKED"`
+    that the PRODUCT_OWNER prompt has carried since the M71 cutover.
+    The 2026-05-24 RCA found the model defaulting to the legacy field
+    because the prompt asks for both shapes; rather than force a prompt
+    fork (and re-cache invalidation) we coerce here.
+    """
+
+    kind: Literal[ReceiptKind.STORY_INTAKE_REVIEW] = ReceiptKind.STORY_INTAKE_REVIEW
+    recommended_for_approval: bool = Field(
+        ...,
+        description="True when the story brief is ready for ARCHITECT planning.",
+    )
+    risk_summary: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Structured note on outstanding risks / blockers.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_gate_recommendation(cls, data: Any) -> Any:
+        """When the model emits `gate_recommendation: "PASS"` (or NEEDS_REWORK /
+        BLOCKED) without an explicit `recommended_for_approval`, fold the
+        verdict into the canonical bool.
+
+        Only fires when the canonical field is missing — an explicit
+        `recommended_for_approval` always wins so operators can still set
+        false even when the verdict text looks positive.
+        """
+        if not isinstance(data, dict):
+            return data
+        if "recommended_for_approval" in data and data["recommended_for_approval"] is not None:
+            return data
+        verdict = data.get("gate_recommendation") or data.get("recommendation")
+        if isinstance(verdict, str):
+            verdict_upper = verdict.strip().upper()
+            if verdict_upper == "PASS":
+                data["recommended_for_approval"] = True
+            elif verdict_upper in {"NEEDS_REWORK", "BLOCKED", "FAIL", "REJECT"}:
+                data["recommended_for_approval"] = False
+        return data
+
+
 # ─── Phase → receipt lookup ──────────────────────────────────────────────────
 
 
@@ -352,7 +441,34 @@ _PHASE_TO_MODEL: dict[Phase, type[_ReceiptBase]] = {
 }
 
 
-def receipt_for_phase(phase: Phase) -> type[_ReceiptBase] | None:
+# Stage-specific overrides. Keyed by (agent_role, phase) — when the loop
+# validator sees a stage whose policy declares one of these agent roles
+# AND the current phase is in this map, it uses the override instead of
+# the canonical _PHASE_TO_MODEL entry. Anything not listed here falls
+# through to the default.
+#
+# Today this carries the PRODUCT_OWNER → story-intake mapping; future
+# non-code stage families (e.g. RELEASE → release-notes receipt) plug in
+# the same way without touching the validators.
+_AGENT_ROLE_PHASE_OVERRIDES: dict[tuple[str, Phase], type[_ReceiptBase]] = {
+    ("PRODUCT_OWNER", Phase.PLAN): StoryIntakeReceipt,
+    ("PRODUCT_OWNER", Phase.SELF_REVIEW): StoryIntakeReviewReceipt,
+}
+
+
+def receipt_for_phase(
+    phase: Phase, agent_role: str | None = None
+) -> type[_ReceiptBase] | None:
     """Return the Pydantic model the validator should use for `phase`, or
-    None for phases that don't emit a structured receipt (FINALIZE)."""
+    None for phases that don't emit a structured receipt (FINALIZE).
+
+    When `agent_role` is supplied AND (agent_role, phase) appears in the
+    overrides table, the override wins. This lets non-code stages
+    (PRODUCT_OWNER intake, future RELEASE notes, etc.) reuse the same
+    phase slots without having to share the developer-receipt shape.
+    """
+    if agent_role:
+        override = _AGENT_ROLE_PHASE_OVERRIDES.get((agent_role, phase))
+        if override is not None:
+            return override
     return _PHASE_TO_MODEL.get(phase)

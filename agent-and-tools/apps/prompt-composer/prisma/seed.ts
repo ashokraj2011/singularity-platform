@@ -411,8 +411,8 @@ const loopDeveloperPlanTask = [
   "- external_side_effects_required: true only if this needs network/deploy/API calls beyond local repo work.",
   "- config_inspected_files: OPTIONAL. If the repo's structure is unclear (multi-module Gradle/Maven, monorepo, workspace members), you may read ONE config file (e.g. settings.gradle.kts, pom.xml, pyproject.toml) and list it here. Validator refuses more than 1 — defer broader reads to EXPLORE.",
   "",
-  "Allowed tools: repo_map, symbol_search, list_files, read_repo_instructions, read_workitem, read_file (capped at 1 invocation for config discovery — M72B).",
-  "Soft budget: 4 tool calls total this phase. Use repo_map/symbol_search first; only fall back to read_file when the repo's layout genuinely blocks planning.",
+  "Allowed tools: repo_map, find_symbol, list_indexed_files, read_file (capped at 1 invocation for config discovery — M72B).",
+  "Soft budget: 4 tool calls total this phase. Use repo_map/find_symbol first; only fall back to read_file when the repo's layout genuinely blocks planning.",
   "DO NOT call apply_patch, run_test, or finish_work_branch — those belong to later phases. Tool gateway will refuse them.",
 ].join("\n");
 
@@ -429,7 +429,7 @@ const loopDeveloperExploreTask = [
   "- implementation_findings: short bullet list of what you learned that shapes the edit.",
   "- updated_target_files: revised file list if PLAN was wrong.",
   "",
-  "Allowed tools: repo_map, symbol_search, find_symbol, get_symbol, get_ast_slice, get_dependencies, read_file, read_test_file, search_code, grep_lines, capture_test_baseline.",
+  "Allowed tools: repo_map, find_symbol, get_symbol, get_ast_slice, get_dependencies, read_file, search_code, grep_lines, capture_test_baseline.",
   "",
   "Prefer AST slices over full-file reads. Justify any read_file with a one-line reason. Call capture_test_baseline NOW with the PLAN's test_strategy.commands so pre-existing failures don't masquerade as your regression in VERIFY.",
   "",
@@ -446,10 +446,10 @@ const loopDeveloperActTask = [
   "",
   "Required output fields:",
   "- edits: array of {file, edit_type, reason, anchor_hash?, before_summary?, after_summary?}.",
-  "  edit_type ∈ {apply_patch, replace_text, replace_range, create_file, write_file}.",
+  "  edit_type ∈ {apply_patch, replace_text, replace_range, write_file}.",
   "  Every edit MUST have a reason — one short sentence on why this change satisfies the goal.",
   "",
-  "Allowed tools: apply_patch, replace_text, replace_range, create_file, write_file, read_file, get_ast_slice.",
+  "Allowed tools: apply_patch, replace_text, replace_range, write_file, read_file, get_ast_slice.",
   "Forbidden: shell_unrestricted, network_call, push_branch, deploy.",
   "",
   "Prefer patches over full-file rewrites. Use write_file only when the file is brand-new OR you're replacing the entire contents intentionally (e.g. a generated file). Existing files: apply_patch or replace_range.",
@@ -472,7 +472,7 @@ const loopDeveloperVerifyTask = [
   "  coverage is {targeted_tests, full_tests, lint, typecheck, compile} — booleans.",
   "  If status=unavailable, ALSO include a `reason` field explaining why no test could run.",
   "",
-  "Allowed tools: run_test, run_command, recommended_verification, verification_unavailable, git_diff, changed_files.",
+  "Allowed tools: run_test, run_command, recommended_verification, verification_unavailable, review_diff.",
   "",
   "Strategy: run the test commands from your PLAN's test_strategy.commands. If they don't apply, call recommended_verification to discover what does. If the repo genuinely has no runnable test for this change, emit verification_unavailable with the reason — this is the ONLY way to get past VERIFY without a passing receipt.",
   "",
@@ -514,7 +514,7 @@ const loopDeveloperSelfReviewTask = [
   "- diff_summary: {files_changed, lines_added, lines_deleted, notable_changes}.",
   "- verification_summary: short paragraph on what VERIFY proved.",
   "",
-  "Allowed tools: git_diff, changed_files, read_file.",
+  "Allowed tools: review_diff, read_file.",
   "",
   "If any criterion is `not_met` or `uncertain`, set recommended_for_approval=false and let the approver decide. False positives at this step waste human time; better to flag uncertainty.",
 ].join("\n");
@@ -532,7 +532,7 @@ const loopDeveloperFinalizeTask = [
   "- commit_sha: the final commit SHA on the work branch.",
   "- pull_request_url: present only if you opened a PR.",
   "",
-  "Allowed tools: finish_work_branch, git_commit, prepare_pull_request.",
+  "Allowed tools: finish_work_branch, git_commit.",
   "Forbidden: push_branch, deploy — those are workflow-node operations, not agent operations.",
   "",
   "Call finish_work_branch. Don't push. Don't deploy. The GIT_PUSH workflow node handles the push after approval.",
@@ -555,9 +555,9 @@ const loopQaPlanTask = [
   "- target_files: files you'll inspect (the developer's changed files + their tests).",
   "- test_strategy.commands: the verification commands you'll run — should subsume the developer's PLAN.test_strategy.commands and add regression checks.",
   "",
-  "Allowed tools: repo_map, symbol_search, list_files, read_repo_instructions, read_workitem, changed_files, git_diff.",
+  "Allowed tools: repo_map, find_symbol, list_indexed_files, review_diff.",
   "",
-  "Read the developer's diff first (via git_diff or changed_files), then decide what additional coverage you need.",
+  "Read the developer's diff first (via review_diff), then decide what additional coverage you need.",
 ].join("\n");
 
 const loopQaExploreTask = [
@@ -569,7 +569,7 @@ const loopQaExploreTask = [
   "",
   "Required output: context_used array (same shape as Developer EXPLORE).",
   "",
-  "Allowed tools: read_file, read_test_file, get_ast_slice, search_code, grep_lines, changed_files, git_diff.",
+  "Allowed tools: read_file, get_ast_slice, search_code, grep_lines, review_diff.",
   "",
   "Look for: untested edge cases, missing regression tests, traceability gaps between acceptance criteria and the diff.",
 ].join("\n");
@@ -584,7 +584,7 @@ const loopQaVerifyTask = [
   "Required output field:",
   "- verification_result: same shape as Developer VERIFY (status, commands_run, coverage).",
   "",
-  "Allowed tools: run_test, run_command, recommended_verification, verification_unavailable, git_diff, changed_files.",
+  "Allowed tools: run_test, run_command, recommended_verification, verification_unavailable, review_diff.",
   "",
   "Strategy: run the full test suite (not just targeted tests) + lint + typecheck if available. coverage.full_tests should be true if you actually ran them. status=failed means a regression — flag it but DO NOT mutate code; QA is read-only.",
 ].join("\n");
@@ -602,7 +602,7 @@ const loopQaSelfReviewTask = [
   "- verification_summary: short paragraph on what passed and what (if anything) is concerning.",
   "- traceability_matrix: object mapping acceptance_criteria → test_files (which test covers which criterion).",
   "",
-  "Allowed tools: read_file, git_diff, changed_files.",
+  "Allowed tools: read_file, review_diff.",
   "",
   "This is the certification step. Approver reads your output verbatim and decides whether to ship. Be precise about evidence. \"Tests pass\" is not evidence — \"mvn test passed 128/128 including the new SegmentEligibilityEvaluatorEmptyResponseTest\" is.",
 ].join("\n");
@@ -1120,7 +1120,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
     phases: [
       {
         phase: "PLAN",
-        allowedTools: ["repo_map", "symbol_search", "list_files", "read_repo_instructions", "read_workitem"],
+        allowedTools: ["repo_map", "find_symbol", "list_indexed_files"],
         requiredOutputSchema: {
           required: ["target_files", "symbols_to_inspect", "risk_level"],
           properties: {
@@ -1133,7 +1133,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
       },
       {
         phase: "EXPLORE",
-        allowedTools: ["repo_map", "symbol_search", "find_symbol", "get_symbol", "get_ast_slice", "get_dependencies", "read_file", "read_test_file", "search_code", "grep_lines"],
+        allowedTools: ["repo_map", "find_symbol", "get_symbol", "get_ast_slice", "get_dependencies", "read_file", "search_code", "grep_lines"],
         requiredOutputSchema: {
           required: ["context_used", "implementation_findings"],
           properties: {
@@ -1210,8 +1210,8 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
         // multi-module repos (nested Gradle/Maven, pyproject + workspace
         // members, etc.) couldn't reach a viable plan inside the previous
         // implicit 2-step budget — the agent would burn turns on
-        // repo_map/list_files alone and the run halted POLICY_BLOCKED.
-        allowedTools: ["repo_map", "symbol_search", "list_files", "read_repo_instructions", "read_workitem", "read_file"],
+        // repo_map/list_indexed_files alone and the run halted POLICY_BLOCKED.
+        allowedTools: ["repo_map", "find_symbol", "list_indexed_files", "read_file"],
         maxToolCalls: 4,
         requiredOutputSchema: {
           required: ["target_files", "expected_edits", "test_strategy", "risk_level"],
@@ -1244,7 +1244,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
       },
       {
         phase: "EXPLORE",
-        allowedTools: ["repo_map", "symbol_search", "find_symbol", "get_symbol", "get_ast_slice", "get_dependencies", "read_file", "read_test_file", "search_code", "grep_lines", "capture_test_baseline"],
+        allowedTools: ["repo_map", "find_symbol", "get_symbol", "get_ast_slice", "get_dependencies", "read_file", "search_code", "grep_lines", "capture_test_baseline"],
         requiredOutputSchema: {
           required: ["context_used", "implementation_findings"],
           properties: {
@@ -1256,7 +1256,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
       },
       {
         phase: "ACT",
-        allowedTools: ["apply_patch", "replace_text", "replace_range", "create_file", "write_file", "read_file", "get_ast_slice"],
+        allowedTools: ["apply_patch", "replace_text", "replace_range", "write_file", "read_file", "get_ast_slice"],
         forbiddenTools: ["shell_unrestricted", "network_call", "push_branch", "deploy"],
         requiredOutputSchema: {
           required: ["edits"],
@@ -1268,7 +1268,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
                 required: ["file", "edit_type", "reason"],
                 properties: {
                   file: { type: "string" },
-                  edit_type: { type: "string", enum: ["apply_patch", "replace_text", "replace_range", "create_file", "write_file"] },
+                  edit_type: { type: "string", enum: ["apply_patch", "replace_text", "replace_range", "write_file"] },
                   reason: { type: "string" },
                   anchor_hash: { type: "string" },
                 },
@@ -1279,7 +1279,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
       },
       {
         phase: "VERIFY",
-        allowedTools: ["run_test", "run_command", "verification_unavailable", "recommended_verification", "git_diff", "changed_files"],
+        allowedTools: ["run_test", "run_command", "verification_unavailable", "recommended_verification", "review_diff"],
         requiredOutputSchema: {
           required: ["verification_result"],
           properties: {
@@ -1310,7 +1310,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
       },
       {
         phase: "SELF_REVIEW",
-        allowedTools: ["git_diff", "changed_files", "read_file"],
+        allowedTools: ["review_diff", "read_file"],
         requiredOutputSchema: {
           required: ["recommended_for_approval", "acceptance_criteria_check", "risk_summary", "verification_summary"],
           properties: {
@@ -1335,7 +1335,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
       },
       {
         phase: "FINALIZE",
-        allowedTools: ["finish_work_branch", "git_commit", "prepare_pull_request"],
+        allowedTools: ["finish_work_branch", "git_commit"],
         forbiddenTools: ["push_branch", "deploy"],
         requiredOutputSchema: {
           required: ["branch_name", "commit_sha"],
@@ -1379,7 +1379,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
     phases: [
       {
         phase: "PLAN",
-        allowedTools: ["repo_map", "symbol_search", "list_files", "read_repo_instructions", "read_workitem", "changed_files", "git_diff"],
+        allowedTools: ["repo_map", "find_symbol", "list_indexed_files", "review_diff"],
         requiredOutputSchema: {
           required: ["target_files", "test_strategy"],
           properties: {
@@ -1396,7 +1396,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
       },
       {
         phase: "EXPLORE",
-        allowedTools: ["read_file", "read_test_file", "get_ast_slice", "search_code", "grep_lines", "changed_files", "git_diff"],
+        allowedTools: ["read_file", "get_ast_slice", "search_code", "grep_lines", "review_diff"],
         requiredOutputSchema: {
           required: ["context_used"],
           properties: { context_used: { type: "array" } },
@@ -1404,7 +1404,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
       },
       {
         phase: "VERIFY",
-        allowedTools: ["run_test", "run_command", "recommended_verification", "verification_unavailable", "git_diff", "changed_files"],
+        allowedTools: ["run_test", "run_command", "recommended_verification", "verification_unavailable", "review_diff"],
         requiredOutputSchema: {
           required: ["verification_result"],
           properties: {
@@ -1421,7 +1421,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
       },
       {
         phase: "SELF_REVIEW",
-        allowedTools: ["read_file", "git_diff", "changed_files"],
+        allowedTools: ["read_file", "review_diff"],
         requiredOutputSchema: {
           required: ["recommended_for_approval", "acceptance_criteria_check", "verification_summary"],
           properties: {

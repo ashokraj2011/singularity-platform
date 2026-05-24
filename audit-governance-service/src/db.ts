@@ -194,3 +194,78 @@ export async function ensureEngineEvalTables(): Promise<void> {
     );
   `);
 }
+
+export async function ensureObservabilityLogTables(): Promise<void> {
+  await pool.query(`
+    CREATE SCHEMA IF NOT EXISTS audit_governance;
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+    CREATE TABLE IF NOT EXISTS audit_governance.observability_logs (
+      id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      ts                    TIMESTAMPTZ NOT NULL,
+      level                 TEXT NOT NULL DEFAULT 'info',
+      service               TEXT NOT NULL,
+      environment           TEXT,
+      host                  TEXT,
+      trace_id              TEXT,
+      span_id               TEXT,
+      workflow_instance_id  TEXT,
+      workflow_node_id      TEXT,
+      work_item_id          TEXT,
+      work_item_code        TEXT,
+      capability_id         TEXT,
+      tenant_id             TEXT,
+      stage_key             TEXT,
+      agent_role            TEXT,
+      run_id                TEXT,
+      tool_name             TEXT,
+      model                 TEXT,
+      event_type            TEXT,
+      message               TEXT NOT NULL DEFAULT '',
+      payload               JSONB NOT NULL DEFAULT '{}'::jsonb,
+      raw_storage_uri       TEXT,
+      raw_storage_offset    BIGINT,
+      raw_storage_bytes     INTEGER,
+      created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    ALTER TABLE audit_governance.observability_logs
+      ADD COLUMN IF NOT EXISTS search_vector tsvector
+      GENERATED ALWAYS AS (
+        setweight(to_tsvector('english', coalesce(message, '')), 'A') ||
+        setweight(to_tsvector('english',
+          coalesce(service, '') || ' ' ||
+          coalesce(event_type, '') || ' ' ||
+          coalesce(tool_name, '') || ' ' ||
+          coalesce(model, '')), 'B') ||
+        setweight(to_tsvector('english',
+          coalesce(trace_id, '') || ' ' ||
+          coalesce(workflow_instance_id, '') || ' ' ||
+          coalesce(work_item_id, '') || ' ' ||
+          coalesce(capability_id, '') || ' ' ||
+          coalesce(stage_key, '')), 'B') ||
+        setweight(to_tsvector('english', coalesce(payload::text, '')), 'C')
+      ) STORED;
+
+    CREATE INDEX IF NOT EXISTS idx_observability_logs_ts
+      ON audit_governance.observability_logs(ts DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_observability_logs_trace
+      ON audit_governance.observability_logs(trace_id, ts DESC)
+      WHERE trace_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_observability_logs_service_ts
+      ON audit_governance.observability_logs(service, ts DESC);
+    CREATE INDEX IF NOT EXISTS idx_observability_logs_workflow_ts
+      ON audit_governance.observability_logs(workflow_instance_id, ts DESC)
+      WHERE workflow_instance_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_observability_logs_workitem_ts
+      ON audit_governance.observability_logs(work_item_id, ts DESC)
+      WHERE work_item_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_observability_logs_level_ts
+      ON audit_governance.observability_logs(level, ts DESC);
+    CREATE INDEX IF NOT EXISTS idx_observability_logs_event_ts
+      ON audit_governance.observability_logs(event_type, ts DESC)
+      WHERE event_type IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_observability_logs_search
+      ON audit_governance.observability_logs USING GIN (search_vector);
+  `);
+}

@@ -33,6 +33,7 @@ below but not exposed via HTTP yet.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -194,41 +195,124 @@ def _build_tool_descriptors(policy: StagePolicy, phase: Phase) -> list[dict[str,
     return descriptors
 
 
+@dataclass(frozen=True)
+class _MalformedSubmit:
+    """Captures a submit_phase_output call we couldn't extract a valid
+    receipt from. Surfaces to the caller (run_turn) so we can:
+
+      1. Emit a `governed.submit_phase_output_malformed` audit event
+         (previously silent — see code-review fix 2026-05-24).
+      2. Feed a structured error back to the LLM via stage_driver's
+         validation-error injection path so the next turn knows what
+         went wrong.
+
+    `reason` is the operator-readable explanation; `arg_keys` and
+    `payload_type` give the structured detail the LLM needs to self-
+    correct without us leaking arbitrary user data.
+    """
+
+    reason: str
+    arg_keys: list[str]
+    payload_type: str
+    next_phase_raw: str | None
+
+
 def _extract_phase_output(
     tool_calls: list[ChatToolCall],
-) -> tuple[dict[str, Any] | None, Phase | None, list[ChatToolCall]]:
-    """Split a turn's tool calls into (phase_output, next_phase, other_calls).
+) -> tuple[dict[str, Any] | None, Phase | None, list[ChatToolCall], _MalformedSubmit | None]:
+    """Split a turn's tool calls into (phase_output, next_phase, other_calls, malformed).
 
     If the LLM called `submit_phase_output`:
-      - Pull its `payload` (dict).
+      - Pull its `payload` (dict). When the provider stringified the payload
+        (some models JSON-encode the inner value of tool args even when the
+        outer arguments object is already an object), JSON-decode it.
       - Pull its `next_phase` (string → Phase enum, or None).
       - Remove it from the tool_calls list returned for dispatch.
 
-    Multiple `submit_phase_output` calls in one turn: the LAST one wins (the
-    LLM has the receipt-shape rules in the prompt; if it submits twice the
-    second is its corrected attempt).
+    When the call exists but produces NO usable phase_output, return a
+    `_MalformedSubmit` so the caller can:
+      - emit an audit event (otherwise this looks like a no-op turn from
+        outside the loop), and
+      - feed a corrective error message back into the next turn (otherwise
+        the LLM blindly repeats the same mistake until the stagnant-turn
+        guard fires).
+
+    Multiple `submit_phase_output` calls in one turn: the LAST valid one
+    wins. If none is valid, the LAST attempt drives the malformed report
+    so the LLM sees feedback on its most recent shape (the one it'd retry).
     """
     phase_output: dict[str, Any] | None = None
     next_phase: Phase | None = None
     other_calls: list[ChatToolCall] = []
+    last_malformed: _MalformedSubmit | None = None
     for call in tool_calls:
         if call.name != SUBMIT_PHASE_OUTPUT:
             other_calls.append(call)
             continue
         args = call.arguments or {}
-        payload = args.get("payload")
-        if isinstance(payload, dict):
-            phase_output = payload
+        payload_raw = args.get("payload")
+        # Some providers return arguments where the inner `payload` is
+        # still a JSON-encoded string even though llm_client.from_dict
+        # already parsed the OUTER arguments object. One more decode
+        # attempt before giving up. We also accept the case where the
+        # whole arguments object IS the payload (`{story_brief: ..., ...}`
+        # without a `payload` wrapper) since smaller models routinely
+        # collapse the wrapper.
+        payload: dict[str, Any] | None = None
+        if isinstance(payload_raw, dict):
+            payload = payload_raw
+        elif isinstance(payload_raw, str):
+            try:
+                decoded = json.loads(payload_raw)
+            except (json.JSONDecodeError, ValueError):
+                decoded = None
+            if isinstance(decoded, dict):
+                payload = decoded
+        elif payload_raw is None and isinstance(args, dict) and args:
+            # The model put receipt fields at the top level of arguments
+            # instead of nesting under `payload`. Pull them as the payload
+            # but strip `next_phase` so it doesn't end up inside the
+            # receipt itself.
+            collapsed = {k: v for k, v in args.items() if k != "next_phase"}
+            if collapsed:
+                payload = collapsed
+
         np_str = args.get("next_phase")
+        resolved_next: Phase | None = None
         if isinstance(np_str, str) and np_str:
             try:
-                next_phase = Phase(np_str)
+                resolved_next = Phase(np_str)
             except ValueError:
                 log.warning(
                     "submit_phase_output supplied unknown next_phase=%s; ignored", np_str
                 )
-                next_phase = None
-    return phase_output, next_phase, other_calls
+                resolved_next = None
+
+        if payload is not None:
+            phase_output = payload
+            next_phase = resolved_next
+            last_malformed = None  # a later good call clears prior malformed
+        else:
+            reason_bits: list[str] = []
+            if payload_raw is None:
+                reason_bits.append("missing required field `payload`")
+            elif isinstance(payload_raw, str):
+                reason_bits.append(
+                    "`payload` was a string; tried to JSON-decode it but the "
+                    "result was not a JSON object"
+                )
+            else:
+                reason_bits.append(
+                    f"`payload` had type {type(payload_raw).__name__}; "
+                    "expected a JSON object"
+                )
+            last_malformed = _MalformedSubmit(
+                reason="; ".join(reason_bits),
+                arg_keys=sorted(args.keys()) if isinstance(args, dict) else [],
+                payload_type=type(payload_raw).__name__ if payload_raw is not None else "missing",
+                next_phase_raw=np_str if isinstance(np_str, str) else None,
+            )
+    return phase_output, next_phase, other_calls, last_malformed
 
 
 async def run_turn(
@@ -378,7 +462,122 @@ async def run_turn(
     )
 
     # 5. Split tool calls.
-    phase_output, next_phase, other_calls = _extract_phase_output(response.tool_calls)
+    phase_output, next_phase, other_calls, malformed = _extract_phase_output(
+        response.tool_calls
+    )
+
+    # 5a. (Code-review fix 2026-05-24) — surface malformed submit_phase_output
+    # calls instead of silently dropping them. Without this:
+    #   - no audit event fires (operators can't tell why a stage stalled),
+    #   - the LLM gets no validation feedback (the stage_driver's
+    #     validation-error injection only runs when step.validation_error
+    #     is set), and
+    #   - the stagnant-turn guard eventually fires POLICY_BLOCKED, which
+    #     looks like a refusal but is actually a shape bug.
+    # We emit the event AND set a validation_error on the synthesized step
+    # result so stage_driver's existing retry/feedback path takes over.
+    if malformed is not None and phase_output is None and not other_calls:
+        log.info(
+            "submit_phase_output malformed phase=%s reason=%s",
+            state.current_phase.value,
+            malformed.reason,
+        )
+        await emit_governed_event(
+            kind="governed.submit_phase_output_malformed",
+            state=state,
+            policy=policy,
+            run_context=run_context,
+            payload={
+                "phase": state.current_phase.value,
+                "reason": malformed.reason,
+                "arg_keys": malformed.arg_keys,
+                "payload_type": malformed.payload_type,
+                "next_phase_raw": malformed.next_phase_raw,
+            },
+            severity="warn",
+        )
+        # Build a synthetic GovernedStepResult so the driver's existing
+        # validation_error retry path injects a corrective message into
+        # the next turn. We bypass governed_step entirely (nothing to
+        # dispatch and no receipt to validate) but keep the shape it
+        # would have produced.
+        synthetic_step = GovernedStepResult(
+            next_state=state,
+            from_phase=state.current_phase.value,
+            to_phase=state.current_phase.value,
+            validation_error={
+                "error_code": "SUBMIT_PHASE_OUTPUT_MALFORMED",
+                "phase": state.current_phase.value,
+                "reason": (
+                    "Your last submit_phase_output call could not be parsed: "
+                    f"{malformed.reason}. The synthetic tool expects "
+                    "arguments shaped exactly as "
+                    "{ payload: <object>, next_phase: <PHASE NAME or omit> }. "
+                    "`payload` must be a JSON object, not a string. Put the "
+                    "receipt fields described in your prompt INSIDE `payload`."
+                ),
+                "details": [
+                    {"field": "payload", "issue": malformed.reason},
+                ],
+                "arg_keys_seen": malformed.arg_keys,
+                "payload_type_seen": malformed.payload_type,
+            },
+        )
+        return TurnResult(
+            next_state=state,
+            step=synthetic_step,
+            llm={
+                "content": response.content,
+                "finish_reason": response.finish_reason,
+                "input_tokens": response.input_tokens,
+                "output_tokens": response.output_tokens,
+                "latency_ms": response.latency_ms,
+                "provider": response.provider,
+                "model": response.model,
+                "model_alias": response.model_alias,
+                "estimated_cost": response.estimated_cost,
+                "tool_call_count": len(response.tool_calls),
+            },
+            prompt={
+                "binding_id": prompt.binding_id,
+                "prompt_profile_id": prompt.prompt_profile_id,
+                "phase_used": prompt.phase,
+                "stage_key": prompt.stage_key,
+                "agent_role": prompt.agent_role,
+            },
+            policy={
+                "policy_id": policy.policy_id,
+                "stage_key": policy.stage_key,
+                "agent_role": policy.agent_role,
+                "version": policy.version,
+                "max_repair_attempts": policy.max_repair_attempts,
+            },
+        )
+
+    # 5b. No tool call at all is also a stagnant-turn risk — the LLM
+    # produced prose but didn't advance. Emit a marker event so the
+    # silent stagnant→POLICY_BLOCKED path is observable. We don't synthesize
+    # a validation_error here because the prompt itself may have asked for
+    # a thought-only turn (rare but allowed); the stagnant guard will still
+    # halt the stage after _STAGNANT_THRESHOLD repetitions.
+    if (
+        phase_output is None
+        and not other_calls
+        and malformed is None
+        and len(response.tool_calls) == 0
+    ):
+        await emit_governed_event(
+            kind="governed.no_tool_called",
+            state=state,
+            policy=policy,
+            run_context=run_context,
+            payload={
+                "phase": state.current_phase.value,
+                "content_chars": len(response.content or ""),
+                "finish_reason": response.finish_reason,
+            },
+            severity="warn",
+        )
 
     # 6. Hand to the governance oracle. Tool calls go through hard-refuse;
     # phase_output goes through the validator + state machine.

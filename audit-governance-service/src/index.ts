@@ -35,9 +35,10 @@ import { streamRouter } from "./routes-stream";
 // M65 Slice 1A — Token-savings read endpoints, migrated from
 // metrics-ledger. Single source of truth for savings analytics.
 import { savingsRouter } from "./routes-savings";
+import { logsRouter } from "./routes-logs";
 import { engineRouter } from "./engine/routes";
 import { startEngineSweep, stopEngineSweep } from "./engine/sweep";
-import { ensureEngineEvalTables } from "./db";
+import { ensureEngineEvalTables, ensureObservabilityLogTables } from "./db";
 
 // M35.1 — production-class envs refuse to start with weak secrets.
 // Mirrors @agentandtools/shared assertProductionSecret (inlined here
@@ -108,6 +109,9 @@ app.use("/api/v1",            searchRouter);
 app.use("/api/v1",            streamRouter);
 // M65 Slice 1A — GET /api/v1/savings/* (session, agent, best-mode, dashboard).
 app.use("/api/v1",            savingsRouter);
+// Operator log lake: structured logs + raw NDJSON storage, searchable by
+// trace/work item/service. Mounted as /api/v1/logs/* and /api/v1/traces/*.
+app.use("/api/v1",            logsRouter);
 app.use("/api/v1/engine",    engineRouter);
 
 // Error handler — translate ZodErrors and unknowns into JSON.
@@ -128,6 +132,11 @@ const server = app.listen(PORT, () => {
   void ensureEngineEvalTables().catch((err) => {
     // eslint-disable-next-line no-console
     console.error("[audit-gov] failed to ensure eval tables", err);
+  });
+
+  void ensureObservabilityLogTables().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error("[audit-gov] failed to ensure observability log tables", err);
   });
 
   // Start the Singularity Engine sweep worker.

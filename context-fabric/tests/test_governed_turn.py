@@ -133,10 +133,11 @@ def test_extract_phase_output_single_call():
             },
         )
     ]
-    payload, next_phase, others = _extract_phase_output(calls)
+    payload, next_phase, others, malformed = _extract_phase_output(calls)
     assert payload == {"target_files": ["a.py"]}
     assert next_phase is Phase.EXPLORE
     assert others == []
+    assert malformed is None
 
 
 def test_extract_phase_output_mixed_with_real_tools():
@@ -150,10 +151,11 @@ def test_extract_phase_output_mixed_with_real_tools():
             arguments={"payload": {"x": 1}, "next_phase": "EXPLORE"},
         ),
     ]
-    payload, next_phase, others = _extract_phase_output(calls)
+    payload, next_phase, others, malformed = _extract_phase_output(calls)
     assert payload == {"x": 1}
     assert next_phase is Phase.EXPLORE
     assert [c.name for c in others] == ["repo_map", "symbol_search"]
+    assert malformed is None
 
 
 def test_extract_phase_output_unknown_next_phase_dropped():
@@ -165,20 +167,94 @@ def test_extract_phase_output_unknown_next_phase_dropped():
             arguments={"payload": {"a": 1}, "next_phase": "gibberish"},
         )
     ]
-    payload, next_phase, others = _extract_phase_output(calls)
+    payload, next_phase, others, malformed = _extract_phase_output(calls)
     assert payload == {"a": 1}
     assert next_phase is None  # Unknown enum string is dropped, not raised.
+    assert malformed is None
 
 
-def test_extract_phase_output_missing_payload():
-    """If the LLM forgot the payload, we don't crash — payload stays None
-    and the validator will fail downstream with a clear message."""
+def test_extract_phase_output_missing_payload_reports_malformed():
+    """If the LLM forgot `payload` entirely AND didn't put any other keys
+    (besides next_phase) at the top of arguments, the call is malformed —
+    surface it so the next turn gets corrective feedback. Without this
+    the silent-drop hits the stagnant-turn guard after 3 retries.
+    """
     calls = [
         ChatToolCall(id="c1", name=SUBMIT_PHASE_OUTPUT, arguments={"next_phase": "EXPLORE"})
     ]
-    payload, next_phase, others = _extract_phase_output(calls)
+    payload, next_phase, others, malformed = _extract_phase_output(calls)
     assert payload is None
-    assert next_phase is Phase.EXPLORE
+    # next_phase was valid in isolation, but we don't advance without a
+    # payload — the caller treats malformed-not-None as the stop signal.
+    assert next_phase is None
+    assert malformed is not None
+    assert "missing required field `payload`" in malformed.reason
+    assert malformed.payload_type == "missing"
+    assert malformed.next_phase_raw == "EXPLORE"
+
+
+def test_extract_phase_output_stringified_payload_decoded():
+    """Some providers stringify the inner `payload` even when the outer
+    arguments object is already an object. JSON-decode the inner string
+    rather than silently dropping it.
+    """
+    calls = [
+        ChatToolCall(
+            id="c1",
+            name=SUBMIT_PHASE_OUTPUT,
+            arguments={
+                "payload": '{"story_brief": "X", "acceptance_criteria": ["a"]}',
+                "next_phase": "SELF_REVIEW",
+            },
+        )
+    ]
+    payload, next_phase, others, malformed = _extract_phase_output(calls)
+    assert payload == {"story_brief": "X", "acceptance_criteria": ["a"]}
+    assert next_phase is Phase.SELF_REVIEW
+    assert malformed is None
+
+
+def test_extract_phase_output_unparseable_string_payload_reports_malformed():
+    """A non-JSON string in `payload` is not silently dropped — operators
+    need to see the bad shape in audit-gov so they can fix the prompt or
+    swap the model.
+    """
+    calls = [
+        ChatToolCall(
+            id="c1",
+            name=SUBMIT_PHASE_OUTPUT,
+            arguments={"payload": "this is not JSON {{", "next_phase": "EXPLORE"},
+        )
+    ]
+    payload, next_phase, others, malformed = _extract_phase_output(calls)
+    assert payload is None
+    assert malformed is not None
+    assert "JSON-decode" in malformed.reason
+    assert malformed.payload_type == "str"
+
+
+def test_extract_phase_output_collapsed_wrapper_accepted():
+    """Smaller models routinely collapse the {payload: {...}} wrapper and
+    put receipt fields at the top level of arguments. Accept that shape —
+    it's the LLM's intent and the validator can sort out the rest.
+    """
+    calls = [
+        ChatToolCall(
+            id="c1",
+            name=SUBMIT_PHASE_OUTPUT,
+            arguments={
+                "story_brief": "Implement X",
+                "acceptance_criteria": ["a", "b"],
+                "next_phase": "SELF_REVIEW",
+            },
+        )
+    ]
+    payload, next_phase, others, malformed = _extract_phase_output(calls)
+    assert payload == {"story_brief": "Implement X", "acceptance_criteria": ["a", "b"]}
+    # next_phase is stripped from the collapsed payload but still resolved.
+    assert "next_phase" not in payload
+    assert next_phase is Phase.SELF_REVIEW
+    assert malformed is None
 
 
 def test_extract_phase_output_last_call_wins():
@@ -187,9 +263,57 @@ def test_extract_phase_output_last_call_wins():
         ChatToolCall(id="c1", name=SUBMIT_PHASE_OUTPUT, arguments={"payload": {"v": 1}}),
         ChatToolCall(id="c2", name=SUBMIT_PHASE_OUTPUT, arguments={"payload": {"v": 2}, "next_phase": "EXPLORE"}),
     ]
-    payload, next_phase, others = _extract_phase_output(calls)
+    payload, next_phase, others, malformed = _extract_phase_output(calls)
     assert payload == {"v": 2}
     assert next_phase is Phase.EXPLORE
+    assert malformed is None
+
+
+def test_extract_phase_output_last_good_wins_over_earlier_malformed():
+    """If the LLM mis-shapes the first attempt and corrects on the second,
+    we take the second. The malformed report is cleared (the LLM already
+    self-corrected within the same turn)."""
+    calls = [
+        ChatToolCall(id="c1", name=SUBMIT_PHASE_OUTPUT, arguments={"next_phase": "EXPLORE"}),
+        ChatToolCall(
+            id="c2",
+            name=SUBMIT_PHASE_OUTPUT,
+            arguments={"payload": {"v": 2}, "next_phase": "EXPLORE"},
+        ),
+    ]
+    payload, next_phase, others, malformed = _extract_phase_output(calls)
+    assert payload == {"v": 2}
+    assert next_phase is Phase.EXPLORE
+    assert malformed is None
+
+
+def test_extract_phase_output_malformed_after_good_keeps_good():
+    """A malformed second call does NOT clobber a valid first call's
+    payload — we'd rather validate the good one than throw it away just
+    because the LLM produced a second confused tool call in the same turn.
+
+    The malformed flag is still set so audit-gov shows the operator the
+    model emitted a sketchy retry, but run_turn's malformed-handling
+    branch only fires when phase_output is also None, so this case
+    proceeds normally to receipt validation with the good payload.
+    """
+    calls = [
+        ChatToolCall(
+            id="c1",
+            name=SUBMIT_PHASE_OUTPUT,
+            arguments={"payload": {"v": 1}, "next_phase": "EXPLORE"},
+        ),
+        ChatToolCall(id="c2", name=SUBMIT_PHASE_OUTPUT, arguments={"next_phase": "EXPLORE"}),
+    ]
+    payload, next_phase, others, malformed = _extract_phase_output(calls)
+    assert payload == {"v": 1}
+    assert next_phase is Phase.EXPLORE
+    # The malformed report is set (the second call WAS malformed) but
+    # run_turn's gate `phase_output is None and not other_calls` is
+    # False here, so the malformed branch will not fire — the operator
+    # just gets the audit signal that the model's second emission was
+    # confused.
+    assert malformed is not None
 
 
 # ── _build_tool_descriptors ─────────────────────────────────────────────────

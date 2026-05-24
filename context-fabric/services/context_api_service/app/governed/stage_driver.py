@@ -118,10 +118,25 @@ def _history_from_turn(turn: TurnResult) -> list[dict[str, Any]]:
         })
 
     messages: list[dict[str, Any]] = []
-    if turn.llm.get("content") or tool_calls_block:
+    # (2026-05-24 RCA) — strip the assistant content before threading
+    # it into history. Anthropic's Messages API 400s on assistant content
+    # that ends with trailing whitespace ("messages: final assistant
+    # content cannot end with trailing whitespace"). Haiku occasionally
+    # emits content=" " (a single space) alongside a tool_call block; if
+    # we preserve that verbatim, the NEXT turn's request to Anthropic
+    # fails with a 400 and stops the entire stage. Stripping is safe —
+    # leading/trailing whitespace carries no semantic load, and an
+    # empty content string is fine for an assistant message that's
+    # only there to anchor a tool_call.
+    raw_content = turn.llm.get("content", "")
+    if isinstance(raw_content, str):
+        normalized_content = raw_content.strip()
+    else:
+        normalized_content = raw_content
+    if normalized_content or tool_calls_block:
         messages.append({
             "role": "assistant",
-            "content": turn.llm.get("content", ""),
+            "content": normalized_content,
             "tool_calls": tool_calls_block,
         })
 

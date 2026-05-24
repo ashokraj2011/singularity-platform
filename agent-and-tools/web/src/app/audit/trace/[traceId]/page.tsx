@@ -22,24 +22,21 @@
 import { use, useMemo } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { auditGovApi, type AuditEventRow } from "@/lib/api";
+import { auditGovApi, type TraceTimelineRow } from "@/lib/api";
 import { ArrowLeft, AlertTriangle, ShieldCheck, Activity } from "lucide-react";
 
 export default function TraceTimelinePage({ params }: { params: Promise<{ traceId: string }> }) {
   const { traceId } = use(params);
   const decoded = decodeURIComponent(traceId);
 
-  // We pull 500 events for the trace (~the upper bound of any
-  // realistic workflow). Forward sort by re-sorting client-side —
-  // the API returns DESC, we want ASC for the story view.
   const { data, error, isLoading } = useSWR(
     decoded ? `audit-trace-${decoded}` : null,
-    () => auditGovApi.auditSearch({ traceId: decoded, limit: 500 }),
+    () => auditGovApi.traceTimeline(decoded, 1_000),
   );
 
-  const events: AuditEventRow[] = useMemo(() => {
+  const events: TraceTimelineRow[] = useMemo(() => {
     const items = data?.items ?? [];
-    return [...items].sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+    return [...items].sort((a, b) => (a.ts < b.ts ? -1 : 1));
   }, [data]);
 
   // Quick stats for the header bar
@@ -47,9 +44,9 @@ export default function TraceTimelinePage({ params }: { params: Promise<{ traceI
     const out = { total: 0, errors: 0, warns: 0, highRisk: 0 };
     for (const ev of events) {
       out.total += 1;
-      if (ev.severity === "error") out.errors += 1;
-      if (ev.severity === "warn")  out.warns  += 1;
-      if (ev.risk_level === "high" || ev.risk_level === "critical") out.highRisk += 1;
+      if (ev.level === "error" || ev.level === "fatal") out.errors += 1;
+      if (ev.level === "warn") out.warns += 1;
+      if (ev.event_type.includes("denied") || ev.event_type.includes("failed") || ev.event_type.includes("conflict")) out.highRisk += 1;
     }
     return out;
   }, [events]);
@@ -89,45 +86,41 @@ export default function TraceTimelinePage({ params }: { params: Promise<{ traceI
           // are visually obvious. The colour is derived from a stable
           // hash of the service name so workgraph-api is always the
           // same colour across traces.
-          const bandHue = hashHue(ev.source_service);
+          const bandHue = hashHue(ev.service);
           const prev = events[idx - 1];
-          const isNewService = !prev || prev.source_service !== ev.source_service;
+          const isNewService = !prev || prev.service !== ev.service;
           const severityClass =
-            ev.severity === "error" ? "bg-red-100 text-red-700" :
-            ev.severity === "warn"  ? "bg-amber-100 text-amber-700" :
+            ev.level === "fatal" ? "bg-red-700 text-white" :
+            ev.level === "error" ? "bg-red-100 text-red-700" :
+            ev.level === "warn"  ? "bg-amber-100 text-amber-700" :
                                       "bg-slate-100 text-slate-600";
-          const riskBand = ev.risk_level === "critical" ? "border-l-red-400" :
-            ev.risk_level === "high" ? "border-l-amber-400" :
-            ev.risk_level === "medium" ? "border-l-yellow-300" :
-            "border-l-slate-200";
+          const riskBand = ev.level === "fatal" || ev.level === "error" ? "border-l-red-400" :
+            ev.level === "warn" ? "border-l-amber-400" :
+            ev.source === "log" ? "border-l-blue-300" : "border-l-slate-200";
           return (
             <li key={ev.id} className="flex items-start gap-3">
               <div className="w-24 shrink-0 text-right">
-                <div className="text-[11px] text-slate-500 tabular-nums">{new Date(ev.created_at).toLocaleTimeString(undefined, { hour12: false })}</div>
-                <div className="text-[9px] text-slate-400">{new Date(ev.created_at).toLocaleDateString()}</div>
+                <div className="text-[11px] text-slate-500 tabular-nums">{new Date(ev.ts).toLocaleTimeString(undefined, { hour12: false })}</div>
+                <div className="text-[9px] text-slate-400">{new Date(ev.ts).toLocaleDateString()}</div>
               </div>
               <div
                 className="w-1 self-stretch rounded-full shrink-0"
                 style={{ background: `hsl(${bandHue} 70% 60%)` }}
-                title={ev.source_service}
+                title={ev.service}
               />
               <div className={`flex-1 min-w-0 card p-2.5 border-l-4 ${riskBand}`}>
                 <div className="flex items-center gap-2 flex-wrap mb-1">
                   {isNewService && (
                     <span className="text-[10px] font-mono px-1.5 py-0.5 rounded" style={{ background: `hsl(${bandHue} 70% 95%)`, color: `hsl(${bandHue} 70% 35%)` }}>
-                      {ev.source_service}
+                      {ev.service}
                     </span>
                   )}
-                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${severityClass}`}>{ev.severity}</span>
-                  {ev.risk_level && ev.risk_level !== "low" && (
-                    <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500">{ev.risk_level}</span>
-                  )}
-                  <span className="font-medium text-slate-800 text-sm">{ev.kind}</span>
+                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded uppercase ${severityClass}`}>{ev.level}</span>
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400">{ev.source}</span>
+                  <span className="font-medium text-slate-800 text-sm">{ev.event_type}</span>
                 </div>
-                {ev.subject_type && (
-                  <div className="text-[10px] text-slate-400 font-mono">
-                    {ev.subject_type} / {ev.subject_id?.slice(0, 16)}
-                  </div>
+                {ev.message && ev.message !== ev.event_type && (
+                  <div className="text-[11px] text-slate-600 mb-1">{ev.message}</div>
                 )}
                 {ev.payload && Object.keys(ev.payload).length > 0 && (
                   <details className="mt-1">

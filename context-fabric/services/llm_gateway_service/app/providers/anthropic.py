@@ -55,20 +55,64 @@ def _to_anthropic(messages: List[ChatMessage]):
             })
             continue
         if m.role == "assistant":
-            try:
-                parsed = json.loads(m.content or "{}")
-                if isinstance(parsed, dict) and isinstance(parsed.get("tool_calls"), list) and parsed["tool_calls"]:
-                    out.append({
-                        "role": "assistant",
-                        "content": [
-                            {"type": "tool_use", "id": c.get("id"), "name": c.get("name"), "input": c.get("args") or {}}
-                            for c in parsed["tool_calls"]
-                        ],
+            # (2026-05-24 RCA) Prefer the structured tool_calls field.
+            # Callers (notably context-fabric stage_driver) now ship the
+            # list as a sibling of `content` instead of stringifying it
+            # inside content. Tolerate both gateway-flat
+            # ({id, name, args}) AND OpenAI-nested
+            # ({id, type, function: {name, arguments}}) shapes so older
+            # callers don't break.
+            structured_tc: Optional[List[Dict[str, Any]]] = m.tool_calls
+            if not structured_tc:
+                # Backward-compat: a legacy caller may still be JSON-
+                # encoding tool_calls into content. Try to recover it.
+                try:
+                    parsed = json.loads(m.content or "{}")
+                    if isinstance(parsed, dict) and isinstance(parsed.get("tool_calls"), list):
+                        structured_tc = parsed["tool_calls"]
+                except Exception:
+                    structured_tc = None
+            if structured_tc:
+                use_blocks: List[Dict[str, Any]] = []
+                for c in structured_tc:
+                    if not isinstance(c, dict):
+                        continue
+                    # Normalize OpenAI {id, type, function:{name, arguments}}
+                    # → flat {id, name, input}.
+                    fn = c.get("function") if isinstance(c.get("function"), dict) else None
+                    name = c.get("name") or (fn.get("name") if fn else None) or ""
+                    raw_input = c.get("args")
+                    if raw_input is None and fn is not None:
+                        raw_input = fn.get("arguments")
+                    if raw_input is None:
+                        raw_input = c.get("input")
+                    if isinstance(raw_input, str):
+                        try:
+                            raw_input = json.loads(raw_input)
+                        except Exception:
+                            raw_input = {"_raw": raw_input}
+                    if not isinstance(raw_input, dict):
+                        raw_input = {}
+                    use_blocks.append({
+                        "type": "tool_use",
+                        "id": c.get("id") or "",
+                        "name": name,
+                        "input": raw_input,
                     })
+                if use_blocks:
+                    out.append({"role": "assistant", "content": use_blocks})
                     continue
-            except Exception:
-                pass
-        out.append({"role": "assistant" if m.role == "assistant" else "user", "content": m.content or ""})
+        # (2026-05-24 RCA) Anthropic's Messages API 400s on assistant
+        # content with trailing whitespace. Defensive strip here so a
+        # buggy upstream caller can't kill the request — we'd rather
+        # send a benign empty/trimmed message than fail the whole turn.
+        # The same normalization lives in context-fabric's stage_driver
+        # but other callers (tests, agents-and-tools, future services)
+        # share this gateway so the defensive copy stays.
+        content = m.content or ""
+        if m.role == "assistant" and isinstance(content, str):
+            content = content.strip()
+        out.append({"role": "assistant" if m.role == "assistant" else "user", "content": content})
     system = "\n\n".join(s for s in system_chunks if s) if system_chunks else None
     return system, out
 
@@ -134,7 +178,12 @@ async def respond(
             delay = min(settings.upstream_rate_limit_max_sleep_sec, _retry_after_seconds(res))
             await asyncio.sleep(delay)
     if res.status_code != 200:
-        snippet = res.text[:400] if isinstance(res.text, str) else ""
+        # Widened snippet to 2000 chars (was 400) so the full Anthropic
+        # complaint always lands in the audit trail instead of being
+        # truncated mid-sentence. The 2026-05-24 tool_use_id RCA spent
+        # an extra round trip because the original snippet stopped at
+        # "found in `tool_r" — we never saw the block kind.
+        snippet = res.text[:2000] if isinstance(res.text, str) else ""
         raise AnthropicUpstreamError(res.status_code, f"anthropic returned {res.status_code}: {snippet}")
     data = res.json()
     text_content = ""

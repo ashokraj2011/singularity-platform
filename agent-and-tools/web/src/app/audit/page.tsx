@@ -24,10 +24,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { auditGovApi, runtimeApi, type AuditEventRow } from "@/lib/api";
+import { auditGovApi, runtimeApi, type AuditEventRow, type ObservabilityLogRow } from "@/lib/api";
 import {
   Activity, AlertTriangle, CheckCircle, ChevronRight, ChevronLeft,
-  FolderSearch, Pause, Play, RefreshCw, Search, ShieldCheck,
+  Database, FolderSearch, Pause, Play, RefreshCw, Search, ShieldCheck,
   Trash2, XCircle, Zap,
 } from "lucide-react";
 
@@ -58,6 +58,8 @@ const RELATIVE_TIMES = [
 export default function AuditPage() {
   const { data: summary } = useSWR("audit-summary", () => auditGovApi.summary(), { refreshInterval: 5_000 });
   const { data: facets }  = useSWR("audit-facets",  () => auditGovApi.auditFacets(), { refreshInterval: 60_000 });
+  const { data: logFacets } = useSWR("audit-log-facets", () => auditGovApi.logFacets(), { refreshInterval: 30_000 });
+  const { data: logHealth } = useSWR("audit-log-health", () => auditGovApi.logHealth(), { refreshInterval: 10_000 });
   const { data: capabilities } = useSWR("audit-capabilities", () => runtimeApi.listCapabilities());
   const { data: pendData, mutate: mutatePend } = useSWR(
     "audit-approvals-pending",
@@ -74,6 +76,19 @@ export default function AuditPage() {
   const [capabilityId, setCapabilityId] = useState("");
   const [actorId, setActorId] = useState("");
   const [traceId, setTraceId] = useState("");
+
+  // ── Error log state ─────────────────────────────────────────────────────
+  const [logQ, setLogQ] = useState("");
+  const [logLevels, setLogLevels] = useState<("warn" | "error" | "fatal")[]>(["error", "fatal"]);
+  const [logService, setLogService] = useState("");
+  const [logTraceId, setLogTraceId] = useState("");
+  const [logWorkItemId, setLogWorkItemId] = useState("");
+  const [logTimeRangeMs, setLogTimeRangeMs] = useState<number | null>(24 * 60 * 60 * 1000);
+  const [logRows, setLogRows] = useState<ObservabilityLogRow[]>([]);
+  const [logLoading, setLogLoading] = useState(false);
+  const [logError, setLogError] = useState<string | null>(null);
+  const [logNextCursor, setLogNextCursor] = useState<string | null>(null);
+  const [selectedLog, setSelectedLog] = useState<ObservabilityLogRow | null>(null);
 
   // ── Live tail state ──────────────────────────────────────────────────────
   const [tailOn, setTailOn] = useState(false);
@@ -116,6 +131,18 @@ export default function AuditPage() {
     };
   }, [q, selectedKinds, selectedSeverities, selectedRisks, timeRangeMs, capabilityId, actorId, traceId]);
 
+  const logFilter = useMemo(() => {
+    const since = logTimeRangeMs ? new Date(Date.now() - logTimeRangeMs).toISOString() : undefined;
+    return {
+      q: logQ.trim() || undefined,
+      levels: logLevels.length > 0 ? logLevels : undefined,
+      services: logService ? [logService] : undefined,
+      traceId: logTraceId || undefined,
+      workItemId: logWorkItemId || undefined,
+      since,
+    };
+  }, [logQ, logLevels, logService, logTraceId, logWorkItemId, logTimeRangeMs]);
+
   // ── Search action ────────────────────────────────────────────────────────
   const runSearch = useCallback(async (append = false) => {
     setLoading(true);
@@ -135,6 +162,24 @@ export default function AuditPage() {
     }
   }, [filter, nextCursor]);
 
+  const runLogSearch = useCallback(async (append = false) => {
+    setLogLoading(true);
+    setLogError(null);
+    try {
+      const res = await auditGovApi.logSearch({
+        ...logFilter,
+        limit: 100,
+        cursor: append ? logNextCursor ?? undefined : undefined,
+      });
+      setLogRows(prev => append ? [...prev, ...res.items] : res.items);
+      setLogNextCursor(res.nextCursor);
+    } catch (err) {
+      setLogError((err as Error).message);
+    } finally {
+      setLogLoading(false);
+    }
+  }, [logFilter, logNextCursor]);
+
   // Auto-search on filter change (debounced). Skip when tail is on —
   // the operator's looking at live data, not a static result set.
   useEffect(() => {
@@ -143,6 +188,12 @@ export default function AuditPage() {
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, selectedKinds, selectedSeverities, selectedRisks, timeRangeMs, capabilityId, actorId, traceId, tailOn]);
+
+  useEffect(() => {
+    const t = setTimeout(() => { void runLogSearch(false); }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logQ, logLevels, logService, logTraceId, logWorkItemId, logTimeRangeMs]);
 
   // ── Live tail wiring ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -227,6 +278,15 @@ export default function AuditPage() {
 
   const pending = (pendData?.items ?? []) as Approval[];
   const capabilityOptions = (capabilities ?? []) as Array<Record<string, unknown>>;
+  const errorLogCounts = useMemo(() => {
+    const out = { fatal: 0, error: 0, warn: 0 };
+    for (const row of logRows) {
+      if (row.level === "fatal") out.fatal += 1;
+      if (row.level === "error") out.error += 1;
+      if (row.level === "warn") out.warn += 1;
+    }
+    return out;
+  }, [logRows]);
 
   return (
     <div>
@@ -271,6 +331,138 @@ export default function AuditPage() {
           </div>
         </section>
       )}
+
+      {/* Error console */}
+      <section className="mb-8">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Error console</h2>
+            <p className="text-xs text-slate-500">Operational logs from the new log lake, optimized for debugging failed stages and stuck WorkItems.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] px-2 py-1 rounded-md border border-slate-200 bg-white text-slate-500 flex items-center gap-1">
+              <Database size={12} />
+              {logHealth?.storage.backend ?? "storage"} · {logHealth?.storage.path ?? logHealth?.storage.bucket ?? "not ready"}
+            </span>
+            <button
+              type="button"
+              className="text-xs px-3 py-1.5 rounded-md border bg-white border-slate-200 text-slate-600 hover:bg-slate-50 flex items-center gap-1.5"
+              onClick={() => void runLogSearch(false)}
+              disabled={logLoading}
+            >
+              <RefreshCw size={13} className={logLoading ? "animate-spin" : ""} /> Refresh errors
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+          <Tile icon={AlertTriangle} label="Fatal" value={errorLogCounts.fatal} highlight={errorLogCounts.fatal > 0 ? "red" : undefined} />
+          <Tile icon={AlertTriangle} label="Errors" value={errorLogCounts.error} highlight={errorLogCounts.error > 0 ? "red" : undefined} />
+          <Tile icon={AlertTriangle} label="Warnings" value={errorLogCounts.warn} highlight={errorLogCounts.warn > 0 ? "amber" : undefined} />
+          <Tile icon={Database} label="Stored logs" value={(logHealth?.ingested_count ?? 0).toLocaleString()} />
+        </div>
+
+        <div className="card p-3 mb-3 space-y-3">
+          <div className="flex items-center gap-2">
+            <Search size={14} className="text-slate-400 shrink-0" />
+            <input
+              className="flex-1 px-2 py-1.5 text-sm border border-slate-200 rounded-md font-mono"
+              placeholder='Search error logs — e.g. "workspace locked", timeout, anthropic, context-fabric'
+              value={logQ}
+              onChange={e => setLogQ(e.target.value)}
+            />
+            {logQ && <button onClick={() => setLogQ("")} className="text-slate-400 hover:text-slate-600"><XCircle size={14} /></button>}
+          </div>
+
+          <div className="flex flex-wrap gap-2 items-center">
+            <span className="text-[11px] uppercase tracking-wider text-slate-400">Level</span>
+            {(["fatal", "error", "warn"] as const).map(level => {
+              const active = logLevels.includes(level);
+              return (
+                <button
+                  key={level}
+                  type="button"
+                  className={`text-xs px-2.5 py-1 rounded-md border uppercase ${active ? "bg-red-50 border-red-200 text-red-700" : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"}`}
+                  onClick={() => setLogLevels(prev => active ? prev.filter(v => v !== level) as typeof prev : [...prev, level])}
+                >{level}</button>
+              );
+            })}
+            <button
+              type="button"
+              className="text-xs px-2.5 py-1 rounded-md border bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
+              onClick={() => setLogLevels(["warn", "error", "fatal"])}
+            >Warnings + errors</button>
+            <button
+              type="button"
+              className="text-xs px-2.5 py-1 rounded-md border bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
+              onClick={() => setLogLevels([])}
+            >All levels</button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-2">
+            <select
+              className="px-2 py-1.5 text-xs border border-slate-200 rounded-md"
+              value={logService}
+              onChange={e => setLogService(e.target.value)}
+            >
+              <option value="">All services</option>
+              {(logFacets?.services ?? []).map(service => (
+                <option key={service.service} value={service.service}>{service.service} ({service.count})</option>
+              ))}
+            </select>
+            <input
+              className="px-2 py-1.5 text-xs border border-slate-200 rounded-md font-mono lg:col-span-2"
+              placeholder="trace_id"
+              value={logTraceId}
+              onChange={e => setLogTraceId(e.target.value.trim())}
+            />
+            <input
+              className="px-2 py-1.5 text-xs border border-slate-200 rounded-md font-mono"
+              placeholder="work_item_id"
+              value={logWorkItemId}
+              onChange={e => setLogWorkItemId(e.target.value.trim())}
+            />
+            <select
+              className="px-2 py-1.5 text-xs border border-slate-200 rounded-md"
+              value={String(logTimeRangeMs)}
+              onChange={e => setLogTimeRangeMs(e.target.value === "all" ? null : Number(e.target.value))}
+            >
+              <option value={15 * 60 * 1000}>Last 15m</option>
+              <option value={60 * 60 * 1000}>Last 1h</option>
+              <option value={24 * 60 * 60 * 1000}>Last 24h</option>
+              <option value={7 * 24 * 60 * 60 * 1000}>Last 7d</option>
+              <option value="all">All time</option>
+            </select>
+          </div>
+        </div>
+
+        {logError && (
+          <div className="card p-3 mb-3 bg-red-50 border-red-200 text-red-800 text-sm">
+            Error-log search failed: {logError}
+          </div>
+        )}
+
+        <div className="space-y-1">
+          {logRows.slice(0, 100).map(log => (
+            <LogRowItem key={log.id} row={log} onClick={() => setSelectedLog(log)} />
+          ))}
+          {logRows.length === 0 && !logLoading && (
+            <p className="text-sm text-slate-400 p-6 text-center border border-dashed border-slate-200 rounded-lg">
+              No operational logs match this filter yet. Services need to emit to <code>/api/v1/logs</code> for richer diagnostics.
+            </p>
+          )}
+        </div>
+        {logNextCursor && (
+          <div className="text-center mt-3">
+            <button
+              type="button"
+              className="btn-secondary text-xs"
+              onClick={() => void runLogSearch(true)}
+              disabled={logLoading}
+            >Load more logs</button>
+          </div>
+        )}
+      </section>
 
       {/* Activity log */}
       <section>
@@ -494,6 +686,15 @@ export default function AuditPage() {
           onFilterByActor={(id) => { setActorId(id); setSelectedRow(null); }}
         />
       )}
+      {selectedLog && (
+        <LogDrawer
+          log={selectedLog}
+          onClose={() => setSelectedLog(null)}
+          onFilterTrace={(id) => { setLogTraceId(id); setSelectedLog(null); }}
+          onFilterWorkItem={(id) => { setLogWorkItemId(id); setSelectedLog(null); }}
+          onFilterService={(service) => { setLogService(service); setSelectedLog(null); }}
+        />
+      )}
     </div>
   );
 }
@@ -533,6 +734,42 @@ function RowItem({ row, onClick }: { row: AuditEventRow; onClick: () => void }) 
         )}
         <ChevronRight size={12} className="text-slate-300 shrink-0" />
       </div>
+    </button>
+  );
+}
+
+function LogRowItem({ row, onClick }: { row: ObservabilityLogRow; onClick: () => void }) {
+  const levelClass =
+    row.level === "fatal" ? "bg-red-700 text-white" :
+    row.level === "error" ? "bg-red-100 text-red-700" :
+    row.level === "warn"  ? "bg-amber-100 text-amber-700" :
+                             "bg-slate-100 text-slate-600";
+  const message = row.message || row.event_type || "log";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full text-left card p-3 hover:border-red-200 hover:bg-red-50/30 transition-colors"
+    >
+      <div className="flex items-start gap-3 text-xs">
+        <span className="text-[10px] text-slate-400 w-24 shrink-0 font-mono tabular-nums">
+          {new Date(row.ts).toLocaleTimeString(undefined, { hour12: false })}
+        </span>
+        <span className={`shrink-0 px-1.5 py-0.5 rounded font-mono text-[10px] uppercase ${levelClass}`}>{row.level}</span>
+        <span className="text-slate-500 text-[10px] font-mono w-36 shrink-0 truncate">{row.service}</span>
+        <span className="font-medium text-slate-900 flex-1 truncate">{message}</span>
+        {row.stage_key && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{row.stage_key}</span>}
+        {row.trace_id && <code className="text-[10px] text-slate-400 truncate max-w-[180px]">trace={row.trace_id}</code>}
+        <ChevronRight size={12} className="text-slate-300 shrink-0" />
+      </div>
+      {(row.event_type || row.work_item_id || row.tool_name || row.model) && (
+        <div className="mt-1 ml-[8.25rem] flex items-center gap-2 text-[10px] text-slate-400 font-mono flex-wrap">
+          {row.event_type && <span>{row.event_type}</span>}
+          {row.work_item_id && <span>workItem={row.work_item_id}</span>}
+          {row.tool_name && <span>tool={row.tool_name}</span>}
+          {row.model && <span>model={row.model}</span>}
+        </div>
+      )}
     </button>
   );
 }
@@ -600,6 +837,83 @@ function EventDrawer({
             <div className="text-[11px] uppercase tracking-wider text-slate-400 mb-1">Payload</div>
             <pre className="text-[11px] bg-slate-50 border border-slate-200 rounded p-3 overflow-auto font-mono leading-relaxed">
               {JSON.stringify(event.payload, null, 2)}
+            </pre>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function LogDrawer({
+  log, onClose, onFilterTrace, onFilterWorkItem, onFilterService,
+}: {
+  log: ObservabilityLogRow;
+  onClose: () => void;
+  onFilterTrace: (id: string) => void;
+  onFilterWorkItem: (id: string) => void;
+  onFilterService: (service: string) => void;
+}) {
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} />
+      <div className="fixed right-0 top-0 bottom-0 w-full max-w-2xl bg-white shadow-2xl z-50 flex flex-col">
+        <header className="border-b border-slate-200 p-4 flex items-center gap-2">
+          <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded"><ChevronLeft size={18} /></button>
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold text-slate-900 truncate">{log.message || log.event_type || "Operational log"}</div>
+            <div className="text-[11px] text-slate-500 font-mono">{log.id}</div>
+          </div>
+        </header>
+        <div className="flex-1 overflow-auto p-4 space-y-4">
+          <DefList items={[
+            ["Time", new Date(log.ts).toISOString()],
+            ["Service", log.service],
+            ["Level", log.level],
+            ["Event type", log.event_type ?? "—"],
+            ["Trace", log.trace_id ?? "—"],
+            ["WorkItem", log.work_item_id ?? "—"],
+            ["Workflow", log.workflow_instance_id ?? "—"],
+            ["Stage", log.stage_key ?? "—"],
+            ["Tool", log.tool_name ?? "—"],
+            ["Model", log.model ?? "—"],
+            ["Raw storage", log.raw_storage_uri ?? "—"],
+          ]} />
+
+          <div>
+            <div className="text-[11px] uppercase tracking-wider text-slate-400 mb-1">Actions</div>
+            <div className="flex flex-wrap gap-2">
+              {log.trace_id && (
+                <Link
+                  href={`/audit/trace/${encodeURIComponent(log.trace_id)}`}
+                  className="text-xs px-2 py-1 rounded-md border border-singularity-200 bg-singularity-50 text-singularity-700 hover:bg-singularity-100"
+                >
+                  Open combined trace timeline →
+                </Link>
+              )}
+              {log.trace_id && (
+                <button
+                  className="text-xs px-2 py-1 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  onClick={() => onFilterTrace(log.trace_id!)}
+                >Filter this trace</button>
+              )}
+              {log.work_item_id && (
+                <button
+                  className="text-xs px-2 py-1 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  onClick={() => onFilterWorkItem(log.work_item_id!)}
+                >Filter this WorkItem</button>
+              )}
+              <button
+                className="text-xs px-2 py-1 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                onClick={() => onFilterService(log.service)}
+              >Filter this service</button>
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[11px] uppercase tracking-wider text-slate-400 mb-1">Payload</div>
+            <pre className="text-[11px] bg-slate-50 border border-slate-200 rounded p-3 overflow-auto font-mono leading-relaxed">
+              {JSON.stringify(log.payload, null, 2)}
             </pre>
           </div>
         </div>

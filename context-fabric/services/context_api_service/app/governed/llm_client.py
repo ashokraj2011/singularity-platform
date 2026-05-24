@@ -56,9 +56,23 @@ class ChatToolCall:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ChatToolCall":
-        # Gateway returns args as `arguments`; some providers stringify them.
-        # Tolerate both shapes.
-        args = raw.get("arguments")
+        # The llm-gateway's ToolCall pydantic model serializes the args
+        # under the field name `args` (see
+        # context-fabric/services/llm_gateway_service/app/types.py:54).
+        # Earlier code here only checked `arguments`, which was wrong for
+        # every gateway-served call — args silently became `{}` on every
+        # tool call across the governed loop, including
+        # `submit_phase_output`. That bug masqueraded as "the LLM keeps
+        # calling submit_phase_output with empty payload" all the way
+        # through to a VALIDATION_BLOCKED stage halt. We accept both
+        # names here for resilience: gateways or providers that prefer
+        # the OpenAI-style `arguments` key still work, but the gateway's
+        # canonical `args` wins. Some providers also stringify the
+        # arguments value; we JSON-decode that case so the inner shape
+        # survives.
+        args = raw.get("args")
+        if args is None:
+            args = raw.get("arguments")
         if isinstance(args, str):
             import json
 

@@ -18,6 +18,16 @@ class ChatMessage(BaseModel):
     content: str = ""
     tool_call_id: Optional[str] = None
     tool_name: Optional[str] = None
+    # (2026-05-24) Assistant turns that emitted tool calls round-trip
+    # through history with the structured tool_use list attached here.
+    # Previously this lived inside `content` as JSON, which the provider
+    # converters tried to parse — but stage_driver shipped OpenAI-style
+    # {id, type, function:{name,arguments}} while the converters
+    # expected flat {id, name, args}, so the tool_use list silently
+    # dropped on every turn and Anthropic 400'd on the next message
+    # because the tool_result had no matching tool_use. Accepting both
+    # shapes here lets the converter normalize without a contract break.
+    tool_calls: Optional[List[Dict[str, Any]]] = None
 
 
 class ToolDescriptor(BaseModel):

@@ -178,12 +178,14 @@ ${C_BLUE}Singularity Platform URLs${C_END}
     metrics-ledger      http://localhost:8003
     formal-verifier     http://localhost:8010      (optional SMT governance analyzer)
     mcp-server-demo     http://localhost:7100      (reference MCP server; bearer-token gated)
+    audit-governance    http://localhost:8500      (events, logs, governance, run insights)
 
   ${C_GREEN}Storage${C_END}
     iam-postgres        localhost:5433  (db: singularity_iam, user: singularity)
     at-postgres         localhost:5432  (db: singularity, user: postgres)
     wg-postgres         localhost:5434  (db: workgraph, user: workgraph)
     wg-minio            http://localhost:9000  (console: :9001, user: workgraph / workgraph_secret)
+    audit-postgres      localhost:5436  (db: audit_governance, user: postgres)
 EOF
     ;;
 

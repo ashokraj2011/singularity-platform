@@ -498,6 +498,55 @@ export const auditGovApi = {
     riskLevels: Array<{ risk_level: string; count: number }>;
   }>(`${AUDIT_GOV_BASE}/audit/search/facets`),
 
+  logHealth: () => req<{
+    ok: boolean;
+    storage: { backend: "filesystem" | "s3"; configured: boolean; path?: string; endpoint?: string; bucket?: string };
+    ingested_count: number;
+    newest_ts: string | null;
+  }>(`${AUDIT_GOV_BASE}/logs/health`),
+
+  logSearch: (body: {
+    q?: string;
+    levels?: ("trace" | "debug" | "info" | "warn" | "error" | "fatal" | "audit")[];
+    services?: string[];
+    eventTypes?: string[];
+    traceId?: string;
+    traceIdPrefix?: string;
+    workflowInstanceId?: string;
+    workflowNodeId?: string;
+    workItemId?: string;
+    capabilityId?: string;
+    tenantId?: string;
+    stageKey?: string;
+    agentRole?: string;
+    toolName?: string;
+    model?: string;
+    since?: string;
+    until?: string;
+    limit?: number;
+    cursor?: string;
+  }) => req<{
+    items: Array<ObservabilityLogRow>;
+    nextCursor: string | null;
+    pageSize: number;
+    hasMore: boolean;
+  }>(`${AUDIT_GOV_BASE}/logs/search`, {
+    method: "POST", body: JSON.stringify(body),
+  }),
+
+  logFacets: () => req<{
+    services: Array<{ service: string; count: number }>;
+    levels: Array<{ level: string; count: number }>;
+    eventTypes: Array<{ event_type: string; count: number }>;
+    stages: Array<{ stage_key: string; count: number }>;
+    models: Array<{ model: string; count: number }>;
+  }>(`${AUDIT_GOV_BASE}/logs/facets`),
+
+  traceTimeline: (traceId: string, limit = 500) =>
+    req<{ traceId: string; items: Array<TraceTimelineRow>; count: number }>(
+      `${AUDIT_GOV_BASE}/traces/${encodeURIComponent(traceId)}/timeline?limit=${limit}`,
+    ),
+
   // M63 Slice B — SSE live-tail stream. Returns the absolute URL so
   // the caller constructs the EventSource directly (EventSource can't
   // share the `req` wrapper's auth headers since the browser API
@@ -540,4 +589,46 @@ export type AuditEventRow = {
   risk_level: string | null;
   payload: Record<string, unknown>;
   created_at: string;
+};
+
+export type ObservabilityLogRow = {
+  id: string;
+  ts: string;
+  level: "trace" | "debug" | "info" | "warn" | "error" | "fatal" | "audit" | string;
+  service: string;
+  environment: string | null;
+  host: string | null;
+  trace_id: string | null;
+  span_id: string | null;
+  workflow_instance_id: string | null;
+  workflow_node_id: string | null;
+  work_item_id: string | null;
+  work_item_code: string | null;
+  capability_id: string | null;
+  tenant_id: string | null;
+  stage_key: string | null;
+  agent_role: string | null;
+  run_id: string | null;
+  tool_name: string | null;
+  model: string | null;
+  event_type: string | null;
+  message: string;
+  payload: Record<string, unknown>;
+  raw_storage_uri: string | null;
+  raw_storage_offset: number | string | null;
+  raw_storage_bytes: number | null;
+  created_at: string;
+};
+
+export type TraceTimelineRow = {
+  source: "audit_event" | "log" | string;
+  id: string;
+  ts: string;
+  service: string;
+  level: string;
+  event_type: string;
+  message: string;
+  capability_id: string | null;
+  tenant_id: string | null;
+  payload: Record<string, unknown>;
 };
