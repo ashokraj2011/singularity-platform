@@ -7,6 +7,7 @@
     "goal": "Implement a Python function `is_palindrome(s: str) -> bool` that returns True if the input string reads the same forwards and backwards. Comparison must be case-insensitive and must ignore non-alphanumeric characters (so 'A man, a plan, a canal: Panama' returns True). Empty string returns True.",
     "rubric": "Does the implementation: (1) handle the case-insensitive requirement, (2) ignore non-alphanumeric characters as specified, (3) handle the empty-string edge case correctly, (4) avoid obvious bugs like off-by-one errors or infinite loops? Score 4-5 if all four hold; 2-3 if 2-3 hold; 1 if fewer.",
     "reference_patch": "def is_palindrome(s: str) -> bool:\n    cleaned = [c.lower() for c in s if c.isalnum()]\n    return cleaned == cleaned[::-1]\n",
+    "test_code": "def test_basic():\n    assert is_palindrome('abba') is True\n    assert is_palindrome('abc') is False\n\ndef test_case_insensitive():\n    assert is_palindrome('Abba') is True\n\ndef test_ignore_punctuation():\n    assert is_palindrome('A man, a plan, a canal: Panama') is True\n\ndef test_empty():\n    assert is_palindrome('') is True\n\ndef test_single_char():\n    assert is_palindrome('x') is True\n",
     "sample_response": {
       "agent_output": "def is_palindrome(s: str) -> bool:\n    filtered = [c.lower() for c in s if c.isalnum()]\n    return filtered == filtered[::-1]\n",
       "stop_reason": "FINALIZED",
@@ -21,6 +22,7 @@
     "goal": "Implement `contains_a_character(haystack: str, needle: str) -> bool` that returns True if `needle` appears in `haystack`. Comparison must be case-insensitive. `needle` is always a single character; if it's empty or longer than one character, raise ValueError with a clear message.",
     "rubric": "Does the implementation: (1) perform case-insensitive comparison correctly, (2) validate that needle is exactly one character (raises ValueError otherwise), (3) handle the empty haystack correctly (returns False), (4) match the function signature precisely? Score 4-5 if all four hold.",
     "reference_patch": "def contains_a_character(haystack: str, needle: str) -> bool:\n    if len(needle) != 1:\n        raise ValueError(f'needle must be exactly one character, got len={len(needle)}')\n    return needle.lower() in haystack.lower()\n",
+    "test_code": "import pytest\n\ndef test_basic():\n    assert contains_a_character('hello', 'e') is True\n    assert contains_a_character('hello', 'z') is False\n\ndef test_case_insensitive():\n    assert contains_a_character('Hello', 'h') is True\n    assert contains_a_character('hello', 'H') is True\n\ndef test_empty_haystack():\n    assert contains_a_character('', 'a') is False\n\ndef test_invalid_needle_raises():\n    with pytest.raises(ValueError):\n        contains_a_character('hello', '')\n    with pytest.raises(ValueError):\n        contains_a_character('hello', 'ab')\n",
     "sample_response": {
       "agent_output": "def contains_a_character(haystack: str, needle: str) -> bool:\n    if len(needle) != 1:\n        raise ValueError('needle must be a single character')\n    return needle.lower() in haystack.lower()\n",
       "stop_reason": "FINALIZED",
@@ -35,6 +37,7 @@
     "goal": "Implement `fibonacci(n: int) -> int` returning the n-th Fibonacci number (0-indexed: fib(0)=0, fib(1)=1, fib(2)=1, fib(3)=2, ...). Must be iterative, not recursive (so n=100 doesn't blow the stack). Negative n raises ValueError.",
     "rubric": "Does the implementation: (1) use an iterative loop (no recursive call), (2) match the 0-indexed convention specified, (3) raise ValueError for negative n, (4) return the correct value for n=0..10 by inspection? Score 4-5 if all four hold; 2-3 if 2-3 hold.",
     "reference_patch": "def fibonacci(n: int) -> int:\n    if n < 0:\n        raise ValueError('n must be non-negative')\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n",
+    "test_code": "import pytest\n\ndef test_base_cases():\n    assert fibonacci(0) == 0\n    assert fibonacci(1) == 1\n    assert fibonacci(2) == 1\n\ndef test_known_values():\n    expected = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55]\n    for i, val in enumerate(expected):\n        assert fibonacci(i) == val, f'fib({i}) was {fibonacci(i)}, expected {val}'\n\ndef test_no_stack_overflow():\n    assert fibonacci(100) > 0\n\ndef test_negative_raises():\n    with pytest.raises(ValueError):\n        fibonacci(-1)\n",
     "sample_response": {
       "agent_output": "def fibonacci(n: int) -> int:\n    if n < 0:\n        raise ValueError('n must be non-negative')\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n",
       "stop_reason": "FINALIZED",

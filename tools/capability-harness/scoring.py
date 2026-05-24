@@ -271,24 +271,64 @@ def _extract_judge_json(content: str) -> dict[str, Any] | None:
     return result if isinstance(result, dict) else None
 
 
-# ── Oracle 3: tests pass (Slice 1 STUB) ─────────────────────────────────────
+# ── Oracle 3: tests pass (Slice 2 — live) ───────────────────────────────────
 
 
-def oracle_tests_pass(*, task_id: str, **_kwargs: Any) -> OracleResult:
-    """Stubbed for Slice 1. Slice 2 (task #115) wires this to a real
-    sandboxed test execution using mcp-server's /mcp/tool-run +
-    run_test against a per-task workspace.
+def oracle_tests_pass(
+    *,
+    task_id: str,
+    agent_output: str,
+    test_code: str | None = None,
+    test_timeout_sec: float | None = None,
+    _sandbox: Any = None,  # injection seam for tests
+    **_kwargs: Any,
+) -> OracleResult:
+    """Run the corpus's `test_code` against the agent's output in a
+    subprocess sandbox (Slice 2). When the corpus task has no
+    test_code, skip cleanly — the diff + judge oracles still vote.
 
-    Returns passed=False, score=0.0 so the stubbed oracle never
-    fakes a pass. The bench's majority-pass rule (2 of 3) means a
-    task can still pass overall via diff + judge — the stub just
-    doesn't contribute positive signal until Slice 2 lands."""
+    Wired in Slice 2 (#115). Earlier behavior (stub returning False)
+    is preserved when test_code is absent, so tasks authored under
+    Slice 1 don't regress.
+    """
+    if not test_code:
+        return OracleResult(
+            name="tests_pass",
+            passed=False,
+            score=0.0,
+            reason="no test_code in corpus — oracle skipped (add test_code to enable)",
+            details={"status": "skipped", "task_id": task_id},
+        )
+    if not agent_output:
+        return OracleResult(
+            name="tests_pass",
+            passed=False,
+            score=0.0,
+            reason="agent produced no code to test",
+            details={"status": "no_agent_output", "task_id": task_id},
+        )
+
+    # Lazy import — keeps the sandbox stdlib-import out of the
+    # critical path for dry-runs that never need it.
+    if _sandbox is None:
+        from sandbox import run_python_tests as _sandbox  # type: ignore
+
+    sb_result = _sandbox(
+        agent_code=agent_output,
+        test_code=test_code,
+        timeout_sec=test_timeout_sec or 30.0,
+    )
     return OracleResult(
         name="tests_pass",
-        passed=False,
-        score=0.0,
-        reason="tests_pass oracle is stubbed in Slice 1 — waiting on Slice 2 sandbox (task #115)",
-        details={"status": "stubbed", "task_id": task_id},
+        passed=sb_result.passed,
+        score=1.0 if sb_result.passed else 0.0,
+        reason=sb_result.reason,
+        details={
+            "exit_code": sb_result.exit_code,
+            "duration_ms": sb_result.duration_ms,
+            "timed_out": sb_result.timed_out,
+            "stderr_tail": (sb_result.stderr or "")[-500:],
+        },
     )
 
 
@@ -333,7 +373,12 @@ def score_task(
             model_alias=judge_model_alias,
         ))
 
-    oracles.append(oracle_tests_pass(task_id=task.task_id))
+    oracles.append(oracle_tests_pass(
+        task_id=task.task_id,
+        agent_output=agent_output,
+        test_code=getattr(task, "test_code", None),
+        test_timeout_sec=getattr(task, "test_timeout_sec", None),
+    ))
 
     pass_votes = sum(1 for o in oracles if o.passed)
     return TaskScore(

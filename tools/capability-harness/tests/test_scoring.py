@@ -199,18 +199,74 @@ def test_llm_judge_unparseable_response_handled() -> None:
     assert "not parseable" in r.reason
 
 
-# ── Oracle 3: tests_pass (Slice 1 stub) ─────────────────────────────────────
+# ── Oracle 3: tests_pass (Slice 2 — live) ───────────────────────────────────
 
 
-def test_tests_pass_oracle_is_stubbed_in_slice_1() -> None:
-    """When Slice 2 (task #115) lands, this test should flip to
-    asserting the oracle invokes the sandbox runner. Failing it as
-    a stub regression is a feature — forces a conscious decision."""
-    r = oracle_tests_pass(task_id="anything")
+def test_tests_pass_skips_when_no_test_code() -> None:
+    """A corpus task without test_code skips this oracle cleanly —
+    legacy Slice-1 tasks don't regress. The reason field is explicit
+    so operators know how to enable it ('add test_code')."""
+    r = oracle_tests_pass(task_id="x", agent_output="def f(): pass")
     assert r.passed is False
     assert r.score == 0.0
-    assert "stubbed" in r.reason.lower()
-    assert "Slice 2" in r.reason or "#115" in r.reason
+    assert "no test_code" in r.reason
+    assert r.details["status"] == "skipped"
+
+
+def test_tests_pass_handles_empty_agent_output() -> None:
+    """Agent produced nothing → oracle fails cleanly without running
+    the sandbox (no point firing pytest against nothing)."""
+    r = oracle_tests_pass(
+        task_id="x",
+        agent_output="",
+        test_code="def test_x(): assert True",
+    )
+    assert r.passed is False
+    assert "no code to test" in r.reason
+
+
+def test_tests_pass_passes_when_sandbox_passes() -> None:
+    """Sandbox dependency-injection: feed a fake sandbox that returns
+    success and the oracle should report passed=True with score=1.0."""
+    from sandbox import SandboxResult
+
+    def _fake_sandbox(**_kwargs):
+        return SandboxResult(
+            passed=True, duration_ms=42, stdout="3 passed", stderr="",
+            exit_code=0, timed_out=False, reason="all tests passed",
+        )
+
+    r = oracle_tests_pass(
+        task_id="x",
+        agent_output="def f(): pass",
+        test_code="def test_x(): assert True",
+        _sandbox=_fake_sandbox,
+    )
+    assert r.passed is True
+    assert r.score == 1.0
+    assert r.details["duration_ms"] == 42
+    assert r.details["exit_code"] == 0
+
+
+def test_tests_pass_fails_when_sandbox_fails() -> None:
+    from sandbox import SandboxResult
+
+    def _fake_sandbox(**_kwargs):
+        return SandboxResult(
+            passed=False, duration_ms=100, stdout="1 failed",
+            stderr="AssertionError: nope",
+            exit_code=1, timed_out=False, reason="pytest exit 1",
+        )
+
+    r = oracle_tests_pass(
+        task_id="x",
+        agent_output="def f(): pass",
+        test_code="def test_x(): assert False",
+        _sandbox=_fake_sandbox,
+    )
+    assert r.passed is False
+    assert r.score == 0.0
+    assert "AssertionError" in r.details["stderr_tail"]
 
 
 # ── Composite: score_task ────────────────────────────────────────────────────

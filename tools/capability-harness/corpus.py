@@ -41,6 +41,14 @@ class CorpusTask:
     setup_files: dict[str, str] = field(default_factory=dict)
     # Free-form tags for filtering (e.g. "python", "easy", "swe-lite").
     tags: list[str] = field(default_factory=list)
+    # Slice 2 — inline test code. If present, the tests_pass oracle
+    # writes it to a sibling file in the sandbox and runs pytest
+    # against it. Convention: `from solution import *` is auto-
+    # prepended so authors write `assert is_palindrome("abba")`
+    # without qualifying. None = oracle skipped (returns "no test_code").
+    test_code: str | None = None
+    # Slice 2 — per-task timeout override. None = sandbox default (30s).
+    test_timeout_sec: float | None = None
 
 
 def load_corpus(path: str | Path) -> list[CorpusTask]:
@@ -113,4 +121,6 @@ def _task_from_dict(entry: dict[str, Any], *, index: int) -> CorpusTask:
         sample_response=entry.get("sample_response"),
         setup_files={str(k): str(v) for k, v in setup.items()},
         tags=[str(t) for t in tags],
+        test_code=entry.get("test_code"),
+        test_timeout_sec=entry.get("test_timeout_sec"),
     )
