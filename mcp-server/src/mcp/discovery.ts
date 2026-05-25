@@ -388,7 +388,12 @@ discoveryRouter.get("/discovery", async (req, res) => {
         isolatedCommandExecution: commandExecution.mode === "container",
         autoVerification: true,
         conflictSafeEdits: true,
-        applierModelSupport: true,
+        // ADR-0002 — applier-model is deprecated. The legacy `/mcp/invoke`
+        // path still HAS the code, but new callers should not opt in:
+        // it's slated to disappear with the rest of /mcp/invoke under
+        // task #119 (governed migration). Flipping this signals
+        // end-of-life to clients during the deprecation window.
+        applierModelSupport: false,
         gitCheckpoints: true,
       },
       endpoints: endpointDescriptors(),
