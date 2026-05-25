@@ -1,38 +1,5 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
-
-/**
- * Detect whether this app is being rendered inside an iframe of another
- * Singularity surface (e.g. Agent Studio at :3000 embedding the workflow
- * manager at :5174 under its "Workflows" tab). When embedded we hide our
- * own sidebar + topbar so the host's chrome is the only chrome — gets
- * rid of the "two sidebars side-by-side, same brand twice" look.
- *
- * Two trigger paths:
- *   - `window.self !== window.top`     — generic iframe detection
- *   - `?embed=true` (or `?embed=1`)    — explicit override, useful for
- *                                        testing the embedded view in a
- *                                        full tab or for hosts that want
- *                                        the URL to be self-describing.
- *
- * Cross-origin parent access throws on the `window.top` read; that
- * exception alone proves we're embedded, so we treat the throw as a
- * positive signal. Memoised because the value can't change for the
- * lifetime of the page — re-running the check would be wasted work.
- */
-function useEmbedded(): boolean {
-  return useMemo(() => {
-    if (typeof window === 'undefined') return false
-    try {
-      const explicit = new URL(window.location.href).searchParams.get('embed')
-      if (explicit === 'true' || explicit === '1') return true
-      return window.self !== window.top
-    } catch {
-      // Cross-origin parent access threw → we're embedded.
-      return true
-    }
-  }, [])
-}
 import { motion, AnimatePresence } from 'motion/react'
 import {
   LayoutDashboard, FileText, GitBranch, ScrollText, Globe, Inbox,
@@ -165,10 +132,6 @@ export function AppLayout() {
   const clearContext = useActiveContextStore(s => s.clear)
   const navigate = useNavigate()
   const location = useLocation()
-  // When embedded under Agent Studio (or any other host iframe), let the
-  // host's chrome be the only chrome. The page content keeps rendering;
-  // only the sidebar + topbar collapse out.
-  const embedded = useEmbedded()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === 'undefined') return false
     return localStorage.getItem('sidebar-collapsed') === 'true'
@@ -188,9 +151,6 @@ export function AppLayout() {
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--color-surface)' }}>
 
       {/* ── Sidebar ─────────────────────────────────────────────────────── */}
-      {/* Hidden when embedded — Agent Studio (or any host iframe) supplies
-          its own nav, so rendering ours produces the "two sidebars" look. */}
-      {!embedded && (
       <aside className="shell-sidebar" style={{
         width: sidebarCollapsed ? 80 : 280,
         transition: 'width 0.24s ease-out',
@@ -341,14 +301,11 @@ export function AppLayout() {
           </button>
         </div>
       </aside>
-      )}
 
       {/* ── Right column ────────────────────────────────────────────────── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-        {/* Topbar — same iframe-aware suppression as the sidebar. The
-            host (Agent Studio) renders its own breadcrumb/profile/menu. */}
-        {!embedded && (
+        {/* Topbar */}
         <header className="shell-topbar" style={{ height: 52, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 20px' }}>
           {/* Breadcrumb / workspace badge */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -416,7 +373,6 @@ export function AppLayout() {
             </div>
           </div>
         </header>
-        )}
 
         {/* Page content */}
         <main style={{ flex: 1, overflow: 'auto' }}>
