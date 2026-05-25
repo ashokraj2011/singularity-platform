@@ -2916,6 +2916,52 @@ async function saveStageVerdict(
     if (classification && totalClassified > 0) {
       const inheritedOnly = classification.regressionFailures.length === 0
                             && classification.inheritedFailures.length > 0
+
+      // M78 Slice 4 — Auto-remediation. When the platform operator has
+      // opted in via WORKGRAPH_AUTO_REMEDIATE_INHERITED_FAILURES AND all
+      // failures are inherited (i.e. NOT the agent's fault), spawn one
+      // remediation WI per failure right here, before throwing the
+      // blocking error. The error still fires (the original WI's gate
+      // stays blocked until the operator re-tries approval) but its
+      // payload kind flips to `auto_remediation_spawned` so the workbench
+      // shows "🤖 auto-spawned WI-1234, WI-1235" instead of the manual-
+      // click card. Auto-unblock when remediation completes is a follow-
+      // up; today the operator manually re-tries approval. Best-effort:
+      // any individual spawn failure just records the error and the
+      // remaining failures fall back to manual click; we never block
+      // approval harder than the legacy path.
+      if (inheritedOnly && config.WORKGRAPH_AUTO_REMEDIATE_INHERITED_FAILURES) {
+        const spawned: Array<{ id: string; workCode: string; title: string; test: string }> = []
+        const spawnErrors: Array<{ test: string; reason: string }> = []
+        for (const failure of classification.inheritedFailures) {
+          try {
+            const created = await createInheritedFailureRemediation(
+              sessionId, stageKey,
+              { failure, originAttemptId: latestAttempt?.id },
+              actorId,
+            )
+            spawned.push({ ...created, test: failure.test })
+          } catch (err) {
+            spawnErrors.push({ test: failure.test, reason: (err as Error).message })
+          }
+        }
+        const allSpawned = spawned.length === classification.inheritedFailures.length
+        const message = allSpawned
+          ? `Approval blocked — but auto-remediation spawned ${spawned.length} work item(s) to fix the upstream failures. Re-try approval after they complete.`
+          : `Approval blocked. Auto-remediation spawned ${spawned.length} of ${classification.inheritedFailures.length} work items; ${spawnErrors.length} failed and need manual handling.`
+        throw new ValidationError(message, {
+          kind: 'auto_remediation_spawned',
+          inheritedOnly: true,
+          inheritedFailures: classification.inheritedFailures,
+          regressionFailures: [],
+          spawnedWorkItems: spawned,
+          spawnErrors,
+          recommendedActions: spawnErrors.length > 0
+            ? ['retry_approval_after_remediation', 'manually_create_remediation_wi']
+            : ['retry_approval_after_remediation'],
+        })
+      }
+
       const message = inheritedOnly
         ? `Approval blocked: ${classification.inheritedFailures.length} test failure(s) are inherited from upstream — your agent's own changes didn't introduce them. Create a remediation work item to fix the upstream tests, or accept the risk to proceed.`
         : `Approval blocked: ${classification.regressionFailures.length} new test regression(s) introduced by this attempt`

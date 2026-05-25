@@ -32,11 +32,20 @@ export interface InheritedFailure {
 }
 
 export interface VerificationFailureAnalysis {
-  kind: 'verification_failure_analysis'
+  // M78 — Two flavours of analysis:
+  //   verification_failure_analysis: user must act (Slice 1/2/3)
+  //   auto_remediation_spawned:     platform already spawned the WIs (Slice 4)
+  kind: 'verification_failure_analysis' | 'auto_remediation_spawned'
   inheritedOnly: boolean
   inheritedFailures: InheritedFailure[]
   regressionFailures: InheritedFailure[]
   unparseable?: Array<{ command: string; reason: string }>
+  // M78 Slice 4 — populated when kind === 'auto_remediation_spawned'.
+  // One entry per inherited failure that was successfully spawned as
+  // a remediation WorkItem. Card surfaces these as a "🤖 spawned" list
+  // with deep-links to each WI.
+  spawnedWorkItems?: Array<{ id: string; workCode: string; title: string; test: string }>
+  spawnErrors?: Array<{ test: string; reason: string }>
   recommendedActions: string[]
 }
 
@@ -149,20 +158,66 @@ export function InheritedFailureCard({
   onAcceptWithRisk,
   onSendBack,
 }: InheritedFailureCardProps) {
-  const { inheritedFailures, regressionFailures, recommendedActions } = analysis
+  const { inheritedFailures, regressionFailures, recommendedActions, spawnedWorkItems, spawnErrors } = analysis
   const hasInherited = inheritedFailures.length > 0
   const hasRegression = regressionFailures.length > 0
+  const isAutoSpawned = analysis.kind === 'auto_remediation_spawned'
 
   return (
     <div>
       {/* Summary banner — uses the API's message verbatim. */}
       <div style={analysis.inheritedOnly ? inheritedCardStyle : cardStyle}>
         <div style={headerStyle}>
-          {analysis.inheritedOnly
-            ? '⚠ Approval blocked by upstream bugs (not your agent\'s fault)'
-            : '✗ Approval blocked by test failures'}
+          {isAutoSpawned
+            ? '🤖 Auto-remediation spawned — approval re-try pending'
+            : analysis.inheritedOnly
+              ? '⚠ Approval blocked by upstream bugs (not your agent\'s fault)'
+              : '✗ Approval blocked by test failures'}
         </div>
         <div>{message}</div>
+
+        {/* M78 Slice 4 — When the API auto-spawned WIs, show the list
+            up top with deep-links. Failures list still renders below
+            for context, but without per-row "Create remediation" buttons
+            (already done by the platform). */}
+        {isAutoSpawned && spawnedWorkItems && spawnedWorkItems.length > 0 && (
+          <>
+            <div style={{ ...headerStyle, marginTop: 16, color: '#86efac' }}>
+              Auto-spawned remediation work items ({spawnedWorkItems.length})
+            </div>
+            {spawnedWorkItems.map((wi, i) => (
+              <div key={`s-${i}`} style={failureRowStyle}>
+                <div>
+                  <a
+                    href={`/work-items/${wi.id}`}
+                    style={{ color: '#a7f3d0', fontWeight: 600, textDecoration: 'underline' }}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {wi.workCode}
+                  </a>
+                  {`  —  ${wi.title}`}
+                </div>
+                <div style={{ opacity: 0.75, marginTop: 2, fontSize: 12 }}>
+                  remediates {wi.test}
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+        {isAutoSpawned && spawnErrors && spawnErrors.length > 0 && (
+          <>
+            <div style={{ ...headerStyle, marginTop: 12, color: '#fca5a5' }}>
+              Auto-spawn errors ({spawnErrors.length}) — manual click required
+            </div>
+            {spawnErrors.map((err, i) => (
+              <div key={`e-${i}`} style={failureRowStyle}>
+                <div style={{ fontWeight: 600 }}>{err.test}</div>
+                <div style={{ opacity: 0.85, marginTop: 2 }}>{err.reason}</div>
+              </div>
+            ))}
+          </>
+        )}
 
         {hasRegression && (
           <>
@@ -178,13 +233,16 @@ export function InheritedFailureCard({
         {hasInherited && (
           <>
             <div style={{ ...headerStyle, marginTop: 16, color: '#fcd34d' }}>
-              Inherited — pre-exist in upstream code ({inheritedFailures.length})
+              Inherited failures — pre-exist in upstream code ({inheritedFailures.length})
             </div>
             {inheritedFailures.map((f, i) => (
               <FailureRow
                 key={`i-${i}`}
                 failure={f}
-                onCreateRemediationWI={onCreateRemediationWI}
+                // When auto-spawned, the per-row button is suppressed
+                // because the platform already created the WI. The
+                // spawnedWorkItems list above is the actionable surface.
+                onCreateRemediationWI={isAutoSpawned ? undefined : onCreateRemediationWI}
               />
             ))}
           </>
@@ -236,7 +294,10 @@ export function getVerificationFailureAnalysis(error: unknown): VerificationFail
   const e = error as { details?: unknown }
   if (!e.details || typeof e.details !== 'object') return null
   const d = e.details as Record<string, unknown>
-  if (d.kind !== 'verification_failure_analysis') return null
+  // Accept both Slice 1's manual-action kind and Slice 4's auto-
+  // spawned kind. The card branches on `kind` internally.
+  if (d.kind !== 'verification_failure_analysis' && d.kind !== 'auto_remediation_spawned') return null
+  const kind = d.kind
   // Coerce / validate the shape. Defensive: a server with skew might
   // emit slightly different keys; we don't want to render undefined.
   const inh = Array.isArray(d.inheritedFailures) ? d.inheritedFailures as InheritedFailure[] : []
@@ -245,11 +306,17 @@ export function getVerificationFailureAnalysis(error: unknown): VerificationFail
     ? (d.recommendedActions as unknown[]).filter((x): x is string => typeof x === 'string')
     : []
   return {
-    kind: 'verification_failure_analysis',
+    kind,
     inheritedOnly: d.inheritedOnly === true,
     inheritedFailures: inh,
     regressionFailures: reg,
     unparseable: Array.isArray(d.unparseable) ? d.unparseable as Array<{ command: string; reason: string }> : undefined,
+    spawnedWorkItems: Array.isArray(d.spawnedWorkItems)
+      ? d.spawnedWorkItems as Array<{ id: string; workCode: string; title: string; test: string }>
+      : undefined,
+    spawnErrors: Array.isArray(d.spawnErrors)
+      ? d.spawnErrors as Array<{ test: string; reason: string }>
+      : undefined,
     recommendedActions: rec,
   }
 }

@@ -72,6 +72,16 @@ const envSchema = z.object({
   // skip/return clear evidence and never call the verifier service.
   FORMAL_VERIFICATION_ENABLED: z.coerce.boolean().default(false),
   FORMAL_VERIFIER_URL: z.string().default('http://localhost:8010'),
+
+  // M78 Slice 4 — Auto-remediation pipeline. When ON, the develop-stage
+  // approval gate stops throwing a blocking error for inherited-only
+  // failures and instead spawns one remediation WorkItem per inherited
+  // failure, returning the list to the workbench so the operator sees
+  // "🤖 auto-spawned WI-1234, WI-1235" instead of "fix these manually".
+  // The original WI's gate stays blocked (no auto-unblock yet — operator
+  // re-tries approval once the remediation WIs land). Off by default;
+  // operator opts in at the platform level by setting this in compose.
+  WORKGRAPH_AUTO_REMEDIATE_INHERITED_FAILURES: z.coerce.boolean().default(false),
 })
 
 // M35.1 — production-class envs refuse to start with weak secrets.
