@@ -40,6 +40,16 @@ from .dispatch import ToolDispatchError, ToolDispatchResult, dispatch_tool
 from .path_coverage import check_path_coverage
 from .phase_state import Phase, PhaseState, advance_phase
 from .pii_mask import mask_pii_in_result, unmask_pii_in_args
+
+# Source-code file extensions whose content must NOT be PII-masked before
+# returning to the LLM. Test fixtures routinely contain email-like strings
+# (e.g. "user42@example.com" in a regex test) that the email detector fires
+# on, corrupting the exact lines the agent needs to read in order to repair
+# a failing test. Source code is not personal data; masking it is a false
+# positive with serious downstream consequences (M76 postmortem).
+_SOURCE_CODE_EXTS = frozenset(
+    ".java .py .ts .tsx .js .jsx .go .rs .kt .scala .rb .cs .cpp .c .h .swift".split()
+)
 from .verify_synthesis import synthesize_verifier_run
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
 from .tool_gateway import PhaseToolForbidden, check_tool_allowed
@@ -162,18 +172,36 @@ def _extract_code_changes(
     tool_name: str,
     result: Any,
     tool_success: bool | None,
+    tool_invocation_id: str | None = None,
 ) -> list[tuple[str, str]]:
     """Pull (file_path, change_id) pairs from a successful mutating
     tool's result envelope. Returns [] when the tool isn't mutating,
-    didn't succeed, or didn't surface a change_id.
+    didn't succeed, or didn't surface a recognisable file path.
 
-    Recognised aliases on the result dict mirror what workgraph-api's
-    orchestrator.ts:adaptGovernedStageToCodingRun already scans for
-    (code_change_id / codeChangeId / changeId / change_id) plus the
-    file field variants (file / path / file_path / target_file).
+    Recognised aliases on the result dict:
+      - paths_touched / paths_changed / changed_files / files — list-shape
+        (mcp-server's apply_patch / replace_text / write_file all emit
+        `paths_touched`; older variants used the plural `files`).
+      - file / path / file_path / target_file — single-shape.
+      - code_change_id / codeChangeId / changeId / change_id — the
+        binding token; when absent we fall back to the tool_invocation_id
+        which the loop generates per dispatch and which is unique per
+        tool call. The binding token's purpose is to PROVE the dispatch
+        happened — tool_invocation_id satisfies that contract just as
+        well as a server-minted change_id.
 
-    Multiple files per call (e.g. a batch apply_patch) are picked up
-    via an optional `files` / `changed_files` list on the envelope.
+    Returns a list of `(path, change_id)` tuples; one per file the tool
+    reported as touched. Empty list = nothing to bind (path or
+    invocation_id missing).
+
+    (2026-05-25) RCA: mcp-server's mutating-tool output uses
+    `paths_touched` and does NOT include a `code_change_id`. The
+    previous version of this function required both a recognized path
+    key (which `paths_touched` wasn't) AND a `code_change_id` (never
+    emitted) — so every successful mutation looked unbacked to the
+    receipt-provenance check, causing PHASE_EDIT_UNBACKED to fire
+    on legitimate edits. Adding `paths_touched` to the alias list +
+    falling back to tool_invocation_id closes both gaps.
     """
     if tool_name not in _MUTATING_TOOLS:
         return []
@@ -190,33 +218,43 @@ def _extract_code_changes(
         or result.get("codeChangeId")
         or result.get("changeId")
         or result.get("change_id")
+        # When the tool doesn't mint a change_id, the dispatch's
+        # invocation id is a perfectly stable binding token — every
+        # tool call has one and it ties the EditReceipt claim back to
+        # the audit-gov `governed.tool_dispatched` event for the call.
+        or tool_invocation_id
     )
     if not isinstance(change_id, str) or not change_id:
-        # No change_id surfaced — can't bind. Returning [] here means
-        # the receipt validator will reject the file as unbacked. That's
-        # the intended safety behavior: if the tool didn't emit a
-        # change_id we can't prove the edit happened.
         return []
 
-    # Pull the file path(s). Single-file shape first.
+    # Pull the file path(s). Try BATCH shape first because that's what
+    # mcp-server actually emits (paths_touched is the canonical key).
+    paths: list[str] = []
+    for batch_key in ("paths_touched", "paths_changed", "changed_files", "files"):
+        batch = result.get(batch_key)
+        if isinstance(batch, list):
+            paths.extend(p for p in batch if isinstance(p, str) and p.strip())
+    # Single-file shape as fallback (some tools emit just `file`/`path`).
     single = (
         result.get("file")
         or result.get("path")
         or result.get("file_path")
         or result.get("target_file")
     )
-    paths: list[str] = []
     if isinstance(single, str) and single.strip():
         paths.append(single)
-    # Batch shape: a list of file paths on `files` or `changed_files`.
-    for batch_key in ("files", "changed_files"):
-        batch = result.get(batch_key)
-        if isinstance(batch, list):
-            paths.extend(p for p in batch if isinstance(p, str) and p.strip())
 
     if not paths:
         return []
-    return [(_normalise_change_path(p), change_id) for p in paths]
+    # Dedupe while preserving order in case the tool reports the same
+    # path twice across batch + single shapes.
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for p in paths:
+        if p not in seen:
+            seen.add(p)
+            deduped.append(p)
+    return [(_normalise_change_path(p), change_id) for p in deduped]
 
 
 def _truncate_oversize_strings(
@@ -459,9 +497,29 @@ async def governed_step(
             outcome_served_by = getattr(outcome, "served_by", "http")
             outcome_laptop_device_id = getattr(outcome, "laptop_device_id", None)
             outcome_laptop_device_name = getattr(outcome, "laptop_device_name", None)
-            masked_result, new_token_map, mask_applied = mask_pii_in_result(
-                outcome.result, state.pii_token_map,
+            # Skip PII masking for source-code file reads. Test fixtures
+            # contain email-shaped strings that are fixture data, not real
+            # PII. Masking them corrupts the content the agent reads and
+            # causes it to apply wrong repairs (M76 postmortem, fix #3).
+            _read_path: str = ""
+            if tool_name == "read_file":
+                _read_path = str(
+                    dispatch_args.get("path")
+                    or dispatch_args.get("file_path")
+                    or dispatch_args.get("filePath")
+                    or ""
+                )
+            _skip_mask = tool_name == "read_file" and any(
+                _read_path.endswith(ext) for ext in _SOURCE_CODE_EXTS
             )
+            if _skip_mask:
+                masked_result = outcome.result
+                new_token_map = state.pii_token_map
+                mask_applied: list = []
+            else:
+                masked_result, new_token_map, mask_applied = mask_pii_in_result(
+                    outcome.result, state.pii_token_map,
+                )
             # PhaseState is frozen; update via dataclasses.replace so the
             # subsequent tool call in this turn (if any) sees the new
             # token map. Token map accumulates across every tool call —
@@ -533,6 +591,11 @@ async def governed_step(
                 tool_name=tool_name,
                 result=outcome.result,
                 tool_success=outcome.tool_success,
+                # (2026-05-25) Fallback binding token when the tool
+                # didn't mint a code_change_id of its own. Every
+                # dispatch has an invocation id; using it here lets
+                # the EditReceipt-provenance check accept the edit.
+                tool_invocation_id=outcome.tool_invocation_id,
             )
             if new_changes:
                 merged = {
@@ -715,17 +778,39 @@ async def governed_step(
                 produced_changes=state.produced_code_changes,
             )
             if unbacked:
+                # (2026-05-25) Self-correction guidance.
+                # The model's go-to mistake on this error is to retry with
+                # the SAME EditReceipt and HOPE — burning turns. Tell it
+                # exactly what to do: move the unbacked file(s) to
+                # skipped_targets[] with a reason. This nudges the model
+                # toward the correct receipt shape on its very next turn
+                # instead of falling back to "re-edit and hope".
+                unbacked_list = ", ".join(f'"{p}"' for p in unbacked)
+                skip_entries = ", ".join(
+                    f'{{file: "{p}", reason: "<one-sentence reason, e.g. no edit required after implementing X>"}}'
+                    for p in unbacked
+                )
                 err_payload = {
                     "error_code": "PHASE_EDIT_UNBACKED",
                     "phase": "ACT",
                     "reason": (
-                        f"EditReceipt claims edits on file(s) {unbacked!r} "
+                        f"EditReceipt claims edits on file(s) [{unbacked_list}] "
                         "but no successful mutating-tool dispatch produced "
-                        "a code_change_id for them in this stage. Either "
-                        "actually dispatch the mutating tool, or remove "
-                        "the file from edits[]."
+                        "a code_change_id for them in this stage. To self-"
+                        "correct on the next turn, do EXACTLY ONE of: "
+                        f"(A) REMOVE those files from edits[] AND ADD them "
+                        f"to skipped_targets[] like this: skipped_targets: "
+                        f"[{skip_entries}]; "
+                        "OR (B) actually dispatch the mutating tool "
+                        "(apply_patch / replace_text / replace_range / "
+                        "write_file / create_file) for each file BEFORE "
+                        "the next submit_phase_output. Do NOT just resubmit "
+                        "the same EditReceipt — the provenance check is "
+                        "deterministic; it will fail the same way until "
+                        "edits[] only lists files you actually mutated."
                     ),
                     "unbacked_files": unbacked,
+                    "self_correction_hint": "MOVE_TO_SKIPPED_TARGETS",
                 }
                 result.validation_error = err_payload
                 await emit_governed_event(

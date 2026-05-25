@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .phase_state import Phase
 
@@ -277,6 +277,30 @@ class DiffSummary(BaseModel):
     lines_deleted: int = 0
     notable_changes: list[str] = Field(default_factory=list)
 
+    @field_validator("files_changed", mode="before")
+    @classmethod
+    def _coerce_files_changed(cls, v: Any) -> Any:
+        """The prompt example historically showed `files_changed: 0` (an int),
+        so some agents emit a count instead of a list of paths. Coerce common
+        misshapes into a list so a long-running stage doesn't get stranded
+        in SELF_REVIEW on a cosmetic schema mismatch (M76 postmortem). The
+        downstream consumers all treat this as an audit/UI list — if the
+        agent passed a count we just don't have paths to show; we don't fail.
+        """
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        if isinstance(v, int):
+            return []  # legacy count-shape: drop the count, keep the list empty
+        if isinstance(v, str):
+            return [v]  # single path passed unwrapped
+        if isinstance(v, dict):
+            # tolerate {"count": N, "paths": [...]} or {"paths": [...]}
+            paths = v.get("paths") or v.get("files") or []
+            return paths if isinstance(paths, list) else []
+        return []  # unknown shape — degrade to empty rather than 400
+
 
 class SelfReviewReceipt(_ReceiptBase):
     """Spec §7.6 self-review output. Gates the approval gate."""
@@ -374,6 +398,153 @@ class StoryIntakeReceipt(_ReceiptBase):
         description="Clarification questions that block planning.",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_intake_shapes(cls, data: Any) -> Any:
+        """(2026-05-25) Lenient coercion for over-structured model output.
+
+        Claude haiku 4.5 (and other models) interpret "structured story
+        intake" too literally and emit every field as a richly-annotated
+        object instead of the flat type the schema declares. Two
+        observed failure modes in production:
+
+          1. `open_questions` / `acceptance_criteria` as
+             `list[dict]` instead of `list[str]` — model attaches
+             `{question, priority, area}` metadata to each item.
+
+          2. `story_brief` as `dict` instead of `str` — model emits
+             `{markdown, sections, summary}` instead of a flat string.
+
+        Both cases: the model's intent is clear and the metadata is
+        harmless to drop or stringify. Force the schema-declared shape
+        on the way in so validation can proceed; we'd rather lose
+        annotation than fail the whole stage.
+
+        For `acceptance_criteria` specifically, ALSO check common
+        synonym keys (`acceptanceCriteria`, `acceptance_contract`,
+        `criteria`) when the canonical field is missing — operators
+        change prompt wording, models follow, schema needs to keep up.
+        """
+        if not isinstance(data, dict):
+            return data
+        import json as _json
+
+        # --- list-shape coercion (open_questions, acceptance_criteria) ---
+        def _dict_to_text(item: dict) -> str:
+            for key in (
+                "question", "text", "content", "criterion",
+                "description", "value", "title", "name", "summary",
+            ):
+                v = item.get(key)
+                if isinstance(v, str) and v.strip():
+                    return v
+            return _json.dumps(item, separators=(",", ":"))
+
+        def _coerce_to_str_list(raw: Any) -> list[str] | None:
+            if not isinstance(raw, list):
+                return None
+            out: list[str] = []
+            for item in raw:
+                if item is None or item == "":
+                    continue
+                if isinstance(item, str):
+                    out.append(item)
+                elif isinstance(item, dict):
+                    out.append(_dict_to_text(item))
+                else:
+                    out.append(str(item))
+            return out
+
+        # acceptance_criteria — pull from common synonyms if missing, and
+        # also unwrap from a wrapping dict (acceptance_contract={criteria:[...]})
+        # because operators set `acceptance_contract` as the artifact name
+        # and models echo that label.
+        if not isinstance(data.get("acceptance_criteria"), list):
+            found = False
+            for syn in ("acceptanceCriteria", "acceptance_contract",
+                        "acceptanceContract", "criteria", "criterions",
+                        "passConditions", "pass_conditions"):
+                v = data.get(syn)
+                if isinstance(v, list):
+                    data["acceptance_criteria"] = v
+                    found = True
+                    break
+                if isinstance(v, dict):
+                    # Unwrap a wrapper object: pull the first list-valued
+                    # field whose key suggests criteria-ness.
+                    for inner_key in (
+                        "criteria", "items", "list", "acceptance_criteria",
+                        "conditions", "checks", "examples",
+                    ):
+                        inner = v.get(inner_key)
+                        if isinstance(inner, list):
+                            data["acceptance_criteria"] = inner
+                            found = True
+                            break
+                    if found:
+                        break
+                if isinstance(v, str) and v.strip():
+                    # Operator passed a single string as the contract — split
+                    # on newlines / bullets to recover individual criteria.
+                    import re as _re
+                    split = [
+                        s.strip().lstrip("-*•").strip()
+                        for s in _re.split(r"\n+", v)
+                        if s.strip()
+                    ]
+                    if split:
+                        data["acceptance_criteria"] = split
+                        found = True
+                        break
+
+        for field_name in ("open_questions", "acceptance_criteria"):
+            coerced = _coerce_to_str_list(data.get(field_name))
+            if coerced is not None:
+                data[field_name] = coerced
+
+        # --- story_brief: dict → string ---
+        sb = data.get("story_brief")
+        if isinstance(sb, dict):
+            # Prefer markdown / content / summary / body / text keys.
+            for key in ("markdown", "content", "summary", "body", "text",
+                        "narrative", "brief"):
+                v = sb.get(key)
+                if isinstance(v, str) and v.strip():
+                    data["story_brief"] = v
+                    break
+            else:
+                # No known key — assemble a markdown-ish dump of all
+                # string fields so the brief content isn't lost.
+                lines: list[str] = []
+                for k, v in sb.items():
+                    if isinstance(v, str) and v.strip():
+                        lines.append(f"### {k}\n{v}")
+                if lines:
+                    data["story_brief"] = "\n\n".join(lines)
+                else:
+                    # Last resort: serialize the whole object.
+                    data["story_brief"] = _json.dumps(sb, indent=2)
+        elif isinstance(sb, list):
+            # Some models emit story_brief as a list of paragraphs.
+            data["story_brief"] = "\n\n".join(
+                str(p) for p in sb if p is not None and p != ""
+            )
+        # If story_brief is missing entirely, try common aliases.
+        if not data.get("story_brief"):
+            for syn in ("storyBrief", "story", "brief", "narrative",
+                        "summary", "description"):
+                v = data.get(syn)
+                if isinstance(v, str) and v.strip():
+                    data["story_brief"] = v
+                    break
+                if isinstance(v, dict):
+                    # Recurse: treat the syn-value the same way.
+                    inner = v.get("markdown") or v.get("content") or v.get("text")
+                    if isinstance(inner, str) and inner.strip():
+                        data["story_brief"] = inner
+                        break
+        return data
+
 
 class StoryIntakeReviewReceipt(_ReceiptBase):
     """PRODUCT_OWNER's SELF_REVIEW output.
@@ -382,18 +553,38 @@ class StoryIntakeReviewReceipt(_ReceiptBase):
     only attests that the brief is ready (or not) for the planning stage
     to consume.
 
-    Accepts BOTH the canonical `recommended_for_approval: bool` AND the
-    legacy `gate_recommendation: "PASS" | "NEEDS_REWORK" | "BLOCKED"`
-    that the PRODUCT_OWNER prompt has carried since the M71 cutover.
-    The 2026-05-24 RCA found the model defaulting to the legacy field
-    because the prompt asks for both shapes; rather than force a prompt
-    fork (and re-cache invalidation) we coerce here.
+    Permissive on purpose. The workbench always gates intake on a HUMAN
+    approval card after the model emits this receipt (gateMode=manual
+    in the loop definition), so the receipt's role is purely to signal
+    "model finished reviewing" — not to make the final pass/fail call.
+    Treat any non-empty review submission as `recommended_for_approval=True`
+    by default; the human can still send back, reject, or edit during
+    the manual approval step.
+
+    Coercion order (most→least specific):
+      1. Explicit `recommended_for_approval: bool` wins (operator
+         opt-out, even if the verdict text looks positive).
+      2. Legacy verdict keys `gate_recommendation` / `recommendation` /
+         `verdict` / `approval` → bool via the PASS|NEEDS_REWORK|BLOCKED
+         vocabulary the original PRODUCT_OWNER prompt has carried since
+         M71.
+      3. Anything else → default to True. The 2026-05-24 RCA observed
+         haiku 4.5 producing a `risk_summary`-only payload (no verdict
+         field at all) on the SELF_REVIEW phase because it got confused
+         about which phase it was in; rather than block the whole
+         stage on prompt-following noise from a model that's already
+         done the work, we let it through to the human.
     """
 
     kind: Literal[ReceiptKind.STORY_INTAKE_REVIEW] = ReceiptKind.STORY_INTAKE_REVIEW
     recommended_for_approval: bool = Field(
-        ...,
-        description="True when the story brief is ready for ARCHITECT planning.",
+        default=True,
+        description=(
+            "True when the story brief is ready for ARCHITECT planning. "
+            "Defaults to True because the human approval gate downstream "
+            "is the binding decision; the receipt just records the model's "
+            "self-assessment."
+        ),
     )
     risk_summary: dict[str, Any] = Field(
         default_factory=dict,
@@ -403,25 +594,34 @@ class StoryIntakeReviewReceipt(_ReceiptBase):
     @model_validator(mode="before")
     @classmethod
     def _coerce_gate_recommendation(cls, data: Any) -> Any:
-        """When the model emits `gate_recommendation: "PASS"` (or NEEDS_REWORK /
-        BLOCKED) without an explicit `recommended_for_approval`, fold the
-        verdict into the canonical bool.
-
-        Only fires when the canonical field is missing — an explicit
-        `recommended_for_approval` always wins so operators can still set
-        false even when the verdict text looks positive.
+        """Map legacy verdict keys onto the canonical bool when the model
+        skipped `recommended_for_approval`. Falls through to the field
+        default (True) when no verdict is present at all.
         """
         if not isinstance(data, dict):
             return data
         if "recommended_for_approval" in data and data["recommended_for_approval"] is not None:
             return data
-        verdict = data.get("gate_recommendation") or data.get("recommendation")
-        if isinstance(verdict, str):
+        # Try a wider set of legacy keys. Different prompt revisions and
+        # different models settle on different vocabulary.
+        verdict = (
+            data.get("gate_recommendation")
+            or data.get("recommendation")
+            or data.get("verdict")
+            or data.get("approval")
+            or data.get("review_verdict")
+            or data.get("ready_for_approval")
+        )
+        if isinstance(verdict, bool):
+            data["recommended_for_approval"] = verdict
+        elif isinstance(verdict, str):
             verdict_upper = verdict.strip().upper()
-            if verdict_upper == "PASS":
+            if verdict_upper in {"PASS", "APPROVE", "APPROVED", "READY", "YES", "TRUE"}:
                 data["recommended_for_approval"] = True
-            elif verdict_upper in {"NEEDS_REWORK", "BLOCKED", "FAIL", "REJECT"}:
+            elif verdict_upper in {"NEEDS_REWORK", "BLOCKED", "FAIL", "REJECT", "REJECTED", "NO", "FALSE"}:
                 data["recommended_for_approval"] = False
+        # If we still didn't resolve a verdict, the Field default (True)
+        # applies — the human approver is the real gate.
         return data
 
 

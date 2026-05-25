@@ -115,15 +115,21 @@ export function useLiveLoopEventStream(opts: UseLiveLoopEventStreamOptions): Use
         if (closed) return
         setStatus('live')
       })
-      es.onmessage = (event) => {
+      // audit-gov tags every data frame as `event: audit`. EventSource's
+      // built-in `onmessage` handler only fires for unnamed events (or
+      // `event: message`), so subscribing via addEventListener('audit', ...)
+      // is the only thing that actually delivers data. Keeping the
+      // onmessage assignment too is harmless and protects the theater
+      // against a future server-side rename to `message`.
+      const handleAuditFrame = (event: MessageEvent) => {
         if (closed) return
         let parsed: AuditEvent | null = null
         try {
           parsed = JSON.parse(event.data) as AuditEvent
         } catch {
           // Keepalive frames are sent as comments (`: keepalive`) — they
-          // never reach onmessage. Anything that lands here and fails to
-          // parse is genuinely malformed; drop it silently.
+          // never reach this handler. Anything that lands here and fails
+          // to parse is genuinely malformed; drop it silently.
           return
         }
         if (!parsed) return
@@ -151,6 +157,8 @@ export function useLiveLoopEventStream(opts: UseLiveLoopEventStreamOptions): Use
           return next.length > maxScenes ? next.slice(-maxScenes) : next
         })
       }
+      es.addEventListener('audit', handleAuditFrame as EventListener)
+      es.onmessage = handleAuditFrame
       es.onerror = () => {
         if (closed) return
         // EventSource auto-retries by default. We still surface the

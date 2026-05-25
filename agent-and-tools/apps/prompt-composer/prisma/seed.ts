@@ -45,6 +45,7 @@ const IDS = {
     LOOP_DEVELOPER:      "00000000-0000-0000-0000-0000000000f5",
     LOOP_QA:             "00000000-0000-0000-0000-0000000000f6",
     LOOP_INTAKE:         "00000000-0000-0000-0000-0000000000f7",
+    LOOP_ARCHITECT:      "00000000-0000-0000-0000-0000000000f8",
   },
   // M36.1 — StagePromptBinding rows. Stable UUIDs so re-seed is idempotent.
   // Convention: e1xx = blueprint.*, e2xx = loop.*
@@ -57,6 +58,7 @@ const IDS = {
     LOOP_QA:             "00000000-0000-0000-0000-0000000000e6",
     LOOP_INTAKE:         "00000000-0000-0000-0000-0000000000e7",
     LOOP_PRODUCT_OWNER:  "00000000-0000-0000-0000-0000000000e8",
+    LOOP_ARCHITECT:      "00000000-0000-0000-0000-0000000000e9",
   },
   // M71 — StagePolicy rows. Stable UUIDs (71-74 mirrors the milestone) so
   // re-seed is idempotent. One row per (stageKey, agentRole) covering the
@@ -78,6 +80,9 @@ const IDS = {
     DEV_REPAIR:      "00000000-0000-0000-0000-0000071000d5",
     DEV_SELF_REVIEW: "00000000-0000-0000-0000-0000071000d6",
     DEV_FINALIZE:    "00000000-0000-0000-0000-0000071000d7",
+    ARCH_PLAN:       "00000000-0000-0000-0000-0000071000a1",
+    ARCH_EXPLORE:    "00000000-0000-0000-0000-0000071000a2",
+    ARCH_SELF_REVIEW:"00000000-0000-0000-0000-0000071000a6",
     QA_PLAN:         "00000000-0000-0000-0000-0000071000f1",
     QA_EXPLORE:      "00000000-0000-0000-0000-0000071000f2",
     QA_VERIFY:       "00000000-0000-0000-0000-0000071000f4",
@@ -94,6 +99,9 @@ const IDS = {
     DEV_REPAIR:      "00000000-0000-0000-0000-0000071010d5",
     DEV_SELF_REVIEW: "00000000-0000-0000-0000-0000071010d6",
     DEV_FINALIZE:    "00000000-0000-0000-0000-0000071010d7",
+    ARCH_PLAN:       "00000000-0000-0000-0000-0000071010a1",
+    ARCH_EXPLORE:    "00000000-0000-0000-0000-0000071010a2",
+    ARCH_SELF_REVIEW:"00000000-0000-0000-0000-0000071010a6",
     QA_PLAN:         "00000000-0000-0000-0000-0000071010f1",
     QA_EXPLORE:      "00000000-0000-0000-0000-0000071010f2",
     QA_VERIFY:       "00000000-0000-0000-0000-0000071010f4",
@@ -275,7 +283,47 @@ const loopIntakeTask = [
   "- Do not inspect, mention, infer, or request repository files, source snapshots, branches, code symbols, tests, package manifests, or tool output.",
   "- If implementation details are needed, write them as questions for the Plan stage instead of guessing.",
   "",
-  "Return concise, structured story intake output with: story brief, acceptance contract, in-scope/out-of-scope notes, assumptions, risks, open questions, and a gate recommendation of PASS, NEEDS_REWORK, or BLOCKED.",
+  "Phase protocol (governed loop):",
+  "",
+  "This stage runs under a phase machine that REQUIRES you to call submit_phase_output to advance. Prose alone CANNOT advance the stage — every turn must end with a submit_phase_output tool call or the stage stalls and fails.",
+  "",
+  "For the PLAN phase (story intake), call:",
+  "  submit_phase_output({",
+  "    payload: {",
+  "      story_brief: \"<Markdown narrative covering user story, value, scope, in-scope/out-of-scope, assumptions, risks — put ALL the brief content here as one Markdown string>\",",
+  "      acceptance_criteria: [\"<pass/fail criterion 1>\", \"<pass/fail criterion 2>\", ...],",
+  "      open_questions: [\"<question 1>\", \"<question 2>\", ...]",
+  "    },",
+  "    next_phase: \"SELF_REVIEW\"",
+  "  })",
+  "",
+  "For the SELF_REVIEW phase (final intake check), call:",
+  "  submit_phase_output({",
+  "    payload: {",
+  "      recommended_for_approval: true,",
+  "      risk_summary: { /* optional notes */ }",
+  "    },",
+  "    next_phase: \"FINALIZE\"",
+  "  })",
+  "",
+  "Field shape rules (the validator is strict):",
+  "- story_brief MUST be a plain string (not an object). Put the entire narrative — including any sub-headings — as one Markdown string.",
+  "- acceptance_criteria MUST be a list of plain strings (not a list of objects). One string per criterion.",
+  "- open_questions MUST be a list of plain strings (not a list of objects). One string per question.",
+  "- Do NOT wrap story_brief or criteria in extra { markdown: ... } / { question: ... } objects — emit the strings directly.",
+  "",
+  "Self-correction rule: if a previous turn returned PHASE_OUTPUT_INVALID, read the missing/wrong fields from the validation error and resubmit with the corrected shape — same submit_phase_output call, fixed payload. Do not just emit more prose.",
+].join("\n");
+
+const loopArchitectTask = [
+  loopDefaultTask,
+  "",
+  "Architect / planning execution contract:",
+  "- This is a read-only planning stage. Produce mental model, target files/symbols, solution outline, risks, and implementation handoff notes.",
+  "- You may inspect repository structure and code context when the workflow stage policy grants read-only tools.",
+  "- Do not mutate files, run verifiers as proof of implementation, create commits, finish branches, push, or deploy.",
+  "- Do not advance into developer ACT or VERIFY phases. Those belong to the Developer stage.",
+  "- If implementation is unclear, list the gap as an open question or handoff risk instead of inventing code changes.",
 ].join("\n");
 
 // Developer-specific extension to the loop task. Encodes the "you must
@@ -388,6 +436,145 @@ const loopIntakeExtraContext = [
 
 // ── DEVELOPER ────────────────────────────────────────────────────────────
 
+const loopArchitectPlanTask = [
+  "Phase: PLAN — Architect stage",
+  "",
+  "Goal: {{goal}}",
+  "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
+  "",
+  "Approved upstream artifacts and decisions:",
+  "{{priorApprovedArtifacts}}",
+  "{{latestAccepted}}",
+  "",
+  "Operator guidance:",
+  "{{operatorChat}}",
+  "",
+  "Your task this turn: create the read-only planning receipt for the implementation handoff.",
+  "",
+  "Keep PLAN short. PLAN is for target selection, not detailed code exploration.",
+  "Use at most one lightweight discovery tool if needed (prefer repo_map, search_code, find_symbol, or list_indexed_files), then call submit_phase_output.",
+  "Detailed reads, AST slices, dependency checks, and file inspection belong in EXPLORE after the PLAN receipt is submitted.",
+  "Do not answer with prose like \"now I will inspect\" unless you are also making the tool call; after a discovery result, submit the PLAN receipt.",
+  "",
+  "Required payload fields:",
+  "- target_files: repo-relative files likely to matter. Use [] only if the repo target cannot be inferred.",
+  "- expected_edits: array of {file, reason, change}. These are planned edits only; do not mutate.",
+  "- symbols_to_inspect: functions/classes/enums to inspect or hand off to Developer.",
+  "- test_strategy.commands: verification commands the Developer/QA stage should run, or ['verification_unavailable'] with a reason if unknown.",
+  "- risk_level: low / medium / high.",
+  "- external_side_effects_required: false unless the plan requires external systems.",
+  "- assumptions and open_questions when useful.",
+  "",
+  "Allowed PLAN tools: repo_map, search_code, find_symbol, list_indexed_files.",
+  "Not allowed in PLAN: read_file, get_symbol, get_ast_slice, get_dependencies, grep_lines. Use those in EXPLORE.",
+  "",
+  "When ready, call submit_phase_output with:",
+  "{ payload: { target_files, expected_edits, symbols_to_inspect, test_strategy, risk_level, external_side_effects_required, assumptions, open_questions }, next_phase: \"EXPLORE\" }",
+].join("\n");
+
+const loopArchitectExploreTask = [
+  "Phase: EXPLORE — Architect stage",
+  "",
+  "Goal: {{goal}}",
+  "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
+  "",
+  "Use read-only tools to validate the plan enough for a Developer handoff. Prefer AST/symbol slices over full-file reads.",
+  "Keep EXPLORE bounded. Use at most two targeted read-only tools before submitting unless the plan has no usable target file.",
+  "A good operator-change inspection path is: search_code for the existing operator, get_ast_slice/get_symbol for the enum/service method, then submit.",
+  "Do not spend EXPLORE trying to design the final code; capture concrete findings and hand the mutation to Developer.",
+  "",
+  "Required payload fields:",
+  "- context_used: array of {type, target, reason, token_estimate}. Type is one of repo_map, symbol, ast_slice, dependency_slice, file.",
+  "- implementation_findings: concrete findings that should shape the Developer stage.",
+  "- updated_target_files: optional revised target file list.",
+  "- solution_outline: optional brief implementation approach.",
+  "- gaps: optional unknowns or risks that need human or Developer attention.",
+  "",
+  "Allowed tools: repo_map, find_symbol, get_symbol, get_ast_slice, get_dependencies, read_file, search_code, grep_lines.",
+  "",
+  "When ready, call submit_phase_output with:",
+  "{ payload: { context_used, implementation_findings, updated_target_files, solution_outline, gaps }, next_phase: \"SELF_REVIEW\" }",
+].join("\n");
+
+const loopArchitectSelfReviewTask = [
+  "Phase: SELF_REVIEW — Architect stage",
+  "",
+  "Goal: {{goal}}",
+  "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
+  "",
+  "Review whether the plan is ready for human approval and Developer handoff.",
+  "",
+  "Required payload fields:",
+  "- recommended_for_approval: true when the implementation plan is specific enough to hand to Developer.",
+  "- risk_summary: {risk_level, risks, rollback_notes}.",
+  "- summary: concise human-readable plan summary.",
+  "- acceptance_criteria_check: map the WorkItem acceptance criteria to planned evidence where possible.",
+  "- verification_summary: what should be verified later; do not claim tests have run.",
+  "",
+  "Allowed tools: none. SELF_REVIEW is for the final approval handoff, not more exploration.",
+  "",
+  "To open the Workbench approval gate, call submit_phase_output with:",
+  "{ payload: { recommended_for_approval, risk_summary, summary, acceptance_criteria_check, verification_summary }, next_phase: \"SELF_REVIEW\" }",
+].join("\n");
+
+// (2026-05-25) Operator context block: every per-phase template needs to
+// surface the operator's captured answers, send-backs, and chat thread
+// so "Save & re-run with answers" actually changes what the agent sees.
+// Without this, the per-phase prompts silently ignored operator input
+// because they were written before the M54.A workbench flow existed.
+// Inject the same block at the top of every per-phase task to give the
+// model consistent operator context.
+function operatorContext(): string {
+  return [
+    "",
+    "Captured stakeholder decisions (operator answers from prior turn):",
+    "{{capturedDecisions}}",
+    "",
+    "Recent send-backs (operator feedback):",
+    "{{sendBacks}}",
+    "",
+    "Operator guidance (chronological):",
+    "{{operatorChat}}",
+    "",
+    "When operator decisions exist, treat them as binding constraints — do not re-ask the same question. Send-backs describe what the previous attempt got wrong; address those concerns first.",
+  ].join("\n");
+}
+
+// (2026-05-25) Phase-protocol footer: every per-phase template gets the
+// same closing block telling the model to call submit_phase_output with
+// a concrete payload shape. The audit on 2026-05-25 found 11 of 11
+// DEVELOPER + QA per-phase profiles missing this — the model could
+// infer the call from the "Required output fields" list some of the
+// time, but POLICY_BLOCKED rates were unacceptable. We codify the
+// protocol once per phase and append it to the role-specific tasks.
+//
+// Each footer carries: (1) the canonical submit_phase_output({...}) call
+// example with the phase's actual payload field names, (2) the correct
+// next_phase, (3) strict field-shape rules ("string not object"), and
+// (4) a self-correction nudge for PHASE_OUTPUT_INVALID retries.
+function phaseProtocol(
+  payloadShape: string,
+  nextPhase: string,
+  extras: string[] = [],
+): string {
+  return [
+    "",
+    "Phase protocol (governed loop):",
+    "You MUST end this turn by calling submit_phase_output. Prose alone CANNOT advance the stage.",
+    "",
+    "Call:",
+    "  submit_phase_output({",
+    "    payload: { " + payloadShape + " },",
+    `    next_phase: "${nextPhase}"`,
+    "  })",
+    "",
+    "Field shape rules: every field must be exactly the type listed above. Strings are strings (not objects). Lists are lists of strings unless the schema specifies a richer item shape (e.g. ACT.edits[]). Do NOT wrap fields in { markdown: ..., content: ... } objects.",
+    "",
+    "Self-correction: if a previous turn returned PHASE_OUTPUT_INVALID, READ the missing/wrong fields from the validation error and resubmit the corrected payload — same submit_phase_output call, fixed payload shape. Do not just emit prose.",
+    ...extras.length ? ["", ...extras] : [],
+  ].join("\n");
+}
+
 const loopDeveloperPlanTask = [
   "Phase: PLAN — Developer stage",
   "",
@@ -414,6 +601,10 @@ const loopDeveloperPlanTask = [
   "Allowed tools: repo_map, find_symbol, list_indexed_files, read_file (capped at 1 invocation for config discovery — M72B).",
   "Soft budget: 4 tool calls total this phase. Use repo_map/find_symbol first; only fall back to read_file when the repo's layout genuinely blocks planning.",
   "DO NOT call apply_patch, run_test, or finish_work_branch — those belong to later phases. Tool gateway will refuse them.",
+  phaseProtocol(
+    'target_files: ["<path1>", "<path2>"], expected_edits: [{file: "<path>", reason: "<why>", change: "<short>"}], symbols_to_inspect: ["<symbol>"], test_strategy: { commands: ["<cmd>"], reason: "<why>" }, risk_level: "low|medium|high", external_side_effects_required: false, assumptions: ["<assumption>"], open_questions: ["<question>"]',
+    "EXPLORE",
+  ),
 ].join("\n");
 
 const loopDeveloperExploreTask = [
@@ -431,9 +622,13 @@ const loopDeveloperExploreTask = [
   "",
   "Allowed tools: repo_map, find_symbol, get_symbol, get_ast_slice, get_dependencies, read_file, search_code, grep_lines, capture_test_baseline.",
   "",
-  "Prefer AST slices over full-file reads. Justify any read_file with a one-line reason. Call capture_test_baseline NOW with the PLAN's test_strategy.commands so pre-existing failures don't masquerade as your regression in VERIFY.",
+  "Prefer AST slices over full-file reads. Justify any read_file with a one-line reason. Call capture_test_baseline NOW with the PLAN's test_strategy.commands so pre-existing failures don't masquerade as your regression in VERIFY. CRITICAL: the baseline command MUST be a test-runner command (e.g. 'mvn test', 'pytest', 'npm test') — NOT a compile-only command like 'mvn compile'. Compile passing does not prove tests pass.",
   "",
   "DO NOT call apply_patch / replace_text / write_file — that's ACT phase. Tool gateway will refuse.",
+  phaseProtocol(
+    'context_used: [{type: "ast_slice|symbol|file|repo_map|dependency_slice", target: "<name or path>", reason: "<why>", token_estimate: 0}], implementation_findings: ["<finding 1>"], updated_target_files: ["<path>"]',
+    "ACT",
+  ),
 ].join("\n");
 
 const loopDeveloperActTask = [
@@ -455,6 +650,45 @@ const loopDeveloperActTask = [
   "Prefer patches over full-file rewrites. Use write_file only when the file is brand-new OR you're replacing the entire contents intentionally (e.g. a generated file). Existing files: apply_patch or replace_range.",
   "",
   "DO NOT call run_test or finish_work_branch in this phase — that's VERIFY and FINALIZE. Tool gateway will refuse.",
+  "",
+  // (2026-05-25) Strong discipline on EditReceipt.edits[] vs
+  // skipped_targets[]. The model has a persistent failure mode where
+  // it edits the production files successfully but ALSO lists test
+  // files (that appeared in PlanReceipt.target_files) in edits[]
+  // without actually editing them. The receipt-provenance check
+  // (M74 Phase 1B) correctly refuses the ACT→VERIFY advance, but the
+  // model keeps retrying with the same over-claim. Make the
+  // edits[] = "only files I actually mutated" rule unambiguous,
+  // with a worked example using the actual file pattern from the
+  // RuleEngine reproduction case.
+  "STRICT RULE — edits[] vs skipped_targets:",
+  "",
+  "1. edits[] = files you ACTUALLY called a mutating tool on (apply_patch, replace_text, replace_range, write_file, create_file) AND the tool returned success=true. If you never made a successful mutating tool call for a file, it MUST NOT appear in edits[].",
+  "",
+  "2. skipped_targets[] = files from your PlanReceipt.target_files that you decided NOT to edit this attempt. Every file in target_files that does not appear in edits[] MUST appear in skipped_targets[] with a one-sentence reason (e.g. \"test regenerated by build\", \"no manual edit needed for this change\", \"deferred to follow-up issue\", \"production change alone satisfies the goal\").",
+  "",
+  "3. NEVER claim an edit you did not make. The receipt-provenance check cross-references EditReceipt.edits[] against the actual successful tool_dispatched events for this stage — any unbacked claim hard-fails ACT→VERIFY with PHASE_EDIT_UNBACKED, no exceptions.",
+  "",
+  "4. If your PlanReceipt over-listed target_files (e.g. listed a test file that turned out not to need changes), the correct move is to put that file in skipped_targets[] with reason \"no edit required after implementing X\" — NOT to fake an edit by listing it in edits[].",
+  "",
+  "Example of the correct shape when you edited Operator.java + RuleEngineService.java but the test file in target_files didn't need changes:",
+  "  edits: [",
+  "    {file: \"src/main/java/org/example/rules/Operator.java\", edit_type: \"replace_range\", reason: \"added new enum value\"},",
+  "    {file: \"src/main/java/org/example/rules/RuleEngineService.java\", edit_type: \"replace_text\", reason: \"added case branch\"}",
+  "  ],",
+  "  skipped_targets: [",
+  "    {file: \"src/test/java/org/example/rules/RuleEngineServiceTest.java\", reason: \"existing tests still pass for the new enum value; new tests are QA stage's scope\"}",
+  "  ]",
+  "",
+  "Tool args reminder: the canonical arg names are `path` (not `filePath`), `patch` (not `diff`), `content` (not `contents`), `oldText`/`newText` (not snake_case). The mcp-server normalizes common aliases but emitting the canonical names is more reliable.",
+  phaseProtocol(
+    'edits: [{file: "<path>", edit_type: "apply_patch|replace_text|replace_range|write_file|create_file", reason: "<why>"}], skipped_targets: [{file: "<path>", reason: "<why deliberately skipped>"}]',
+    "VERIFY",
+    [
+      "EditReceipt MUST list every file the agent actually edited (matching the tool_dispatched events). The path-coverage check refuses ACT→VERIFY if the EditReceipt drops a PlanReceipt.target_files entry without a skipped_targets justification.",
+      "Files in edits[] without a matching successful mutating-tool dispatch fail with PHASE_EDIT_UNBACKED — move them to skipped_targets[] with a reason instead.",
+    ],
+  ),
 ].join("\n");
 
 const loopDeveloperVerifyTask = [
@@ -472,11 +706,18 @@ const loopDeveloperVerifyTask = [
   "  coverage is {targeted_tests, full_tests, lint, typecheck, compile} — booleans.",
   "  If status=unavailable, ALSO include a `reason` field explaining why no test could run.",
   "",
-  "Allowed tools: run_test, run_command, recommended_verification, verification_unavailable, review_diff.",
+  "Allowed tools: read_file, run_test, run_command, recommended_verification, verification_unavailable, review_diff.",
   "",
-  "Strategy: run the test commands from your PLAN's test_strategy.commands. If they don't apply, call recommended_verification to discover what does. If the repo genuinely has no runnable test for this change, emit verification_unavailable with the reason — this is the ONLY way to get past VERIFY without a passing receipt.",
+  "Strategy: You MUST call run_test with the test command from your PLAN's test_strategy.commands. Do NOT submit status=passed based on compile-only, grep_lines, or read_file — only a run_test call with exit_code=0 proves tests pass. If they don't apply, call recommended_verification to discover what does. If the repo genuinely has no runnable test for this change, emit verification_unavailable with the reason — this is the ONLY way to get past VERIFY without a passing receipt.",
   "",
   "Compare your run against the baseline you captured in EXPLORE. NEW failures = regression. Pre-existing failures = leave them alone.",
+  phaseProtocol(
+    'verification_result: { status: "passed|failed|unavailable", reason: "<required when not passed>", coverage: { targeted_tests: true, full_tests: false, lint: false, typecheck: false, compile: false }, commands: [{ command: "<cmd>", exit_code: 0, duration_ms: 0, stdout_summary: "", stderr_summary: "" }] }',
+    "SELF_REVIEW",
+    [
+      "Use next_phase: \"REPAIR\" if status=failed and you intend to repair on the next attempt. The phase machine refuses VERIFY→SELF_REVIEW unless status=passed (or risk_policy.allow_unverified=true).",
+    ],
+  ),
 ].join("\n");
 
 const loopDeveloperRepairTask = [
@@ -497,6 +738,12 @@ const loopDeveloperRepairTask = [
   "Allowed tools: read_file, get_ast_slice, apply_patch, replace_text, replace_range, run_test, run_command.",
   "",
   "Read the failing test output carefully. Don't guess. State what changed between expected and actual, and what your fix does about it. Identical hypotheses across repair attempts = you're stuck; surface that explicitly and recommend BLOCKED.",
+  "",
+  "IMPORTANT — test-setup failures: if the exception fires BEFORE any assertion (e.g. NullPointerException, IllegalArgumentException, or any error thrown from a test constructor, @BeforeEach, or collection initialiser like Map.of()), that means the bug is in the test setup itself — NOT in the production code. Use read_file to open the test file and inspect the failing test method's setup lines. Common Java 9+ trap: Map.of() and List.of() reject null values at construction time; use new HashMap<>() / new ArrayList<>() + explicit .put()/.add() calls instead.",
+  phaseProtocol(
+    'retry_number: 1, failure_summary: "<one-sentence>", repair_hypothesis: "<what+why>", files_to_reinspect: ["<path>"], edits: [{file: "<path>", edit_type: "apply_patch|replace_text|replace_range|write_file", reason: "<why>"}]',
+    "VERIFY",
+  ),
 ].join("\n");
 
 const loopDeveloperSelfReviewTask = [
@@ -511,12 +758,19 @@ const loopDeveloperSelfReviewTask = [
   "- recommended_for_approval: true ONLY if you'd ship this. False if anything in your diff makes you hesitate.",
   "- acceptance_criteria_check: array of {criterion, status, evidence}. status ∈ {met, not_met, uncertain}. ONE entry per acceptance criterion in the WorkItem.",
   "- risk_summary: {risk_level, risks, rollback_notes}.",
-  "- diff_summary: {files_changed, lines_added, lines_deleted, notable_changes}.",
+  "- diff_summary: {files_changed (LIST OF FILE PATHS, not a count), lines_added, lines_deleted, notable_changes}.",
   "- verification_summary: short paragraph on what VERIFY proved.",
   "",
   "Allowed tools: review_diff, read_file.",
   "",
   "If any criterion is `not_met` or `uncertain`, set recommended_for_approval=false and let the approver decide. False positives at this step waste human time; better to flag uncertainty.",
+  phaseProtocol(
+    'recommended_for_approval: true, acceptance_criteria_check: [{criterion: "<text>", status: "met|not_met|uncertain", evidence: "<short>"}], risk_summary: {risk_level: "low|medium|high", risks: ["<risk>"], rollback_notes: "<text>"}, diff_summary: {files_changed: ["src/path/to/File.java"], lines_added: 0, lines_deleted: 0, notable_changes: ["<change>"]}, verification_summary: "<short>"',
+    "FINALIZE",
+    [
+      "Setting recommended_for_approval=true here also opens the human approval gate; the stage halts at APPROVAL_PENDING until the operator advances.",
+    ],
+  ),
 ].join("\n");
 
 const loopDeveloperFinalizeTask = [
@@ -536,6 +790,13 @@ const loopDeveloperFinalizeTask = [
   "Forbidden: push_branch, deploy — those are workflow-node operations, not agent operations.",
   "",
   "Call finish_work_branch. Don't push. Don't deploy. The GIT_PUSH workflow node handles the push after approval.",
+  phaseProtocol(
+    'branch_name: "<sg/WRK-XXX/develop/N-attempt>", commit_sha: "<sha>", pull_request_url: "<optional>"',
+    "FINALIZE",
+    [
+      "next_phase stays FINALIZE — the phase machine treats FINALIZE as terminal. Call finish_work_branch first, then submit_phase_output once finish_work_branch returns the branch_name + commit_sha.",
+    ],
+  ),
 ].join("\n");
 
 // ── QA ────────────────────────────────────────────────────────────────────
@@ -558,6 +819,10 @@ const loopQaPlanTask = [
   "Allowed tools: repo_map, find_symbol, list_indexed_files, review_diff.",
   "",
   "Read the developer's diff first (via review_diff), then decide what additional coverage you need.",
+  phaseProtocol(
+    'target_files: ["<path>"], test_strategy: { commands: ["<cmd>"], reason: "<why>" }, risk_level: "low|medium|high", assumptions: ["<assumption>"], open_questions: ["<question>"]',
+    "EXPLORE",
+  ),
 ].join("\n");
 
 const loopQaExploreTask = [
@@ -572,6 +837,10 @@ const loopQaExploreTask = [
   "Allowed tools: read_file, get_ast_slice, search_code, grep_lines, review_diff.",
   "",
   "Look for: untested edge cases, missing regression tests, traceability gaps between acceptance criteria and the diff.",
+  phaseProtocol(
+    'context_used: [{type: "ast_slice|symbol|file|repo_map|dependency_slice", target: "<name or path>", reason: "<why>", token_estimate: 0}], implementation_findings: ["<finding>"], updated_target_files: ["<path>"]',
+    "VERIFY",
+  ),
 ].join("\n");
 
 const loopQaVerifyTask = [
@@ -584,9 +853,13 @@ const loopQaVerifyTask = [
   "Required output field:",
   "- verification_result: same shape as Developer VERIFY (status, commands_run, coverage).",
   "",
-  "Allowed tools: run_test, run_command, recommended_verification, verification_unavailable, review_diff.",
+  "Allowed tools: read_file, run_test, run_command, recommended_verification, verification_unavailable, review_diff.",
   "",
   "Strategy: run the full test suite (not just targeted tests) + lint + typecheck if available. coverage.full_tests should be true if you actually ran them. status=failed means a regression — flag it but DO NOT mutate code; QA is read-only.",
+  phaseProtocol(
+    'verification_result: { status: "passed|failed|unavailable", reason: "<required when not passed>", coverage: { targeted_tests: true, full_tests: true, lint: false, typecheck: false, compile: false }, commands: [{ command: "<cmd>", exit_code: 0, duration_ms: 0, stdout_summary: "", stderr_summary: "" }] }',
+    "SELF_REVIEW",
+  ),
 ].join("\n");
 
 const loopQaSelfReviewTask = [
@@ -605,6 +878,10 @@ const loopQaSelfReviewTask = [
   "Allowed tools: read_file, review_diff.",
   "",
   "This is the certification step. Approver reads your output verbatim and decides whether to ship. Be precise about evidence. \"Tests pass\" is not evidence — \"mvn test passed 128/128 including the new SegmentEligibilityEvaluatorEmptyResponseTest\" is.",
+  phaseProtocol(
+    'recommended_for_approval: true, acceptance_criteria_check: [{criterion: "<text>", status: "met|not_met|uncertain", evidence: "<cite cmd or file:line>"}], risk_summary: {risk_level: "low|medium|high", risks: ["<risk>"], rollback_notes: "<text>"}, verification_summary: "<short>", traceability_matrix: {"<criterion>": ["<test_file>"]}',
+    "FINALIZE",
+  ),
 ].join("\n");
 
 // PHASE_PROMPTS — the registry the seed loop iterates. Each entry creates one
@@ -631,6 +908,46 @@ interface PhasePromptEntry {
 }
 
 const PHASE_PROMPTS: PhasePromptEntry[] = [
+  // ARCHITECT — read-only planning phases. These prevent Architect/Plan
+  // stages from falling back to the generic loop prompt, which describes
+  // the Developer ACT/VERIFY flow and can strand the phase machine in
+  // EXPLORE with POLICY_BLOCKED.
+  {
+    profileId: IDS.phaseProfiles.ARCH_PLAN,
+    bindingId: IDS.phaseBindings.ARCH_PLAN,
+    stageKey: "loop.stage",
+    agentRole: "ARCHITECT",
+    phase: "PLAN",
+    profileName: "Architect PLAN phase profile",
+    description: "M71 — Architect in PLAN: read-only target files, symbols, test strategy, and handoff risks.",
+    taskTemplate: loopArchitectPlanTask,
+    roleLayerId: IDS.layers.role.ARCHITECT,
+    attachMutationPolicy: false,
+  },
+  {
+    profileId: IDS.phaseProfiles.ARCH_EXPLORE,
+    bindingId: IDS.phaseBindings.ARCH_EXPLORE,
+    stageKey: "loop.stage",
+    agentRole: "ARCHITECT",
+    phase: "EXPLORE",
+    profileName: "Architect EXPLORE phase profile",
+    description: "M71 — Architect in EXPLORE: validate implementation plan with read-only code context.",
+    taskTemplate: loopArchitectExploreTask,
+    roleLayerId: IDS.layers.role.ARCHITECT,
+    attachMutationPolicy: false,
+  },
+  {
+    profileId: IDS.phaseProfiles.ARCH_SELF_REVIEW,
+    bindingId: IDS.phaseBindings.ARCH_SELF_REVIEW,
+    stageKey: "loop.stage",
+    agentRole: "ARCHITECT",
+    phase: "SELF_REVIEW",
+    profileName: "Architect SELF_REVIEW phase profile",
+    description: "M71 — Architect in SELF_REVIEW: summarize plan and open the Workbench approval gate.",
+    taskTemplate: loopArchitectSelfReviewTask,
+    roleLayerId: IDS.layers.role.ARCHITECT,
+    attachMutationPolicy: false,
+  },
   // DEVELOPER — 7 phases.
   {
     profileId: IDS.phaseProfiles.DEV_PLAN,
@@ -1120,7 +1437,13 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
     phases: [
       {
         phase: "PLAN",
-        allowedTools: ["repo_map", "find_symbol", "list_indexed_files"],
+        allowedTools: [
+          "repo_map",
+          "find_symbol",
+          "list_indexed_files",
+          "search_code",
+        ],
+        maxToolCalls: 2,
         requiredOutputSchema: {
           required: ["target_files", "symbols_to_inspect", "risk_level"],
           properties: {
@@ -1144,7 +1467,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
       },
       {
         phase: "SELF_REVIEW",
-        allowedTools: ["read_file"],
+        allowedTools: [],
         requiredOutputSchema: {
           required: ["recommended_for_approval", "risk_summary"],
           properties: {
@@ -1279,7 +1602,7 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
       },
       {
         phase: "VERIFY",
-        allowedTools: ["run_test", "run_command", "verification_unavailable", "recommended_verification", "review_diff"],
+        allowedTools: ["read_file", "run_test", "run_command", "verification_unavailable", "recommended_verification", "review_diff"],
         requiredOutputSchema: {
           required: ["verification_result"],
           properties: {
@@ -1910,6 +2233,16 @@ async function main() {
     roleLayerId: IDS.layers.role.PRODUCT_OWNER,
   });
   await upsertStageProfile({
+    id: IDS.stageProfiles.LOOP_ARCHITECT,
+    name: "Blueprint Loop Architect Stage Profile",
+    description: "Read-only Workbench planning/design profile. It must never enter mutation phases.",
+    stageKey: "loop.stage",
+    roleGate: "ARCHITECT",
+    taskTemplate: loopArchitectTask,
+    extraContextTemplate: loopDefaultExtraContext,
+    roleLayerId: IDS.layers.role.ARCHITECT,
+  });
+  await upsertStageProfile({
     id: IDS.stageProfiles.LOOP_DEVELOPER,
     name: "Blueprint Loop Developer Stage Profile",
     description: "Developer-role override for the Blueprint Loop runner. Encodes the actual-code-change execution contract.",
@@ -1938,6 +2271,7 @@ async function main() {
   await linkLayer(IDS.stageProfiles.BLUEPRINT_DEVELOPER,  IDS.layers.localCodeIntelligence, 200);
   await linkLayer(IDS.stageProfiles.BLUEPRINT_QA,         IDS.layers.localCodeIntelligence, 200);
   await linkLayer(IDS.stageProfiles.LOOP_DEFAULT,         IDS.layers.localCodeIntelligence, 200);
+  await linkLayer(IDS.stageProfiles.LOOP_ARCHITECT,       IDS.layers.localCodeIntelligence, 200);
   await linkLayer(IDS.stageProfiles.LOOP_DEVELOPER,       IDS.layers.localCodeIntelligence, 200);
   await linkLayer(IDS.stageProfiles.LOOP_QA,              IDS.layers.localCodeIntelligence, 200);
   // LOOP_INTAKE intentionally has no localCodeIntelligence layer: Intake is
@@ -1987,6 +2321,13 @@ async function main() {
     agentRole: "PRODUCT_OWNER",
     promptProfileId: IDS.stageProfiles.LOOP_INTAKE,
     description: "Loop stage fallback — PRODUCT_OWNER role uses story-only Intake prompt unless a stage-specific binding overrides it.",
+  });
+  await upsertBinding({
+    id: IDS.stageBindings.LOOP_ARCHITECT,
+    stageKey: "loop.stage",
+    agentRole: "ARCHITECT",
+    promptProfileId: IDS.stageProfiles.LOOP_ARCHITECT,
+    description: "Loop stage — ARCHITECT role override (read-only plan/design, no mutation phases).",
   });
   await upsertBinding({
     id: IDS.stageBindings.LOOP_DEVELOPER,

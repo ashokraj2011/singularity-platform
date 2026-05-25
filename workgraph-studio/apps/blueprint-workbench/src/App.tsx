@@ -1121,13 +1121,15 @@ function WorkbenchNeo({
           <FinalizeStrip session={session} onSession={onSession} />
         </div>
 
-        {/* LiveCockpit needs a workflow instance id to subscribe to the
-            SSE stream. Standalone Workbench sessions without a linked
-            workflow run get an explanatory empty state instead of a
-            permanent connection error. */}
+        {/* LiveCockpit subscribes to audit-gov by trace prefix
+            `blueprint-<sessionId>` (the same path the Loop Theater
+            uses). Standalone Workbench sessions without a linked
+            workflow run still get a session id, so the cockpit lights
+            up for them too. workflowInstanceId is passed so the empty
+            state can differentiate "loading" from "will never load". */}
         <LiveCockpit
+          sessionId={session.id ?? null}
           workflowInstanceId={session.workflowInstanceId ?? null}
-          authToken={getToken()}
         />
       </section>
 

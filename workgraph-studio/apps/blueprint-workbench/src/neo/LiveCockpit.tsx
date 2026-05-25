@@ -2,45 +2,86 @@
  * M41.1 — Live Cockpit.
  *
  * Right-column real-time view of what the agent is doing RIGHT NOW.
- * Subscribes to workgraph-api's SSE endpoint at
+ *
+ * Originally (M41.1) this component proxied workgraph-api's
  *   GET /api/workflow-instances/:runId/events/stream
- * (same endpoint LiveEventsPanel.tsx in workgraph-web uses).
+ * which in turn pulled from context-fabric's legacy CallLog store.
+ * After the M71 governed-loop cutover, context-fabric no longer writes
+ * to CallLog — every per-turn event lands in audit-gov instead.
+ * Subscribing to the legacy endpoint produced a permanent "no trace
+ * recorded" 404 and the cockpit stayed blank for every real run.
+ *
+ * Today the cockpit subscribes to audit-gov directly, the same path the
+ * M69 Loop Theater uses:
+ *   - GET  /audit-gov/api/v1/audit/search?traceIdPrefix=blueprint-<sid>
+ *     for the catch-up of the most recent ~100 events
+ *   - GET  /audit-gov/api/v1/audit/stream
+ *     for the live tail (filtered client-side on trace_id prefix)
  *
  * Renders three sections:
- *   - "Now" — the most recent LLM stream / tool call (animated)
- *   - "Activity" — chronological stream of tool calls, LLM responses,
- *     artifact creations, branch commits
+ *   - "Now" — the most recent LLM turn / tool call (animated)
+ *   - "Activity" — chronological stream of LLM / tool / phase / commit
+ *     events
  *   - "Receipts" — cumulative token / cost / latency rollup
  *
- * Auto-falls-back to polling /events if SSE is unavailable (same pattern
- * as LiveEventsPanel). Closes streams on unmount.
+ * Closes streams on unmount.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BLUEPRINT_AUTH_INVALID_EVENT, clearToken } from '../api'
 
 interface CockpitEvent {
   id: string
   kind: string
-  timestamp: string
-  capability_id?: string | null
   trace_id?: string | null
+  created_at?: string
+  occurred_at?: string
+  // legacy fields kept so an old-style payload still renders
+  timestamp?: string
+  capability_id?: string | null
   source_service?: string | null
   payload?: Record<string, unknown> | null
 }
 
-type CockpitStatus = 'connecting' | 'streaming' | 'polling' | 'idle' | 'error'
+type CockpitStatus = 'connecting' | 'streaming' | 'reconnecting' | 'idle' | 'error'
 
+const AUDIT_GOV_BASE = '/audit-gov'
 const EVENT_CAP = 200      // ring buffer; oldest drops when exceeded
-const POLL_INTERVAL_MS = 2500
+
+// Event kinds we render. Anything not in here is filtered out so the
+// noisy per-turn debug events (governed.llm_request etc.) don't drown
+// the user-facing narrative.
+const RENDERABLE_KINDS = new Set<string>([
+  // governed loop (M71 cutover) — the modern path
+  'governed.llm_response',
+  'governed.tool_dispatched',
+  'governed.tool_refused',
+  'governed.phase_completed',
+  'governed.phase_output_invalid',
+  'governed.stage_aborted',
+  'governed.auto_verify_completed',
+  'governed.path_coverage_gap',
+  'governed.pii_masked',
+  // legacy mcp-server / workgraph events — still surface when present
+  'llm.call.completed',
+  'tool.invocation.completed',
+  'code_change.detected',
+  'code_change.applied',
+  'workspace.branch.created',
+  'git.commit.created',
+  'agent.phase.transitioned',
+  'blueprint.stage.run.completed',
+])
 
 function isToolEvent(k: string): boolean {
-  return k.startsWith('tool.invocation')
+  return k === 'governed.tool_dispatched' || k === 'governed.tool_refused' || k.startsWith('tool.invocation')
 }
 function isLlmEvent(k: string): boolean {
-  return k === 'llm.call.completed' || k === 'llm.call.started' || k === 'llm.stream.delta'
+  return k === 'governed.llm_response' || k === 'llm.call.completed' || k === 'llm.call.started' || k === 'llm.stream.delta'
 }
 function isCodeEvent(k: string): boolean {
-  return k === 'code_change.detected' || k === 'workspace.branch.created' || k === 'git.commit.created'
+  return k === 'code_change.detected' || k === 'code_change.applied' || k === 'workspace.branch.created' || k === 'git.commit.created'
+}
+function isPhaseEvent(k: string): boolean {
+  return k === 'governed.phase_completed' || k === 'agent.phase.transitioned'
 }
 function isApprovalEvent(k: string): boolean {
   return k.startsWith('approval.')
@@ -50,16 +91,50 @@ function eventGlyph(k: string): string {
   if (isToolEvent(k))     return '🔧'
   if (isLlmEvent(k))      return '💬'
   if (isCodeEvent(k))     return '📝'
+  if (isPhaseEvent(k))    return '➤'
   if (isApprovalEvent(k)) return '🛂'
   if (k.startsWith('governance.')) return '⚖️'
   if (k.startsWith('artifact.'))   return '📄'
+  if (k.startsWith('governed.'))   return '·'
   return '·'
+}
+
+function eventTimestamp(ev: CockpitEvent): string | undefined {
+  return ev.created_at ?? ev.occurred_at ?? ev.timestamp
 }
 
 function eventLabel(ev: CockpitEvent): string {
   const p = ev.payload ?? {}
+  if (ev.kind === 'governed.tool_dispatched') {
+    const name = stringValue(p.tool_name) ?? '?'
+    const ok = p.tool_success === false ? '✗' : '✓'
+    return `${ok} ${name}`
+  }
+  if (ev.kind === 'governed.tool_refused') {
+    const name = stringValue(p.tool_name) ?? '?'
+    return `⊘ ${name} (refused)`
+  }
+  if (ev.kind === 'governed.phase_completed') {
+    const from = stringValue(p.from_phase) ?? '?'
+    const to = stringValue(p.to_phase) ?? '?'
+    return `${from} → ${to}`
+  }
+  if (ev.kind === 'governed.phase_output_invalid') {
+    return 'phase output invalid'
+  }
+  if (ev.kind === 'governed.stage_aborted') {
+    return 'stage aborted'
+  }
+  if (ev.kind === 'governed.llm_response') {
+    const modelAlias = stringValue(p.model_alias ?? p.modelAlias) ?? stringValue(p.provider) ?? 'gateway'
+    const inTok = numberValue(p.input_tokens)
+    const outTok = numberValue(p.output_tokens)
+    const cost = numberValue(p.estimated_cost ?? p.estimatedCost)
+    const tokens = inTok + outTok
+    return `LLM ${modelAlias} · ${tokens.toLocaleString()} tok${cost ? ` · ${money(cost)}` : ''}`
+  }
   if (isToolEvent(ev.kind)) {
-    const name = (p.tool_name as string) ?? '?'
+    const name = stringValue(p.tool_name) ?? '?'
     const ok = p.success === false ? '✗' : '✓'
     return `${ok} ${name}`
   }
@@ -69,21 +144,49 @@ function eventLabel(ev: CockpitEvent): string {
     const cost = numberValue(p.estimated_cost ?? p.estimatedCost)
     return `LLM ${modelAlias} · ${tokens.toLocaleString()} tok${cost ? ` · ${money(cost)}` : ''}`
   }
-  if (ev.kind === 'code_change.detected') {
-    const paths = (p.changed_paths as string[] | undefined) ?? []
+  if (ev.kind === 'code_change.detected' || ev.kind === 'code_change.applied') {
+    const paths = (p.paths_touched as string[] | undefined) ?? (p.changed_paths as string[] | undefined) ?? []
     return `${paths.length} file${paths.length === 1 ? '' : 's'} changed`
   }
   if (ev.kind === 'workspace.branch.created') {
-    return `branch ${(p.branch as string) ?? 'created'}`
+    return `branch ${stringValue(p.branch) ?? 'created'}`
   }
   if (ev.kind === 'git.commit.created') {
-    return `commit ${((p.commit_sha as string) ?? '').slice(0, 7)}`
+    return `commit ${(stringValue(p.commit_sha) ?? '').slice(0, 7)}`
+  }
+  if (ev.kind === 'agent.phase.transitioned') {
+    return `→ ${stringValue(p.to_phase) ?? stringValue(p.phase) ?? '?'}`
+  }
+  if (ev.kind === 'blueprint.stage.run.completed') {
+    return `stage ${stringValue(p.verdict) ?? 'completed'}`
+  }
+  if (ev.kind === 'governed.auto_verify_completed') {
+    return p.passed === false ? 'auto-verify failed' : 'auto-verify passed'
+  }
+  if (ev.kind === 'governed.path_coverage_gap') {
+    return 'path coverage gap'
+  }
+  if (ev.kind === 'governed.pii_masked') {
+    return 'pii masked'
   }
   return ev.kind.replaceAll('.', ' › ')
 }
 
 function eventDetail(ev: CockpitEvent): string {
   const p = ev.payload ?? {}
+  if (ev.kind === 'governed.tool_dispatched' || ev.kind === 'governed.tool_refused') {
+    const reason = stringValue(p.reason)
+    const latency = numberValue(p.latency_ms ?? p.latencyMs)
+    const paths = (p.paths_touched as string[] | undefined) ?? []
+    const phase = stringValue(p.phase)
+    return [phase, reason, paths.slice(0, 2).join(', '), latency ? `${latency} ms` : undefined]
+      .filter(Boolean).join(' · ')
+  }
+  if (ev.kind === 'governed.phase_completed') {
+    const receipt = stringValue(p.receipt_kind)
+    const pending = p.approval_pending === true ? 'awaiting approval' : undefined
+    return [receipt, pending].filter(Boolean).join(' · ')
+  }
   if (isToolEvent(ev.kind)) {
     const duration = numberValue(p.latency_ms ?? p.latencyMs)
     const risk = stringValue(p.risk_level ?? p.riskLevel)
@@ -98,7 +201,7 @@ function eventDetail(ev: CockpitEvent): string {
       .filter(Boolean)
       .join(' · ')
   }
-  if (ev.kind === 'llm.call.completed' || ev.kind === 'llm.response') {
+  if (ev.kind === 'governed.llm_response' || ev.kind === 'llm.call.completed' || ev.kind === 'llm.response') {
     const provider = stringValue(p.provider)
     const model = stringValue(p.model)
     const finish = stringValue(p.finish_reason ?? p.finishReason)
@@ -106,14 +209,14 @@ function eventDetail(ev: CockpitEvent): string {
     const cost = numberValue(p.estimated_cost ?? p.estimatedCost)
     return [provider, model, finish, latency ? `${latency} ms` : undefined, cost ? money(cost) : undefined].filter(Boolean).join(' · ')
   }
-  if (ev.kind === 'code_change.detected') {
+  if (ev.kind === 'code_change.detected' || ev.kind === 'code_change.applied') {
     const paths = (p.paths_touched as string[] | undefined) ?? (p.changed_paths as string[] | undefined) ?? []
     return paths.slice(0, 3).join(', ')
   }
   if (ev.kind === 'governance.denied') {
     return stringValue(p.reason) ?? ''
   }
-  return stringValue(p.phase ?? p.finishReason ?? p.finish_reason) ?? ''
+  return stringValue(p.phase ?? p.finishReason ?? p.finish_reason ?? p.error_code) ?? ''
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -131,21 +234,32 @@ function money(value: number): string {
 }
 
 export function LiveCockpit({
+  sessionId,
   workflowInstanceId,
-  authToken,
 }: {
+  /** BlueprintSession id — used to build the audit-gov trace prefix
+   *  `blueprint-<sessionId>`. When null/undefined the cockpit shows
+   *  the "not linked" empty state because there's no trace to follow. */
+  sessionId: string | null
+  /** Kept for the empty-state heuristic: a session that is workflow-linked
+   *  but doesn't have its trace populated yet looks different than a
+   *  standalone session that will never have one. */
   workflowInstanceId: string | null
-  authToken: string | null
+  // legacy prop kept for backward compat — the new path doesn't need a
+  // bearer token because the audit-gov proxy in vite.config.ts is open
+  // in dev. Prod will replace it with a workgraph-api passthrough.
+  authToken?: string | null
 }) {
   const [events, setEvents] = useState<CockpitEvent[]>([])
   const [status, setStatus] = useState<CockpitStatus>('connecting')
   const [error, setError] = useState<string | null>(null)
   const seenIds = useRef<Set<string>>(new Set())
 
-  // Standalone Workbench sessions aren't tied to a workflow run, so the
-  // SSE stream has nothing to subscribe to. Show a friendly empty state
-  // instead of a permanent connection error.
-  if (!workflowInstanceId) {
+  // Standalone Workbench sessions without a linked session show a friendly
+  // empty state. Workflow-scoped sessions with no session id yet are rare
+  // (the workbench creates a session row before mounting), but treat them
+  // the same way.
+  if (!sessionId) {
     return (
       <section className="neo-cockpit unlinked" aria-label="Live agent activity">
         <header className="cockpit-head">
@@ -153,111 +267,116 @@ export function LiveCockpit({
           <span className="cockpit-status idle">○ not linked</span>
         </header>
         <p className="cockpit-empty">
-          This session isn't linked to a workflow run, so there's no live
-          event stream to subscribe to. Open the Workbench from an active
-          workflow task to see tools and tokens flow in real time.
+          {workflowInstanceId
+            ? 'Loading session…'
+            : "This session isn't linked to a workflow run, so there's no live event stream to subscribe to. Open the Workbench from an active workflow task to see tools and tokens flow in real time."}
         </p>
       </section>
     )
   }
 
+  const tracePrefix = `blueprint-${sessionId}`
+
   function push(ev: CockpitEvent) {
     if (!ev.id || seenIds.current.has(ev.id)) return
+    if (!RENDERABLE_KINDS.has(ev.kind)) return
+    const tid = ev.trace_id ?? ''
+    if (!tid.startsWith(tracePrefix)) return
     seenIds.current.add(ev.id)
     setEvents(prev => {
       const next = [...prev, ev]
-      // ring buffer — drop oldest if cap exceeded
       return next.length > EVENT_CAP ? next.slice(next.length - EVENT_CAP) : next
     })
   }
 
   useEffect(() => {
-    if (!workflowInstanceId || !authToken) {
-      setStatus('idle')
-      return
-    }
-    let stopped = false
-    let pollTimer: ReturnType<typeof setTimeout> | undefined
+    // Reset state when the session/trace changes.
+    seenIds.current = new Set()
+    setEvents([])
+    setStatus('connecting')
+    setError(null)
+
+    let closed = false
     let es: EventSource | undefined
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined
 
-    function startPolling(sinceId?: string) {
-      if (!stopped) pollTimer = setTimeout(() => poll(sinceId), 250)
-    }
-
-    async function poll(sinceId?: string) {
-      if (stopped) return
+    // Catch-up: pull the most recent ~100 events for this trace so the
+    // cockpit lights up the moment it opens, even if no new event fires
+    // for a while. Without it, opening the workbench mid-run shows a
+    // blank "Waiting for activity..." that reads as broken.
+    async function catchUp() {
       try {
-        const url = new URL(`/api/workflow-instances/${workflowInstanceId}/events`, window.location.origin)
-        if (sinceId) url.searchParams.set('since_id', sinceId)
-        const r = await fetch(url, { headers: { Authorization: `Bearer ${authToken}` } })
-        if (!r.ok) {
-          setStatus('error')
-          // 403/404 are terminal — the run is gone or not ours. Stop the
-          // polling loop instead of grinding a request every 2.5s forever.
-          if (r.status === 403 || r.status === 404) {
-            setError(r.status === 403 ? 'workflow run not accessible' : 'workflow run not found')
-            stopped = true
-            return
-          }
-          // M69 follow-up — 401 used to be retried forever with the same
-          // stale token, producing an apparent "infinite loop" of 401s in
-          // the workbench logs and keeping the page polling indefinitely.
-          // Treat 401 as terminal for the polling loop AND fire the
-          // auth-invalid event so App.tsx bounces the user to AuthGate
-          // for re-login.
-          if (r.status === 401) {
-            setError('session expired — please sign in again')
-            stopped = true
-            clearToken()
-            window.dispatchEvent(new Event(BLUEPRINT_AUTH_INVALID_EVENT))
-            return
-          }
-          setError(`HTTP ${r.status}`)
-        } else {
-          const d = await r.json() as { events?: CockpitEvent[]; tail_id?: string | null }
-          if (d.events?.length) for (const ev of d.events) push(ev)
-          setStatus('polling')
-          setError(null)
-          sinceId = d.tail_id ?? sinceId
-        }
-      } catch (err) {
-        setStatus('error')
-        setError((err as Error).message)
+        const res = await fetch(`${AUDIT_GOV_BASE}/api/v1/audit/search`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ traceIdPrefix: tracePrefix, limit: 100 }),
+        })
+        if (closed || !res.ok) return
+        const data = await res.json() as { items?: CockpitEvent[] }
+        const items = (data.items ?? []).slice()
+        // Oldest first so they read chronologically when the rollup
+        // sorts by arrival.
+        items.sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
+        for (const ev of items) push(ev)
+      } catch {
+        // Catch-up is best-effort; live path still tries to connect.
       }
-      if (!stopped) pollTimer = setTimeout(() => poll(sinceId), POLL_INTERVAL_MS)
     }
 
-    // SSE first; fall back to polling on error / done
-    const streamUrl = new URL(`/api/workflow-instances/${workflowInstanceId}/events/stream`, window.location.origin)
-    streamUrl.searchParams.set('access_token', authToken)
-    streamUrl.searchParams.set('max_idle_seconds', '120')
-    es = new EventSource(streamUrl.toString())
-    es.onopen = () => { if (!stopped) { setStatus('streaming'); setError(null) } }
-    es.onmessage = (event) => {
-      try { push(JSON.parse(event.data) as CockpitEvent) } catch { /* heartbeat */ }
+    function connect() {
+      if (closed) return
+      // audit-gov SSE supports filtering by exact trace_id but not by
+      // prefix, so we subscribe wide and filter on the client (same
+      // pattern as useLiveLoopEventStream).
+      const url = `${AUDIT_GOV_BASE}/api/v1/audit/stream`
+      es = new EventSource(url)
+      es.onopen = () => {
+        if (closed) return
+        setStatus('streaming')
+        setError(null)
+      }
+      es.addEventListener('hello', () => {
+        if (closed) return
+        setStatus('streaming')
+      })
+      // audit-gov tags data frames as `event: audit`. Assigning
+      // onmessage alone would never deliver them (only unnamed events
+      // hit onmessage). Subscribe explicitly.
+      const handleAuditFrame = (event: MessageEvent) => {
+        if (closed) return
+        try {
+          const parsed = JSON.parse(event.data) as CockpitEvent
+          push(parsed)
+        } catch {
+          // Keepalive `:` frames never reach onmessage; anything that
+          // lands here and fails to parse is malformed — drop silently.
+        }
+      }
+      es.addEventListener('audit', handleAuditFrame as EventListener)
+      es.onmessage = handleAuditFrame
+      es.onerror = () => {
+        if (closed) return
+        setStatus('reconnecting')
+        setError('stream interrupted — retrying')
+        es?.close()
+        es = undefined
+        if (!closed) {
+          reconnectTimer = setTimeout(connect, 1500)
+        }
+      }
     }
-    es.addEventListener('done', () => {
-      if (stopped) return
-      setStatus('idle')
-      es?.close()
-      const last = Array.from(seenIds.current).at(-1)
-      startPolling(last)
+
+    catchUp().then(() => {
+      if (!closed) connect()
     })
-    es.onerror = () => {
-      if (stopped) return
-      setStatus('polling')
-      setError('stream unavailable; polling')
-      es?.close()
-      const last = Array.from(seenIds.current).at(-1)
-      startPolling(last)
-    }
 
     return () => {
-      stopped = true
-      if (pollTimer) clearTimeout(pollTimer)
+      closed = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
       if (es) es.close()
+      setStatus('idle')
     }
-  }, [workflowInstanceId, authToken])
+  }, [sessionId])
 
   const totals = useMemo(() => {
     let tokens = 0
@@ -267,11 +386,14 @@ export function LiveCockpit({
     let cost = 0
     for (const ev of events) {
       const p = ev.payload ?? {}
+      const inTok = numberValue(p.input_tokens)
+      const outTok = numberValue(p.output_tokens)
       if (typeof p.total_tokens === 'number') tokens += p.total_tokens
+      else if (inTok || outTok) tokens += inTok + outTok
       cost += numberValue(p.estimated_cost ?? p.estimatedCost)
       if (isToolEvent(ev.kind)) toolCalls += 1
-      if (ev.kind === 'llm.call.completed') llmCalls += 1
-      if (ev.kind === 'code_change.detected') codeChanges += 1
+      if (isLlmEvent(ev.kind)) llmCalls += 1
+      if (isCodeEvent(ev.kind)) codeChanges += 1
     }
     return { tokens, toolCalls, llmCalls, codeChanges, cost }
   }, [events])
@@ -305,7 +427,7 @@ export function LiveCockpit({
       <div className="cockpit-stream" role="log" aria-live="polite">
         {recent.length === 0 && (
           <p className="cockpit-empty">
-            {status === 'streaming' ? 'Waiting for activity…' : status === 'idle' ? 'No active run.' : 'Connecting…'}
+            {status === 'streaming' ? 'Waiting for activity…' : status === 'idle' ? 'No active run.' : status === 'reconnecting' ? 'Reconnecting…' : 'Connecting…'}
           </p>
         )}
         {recent.map(ev => (
@@ -315,7 +437,7 @@ export function LiveCockpit({
               <span className="row-label">{eventLabel(ev)}</span>
               {eventDetail(ev) && <span className="row-detail">{eventDetail(ev)}</span>}
             </span>
-            <time className="row-time">{shortTime(ev.timestamp)}</time>
+            <time className="row-time">{shortTime(eventTimestamp(ev))}</time>
           </div>
         ))}
       </div>
@@ -335,11 +457,12 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function highlightClass(kind: string): string {
-  if (kind.startsWith('tool.invocation')) return 'tool'
-  if (kind.startsWith('llm.'))            return 'llm'
-  if (kind.startsWith('code_change.') || kind.startsWith('git.') || kind.startsWith('workspace.')) return 'code'
+  if (isToolEvent(kind))   return 'tool'
+  if (isLlmEvent(kind))    return 'llm'
+  if (isCodeEvent(kind))   return 'code'
+  if (isPhaseEvent(kind))  return 'governance'
   if (kind.startsWith('approval.'))       return 'approval'
-  if (kind.startsWith('governance.'))     return 'governance'
+  if (kind.startsWith('governance.') || kind.startsWith('governed.')) return 'governance'
   return ''
 }
 
@@ -355,10 +478,10 @@ function shortTime(iso?: string): string {
 
 function statusLabel(s: CockpitStatus): string {
   switch (s) {
-    case 'streaming': return '● live'
-    case 'polling':   return '● polling'
-    case 'connecting': return '● connecting'
-    case 'idle':      return '○ idle'
-    case 'error':     return '✗ error'
+    case 'streaming':    return '● live'
+    case 'reconnecting': return '○ reconnecting'
+    case 'connecting':   return '● connecting'
+    case 'idle':         return '○ idle'
+    case 'error':        return '✗ error'
   }
 }
