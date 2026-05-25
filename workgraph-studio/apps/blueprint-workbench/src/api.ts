@@ -507,9 +507,50 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       clearToken()
       notifyInvalidAuth()
     }
+    // M78 Slice 2 — Try to surface the API's structured error body
+    // (code/message/details). If the response is JSON-shaped, attach
+    // the parsed fields to a richer Error subclass so React Query's
+    // mutation.error gives downstream UI access to error.details for
+    // the inherited-failure cards. Falls back to the plain string
+    // path when the body isn't JSON (legacy endpoints).
+    let parsed: unknown = null
+    try { parsed = text ? JSON.parse(text) : null } catch { /* not JSON */ }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const obj = parsed as Record<string, unknown>
+      const message = typeof obj.message === 'string' && obj.message
+        ? obj.message
+        : `Request failed with ${res.status}`
+      throw new ApiError(message, {
+        code: typeof obj.code === 'string' ? obj.code : undefined,
+        statusCode: res.status,
+        details: (obj.details && typeof obj.details === 'object' && !Array.isArray(obj.details))
+          ? obj.details as Record<string, unknown>
+          : undefined,
+      })
+    }
     throw new Error(text || `Request failed with ${res.status}`)
   }
   return await res.json() as T
+}
+
+/**
+ * M78 — Error subclass that preserves the API's structured `details`
+ * payload. React Query's mutation.error surfaces this verbatim, so
+ * downstream components can branch on `details.kind === 'verification_
+ * failure_analysis'` and render inherited-failure cards instead of
+ * a flat message string.
+ */
+export class ApiError extends Error {
+  readonly code?: string
+  readonly statusCode: number
+  readonly details?: Record<string, unknown>
+  constructor(message: string, opts: { code?: string; statusCode: number; details?: Record<string, unknown> }) {
+    super(message)
+    this.name = 'ApiError'
+    this.code = opts.code
+    this.statusCode = opts.statusCode
+    this.details = opts.details
+  }
 }
 
 function unwrap<T>(data: unknown): T[] {

@@ -60,6 +60,7 @@ import { LiveCockpit } from './neo/LiveCockpit'
 import { FocusPane, computeFocusIntent, type FocusAction } from './neo/FocusPane'
 import { NeoNotifier } from './neo/NeoNotifier'
 import { StageChat } from './neo/StageChat'
+import { InheritedFailureCard, getVerificationFailureAnalysis } from './neo/InheritedFailureCard'
 import { LoopTrace } from './neo/LoopTrace'
 import { LoopTheater } from './loop-theater/LoopTheater'
 import { NeoThemePicker, lookClass, useNeoLook } from './neo/NeoThemePicker'
@@ -1494,11 +1495,31 @@ function NeoStageController({
   const confidence = latest?.gateRecommendation?.confidence
   const pendingApproval = pendingApprovalFor(latest)
 
-  const mutationError = (runMutation.error ?? verdictMutation.error ?? sendBackMutation.error ?? resetAttemptsMutation.error ?? approvalMutation.error)?.message ?? null
+  const rawError = runMutation.error ?? verdictMutation.error ?? sendBackMutation.error ?? resetAttemptsMutation.error ?? approvalMutation.error
+  const mutationErrorMessage = rawError?.message ?? null
+  // M78 Slice 2 — When the error carries a structured failure-analysis
+  // payload (only emitted today for develop-stage approval blocks where
+  // the API was able to classify each failure as inherited vs
+  // regression), render an actionable card instead of the flat string.
+  // The bare `mutationErrorMessage` falls back to the inlineError prop
+  // for every other error path — network/401/legacy validation errors
+  // get exactly the same treatment as before.
+  const failureAnalysis = getVerificationFailureAnalysis(rawError)
+  const mutationError = failureAnalysis ? null : mutationErrorMessage
 
   // Compose the FocusPane body based on intent.
   const body: ReactNode = (
     <>
+      {failureAnalysis && (
+        <InheritedFailureCard
+          analysis={failureAnalysis}
+          message={mutationErrorMessage ?? ''}
+          onSendBack={() => setSendBackOpen(true)}
+          // M78 Slice 3 will wire onCreateRemediationWI; until then the
+          // button stays disabled and shows a "coming soon" tooltip.
+          onCreateRemediationWI={undefined}
+        />
+      )}
       {intent === 'answer' && (
         <div className="focus-questions">
           {(stage.questions ?? []).filter(q => q.required && !hasAnswerForQuestion(q, answerList(answers))).map(question => (
