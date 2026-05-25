@@ -8,6 +8,7 @@ import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError } from '../../lib/errors'
+import { classifyFailures, type FailureClassification } from './inherited-failure-analyzer'
 import { createReceipt, logEvent, publishOutbox } from '../../lib/audit'
 import { contextFabricClient, ContextFabricError, type ExecuteResponse } from '../../lib/context-fabric/client'
 import { fetchEvalFeedback } from '../../lib/audit-gov/client'
@@ -537,7 +538,19 @@ blueprintRouter.get('/sessions', async (req, res, next) => {
       // resume the stale session (workbench frontend picks the latest match
       // by updatedAt). The session row is preserved for audit; we just want
       // it out of the "pick up where you left off" candidate pool.
-      where: { createdById, status: { not: 'ABANDONED' } },
+      where: {
+        createdById,
+        status: {
+          in: [
+            BlueprintSessionStatus.DRAFT,
+            BlueprintSessionStatus.SNAPSHOTTED,
+            BlueprintSessionStatus.RUNNING,
+            BlueprintSessionStatus.COMPLETED,
+            BlueprintSessionStatus.APPROVED,
+            BlueprintSessionStatus.FAILED,
+          ],
+        },
+      },
       include: {
         snapshots: { orderBy: { createdAt: 'desc' }, take: 1 },
         stageRuns: { orderBy: { createdAt: 'desc' } },
@@ -2741,6 +2754,38 @@ async function saveStageVerdict(
     )
   }
   if (accepted && attemptHasActualCodeChange(latestAttempt) && attemptHasFailedVerificationReceipt(latestAttempt)) {
+    // M78 Slice 1 — Classify each failed test as REGRESSION (file the
+    // agent touched in this attempt) vs INHERITED (failure exists in
+    // upstream code the agent didn't modify). When all failures are
+    // inherited, the workbench renders actionable cards instead of a
+    // wall-of-text validation error — and Slice 3+ can turn that into
+    // a one-click remediation WI. Best-effort: when path-resolution
+    // fails or the parser couldn't extract structured failingTests we
+    // fall back to the legacy string-only error so callers never see
+    // worse UX than today.
+    const classification = await analyzeAttemptFailures(latestAttempt).catch(() => null)
+    const totalClassified = (classification?.inheritedFailures.length ?? 0)
+      + (classification?.regressionFailures.length ?? 0)
+    if (classification && totalClassified > 0) {
+      const inheritedOnly = classification.regressionFailures.length === 0
+                            && classification.inheritedFailures.length > 0
+      const message = inheritedOnly
+        ? `Approval blocked: ${classification.inheritedFailures.length} test failure(s) are inherited from upstream — your agent's own changes didn't introduce them. Create a remediation work item to fix the upstream tests, or accept the risk to proceed.`
+        : `Approval blocked: ${classification.regressionFailures.length} new test regression(s) introduced by this attempt`
+          + (classification.inheritedFailures.length > 0
+              ? ` + ${classification.inheritedFailures.length} inherited failure(s). Send the stage back to fix the regressions; inherited failures need their own remediation WI.`
+              : '. Send the stage back so the agent can fix them.')
+      throw new ValidationError(message, {
+        kind: 'verification_failure_analysis',
+        inheritedOnly,
+        inheritedFailures: classification.inheritedFailures,
+        regressionFailures: classification.regressionFailures,
+        unparseable: classification.unparseable,
+        recommendedActions: inheritedOnly
+          ? ['create_remediation_wi', 'accept_risk']
+          : ['send_back_to_develop'],
+      })
+    }
     throw new ValidationError(
       'Code-changing stages cannot be approved with failed verification receipts. Either: ' +
       '(a) Send the stage back so the agent can fix the failing tests, OR ' +
@@ -3162,11 +3207,23 @@ async function runLoopStageExecute(
   extraContext: string,
 ): Promise<CodingRunResult> {
   const traceId = `blueprint-${session.id}-${stage.key}`
-  const executionConfig = readLoopState(session).executionConfig
+  const state = readLoopState(session)
+  const executionConfig = state.executionConfig
   const modelAlias = stageModelAlias(executionConfig, stage.key, stage.label)
   const limits = workbenchExecutionLimits(executionConfig)
   const isDeveloperStage = stageAllowsMutation(stage)
   const usesRepoContext = stageUsesRepoContext(stage)
+  // (2026-05-25) Full stageVars bundle — needed so the governed path
+  // surfaces capturedDecisions, latestAccepted, sendBacks, operatorChat,
+  // questions, artifacts, priorApprovedArtifacts, implementationDirective,
+  // and priorAttemptLearnings to the per-phase prompts. The previous
+  // implementation cherry-picked a subset and silently dropped operator-
+  // facing inputs — most visibly, "Save & re-run with answers" had no
+  // effect because capturedDecisions never reached context-fabric. The
+  // legacy /execute path called buildLoopStageVars implicitly via the
+  // pre-rendered `task` body; the governed path needs the vars spread
+  // explicitly because each per-phase prompt picks the ones it needs.
+  const stageVars = buildLoopStageVars(session, stage, state)
   const linkedWorkItem = await workflowWorkItemContext(session.workflowInstanceId)
   const agentTemplateId = attempt.agentTemplateId
   const executeArtifacts = usesRepoContext && snapshot
@@ -3263,19 +3320,30 @@ async function runLoopStageExecute(
     policy,
     modelAlias,
     vars: {
+      // (2026-05-25) Spread the full stageVars bundle FIRST so all the
+      // operator-facing context (capturedDecisions, latestAccepted,
+      // sendBacks, operatorChat, questions, artifacts, ...) reaches
+      // the per-phase prompts. This is what makes "Save & re-run with
+      // answers" actually work — without spreading capturedDecisions
+      // the agent re-runs blind to the operator's answers.
+      ...stageVars,
       blueprintSessionId: session.id,
       // M74 Phase 2B — present only when there's prior-attempt feedback to
       // surface. context-fabric's stage_driver checks vars.eval_feedback and
       // injects the synthetic prompt message only when this key is set.
       ...(evalFeedback ? { eval_feedback: evalFeedback } : {}),
-      // Goal text — the per-phase prompts reference {{goal}}.
+      // Explicit overrides for vars that need different values than
+      // buildLoopStageVars produces. These all match what stageVars
+      // already has but stay explicit so a code reader can see the
+      // contract at the call site.
       goal: session.goal ?? '',
       stageKey: stage.key,
       stageLabel: stage.label,
       // The pre-rendered task body still flows through so prompt-composer's
       // top-level loopDefaultTask vars resolve when a phase-specific binding
-      // doesn't exist. Phase-specific prompts (Slice E) use their own copy
-      // of stageDescription / artifacts etc. so they don't need this.
+      // doesn't exist. Phase-specific prompts (Slice E) reference the
+      // individual vars from stageVars above; this `task` is the legacy
+      // fallback for stage-level bindings.
       task,
       stageDescription: stage.description ?? '',
       agentRole: stage.agentRole ?? '',
@@ -3305,7 +3373,7 @@ async function runLoopStageExecute(
       user_id: session.createdById ?? undefined,
       trace_id: traceId,
       branch_base: isDeveloperStage ? session.sourceRef ?? undefined : undefined,
-      branch_name: isDeveloperStage ? workbenchBranchName(session, stage, attempt) : undefined,
+      branch_name: isDeveloperStage ? workbenchBranchName(session, stage, attempt, linkedWorkItem) : undefined,
       source_type: usesRepoContext ? session.sourceType.toLowerCase() : undefined,
       source_uri: usesRepoContext ? session.sourceUri : undefined,
       source_ref: usesRepoContext ? session.sourceRef ?? undefined : undefined,
@@ -3361,8 +3429,21 @@ function workbenchBranchName(
   session: { id: string; workflowInstanceId?: string | null },
   stage: { key: string },
   attempt: { id: string; attemptNumber: number },
+  // (2026-05-25) Prefer the WorkItem identifier in the branch name when
+  // present. Operator-readable branches (`sg/WRK-984AD/develop/1-98a533ef`)
+  // beat opaque UUIDs (`sg/2c2033e1-…/develop/1-98a533ef`) in github's
+  // branch dropdown, PR list, and `gh pr list` output. Falls back to the
+  // workflowInstanceId UUID when no WorkItem is linked (e.g. exploratory
+  // sessions without a WorkItem), and finally to `blueprint-<sessionId>`.
+  // workItemCode wins over workItemId because the code (WRK-984AD) is
+  // the visible label operators use; the uuid is plumbing.
+  linkedWorkItem?: { workItemCode?: string | null; workItemId?: string | null } | null,
 ) {
-  const base = session.workflowInstanceId ?? `blueprint-${session.id}`
+  const base =
+    linkedWorkItem?.workItemCode?.trim()
+    ?? linkedWorkItem?.workItemId?.trim()
+    ?? session.workflowInstanceId
+    ?? `blueprint-${session.id}`
   const raw = `sg/${base}/${stage.key}/${attempt.attemptNumber}-${attempt.id.slice(0, 8)}`
   return raw
     .replace(/[^a-zA-Z0-9._/-]+/g, '-')
@@ -4348,6 +4429,72 @@ function attemptReceiptExitCode(receipt: Record<string, unknown>): number | unde
     : typeof receipt.exit_code === 'number'
       ? receipt.exit_code
       : undefined
+}
+
+/**
+ * M78 Slice 1 — Resolve a develop attempt's verification failures into
+ * structured `{inherited[], regression[]}` lists by:
+ *   1. Pulling tool_invocation_ids from attempt.correlation.codeChangeIds
+ *   2. Resolving them to file paths via contextFabricClient.listCodeChanges
+ *   3. Cross-referencing failing-test FQNs with those paths via the
+ *      analyzer module (inherited-failure-analyzer.ts).
+ * Returns null when the receipt set lacks structured parsed_tests data
+ * (e.g. Jest runner before M72 D supports it) — caller falls back to the
+ * legacy string-only validation error. Best-effort throughout: failures
+ * to reach context-fabric just degrade to "no agent paths known", which
+ * classifies every failure as inherited rather than blocking the gate.
+ */
+async function analyzeAttemptFailures(attempt: StageAttempt): Promise<FailureClassification | null> {
+  const correlation = isRecord(attempt.correlation) ? attempt.correlation : {}
+  const cfCallId = typeof correlation.cfCallId === 'string' ? correlation.cfCallId : ''
+  const rawIds = correlation.codeChangeIds
+  const codeChangeIds: string[] = Array.isArray(rawIds)
+    ? rawIds.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+    : []
+
+  let agentChangedPaths: string[] = []
+  if (cfCallId && codeChangeIds.length > 0) {
+    try {
+      const { items } = await contextFabricClient.listCodeChanges(cfCallId, { codeChangeIds })
+      agentChangedPaths = items.flatMap(item =>
+        Array.isArray((item as { paths_touched?: unknown }).paths_touched)
+          ? ((item as { paths_touched: unknown[] }).paths_touched.filter(
+              (p): p is string => typeof p === 'string' && p.trim().length > 0))
+          : [],
+      )
+    } catch {
+      // context-fabric unreachable / 5xx — leave agentChangedPaths empty.
+      // Analyzer will then classify every failure as inherited; downstream
+      // UI still gets useful structured data, and operator can override.
+    }
+  }
+
+  // Coerce the attempt's verificationReceipts into the analyzer's shape.
+  // The receipts on attempt are the M71-summarised version that now
+  // carries parsedTests + stdoutExcerpt (M78 orchestrator change).
+  const receiptsRaw = Array.isArray(attempt.verificationReceipts)
+    ? attempt.verificationReceipts as Array<Record<string, unknown>>
+    : []
+  const receipts = receiptsRaw.map(r => ({
+    passed: typeof r.passed === 'boolean' ? r.passed : (r.passed ?? null) as boolean | null,
+    command: typeof r.command === 'string' ? r.command : null,
+    exit_code: typeof r.exit_code === 'number' ? r.exit_code as number :
+               (typeof r.exitCode === 'number' ? r.exitCode as number : null),
+    stdout_excerpt: typeof r.stdout_excerpt === 'string' ? r.stdout_excerpt :
+                    (typeof r.stdoutExcerpt === 'string' ? r.stdoutExcerpt : null),
+    parsed_tests: isRecord(r.parsed_tests) ? r.parsed_tests as Record<string, unknown> :
+                  (isRecord(r.parsedTests) ? r.parsedTests as Record<string, unknown> : null),
+  }))
+
+  const classification = classifyFailures(receipts, agentChangedPaths)
+  // If we couldn't parse a single failure and there's no agent-touched
+  // path data, the classifier has nothing to say — return null so the
+  // caller falls back to the legacy message.
+  if (classification.inheritedFailures.length === 0
+      && classification.regressionFailures.length === 0) {
+    return null
+  }
+  return classification
 }
 
 function attemptHasFailedVerificationReceipt(attempt: StageAttempt): boolean {

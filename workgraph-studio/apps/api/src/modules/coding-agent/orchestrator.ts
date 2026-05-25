@@ -41,6 +41,13 @@ export interface VerificationReceiptSummary {
   exitCode?: number
   unavailable?: boolean
   source: 'tool' | 'artifact' | 'unknown'
+  // M78 — surface the structured test parser output + a stdout slice so
+  // the inherited-failure analyzer (blueprint.router approval path) can
+  // classify each failed test as regression-vs-inherited and extract the
+  // exception type for actionable UI. Optional — older receipts and
+  // unsupported runners just leave these undefined.
+  parsedTests?: { failingTests?: string[]; passingTests?: string[]; format?: string }
+  stdoutExcerpt?: string
 }
 
 export async function runCodingStage(input: CodingRunRequest): Promise<CodingRunResult> {
@@ -299,9 +306,12 @@ export async function runCodingStageGoverned(
  * Map StageRunResult → CodingRunResult so existing blueprint.router code
  * paths keep working. Decisions:
  *
- *   - status: FINALIZED → COMPLETED. APPROVAL_PENDING → PAUSED (matches
- *     today's pause-for-approval flow). VALIDATION_BLOCKED /
- *     POLICY_BLOCKED / MAX_TURNS → FAILED. LLM_ERROR → FAILED.
+ *   - status: FINALIZED → COMPLETED. APPROVAL_PENDING → COMPLETED. The
+ *     governed stage driver uses APPROVAL_PENDING for SELF_REVIEW's
+ *     "ready for Workbench human approval" gate, not for a resumable MCP tool
+ *     approval. MCP/tool approvals still come through the legacy /execute
+ *     response with a continuation token. VALIDATION_BLOCKED / POLICY_BLOCKED
+ *     / MAX_TURNS → FAILED. LLM_ERROR → FAILED.
  *
  *   - codeChangeIds: extracted from any tool outcome whose result carries
  *     a recognizable code_change_id / changeId. Conservative; misses any
@@ -324,18 +334,36 @@ export function adaptGovernedStageToCodingRun(
 ): CodingRunResult {
   const stopReason = resp.stop_reason
   const status: CodingRunStatus =
-    stopReason === 'FINALIZED' ? 'COMPLETED'
-      : stopReason === 'APPROVAL_PENDING' ? 'PAUSED'
-        : 'FAILED'
+    stopReason === 'FINALIZED' || stopReason === 'APPROVAL_PENDING' ? 'COMPLETED'
+      : 'FAILED'
   const executeStatus: ExecuteResponse['status'] =
-    stopReason === 'FINALIZED' ? 'COMPLETED'
-      : stopReason === 'APPROVAL_PENDING' ? 'WAITING_APPROVAL'
-        : 'FAILED'
+    stopReason === 'FINALIZED' || stopReason === 'APPROVAL_PENDING' ? 'COMPLETED'
+      : 'FAILED'
 
   // Walk all turns and harvest tool-result payloads into the legacy slots.
   const codeChangeIds: string[] = []
   const verificationReceipts: VerificationReceiptSummary[] = []
   const warnings: string[] = []
+  // (2026-05-25) Mirror context-fabric's loop._extract_code_changes
+  // logic: a mutating tool is "evidence of a real code change" iff
+  // it ran successfully AND either emitted a code_change_id OR (more
+  // commonly) emitted a paths_touched/paths_changed/files list. When
+  // no server-minted id exists, use the dispatch's tool_invocation_id
+  // as the binding token — that's the same token audit-gov's
+  // governed.tool_dispatched events carry, so the trail stays intact.
+  // The previous version of this adapter only knew the
+  // {code_change_id, codeChangeId, changeId, change_id} aliases — none
+  // of which mcp-server emits today — so every successful mutation
+  // left codeChangeIds empty and the Develop approval guard refused
+  // to advance. Reproduced manually 2026-05-25: 3 successful
+  // replace_text calls on Operator.java + RuleEngineService.java +
+  // RuleEngineServiceTest.java, all surfaced as
+  // `{kind:"code_change", paths_touched:[...], diff:"...", patch:"...",
+  //   lines_added, lines_removed}` — no id whatsoever.
+  const MUTATING_TOOLS = new Set([
+    'apply_patch', 'replace_text', 'replace_range', 'write_file',
+    'create_file', 'finish_work_branch',
+  ])
   for (const turn of resp.turns) {
     for (const outcome of turn.tool_outcomes) {
       if (!outcome.allowed && outcome.refusal_reason) {
@@ -345,16 +373,66 @@ export function adaptGovernedStageToCodingRun(
       const result = outcome.result
       if (result && typeof result === 'object' && !Array.isArray(result)) {
         const rec = result as Record<string, unknown>
-        // Code-change extraction: tools like apply_patch, replace_text,
-        // create_file, finish_work_branch all expose a code_change_id (or
-        // changeId) on the result envelope when they actually mutate.
-        const candidates = [rec.code_change_id, rec.codeChangeId, rec.changeId, rec.change_id]
-        for (const cid of candidates) {
-          if (typeof cid === 'string' && cid.length > 0) codeChangeIds.push(cid)
+        // Code-change extraction. Three signals stack:
+        //   1. Server-minted change id (preferred when present).
+        //   2. paths_touched/paths_changed list + a binding id fallback.
+        //   3. Single file/path field + a binding id fallback.
+        // The fallback for (2) and (3) is the dispatch's
+        // tool_invocation_id — guaranteed unique per call.
+        const explicitIdCandidates = [
+          rec.code_change_id, rec.codeChangeId, rec.changeId, rec.change_id,
+        ]
+        let explicitChangeId: string | null = null
+        for (const cid of explicitIdCandidates) {
+          if (typeof cid === 'string' && cid.length > 0) {
+            explicitChangeId = cid
+            codeChangeIds.push(cid)
+            break
+          }
+        }
+        // If no explicit id but the tool is mutating AND succeeded AND
+        // reported a path, fall back to invocation_id.
+        if (
+          !explicitChangeId
+          && MUTATING_TOOLS.has(outcome.tool_name)
+          && outcome.tool_success !== false
+          && outcome.tool_invocation_id
+        ) {
+          // Confirm the result envelope actually claims a path —
+          // otherwise we don't have evidence of a real edit.
+          const pathLists: unknown[] = [
+            rec.paths_touched, rec.paths_changed, rec.changed_files, rec.files,
+          ]
+          const singlePath = rec.file ?? rec.path ?? rec.file_path ?? rec.target_file
+          const hasAnyPath =
+            pathLists.some(p => Array.isArray(p) && p.some(x => typeof x === 'string' && x.length > 0))
+            || (typeof singlePath === 'string' && singlePath.length > 0)
+          if (hasAnyPath) {
+            codeChangeIds.push(outcome.tool_invocation_id)
+          }
         }
         // Verification receipt extraction.
         const kind = String(rec.kind ?? rec.type ?? '').toLowerCase()
         if (kind === 'verification_result' || kind === 'test_result' || outcome.tool_name === 'run_test' || outcome.tool_name === 'run_command') {
+          // M78 — Preserve the structured test-parser output + a stdout
+          // slice so the approval gate's inherited-failure analyzer can
+          // classify each failed test (regression-vs-inherited) and
+          // extract the exception class for actionable UI cards. The
+          // structured data lives at rec.parsed_tests (see
+          // mcp-server/src/tools/test-report-parser.ts), populated by
+          // M72 Slice D for Maven/Gradle/pytest. Older runners + Jest
+          // leave it undefined; analyzer degrades gracefully.
+          const parsedRec = (rec.parsed_tests && typeof rec.parsed_tests === 'object'
+            && !Array.isArray(rec.parsed_tests)) ? rec.parsed_tests as Record<string, unknown> : undefined
+          const parsedTests = parsedRec ? {
+            failingTests: Array.isArray(parsedRec.failingTests)
+              ? parsedRec.failingTests.filter((t): t is string => typeof t === 'string')
+              : undefined,
+            passingTests: Array.isArray(parsedRec.passingTests)
+              ? parsedRec.passingTests.filter((t): t is string => typeof t === 'string')
+              : undefined,
+            format: typeof parsedRec.format === 'string' ? parsedRec.format : undefined,
+          } : undefined
           verificationReceipts.push({
             id: typeof rec.id === 'string' ? rec.id : undefined,
             command: typeof rec.command === 'string' ? rec.command : undefined,
@@ -364,6 +442,8 @@ export function adaptGovernedStageToCodingRun(
               : (typeof rec.exitCode === 'number' ? rec.exitCode as number : undefined),
             unavailable: rec.unavailable === true || rec.verification_kind === 'unavailable',
             source: 'tool',
+            parsedTests,
+            stdoutExcerpt: typeof rec.stdout_excerpt === 'string' ? rec.stdout_excerpt : undefined,
           })
         }
       }
@@ -380,11 +460,26 @@ export function adaptGovernedStageToCodingRun(
   // Synthesize a minimum-viable ExecuteResponse shell so legacy readers
   // don't crash on .response.X access. The interesting fields live in the
   // adapter outputs above; this is just the envelope.
+  const cfCallId = `governed:${resp.final_state.stage_key}:${resp.turns.length}`
+  const finalResponse = governedFinalResponse(resp)
   const syntheticResponse = {
     status: executeStatus,
-    cfCallId: `governed:${resp.final_state.stage_key}:${resp.turns.length}`,
-    text: resp.turns.at(-1)?.llm?.content ?? '',
-    correlation: { codeChangeIds, verificationReceipts },
+    cfCallId,
+    finalResponse,
+    text: finalResponse,
+    correlation: {
+      cfCallId,
+      codeChangeIds,
+      verificationReceipts,
+      governed: {
+        stopReason: resp.stop_reason,
+        errorCode: resp.error_code,
+        errorMessage: resp.error_message,
+        finalPhase: resp.final_state.current_phase,
+        totalTurns: resp.turns.length,
+        approvalPending: resp.final_state.approval_pending,
+      },
+    },
     modelUsage: {
       provider: resp.turns.at(-1)?.llm?.provider ?? 'unknown',
       model: resp.turns.at(-1)?.llm?.model ?? 'unknown',
@@ -400,9 +495,7 @@ export function adaptGovernedStageToCodingRun(
     },
     verificationReceipts,
     warnings,
-    pendingApproval: resp.stop_reason === 'APPROVAL_PENDING'
-      ? { reason: 'SELF_REVIEW recommended approval', kind: 'self_review_approval' as const }
-      : null,
+    pendingApproval: null,
     // M71 — extra fields the legacy ExecuteResponse type doesn't carry but
     // downstream debug surfaces can read off `result.response.governed`.
     governed: {
@@ -428,4 +521,85 @@ export function adaptGovernedStageToCodingRun(
     tokensUsed: syntheticResponse.tokensUsed,
     warnings,
   }
+}
+
+function governedFinalResponse(resp: GovernedStageResponse): string {
+  const sections: string[] = []
+  const receipts = resp.final_state.receipts ?? {}
+
+  for (const [phase, phaseReceipts] of Object.entries(receipts)) {
+    for (const receipt of phaseReceipts) {
+      if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) continue
+      const record = receipt as Record<string, unknown>
+
+      if (typeof record.story_brief === 'string' && record.story_brief.trim()) {
+        const block = [
+          `## ${titleFromPhase(phase)} story brief`,
+          '',
+          record.story_brief.trim(),
+          ...formatStringList('Acceptance criteria', record.acceptance_criteria),
+          ...formatStringList('Open questions', record.open_questions),
+        ].filter(Boolean).join('\n')
+        sections.push(block)
+        continue
+      }
+
+      if (typeof record.summary === 'string' && record.summary.trim()) {
+        sections.push([
+          `## ${titleFromPhase(phase)} summary`,
+          '',
+          record.summary.trim(),
+        ].join('\n'))
+      }
+
+      if (typeof record.recommended_for_approval === 'boolean') {
+        const riskSummary = record.risk_summary && typeof record.risk_summary === 'object'
+          ? JSON.stringify(record.risk_summary, null, 2)
+          : ''
+        sections.push([
+          `## ${titleFromPhase(phase)} review`,
+          '',
+          `Recommended for approval: ${record.recommended_for_approval ? 'yes' : 'no'}`,
+          riskSummary ? `\nRisk summary:\n\n\`\`\`json\n${riskSummary}\n\`\`\`` : '',
+        ].filter(Boolean).join('\n'))
+      }
+    }
+  }
+
+  const llmNotes = resp.turns
+    .map(turn => typeof turn.llm?.content === 'string' ? turn.llm.content.trim() : '')
+    .filter(Boolean)
+    .at(-1)
+
+  if (sections.length === 0 && llmNotes) {
+    sections.push(llmNotes)
+  }
+
+  if (sections.length === 0) {
+    sections.push([
+      '## Governed stage completed',
+      '',
+      `Stop reason: ${resp.stop_reason || 'unknown'}`,
+      `Final phase: ${resp.final_state.current_phase || 'unknown'}`,
+    ].join('\n'))
+  }
+
+  return sections.join('\n\n').slice(0, 20000)
+}
+
+function titleFromPhase(phase: string): string {
+  return phase
+    .toLowerCase()
+    .split(/[_\-\s]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || 'Stage'
+}
+
+function formatStringList(title: string, value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const items = value
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map(item => `- ${item.trim()}`)
+  return items.length > 0 ? ['', `### ${title}`, '', ...items] : []
 }

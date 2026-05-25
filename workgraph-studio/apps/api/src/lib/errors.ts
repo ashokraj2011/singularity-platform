@@ -3,6 +3,11 @@ export class AppError extends Error {
     message: string,
     public readonly code: string = 'APP_ERROR',
     public readonly statusCode: number = 500,
+    // M78 — Optional structured payload for callers that need to render
+    // actionable UI instead of a wall of text. The errorHandler middleware
+    // surfaces this verbatim to the HTTP response when present. Use sparingly;
+    // most errors should stay plain string-shaped to keep the surface narrow.
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message)
     this.name = 'AppError'
@@ -35,8 +40,8 @@ export class ConflictError extends AppError {
 }
 
 export class ValidationError extends AppError {
-  constructor(message: string) {
-    super(message, 'VALIDATION_ERROR', 400)
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message, 'VALIDATION_ERROR', 400, details)
     this.name = 'ValidationError'
   }
 }

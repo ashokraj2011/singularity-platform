@@ -13,7 +13,14 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   }
 
   if (err instanceof AppError) {
-    res.status(err.statusCode).json({ code: err.code, message: err.message })
+    // M78 — Pass structured `details` through to clients when present.
+    // Used by the inherited-failure analyzer to send actionable cards
+    // instead of a string the workbench has to parse.
+    const body: Record<string, unknown> = { code: err.code, message: err.message }
+    if (err.details && typeof err.details === 'object') {
+      body.details = err.details
+    }
+    res.status(err.statusCode).json(body)
     return
   }
 
