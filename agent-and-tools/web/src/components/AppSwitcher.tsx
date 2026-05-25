@@ -81,10 +81,22 @@ export function AppSwitcher({ currentApp }: { currentApp?: string }) {
           {links.map(item => {
             const Icon = item.icon;
             const active = item.id === resolvedCurrentApp;
+            // Each control-plane entry is a separate Singularity app
+            // running on its own port. Embedding them via the internal
+            // /workflows-style iframe wrapper produces a "two sidebars,
+            // same brand twice" visual mess. Open the native URL in a
+            // new tab so each app gets its own clean tab — workflow
+            // management lives at :5174, runs at :5174, workbench at
+            // :5176, etc. Same-app entries (agent-studio, control-plane)
+            // stay in-tab via item.href.
+            const isExternalApp = item.nativeHref.startsWith("http");
+            const linkProps = isExternalApp
+              ? { href: item.nativeHref, target: "_blank", rel: "noreferrer" }
+              : { href: item.href };
             return (
               <a
                 key={item.id}
-                href={item.href}
+                {...linkProps}
                 role="menuitem"
                 style={{
                   display: "flex",
