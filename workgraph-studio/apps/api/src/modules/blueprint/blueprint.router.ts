@@ -9,6 +9,7 @@ import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { classifyFailures, type FailureClassification } from './inherited-failure-analyzer'
+import { createWorkItem } from '../work-items/work-items.service'
 import { createReceipt, logEvent, publishOutbox } from '../../lib/audit'
 import { contextFabricClient, ContextFabricError, type ExecuteResponse } from '../../lib/context-fabric/client'
 import { fetchEvalFeedback } from '../../lib/audit-gov/client'
@@ -1142,6 +1143,45 @@ blueprintRouter.post('/sessions/:id/stages/:stageKey/send-back', validate(sendBa
     res.json(updated)
   } catch (err) { next(err) }
 })
+
+// M78 Slice 3 — Create a remediation work item from an inherited test
+// failure. Triggered by the workbench's InheritedFailureCard "Create
+// remediation WI →" button.  Each failure spawns its own WI so the
+// operator can choose which subset of inherited failures actually
+// needs fixing right now versus deferring.
+const inheritedFailurePayloadSchema = z.object({
+  test: z.string().min(1),
+  file: z.string().min(1),
+  exception: z.string().optional(),
+  exceptionLine: z.number().int().positive().optional(),
+  hint: z.string().optional(),
+})
+const createRemediationSchema = z.object({
+  failure: inheritedFailurePayloadSchema,
+  originAttemptId: z.string().optional(),
+  // Optional override; defaults to the inferred title built from the failure.
+  titleOverride: z.string().min(1).max(180).optional(),
+  // When omitted, the new WI targets the session's parent capability
+  // (most common: remediation lives in the same capability that
+  // surfaced the failure). Override only when the operator knows the
+  // bug actually lives in a different capability's repo.
+  targetCapabilityId: z.string().optional(),
+})
+
+blueprintRouter.post(
+  '/sessions/:id/stages/:stageKey/inherited-failure/remediate',
+  validate(createRemediationSchema),
+  async (req, res, next) => {
+    try {
+      const params = stageActionParamsSchema.parse(req.params)
+      const body = req.body as z.infer<typeof createRemediationSchema>
+      const created = await createInheritedFailureRemediation(
+        params.id, params.stageKey, body, req.user!.userId,
+      )
+      res.status(201).json(created)
+    } catch (err) { next(err) }
+  },
+)
 
 blueprintRouter.post('/sessions/:id/finalize', async (req, res, next) => {
   try {
@@ -2719,6 +2759,113 @@ async function resumeLoopStageApproval(
     metrics: result.metrics,
   })
   return loadSession(session.id, actorId)
+}
+
+/**
+ * M78 Slice 3 — Spawn a remediation work item that targets a specific
+ * inherited test failure surfaced on a develop attempt. Returns the
+ * new work item's id + workCode so the workbench can show a link.
+ *
+ * The new WI:
+ *   - Inherits the source session's capability (most common case;
+ *     operator can override via `targetCapabilityId` when the bug
+ *     belongs to a sibling repo).
+ *   - Carries a structured `details.inheritedFailureRemediation`
+ *     payload back-linking to the originating session/stage/attempt
+ *     so audit-gov + Slice 4's auto-execute hook can find it.
+ *   - Defaults to MANUAL routingMode so the operator decides when
+ *     to start the loop. Slice 4 will optionally override this with
+ *     AUTO_START when the capability has the auto-remediation flag on.
+ *
+ * The WI title is a concise, search-friendly summary of the bug;
+ * the description is structured Markdown that the receiving agent
+ * can read as a task pack.
+ */
+async function createInheritedFailureRemediation(
+  sessionId: string,
+  stageKey: string,
+  body: {
+    failure: { test: string; file: string; exception?: string; exceptionLine?: number; hint?: string }
+    originAttemptId?: string
+    titleOverride?: string
+    targetCapabilityId?: string
+  },
+  actorId: string,
+) {
+  const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
+  if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+  assertBlueprintAccess(session, actorId)
+
+  const capabilityId = body.targetCapabilityId ?? session.capabilityId
+  if (!capabilityId) {
+    throw new ValidationError(
+      'Cannot create remediation WI: no target capability. Pass targetCapabilityId explicitly or attach the session to a capability first.',
+    )
+  }
+
+  const { failure } = body
+  // Derive a short, search-friendly title. Examples:
+  //   "Fix testIsNull (NullPointer at line 136)"
+  //   "Fix testContainsACharacter (no exception data)"
+  const shortTest = failure.test.split('.').pop() ?? failure.test
+  const shortException = failure.exception ?? 'failing test'
+  const linePart = failure.exceptionLine ? ` at line ${failure.exceptionLine}` : ''
+  const title = body.titleOverride ?? `Fix ${shortTest} (${shortException}${linePart})`
+
+  // The description doubles as the new WI's task pack — the
+  // remediation agent reads it as the goal. Keep it short, factual,
+  // and unambiguous about what "done" looks like. The hint comes
+  // straight from the analyzer's hintForException() output when it
+  // recognises the pattern.
+  const descriptionParts: string[] = [
+    `## Inherited test failure — remediation task`,
+    ``,
+    `**Test:** \`${failure.test}\``,
+    `**File:** \`${failure.file}${failure.exceptionLine ? `:${failure.exceptionLine}` : ''}\``,
+    ...(failure.exception ? [`**Exception:** \`${failure.exception}\``] : []),
+    ``,
+  ]
+  if (failure.hint) {
+    descriptionParts.push(`### Hint`, failure.hint, ``)
+  }
+  descriptionParts.push(
+    `### Origin`,
+    `Auto-created from inherited-failure remediation on blueprint session \`${sessionId}\` (stage \`${stageKey}\`${body.originAttemptId ? `, attempt \`${body.originAttemptId}\`` : ''}).`,
+    `The agent's work in that attempt was correct — this test was already failing in upstream main.`,
+    ``,
+    `### Acceptance criteria`,
+    `- [ ] \`${failure.test}\` no longer throws / fails when invoked via the project's test runner.`,
+    `- [ ] No other tests regress (call \`capture_test_baseline\` before editing).`,
+    `- [ ] The fix is the minimal change that makes the test pass — do not refactor surrounding code.`,
+  )
+  const description = descriptionParts.join('\n')
+
+  const workItem = await createWorkItem({
+    title,
+    description,
+    parentCapabilityId: capabilityId,
+    sourceWorkflowInstanceId: session.workflowInstanceId ?? undefined,
+    targets: [{ targetCapabilityId: capabilityId }],
+    details: {
+      title,
+      description,
+      inheritedFailureRemediation: {
+        originSessionId: sessionId,
+        originStageKey: stageKey,
+        originAttemptId: body.originAttemptId ?? null,
+        failure,
+      },
+    },
+    urgency: 'NORMAL',
+    routingMode: 'MANUAL',
+  }, actorId)
+
+  return {
+    id: workItem.id,
+    workCode: workItem.workCode,
+    title,
+    capabilityId,
+  }
 }
 
 async function saveStageVerdict(

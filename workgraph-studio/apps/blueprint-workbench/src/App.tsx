@@ -1478,6 +1478,32 @@ function NeoStageController({
     },
     onSuccess: onSession,
   })
+  // M78 Slice 3 — one-click remediation WI creation. Each failed test
+  // the operator clicks "Create remediation WI →" on triggers one
+  // independent call, so partial selection works without losing the
+  // others. onSuccess raises a toast via NeoNotifier-compatible window
+  // event; failures show in the card's row-level error (the mutation
+  // tracks its own error state distinct from approvalMutation).
+  const remediationMutation = useMutation({
+    mutationFn: (failure: { test: string; file: string; exception?: string; exceptionLine?: number; hint?: string }) => {
+      if (!stage) throw new Error('No stage selected')
+      return api.createInheritedFailureRemediation(session.id, stage.key, {
+        failure,
+        originAttemptId: latest?.id,
+      })
+    },
+    onSuccess: (created) => {
+      // Notify via the same channel NeoNotifier listens on. Keeps the
+      // toast plumbing out of this component.
+      window.dispatchEvent(new CustomEvent('neo:notify', {
+        detail: {
+          kind: 'success',
+          message: `Created remediation WI ${created.workCode}: ${created.title}`,
+          href: `/work-items/${created.id}`,
+        },
+      }))
+    },
+  })
 
   if (!stage) {
     return <FocusPane stage={undefined} latest={undefined} intent="idle" />
@@ -1515,9 +1541,13 @@ function NeoStageController({
           analysis={failureAnalysis}
           message={mutationErrorMessage ?? ''}
           onSendBack={() => setSendBackOpen(true)}
-          // M78 Slice 3 will wire onCreateRemediationWI; until then the
-          // button stays disabled and shows a "coming soon" tooltip.
-          onCreateRemediationWI={undefined}
+          // M78 Slice 3 — wire each per-failure click to the mutation.
+          // The mutation is fire-and-forget: success raises a window
+          // event for NeoNotifier, failure surfaces via mutation.error.
+          // The card itself stays simple — no React Query coupling.
+          onCreateRemediationWI={(failure) => {
+            remediationMutation.mutate(failure)
+          }}
         />
       )}
       {intent === 'answer' && (

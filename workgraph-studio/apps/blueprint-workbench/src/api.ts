@@ -574,6 +574,24 @@ export const api = {
   snapshot: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/snapshot`, { method: 'POST' }),
   run: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/run`, { method: 'POST' }),
   runStage: (id: string, stageKey: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/run`, { method: 'POST' }),
+  // M78 Slice 3 — One-click remediation WI creation from an inherited
+  // failure card. Returns { id, workCode, title, capabilityId } so the
+  // toast can link out. Body matches the workgraph-api Zod schema:
+  // failure (test, file, exception, exceptionLine, hint) + optional
+  // originAttemptId for back-linking.
+  createInheritedFailureRemediation: (
+    sessionId: string,
+    stageKey: string,
+    body: {
+      failure: { test: string; file: string; exception?: string; exceptionLine?: number; hint?: string }
+      originAttemptId?: string
+      titleOverride?: string
+      targetCapabilityId?: string
+    },
+  ) => request<{ id: string; workCode: string; title: string; capabilityId: string }>(
+    `/blueprint/sessions/${encodeURIComponent(sessionId)}/stages/${encodeURIComponent(stageKey)}/inherited-failure/remediate`,
+    { method: 'POST', body: JSON.stringify(body) },
+  ),
   stageApproval: (id: string, stageKey: string, body: { decision: 'approved' | 'rejected'; reason?: string; argsOverride?: Record<string, unknown> }) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/approval`, { method: 'POST', body: JSON.stringify(body) }),
   verdict: (id: string, stageKey: string, body: { verdict: LoopVerdict; feedback?: string; confidence?: number; acceptRisk?: boolean; answers?: DecisionAnswer[] }) =>
