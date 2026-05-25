@@ -7,6 +7,9 @@ import {
 import { config } from '../../../../config'
 import { snapshotAgentTemplate, snapshotCapability } from '../../../../lib/snapshot'
 import { prepareLlmBudget, recordWorkflowLlmUsage } from '../budget'
+import {
+  executeReqToGovernedStageReq, governedStageRespToExecuteResp,
+} from './governed-execute-adapter'
 
 type GovernanceMode = NonNullable<ExecuteRequest['governance_mode']>
 
@@ -274,33 +277,48 @@ export async function activateAgentTask(
     governance_mode: governanceMode,
   }
 
-  // Architecture gap #1 (2026-05-23) — feature-flagged governed
-  // migration scaffold. When the node design sets
-  // useGovernedExecutor:true, the workflow path will route to
-  // context-fabric's /api/v1/execute-governed-stage (matching what
-  // blueprint.router.ts already does). For now we PARSE the flag
-  // but fail-fast — the response-shape adapter that lets the rest
-  // of this executor consume a GovernedStageResponse hasn't landed
-  // yet (tracked as task #119). Refusing loudly is safer than
-  // silently running the legacy path when an operator THINKS they
-  // turned the flag on.
+  // Architecture gap #1 / task #119 — feature-flagged governed migration.
   //
-  // Migration sequence documented in
-  // docs/governed-migration-strategy.md. When that work ships, the
-  // throw below becomes `return await runViaGovernedExecutor(...)`.
-  if (cfg.useGovernedExecutor === true) {
-    await failRun(run.id, 'governed-executor-not-implemented',
-      'cfg.useGovernedExecutor=true requested but the workflow→governed ' +
-      'response-shape adapter has not landed (task #119). Set the flag ' +
-      'back to false or undefined to use the legacy path; see ' +
-      'docs/governed-migration-strategy.md for the migration plan.')
-    return
-  }
+  // Two opt-in paths, either flips this node to /execute-governed-stage:
+  //   - cfg.useGovernedExecutor === true on the node design (per-node)
+  //   - config.CONTEXT_FABRIC_USE_GOVERNED_FOR_NON_BLUEPRINT === true (deployment-wide)
+  //
+  // When neither is on, the legacy /execute path runs (existing behaviour).
+  // The adapter (governed-execute-adapter.ts) maps the legacy ExecuteRequest
+  // into a GovernedStageRequest and the response back into the
+  // ExecuteResponse shape the downstream persistence + correlation code
+  // expects, so the rest of this executor stays unchanged regardless of
+  // which path served the request.
+  //
+  // Phase: AgentTaskExecutor first. ContractReplay, EventHorizonChat, and
+  // PromptComposerRespond migrate in follow-ups (each independently
+  // flag-able once their callers grow the equivalent toggle).
+  const useGoverned = cfg.useGovernedExecutor === true
+    || config.CONTEXT_FABRIC_USE_GOVERNED_FOR_NON_BLUEPRINT === true
 
-  // 4. Call context-fabric /execute.
+  // 4. Call context-fabric — governed or legacy depending on the flag.
   let result: Awaited<ReturnType<typeof contextFabricClient.execute>>
   try {
-    result = await contextFabricClient.execute(executeReq)
+    if (useGoverned) {
+      // Map legacy → governed → call → map back. The adapter file owns
+      // the field-by-field rules; this caller just orchestrates.
+      const govReq = executeReqToGovernedStageReq(executeReq, {
+        stageKey: typeof cfg.governedStageKey === 'string' ? cfg.governedStageKey : undefined,
+        agentRole: typeof cfg.governedAgentRole === 'string' ? cfg.governedAgentRole : undefined,
+        maxTurns: typeof cfg.governedMaxTurns === 'number' ? cfg.governedMaxTurns : undefined,
+      })
+      const govResp = await contextFabricClient.executeGovernedStage(govReq)
+      result = governedStageRespToExecuteResp(govResp, {
+        traceId: executeReq.trace_id ?? null,
+        // sessionId isn't a typed field on ExecuteRunContext today;
+        // pull it from the loose dict-shape if the caller stashed one,
+        // otherwise null. Audit-gov correlation still wires up via
+        // cfCallId so this isn't on the critical path.
+        sessionId: ((executeReq.run_context as unknown as Record<string, unknown>)?.session_id as string | null) ?? null,
+      })
+    } else {
+      result = await contextFabricClient.execute(executeReq)
+    }
   } catch (err) {
     if (err instanceof ContextFabricError) {
       // M26 — surface MCP_NOT_CONNECTED / MCP_LAPTOP_TIMEOUT as friendlier

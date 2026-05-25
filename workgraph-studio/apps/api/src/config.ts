@@ -82,6 +82,16 @@ const envSchema = z.object({
   // re-tries approval once the remediation WIs land). Off by default;
   // operator opts in at the platform level by setting this in compose.
   WORKGRAPH_AUTO_REMEDIATE_INHERITED_FAILURES: z.coerce.boolean().default(false),
+
+  // Task #119 — feature flag for the non-blueprint governed migration.
+  // When true, the workflow AGENT_TASK executor routes through context-
+  // fabric's /api/v1/execute-governed-stage (the M71 phase-based path
+  // already used by blueprint flows) instead of the legacy /api/v1/
+  // execute endpoint. Off by default; per-deployment opt-in via env.
+  // Phased rollout — flip on for one workflow, observe via audit-gov,
+  // then expand. ContractReplay / EventHorizonChat / PromptComposer
+  // stay on legacy until their adapters land in follow-ups.
+  CONTEXT_FABRIC_USE_GOVERNED_FOR_NON_BLUEPRINT: z.coerce.boolean().default(false),
 })
 
 // M35.1 — production-class envs refuse to start with weak secrets.

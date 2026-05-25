@@ -1,0 +1,204 @@
+/**
+ * Task #119 — Adapter that lets workflow AGENT_TASK nodes route through
+ * context-fabric's governed-stage endpoint without rewriting the
+ * downstream code that reads the legacy ExecuteResponse shape.
+ *
+ * Two functions:
+ *   - executeReqToGovernedStageReq(): map the legacy ExecuteRequest into
+ *     a GovernedStageRequest. Best-effort; some legacy fields don't
+ *     have a direct equivalent (system_prompt, prior_outputs, etc.) and
+ *     get folded into `vars` so the prompt-composer still sees them.
+ *   - governedStageRespToExecuteResp(): map the GovernedStageResponse
+ *     into an ExecuteResponse-shaped object the AgentTaskExecutor's
+ *     persistence + correlation code already knows how to read.
+ *
+ * Used today by AgentTaskExecutor (workflow-graph nodes). The
+ * blueprint coding-stage path has its own purpose-built adapter
+ * (coding-agent/orchestrator.ts:adaptGovernedStageToCodingRun) — that
+ * one targets a different downstream consumer (CodingRunResult vs
+ * ExecuteResponse) so we deliberately don't share code. Both adapters
+ * agree on the same conceptual mapping; if you change one, audit the
+ * other for drift.
+ *
+ * Not feature-flagged here — the AgentTaskExecutor caller is. This
+ * file just defines the mapping; the caller decides when to use it.
+ */
+import type { ExecuteRequest, ExecuteResponse } from '../../../../lib/context-fabric/client'
+import type {
+  GovernedStageRequest,
+  GovernedStageResponse,
+} from '../../../../lib/context-fabric/client'
+
+/**
+ * Map a legacy ExecuteRequest to a GovernedStageRequest. The two shapes
+ * overlap mostly in metadata; the actual "what should the LLM do"
+ * payload moves from `task` (free-text) to `vars` (where the
+ * prompt-composer's templated stage prompts pick it up by name).
+ *
+ * Stage_key defaults to `loop.stage` — the catch-all policy seeded
+ * for the M71 cutover. When operators want a node to use a different
+ * policy they pass `governedStageKey` + `governedAgentRole` in the
+ * node's cfg (the caller is responsible for plumbing those through;
+ * this function just respects them when present).
+ */
+export function executeReqToGovernedStageReq(req: ExecuteRequest, opts: {
+  stageKey?: string
+  agentRole?: string
+  maxTurns?: number
+} = {}): GovernedStageRequest {
+  const stageKey = opts.stageKey ?? 'loop.stage'
+  // Fold legacy fields the governed path doesn't model into vars so
+  // the prompt-composer can still surface them. Names match the
+  // legacy ExecuteRequest field names so prompt templates that
+  // reference them keep working.
+  const vars: Record<string, unknown> = {
+    ...(req.vars ?? {}),
+    task: req.task ?? '',
+    ...(req.system_prompt ? { system_prompt: req.system_prompt } : {}),
+    ...(req.prior_outputs ? { prior_outputs: req.prior_outputs } : {}),
+    ...(req.artifacts ? { artifacts: req.artifacts } : {}),
+    ...(req.globals ? { globals: req.globals } : {}),
+  }
+  return {
+    stage_key: stageKey,
+    agent_role: opts.agentRole,
+    vars,
+    initial_history: [],
+    run_context: (req.run_context ?? {}) as unknown as Record<string, unknown>,
+    bearer: undefined,
+    max_turns: opts.maxTurns ?? 25,
+    model_alias: req.model_overrides?.modelAlias,
+  }
+}
+
+/**
+ * Map a GovernedStageResponse back to the legacy ExecuteResponse shape
+ * the AgentTaskExecutor's downstream code expects. Lossy by design —
+ * `turns[]` and `final_state.receipts[]` are richer than ExecuteResponse
+ * carries, so we project the salient totals + a synthetic finalResponse.
+ *
+ * `finalResponse` is built from the receipts; the workflow doesn't
+ * stream output the way the chat surface does, so the persisted
+ * `agentRunOutput.rawContent` ends up being a structured digest rather
+ * than a free-form completion. Operators reading agentRunOutput rows
+ * still see what happened; if they need the raw turns they pull them
+ * from audit-gov via the cfCallId.
+ */
+export function governedStageRespToExecuteResp(
+  resp: GovernedStageResponse,
+  opts: { traceId?: string | null; sessionId?: string | null } = {},
+): ExecuteResponse {
+  const cfCallId = `governed:${resp.final_state.stage_key}:${resp.turns.length}`
+  // Aggregate tool_invocation_ids across all turns so the legacy
+  // correlation table still gets populated (downstream code reads
+  // result.correlation.toolInvocationIds).
+  const toolInvocationIds: string[] = []
+  for (const turn of resp.turns) {
+    // Defensive: turns that haven't dispatched tools (LLM-only) won't
+    // have a tool_outcomes array. Don't crash on those.
+    const outcomes = Array.isArray(turn.tool_outcomes) ? turn.tool_outcomes : []
+    for (const outcome of outcomes) {
+      if (outcome.tool_invocation_id) toolInvocationIds.push(outcome.tool_invocation_id)
+    }
+  }
+  const finishReason = stopReasonToFinishReason(resp.stop_reason)
+  const status = resp.stop_reason === 'FINALIZED' || resp.stop_reason === 'APPROVAL_PENDING'
+    ? 'COMPLETED' as const
+    : 'FAILED' as const
+  return {
+    status,
+    finalResponse: synthesiseFinalResponse(resp),
+    finishReason,
+    stepsTaken: resp.turns.length,
+    correlation: {
+      cfCallId,
+      traceId: opts.traceId ?? null,
+      sessionId: opts.sessionId ?? null,
+      promptAssemblyId: null,
+      mcpServerId: null,
+      mcpInvocationId: null,
+      modelAlias: resp.turns.at(-1)?.llm?.model_alias ?? null,
+      llmCallIds: [],
+      toolInvocationIds,
+      artifactIds: [],
+      codeChangeIds: [],
+      contextPlanHash: null,
+      governanceMode: 'fail_open' as const,
+      executionPosture: 'governed' as const,
+      workspaceBranch: null,
+      workspaceCommitSha: null,
+      changedPaths: [],
+      astIndexStatus: null,
+      astIndexedFiles: null,
+      astIndexedSymbols: null,
+    },
+    modelUsage: {
+      provider: resp.turns.at(-1)?.llm?.provider ?? 'unknown',
+      model: resp.turns.at(-1)?.llm?.model ?? 'unknown',
+      modelAlias: resp.turns.at(-1)?.llm?.model_alias ?? null,
+      inputTokens: resp.totals.input_tokens,
+      outputTokens: resp.totals.output_tokens,
+      estimatedCost: 0,
+      latencyMs: resp.turns.reduce((s, t) => s + (t.llm?.latency_ms ?? 0), 0),
+    },
+    tokensUsed: {
+      input: resp.totals.input_tokens,
+      output: resp.totals.output_tokens,
+      total: resp.totals.input_tokens + resp.totals.output_tokens,
+    },
+    metrics: {},
+    workspace: null,
+    warnings: resp.error_message ? [resp.error_message] : [],
+    pendingApproval: null,
+    blockedReason: resp.error_code ?? null,
+    requiredContextStatus: null,
+    contextPlanHash: null,
+    governanceMode: 'fail_open' as const,
+    executionPosture: 'governed' as const,
+    prompt: undefined,
+    verificationReceipts: [],
+  } as unknown as ExecuteResponse
+}
+
+function stopReasonToFinishReason(stop: GovernedStageResponse['stop_reason']): string {
+  switch (stop) {
+    case 'FINALIZED': return 'stop'
+    case 'APPROVAL_PENDING': return 'approval_pending'
+    case 'MAX_TURNS': return 'length'
+    case 'LLM_ERROR': return 'error'
+    case 'VALIDATION_BLOCKED': return 'validation_blocked'
+    case 'POLICY_BLOCKED': return 'policy_blocked'
+    default: return 'stop'
+  }
+}
+
+/**
+ * Build a digest of the run for the legacy `finalResponse` slot. We
+ * concatenate receipt summaries by phase — sufficient for the
+ * agentRunOutput's rawContent column and for operators eyeballing the
+ * run. The structured turns + receipts are recoverable from audit-gov
+ * via the cfCallId.
+ */
+function synthesiseFinalResponse(resp: GovernedStageResponse): string {
+  const lines: string[] = []
+  lines.push(`# Governed stage \`${resp.final_state.stage_key}\``)
+  lines.push(`final phase: ${resp.final_state.current_phase} · stop: ${resp.stop_reason} · turns: ${resp.turns.length}`)
+  lines.push('')
+  for (const [phase, receiptList] of Object.entries(resp.final_state.receipts ?? {})) {
+    for (const receipt of receiptList) {
+      if (!receipt || typeof receipt !== 'object') continue
+      const r = receipt as Record<string, unknown>
+      if (typeof r.summary === 'string') {
+        lines.push(`## ${phase}`)
+        lines.push(r.summary)
+        lines.push('')
+      }
+    }
+  }
+  if (resp.error_message) {
+    lines.push('')
+    lines.push(`## error`)
+    lines.push(resp.error_message)
+  }
+  return lines.join('\n')
+}
