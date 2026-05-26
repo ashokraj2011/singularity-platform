@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { config } from "../config";
 
@@ -74,6 +75,78 @@ function safeExplicitWorkspaceRoot(value: string | undefined): string | undefine
   return undefined;
 }
 
+// M83 task #176 (2026-05-26) — Cache the workspace-root lookup per
+// (identity, expected-branch) so we don't shell out to `git` on every
+// tool dispatch. Invalidated only by process restart. Keys include
+// the expected wi/<code> branch so a stale entry can't survive a
+// rename.
+const worktreeRootCache = new Map<string, string>();
+
+/**
+ * For a given workitem identity, find the worktree dir whose git HEAD
+ * is on `wi/<workItemCode>`. The fast path is the canonical
+ * `<base>/<workItemCode>` directory — for fresh workitems created by
+ * M81 source-materializer, that's always correct. The slow path runs
+ * only when the canonical dir exists but is on the wrong branch
+ * (legacy debris from per-attempt naming pre-M81 P2), in which case
+ * we scan sibling directories for one whose HEAD matches.
+ *
+ * Returns the absolute path. Cached per process.
+ */
+function resolveWiBranchWorktree(workItemCode: string, fallback: string): string {
+  const expectedBranch = `wi/${workItemCode}`;
+  const cacheKey = `${workItemCode}|${expectedBranch}`;
+  const cached = worktreeRootCache.get(cacheKey);
+  if (cached && fs.existsSync(cached)) return cached;
+
+  // Fast path: canonical dir exists and is on the right branch.
+  if (fs.existsSync(fallback) && isOnBranch(fallback, expectedBranch)) {
+    worktreeRootCache.set(cacheKey, fallback);
+    return fallback;
+  }
+
+  // Slow path: scan sibling dirs (typical case = a 36-char UUID
+  // from older runs that holds the correct wi/<code> checkout while
+  // the canonical short-code dir is on a stale per-attempt branch).
+  const workspacesRoot = workItemWorkspacesRoot();
+  if (fs.existsSync(workspacesRoot)) {
+    try {
+      const siblings = fs.readdirSync(workspacesRoot, { withFileTypes: true });
+      for (const entry of siblings) {
+        if (!entry.isDirectory()) continue;
+        const candidate = path.join(workspacesRoot, entry.name);
+        if (candidate === fallback) continue;
+        if (isOnBranch(candidate, expectedBranch)) {
+          worktreeRootCache.set(cacheKey, candidate);
+          return candidate;
+        }
+      }
+    } catch {
+      // readdir failed; nothing we can do, fall through to canonical
+    }
+  }
+
+  // Nothing found. Return canonical; M81 source-materializer will
+  // create it on first checkout and put it on the right branch.
+  worktreeRootCache.set(cacheKey, fallback);
+  return fallback;
+}
+
+function isOnBranch(dir: string, expectedBranch: string): boolean {
+  if (!fs.existsSync(path.join(dir, ".git"))) return false;
+  try {
+    const proc = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 2_000,
+    });
+    if (proc.status !== 0) return false;
+    return (proc.stdout ?? "").trim() === expectedBranch;
+  } catch {
+    return false;
+  }
+}
+
 export function workspaceRootForRunContext(req: WorkspaceRootRequest): string {
   const explicit = safeExplicitWorkspaceRoot(req.workspaceRoot);
   if (explicit) return explicit;
@@ -82,6 +155,14 @@ export function workspaceRootForRunContext(req: WorkspaceRootRequest): string {
     || req.workItemId?.trim();
   if (!identity) return baseSandboxRoot();
   const base = path.join(workItemWorkspacesRoot(), safeWorkspaceSegment(identity, "workitem"));
+  // M83 task #176 — when a workItemCode is supplied, prefer whichever
+  // sibling dir is on `wi/<code>` over the canonical path. This is a
+  // no-op for fresh workitems (canonical IS the right one) and only
+  // matters for legacy debris where the canonical dir holds the
+  // pre-M81 per-attempt branch.
+  if (req.workItemCode?.trim()) {
+    return resolveWiBranchWorktree(req.workItemCode.trim(), base);
+  }
   // M81 P2 (2026-05-26) — Per-workitem layout. Previously M72 Slice C
   // appended `attempts/<attemptId>/` so concurrent attempts on the
   // same WorkItem couldn't stomp each other's worktrees. That isolation
