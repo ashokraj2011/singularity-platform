@@ -3028,6 +3028,26 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
       generatedQuestionIds: llmOpenQuestions.map(question => question.id),
       verificationReceipts: codingResult.verificationReceipts as unknown as Array<Record<string, unknown>>,
     } : item)
+    // M83.y P2 — auto-spawn remediation WIs when this is the last
+    // allowed attempt and it failed. The persisted attempt is the
+    // one we just built in updatedAttempts; look it up via id so
+    // the helper sees the FAILED status it just wrote.
+    const persistedAttempt = updatedAttempts.find(a => a.id === attempt.id)
+    const maxLoopsPerStage = Number(
+      (isRecord(nextState.loopDefinition)
+        ? (nextState.loopDefinition as { maxLoopsPerStage?: unknown }).maxLoopsPerStage
+        : undefined) ?? 3,
+    )
+    const terminalSpawn = persistedAttempt
+      ? await maybeSpawnTerminalRemediation(
+          { id: session.id, capabilityId: session.capabilityId, workflowInstanceId: session.workflowInstanceId },
+          { key: stage.key, label: stage.label, approvalRequired: stage.approvalRequired },
+          persistedAttempt,
+          attempt.attemptNumber,
+          maxLoopsPerStage,
+          actorId,
+        )
+      : null
     let updatedState: LoopState = {
       ...nextState,
       loopDefinition: nextLoopDefinition,
@@ -3057,7 +3077,31 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
         gateRecommendation,
         artifactIds,
         approvalRequired: stage.approvalRequired !== false,
-      })],
+      }),
+      // M83.y P2 — surface auto-remediation outcome as a review event
+      // so the workbench picks it up via its normal events feed. The
+      // payload carries the spawned WI list + any spawn errors; the
+      // UI uses that to render "🤖 Spawned WI-1234 to fix inherited
+      // failure: testIsNull (NullPointerException at line 136)" cards
+      // beneath the red failure banner.
+      ...(terminalSpawn && (terminalSpawn.spawned.length > 0 || terminalSpawn.spawnErrors.length > 0)
+        ? [reviewEvent(
+            'AUTO_REMEDIATION_SPAWNED_ON_TERMINAL_FAILURE',
+            terminalSpawn.spawned.length > 0
+              ? `${stage.label} exhausted ${attempt.attemptNumber}/${maxLoopsPerStage} attempts; spawned ${terminalSpawn.spawned.length} remediation work item(s).`
+              : `${stage.label} exhausted attempts; ${terminalSpawn.spawnErrors.length} remediation spawn(s) failed and need manual creation.`,
+            actorId,
+            {
+              stageKey: stage.key,
+              attemptId: attempt.id,
+              spawnedWorkItems: terminalSpawn.spawned,
+              spawnErrors: terminalSpawn.spawnErrors,
+              inheritedFailureCount: terminalSpawn.classification?.inheritedFailures.length ?? 0,
+              regressionFailureCount: terminalSpawn.classification?.regressionFailures.length ?? 0,
+            },
+          )]
+        : []),
+      ],
     }
     updatedState = maybeApplyAutoGate(updatedState, stage, attempt.id, actorId)
     await prisma.blueprintSession.update({
@@ -5445,6 +5489,76 @@ function attemptReceiptExitCode(receipt: Record<string, unknown>): number | unde
  * to reach context-fabric just degrade to "no agent paths known", which
  * classifies every failure as inherited rather than blocking the gate.
  */
+// M83.y P2 (2026-05-27) — Auto-spawn remediation work items when an
+// autonomous develop attempt finishes FAILED on its terminal try
+// (attemptNumber === maxLoopsPerStage). Today M78 Slice 4's auto-spawn
+// only fires when the operator clicks Approve and gets blocked; that
+// leaves the "stage just ran out of attempts" path with no path
+// forward unless someone notices. This helper mirrors the
+// Approve-blocked logic but triggers from the autonomous run path
+// so a dead-end develop attempt at least leaves remediation WIs
+// behind for the operator to pick up.
+//
+// Returns the array of spawned WIs (possibly empty) plus any spawn
+// errors so the caller can attach them to a reviewEvent.
+async function maybeSpawnTerminalRemediation(
+  session: { id: string; capabilityId: string | null; workflowInstanceId: string | null },
+  stage: { key: string; label: string; approvalRequired?: boolean },
+  attempt: StageAttempt,
+  attemptNumber: number,
+  maxLoopsPerStage: number,
+  actorId: string,
+): Promise<{
+  spawned: Array<{ id: string; workCode: string; title: string; test: string }>
+  spawnErrors: Array<{ test: string; reason: string }>
+  classification: FailureClassification | null
+} | null> {
+  if (!config.WORKGRAPH_AUTO_REMEDIATE_INHERITED_FAILURES) {
+    // Feature flag off — match M78 Slice 4's contract. Operator can
+    // still click Approve to fall back to the manual remediation card.
+    return null
+  }
+  if (attempt.status !== 'FAILED') {
+    return null
+  }
+  if (attemptNumber < maxLoopsPerStage) {
+    // Not terminal yet — the next attempt might pass. Don't spawn
+    // remediation WIs prematurely.
+    return null
+  }
+  if (!attemptHasActualCodeChange(attempt)) {
+    // No code change → no test verification to classify. The
+    // workbench surfaces a different failure shape for these
+    // (no-edit attempts) and remediation here would be guessing.
+    return null
+  }
+
+  const classification = await analyzeAttemptFailures(attempt).catch(() => null)
+  if (!classification) return null
+  if (classification.inheritedFailures.length === 0) {
+    // No inherited failures to spawn for. If regressions exist, those
+    // are the agent's own and remediation isn't the right tool — they
+    // need a send-back. Caller's reviewEvent surfaces this distinction.
+    return { spawned: [], spawnErrors: [], classification }
+  }
+
+  const spawned: Array<{ id: string; workCode: string; title: string; test: string }> = []
+  const spawnErrors: Array<{ test: string; reason: string }> = []
+  for (const failure of classification.inheritedFailures) {
+    try {
+      const created = await createInheritedFailureRemediation(
+        session.id, stage.key,
+        { failure, originAttemptId: attempt.id },
+        actorId,
+      )
+      spawned.push({ ...created, test: failure.test })
+    } catch (err) {
+      spawnErrors.push({ test: failure.test, reason: (err as Error).message })
+    }
+  }
+  return { spawned, spawnErrors, classification }
+}
+
 async function analyzeAttemptFailures(attempt: StageAttempt): Promise<FailureClassification | null> {
   const correlation = isRecord(attempt.correlation) ? attempt.correlation : {}
   const cfCallId = typeof correlation.cfCallId === 'string' ? correlation.cfCallId : ''
