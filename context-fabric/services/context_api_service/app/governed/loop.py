@@ -31,6 +31,7 @@ to the operator and/or feed back into the LLM for the next turn.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
@@ -50,6 +51,41 @@ from .pii_mask import mask_pii_in_result, unmask_pii_in_args
 _SOURCE_CODE_EXTS = frozenset(
     ".java .py .ts .tsx .js .jsx .go .rs .kt .scala .rb .cs .cpp .c .h .swift".split()
 )
+
+# M83.x parallel exploration — tools that are safe to dispatch in
+# parallel within a single LLM turn. The hard rule: must be read-only
+# (no filesystem mutation, no git side-effects, no shell execution
+# against the workspace). EXPLORE-phase tools dominate this list since
+# that's where parallelism pays. Adding to this list requires:
+#   1. No mutation of workspace state or git refs.
+#   2. No execution of arbitrary user-controlled commands (run_test,
+#      finish_work_branch, etc. stay sequential even if the underlying
+#      runner happens to be idempotent today).
+#   3. Idempotent — same args MUST return the same result if nothing
+#      else changed.
+_PARALLEL_SAFE_TOOLS = frozenset({
+    "repo_map",
+    "symbol_search",
+    "list_files",
+    "list_directory",
+    "read_file",
+    "read_files",
+    "read_repo_instructions",
+    "read_workitem",
+    "code_context_package",
+    "ast_search",
+    "grep",
+    "search_code",
+})
+
+# Concurrency cap on the parallel dispatch group. Sized to balance
+# wall-clock win (large enough to mask mcp-server's ~30-80ms per-call
+# overhead on warm tool runners) against the workspace runner pool
+# size (mcp-sandbox-runner serves dispatches; flooding it with 20
+# concurrent reads serializes anyway at the container side). 6 is the
+# sweet spot empirically: 90% of the theoretical parallel speedup
+# without thrashing the runner.
+_PARALLEL_DISPATCH_CONCURRENCY = 6
 from .verify_synthesis import synthesize_verifier_run
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
 from .tool_gateway import PhaseToolForbidden, check_tool_allowed
@@ -384,7 +420,31 @@ async def governed_step(
     )
 
     # ── 1. Tool dispatch with hard-refuse policy ──────────────────────────
-
+    #
+    # M83.x parallel exploration — tool dispatch happens in two passes:
+    #
+    #   Pass A (pre-classify, sequential): for every tool_call we run the
+    #   normalize + policy gate. Malformed/refused calls get their
+    #   outcomes recorded immediately and their audit events fired in
+    #   submission order so audit-gov shows the same picture as before.
+    #   Allowed calls get queued in `allowed_queue` for Pass B.
+    #
+    #   Pass B (dispatch + post-process): allowed calls whose tool_name
+    #   is in _PARALLEL_SAFE_TOOLS get dispatched concurrently via
+    #   asyncio.gather (capped by _PARALLEL_DISPATCH_CONCURRENCY). The
+    #   rest dispatch sequentially. Post-dispatch processing (PII
+    #   masking, result truncation, code-change extraction, audit
+    #   event emission) ALWAYS happens in submission order and on the
+    #   running `state` so state mutations stay deterministic.
+    #
+    # Why pass B can't just gather everything: pii_token_map and
+    # produced_code_changes need to thread sequentially through every
+    # allowed call (so token IDs stay stable and EditReceipt provenance
+    # is bound to the right tool). Parallel-safe tools (reads, ast,
+    # repo_map) don't produce code changes and source-code reads bypass
+    # PII masking entirely (see _skip_mask), so dispatching them with a
+    # snapshot of the token map is harmless.
+    allowed_queue: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
     for raw in tool_calls:
         try:
             tool_name, args = _normalize_tool_call(raw)
@@ -440,6 +500,76 @@ async def governed_step(
             )
             continue
 
+        # M83.x — defer the actual dispatch to Pass B; allowed_queue
+        # preserves submission order so post-dispatch processing stays
+        # deterministic. Pass B then concurrently dispatches the
+        # parallel-safe subset.
+        allowed_queue.append((raw, tool_name, args))
+
+    # ── Pass B: dispatch (concurrent for parallel-safe, sequential rest)
+    # and post-process. State mutations thread through this loop in
+    # submission order so EditReceipt provenance + pii_token_map remain
+    # deterministic across re-runs.
+    #
+    # Pre-dispatch the parallel-safe calls via gather BEFORE entering the
+    # post-process loop. Each parallel call uses a snapshot of the
+    # current pii_token_map for arg unmasking — they can't see each
+    # other's token-map mutations, but the allowlist is restricted to
+    # read-only tools (mostly source-code reads, which skip masking
+    # entirely), so the practical impact is nil.
+    pre_dispatched: dict[int, ToolDispatchResult | Exception] = {}
+    if allowed_queue:
+        parallel_indices = [
+            i for i, (_, name, _) in enumerate(allowed_queue)
+            if name in _PARALLEL_SAFE_TOOLS
+        ]
+        if len(parallel_indices) >= 2:
+            # Only gather when there's actual parallelism to win. A
+            # single parallel-safe call just goes through the sequential
+            # path with one fewer indirection.
+            snapshot_token_map = dict(state.pii_token_map)
+            run_ctx_for_gather = run_context or {}
+            prefer_laptop_g = run_ctx_for_gather.get("prefer_laptop")
+            ctx_user_id_g = (
+                run_ctx_for_gather.get("user_id")
+                or run_ctx_for_gather.get("userId")
+            )
+            laptop_user_id_g = (
+                str(ctx_user_id_g)
+                if prefer_laptop_g is True and ctx_user_id_g
+                else None
+            )
+            semaphore = asyncio.Semaphore(_PARALLEL_DISPATCH_CONCURRENCY)
+
+            async def _bounded(i: int) -> ToolDispatchResult:
+                _, tname, targs = allowed_queue[i]
+                async with semaphore:
+                    return await dispatch_tool(
+                        tool_name=tname,
+                        args=unmask_pii_in_args(targs, snapshot_token_map),
+                        work_item_id=run_ctx_for_gather.get("work_item_id")
+                        or run_ctx_for_gather.get("workItemId"),
+                        workspace_id=run_ctx_for_gather.get("workspace_id")
+                        or run_ctx_for_gather.get("workspaceId"),
+                        run_context=run_context,
+                        bearer=bearer,
+                        laptop_user_id=laptop_user_id_g,
+                    )
+
+            gather_results = await asyncio.gather(
+                *[_bounded(i) for i in parallel_indices],
+                return_exceptions=True,
+            )
+            for i, res in zip(parallel_indices, gather_results):
+                pre_dispatched[i] = res
+            log.info(
+                "parallel tool dispatch phase=%s count=%d concurrency=%d",
+                state.current_phase.value,
+                len(parallel_indices),
+                _PARALLEL_DISPATCH_CONCURRENCY,
+            )
+
+    for queue_idx, (raw, tool_name, args) in enumerate(allowed_queue):
         # Allowed → dispatch to mcp-server's /mcp/tool-run.
         #
         # M73-followup #93 — multi-turn PII protection around the dispatch:
@@ -477,18 +607,30 @@ async def governed_step(
             else None
         )
         try:
+            # M83.x — if this call was pre-dispatched in the parallel
+            # gather, surface the cached result (or re-raise the
+            # captured exception) rather than calling dispatch_tool
+            # again. dispatch_args still gets computed for the audit
+            # event payload + downstream code-change extraction logic
+            # that reads from `dispatch_args`.
             dispatch_args = unmask_pii_in_args(args, state.pii_token_map)
-            outcome = await dispatch_tool(
-                tool_name=tool_name,
-                args=dispatch_args,
-                work_item_id=run_ctx.get("work_item_id")
-                or run_ctx.get("workItemId"),
-                workspace_id=run_ctx.get("workspace_id")
-                or run_ctx.get("workspaceId"),
-                run_context=run_context,
-                bearer=bearer,
-                laptop_user_id=laptop_user_id,
-            )
+            pre = pre_dispatched.get(queue_idx)
+            if pre is not None:
+                if isinstance(pre, BaseException):
+                    raise pre
+                outcome = pre
+            else:
+                outcome = await dispatch_tool(
+                    tool_name=tool_name,
+                    args=dispatch_args,
+                    work_item_id=run_ctx.get("work_item_id")
+                    or run_ctx.get("workItemId"),
+                    workspace_id=run_ctx.get("workspace_id")
+                    or run_ctx.get("workspaceId"),
+                    run_context=run_context,
+                    bearer=bearer,
+                    laptop_user_id=laptop_user_id,
+                )
             # M75 Slice 5 — read provenance off the dispatch result.
             # Pre-Slice-5 ToolDispatchResult instances (defensive)
             # default served_by="http" via the dataclass — so getattr

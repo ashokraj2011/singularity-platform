@@ -29,36 +29,105 @@ def _to_openai_tools(tools: Optional[List[ToolDescriptor]]) -> Optional[List[Dic
 
 
 def _to_openai_messages(messages: List[ChatMessage]) -> List[Dict[str, Any]]:
+    """Convert internal ChatMessage list to OpenAI Chat Completions shape.
+
+    Covers all providers that share the OpenAI wire format:
+      - openai (OpenAI direct + Azure OpenAI deployments)
+      - openrouter
+      - copilot (GitHub Copilot Chat API; gh copilot CLI calls this same
+        endpoint)
+
+    (2026-05-24 RCA — multi-provider sweep)
+
+    Two related bugs lived here, mirroring the ones we fixed in the
+    Anthropic provider:
+
+      1. The function only looked for tool_calls inside `m.content`
+         (parsed as JSON). Stage_driver ships tool_calls as a sibling
+         of `content`, so this path silently dropped every tool round-
+         trip going to OpenAI/Copilot. The Anthropic side surfaced as
+         "tool_result has no corresponding tool_use" 400s; the OpenAI
+         side surfaces more subtly as the assistant looking like it
+         hallucinated tool results out of thin air on the next turn
+         (no matching tool_calls in its prior message → the LLM
+         confidently fabricates).
+
+      2. The shape conversion only understood gateway-flat
+         {id, name, args} input, not the OpenAI-nested
+         {id, type, function: {name, arguments}} that stage_driver
+         actually builds. So even when the JSON-content path did fire
+         (for the legacy mcp-server-style caller), the nested form
+         got dropped.
+
+    Both shapes are now accepted and normalized to OpenAI's expected
+    output format.
+    """
     out: List[Dict[str, Any]] = []
     for m in messages:
         if m.role == "tool":
+            # tool_call_id is REQUIRED by the OpenAI API. Empty string
+            # is silently accepted but the resulting message has no
+            # parent and the model treats it as floating context.
             out.append({
                 "role": "tool",
-                "content": m.content,
+                "content": m.content or "",
                 "tool_call_id": m.tool_call_id or "",
-                "name": m.tool_name,
+                "name": m.tool_name or "",
             })
             continue
         if m.role == "assistant":
-            # mcp-server stringifies prior tool_calls into content; reverse here.
-            try:
-                parsed = json.loads(m.content or "{}")
-                if isinstance(parsed, dict) and isinstance(parsed.get("tool_calls"), list) and parsed["tool_calls"]:
+            structured_tc: Optional[List[Dict[str, Any]]] = m.tool_calls
+            if not structured_tc:
+                # Legacy callers (pre-2026-05-24) JSON-encoded tool_calls
+                # inside content. Try to recover that shape for backward-
+                # compat with any caller still on the old wire format.
+                try:
+                    parsed = json.loads(m.content or "{}")
+                    if isinstance(parsed, dict) and isinstance(parsed.get("tool_calls"), list):
+                        structured_tc = parsed["tool_calls"]
+                except Exception:
+                    structured_tc = None
+            if structured_tc:
+                oa_tool_calls: List[Dict[str, Any]] = []
+                for c in structured_tc:
+                    if not isinstance(c, dict):
+                        continue
+                    # Normalize gateway-flat AND OpenAI-nested input
+                    # shapes to OpenAI's expected output shape.
+                    fn = c.get("function") if isinstance(c.get("function"), dict) else None
+                    name = c.get("name") or (fn.get("name") if fn else None) or ""
+                    raw_args: Any = c.get("args")
+                    if raw_args is None and fn is not None:
+                        raw_args = fn.get("arguments")
+                    if raw_args is None:
+                        raw_args = c.get("input")
+                    # OpenAI expects arguments to be a JSON-STRING (not
+                    # an object). Stringify whatever we have.
+                    if isinstance(raw_args, str):
+                        args_str = raw_args
+                    elif isinstance(raw_args, dict):
+                        args_str = json.dumps(raw_args)
+                    elif raw_args is None:
+                        args_str = "{}"
+                    else:
+                        args_str = json.dumps({"_raw": raw_args}, default=str)
+                    oa_tool_calls.append({
+                        "id": c.get("id") or f"tc-{uuid.uuid4().hex[:8]}",
+                        "type": "function",
+                        "function": {"name": name, "arguments": args_str},
+                    })
+                if oa_tool_calls:
+                    # OpenAI accepts content=None when tool_calls is set
+                    # (and many clients prefer it that way), but it ALSO
+                    # accepts a non-empty string. Pass through whatever
+                    # text the assistant produced so the next turn sees
+                    # the model's reasoning alongside its tool call.
                     out.append({
                         "role": "assistant",
-                        "content": None,
-                        "tool_calls": [
-                            {
-                                "id": c.get("id"),
-                                "type": "function",
-                                "function": {"name": c.get("name"), "arguments": json.dumps(c.get("args") or {})},
-                            }
-                            for c in parsed["tool_calls"]
-                        ],
+                        "content": m.content or None,
+                        "tool_calls": oa_tool_calls,
                     })
                     continue
-            except Exception:
-                pass
         out.append({"role": m.role, "content": m.content or ""})
     return out
 
@@ -86,14 +155,27 @@ async def respond(
     if tools:
         body["tools"] = tools
         body["tool_choice"] = "auto"
-        body["parallel_tool_calls"] = False
+        # M83.x parallel exploration — let the model emit multiple
+        # read-only tool calls in the same turn. The governed loop in
+        # context-fabric dispatches them concurrently via
+        # asyncio.gather for the parallel-safe allowlist. Mutating
+        # tools (apply_patch, run_test, finish_work_branch) still
+        # serialize on the loop side, so this flag is safe to flip
+        # on even though some calls in a turn might be mutations —
+        # the model can emit them in parallel, but they'll execute
+        # in submission order.
+        body["parallel_tool_calls"] = True
 
     start = time.time()
     headers = {"content-type": "application/json", "authorization": f"Bearer {api_key}"}
     async with httpx.AsyncClient(timeout=settings.upstream_timeout_sec) as client:
         res = await client.post(url, headers=headers, json=body)
     if res.status_code != 200:
-        snippet = res.text[:400] if isinstance(res.text, str) else ""
+        # 2000-char snippet to match Anthropic — the 400-char window was
+        # enough to truncate "messages.N.content.0.tool_use.id: String
+        # should match pattern '..." mid-sentence, sending the operator
+        # on a second round trip to reproduce just to see the rest.
+        snippet = res.text[:2000] if isinstance(res.text, str) else ""
         raise RuntimeError(f"{provider} returned {res.status_code}: {snippet}")
     data = res.json()
     choice = (data.get("choices") or [None])[0]

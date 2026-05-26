@@ -148,6 +148,16 @@ async def respond(
     tools = _to_anthropic_tools(req.tools)
     if tools:
         body["tools"] = tools
+        # M83.x parallel exploration — make the parallel-tool-use
+        # opt-in explicit. Anthropic's Messages API enables parallel
+        # tool use by default unless tool_choice carries
+        # disable_parallel_tool_use=true; setting it explicitly to
+        # false makes our intent legible and survives any future
+        # default-flip on the provider side. The governed loop's
+        # dispatch path (loop.py) handles the parallel calls — for
+        # read-only tools it actually runs them concurrently via
+        # asyncio.gather, for mutating tools it serializes.
+        body["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": False}
 
     url = f"{provider_base_url('anthropic').rstrip('/')}/v1/messages"
     headers = {

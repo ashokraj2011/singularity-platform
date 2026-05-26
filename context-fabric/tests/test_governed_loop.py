@@ -356,3 +356,138 @@ async def test_result_to_dict_serializable():
     assert isinstance(serialized, str)
     assert payload["to_phase"] == "EXPLORE"
     assert payload["phase_advanced"] is True
+
+
+# ── M83.x parallel exploration ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_parallel_safe_tools_dispatch_concurrently(monkeypatch):
+    """When the LLM emits multiple tool_calls in the _PARALLEL_SAFE_TOOLS
+    allowlist within a single turn, they dispatch concurrently rather than
+    sequentially. We prove this by holding each dispatch behind an asyncio
+    event and asserting wall-clock time is bounded by max(holds), not
+    sum(holds)."""
+    import asyncio
+    import time
+
+    # Each fake dispatch waits 100ms then returns. Three calls dispatched
+    # sequentially would take ~300ms; concurrently they should be ~100ms.
+    DISPATCH_HOLD = 0.1
+
+    inflight = 0
+    peak_inflight = 0
+    inflight_lock = asyncio.Lock()
+
+    async def fake_dispatch(*, tool_name, args, **_kwargs):
+        nonlocal inflight, peak_inflight
+        async with inflight_lock:
+            inflight += 1
+            peak_inflight = max(peak_inflight, inflight)
+        try:
+            await asyncio.sleep(DISPATCH_HOLD)
+            return ToolDispatchResult(
+                result={"tool": tool_name},
+                duration_ms=int(DISPATCH_HOLD * 1000),
+                tool_invocation_id=f"ti-{tool_name}",
+                tool_success=True,
+                tool_error=None,
+            )
+        finally:
+            async with inflight_lock:
+                inflight -= 1
+
+    monkeypatch.setattr(
+        "context_api_service.app.governed.loop.dispatch_tool", fake_dispatch
+    )
+
+    policy = _policy({Phase.EXPLORE: ["repo_map", "list_files", "read_file"]})
+    state = _fresh_state(Phase.EXPLORE)
+
+    started = time.monotonic()
+    result = await governed_step(
+        state=state,
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        tool_calls=[
+            {"tool_name": "repo_map", "args": {"path": "."}},
+            {"tool_name": "list_files", "args": {"path": "src"}},
+            {"tool_name": "read_file", "args": {"path": "README.md"}},
+        ],
+        policy=policy,
+    )
+    elapsed = time.monotonic() - started
+
+    # All three outcomes are recorded, in submission order.
+    assert len(result.tool_outcomes) == 3
+    assert [o.tool_name for o in result.tool_outcomes] == [
+        "repo_map", "list_files", "read_file",
+    ]
+    assert all(o.allowed and o.tool_success for o in result.tool_outcomes)
+    # Parallelism evidence: peak in-flight must reach the number of
+    # parallel-safe calls (or the configured concurrency cap, whichever
+    # is smaller). Three reads under a cap of 6 means all three should
+    # be in flight simultaneously.
+    assert peak_inflight == 3, (
+        f"expected 3 concurrent dispatches; got peak={peak_inflight}"
+    )
+    # Wall-clock check (loose to avoid flaky CI): three sequential 100ms
+    # holds would take ~300ms. Concurrent should finish in ~100-180ms.
+    # We assert <250ms which is a real signal without being timing-flaky.
+    assert elapsed < 0.25, (
+        f"parallel dispatch expected to finish in <250ms; took {elapsed*1000:.0f}ms"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mutation_tools_stay_sequential(monkeypatch):
+    """A turn containing a mutating tool (apply_patch) — which is NOT in
+    the parallel-safe allowlist — must dispatch sequentially. Verifies
+    the partition logic: parallel-safe tools gather, the rest serialize."""
+    import asyncio
+
+    inflight = 0
+    peak_inflight = 0
+    inflight_lock = asyncio.Lock()
+
+    async def fake_dispatch(*, tool_name, args, **_kwargs):
+        nonlocal inflight, peak_inflight
+        async with inflight_lock:
+            inflight += 1
+            peak_inflight = max(peak_inflight, inflight)
+        try:
+            await asyncio.sleep(0.05)
+            return ToolDispatchResult(
+                result={"tool": tool_name},
+                duration_ms=50,
+                tool_invocation_id=f"ti-{tool_name}",
+                tool_success=True,
+                tool_error=None,
+            )
+        finally:
+            async with inflight_lock:
+                inflight -= 1
+
+    monkeypatch.setattr(
+        "context_api_service.app.governed.loop.dispatch_tool", fake_dispatch
+    )
+
+    policy = _policy({Phase.ACT: ["apply_patch", "write_file"]})
+    state = _fresh_state(Phase.ACT)
+
+    result = await governed_step(
+        state=state,
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        tool_calls=[
+            {"tool_name": "apply_patch", "args": {"path": "a.py", "patch": "..."}},
+            {"tool_name": "write_file", "args": {"path": "b.py", "content": "..."}},
+        ],
+        policy=policy,
+    )
+
+    assert len(result.tool_outcomes) == 2
+    # No gather should have fired — mutations serialize.
+    assert peak_inflight == 1, (
+        f"mutating tools must dispatch sequentially; got peak={peak_inflight}"
+    )
