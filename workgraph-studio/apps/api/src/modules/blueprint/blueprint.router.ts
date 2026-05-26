@@ -1927,7 +1927,17 @@ function stageUsesRepoContext(stage: LoopStageDefinition): boolean {
 }
 
 function stageAllowsMutation(stage: LoopStageDefinition): boolean {
-  return stage.contextPolicy === 'CODE_EDIT' || stage.toolPolicy === 'MUTATION' || normalizeAgentRole(stage.agentRole).includes('DEV')
+  // The role check uses .includes('DEV') as a permissive fallback when
+  // explicit policy fields are missing, but 'DEVOPS' also contains 'DEV'
+  // and the release-readiness stage is read-only — it reviews the diff
+  // and produces a SelfReviewReceipt, never calls finish_work_branch.
+  // Without the exclusion, the FINALIZE_PROVENANCE_MISSING guard fires
+  // on every release-readiness attempt (repro 2026-05-26 attempt
+  // 7c6bd542 on WRK-984AD: stage marked FAILED despite a valid
+  // medium-risk SelfReviewReceipt with 3 findings + rollback_notes).
+  const role = normalizeAgentRole(stage.agentRole)
+  const isDevByRole = role.includes('DEV') && role !== 'DEVOPS' && !role.startsWith('DEVOPS_')
+  return stage.contextPolicy === 'CODE_EDIT' || stage.toolPolicy === 'MUTATION' || isDevByRole
 }
 
 // QA-review and any stage whose agent role is 'QA' runs a real VERIFY
