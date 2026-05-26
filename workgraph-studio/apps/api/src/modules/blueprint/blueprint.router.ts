@@ -3071,7 +3071,16 @@ async function saveStageVerdict(
   }
 
   const accepted = body.verdict === 'PASS' || body.verdict === 'ACCEPTED_WITH_RISK'
-  if (accepted && normalizeAgentRole(stage.agentRole).includes('DEV') && !attemptHasActualCodeChange(latestAttempt)) {
+  // M81 + 2026-05-26: gate on accumulated branch state, not the
+  // latest attempt's records alone. The wi/<code> branch persists
+  // commits across attempts, so a no-op re-run review is approvable
+  // when an earlier attempt already landed the code. See
+  // loopStateHasAccumulatedCodeChange comment for the repro.
+  if (
+    accepted
+    && stageAllowsMutation(stage)
+    && !loopStateHasAccumulatedCodeChange(state, stage.key)
+  ) {
     throw new ValidationError(
       'Developer stage cannot be approved until an actual MCP/git code change is captured. Re-run Develop with a writable MCP workspace and a tool-capable model alias.',
     )
@@ -4756,6 +4765,29 @@ function attemptHasActualCodeChange(attempt: StageAttempt): boolean {
   const correlation = isRecord(attempt.correlation) ? attempt.correlation : {}
   const codeChangeIds = correlation.codeChangeIds
   return Array.isArray(codeChangeIds) && codeChangeIds.some(id => typeof id === 'string' && id.trim().length > 0)
+}
+
+// (2026-05-26) Under M81's per-workitem branch model, a dev stage's
+// commits accumulate on wi/<code> across attempts. A subsequent
+// attempt may correctly produce zero new code changes — e.g. when
+// the workflow re-runs develop after QA approval and the agent
+// (correctly) sees the work is already committed and acts as a
+// reviewer rather than an editor.
+//
+// Repro 2026-05-26 attempt dea06240 on WRK-984AD: branch already
+// had 3 commits from prior attempt fde84058 (containsACharacter
+// implementation + tests). The re-run agent on Haiku spent 9
+// turns in PLAN/EXPLORE confirming the implementation existed,
+// then submitted a SelfReviewReceipt(recommended_for_approval=true,
+// risk_level=low) with thoughtful risk callouts. Attempt-level
+// codeChangeIds was empty (no NEW changes) so the dev approval
+// gate blocked with "Re-run Develop with a writable MCP workspace
+// and a tool-capable model alias" — wrong answer: the work is
+// already on the branch, just from a different attempt.
+//
+// Check ANY attempt for this stage instead of just the latest.
+function loopStateHasAccumulatedCodeChange(state: LoopState, stageKey: string): boolean {
+  return state.stageAttempts.some(attempt => attempt.stageKey === stageKey && attemptHasActualCodeChange(attempt))
 }
 
 /** Phased Agent Reasoning Model (v4) — extract the code-change coverage
