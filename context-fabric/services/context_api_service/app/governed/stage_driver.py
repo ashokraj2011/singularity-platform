@@ -835,7 +835,16 @@ async def run_stage(
     #   • Counter resets on ANY successful step (phase advance or a
     #     non-validation turn) — a transient error doesn't poison
     #     a long-running session.
-    _VALIDATION_RETRY_BUDGET = 1
+    # (2026-05-26) Bumped from 1 to 2 — observed agent iterating
+    # productively across THREE shape errors (e.g. session 1267e003
+    # design attempts bc84609f + e4454d7a: list_type → missing status
+    # → uncertain-cascade). One retry wasn't enough to converge when
+    # the receipt had multiple cosmetic issues. Two retries gives the
+    # agent 3 total attempts at the same submit, which empirically
+    # covers the common shape-iteration patterns without enabling
+    # genuine infinite loops (still bounded by max_turns + the
+    # stagnant-phase detector).
+    _VALIDATION_RETRY_BUDGET = 2
     consecutive_validation_errors = 0
 
     for turn_idx in range(max_turns):

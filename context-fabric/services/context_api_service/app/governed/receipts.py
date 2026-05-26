@@ -356,6 +356,65 @@ class SelfReviewReceipt(_ReceiptBase):
     verification_summary: str = ""
     recommended_for_approval: bool = False
 
+    @field_validator("acceptance_criteria_check", mode="before")
+    @classmethod
+    def _coerce_acceptance_criteria_list(cls, v: Any) -> Any:
+        """Agents commonly emit acceptance_criteria_check as a dict
+        instead of a list — either keyed by criterion id ({CRIT-1: {...}})
+        or with results bundled ({summary: '...', checks: [...]}).
+        Coerce to list so the per-item AcceptanceCheck validation
+        actually runs.
+
+        Repro 2026-05-26 design attempts bc84609f + e4454d7a: both
+        submitted acceptance_criteria_check as an object, validation
+        failed with `list_type`, retry budget exhausted.
+
+        Also default missing `status` to 'met' WHEN evidence is
+        non-empty — if the agent wrote a sentence about why the
+        criterion holds, treating the absence of an explicit status
+        as 'met' matches what the agent meant. Empty evidence still
+        falls through to the AcceptanceCheck default of 'uncertain'.
+        """
+        if v is None:
+            return []
+        if isinstance(v, dict):
+            # Common shapes:
+            # 1. {summary: '...', checks: [...]} — pull the inner list
+            inner = v.get("checks") or v.get("criteria") or v.get("items")
+            if isinstance(inner, list):
+                return cls._normalize_acceptance_items(inner)
+            # 2. {<criterion_id>: {status, evidence}, ...} — flatten
+            out: list[dict[str, Any]] = []
+            for key, val in v.items():
+                if not isinstance(val, dict):
+                    continue
+                entry = dict(val)
+                if "criterion" not in entry:
+                    entry["criterion"] = str(key)
+                out.append(entry)
+            return cls._normalize_acceptance_items(out)
+        if isinstance(v, list):
+            return cls._normalize_acceptance_items(v)
+        return v
+
+    @staticmethod
+    def _normalize_acceptance_items(items: list[Any]) -> list[Any]:
+        """When an item has evidence but no status, default status to
+        'met' instead of 'uncertain'. Rationale: the agent wrote
+        evidence, so it thinks the criterion is satisfied. Defaulting
+        to 'uncertain' here cascades into the 2+ uncertain top-level
+        guard refusing recommended_for_approval=True (repro:
+        e4454d7a 09:40:45). Empty-evidence items still default to
+        'uncertain' via AcceptanceCheck.status's own default."""
+        out: list[Any] = []
+        for item in items:
+            if isinstance(item, dict) and "status" not in item:
+                ev = item.get("evidence")
+                if isinstance(ev, str) and ev.strip():
+                    item = {**item, "status": "met"}
+            out.append(item)
+        return out
+
     # M73-followup #4 — confidently-wrong agents will mark their own work
     # `recommended_for_approval=True` even when their own acceptance-criteria
     # checks contradict that. The human-approval gate downstream is meant to
