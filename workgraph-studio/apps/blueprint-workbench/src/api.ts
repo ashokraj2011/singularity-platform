@@ -649,6 +649,22 @@ export const api = {
       content: string
       blobSha: string | null
     }>(`/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/file?path=${encodeURIComponent(path)}`),
+  // M83 S4 v1 — operator-driven API caller. Proxies an HTTP request
+  // to a target the operator brought up themselves (host, sibling
+  // container, etc.). Backend refuses non-private targets. Container
+  // lifecycle ("bring up the app") is a deferred S4 followup.
+  workitemApiCall: (sessionId: string, body: { method: string; url: string; headers?: Record<string, string>; body?: string; timeoutMs?: number }) =>
+    request<{
+      ok: boolean
+      status: number
+      statusText?: string
+      headers?: Record<string, string>
+      body?: string
+      byteLength?: number
+      truncated?: boolean
+      durationMs: number
+      error?: string
+    }>(`/blueprint/sessions/${encodeURIComponent(sessionId)}/api-call`, { method: 'POST', body: JSON.stringify(body) }),
   // M83 S2 — write a file edit to wi/<code> as a commit attributed to
   // the operator. expectedSha is the file's last-known blob sha
   // (returned from worktreeFile); when set, server refuses with 409

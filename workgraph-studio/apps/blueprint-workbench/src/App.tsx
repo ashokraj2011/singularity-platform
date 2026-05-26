@@ -2571,6 +2571,12 @@ function WorktreeBrowser({ sessionId }: { sessionId: string }) {
             or types a custom command, clicks Run, and watches the
             SSE-streamed output land in the terminal pane. */}
         <WorktreeTestRunner sessionId={sessionId} />
+        {/* M83 S4 v1 — API caller. Operator brings the workitem
+            service up themselves (host JVM, sibling container);
+            this panel hits any private/loopback URL through
+            workgraph-api's proxy. Container lifecycle ("bring up
+            the app from the workbench") is a deferred followup. */}
+        <WorkitemApiCaller sessionId={sessionId} />
       </section>
     </div>
   )
@@ -2797,6 +2803,173 @@ function handleSseFrame(
 // this automatically but we need raw fetch for SSE).
 function getAuthToken(): string {
   return localStorage.getItem('workbench.token') ?? localStorage.getItem('token') ?? ''
+}
+
+// ─── M83 S4 v1 — Postman-style API caller ────────────────────────────────
+// Hits any private/loopback URL through workgraph-api's proxy. The
+// operator brings the app up themselves (host JVM, sibling container,
+// docker-compose); this panel does method + URL + headers + body and
+// renders the response. The backend refuses public hosts so the proxy
+// can't be used as an exfiltration vector.
+function WorkitemApiCaller({ sessionId }: { sessionId: string }) {
+  const [method, setMethod] = useState<string>('GET')
+  const [url, setUrl] = useState<string>('http://host.docker.internal:8080/')
+  const [headersText, setHeadersText] = useState<string>('Content-Type: application/json')
+  const [bodyText, setBodyText] = useState<string>('')
+  const [sending, setSending] = useState(false)
+  const [response, setResponse] = useState<{
+    ok: boolean
+    status: number
+    statusText?: string
+    headers?: Record<string, string>
+    body?: string
+    durationMs: number
+    error?: string
+    truncated?: boolean
+  } | null>(null)
+
+  const parseHeaders = (): Record<string, string> => {
+    const out: Record<string, string> = {}
+    for (const line of headersText.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      const idx = trimmed.indexOf(':')
+      if (idx < 0) continue
+      const key = trimmed.slice(0, idx).trim()
+      const value = trimmed.slice(idx + 1).trim()
+      if (key) out[key] = value
+    }
+    return out
+  }
+
+  const send = async () => {
+    setSending(true)
+    setResponse(null)
+    try {
+      const res = await api.workitemApiCall(sessionId, {
+        method,
+        url,
+        headers: parseHeaders(),
+        body: method !== 'GET' && method !== 'HEAD' ? bodyText : undefined,
+      })
+      setResponse(res)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setResponse({ ok: false, status: 0, error: msg, durationMs: 0 })
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div style={{ borderTop: '1px solid var(--border, #2a2a2a)', padding: 8, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 420 }}>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <strong style={{ fontSize: 12 }}>API call</strong>
+        <select
+          value={method}
+          onChange={e => setMethod(e.target.value)}
+          disabled={sending}
+          style={{ fontSize: 12, padding: 4 }}
+        >
+          {['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map(m => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+        <input
+          type="text"
+          value={url}
+          onChange={e => setUrl(e.target.value)}
+          disabled={sending}
+          placeholder="http://host.docker.internal:8080/operators/containsACharacter"
+          style={{ flex: 1, fontSize: 12, fontFamily: 'var(--font-mono, monospace)', padding: 4, minWidth: 200 }}
+        />
+        <button
+          type="button"
+          className="primary-button"
+          onClick={send}
+          disabled={sending || !url.trim()}
+        >
+          {sending ? 'Sending…' : 'Send'}
+        </button>
+      </div>
+      <details>
+        <summary style={{ fontSize: 11, color: 'var(--muted, #888)', cursor: 'pointer' }}>
+          Headers ({Object.keys(parseHeaders()).length}) + body
+        </summary>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+          <textarea
+            value={headersText}
+            onChange={e => setHeadersText(e.target.value)}
+            disabled={sending}
+            rows={3}
+            spellCheck={false}
+            placeholder="Header-Name: value (one per line)"
+            style={{ width: '100%', fontSize: 11, fontFamily: 'var(--font-mono, monospace)', padding: 4 }}
+          />
+          {method !== 'GET' && method !== 'HEAD' && (
+            <textarea
+              value={bodyText}
+              onChange={e => setBodyText(e.target.value)}
+              disabled={sending}
+              rows={4}
+              spellCheck={false}
+              placeholder='{ "key": "value" }'
+              style={{ width: '100%', fontSize: 11, fontFamily: 'var(--font-mono, monospace)', padding: 4 }}
+            />
+          )}
+        </div>
+      </details>
+      {response && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{
+            fontSize: 12,
+            color: response.error ? 'var(--danger, #c66)'
+              : response.ok ? 'var(--success, #6c6)'
+                : 'var(--warn, #fa6)',
+          }}>
+            {response.error
+              ? `✗ ${response.error}`
+              : `${response.ok ? '✓' : '✗'} ${response.status}${response.statusText ? ' ' + response.statusText : ''} · ${Math.round(response.durationMs)}ms${response.truncated ? ' · truncated' : ''}`
+            }
+          </div>
+          {response.headers && Object.keys(response.headers).length > 0 && (
+            <details>
+              <summary style={{ fontSize: 11, color: 'var(--muted, #888)', cursor: 'pointer' }}>
+                Response headers ({Object.keys(response.headers).length})
+              </summary>
+              <pre style={{
+                fontSize: 10,
+                fontFamily: 'var(--font-mono, monospace)',
+                padding: 4,
+                margin: 0,
+                background: 'var(--code-bg, #0a0a0a)',
+                border: '1px solid var(--border, #2a2a2a)',
+                maxHeight: 80,
+                overflow: 'auto',
+              }}>
+                {Object.entries(response.headers).map(([k, v]) => `${k}: ${v}`).join('\n')}
+              </pre>
+            </details>
+          )}
+          {response.body !== undefined && (
+            <pre style={{
+              fontSize: 11,
+              fontFamily: 'var(--font-mono, monospace)',
+              padding: 6,
+              margin: 0,
+              background: 'var(--code-bg, #0a0a0a)',
+              border: '1px solid var(--border, #2a2a2a)',
+              maxHeight: 200,
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+            }}>
+              {response.body || '(empty body)'}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function WorktreeFileView({ sessionId, path }: { sessionId: string; path: string }) {

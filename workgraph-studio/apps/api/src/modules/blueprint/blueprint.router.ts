@@ -1036,6 +1036,129 @@ blueprintRouter.put('/sessions/:id/worktree/file', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// M83 S4 v1 — API caller proxy. The operator brings the workitem's
+// service up however they want (host JVM, docker compose, sibling
+// container) and points this endpoint at it. We do the fetch
+// server-side so CORS, cookies, and the workbench origin lock all
+// stay sane, and so we can enforce the target-host allowlist
+// (private/loopback only — no exfiltration vectors).
+//
+// Followup (deferred S4.b/c, see docs/M83-ide-develop-stage.md):
+// long-lived `serve` lifecycle that spins up a runner container
+// running `mvn spring-boot:run` / `npm start` and registers a
+// proxyId. v1 just trusts the operator to bring up the service.
+function isPrivateApiCallerTarget(rawUrl: string): { ok: true; url: URL } | { ok: false; reason: string } {
+  let url: URL
+  try { url = new URL(rawUrl) } catch { return { ok: false, reason: 'invalid URL' } }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { ok: false, reason: `protocol ${url.protocol} not allowed (http/https only)` }
+  }
+  const host = url.hostname.toLowerCase()
+  // Docker-resolvable internal hostnames + ipv4 private ranges +
+  // loopback. We don't do DNS lookups here — a malicious operator
+  // could point evil.com at a private IP. The mcp-sandbox-runner's
+  // network sandbox is the second layer of defense.
+  const allowedHosts = new Set([
+    'localhost',
+    'host.docker.internal',
+    'mcp-server-demo',
+    'mcp-sandbox-runner',
+    'workgraph-api',
+    'context-api',
+    'audit-governance-service',
+    'singularity-mcp-server-demo',
+    'singularity-mcp-sandbox-runner',
+  ])
+  if (allowedHosts.has(host)) return { ok: true, url }
+  // IPv4 private + loopback. We deliberately don't allow IPv6 in v1.
+  const ipv4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host)
+  if (ipv4) {
+    const a = parseInt(ipv4[1], 10)
+    const b = parseInt(ipv4[2], 10)
+    if (a === 127) return { ok: true, url }
+    if (a === 10) return { ok: true, url }
+    if (a === 192 && b === 168) return { ok: true, url }
+    if (a === 172 && b >= 16 && b <= 31) return { ok: true, url }
+  }
+  return { ok: false, reason: `target host '${host}' is not on the private/loopback allowlist` }
+}
+
+blueprintRouter.post('/sessions/:id/api-call', async (req, res, next) => {
+  try {
+    const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
+    if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    assertBlueprintAccess(session, req.user!.userId)
+    const body = (req.body ?? {}) as {
+      method?: string
+      url?: string
+      headers?: Record<string, string>
+      body?: string
+      timeoutMs?: number
+    }
+    const method = (body.method ?? 'GET').toUpperCase()
+    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].includes(method)) {
+      throw new ValidationError(`Method '${method}' is not allowed`)
+    }
+    if (typeof body.url !== 'string' || !body.url.trim()) {
+      throw new ValidationError("'url' is required")
+    }
+    const guard = isPrivateApiCallerTarget(body.url)
+    if (!guard.ok) {
+      throw new ValidationError(`API caller refused: ${guard.reason}`)
+    }
+    const timeoutMs = Math.min(Math.max(body.timeoutMs ?? 30_000, 1_000), 120_000)
+    const startedAt = Date.now()
+    const headers = new Headers(body.headers ?? {})
+    // Strip any client-supplied Authorization to prevent the operator
+    // from accidentally forwarding their workbench JWT to the proxied
+    // target. If they need auth on the target, they supply a separate
+    // header like X-Target-Authorization that the target accepts.
+    headers.delete('authorization')
+    headers.delete('cookie')
+    const fetchInit: RequestInit = {
+      method,
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+      // Only pass a body when the method supports it. fetch will throw
+      // on GET/HEAD with body.
+      ...(method !== 'GET' && method !== 'HEAD' && body.body
+        ? { body: body.body }
+        : {}),
+    }
+    let upstream: Response
+    try {
+      upstream = await fetch(guard.url.toString(), fetchInit)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      res.json({
+        ok: false,
+        status: 0,
+        error: msg,
+        durationMs: Date.now() - startedAt,
+      })
+      return
+    }
+    // Collect headers + body. Cap at 5 MB to avoid eating workgraph-api
+    // memory on a misbehaving target.
+    const responseHeaders: Record<string, string> = {}
+    upstream.headers.forEach((value, key) => { responseHeaders[key] = value })
+    const buf = await upstream.arrayBuffer().catch(() => new ArrayBuffer(0))
+    const MAX = 5 * 1024 * 1024
+    const truncated = buf.byteLength > MAX
+    const bodyText = Buffer.from(buf.slice(0, MAX)).toString('utf8')
+    res.json({
+      ok: upstream.ok,
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: responseHeaders,
+      body: bodyText,
+      byteLength: buf.byteLength,
+      truncated,
+      durationMs: Date.now() - startedAt,
+    })
+  } catch (err) { next(err) }
+})
+
 // M83 S3 — Test runner SSE proxy. The mcp-server endpoint returns
 // text/event-stream; we pipe the response straight through so the
 // workbench's EventSource gets the started → stdout/stderr → finished
