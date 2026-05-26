@@ -2367,23 +2367,36 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
 
     const completedAt = new Date().toISOString()
     // (2026-05-26) Provenance check: a mutating stage that claims
-    // COMPLETED must have actually invoked finish_work_branch. The
+    // FINALIZED must have actually invoked finish_work_branch. The
     // orchestrator surfaces finishWorkBranchInvoked from the
     // governed response's tool outcomes — see orchestrator.ts.
-    // The dev FINALIZE prompt tells the agent to call the tool,
-    // but the FinalizeReceipt validator only enforces that
-    // branch_name + commit_sha are non-empty strings, so an agent
-    // can fabricate values and the stage closes with no actual
-    // commit on disk. QA then opens a fresh worktree from main
-    // and correctly reports "no developer changes detected".
-    // Repro: session ef0e849e dev attempts 22b07b16 (04:28) and
-    // c119c6b7 (05:21) — both COMPLETED with 3 replace_text calls
-    // each, zero finish_work_branch dispatches, downstream
-    // qa-review consistently failed because there was no diff.
+    //
+    // Scope to stopReason === 'FINALIZED' specifically — when the
+    // loop halts at SELF_REVIEW with APPROVAL_PENDING, the agent
+    // hasn't even been into FINALIZE yet (that's the point of the
+    // approval gate: human approves, then a resume call gives the
+    // agent a turn in FINALIZE to call finish_work_branch). The
+    // earlier version of this guard fired on APPROVAL_PENDING too
+    // and failed dev attempts that were correctly paused for
+    // approval. Repro: c1f2f169 + c3420dd8 on 2026-05-26.
+    //
+    // Why this matters: the dev FINALIZE prompt tells the agent
+    // to call finish_work_branch, but the FinalizeReceipt
+    // validator only enforces that branch_name + commit_sha are
+    // non-empty strings, so a misbehaving agent can fabricate
+    // values and the stage closes with no commit on disk. QA
+    // then opens a fresh worktree from main and reports "no
+    // developer changes detected". Original repro: dev attempts
+    // 22b07b16 (04:28) and c119c6b7 (05:21) — both claimed
+    // FINALIZED with 3 replace_text calls each, zero
+    // finish_work_branch dispatches.
+    const governedMeta = (result.correlation as { governed?: { stopReason?: string }; finishWorkBranchInvoked?: boolean }) ?? {}
+    const stopReason = governedMeta.governed?.stopReason
     if (
       codingResult.status === 'COMPLETED'
+      && stopReason === 'FINALIZED'
       && stageAllowsMutation(stage)
-      && (result.correlation as { finishWorkBranchInvoked?: boolean })?.finishWorkBranchInvoked === false
+      && governedMeta.finishWorkBranchInvoked === false
     ) {
       codingResult.status = 'FAILED'
       codingResult.warnings = [
