@@ -1966,7 +1966,21 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
     phases: [
       {
         phase: "PLAN",
-        allowedTools: ["repo_map", "find_symbol", "list_indexed_files", "review_diff"],
+        // (2026-05-26) QA PLAN previously only had
+        // {repo_map, find_symbol, list_indexed_files, review_diff} —
+        // missing read_file / get_ast_slice / search_code / grep_lines.
+        // The QA PLAN prompt asks the agent to identify "files you'll
+        // inspect" + plan test coverage, which naturally requires
+        // peeking at a few files to know what's changed. Without
+        // read access the agent burns 3+ turns on tool_refused
+        // before submitting an incomplete plan (repro 2026-05-26
+        // attempt f5797dc2). Widened to match SECURITY/DEVOPS PLAN
+        // which already grant the same toolset for the same reason.
+        allowedTools: [
+          "repo_map", "find_symbol", "list_indexed_files",
+          "read_file", "get_ast_slice", "search_code", "grep_lines",
+          "review_diff",
+        ],
         requiredOutputSchema: {
           required: ["target_files", "test_strategy"],
           properties: {
