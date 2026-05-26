@@ -270,12 +270,50 @@ def advance_phase(
     )
 
     approval_pending = state.approval_pending
-    if next_phase is Phase.SELF_REVIEW and isinstance(receipt, dict):
+    # (2026-05-26) The original predicate `next_phase is SELF_REVIEW` was
+    # wrong: receipts are produced as the OUTPUT of the agent's current
+    # phase, so when advancing INTO SELF_REVIEW the receipt is a
+    # VerificationReceipt (or whatever the prior phase emits), not a
+    # SelfReviewReceipt. The SelfReviewReceipt is produced when the
+    # agent submits FROM SELF_REVIEW (advancing to FINALIZE or
+    # re-routing to REPAIR). Check that direction instead.
+    #
+    # Without this fix, recommended_for_approval=true is silently
+    # ignored, the loop sails straight past SELF_REVIEW into the
+    # terminal FINALIZE state, and the human approval gate never
+    # opens. Repro 2026-05-26 dev attempts 51e2d192 + 2aac14dc on
+    # session ef0e849e — both submitted SelfReviewReceipts with
+    # recommended_for_approval=true, but final_state had
+    # approvalPending=false and stop_reason=FINALIZED, so the
+    # workgraph-api treated the stage as complete and tried to
+    # advance to qa-review without a human approval step.
+    if state.current_phase is Phase.SELF_REVIEW and isinstance(receipt, dict):
         approval_pending = bool(receipt.get("recommended_for_approval", False))
+
+    # (2026-05-26) When SELF_REVIEW says "approve me", DON'T advance the
+    # phase machine. The spec design is that human approval happens
+    # BETWEEN SELF_REVIEW and FINALIZE — the operator clicks approve,
+    # workgraph-api clears approval_pending, then a resume execute call
+    # gets a turn IN FINALIZE phase where the agent can call
+    # finish_work_branch. Without this guard the loop would advance
+    # straight to FINALIZE, hit _is_terminal_state in stage_driver,
+    # and exit FINALIZED in the same turn the SelfReviewReceipt was
+    # submitted — meaning the agent never gets to call
+    # finish_work_branch and the work never gets committed. See
+    # blueprint.router's finishWorkBranchInvoked guard, which catches
+    # the symptom; this is the structural fix that lets the system
+    # actually reach FINALIZE through a human approval step.
+    effective_next_phase = next_phase
+    if (
+        state.current_phase is Phase.SELF_REVIEW
+        and next_phase is Phase.FINALIZE
+        and approval_pending
+    ):
+        effective_next_phase = Phase.SELF_REVIEW
 
     return replace(
         state,
-        current_phase=next_phase,
+        current_phase=effective_next_phase,
         repair_attempts=new_repair,
         plan_rewinds=new_plan_rewinds,
         receipts=receipts,

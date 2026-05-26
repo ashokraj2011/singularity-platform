@@ -218,27 +218,60 @@ def test_advance_phase_records_receipt_and_history():
 
 def test_advance_phase_sets_approval_pending_on_self_review_recommend():
     """SELF_REVIEW with recommended_for_approval=True flips the flag that
-    workgraph-api uses to open the approval gate."""
+    workgraph-api uses to open the approval gate.
+
+    (2026-05-26) The receipt is produced when the agent submits FROM
+    SELF_REVIEW (not when entering it) — the SelfReviewReceipt is
+    the output of the SELF_REVIEW turn. The phase machine must
+    pause at SELF_REVIEW with approval_pending=True instead of
+    advancing to FINALIZE, so the human approval gate can open
+    and a subsequent resume call can give the agent a turn in
+    FINALIZE phase to call finish_work_branch.
+    """
     state = PhaseState.fresh("loop.stage", "DEVELOPER")
     state = advance_phase(state, Phase.EXPLORE)
     state = advance_phase(state, Phase.ACT)
     state = advance_phase(state, Phase.VERIFY)
     state = advance_phase(
-        state, Phase.SELF_REVIEW, receipt={"kind": "self_review_receipt", "recommended_for_approval": True}
+        state, Phase.SELF_REVIEW, receipt={"kind": "verification_receipt"}
+    )
+    # Now IN SELF_REVIEW. Agent submits its SelfReviewReceipt with
+    # recommended_for_approval=true and asks to advance to FINALIZE.
+    # The phase machine must clamp to SELF_REVIEW + set the flag.
+    state = advance_phase(
+        state,
+        Phase.FINALIZE,
+        receipt={"kind": "self_review_receipt", "recommended_for_approval": True},
     )
     assert state.approval_pending is True
+    assert state.current_phase is Phase.SELF_REVIEW, (
+        "loop must stay at SELF_REVIEW so the human approval gate can open; "
+        f"got {state.current_phase}"
+    )
 
 
 def test_advance_phase_self_review_no_recommend_keeps_flag_false():
-    """A self-review that does NOT recommend approval must not open the gate."""
+    """A self-review that does NOT recommend approval must not open the gate.
+
+    The agent in SELF_REVIEW with recommended_for_approval=false is
+    routing back for repair — the phase machine honors next_phase
+    (typically REPAIR) and leaves approval_pending=False.
+    """
     state = PhaseState.fresh("loop.stage", "DEVELOPER")
     state = advance_phase(state, Phase.EXPLORE)
     state = advance_phase(state, Phase.ACT)
     state = advance_phase(state, Phase.VERIFY)
     state = advance_phase(
-        state, Phase.SELF_REVIEW, receipt={"kind": "self_review_receipt", "recommended_for_approval": False}
+        state, Phase.SELF_REVIEW, receipt={"kind": "verification_receipt"}
+    )
+    # Agent decides changes needed — routes back to REPAIR.
+    state = advance_phase(
+        state,
+        Phase.REPAIR,
+        receipt={"kind": "self_review_receipt", "recommended_for_approval": False},
     )
     assert state.approval_pending is False
+    assert state.current_phase is Phase.REPAIR
 
 
 # ── serialization round-trip ────────────────────────────────────────────────
