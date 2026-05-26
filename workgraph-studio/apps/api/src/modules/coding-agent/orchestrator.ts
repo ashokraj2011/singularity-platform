@@ -366,6 +366,24 @@ export function adaptGovernedStageToCodingRun(
   }> = []
   const verificationReceipts: VerificationReceiptSummary[] = []
   const warnings: string[] = []
+  // (2026-05-26) Provenance for finish_work_branch. The dev FINALIZE
+  // prompt tells the agent to call finish_work_branch, but the
+  // FinalizeReceipt validator only checks that branch_name and
+  // commit_sha are strings — it doesn't verify those strings came
+  // from a real tool dispatch. Agents have submitted fabricated
+  // values and the stage closed COMPLETED with no actual commit
+  // (repro 2026-05-26 session ef0e849e dev attempts 22b07b16 +
+  // c119c6b7 — 3 successful replace_text calls each, zero
+  // finish_work_branch dispatches, yet stage marked COMPLETED).
+  // Surface a top-level signal so blueprint.router can refuse to
+  // mark COMPLETED when the agent claims to have finalized but
+  // never actually committed.
+  let finishWorkBranchInvoked = false
+  let finishWorkBranchResult: {
+    branch_name?: string
+    commit_sha?: string
+    paths_committed?: string[]
+  } | null = null
   // (2026-05-25) Mirror context-fabric's loop._extract_code_changes
   // logic: a mutating tool is "evidence of a real code change" iff
   // it ran successfully AND either emitted a code_change_id OR (more
@@ -473,6 +491,21 @@ export function adaptGovernedStageToCodingRun(
             stale: false,
           })
         }
+        // (2026-05-26) finish_work_branch provenance. Track whether
+        // the dev agent actually invoked the tool (vs fabricating the
+        // FinalizeReceipt). See finishWorkBranchInvoked declaration.
+        if (outcome.tool_name === 'finish_work_branch' && outcome.tool_success !== false) {
+          finishWorkBranchInvoked = true
+          finishWorkBranchResult = {
+            branch_name: typeof rec.branch_name === 'string' ? rec.branch_name : undefined,
+            commit_sha: typeof rec.commit_sha === 'string' ? rec.commit_sha : undefined,
+            paths_committed: Array.isArray(rec.paths_committed)
+              ? rec.paths_committed.filter((p): p is string => typeof p === 'string')
+              : Array.isArray(rec.paths_touched)
+                ? rec.paths_touched.filter((p): p is string => typeof p === 'string')
+                : undefined,
+          }
+        }
         // Verification receipt extraction.
         const kind = String(rec.kind ?? rec.type ?? '').toLowerCase()
         if (kind === 'verification_result' || kind === 'test_result' || outcome.tool_name === 'run_test' || outcome.tool_name === 'run_command') {
@@ -540,6 +573,10 @@ export function adaptGovernedStageToCodingRun(
       // .correlation by the existing spread at line ~2342 / 2366.
       codeChangeRecords,
       verificationReceipts,
+      // (2026-05-26) Cross-stage check: blueprint.router refuses to
+      // mark develop COMPLETED when finishWorkBranchInvoked is false.
+      finishWorkBranchInvoked,
+      finishWorkBranchResult,
       governed: {
         stopReason: resp.stop_reason,
         errorCode: resp.error_code,

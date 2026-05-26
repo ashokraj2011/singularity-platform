@@ -2366,6 +2366,31 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
     }
 
     const completedAt = new Date().toISOString()
+    // (2026-05-26) Provenance check: a mutating stage that claims
+    // COMPLETED must have actually invoked finish_work_branch. The
+    // orchestrator surfaces finishWorkBranchInvoked from the
+    // governed response's tool outcomes — see orchestrator.ts.
+    // The dev FINALIZE prompt tells the agent to call the tool,
+    // but the FinalizeReceipt validator only enforces that
+    // branch_name + commit_sha are non-empty strings, so an agent
+    // can fabricate values and the stage closes with no actual
+    // commit on disk. QA then opens a fresh worktree from main
+    // and correctly reports "no developer changes detected".
+    // Repro: session ef0e849e dev attempts 22b07b16 (04:28) and
+    // c119c6b7 (05:21) — both COMPLETED with 3 replace_text calls
+    // each, zero finish_work_branch dispatches, downstream
+    // qa-review consistently failed because there was no diff.
+    if (
+      codingResult.status === 'COMPLETED'
+      && stageAllowsMutation(stage)
+      && (result.correlation as { finishWorkBranchInvoked?: boolean })?.finishWorkBranchInvoked === false
+    ) {
+      codingResult.status = 'FAILED'
+      codingResult.warnings = [
+        'FINALIZE_PROVENANCE_MISSING: the agent submitted a FinalizeReceipt without successfully invoking finish_work_branch. Edits were made in the worktree but never committed to a branch. Re-run the develop stage so finish_work_branch actually runs.',
+        ...(codingResult.warnings ?? []),
+      ]
+    }
     const gateRecommendation = buildCodingGateRecommendation(codingResult, stage)
     const artifactIds = await createLoopStageArtifacts(session, snapshot, stage, attempt, result, gateRecommendation, actorId)
     const rawLlmOpenQuestions = extractLlmOpenQuestions(result.finalResponse ?? '', stage, attempt)
