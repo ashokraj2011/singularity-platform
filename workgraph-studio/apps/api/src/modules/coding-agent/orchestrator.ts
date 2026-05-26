@@ -282,6 +282,11 @@ export interface CodingStageGovernedRequest {
   initialHistory?: unknown[]
   // Safety cap on LLM turns. Unset = context-fabric's default (25).
   maxTurns?: number
+  // Wall-clock budget for the entire CF execute call. Drives both the
+  // HTTP client AbortSignal in the CF client and (when honored on the
+  // server) the per-stage timeout inside context-fabric's loop driver.
+  // Unset = the CF client's hardcoded 15-minute ceiling.
+  timeoutSec?: number
 }
 
 export async function runCodingStageGoverned(
@@ -297,6 +302,7 @@ export async function runCodingStageGoverned(
     bearer: input.bearer,
     run_context: input.runContext ?? {},
     max_turns: input.maxTurns,
+    timeout_sec: input.timeoutSec,
   }
   const response = await contextFabricClient.executeGovernedStage(stageRequest)
   return adaptGovernedStageToCodingRun(response, input.policy)

@@ -204,6 +204,13 @@ export interface GovernedStageRequest {
   run_context?: Record<string, unknown>
   // Safety cap on LLM turns; defaults to context-fabric's DEFAULT_MAX_TURNS (25).
   max_turns?: number
+  // Wall-clock budget for the entire CF execute call. Drives the HTTP
+  // client AbortSignal here, and (when honored on the server) the
+  // per-stage deadline inside context-fabric's loop driver. Unset =
+  // the 15-minute envelope below. The blueprint router computes this
+  // via resolveStageTimeoutSec() so workflow-declared
+  // `stage.limits.timeoutSec` wins over the role-class default.
+  timeout_sec?: number
 }
 
 // M71 Slice F — Governed-stage response shape. Mirrors StageRunResult.to_dict()
@@ -368,9 +375,17 @@ export const contextFabricClient = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
-      // Multi-turn driver may run for a while; pad past the LLM timeout
-      // envelope. workgraph-api enforces its own per-attempt budget upstream.
-      signal: AbortSignal.timeout(900_000),
+      // Per-stage budget when the caller declared one (workflow node's
+      // `stage.limits.timeoutSec`), with a 30s buffer so the server has
+      // room to format its terminal response after its own internal
+      // deadline fires. Falls back to a 15-minute envelope when the
+      // caller didn't supply a value. workgraph-api enforces its own
+      // per-attempt budget upstream; this is the HTTP-level safety net.
+      signal: AbortSignal.timeout(
+        input.timeout_sec && input.timeout_sec > 0
+          ? input.timeout_sec * 1000 + 30_000
+          : 900_000,
+      ),
     })
     if (!res.ok) {
       const text = await res.text().catch(() => '')

@@ -1985,6 +1985,32 @@ function resolveStageMaxSteps(stage: LoopStageDefinition): number {
   return WORKBENCH_DEFAULT_MAX_STEPS
 }
 
+// Per-stage wall-clock budget for the CF execute envelope. Same
+// precedence as resolveStageMaxSteps — workflow-declared
+// `stage.limits.timeoutSec` wins, else fall back to role-class
+// defaults. Tuned to fit comfortably under the blueprint-workbench
+// nginx proxy_read_timeout (600s) so the browser sees the real
+// stage outcome before nginx pre-empts with a 504.
+//
+// Role-class defaults:
+//   • mutating dev → 540s (long verify steps in develop's VERIFY phase)
+//   • verification  → 540s (qa-review / test-certification can run
+//                           4 mvn/pytest invocations each 30-75s)
+//   • read-only     → 360s (no shelling out, mostly LLM + AST/grep)
+//
+// Operators raising `limits.timeoutSec` above 540 must also bump the
+// blueprint-workbench nginx /api/ `proxy_read_timeout` to stay
+// consistent — otherwise nginx returns 504 before the longer per-stage
+// envelope can drain.
+function resolveStageTimeoutSec(stage: LoopStageDefinition): number {
+  if (stage.limits?.timeoutSec && stage.limits.timeoutSec > 0) {
+    return stage.limits.timeoutSec
+  }
+  if (stageAllowsMutation(stage)) return 540
+  if (stageRunsVerification(stage)) return 540
+  return 360
+}
+
 function stagePromptKey(stage: LoopStageDefinition): string {
   if (stage.promptProfileKey?.trim()) return stage.promptProfileKey.trim()
   return `loop.stage.${stage.key}`
@@ -3790,8 +3816,10 @@ async function runLoopStageExecute(
       ...readPreferLaptopFlag(session.metadata),
     },
     // Per-stage execution budget — workflow-declared limit wins, with
-    // env-based role-class defaults as the fallback. See resolveStageMaxSteps.
+    // env-based role-class defaults as the fallback. See
+    // resolveStageMaxSteps / resolveStageTimeoutSec.
     maxTurns: resolveStageMaxSteps(stage),
+    timeoutSec: resolveStageTimeoutSec(stage),
   })
 }
 
@@ -5643,6 +5671,13 @@ async function runStage(
     : isDeveloperStage ? WORKBENCH_DEVELOPER_MAX_STEPS
       : stage === BlueprintStage.QA ? WORKBENCH_QA_MAX_STEPS
         : WORKBENCH_DEFAULT_MAX_STEPS
+  // Same precedence for the wall-clock budget — workflow node's
+  // `limits.timeoutSec` wins, else role-class default. See
+  // resolveStageTimeoutSec for the nginx-coordinated ceiling.
+  const stageTimeoutSec = stageDefForLimits ? resolveStageTimeoutSec(stageDefForLimits)
+    : isDeveloperStage ? 540
+      : stage === BlueprintStage.QA ? 540
+        : 360
   const linkedWorkItem = await workflowWorkItemContext(session.workflowInstanceId)
   const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
     stageKey,
@@ -5711,7 +5746,7 @@ async function runStage(
     },
     limits: {
       maxSteps: stageMaxSteps,
-      timeoutSec: 480,
+      timeoutSec: stageTimeoutSec,
       inputTokenBudget: limits.maxContextTokens,
       outputTokenBudget: limits.maxOutputTokens,
       maxHistoryMessages: 16,
