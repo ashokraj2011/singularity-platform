@@ -1208,6 +1208,106 @@ blueprintRouter.post('/sessions/:id/worktree/run-test', async (req, res, next) =
   } catch (err) { next(err) }
 })
 
+// M83 S3.2 — Persist a human-origin verification receipt against the
+// latest stage attempt. Called by the workbench Test Runner panel when
+// the operator finishes a manual `mvn test` / `pytest` / etc. so the
+// approval gate (attemptHasPassingVerificationReceipt) sees the human
+// evidence in addition to whatever the agent captured. Origin marker
+// keeps the audit trail honest: the receipt didn't come from the LLM.
+blueprintRouter.post('/sessions/:id/worktree/verification', async (req, res, next) => {
+  try {
+    const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
+    if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    assertBlueprintAccess(session, req.user!.userId)
+
+    const body = req.body as {
+      command?: string
+      passed?: boolean
+      exitCode?: number | null
+      durationMs?: number
+      toolName?: string
+      output?: string
+      notes?: string
+    } | undefined
+    if (!body || typeof body.command !== 'string' || !body.command.trim()) {
+      throw new ValidationError('command is required')
+    }
+    if (typeof body.passed !== 'boolean') {
+      throw new ValidationError('passed (boolean) is required')
+    }
+    const exitCodeNum = typeof body.exitCode === 'number' ? body.exitCode : null
+    const durationMs = typeof body.durationMs === 'number' && Number.isFinite(body.durationMs)
+      ? Math.max(0, Math.round(body.durationMs))
+      : 0
+    // Receipts are bounded; output_excerpt keeps the tail (the part with
+    // failures/assertions) and caps at 4KB so metadata stays compact.
+    const outputExcerpt = typeof body.output === 'string' && body.output.length > 0
+      ? body.output.slice(-4000)
+      : undefined
+    const notes = typeof body.notes === 'string' && body.notes.length > 0
+      ? body.notes.slice(0, 1000)
+      : undefined
+
+    const state = readLoopState(session)
+    const currentStageKey = state.currentStageKey
+    if (!currentStageKey) {
+      throw new ValidationError('No current stage on this session — cannot attach a receipt')
+    }
+    const latestAttempt = latestStageAttempt(state, currentStageKey)
+    if (!latestAttempt) {
+      throw new ValidationError(`No stage attempt exists yet for ${currentStageKey}`)
+    }
+
+    const receipt: Record<string, unknown> = {
+      id: crypto.randomUUID(),
+      toolName: body.toolName?.trim() || 'run_test_human',
+      command: body.command.trim(),
+      exit_code: exitCodeNum,
+      passed: body.passed,
+      durationMs,
+      origin: 'human',
+      capturedBy: req.user?.email ?? req.user?.userId ?? 'operator',
+      capturedAt: new Date().toISOString(),
+      ...(outputExcerpt ? { output_excerpt: outputExcerpt } : {}),
+      ...(notes ? { notes } : {}),
+    }
+
+    const existingReceipts = Array.isArray(latestAttempt.verificationReceipts)
+      ? latestAttempt.verificationReceipts
+      : []
+    const updatedAttempts = state.stageAttempts.map(item => item.id === latestAttempt.id
+      ? { ...item, verificationReceipts: [...existingReceipts, receipt] }
+      : item)
+    const updatedState: LoopState = { ...state, stageAttempts: updatedAttempts }
+
+    await prisma.blueprintSession.update({
+      where: { id: session.id },
+      data: { metadata: stateToMetadata(session, updatedState) },
+    })
+    // Mirror into the session-level rolling history so the next stage's
+    // prior_verification_receipts thread includes it. The de-dup logic
+    // already handles re-runs of the same command.
+    await appendVerificationReceiptsToSession(session.id, [receipt])
+
+    await recordBlueprintAudit(session.id, 'HumanVerificationReceiptAttached', req.user!.userId, {
+      stageKey: currentStageKey,
+      attemptId: latestAttempt.id,
+      command: receipt.command,
+      passed: receipt.passed,
+      exitCode: receipt.exit_code,
+      origin: 'human',
+    })
+
+    res.json({
+      ok: true,
+      receipt,
+      attemptId: latestAttempt.id,
+      stageKey: currentStageKey,
+      totalReceipts: existingReceipts.length + 1,
+    })
+  } catch (err) { next(err) }
+})
+
 blueprintRouter.get('/sessions/:id/code-changes', async (req, res, next) => {
   try {
     const session = await prisma.blueprintSession.findUnique({

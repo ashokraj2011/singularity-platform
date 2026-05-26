@@ -712,6 +712,33 @@ export const api = {
       `/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/file?path=${encodeURIComponent(path)}`,
       { method: 'PUT', body: JSON.stringify(body) },
     ),
+  // M83 S3.2 — Attach a human-origin verification receipt to the
+  // latest stage attempt. Called by the Test Runner panel when a
+  // manual run finishes so the approval gate sees the human evidence
+  // alongside the agent's. The receipt is marked origin=human and
+  // carries the operator's IAM identity in capturedBy.
+  worktreeAttachVerification: (
+    sessionId: string,
+    body: {
+      command: string
+      passed: boolean
+      exitCode: number | null
+      durationMs: number
+      toolName?: string
+      output?: string
+      notes?: string
+    },
+  ) =>
+    request<{
+      ok: boolean
+      receipt: Record<string, unknown>
+      attemptId: string
+      stageKey: string
+      totalReceipts: number
+    }>(
+      `/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/verification`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
   sendBack: (id: string, stageKey: string, body: { targetStageKey: string; reason: string; requiredChanges?: string; blockingQuestions?: string[]; annotations?: SendBackAnnotation[] }) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/send-back`, { method: 'POST', body: JSON.stringify(body) }),
   finalize: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/finalize`, { method: 'POST' }),
