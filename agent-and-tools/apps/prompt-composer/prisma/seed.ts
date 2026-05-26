@@ -60,14 +60,20 @@ const IDS = {
     LOOP_PRODUCT_OWNER:  "00000000-0000-0000-0000-0000000000e8",
     LOOP_ARCHITECT:      "00000000-0000-0000-0000-0000000000e9",
   },
-  // M71 — StagePolicy rows. Stable UUIDs (71-74 mirrors the milestone) so
-  // re-seed is idempotent. One row per (stageKey, agentRole) covering the
-  // 4-stage workbench loop: STORY_INTAKE → DESIGN → DEVELOP → QA.
+  // M71 — StagePolicy rows. Stable UUIDs (71-76) so re-seed is idempotent.
+  // One row per (stageKey, agentRole). The original 4-stage workbench loop
+  // (STORY_INTAKE → DESIGN → DEVELOP → QA) covers PRODUCT_OWNER / ARCHITECT /
+  // DEVELOPER / QA. M79 (2026-05-26) adds SECURITY + DEVOPS to support
+  // loopDefinitions with security-review + release-readiness stages —
+  // operators were hitting STAGE_POLICY_NOT_FOUND when their workflow
+  // advanced past Develop.
   stagePolicies: {
     INTAKE:    "00000000-0000-0000-0000-000000000071",
     DESIGN:    "00000000-0000-0000-0000-000000000072",
     DEVELOP:   "00000000-0000-0000-0000-000000000073",
     QA:        "00000000-0000-0000-0000-000000000074",
+    SECURITY:  "00000000-0000-0000-0000-000000000075",
+    DEVOPS:    "00000000-0000-0000-0000-000000000076",
   },
   // M71 Slice E — Per-phase prompt profiles. One per (role, phase). UUID
   // suffix: `7100<role><phase>` where role = d=DEVELOPER, q=QA, and phase =
@@ -1763,6 +1769,132 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
             },
             verification_summary: { type: "string" },
             traceability_matrix: { type: "object" },
+          },
+        },
+      },
+    ],
+  },
+  // ── SECURITY — read-only audit reviewer (M79, 2026-05-26) ───────────────
+  // Originally missing — loopDefinitions with a SECURITY_REVIEW stage hit
+  // STAGE_POLICY_NOT_FOUND. Cloned from the QA policy because both are
+  // reviewer roles: no code mutation, runs scans/queries, emits a
+  // pass/fail acceptance check. Tool allowlist is intentionally narrow
+  // — same surface as QA — until we add security-specific tools
+  // (SAST scanners, SBOM diff, dependency-vuln lookups) in a follow-up.
+  {
+    id: IDS.stagePolicies.SECURITY,
+    stageKey: "loop.stage",
+    agentRole: "SECURITY",
+    description: "Security review reviewer. Read-only audit; no code mutation. Mirrors QA policy shape.",
+    approvalModel: { stage_completion: "requires_evidence_approval" },
+    limits: { max_repair_attempts: 2, max_full_file_reads: 10, max_context_tokens: 24000, max_tool_calls: 40 },
+    contextPolicy: { ast_first: true, full_file_read_requires_justification: true, require_context_receipt: true },
+    editPolicy: { patch_first: false, write_file_existing_file: "forbidden", require_anchor_hash: false },
+    verificationPolicy: { verification_required: true, allow_unavailable_with_reason: true, require_test_discovery: false },
+    riskPolicy: { external_side_effects_blocked_by_default: true },
+    phases: [
+      {
+        phase: "PLAN",
+        allowedTools: ["repo_map", "find_symbol", "list_indexed_files", "review_diff"],
+        requiredOutputSchema: {
+          required: ["target_files", "test_strategy"],
+          properties: {
+            target_files: { type: "array" },
+            test_strategy: { type: "object", required: ["commands"], properties: { commands: { type: "array", items: { type: "string" } } } },
+          },
+        },
+      },
+      {
+        phase: "EXPLORE",
+        allowedTools: ["read_file", "get_ast_slice", "search_code", "grep_lines", "review_diff"],
+        requiredOutputSchema: { required: ["context_used"], properties: { context_used: { type: "array" } } },
+      },
+      {
+        phase: "VERIFY",
+        allowedTools: ["run_test", "run_command", "recommended_verification", "verification_unavailable", "review_diff"],
+        requiredOutputSchema: {
+          required: ["verification_result"],
+          properties: {
+            verification_result: {
+              type: "object",
+              required: ["status"],
+              properties: { status: { type: "string", enum: ["passed", "failed", "unavailable"] }, commands_run: { type: "array" } },
+            },
+          },
+        },
+      },
+      {
+        phase: "SELF_REVIEW",
+        allowedTools: ["read_file", "review_diff"],
+        requiredOutputSchema: {
+          required: ["recommended_for_approval", "acceptance_criteria_check", "verification_summary"],
+          properties: {
+            recommended_for_approval: { type: "boolean" },
+            acceptance_criteria_check: { type: "array" },
+            verification_summary: { type: "string" },
+          },
+        },
+      },
+    ],
+  },
+  // ── DEVOPS — release readiness reviewer (M79, 2026-05-26) ───────────────
+  // Same rationale as SECURITY above: loopDefinitions with a
+  // RELEASE_READINESS stage need a policy, and DEVOPS is a reviewer role
+  // (writes a release plan + rollback plan, doesn't mutate code).
+  // Operators who later want DEVOPS-specific tools (deploy probes,
+  // health-check runners, rollout playbooks) can extend allowedTools per
+  // phase — the shape stays QA-compatible.
+  {
+    id: IDS.stagePolicies.DEVOPS,
+    stageKey: "loop.stage",
+    agentRole: "DEVOPS",
+    description: "Release readiness reviewer. Read-only audit + release/rollback plans. Mirrors QA policy shape.",
+    approvalModel: { stage_completion: "requires_evidence_approval" },
+    limits: { max_repair_attempts: 2, max_full_file_reads: 10, max_context_tokens: 24000, max_tool_calls: 40 },
+    contextPolicy: { ast_first: true, full_file_read_requires_justification: true, require_context_receipt: true },
+    editPolicy: { patch_first: false, write_file_existing_file: "forbidden", require_anchor_hash: false },
+    verificationPolicy: { verification_required: true, allow_unavailable_with_reason: true, require_test_discovery: false },
+    riskPolicy: { external_side_effects_blocked_by_default: true },
+    phases: [
+      {
+        phase: "PLAN",
+        allowedTools: ["repo_map", "find_symbol", "list_indexed_files", "review_diff"],
+        requiredOutputSchema: {
+          required: ["target_files", "test_strategy"],
+          properties: {
+            target_files: { type: "array" },
+            test_strategy: { type: "object", required: ["commands"], properties: { commands: { type: "array", items: { type: "string" } } } },
+          },
+        },
+      },
+      {
+        phase: "EXPLORE",
+        allowedTools: ["read_file", "get_ast_slice", "search_code", "grep_lines", "review_diff"],
+        requiredOutputSchema: { required: ["context_used"], properties: { context_used: { type: "array" } } },
+      },
+      {
+        phase: "VERIFY",
+        allowedTools: ["run_test", "run_command", "recommended_verification", "verification_unavailable", "review_diff"],
+        requiredOutputSchema: {
+          required: ["verification_result"],
+          properties: {
+            verification_result: {
+              type: "object",
+              required: ["status"],
+              properties: { status: { type: "string", enum: ["passed", "failed", "unavailable"] }, commands_run: { type: "array" } },
+            },
+          },
+        },
+      },
+      {
+        phase: "SELF_REVIEW",
+        allowedTools: ["read_file", "review_diff"],
+        requiredOutputSchema: {
+          required: ["recommended_for_approval", "acceptance_criteria_check", "verification_summary"],
+          properties: {
+            recommended_for_approval: { type: "boolean" },
+            acceptance_criteria_check: { type: "array" },
+            verification_summary: { type: "string" },
           },
         },
       },
