@@ -53,6 +53,9 @@ codeChangesRouter.get('/:runId/code-changes', async (req: Request, res: Response
   // itself was showing diffs from the same execution.
   type Lookup = { cfCallId: string; codeChangeIds: Set<string>; mcpServerId?: string }
   const lookups = new Map<string, Lookup>()
+  // (2026-05-26) Inline code-change records from the governed adapter, see
+  // blueprint.router /sessions/:id/code-changes for the rationale.
+  const inlineRecords = new Map<string, Record<string, unknown>>()
   const addLookup = (source: Record<string, unknown> | null | undefined) => {
     if (!source) return
     const cfCallId = source.cfCallId
@@ -67,6 +70,15 @@ codeChangesRouter.get('/:runId/code-changes', async (req: Request, res: Response
     const mcpServerId = source.mcpServerId
     if (typeof mcpServerId === 'string' && mcpServerId.trim()) current.mcpServerId = mcpServerId.trim()
     lookups.set(cfCallId, current)
+    const inlineList = source.codeChangeRecords
+    if (Array.isArray(inlineList)) {
+      for (const raw of inlineList) {
+        if (!isRecord(raw)) continue
+        const id = raw.id
+        if (typeof id !== 'string' || !id) continue
+        inlineRecords.set(id, raw)
+      }
+    }
   }
   const isRecord = (v: unknown): v is Record<string, unknown> =>
     Boolean(v) && typeof v === 'object' && !Array.isArray(v)
@@ -113,13 +125,30 @@ codeChangesRouter.get('/:runId/code-changes', async (req: Request, res: Response
   // bridge-relayed Workbench changes resolve under the right MCP server.
   const lookupList = [...lookups.values()]
   try {
-    const settled = await Promise.allSettled(lookupList.map(lookup =>
-      contextFabricClient.listCodeChanges(lookup.cfCallId, {
-        codeChangeIds: lookup.codeChangeIds.size > 0 ? [...lookup.codeChangeIds] : undefined,
-        mcpServerId: lookup.mcpServerId,
-      }),
-    ))
-    const items = settled.flatMap(r => r.status === 'fulfilled' ? r.value.items : [])
+    // Same inline-first strategy as the blueprint route: skip the MCP
+    // roundtrip if every expected id has an inline record already.
+    const needsCfLookup = lookupList.some(lookup =>
+      [...lookup.codeChangeIds].some(id => !inlineRecords.has(id)),
+    )
+    const settled = needsCfLookup
+      ? await Promise.allSettled(lookupList.map(lookup =>
+          contextFabricClient.listCodeChanges(lookup.cfCallId, {
+            codeChangeIds: lookup.codeChangeIds.size > 0 ? [...lookup.codeChangeIds] : undefined,
+            mcpServerId: lookup.mcpServerId,
+          }),
+        ))
+      : []
+    const cfItems = settled.flatMap(r => r.status === 'fulfilled' ? r.value.items : [])
+    const itemsById = new Map<string, Record<string, unknown>>()
+    for (const cfItem of cfItems) {
+      const rec = cfItem as unknown as Record<string, unknown>
+      const id = typeof rec.id === 'string' ? rec.id : null
+      if (id) itemsById.set(id, rec)
+    }
+    for (const [id, inline] of inlineRecords) {
+      itemsById.set(id, inline) // inline wins; it carries the diff body.
+    }
+    const items = [...itemsById.values()] as Array<{ id: string; tool_name?: string; paths_touched?: string[]; commit_sha?: string }>
     const stale = settled.some(r => r.status === 'fulfilled' && r.value.stale)
     const errors = settled.flatMap(r => r.status === 'rejected' ? [(r.reason as Error).message] : [])
 

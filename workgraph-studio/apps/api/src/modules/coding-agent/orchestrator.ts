@@ -342,6 +342,28 @@ export function adaptGovernedStageToCodingRun(
 
   // Walk all turns and harvest tool-result payloads into the legacy slots.
   const codeChangeIds: string[] = []
+  // (2026-05-26) Also harvest the FULL code-change envelope from each
+  // successful mutating tool outcome. mcp-server's /resources/code-changes
+  // ring is keyed by its own cc_<uuid> id which the governed loop never
+  // sees (the legacy /mcp/invoke path used to mint these via
+  // provenanceExtractor; /mcp/tool-run does not). Without inline records,
+  // the workbench's "Code review" panel queried MCP by tool_invocation_id,
+  // got an empty hit, and surfaced the "no diff body was available" banner
+  // even though the diff was right there in the governed response.
+  // Persisting the full envelope alongside the id list lets the
+  // /blueprint/sessions/:id/code-changes endpoint serve diffs from
+  // workgraph state without an MCP roundtrip.
+  const codeChangeRecords: Array<{
+    id: string
+    tool_name: string
+    paths_touched: string[]
+    diff?: string
+    patch?: string
+    lines_added?: number
+    lines_removed?: number
+    commit_sha?: string
+    stale: false
+  }> = []
   const verificationReceipts: VerificationReceiptSummary[] = []
   const warnings: string[] = []
   // (2026-05-25) Mirror context-fabric's loop._extract_code_changes
@@ -390,8 +412,34 @@ export function adaptGovernedStageToCodingRun(
             break
           }
         }
+        // Common-shape harvester used to build the inline record. Computed
+        // up front so both the explicit-id branch and the
+        // invocation-id-fallback branch can reuse it.
+        const collectPaths = (): string[] => {
+          const out: string[] = []
+          const pathLists: unknown[] = [
+            rec.paths_touched, rec.paths_changed, rec.changed_files, rec.files,
+          ]
+          for (const list of pathLists) {
+            if (Array.isArray(list)) {
+              for (const x of list) {
+                if (typeof x === 'string' && x.length > 0 && !out.includes(x)) out.push(x)
+              }
+            }
+          }
+          const singlePath = rec.file ?? rec.path ?? rec.file_path ?? rec.target_file
+          if (typeof singlePath === 'string' && singlePath.length > 0 && !out.includes(singlePath)) {
+            out.push(singlePath)
+          }
+          return out
+        }
+        const numOrUndef = (v: unknown): number | undefined =>
+          typeof v === 'number' && Number.isFinite(v) ? v : undefined
+        const strOrUndef = (v: unknown): string | undefined =>
+          typeof v === 'string' && v.length > 0 ? v : undefined
         // If no explicit id but the tool is mutating AND succeeded AND
         // reported a path, fall back to invocation_id.
+        let fallbackChangeId: string | null = null
         if (
           !explicitChangeId
           && MUTATING_TOOLS.has(outcome.tool_name)
@@ -400,16 +448,30 @@ export function adaptGovernedStageToCodingRun(
         ) {
           // Confirm the result envelope actually claims a path —
           // otherwise we don't have evidence of a real edit.
-          const pathLists: unknown[] = [
-            rec.paths_touched, rec.paths_changed, rec.changed_files, rec.files,
-          ]
-          const singlePath = rec.file ?? rec.path ?? rec.file_path ?? rec.target_file
-          const hasAnyPath =
-            pathLists.some(p => Array.isArray(p) && p.some(x => typeof x === 'string' && x.length > 0))
-            || (typeof singlePath === 'string' && singlePath.length > 0)
-          if (hasAnyPath) {
+          if (collectPaths().length > 0) {
+            fallbackChangeId = outcome.tool_invocation_id
             codeChangeIds.push(outcome.tool_invocation_id)
           }
+        }
+        // (2026-05-26) Inline code-change record. Captures everything the
+        // workbench's review panel needs (paths_touched, diff, lines)
+        // without an MCP roundtrip. The id matches whatever we recorded
+        // in codeChangeIds for this outcome so the existing lookup path
+        // still matches by id when records are merged in the route.
+        const bindingId = explicitChangeId ?? fallbackChangeId
+        if (bindingId) {
+          const paths = collectPaths()
+          codeChangeRecords.push({
+            id: bindingId,
+            tool_name: outcome.tool_name,
+            paths_touched: paths,
+            diff: strOrUndef(rec.diff) ?? strOrUndef(rec.unified_diff),
+            patch: strOrUndef(rec.patch),
+            lines_added: numOrUndef(rec.lines_added),
+            lines_removed: numOrUndef(rec.lines_removed),
+            commit_sha: strOrUndef(rec.commit_sha) ?? strOrUndef(rec.commitSha),
+            stale: false,
+          })
         }
         // Verification receipt extraction.
         const kind = String(rec.kind ?? rec.type ?? '').toLowerCase()
@@ -470,6 +532,13 @@ export function adaptGovernedStageToCodingRun(
     correlation: {
       cfCallId,
       codeChangeIds,
+      // M71-followup (2026-05-26) — inline diff envelopes alongside the
+      // ids. Workbench /blueprint/sessions/:id/code-changes prefers these
+      // over MCP roundtrip because mcp-server's /resources/code-changes
+      // ring is keyed by cc_<uuid> and never sees our tool_invocation_id
+      // fallback. Persisted into BlueprintSession.metadata.stageAttempts[]
+      // .correlation by the existing spread at line ~2342 / 2366.
+      codeChangeRecords,
       verificationReceipts,
       governed: {
         stopReason: resp.stop_reason,

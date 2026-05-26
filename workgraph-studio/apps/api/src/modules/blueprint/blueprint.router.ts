@@ -873,6 +873,11 @@ blueprintRouter.get('/sessions/:id/code-changes', async (req, res, next) => {
       : undefined
     const state = readLoopState(session)
     const lookups = new Map<string, { cfCallId: string; codeChangeIds: Set<string>; mcpServerId?: string }>()
+    // (2026-05-26) Inline code-change records harvested by the governed
+    // orchestrator adapter. Keyed by record id so we can merge them with
+    // the CF roundtrip and prefer the inline diff body when both exist.
+    // See orchestrator.ts → adaptGovernedStageToCodingRun → codeChangeRecords.
+    const inlineRecords = new Map<string, Record<string, unknown>>()
     const addLookup = (source: Record<string, unknown>) => {
       const cfCallId = source.cfCallId
       if (typeof cfCallId !== 'string' || !cfCallId) return
@@ -886,6 +891,15 @@ blueprintRouter.get('/sessions/:id/code-changes', async (req, res, next) => {
       const mcpServerId = source.mcpServerId
       if (typeof mcpServerId === 'string' && mcpServerId.trim()) current.mcpServerId = mcpServerId.trim()
       lookups.set(cfCallId, current)
+      const inlineList = source.codeChangeRecords
+      if (Array.isArray(inlineList)) {
+        for (const raw of inlineList) {
+          if (!isRecord(raw)) continue
+          const id = raw.id
+          if (typeof id !== 'string' || !id) continue
+          inlineRecords.set(id, raw)
+        }
+      }
     }
     for (const attempt of state.stageAttempts ?? []) {
       if (stageKey && attempt.stageKey !== stageKey) continue
@@ -899,11 +913,33 @@ blueprintRouter.get('/sessions/:id/code-changes', async (req, res, next) => {
     }
 
     const lookupList = [...lookups.values()].filter(lookup => lookup.codeChangeIds.size > 0)
-    const settled = await Promise.allSettled(lookupList.map(lookup => contextFabricClient.listCodeChanges(lookup.cfCallId, {
-      codeChangeIds: [...lookup.codeChangeIds],
-      mcpServerId: lookup.mcpServerId,
-    })))
-    const items = settled.flatMap(result => result.status === 'fulfilled' ? result.value.items : [])
+    // Skip MCP roundtrip entirely when every expected id already has an
+    // inline record — mcp-server's ring doesn't index by tool_invocation_id
+    // and would just return stale placeholders anyway.
+    const needsCfLookup = lookupList.some(lookup =>
+      [...lookup.codeChangeIds].some(id => !inlineRecords.has(id)),
+    )
+    const settled = needsCfLookup
+      ? await Promise.allSettled(lookupList.map(lookup => contextFabricClient.listCodeChanges(lookup.cfCallId, {
+          codeChangeIds: [...lookup.codeChangeIds],
+          mcpServerId: lookup.mcpServerId,
+        })))
+      : []
+    // Merge: inline records win when both sources have the same id, since
+    // they always carry the diff/patch body. CF/MCP results fill any
+    // remaining ids (typically empty placeholders for legacy paths).
+    const cfItems = settled.flatMap(result => result.status === 'fulfilled' ? result.value.items : [])
+    const itemsById = new Map<string, Record<string, unknown>>()
+    for (const cfItem of cfItems) {
+      const rec = cfItem as unknown as Record<string, unknown>
+      const id = typeof rec.id === 'string' ? rec.id : null
+      if (id) itemsById.set(id, rec)
+    }
+    for (const [id, inline] of inlineRecords) {
+      // Inline always wins — it's the authoritative source we just captured.
+      itemsById.set(id, inline)
+    }
+    const items = [...itemsById.values()] as Array<Record<string, unknown> & { paths_touched?: string[] }>
     const rankCodeChange = (item: { paths_touched?: string[] }) => {
       const paths = Array.isArray(item.paths_touched) ? item.paths_touched : []
       if (paths.some(path => /\.(java|kt|scala|ts|tsx|js|jsx|py|go|rs|cs|cpp|c|h|hpp)$/i.test(path))) return 0

@@ -90,10 +90,56 @@ resourcesRouter.get("/resources/code-changes", (req, res) => {
   const idsCsv  = typeof req.query.ids === "string" ? req.query.ids : undefined;
   const limit   = Math.min(200, Math.max(1, Number(req.query.limit ?? 50)));
 
-  let items;
+  let items: unknown[];
   if (idsCsv) {
     const ids = idsCsv.split(",").map((s) => s.trim()).filter(Boolean);
-    items = ids.map((id) => audit.codeChanges.byId(id)).filter((x) => x);
+    items = ids.map((id) => {
+      // Primary: direct code-change id match (legacy `cc_<uuid>` ids from
+      // provenanceExtractor).
+      const direct = audit.codeChanges.byId(id);
+      if (direct) return direct;
+      // (2026-05-26) Fallback: the governed loop's adapter uses
+      // tool_invocation_id as the binding id when the tool envelope didn't
+      // mint an explicit code_change_id. Synthesize a record from the
+      // tool_invocation's stored output so downstream readers still see
+      // the diff body instead of an empty stale placeholder. This closes
+      // the "no diff body was available" banner without requiring every
+      // mutating tool to also call recordCodeChange — the tool_invocation
+      // record already carries everything we need.
+      const inv = audit.toolInvocations.byId(id);
+      if (!inv || !inv.success) return null;
+      const out = inv.output;
+      if (!out || typeof out !== "object" || Array.isArray(out)) return null;
+      const rec = out as Record<string, unknown>;
+      const paths: string[] = [];
+      const harvestList = (v: unknown) => {
+        if (Array.isArray(v)) for (const x of v) if (typeof x === "string" && x.length > 0 && !paths.includes(x)) paths.push(x);
+      };
+      harvestList(rec.paths_touched);
+      harvestList(rec.paths_changed);
+      harvestList(rec.changed_files);
+      harvestList(rec.files);
+      const single = rec.file ?? rec.path ?? rec.file_path ?? rec.target_file;
+      if (typeof single === "string" && single.length > 0 && !paths.includes(single)) paths.push(single);
+      if (paths.length === 0 && typeof rec.diff !== "string" && typeof rec.patch !== "string") {
+        // Nothing actionable to surface — let it be a stale placeholder.
+        return null;
+      }
+      return {
+        id,
+        correlation: inv.correlation,
+        tool_name: inv.tool_name,
+        paths_touched: paths,
+        diff: typeof rec.diff === "string" ? rec.diff : undefined,
+        patch: typeof rec.patch === "string" ? rec.patch : undefined,
+        lines_added: typeof rec.lines_added === "number" ? rec.lines_added : undefined,
+        lines_removed: typeof rec.lines_removed === "number" ? rec.lines_removed : undefined,
+        commit_sha: typeof rec.commit_sha === "string" ? rec.commit_sha : undefined,
+        source: "envelope" as const,
+        timestamp: inv.timestamp,
+        synthesized_from: "tool_invocation",
+      };
+    }).filter((x): x is NonNullable<typeof x> => x !== null && x !== undefined);
   } else if (traceId) {
     items = audit.codeChanges.byTraceId(traceId);
   } else {
