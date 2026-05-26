@@ -1157,7 +1157,7 @@ function WorkbenchNeo({
       )}
       {overlay === 'code' && (
         <NeoOverlayShell title="Code · wi/<workitem>" onClose={() => closeOverlay()}>
-          <WorktreeBrowser sessionId={session.id} />
+          <WorktreeBrowser sessionId={session.id} stage={activeStage} />
         </NeoOverlayShell>
       )}
       {overlay === 'terminal' && (
@@ -2393,7 +2393,17 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
 // backend proxies to mcp-server. Per the M83 spec, this is the foundation
 // slice — subsequent slices add editing (S2), test runner (S3), and
 // API caller (S4) without touching this component's surface.
-function WorktreeBrowser({ sessionId }: { sessionId: string }) {
+//
+// M83 task #172/#173 (2026-05-26): per-stage gating. The whole overlay
+// is mounted on any stage (operators benefit from "see the code" even
+// on read-only review stages), but the mutating affordances downstream
+// are scoped to the active stage's toolPolicy:
+//   • Edit button → MUTATION only (dev stages)
+//   • Run tests + API caller → MUTATION || VERIFICATION (dev/qa/test-cert)
+//   • Tree + read-only file viewer → always
+function WorktreeBrowser({ sessionId, stage }: { sessionId: string; stage: LoopStage | undefined }) {
+  const canEdit = stage?.toolPolicy === 'MUTATION'
+  const canRunTools = stage?.toolPolicy === 'MUTATION' || stage?.toolPolicy === 'VERIFICATION'
   // Track which directories are expanded — keyed by their absolute path
   // inside the workitem root. We keep a tree of cached entries here too
   // so re-expanding doesn't re-fetch.
@@ -2559,24 +2569,40 @@ function WorktreeBrowser({ sessionId }: { sessionId: string }) {
       <section style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
         <div style={{ flex: 1, overflow: 'auto' }}>
           {selectedPath ? (
-            <WorktreeFileView sessionId={sessionId} path={selectedPath} />
+            <WorktreeFileView sessionId={sessionId} path={selectedPath} canEdit={canEdit} />
           ) : (
             <p style={{ color: 'var(--muted, #888)', padding: 12 }}>
               Select a file from the tree to view its contents.
             </p>
           )}
         </div>
-        {/* M83 S3 — Test runner panel docked at the bottom of the
-            file viewer. Operator picks a preset (mvn / pytest / npm)
-            or types a custom command, clicks Run, and watches the
-            SSE-streamed output land in the terminal pane. */}
-        <WorktreeTestRunner sessionId={sessionId} />
-        {/* M83 S4 v1 — API caller. Operator brings the workitem
-            service up themselves (host JVM, sibling container);
-            this panel hits any private/loopback URL through
-            workgraph-api's proxy. Container lifecycle ("bring up
-            the app from the workbench") is a deferred followup. */}
-        <WorkitemApiCaller sessionId={sessionId} />
+        {/* M83 S3 — Test runner. Only shown on stages whose
+            toolPolicy permits real tool execution (MUTATION =
+            develop, VERIFICATION = qa-review/test-cert). On
+            read-only review stages this panel is hidden — the
+            operator can browse the code but not spawn runner
+            containers from a stage that's supposed to be a
+            structural review. */}
+        {canRunTools && <WorktreeTestRunner sessionId={sessionId} />}
+        {/* M83 S4 v1 — API caller. Same gating: only shown when
+            the stage permits tool execution. */}
+        {canRunTools && <WorkitemApiCaller sessionId={sessionId} />}
+        {/* When tools are gated off, give the operator a hint so
+            they understand WHY the panels are missing rather than
+            silently rendering an empty area. */}
+        {!canRunTools && stage && (
+          <div style={{
+            borderTop: '1px solid var(--border, #2a2a2a)',
+            padding: '12px 16px',
+            fontSize: 12,
+            color: 'var(--muted, #888)',
+            fontStyle: 'italic',
+          }}>
+            Test runner + API caller are hidden on this stage
+            ({stage.label} · toolPolicy={stage.toolPolicy ?? 'unknown'}).
+            They render on stages with toolPolicy=MUTATION or VERIFICATION.
+          </div>
+        )}
       </section>
     </div>
   )
@@ -2972,7 +2998,7 @@ function WorkitemApiCaller({ sessionId }: { sessionId: string }) {
   )
 }
 
-function WorktreeFileView({ sessionId, path }: { sessionId: string; path: string }) {
+function WorktreeFileView({ sessionId, path, canEdit }: { sessionId: string; path: string; canEdit: boolean }) {
   const [content, setContent] = useState<string | null>(null)
   const [meta, setMeta] = useState<{ sizeBytes: number; modifiedAt: string; encoding: 'utf-8' | 'base64'; blobSha: string | null } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -3074,11 +3100,18 @@ function WorktreeFileView({ sessionId, path }: { sessionId: string; path: string
           {/* M83 S2 — Edit button. Hidden for binary files (no useful
               text edit). Save commits to wi/<code> attributed to the
               operator's IAM identity (workgraph-api injects the
-              author from req.user). */}
-          {!isBinary && !editing && (
+              author from req.user).
+              M83 task #172 — gated on canEdit so non-develop stages
+              (intake/design/qa) get read-only browsing. */}
+          {!isBinary && !editing && canEdit && (
             <button type="button" className="ghost-button" onClick={startEdit}>
               Edit
             </button>
+          )}
+          {!isBinary && !editing && !canEdit && (
+            <span style={{ fontSize: 11, color: 'var(--muted, #888)', fontStyle: 'italic' }}>
+              read-only on this stage
+            </span>
           )}
         </div>
       </header>

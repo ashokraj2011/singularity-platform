@@ -249,6 +249,15 @@ export type LoopStage = {
   // button that bypasses the required-question gate. Mirror of the
   // backend field. Defaults to undefined (treated as false).
   allowMarkDone?: boolean
+  // M83 task #172/#173 — per-stage gating signals for the Code
+  // overlay. Mirror of the backend's normalizeLoopStage output.
+  // toolPolicy='MUTATION' → Edit button visible (dev stages).
+  // toolPolicy='MUTATION' || 'VERIFICATION' → Run tests + API
+  //   caller panels visible (dev + qa + test-cert).
+  // Tree + read-only file viewer always visible (read affordance
+  // helps every reviewer).
+  contextPolicy?: 'NONE' | 'STORY_ONLY' | 'REPO_READ_ONLY' | 'CODE_EDIT' | 'VERIFY_ONLY' | 'EVIDENCE_REVIEW'
+  toolPolicy?: 'NONE' | 'READ_ONLY' | 'MUTATION' | 'VERIFICATION'
 }
 
 export type LoopDefinition = {
