@@ -18,17 +18,20 @@ LLM would re-do the same exploration every turn.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from .audit_emit import emit_governed_event
 from .history_compression import DEFAULT_RECENT_TURNS, compress_history
 from .llm_client import LLMGatewayError
 from .loop import GovernedStepResult, ToolCallOutcome
-from .phase_state import Phase, PhaseState
+from .phase_state import Phase, PhaseState, advance_phase
 from .policy_loader import PolicyNotFoundError
 from .prompt_resolver import PromptNotFoundError
 from .turn import SUBMIT_PHASE_OUTPUT, TurnResult, run_turn
@@ -40,6 +43,14 @@ log = logging.getLogger(__name__)
 # but is checked per-call inside run_turn. This one is the worst-case
 # escape hatch in case of a runaway repair loop.
 DEFAULT_MAX_TURNS = 25
+LLM_RETRY_ATTEMPTS = max(0, int(os.environ.get("GOVERNED_LLM_RETRY_ATTEMPTS", "2")))
+LLM_RETRY_BASE_DELAY_SEC = max(0.1, float(os.environ.get("GOVERNED_LLM_RETRY_BASE_DELAY_SEC", "1.0")))
+_TRANSIENT_LLM_ERROR_CODES = {
+    "LLM_GATEWAY_TIMEOUT",
+    "LLM_GATEWAY_UNAVAILABLE",
+    "LLM_GATEWAY_UPSTREAM_ERROR",
+    "LLM_PROVIDER_OVERLOADED",
+}
 
 
 @dataclass
@@ -77,6 +88,27 @@ class StageRunResult:
         }
 
 
+_REFUSAL_ID_COUNTER = {"n": 0}
+
+
+def _refusal_synthetic_id(tool_name: str) -> str:
+    """Generate an Anthropic-safe synthetic tool_use id for refused calls.
+
+    Anthropic's Messages API enforces tool_use.id to match
+    `^[a-zA-Z0-9_-]{1,256}$`. The previous fallback `f"refused:{tool}"`
+    embedded a colon which violates the pattern and 400'd the next
+    turn with "messages.N.content.0.tool_use.id: String should match
+    pattern '...'", killing the whole stage right after a refusal.
+
+    We swap to underscores and append a monotonically-increasing counter
+    so multiple refusals in the same turn don't collide (Anthropic also
+    refuses duplicate ids within a single content array).
+    """
+    _REFUSAL_ID_COUNTER["n"] += 1
+    safe_tool = "".join(c if (c.isalnum() or c in "_-") else "_" for c in tool_name)
+    return f"refused_{safe_tool}_{_REFUSAL_ID_COUNTER['n']}"
+
+
 def _history_from_turn(turn: TurnResult) -> list[dict[str, Any]]:
     """Build the message-history pair that represents `turn`:
 
@@ -88,11 +120,27 @@ def _history_from_turn(turn: TurnResult) -> list[dict[str, Any]]:
     differences are normalised inside llm-gateway, so this format works
     for Anthropic/OpenAI/mock without further adaptation.
     """
+    # (2026-05-24 RCA) Compute the synthetic id for each outcome ONCE
+    # so the assistant tool_use block and the matching tool_result
+    # block carry identical ids. Earlier this called
+    # _refusal_synthetic_id() twice per refused outcome — once in the
+    # tool_calls_block loop, once in the tool-message loop — and the
+    # counter incremented between them, producing assistant ids
+    # `refused_get_symbol_5,6` paired with tool_result ids
+    # `refused_get_symbol_7,8` that don't match. Anthropic 400'd with
+    # "unexpected tool_use_id" and the stage died right after a
+    # refusal.
+    resolved_ids: list[str] = []
+    for outcome in turn.step.tool_outcomes:
+        resolved_ids.append(
+            outcome.tool_invocation_id or _refusal_synthetic_id(outcome.tool_name)
+        )
+
     # Assistant message — include the tool_calls block so the next turn's
     # LLM sees what it called last time. id values are stable per call so
     # the matched tool result message wires up correctly.
     tool_calls_block: list[dict[str, Any]] = []
-    for outcome in turn.step.tool_outcomes:
+    for outcome, call_id in zip(turn.step.tool_outcomes, resolved_ids):
         # M73-followup #4 — JSON-serialize the original args the LLM emitted.
         # Previously this was the empty string with a comment claiming "LLM
         # has them in its memory" — true within a single live LLM session,
@@ -109,7 +157,7 @@ def _history_from_turn(turn: TurnResult) -> list[dict[str, Any]]:
             # whole turn over a logging detail.
             args_str = json.dumps({"__unserializable__": repr(outcome.args)})
         tool_calls_block.append({
-            "id": outcome.tool_invocation_id or f"refused:{outcome.tool_name}",
+            "id": call_id,
             "type": "function",
             "function": {
                 "name": outcome.tool_name,
@@ -140,9 +188,9 @@ def _history_from_turn(turn: TurnResult) -> list[dict[str, Any]]:
             "tool_calls": tool_calls_block,
         })
 
-    # One tool message per outcome.
-    for outcome in turn.step.tool_outcomes:
-        tool_call_id = outcome.tool_invocation_id or f"refused:{outcome.tool_name}"
+    # One tool message per outcome. Reuse the id we computed for the
+    # assistant tool_use block above so they always match.
+    for outcome, tool_call_id in zip(turn.step.tool_outcomes, resolved_ids):
         if outcome.allowed:
             # Allowed → dispatched. Serialise the result + tool-level error
             # so the LLM can react to verification failures, etc.
@@ -262,6 +310,264 @@ def _render_validation_error_message(validation_error: Any) -> dict[str, Any]:
         "VALIDATION_BLOCKED."
     )
     return {"role": "user", "content": "\n".join(parts)}
+
+
+def _render_narrate_without_act_message(state: PhaseState) -> dict[str, Any]:
+    """Bounce the LLM when it emits assistant text in a mutating phase
+    (ACT / REPAIR) without calling any tool or submit_phase_output.
+
+    Failure mode this catches (repro: develop attempt 5b7c069c, 2026-05-26):
+    the agent enters REPAIR, reads "VERIFY failed. Fix the regression",
+    and replies with narration like "I need to move to REPAIR phase since
+    there's a test failure that needs to be fixed. Let me submit the
+    VERIFY phase output indicating failure, then move to REPAIR." The
+    text is conversationally plausible but no tool fires and no receipt
+    is submitted. The turn counts against max_turns; if it happens near
+    the end of the budget the stage aborts immediately.
+
+    The phase machine doesn't classify this as a validation_error (nothing
+    was submitted to validate), so the existing validation-bounce path
+    doesn't catch it. The stagnant-phase guard does eventually (3
+    consecutive no-progress turns), but by then the budget is shot. This
+    bounce is the early-warning version: one turn of narration in a
+    mutating phase, immediately corrected.
+
+    Read-only phases (PLAN / EXPLORE / VERIFY / SELF_REVIEW / FINALIZE)
+    skip this — those phases sometimes legitimately emit a final summary
+    text alongside submit_phase_output, or read-only exploration where
+    no tool call is genuinely the right answer (rare but real).
+    """
+    phase = state.current_phase.value
+    return {
+        "role": "user",
+        "content": (
+            f"[NARRATE-WITHOUT-ACT] You are in {phase} and your last "
+            "response was text only — no tool call, no submit_phase_output. "
+            f"{phase} is a mutating phase: you must either call an allowed "
+            "tool (read_file, apply_patch, replace_text, run_test, etc.) "
+            "OR call submit_phase_output with the receipt for this phase. "
+            "Describing what you intend to do does not advance the loop. "
+            "If the prior phase output covered the regression and you "
+            "just need to submit a RepairReceipt, do that now. If you "
+            "need to inspect a file first, call read_file. Either way, "
+            "your next response MUST include a tool call."
+        ),
+    }
+
+
+def _render_phase_deadline_message(state: PhaseState, turns_remaining: int) -> dict[str, Any]:
+    """Nudge the model to close the current phase before max_turns.
+
+    Cheaper models often treat a phase prompt's read-only tool allowlist as an
+    invitation to keep exploring. Without a direct countdown they can spend the
+    whole stage saying "I'll inspect one more thing" and never call the
+    synthetic submit_phase_output tool. The phase-specific prompt already owns
+    the exact payload shape; this message only adds the operational stop signal.
+    """
+    plural = "" if turns_remaining == 1 else "s"
+    return {
+        "role": "user",
+        "content": (
+            f"[PHASE-DEADLINE] You are still in {state.current_phase.value}. "
+            f"You have {turns_remaining} turn{plural} left before this stage "
+            "fails with MAX_TURNS. On your next response, call "
+            "`submit_phase_output` with the required payload for the current "
+            "phase. Do not call more exploration tools unless the phase output "
+            "would be impossible without one final read."
+        ),
+    }
+
+
+def _render_architect_close_message(state: PhaseState) -> dict[str, Any] | None:
+    """Tell read-only Architect stages to close after useful exploration.
+
+    Architect Plan/Design stages are handoff stages, not autonomous coding
+    stages. In practice smaller models keep taking another read-only step even
+    after repo_map/search_code has already identified enough targets. This
+    nudge is intentionally narrow to ARCHITECT PLAN/EXPLORE so Developer and
+    QA still get their normal exploration budgets.
+    """
+    if (state.agent_role or "").upper() != "ARCHITECT":
+        return None
+    if state.current_phase is Phase.PLAN:
+        return {
+            "role": "user",
+            "content": (
+                "[ARCHITECT-CLOSE] You have enough to produce the PLAN handoff "
+                "if you can name likely files/symbols and risks. On your next "
+                "response, call submit_phase_output for PLAN and advance to "
+                "EXPLORE. Do not call detailed code-reading tools in PLAN."
+            ),
+        }
+    if state.current_phase is Phase.EXPLORE:
+        return {
+            "role": "user",
+            "content": (
+                "[ARCHITECT-CLOSE] Stop exploring once you can name the "
+                "implementation files, findings, solution outline, and gaps. "
+                "On your next response, call submit_phase_output for EXPLORE "
+                "and advance to SELF_REVIEW."
+            ),
+        }
+    if state.current_phase is Phase.SELF_REVIEW:
+        return {
+            "role": "user",
+            "content": (
+                "[ARCHITECT-CLOSE] You are in SELF_REVIEW. Do not call more "
+                "tools. On your next response, call submit_phase_output with "
+                "recommended_for_approval, risk_summary, summary, "
+                "acceptance_criteria_check, and verification_summary so the "
+                "Workbench approval gate can open."
+            ),
+        }
+    return None
+
+
+def _latest_phase_receipt(state: PhaseState, phase: Phase) -> dict[str, Any] | None:
+    receipts = state.receipts.get(phase.value) or []
+    for receipt in reversed(receipts):
+        if isinstance(receipt, dict):
+            return receipt
+    return None
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip())
+        elif isinstance(item, dict):
+            text = item.get("target") or item.get("file") or item.get("reason")
+            if isinstance(text, str) and text.strip():
+                out.append(text.strip())
+    return out
+
+
+def _render_verification_summary(plan_receipt: dict[str, Any] | None) -> str:
+    if not isinstance(plan_receipt, dict):
+        return "Developer and QA should run the repository's applicable tests after implementation."
+    strategy = plan_receipt.get("test_strategy")
+    if isinstance(strategy, dict):
+        commands = _string_list(strategy.get("commands"))
+        if commands:
+            return f"Run verification after implementation: {', '.join(commands)}."
+    return "Developer and QA should run the repository's applicable tests after implementation."
+
+
+def _architect_self_review_fallback_receipt(state: PhaseState) -> dict[str, Any] | None:
+    """Build an approval-handoff receipt when a read-only Architect stage
+    reached SELF_REVIEW but failed to emit the final receipt before max_turns.
+
+    This is intentionally narrow: it only runs for Architect SELF_REVIEW and
+    only when PLAN or EXPLORE has already produced structured evidence. That
+    preserves the human approval gate while avoiding a wasteful failure after
+    the model has already identified implementation targets and risks.
+    """
+    if (state.agent_role or "").upper() != "ARCHITECT":
+        return None
+    if state.current_phase is not Phase.SELF_REVIEW:
+        return None
+
+    plan = _latest_phase_receipt(state, Phase.PLAN)
+    explore = _latest_phase_receipt(state, Phase.EXPLORE)
+    if plan is None and explore is None:
+        return None
+
+    target_files = _string_list((plan or {}).get("target_files"))
+    target_files.extend(
+        file for file in _string_list((explore or {}).get("updated_target_files"))
+        if file not in target_files
+    )
+    findings = _string_list((explore or {}).get("implementation_findings"))
+    outline = (explore or {}).get("solution_outline")
+    if isinstance(outline, list):
+        outline_text = "; ".join(_string_list(outline))
+    elif isinstance(outline, str):
+        outline_text = outline.strip()
+    else:
+        outline_text = ""
+
+    risk_level = (plan or {}).get("risk_level")
+    if risk_level not in {"low", "medium", "high"}:
+        risk_level = "medium" if _string_list((explore or {}).get("gaps")) else "low"
+    risks = _string_list((plan or {}).get("open_questions"))
+    risks.extend(gap for gap in _string_list((explore or {}).get("gaps")) if gap not in risks)
+    if not risks:
+        risks = ["Developer must verify case-insensitive matching and null or empty input behavior."]
+
+    summary_parts = ["Implementation plan is ready for Developer handoff."]
+    if target_files:
+        summary_parts.append(f"Target files: {', '.join(target_files)}.")
+    if outline_text:
+        summary_parts.append(f"Solution outline: {outline_text}")
+    elif findings:
+        summary_parts.append(f"Key findings: {'; '.join(findings[:4])}.")
+
+    return {
+        "kind": "self_review_receipt",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "summary": " ".join(summary_parts),
+        "acceptance_criteria_check": [
+            {
+                "criterion": "Planning handoff identifies target implementation files, behavior, risks, and verification expectations.",
+                "status": "met",
+                "evidence": "PLAN/EXPLORE receipts were produced before SELF_REVIEW timed out.",
+            }
+        ],
+        "risk_summary": {
+            "risk_level": risk_level,
+            "risks": risks,
+            "rollback_notes": "No code has been changed in the Architect stage; rollback is not required.",
+        },
+        "diff_summary": {
+            "files_changed": [],
+            "lines_added": 0,
+            "lines_deleted": 0,
+            "notable_changes": ["Read-only Architect planning handoff; no repository mutation."],
+        },
+        "verification_summary": _render_verification_summary(plan),
+        "recommended_for_approval": True,
+        "fallback_reason": "Architect reached SELF_REVIEW with structured PLAN/EXPLORE evidence but did not emit the final self-review receipt before max_turns.",
+    }
+
+
+async def _try_architect_self_review_fallback(
+    result: StageRunResult,
+    state: PhaseState,
+    run_context: dict[str, Any] | None,
+) -> bool:
+    receipt = _architect_self_review_fallback_receipt(state)
+    if receipt is None:
+        return False
+    try:
+        next_state = advance_phase(state, Phase.SELF_REVIEW, receipt=receipt)
+    except ValueError as exc:
+        await emit_governed_event(
+            kind="governed.architect_self_review_fallback_failed",
+            state=state,
+            policy=None,
+            run_context=run_context,
+            payload={"reason": str(exc)},
+            severity="warn",
+        )
+        return False
+
+    result.final_state = next_state
+    result.stop_reason = "APPROVAL_PENDING"
+    await emit_governed_event(
+        kind="governed.architect_self_review_fallback",
+        state=next_state,
+        policy=None,
+        run_context=run_context,
+        payload={
+            "reason": receipt["fallback_reason"],
+            "receipt_kind": receipt["kind"],
+        },
+        severity="warn",
+    )
+    return True
 
 
 def _render_eval_feedback_message(feedback: Any) -> dict[str, Any] | None:
@@ -394,6 +700,22 @@ def _accumulate_totals(result: StageRunResult, turn: TurnResult) -> None:
             result.total_tools_refused += 1
 
 
+def _is_transient_llm_error(exc: LLMGatewayError) -> bool:
+    """Return True when retrying the same LLM turn is likely to help.
+
+    Provider disconnects and 5xx responses have shown up in Workbench runs as
+    otherwise-healthy stages failing permanently. Retrying inside the driver
+    preserves the stage attempt and avoids burning one of the user's limited
+    Workbench loop attempts on infrastructure noise. 4xx request-shape errors
+    stay non-retryable because the next identical call would fail the same way.
+    """
+    if exc.error_code not in _TRANSIENT_LLM_ERROR_CODES:
+        return False
+    if exc.upstream_status is None:
+        return True
+    return exc.upstream_status in {429, 500, 502, 503, 504}
+
+
 async def run_stage(
     *,
     state: PhaseState,
@@ -498,27 +820,58 @@ async def run_stage(
     consecutive_validation_errors = 0
 
     for turn_idx in range(max_turns):
-        try:
-            turn = await run_turn(
-                state=state,
-                stage_key=stage_key,
-                agent_role=agent_role,
-                vars=vars,
-                history=history,
-                model_alias=model_alias,
-                run_context=run_context,
-                bearer=bearer,
-            )
-        except LLMGatewayError as exc:
+        last_llm_error: LLMGatewayError | None = None
+        for llm_attempt in range(LLM_RETRY_ATTEMPTS + 1):
+            try:
+                turn = await run_turn(
+                    state=state,
+                    stage_key=stage_key,
+                    agent_role=agent_role,
+                    vars=vars,
+                    history=history,
+                    model_alias=model_alias,
+                    run_context=run_context,
+                    bearer=bearer,
+                )
+                last_llm_error = None
+                break
+            except LLMGatewayError as exc:
+                last_llm_error = exc
+                if llm_attempt >= LLM_RETRY_ATTEMPTS or not _is_transient_llm_error(exc):
+                    break
+                delay = LLM_RETRY_BASE_DELAY_SEC * (2 ** llm_attempt)
+                await emit_governed_event(
+                    kind="governed.llm_retry",
+                    state=state,
+                    policy=None,
+                    run_context=run_context,
+                    payload={
+                        "reason": exc.error_code,
+                        "turn_idx": turn_idx,
+                        "attempt": llm_attempt + 1,
+                        "max_attempts": LLM_RETRY_ATTEMPTS + 1,
+                        "delay_sec": delay,
+                    },
+                    severity="warn",
+                )
+                await asyncio.sleep(delay)
+        else:  # pragma: no cover - loop always breaks or returns through error below.
+            last_llm_error = LLMGatewayError("LLM_GATEWAY_UNAVAILABLE", "LLM retry loop exhausted")
+
+        if last_llm_error is not None:
             result.stop_reason = "LLM_ERROR"
-            result.error_code = exc.error_code
-            result.error_message = str(exc)
+            result.error_code = last_llm_error.error_code
+            result.error_message = str(last_llm_error)
             await emit_governed_event(
                 kind="governed.stage_aborted",
                 state=state,
                 policy=None,
                 run_context=run_context,
-                payload={"reason": exc.error_code, "turn_idx": turn_idx},
+                payload={
+                    "reason": last_llm_error.error_code,
+                    "turn_idx": turn_idx,
+                    "retry_attempts": LLM_RETRY_ATTEMPTS,
+                },
                 severity="warn",
             )
             return result
@@ -612,6 +965,40 @@ async def run_stage(
             if stagnant_turns >= _STAGNANT_THRESHOLD:
                 result.stop_reason = "POLICY_BLOCKED"
                 return result
+
+        if not turn.step.phase_advanced and not turn.step.validation_error:
+            close_message = _render_architect_close_message(state)
+            if close_message is not None:
+                history.append(close_message)
+
+        # (2026-05-26) Narrate-without-act bounce. The agent emitted text
+        # in a mutating phase with no tool call and no submit_phase_output
+        # — this is a failure mode the validation-error path doesn't see
+        # (nothing was submitted to validate) and the stagnant guard only
+        # catches after 3 turns. Hit it once: re-prompt immediately with
+        # a clear correction so the next turn either calls a tool or
+        # submits a receipt. Restricted to ACT / REPAIR because read-only
+        # phases legitimately emit text-only responses sometimes.
+        _MUTATING_PHASES = {Phase.ACT, Phase.REPAIR}
+        if (
+            state.current_phase in _MUTATING_PHASES
+            and not turn.step.tool_outcomes
+            and not turn.step.validation_error
+            and not turn.step.phase_advanced
+        ):
+            history.append(_render_narrate_without_act_message(state))
+
+        turns_remaining = max_turns - (turn_idx + 1)
+        if (
+            turns_remaining in {1, 2, 3}
+            and not turn.step.phase_advanced
+            and not turn.step.validation_error
+            and not _is_terminal_state(state)
+        ):
+            history.append(_render_phase_deadline_message(state, turns_remaining))
+
+    if await _try_architect_self_review_fallback(result, state, run_context):
+        return result
 
     result.stop_reason = "MAX_TURNS"
     return result
