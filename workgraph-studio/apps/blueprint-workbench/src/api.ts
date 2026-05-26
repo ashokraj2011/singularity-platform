@@ -501,14 +501,26 @@ export async function pseudoLogin() {
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken()
-  const res = await fetch(`/api${path}`, {
-    ...init,
-    headers: {
-      'content-type': 'application/json',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...(init.headers ?? {}),
-    },
-  })
+  const headers = {
+    'content-type': 'application/json',
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+    ...(init.headers ?? {}),
+  }
+  // 2026-05-26 — single-shot 5xx retry for read-only methods. nginx's
+  // built-in proxy_next_upstream fires retries in milliseconds (no
+  // delay-between-retries config exists), which doesn't help when
+  // workgraph-api is mid-restart and connection refuses instantly.
+  // The realistic mitigation lives here: detect 502/503/504, wait
+  // ~1.5s, try once more. Disabled for mutating methods so an
+  // accidental double-commit can't happen if the first request
+  // actually completed before the connection broke.
+  const method = (init.method ?? 'GET').toUpperCase()
+  const canRetry = method === 'GET' || method === 'HEAD' || method === 'OPTIONS'
+  let res = await fetch(`/api${path}`, { ...init, headers })
+  if (canRetry && (res.status === 502 || res.status === 503 || res.status === 504)) {
+    await new Promise(resolve => setTimeout(resolve, 1500))
+    res = await fetch(`/api${path}`, { ...init, headers })
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     if (res.status === 401) {
