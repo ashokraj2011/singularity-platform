@@ -5018,7 +5018,23 @@ export function extractLlmOpenQuestions(response: string, stage: LoopStageDefini
       id: `${stage.key.toUpperCase()}-LLM-${attempt.attemptNumber}-${index}`,
       question: parsed.question,
       type: parsed.type,
-      required: true,
+      // (2026-05-26) LLM-generated open questions are clarifications, NOT
+      // hard gates. Treating them as `required: true` made the per-stage
+      // verdict endpoint (missingRequiredQuestions check) reject any
+      // PASS attempt as long as the agent kept finding "useful to know"
+      // items — which it always does, because asking is its job in
+      // intake. Operators got stuck in a loop: answer 5 questions →
+      // re-run → agent finds 5 new ones → repeat.
+      //
+      // The operator-configured questions on the stage (stage.questions
+      // array, source='configured') stay required:true — those are
+      // author-designed gates and should block approval. LLM-generated
+      // clarifications surface in the workbench modal for the operator
+      // to answer if useful, but the operator can also just record
+      // PASS and move on. Repro 2026-05-26 session 5f95ad4b: 3
+      // story-intake attempts each generated 5 fresh open questions,
+      // no path to verdict=PASS without filling all 15.
+      required: false,
       freeform: parsed.freeform,
       options: parsed.options,
       source: 'llm_open_question',
