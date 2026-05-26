@@ -259,8 +259,33 @@ class RepairReceipt(_ReceiptBase):
 class AcceptanceCheck(BaseModel):
     model_config = ConfigDict(extra="allow")
     criterion: str
-    status: Literal["met", "not_met", "uncertain"]
+    # (2026-05-26) Default to 'uncertain' when missing. Repro:
+    # workflowInstance 8d42bedf design attempt bc84609f submitted
+    # acceptance_criteria_check entries with criterion + evidence but
+    # no status, exhausted the validation_retry_budget and the stage
+    # failed VALIDATION_BLOCKED. Treating missing as 'uncertain' is
+    # the safer default — the existing top-level guard already forces
+    # recommended_for_approval=false when too many entries are
+    # uncertain, so we don't lose the human-approval gate behavior.
+    status: Literal["met", "not_met", "uncertain"] = "uncertain"
     evidence: str | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _coerce_status(cls, v: Any) -> Any:
+        """Accept common case/synonym variants for status."""
+        if v is None:
+            return "uncertain"
+        if isinstance(v, str):
+            s = v.strip().lower().replace("-", "_").replace(" ", "_")
+            # Common synonyms we've seen models emit.
+            if s in ("pass", "passed", "ok", "yes", "true", "satisfied"):
+                return "met"
+            if s in ("fail", "failed", "no", "false", "broken", "unsatisfied"):
+                return "not_met"
+            if s in ("unknown", "tbd", "n/a", "na", "partial", "partially_met"):
+                return "uncertain"
+        return v
 
 
 class RiskSummary(BaseModel):
@@ -268,6 +293,24 @@ class RiskSummary(BaseModel):
     risk_level: Literal["low", "medium", "high"] = "low"
     risks: list[str] = Field(default_factory=list)
     rollback_notes: str | None = None
+
+    @field_validator("risk_level", mode="before")
+    @classmethod
+    def _coerce_risk_level(cls, v: Any) -> Any:
+        """Tolerate case + common variants ('Medium', 'HIGH', 'med', 'critical').
+        Same repro as AcceptanceCheck.status: design attempt bc84609f had
+        risk_level fail the strict Literal check on the first submission."""
+        if v is None:
+            return "low"
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("low", "minimal", "none", "minor"):
+                return "low"
+            if s in ("medium", "med", "moderate", "mid"):
+                return "medium"
+            if s in ("high", "critical", "severe", "major", "blocker"):
+                return "high"
+        return v
 
 
 class DiffSummary(BaseModel):
