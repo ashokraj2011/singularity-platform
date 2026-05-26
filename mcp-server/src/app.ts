@@ -14,6 +14,7 @@ import { workRouter } from "./mcp/work";
 import { resourcesRouter } from "./mcp/resources";
 import { eventsRouter } from "./mcp/events";
 import { discoveryRouter } from "./mcp/discovery";
+import { worktreeRouter } from "./mcp/worktree";
 import { buildCodeContextPackage } from "./mcp/code-context";
 // M61 Wire E + Wire B P2 — best-effort callbacks to agent-runtime's
 // CapabilityWorldModel: repo fingerprint (drift detector) + AST index
@@ -111,6 +112,10 @@ app.use("/mcp/tools/call", requireMcpScope("tools:call"));
 // decisions happen UPSTREAM in context-fabric/app/governed/; mcp-server
 // just executes whatever the caller asked for.
 app.use("/mcp/tool-run", requireMcpScope("tools:call"));
+// M83 S1 — worktree browser endpoints. resources:read scope: same as
+// /mcp/resources — these are read-only views into the workitem's git
+// worktree, exposed for the workbench file-browser UI via workgraph-api.
+app.use("/mcp/worktree", requireMcpScope("resources:read"));
 app.use("/mcp/resources", requireMcpScope("resources:read"));
 app.use("/mcp/events", requireMcpScope("events:read"));
 app.use("/mcp", discoveryRouter);
@@ -229,6 +234,8 @@ app.use("/mcp", toolRunRouter);
 // generic /mcp/tools/call endpoint.
 app.use("/mcp", workRouter);
 app.use("/mcp", resourcesRouter);
+// M83 S1 — see comment near the requireMcpScope("resources:read") line.
+app.use("/mcp/worktree", worktreeRouter);
 app.use("/mcp", eventsRouter);
 
 app.use(errorMiddleware);

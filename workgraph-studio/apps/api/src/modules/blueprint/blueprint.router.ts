@@ -927,6 +927,67 @@ blueprintRouter.get('/sessions/:id/stages/:stageKey/loop-trace', async (req, res
   } catch (err) { next(err) }
 })
 
+// ─── M83 S1 — Worktree browser endpoints ─────────────────────────────────
+// Proxy read-only views of the workitem's wi/<code> worktree from
+// mcp-server (which owns the filesystem) to the workbench. We resolve
+// the workItemCode from the session's workflow context (set during the
+// WORKBENCH_TASK node activation) so the workbench just sends sessionId
+// and the path; no client trust on the workitem identity.
+async function getWorktreeWorkItemCode(sessionId: string): Promise<string> {
+  const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
+  if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+  const ctx = await workflowWorkItemContext(session.workflowInstanceId)
+  if (!ctx.workItemCode) {
+    throw new ValidationError(
+      `Session ${sessionId} has no resolved workItemCode. The worktree browser only works after the workflow's WORKBENCH_TASK node has activated and bound this session to a WorkItem.`,
+    )
+  }
+  return ctx.workItemCode
+}
+
+blueprintRouter.get('/sessions/:id/worktree/tree', async (req, res, next) => {
+  try {
+    const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
+    if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    assertBlueprintAccess(session, req.user!.userId)
+    const workItemCode = await getWorktreeWorkItemCode(req.params.id)
+    const params = new URLSearchParams()
+    if (typeof req.query.path === 'string') params.set('path', req.query.path)
+    if (req.query.showHidden === 'true') params.set('showHidden', 'true')
+    const mcpUrl = config.MCP_SERVER_URL.replace(/\/+$/, '')
+    const upstream = await fetch(`${mcpUrl}/mcp/worktree/${encodeURIComponent(workItemCode)}/tree?${params.toString()}`, {
+      headers: { authorization: `Bearer ${config.MCP_BEARER_TOKEN}` },
+    })
+    const body = await upstream.json().catch(() => ({})) as { success?: boolean; data?: unknown; error?: { message?: string } }
+    if (!upstream.ok) {
+      throw new ValidationError(body.error?.message ?? `mcp-server worktree tree returned ${upstream.status}`)
+    }
+    res.json(body.data ?? body)
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.get('/sessions/:id/worktree/file', async (req, res, next) => {
+  try {
+    const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
+    if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    assertBlueprintAccess(session, req.user!.userId)
+    if (typeof req.query.path !== 'string' || !req.query.path.trim()) {
+      throw new ValidationError("'path' query parameter is required")
+    }
+    const workItemCode = await getWorktreeWorkItemCode(req.params.id)
+    const params = new URLSearchParams({ path: req.query.path })
+    const mcpUrl = config.MCP_SERVER_URL.replace(/\/+$/, '')
+    const upstream = await fetch(`${mcpUrl}/mcp/worktree/${encodeURIComponent(workItemCode)}/file?${params.toString()}`, {
+      headers: { authorization: `Bearer ${config.MCP_BEARER_TOKEN}` },
+    })
+    const body = await upstream.json().catch(() => ({})) as { success?: boolean; data?: unknown; error?: { message?: string } }
+    if (!upstream.ok) {
+      throw new ValidationError(body.error?.message ?? `mcp-server worktree file returned ${upstream.status}`)
+    }
+    res.json(body.data ?? body)
+  } catch (err) { next(err) }
+})
+
 blueprintRouter.get('/sessions/:id/code-changes', async (req, res, next) => {
   try {
     const session = await prisma.blueprintSession.findUnique({

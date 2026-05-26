@@ -1000,7 +1000,7 @@ function WorkbenchSetup({
   )
 }
 
-type NeoOverlayKind = 'none' | 'review' | 'artifacts' | 'terminal' | 'loop' | 'replay' | 'theater'
+type NeoOverlayKind = 'none' | 'review' | 'artifacts' | 'terminal' | 'loop' | 'replay' | 'theater' | 'code'
 
 function WorkbenchNeo({
   session,
@@ -1118,6 +1118,7 @@ function WorkbenchNeo({
             onOpenReview={() => canReview && setOverlay('review')}
             onOpenArtifacts={() => { setOverlay('artifacts'); onSection('artifacts') }}
             onOpenTerminal={() => { setOverlay('terminal'); onSection('terminal') }}
+            onOpenCode={() => setOverlay('code')}
           />
           <FinalizeStrip session={session} onSession={onSession} />
         </div>
@@ -1152,6 +1153,11 @@ function WorkbenchNeo({
       {overlay === 'artifacts' && (
         <NeoOverlayShell title="Artifacts" onClose={() => closeOverlay()}>
           <AssetRail session={session} activeStageKey={activeStage?.key} onSession={onSession} />
+        </NeoOverlayShell>
+      )}
+      {overlay === 'code' && (
+        <NeoOverlayShell title="Code · wi/<workitem>" onClose={() => closeOverlay()}>
+          <WorktreeBrowser sessionId={session.id} />
         </NeoOverlayShell>
       )}
       {overlay === 'terminal' && (
@@ -1383,6 +1389,7 @@ function NeoStageController({
   onOpenReview,
   onOpenArtifacts,
   onOpenTerminal,
+  onOpenCode,
 }: {
   session: BlueprintSession
   stage: LoopStage | undefined
@@ -1391,6 +1398,10 @@ function NeoStageController({
   onOpenReview: () => void
   onOpenArtifacts: () => void
   onOpenTerminal: () => void
+  // M83 S1 — chip → opens the wi/<code> file browser overlay. Only
+  // rendered when the workitem has a materialized worktree, but the
+  // gate happens server-side; the chip is unconditional in the UI.
+  onOpenCode: () => void
 }) {
   const [answers, setAnswers] = useState<Record<string, DecisionAnswer>>({})
   const [feedback, setFeedback] = useState('')
@@ -1745,6 +1756,10 @@ function NeoStageController({
       )}
       <button type="button" className="focus-badge link" onClick={onOpenArtifacts}>artifacts →</button>
       <button type="button" className="focus-badge link" onClick={onOpenTerminal}>event log →</button>
+      {/* M83 S1 — file browser of the wi/<code> worktree. Backend
+          refuses the open if the workitem isn't materialized yet,
+          which surfaces as a friendly error in the overlay. */}
+      <button type="button" className="focus-badge link" onClick={onOpenCode}>code →</button>
     </>
   )
 
@@ -2369,6 +2384,250 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
         </div>
       )}
     </section>
+  )
+}
+
+// ─── M83 S1 — Worktree file browser ──────────────────────────────────────
+// Lazy directory tree + read-only file viewer for the workitem's wi/<code>
+// branch. Hits /api/blueprint/sessions/:id/worktree/{tree,file}, which the
+// backend proxies to mcp-server. Per the M83 spec, this is the foundation
+// slice — subsequent slices add editing (S2), test runner (S3), and
+// API caller (S4) without touching this component's surface.
+function WorktreeBrowser({ sessionId }: { sessionId: string }) {
+  // Track which directories are expanded — keyed by their absolute path
+  // inside the workitem root. We keep a tree of cached entries here too
+  // so re-expanding doesn't re-fetch.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(['']))
+  const [cache, setCache] = useState<Record<string, Array<{ name: string; type: 'dir' | 'file' | 'other' }>>>({})
+  const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [rootMeta, setRootMeta] = useState<{ workItemCode: string; workItemRoot: string } | null>(null)
+  const [rootError, setRootError] = useState<string | null>(null)
+  const [loadingPath, setLoadingPath] = useState<string | null>(null)
+
+  // Fetch root on mount. After that, dir loads happen lazily on
+  // expansion.
+  useEffect(() => {
+    let cancelled = false
+    setLoadingPath('')
+    api.worktreeTree(sessionId, '').then(res => {
+      if (cancelled) return
+      setRootMeta({ workItemCode: res.workItemCode, workItemRoot: res.workItemRoot })
+      setCache(prev => ({ ...prev, '': res.entries }))
+      setRootError(null)
+    }).catch((err: unknown) => {
+      if (cancelled) return
+      const msg = err instanceof Error ? err.message : String(err)
+      setRootError(msg)
+    }).finally(() => {
+      if (!cancelled) setLoadingPath(null)
+    })
+    return () => { cancelled = true }
+  }, [sessionId])
+
+  const loadDir = async (path: string) => {
+    if (cache[path]) return
+    setLoadingPath(path)
+    try {
+      const res = await api.worktreeTree(sessionId, path)
+      setCache(prev => ({ ...prev, [path]: res.entries }))
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      // Surface as a phantom entry so the tree renders SOMETHING and
+      // doesn't silently hide the failure.
+      setCache(prev => ({ ...prev, [path]: [{ name: `! ${msg.slice(0, 120)}`, type: 'other' }] }))
+    } finally {
+      setLoadingPath(null)
+    }
+  }
+
+  const toggle = (path: string) => {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      if (next.has(path)) {
+        next.delete(path)
+      } else {
+        next.add(path)
+        void loadDir(path)
+      }
+      return next
+    })
+  }
+
+  const joinPath = (parent: string, name: string) => (parent ? `${parent}/${name}` : name)
+
+  // Recursive tree render. Depth caps at a reasonable bound; very deep
+  // trees would just need more vertical room.
+  const renderTree = (parent: string, depth: number): React.ReactNode => {
+    const entries = cache[parent]
+    if (!entries) {
+      return loadingPath === parent
+        ? <div style={{ paddingLeft: depth * 14, color: 'var(--muted, #888)' }}>Loading…</div>
+        : null
+    }
+    return entries.map(entry => {
+      const full = joinPath(parent, entry.name)
+      if (entry.type === 'dir') {
+        const isOpen = expanded.has(full)
+        return (
+          <div key={full}>
+            <button
+              type="button"
+              onClick={() => toggle(full)}
+              style={{
+                display: 'block',
+                width: '100%',
+                textAlign: 'left',
+                paddingLeft: depth * 14 + 4,
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                fontFamily: 'var(--font-mono, monospace)',
+                fontSize: 13,
+                lineHeight: '20px',
+                color: 'inherit',
+              }}
+            >
+              {isOpen ? '▾' : '▸'} {entry.name}/
+            </button>
+            {isOpen && renderTree(full, depth + 1)}
+          </div>
+        )
+      }
+      if (entry.type === 'file') {
+        const isSelected = selectedPath === full
+        return (
+          <button
+            key={full}
+            type="button"
+            onClick={() => setSelectedPath(full)}
+            style={{
+              display: 'block',
+              width: '100%',
+              textAlign: 'left',
+              paddingLeft: depth * 14 + 18,
+              background: isSelected ? 'var(--selection, #1e3a5c)' : 'none',
+              color: isSelected ? '#fff' : 'inherit',
+              border: 'none',
+              cursor: 'pointer',
+              fontFamily: 'var(--font-mono, monospace)',
+              fontSize: 13,
+              lineHeight: '20px',
+            }}
+          >
+            {entry.name}
+          </button>
+        )
+      }
+      // 'other' — symlinks, sockets, the error phantom. Render greyed.
+      return (
+        <div
+          key={full}
+          style={{
+            paddingLeft: depth * 14 + 18,
+            color: 'var(--danger, #c33)',
+            fontFamily: 'var(--font-mono, monospace)',
+            fontSize: 13,
+            lineHeight: '20px',
+          }}
+        >
+          {entry.name}
+        </div>
+      )
+    })
+  }
+
+  return (
+    <div style={{ display: 'flex', gap: 12, height: '100%', minHeight: 480 }}>
+      <aside
+        style={{
+          flex: '0 0 320px',
+          overflowY: 'auto',
+          borderRight: '1px solid var(--border, #2a2a2a)',
+          paddingRight: 8,
+        }}
+      >
+        {rootMeta && (
+          <div style={{ fontSize: 12, color: 'var(--muted, #888)', padding: '4px 0 8px 4px' }}>
+            <strong>{rootMeta.workItemCode}</strong>
+            <div style={{ fontSize: 11, opacity: 0.7 }}>{rootMeta.workItemRoot}</div>
+          </div>
+        )}
+        {rootError ? (
+          <p style={{ color: 'var(--danger, #c33)', padding: 4, fontSize: 13 }}>{rootError}</p>
+        ) : renderTree('', 0)}
+      </aside>
+      <section style={{ flex: 1, overflow: 'auto' }}>
+        {selectedPath ? (
+          <WorktreeFileView sessionId={sessionId} path={selectedPath} />
+        ) : (
+          <p style={{ color: 'var(--muted, #888)', padding: 12 }}>
+            Select a file from the tree to view its contents.
+          </p>
+        )}
+      </section>
+    </div>
+  )
+}
+
+function WorktreeFileView({ sessionId, path }: { sessionId: string; path: string }) {
+  const [content, setContent] = useState<string | null>(null)
+  const [meta, setMeta] = useState<{ sizeBytes: number; modifiedAt: string; encoding: 'utf-8' | 'base64' } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    setContent(null)
+    api.worktreeFile(sessionId, path).then(res => {
+      if (cancelled) return
+      setContent(res.content)
+      setMeta({ sizeBytes: res.sizeBytes, modifiedAt: res.modifiedAt, encoding: res.encoding })
+    }).catch((err: unknown) => {
+      if (cancelled) return
+      setError(err instanceof Error ? err.message : String(err))
+    }).finally(() => {
+      if (!cancelled) setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [sessionId, path])
+
+  if (loading) return <p style={{ padding: 12, color: 'var(--muted, #888)' }}>Loading {path}…</p>
+  if (error) return <p style={{ padding: 12, color: 'var(--danger, #c33)' }}>{error}</p>
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 8 }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 12 }}>
+        <strong>{path}</strong>
+        {meta && (
+          <span style={{ color: 'var(--muted, #888)' }}>
+            {meta.sizeBytes.toLocaleString()} bytes · {meta.encoding} · modified {new Date(meta.modifiedAt).toLocaleString()}
+          </span>
+        )}
+      </header>
+      {meta?.encoding === 'base64' ? (
+        <p style={{ color: 'var(--muted, #888)', fontStyle: 'italic' }}>
+          (Binary file. Content is base64-encoded; open on disk for the real bytes.)
+        </p>
+      ) : (
+        <pre
+          style={{
+            margin: 0,
+            padding: 8,
+            background: 'var(--code-bg, #0a0a0a)',
+            border: '1px solid var(--border, #2a2a2a)',
+            fontFamily: 'var(--font-mono, monospace)',
+            fontSize: 12,
+            lineHeight: 1.5,
+            overflow: 'auto',
+            maxHeight: 'calc(100vh - 240px)',
+          }}
+        >
+          {content}
+        </pre>
+      )}
+    </div>
   )
 }
 

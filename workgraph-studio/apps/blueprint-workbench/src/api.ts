@@ -622,6 +622,32 @@ export const api = {
       `/blueprint/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}`,
       { method: 'PATCH', body: JSON.stringify(body) },
     ),
+  // M83 S1 — worktree file browser. Proxies to mcp-server's
+  // /mcp/worktree/<workItemCode>/{tree,file} endpoint. The backend
+  // resolves the workItemCode from the session's workflow context, so
+  // the client doesn't need to know it.
+  worktreeTree: (sessionId: string, path: string = '', showHidden = false) => {
+    const params = new URLSearchParams()
+    if (path) params.set('path', path)
+    if (showHidden) params.set('showHidden', 'true')
+    const qs = params.toString()
+    return request<{
+      workItemCode: string
+      workItemRoot: string
+      path: string
+      truncated: boolean
+      entries: Array<{ name: string; type: 'dir' | 'file' | 'other' }>
+    }>(`/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/tree${qs ? `?${qs}` : ''}`)
+  },
+  worktreeFile: (sessionId: string, path: string) =>
+    request<{
+      workItemCode: string
+      path: string
+      sizeBytes: number
+      modifiedAt: string
+      encoding: 'utf-8' | 'base64'
+      content: string
+    }>(`/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/file?path=${encodeURIComponent(path)}`),
   sendBack: (id: string, stageKey: string, body: { targetStageKey: string; reason: string; requiredChanges?: string; blockingQuestions?: string[]; annotations?: SendBackAnnotation[] }) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/send-back`, { method: 'POST', body: JSON.stringify(body) }),
   finalize: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/finalize`, { method: 'POST' }),
