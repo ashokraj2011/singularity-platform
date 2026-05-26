@@ -295,11 +295,32 @@ const stageActionParamsSchema = z.object({
 })
 
 const verdictSchema = z.object({
-  verdict: z.enum(['PASS', 'NEEDS_REWORK', 'BLOCKED', 'ACCEPTED_WITH_RISK']),
+  // M82 S2 (2026-05-26) — MARK_DONE is a verdict variant the workbench
+  // sends from the streamlined "Mark done & advance" button. It's
+  // treated as PASS by all downstream consumers (LoopVerdict union
+  // stays PASS/NEEDS_REWORK/BLOCKED/ACCEPTED_WITH_RISK), but
+  // saveStageVerdict skips the missingRequiredQuestions check when the
+  // stage opts into allowMarkDone. Structural gates (accumulated code
+  // change, verification receipts) still fire.
+  verdict: z.enum(['PASS', 'NEEDS_REWORK', 'BLOCKED', 'ACCEPTED_WITH_RISK', 'MARK_DONE']),
   feedback: z.string().optional(),
   confidence: z.number().min(0).max(1).optional(),
   acceptRisk: z.boolean().optional(),
   answers: z.array(decisionAnswerSchema).max(100).optional(),
+})
+
+// M82 S1 (2026-05-26) — operator-edited artifact body. Refused unless
+// the stage's loopDefinition lists this artifact kind with
+// editable=true. See PATCH /sessions/:id/artifacts/:artifactId.
+const editArtifactSchema = z.object({
+  content: z.string().min(1).max(2_000_000),
+  reason: z.string().max(500).optional(),
+})
+
+// M82 S1 — URL params for PATCH artifact.
+const artifactActionParamsSchema = z.object({
+  id: z.string().min(1),
+  artifactId: z.string().min(1),
 })
 
 // M60 Slice 2 — line-anchored operator annotations on send-back.
@@ -351,6 +372,12 @@ type LoopExpectedArtifact = {
   description?: string
   required?: boolean
   format?: 'MARKDOWN' | 'TEXT' | 'JSON' | 'CODE'
+  // M82 S1 (2026-05-26) — when true, the operator may overwrite the
+  // artifact body from the workbench before approval. The PATCH
+  // endpoint (/sessions/:id/artifacts/:id) refuses if no stage in the
+  // loopDefinition lists this artifact kind with editable=true.
+  // Defaults to false so existing artifact kinds stay read-only.
+  editable?: boolean
 }
 
 type LoopQuestion = {
@@ -390,6 +417,15 @@ type LoopStageDefinition = {
   // mutating dev, 22 for verification, 14 read-only) remain the safety
   // net when no per-stage limit is declared.
   limits?: { maxSteps?: number; timeoutSec?: number }
+  // M82 S2 (2026-05-26) — opt-in shortcut. When true, the workbench
+  // shows a "Mark done & advance" affordance that POSTs verdict=
+  // MARK_DONE. saveStageVerdict treats it as PASS but bypasses the
+  // missingRequiredQuestions check. Structural gates (accumulated
+  // code change for dev, verification receipts, etc.) stay in place.
+  // Use for stages where the operator's eyes-on review IS the
+  // approval contract — e.g. story intake, design — and the
+  // questions are documentation rather than gates.
+  allowMarkDone?: boolean
 }
 
 type LoopDefinition = {
@@ -1203,6 +1239,21 @@ blueprintRouter.post('/sessions/:id/stages/:stageKey/verdict', validate(verdictS
   } catch (err) { next(err) }
 })
 
+// M82 S1 (2026-05-26) — operator overwrites an artifact body before
+// approval. Refused unless the artifact's kind is declared with
+// editable=true on at least one stage's expectedArtifacts in the
+// session's loopDefinition. Previous content is preserved in
+// payload.revisions for audit + rollback; an audit event captures
+// the actor, reason, and length delta.
+blueprintRouter.patch('/sessions/:id/artifacts/:artifactId', validate(editArtifactSchema), async (req, res, next) => {
+  try {
+    const params = artifactActionParamsSchema.parse(req.params)
+    const body = req.body as z.infer<typeof editArtifactSchema>
+    const updated = await editArtifactContent(params.id, params.artifactId, body, req.user!.userId)
+    res.json(updated)
+  } catch (err) { next(err) }
+})
+
 blueprintRouter.post('/sessions/:id/stages/:stageKey/send-back', validate(sendBackSchema), async (req, res, next) => {
   try {
     const params = stageActionParamsSchema.parse(req.params)
@@ -1896,6 +1947,12 @@ function normalizeLoopStage(raw: Record<string, unknown>, index: number, session
     toolPolicy,
     promptProfileKey: typeof raw.promptProfileKey === 'string' && raw.promptProfileKey.trim() ? raw.promptProfileKey.trim() : undefined,
     limits: normalizeStageLimits(raw.limits),
+    // M82 S2 — opt-in. When the workflow's WORKBENCH_TASK node declares
+    // `allowMarkDone: true` on this stage, the workbench surfaces a
+    // "Mark done & advance" affordance that bypasses the
+    // missingRequiredQuestions gate. Defaults to false so the safer
+    // PASS-with-answers flow stays the norm.
+    allowMarkDone: raw.allowMarkDone === true,
   }
 }
 
@@ -2031,6 +2088,11 @@ function normalizeExpectedArtifacts(input: unknown): LoopExpectedArtifact[] {
         description: typeof raw.description === 'string' && raw.description.trim() ? raw.description.trim() : undefined,
         required: raw.required !== false,
         format,
+        // M82 S1 — opt-in. Workflow authors set { editable: true } on
+        // artifact kinds the operator should be able to overwrite (e.g.
+        // story brief, plan, design doc). Defaults to false so reviewer
+        // outputs (security review, qa findings) stay read-only.
+        editable: raw.editable === true,
       }
     })
     .filter((artifact): artifact is LoopExpectedArtifact => Boolean(artifact))
@@ -3092,11 +3154,27 @@ async function saveStageVerdict(
   }
   const mergedAnswers = mergeDecisionAnswers(state.decisionAnswers, body.answers ?? [], actorId)
   const missing = missingRequiredQuestions(stage, mergedAnswers)
+  // M82 S2 — MARK_DONE bypasses the required-question gate when the
+  // stage opts in via allowMarkDone=true on the workflow node. Refuse
+  // MARK_DONE on stages that didn't opt in so an unintended client
+  // can't sneak past the questions check.
+  if (body.verdict === 'MARK_DONE' && stage.allowMarkDone !== true) {
+    throw new ValidationError(
+      `Stage ${stage.label} does not allow Mark Done. Answer the required questions and use PASS instead, or set allowMarkDone: true on the stage in the workflow node's loopDefinition.`,
+    )
+  }
   if ((body.verdict === 'PASS' || body.verdict === 'ACCEPTED_WITH_RISK') && missing.length > 0 && !body.acceptRisk) {
     throw new ValidationError(`Required questions must be answered before approval: ${missing.join(', ')}`)
   }
 
-  const accepted = body.verdict === 'PASS' || body.verdict === 'ACCEPTED_WITH_RISK'
+  // MARK_DONE is treated as PASS by every downstream consumer
+  // (verdict union, attempt status, workflow auto-advance) — it's
+  // purely a UX shortcut that loosens the questions gate. Normalize
+  // here so the LoopVerdict type stays clean and nothing downstream
+  // has to know about MARK_DONE.
+  const wasMarkDone = body.verdict === 'MARK_DONE'
+  const persistedVerdict: LoopVerdict = wasMarkDone ? 'PASS' : (body.verdict as LoopVerdict)
+  const accepted = persistedVerdict === 'PASS' || persistedVerdict === 'ACCEPTED_WITH_RISK'
   // M81 + 2026-05-26: gate on accumulated branch state, not the
   // latest attempt's records alone. The wi/<code> branch persists
   // commits across attempts, so a no-op re-run review is approvable
@@ -3243,8 +3321,8 @@ async function saveStageVerdict(
   }
   const attempts = state.stageAttempts.map(item => item.id === latestAttempt.id ? {
     ...item,
-    status: verdictToAttemptStatus(body.verdict),
-    verdict: body.verdict,
+    status: verdictToAttemptStatus(persistedVerdict),
+    verdict: persistedVerdict,
     confidence: body.confidence,
     feedback: body.feedback,
     acceptedAt: accepted ? new Date().toISOString() : item.acceptedAt,
@@ -3256,10 +3334,14 @@ async function saveStageVerdict(
     decisionAnswers: mergedAnswers,
     currentStageKey: nextStageKey,
     stageAttempts: attempts,
-    reviewEvents: [...state.reviewEvents, reviewEvent('STAGE_VERDICT', `${stage.label} marked ${body.verdict}.`, actorId, {
+    reviewEvents: [...state.reviewEvents, reviewEvent('STAGE_VERDICT', `${stage.label} marked ${persistedVerdict}${wasMarkDone ? ' (via Mark Done)' : ''}.`, actorId, {
       stageKey: stage.key,
       attemptId: latestAttempt.id,
-      verdict: body.verdict,
+      verdict: persistedVerdict,
+      // Preserve the original verb so audit-gov can distinguish a
+      // deliberate "I read it and waived the questions" from a
+      // standard PASS-with-answers.
+      verdictOrigin: wasMarkDone ? 'mark_done' : 'pass_with_answers',
       feedback: body.feedback,
       missingQuestionsAcceptedWithRisk: missing,
     })],
@@ -3281,18 +3363,108 @@ async function saveStageVerdict(
       stageKey: stage.key,
       stageLabel: stage.label,
       attemptId: latestAttempt.id,
-      verdict: body.verdict,
+      verdict: persistedVerdict,
+      verdictOrigin: wasMarkDone ? 'mark_done' : 'pass_with_answers',
     },
   )
   await recordBlueprintAudit(session.id, 'BlueprintStageVerdictSaved', actorId, {
     stageKey: stage.key,
     stageLabel: stage.label,
     attemptId: latestAttempt.id,
-    verdict: body.verdict,
+    verdict: persistedVerdict,
+    verdictOrigin: wasMarkDone ? 'mark_done' : 'pass_with_answers',
     confidence: body.confidence,
     acceptRisk: body.acceptRisk === true,
     missingQuestionsAcceptedWithRisk: missing,
   })
+  return loadSession(session.id, actorId)
+}
+
+// M82 S1 (2026-05-26) — operator-driven artifact edit. Persists the
+// new content, snapshots the previous body into payload.revisions, and
+// emits an audit trail. Refuses if the artifact's kind isn't declared
+// editable on at least one stage's expectedArtifacts in the session's
+// loopDefinition.
+//
+// Design rationale (per the team's earlier "things should come from
+// the workbench node" principle): editability is a per-kind decision
+// the workflow author makes in the WORKBENCH_TASK node config, not a
+// hardcoded allowlist. Reviewer outputs (security findings, qa
+// receipts) stay read-only by default; story briefs and design docs
+// can opt in.
+async function editArtifactContent(
+  sessionId: string,
+  artifactId: string,
+  body: { content: string; reason?: string },
+  actorId: string,
+) {
+  const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
+  if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+  assertBlueprintAccess(session, actorId)
+
+  const artifact = await prisma.blueprintArtifact.findUnique({ where: { id: artifactId } })
+  if (!artifact || artifact.sessionId !== sessionId) {
+    throw new NotFoundError('BlueprintArtifact', artifactId)
+  }
+
+  // Check the loopDefinition for the editable opt-in on this kind. Any
+  // stage that lists the artifact kind with editable=true is enough.
+  const state = readLoopState(session)
+  const editable = state.loopDefinition.stages.some(stage =>
+    (stage.expectedArtifacts ?? []).some(a => a.kind === artifact.kind && a.editable === true),
+  )
+  if (!editable) {
+    throw new ValidationError(
+      `Artifact kind '${artifact.kind}' is not editable. Set editable: true on the expectedArtifacts entry in the workflow node's loopDefinition to allow operator overrides.`,
+    )
+  }
+
+  if (body.content === artifact.content) {
+    // No-op edit; don't bother revisioning. Still return the full
+    // session so the frontend cache stays consistent.
+    return loadSession(session.id, actorId)
+  }
+
+  // Snapshot the previous body into payload.revisions[] so the original
+  // agent-produced text is never lost. Last entry = most recent
+  // pre-edit state.
+  const priorPayload = isRecord(artifact.payload) ? artifact.payload : {}
+  const priorRevisions = Array.isArray(priorPayload.revisions) ? priorPayload.revisions : []
+  const nextPayload: Record<string, unknown> = {
+    ...priorPayload,
+    revisions: [
+      ...priorRevisions,
+      {
+        content: artifact.content ?? '',
+        editedAt: new Date().toISOString(),
+        editedBy: actorId,
+        reason: body.reason ?? null,
+        // length delta is a cheap audit signal — humans can spot a
+        // suspicious wholesale-replace without diffing.
+        priorChars: (artifact.content ?? '').length,
+        nextChars: body.content.length,
+      },
+    ],
+  }
+
+  const updated = await prisma.blueprintArtifact.update({
+    where: { id: artifact.id },
+    data: {
+      content: body.content,
+      payload: nextPayload as Prisma.InputJsonValue,
+    },
+  })
+
+  await recordBlueprintAudit(session.id, 'BlueprintArtifactEdited', actorId, {
+    artifactId: updated.id,
+    kind: updated.kind,
+    title: updated.title,
+    priorChars: (artifact.content ?? '').length,
+    nextChars: body.content.length,
+    reason: body.reason ?? null,
+    revisionCount: priorRevisions.length + 1,
+  })
+
   return loadSession(session.id, actorId)
 }
 

@@ -1433,8 +1433,12 @@ function NeoStageController({
     },
     onSuccess: onSession,
   })
+  // M82 S2 — verdictMutation now accepts MARK_DONE alongside the
+  // standard LoopVerdict union. The backend persists MARK_DONE as PASS
+  // but skips the required-question gate when the stage opts in via
+  // allowMarkDone. Other downstream consumers stay typed to LoopVerdict.
   const verdictMutation = useMutation({
-    mutationFn: (verdict: LoopVerdict) => {
+    mutationFn: (verdict: LoopVerdict | 'MARK_DONE') => {
       if (!stage) throw new Error('No stage selected')
       return api.verdict(session.id, stage.key, {
         verdict,
@@ -1809,6 +1813,18 @@ function NeoStageController({
         onClick: () => runMutation.mutate(),
         busy: runMutation.isPending,
       }] : []),
+      // M82 S2 — "Mark done & advance" shortcut. Only surfaced when
+      // the workflow's WORKBENCH_TASK node declared allowMarkDone=true
+      // on this stage. Backend persists it as PASS but skips the
+      // required-question gate, so it's only useful when the operator
+      // has eyes-on review and the questions are documentation rather
+      // than gates. Structural gates (accumulated code change for dev,
+      // verification receipts) still fire.
+      ...(stage?.allowMarkDone === true ? [{
+        label: 'Mark done & advance',
+        onClick: () => verdictMutation.mutate('MARK_DONE'),
+        busy: verdictMutation.isPending,
+      }] : []),
       { label: 'Accept with risk', onClick: () => verdictMutation.mutate('ACCEPTED_WITH_RISK'), busy: verdictMutation.isPending },
       { label: 'Needs rework', onClick: () => verdictMutation.mutate('NEEDS_REWORK'), busy: verdictMutation.isPending },
     ]
@@ -2167,6 +2183,15 @@ function fallbackDiffBody(paths: string[], change: CodeChangeRecord) {
 
 function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintSession; activeStageKey?: string; onSession: (session: BlueprintSession) => void }) {
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null)
+  // M82 S1 — operator artifact edits. `editingId` tracks which artifact's
+  // body is currently in edit mode; `draft` is the in-flight buffer. We
+  // keep them outside the active-artifact dependency so flipping tabs
+  // doesn't clobber a half-written edit. `reason` is an optional 1-line
+  // justification persisted to the audit event for diffing.
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draft, setDraft] = useState<string>('')
+  const [editReason, setEditReason] = useState<string>('')
+  const [editError, setEditError] = useState<string | null>(null)
   const artifacts = useMemo(() => {
     const ordered = [...session.artifacts]
     ordered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
@@ -2174,6 +2199,45 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
   }, [session.artifacts])
   const visible = artifacts.filter(artifact => !activeStageKey || !artifact.stageKey || artifact.stageKey === activeStageKey || artifact.kind === 'final_implementation_pack')
   const active = visible.find(artifact => artifact.id === activeArtifactId) ?? visible[0]
+  // M82 S1 — derive editability from the workflow's loopDefinition.
+  // Any stage that declares this artifact kind with editable=true grants
+  // the operator the right to overwrite. Read-only by default.
+  const isActiveEditable = useMemo(() => {
+    if (!active) return false
+    const stages = session.loopDefinition?.stages ?? []
+    return stages.some(stage => (stage.expectedArtifacts ?? []).some(a => a.kind === active.kind && a.editable === true))
+  }, [active, session.loopDefinition])
+  const editArtifactMutation = useMutation({
+    mutationFn: ({ id, content, reason }: { id: string; content: string; reason?: string }) =>
+      api.editArtifact(session.id, id, { content, reason }),
+    onSuccess: (nextSession) => {
+      onSession(nextSession)
+      setEditingId(null)
+      setDraft('')
+      setEditReason('')
+      setEditError(null)
+    },
+    onError: (err: unknown) => {
+      const message = err instanceof Error ? err.message : 'Failed to save edit.'
+      setEditError(message)
+    },
+  })
+  const startEdit = (artifactId: string, initialContent: string) => {
+    setEditingId(artifactId)
+    setDraft(initialContent)
+    setEditReason('')
+    setEditError(null)
+  }
+  const cancelEdit = () => {
+    setEditingId(null)
+    setDraft('')
+    setEditReason('')
+    setEditError(null)
+  }
+  const saveEdit = () => {
+    if (!active) return
+    editArtifactMutation.mutate({ id: active.id, content: draft, reason: editReason.trim() || undefined })
+  }
   const consumableRefs = collectStageConsumables(session)
   const publishWarnings = visible
     .map(artifact => artifact.payload?.consumablePublish)
@@ -2234,12 +2298,73 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
             {visible.map(artifact => <ArtifactTab key={artifact.id} artifact={artifact} active={artifact.id === active?.id} onClick={() => setActiveArtifactId(artifact.id)} />)}
           </nav>
           <article className="artifact-reader">
-            <h3>{active?.title}</h3>
-            <MarkdownView
-              content={renderArtifact(active)}
-              kind={active?.kind}
-              title={active?.title}
-            />
+            <div className="artifact-reader-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+              <h3 style={{ margin: 0 }}>{active?.title}</h3>
+              {/* M82 S1 — Edit affordance. Only shown when the workflow's
+                  loopDefinition declares this artifact kind editable.
+                  Read-only artifacts (security findings, qa receipts)
+                  don't get a button at all. */}
+              {active && isActiveEditable && editingId !== active.id && (
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => startEdit(active.id, active.content ?? '')}
+                  disabled={editArtifactMutation.isPending}
+                >
+                  Edit
+                </button>
+              )}
+            </div>
+            {active && editingId === active.id ? (
+              <div className="artifact-editor" style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                <textarea
+                  value={draft}
+                  onChange={e => setDraft(e.target.value)}
+                  rows={24}
+                  spellCheck={false}
+                  style={{ width: '100%', fontFamily: 'var(--font-mono, monospace)', fontSize: 13, padding: 8 }}
+                  disabled={editArtifactMutation.isPending}
+                />
+                <input
+                  type="text"
+                  value={editReason}
+                  onChange={e => setEditReason(e.target.value)}
+                  placeholder="Optional: short reason for the edit (audit trail)"
+                  maxLength={500}
+                  style={{ width: '100%', padding: 6 }}
+                  disabled={editArtifactMutation.isPending}
+                />
+                {editError && (
+                  <p className="form-error" role="alert" style={{ color: 'var(--danger, #c33)' }}>
+                    {editError}
+                  </p>
+                )}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={saveEdit}
+                    disabled={editArtifactMutation.isPending || draft.trim().length === 0}
+                  >
+                    {editArtifactMutation.isPending ? 'Saving…' : 'Save'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={cancelEdit}
+                    disabled={editArtifactMutation.isPending}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <MarkdownView
+                content={renderArtifact(active)}
+                kind={active?.kind}
+                title={active?.title}
+              />
+            )}
           </article>
         </div>
       )}

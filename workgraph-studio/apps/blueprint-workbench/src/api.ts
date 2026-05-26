@@ -226,6 +226,10 @@ export type LoopExpectedArtifact = {
   description?: string
   required?: boolean
   format?: 'MARKDOWN' | 'TEXT' | 'JSON' | 'CODE'
+  // M82 S1 — operator may overwrite this artifact from the workbench.
+  // Mirror of the backend field; the Edit button on each artifact card
+  // keys off this. Defaults to false (read-only) when unset.
+  editable?: boolean
 }
 
 export type LoopStage = {
@@ -241,6 +245,10 @@ export type LoopStage = {
   expectedArtifacts?: LoopExpectedArtifact[]
   allowedSendBackTo?: string[]
   questions?: LoopQuestion[]
+  // M82 S2 — when true, the approval card surfaces a "Mark done"
+  // button that bypasses the required-question gate. Mirror of the
+  // backend field. Defaults to undefined (treated as false).
+  allowMarkDone?: boolean
 }
 
 export type LoopDefinition = {
@@ -594,8 +602,26 @@ export const api = {
   ),
   stageApproval: (id: string, stageKey: string, body: { decision: 'approved' | 'rejected'; reason?: string; argsOverride?: Record<string, unknown> }) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/approval`, { method: 'POST', body: JSON.stringify(body) }),
-  verdict: (id: string, stageKey: string, body: { verdict: LoopVerdict; feedback?: string; confidence?: number; acceptRisk?: boolean; answers?: DecisionAnswer[] }) =>
+  // M82 S2 — `MARK_DONE` is a wire-only verdict variant. The backend
+  // persists it as PASS but skips the missing-required-questions gate
+  // when the stage opts in via allowMarkDone. LoopVerdict union stays
+  // clean so downstream UI logic doesn't have to know about it.
+  verdict: (
+    id: string,
+    stageKey: string,
+    body: { verdict: LoopVerdict | 'MARK_DONE'; feedback?: string; confidence?: number; acceptRisk?: boolean; answers?: DecisionAnswer[] },
+  ) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/verdict`, { method: 'POST', body: JSON.stringify(body) }),
+  // M82 S1 — operator overwrites an artifact body. Backend refuses
+  // unless the artifact's kind is declared with editable=true in the
+  // workflow node's loopDefinition.expectedArtifacts. Returns the
+  // full session (consistent with verdict / send-back / approve) so
+  // the workbench cache invalidates uniformly.
+  editArtifact: (sessionId: string, artifactId: string, body: { content: string; reason?: string }) =>
+    request<BlueprintSession>(
+      `/blueprint/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(artifactId)}`,
+      { method: 'PATCH', body: JSON.stringify(body) },
+    ),
   sendBack: (id: string, stageKey: string, body: { targetStageKey: string; reason: string; requiredChanges?: string; blockingQuestions?: string[]; annotations?: SendBackAnnotation[] }) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/send-back`, { method: 'POST', body: JSON.stringify(body) }),
   finalize: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/finalize`, { method: 'POST' }),
