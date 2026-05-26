@@ -693,27 +693,78 @@ class ReviewPlanReceipt(_ReceiptBase):
                 return None
         return v
 
+    @field_validator("target_files", mode="before")
+    @classmethod
+    def _coerce_target_files(cls, v: Any) -> Any:
+        """Agents commonly emit target_files as a list of structured
+        objects describing each file under review (e.g.
+        `[{file: "x.java", reason: "auth check"}, ...]`) rather than
+        flat path strings. Extract the path from common keys instead
+        of rejecting. Same pattern as DiffSummary.files_changed (M76).
+
+        Also tolerate a single string passed unwrapped, which a few
+        agent runs have produced when they only have one target."""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v]
+        if isinstance(v, dict):
+            # Reviewer agents have produced single-file payloads like
+            # {file: "x", reason: "y"} or {paths: ["a", "b"]}.
+            paths = v.get("paths") or v.get("files")
+            if isinstance(paths, list):
+                return [p for p in paths if isinstance(p, str) and p.strip()]
+            single = v.get("file") or v.get("path") or v.get("name")
+            if isinstance(single, str) and single.strip():
+                return [single]
+            return []
+        if not isinstance(v, list):
+            return []
+        out: list[str] = []
+        for item in v:
+            if isinstance(item, str) and item.strip():
+                out.append(item)
+            elif isinstance(item, dict):
+                # Per-item structured shapes — extract the path string.
+                # Most commonly: {file: "x", reason: "y"} or
+                # {path: "x", concern: "y"}.
+                single = item.get("file") or item.get("path") or item.get("name") or item.get("target")
+                if isinstance(single, str) and single.strip():
+                    out.append(single)
+            # Skip anything else (numbers, nulls, nested lists) — preserves
+            # the rest of the receipt rather than rejecting the whole turn.
+        return out
+
     @field_validator("open_questions", mode="before")
     @classmethod
     def _coerce_open_questions(cls, v: Any) -> Any:
-        """Agents sometimes emit `open_questions` as a list of dicts
-        (e.g. {question, blocking}) instead of strings. Stringify each
-        entry rather than rejecting — the question text is what matters
-        for the audit trail, structured per-question metadata can land
-        in `extra="allow"` fields if needed."""
+        """Agents commonly emit `open_questions` in non-list shapes:
+            - a single string (one question)
+            - a single dict {question, blocking}
+            - a list of dicts (per-question metadata)
+        Coerce all into list[str] — the question text is what matters for
+        the audit trail. Structured per-question metadata can be
+        reattached via `extra="allow"` fields if a downstream consumer
+        needs it."""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v] if v.strip() else []
+        if isinstance(v, dict):
+            # Single-question dict shape.
+            q = v.get("question") or v.get("text") or v.get("prompt")
+            return [q] if isinstance(q, str) and q.strip() else []
         if not isinstance(v, list):
-            return v
+            return []
         out: list[str] = []
         for item in v:
-            if isinstance(item, str):
+            if isinstance(item, str) and item.strip():
                 out.append(item)
             elif isinstance(item, dict):
-                # Common keys: question, text, prompt.
                 q = item.get("question") or item.get("text") or item.get("prompt")
-                if isinstance(q, str) and q:
+                if isinstance(q, str) and q.strip():
                     out.append(q)
-            # Drop anything else silently — preserves audit shape without
-            # 400'ing on a malformed nested type.
+            # Skip anything else silently.
         return out
 
 
