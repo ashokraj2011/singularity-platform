@@ -217,6 +217,15 @@ async function ensureMirror(cloneUrl: string): Promise<string> {
     // ref on subsequent fetches, so we keep the mirror-style fetch
     // behavior without the push-time poison.
     await gitBare(mirror, ["config", "--unset", "remote.origin.mirror"], { allowFail: true });
+    // Replace `+refs/*:refs/*` (set by clone --mirror) with the
+    // standard remote-tracking refspec. See longer comment in the
+    // else-branch below for the full rationale — TL;DR fixes the
+    // "refusing to fetch into checked-out branch" failure mode that
+    // silently freezes the mirror at clone-time forever.
+    await gitBare(mirror, [
+      "config", "--replace-all", "remote.origin.fetch",
+      "+refs/heads/*:refs/remotes/origin/*",
+    ], { allowFail: true });
     return mirror;
   }
   // Idempotent self-heal: even if this mirror was created by a prior
@@ -225,6 +234,28 @@ async function ensureMirror(cloneUrl: string): Promise<string> {
   // flag is already unset.
   await gitBare(mirror, ["config", "--unset", "remote.origin.mirror"], { allowFail: true });
   await gitBare(mirror, ["remote", "set-url", "origin", cloneUrl], { allowFail: true });
+  // Bugfix (2026-05-26) — `git clone --mirror` originally configured
+  // the fetch refspec as `+refs/*:refs/*`, which fetches the remote's
+  // `refs/heads/main` directly into the local `refs/heads/main`. Once
+  // the mirror's HEAD is symbolic-ref'd to refs/heads/main (which
+  // happens on non-bare mirrors), git refuses every subsequent
+  // `git fetch origin` with:
+  //     fatal: refusing to fetch into branch 'refs/heads/main'
+  //            checked out at '...'
+  // `allowFail: true` swallows the error and the mirror silently
+  // stays frozen at whatever commit it was created with. New
+  // per-attempt worktrees branch from that frozen commit forever,
+  // so upstream fixes never reach agents — exactly the bug that
+  // burned the RuleEngine WI's testIsNotNull on 2026-05-26.
+  // Fix: replace the refspec with the standard remote-tracking shape.
+  // Fetches now write to refs/remotes/origin/* (which is what
+  // resolveMirrorCommit prefers anyway, see line 237), bypassing the
+  // checked-out branch. Idempotent self-heal — safe to run on every
+  // ensureMirror call, fixes old mirrors created with the bad config.
+  await gitBare(mirror, [
+    "config", "--replace-all", "remote.origin.fetch",
+    "+refs/heads/*:refs/remotes/origin/*",
+  ], { allowFail: true });
   await gitBare(mirror, ["fetch", "--prune", "origin"], { allowFail: true, maxBuffer: 60 * 1024 * 1024 });
   return mirror;
 }
