@@ -641,6 +641,35 @@ _PHASE_TO_MODEL: dict[Phase, type[_ReceiptBase]] = {
 }
 
 
+def _has_non_empty_list_or_string(value: Any) -> bool:
+    """Truth-check for "this looks like usable target_files content".
+
+    The synthesize step only treats a candidate as "already populated"
+    when it carries at least one path's worth of content. Empty lists,
+    blank strings, and None all need fallback synthesis.
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(
+            isinstance(item, str) and item.strip()
+            or isinstance(item, dict) and any(
+                isinstance(item.get(k), str) and item.get(k, "").strip()
+                for k in ("file", "path", "name", "target")
+            )
+            for item in value
+        )
+    if isinstance(value, dict):
+        return any(
+            isinstance(value.get(k), str) and value.get(k, "").strip()
+            for k in ("file", "path", "name", "target")
+        ) or _has_non_empty_list_or_string(value.get("files")) \
+            or _has_non_empty_list_or_string(value.get("paths"))
+    return False
+
+
 class ReviewPlanReceipt(_ReceiptBase):
     """PLAN-phase output for reviewer roles (SECURITY, DEVOPS) where the
     stage doesn't run tests.
@@ -679,6 +708,69 @@ class ReviewPlanReceipt(_ReceiptBase):
     assumptions: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     config_inspected_files: list[str] = Field(default_factory=list, max_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _synthesize_target_files(cls, data: Any) -> Any:
+        """Reviewer agents commonly skip ``target_files`` entirely and
+        instead describe the review scope under alternative keys —
+        ``review_strategy.files``, ``files_to_review``, ``scope.files``,
+        a flat ``files`` list, or even just the agent's text response
+        listing paths. Without this guard the receipt fails validation
+        with "Field required" on the first attempt and burns repair
+        budget on a purely syntactic issue.
+
+        Repro 2026-05-26: session ef0e849e security-review attempts
+        ca36dffe / 5bfe05dc both submitted PLAN output with
+        ``review_strategy: {files: [...]}`` but no top-level
+        ``target_files``, causing "ReviewPlanReceipt validation failed"
+        and stage failure before the agent could correct.
+
+        Synthesis order (first non-empty wins):
+          1. Already-present ``target_files`` — pass through.
+          2. ``review_strategy.files`` / ``review_strategy.target_files``
+             / ``review_strategy.in_scope_files``.
+          3. Top-level ``files_to_review`` / ``files`` / ``inspect_files``
+             / ``paths_in_scope`` / ``scope_files``.
+          4. ``scope.files`` (nested under a ``scope`` dict).
+        Field-level coercion (``_coerce_target_files``) still normalizes
+        the resulting list to ``list[str]`` afterwards.
+        """
+        if not isinstance(data, dict):
+            return data
+        existing = data.get("target_files")
+        if _has_non_empty_list_or_string(existing):
+            return data
+
+        # Candidate keys ranked by how strongly they imply "review scope".
+        candidates: list[Any] = []
+        rev = data.get("review_strategy")
+        if isinstance(rev, dict):
+            for key in ("files", "target_files", "in_scope_files", "paths"):
+                val = rev.get(key)
+                if val is not None:
+                    candidates.append(val)
+        for key in (
+            "files_to_review", "inspect_files", "paths_in_scope",
+            "scope_files", "files", "in_scope_files",
+        ):
+            val = data.get(key)
+            if val is not None:
+                candidates.append(val)
+        scope = data.get("scope")
+        if isinstance(scope, dict):
+            for key in ("files", "target_files", "paths"):
+                val = scope.get(key)
+                if val is not None:
+                    candidates.append(val)
+
+        for cand in candidates:
+            if _has_non_empty_list_or_string(cand):
+                # Leave field-level coercion to normalize shape.
+                data = dict(data)
+                data["target_files"] = cand
+                break
+        return data
 
     @field_validator("test_strategy", mode="before")
     @classmethod
