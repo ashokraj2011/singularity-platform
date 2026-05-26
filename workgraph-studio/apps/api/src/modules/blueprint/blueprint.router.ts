@@ -73,6 +73,18 @@ const WORKBENCH_DEFAULT_MAX_STEPS = positiveIntEnv('WORKBENCH_MAX_STEPS', 14)
 // with the replace_text call already queued in step 15 (see trace from
 // 2026-05-21 10:11). 28 gives ~50% headroom over the observed need.
 const WORKBENCH_DEVELOPER_MAX_STEPS = positiveIntEnv('WORKBENCH_DEVELOPER_MAX_STEPS', 28)
+// QA-review needs more steps than the read-only default because it runs
+// PLAN + EXPLORE + VERIFY + SELF_REVIEW (4 phases) and the VERIFY phase
+// burns 1-3 turns on long-running test commands (run_test / run_command
+// at 30+ seconds each). Repro 2026-05-26 attempt bf0fc33d: 6 turns in
+// PLAN (review_diff + repo_map + list_indexed_files + 3×read_file),
+// 7 turns in EXPLORE (multiple tool retries on failed search_code +
+// get_ast_slice + grep_lines), leaving only 1 turn for VERIFY — agent
+// got the run_test back and ran out of budget before producing the
+// VerificationReceipt. 22 covers the realistic worst case with margin.
+// Security/DevOps reviews stay at the 14-turn default because they have
+// 3 phases (PLAN/EXPLORE/SELF_REVIEW) and don't run verification tools.
+const WORKBENCH_QA_MAX_STEPS = positiveIntEnv('WORKBENCH_QA_MAX_STEPS', 22)
 
 // ── Phased Agent Reasoning Model (v4) ────────────────────────────────────
 // When MCP_AGENT_PHASES_ENABLED is on at mcp-server AND we pass
@@ -1918,6 +1930,15 @@ function stageAllowsMutation(stage: LoopStageDefinition): boolean {
   return stage.contextPolicy === 'CODE_EDIT' || stage.toolPolicy === 'MUTATION' || normalizeAgentRole(stage.agentRole).includes('DEV')
 }
 
+// QA-review and any stage whose agent role is 'QA' runs a real VERIFY
+// phase with run_test / run_command. Caller uses this to pick the larger
+// QA-specific turn budget (see WORKBENCH_QA_MAX_STEPS comment). Kept
+// separate from stageAllowsMutation because QA reads + verifies but
+// must not mutate code.
+function stageRunsVerification(stage: LoopStageDefinition): boolean {
+  return stage.toolPolicy === 'VERIFICATION' || normalizeAgentRole(stage.agentRole).includes('QA')
+}
+
 function stagePromptKey(stage: LoopStageDefinition): string {
   if (stage.promptProfileKey?.trim()) return stage.promptProfileKey.trim()
   return `loop.stage.${stage.key}`
@@ -3715,7 +3736,12 @@ async function runLoopStageExecute(
     },
     // Mirror the existing per-stage step cap; the multi-turn driver respects
     // it as a safety cap separate from StagePolicy.limits.max_tool_calls.
-    maxTurns: isDeveloperStage ? WORKBENCH_DEVELOPER_MAX_STEPS : WORKBENCH_DEFAULT_MAX_STEPS,
+    // QA-review gets its own larger budget (22) because it runs a real
+    // VERIFY phase with long-running test commands; see WORKBENCH_QA_MAX_STEPS
+    // comment above.
+    maxTurns: isDeveloperStage
+      ? WORKBENCH_DEVELOPER_MAX_STEPS
+      : (stageRunsVerification(stage) ? WORKBENCH_QA_MAX_STEPS : WORKBENCH_DEFAULT_MAX_STEPS),
   })
 }
 
@@ -5601,7 +5627,9 @@ async function runStage(
       maxPromptChars: limits.maxPromptChars,
     },
     limits: {
-      maxSteps: isDeveloperStage ? WORKBENCH_DEVELOPER_MAX_STEPS : WORKBENCH_DEFAULT_MAX_STEPS,
+      maxSteps: isDeveloperStage
+        ? WORKBENCH_DEVELOPER_MAX_STEPS
+        : (stage === BlueprintStage.QA ? WORKBENCH_QA_MAX_STEPS : WORKBENCH_DEFAULT_MAX_STEPS),
       timeoutSec: 480,
       inputTokenBudget: limits.maxContextTokens,
       outputTokenBudget: limits.maxOutputTokens,
