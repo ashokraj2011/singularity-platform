@@ -42,33 +42,20 @@ def _state_at_finalize() -> PhaseState:
     return state
 
 
-def test_finalize_without_receipt_is_not_terminal():
-    """Just entering FINALIZE must NOT terminate the loop — the agent
-    still needs a turn to call finish_work_branch and submit the
-    FinalizeReceipt."""
+def test_entering_finalize_is_terminal():
+    """Reaching FINALIZE terminates the loop. The earlier "require a
+    FinalizeReceipt in the bucket before terminating" variant caused
+    infinite-loop-until-MAX_TURNS in practice — the agent kept
+    burning turns in FINALIZE without ever calling
+    finish_work_branch (repro session 5f95ad4b dev attempt 68195c30,
+    56 LLM calls, zero finish_work_branch dispatches).
+
+    The architectural answer: the dev SELF_REVIEW prompt now requires
+    calling finish_work_branch in the SAME turn as submit_phase_output,
+    so the commit lands BEFORE the phase advances. _is_terminal_state
+    can stay simple."""
     state = _state_at_finalize()
     assert state.current_phase is Phase.FINALIZE
-    assert _is_terminal_state(state) is False, (
-        "loop must continue so the agent gets a turn in FINALIZE; "
-        "exiting here strands the work uncommitted on disk"
-    )
-
-
-def test_finalize_with_receipt_is_terminal():
-    """Once the agent has actually submitted a FinalizeReceipt (i.e.
-    called finish_work_branch and reported the resulting
-    branch_name/commit_sha), the loop exits."""
-    state = _state_at_finalize()
-    # Simulate the agent's FINALIZE turn submitting its receipt.
-    state = advance_phase(
-        state,
-        Phase.FINALIZE,
-        receipt={
-            "kind": "finalize_artifact",
-            "branch_name": "sg/WRK-123/develop/1-abc",
-            "commit_sha": "a1b2c3d4",
-        },
-    )
     assert _is_terminal_state(state) is True
 
 
@@ -79,17 +66,4 @@ def test_non_finalize_phase_is_not_terminal():
     state = advance_phase(state, Phase.EXPLORE)
     assert _is_terminal_state(state) is False
     state = advance_phase(state, Phase.ACT)
-    assert _is_terminal_state(state) is False
-
-
-def test_finalize_terminal_check_ignores_other_phase_receipts():
-    """A receipt in EXPLORE/ACT/VERIFY/SELF_REVIEW doesn't satisfy the
-    FINALIZE bucket check — only FINALIZE receipts count."""
-    state = _state_at_finalize()
-    # state has receipts in EXPLORE/ACT/VERIFY/SELF_REVIEW buckets
-    # (from the advance_phase calls above), but no FINALIZE bucket yet.
-    assert state.receipts.get(Phase.SELF_REVIEW.value), (
-        "test setup invariant: SELF_REVIEW bucket should have the receipt"
-    )
-    assert state.receipts.get(Phase.FINALIZE.value) is None
     assert _is_terminal_state(state) is False

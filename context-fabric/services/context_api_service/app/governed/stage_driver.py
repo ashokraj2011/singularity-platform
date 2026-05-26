@@ -633,30 +633,28 @@ def _render_eval_feedback_message(feedback: Any) -> dict[str, Any] | None:
 
 
 def _is_terminal_state(state: PhaseState) -> bool:
-    """The stage is done when the machine reaches FINALIZE AND the agent
-    has actually produced a FinalizeReceipt in FINALIZE phase.
+    """The stage is done when the machine reaches FINALIZE.
 
-    (2026-05-26) Previously this returned True the moment the phase
-    machine entered FINALIZE — meaning the SelfReviewReceipt's
-    submit_phase_output with next_phase=FINALIZE caused the loop to
-    exit immediately, in the same turn. The agent never got a turn
-    IN FINALIZE phase to call finish_work_branch, so the work was
-    never committed and downstream stages saw an empty diff.
+    (2026-05-26 revised) Earlier we tried to require a FinalizeReceipt
+    in the FINALIZE bucket before terminating — to force the agent to
+    take a turn in FINALIZE and call finish_work_branch. That broke
+    in practice: the agent kept submitting non-FINALIZE phase outputs
+    while in FINALIZE phase, the loop kept iterating, eventually hit
+    MAX_TURNS without ever calling the tool — and worse, when the
+    workgraph re-invoked governed-execute it restarted the loop from
+    PLAN (see session 5f95ad4b dev attempt 68195c30: two full cycles,
+    56 LLM calls, zero finish_work_branch dispatches).
 
-    The new check requires both:
-      1. The phase machine is at FINALIZE (transition table exited)
-      2. At least one receipt has been recorded in the FINALIZE bucket
-         — i.e. the agent took a turn in FINALIZE, called
-         finish_work_branch (or git_commit), and submitted the
-         FinalizeReceipt with the resulting branch_name/commit_sha.
-
-    Until both are true, the loop continues so the FINALIZE turn can
-    actually happen.
+    Reverting to the simpler "FINALIZE = terminal" semantics. The
+    finish_work_branch behavior is enforced one level up by the
+    blueprint.router's finishWorkBranchInvoked guard (f538875 +
+    scoped in 96c01d4) — it marks the stage FAILED when the tool
+    wasn't actually called. The right answer to "agent never calls
+    finish_work_branch" is to fix the FINALIZE prompt's pre-flight
+    instructions (call the tool BEFORE submitting submit_phase_output)
+    rather than to block loop termination on it.
     """
-    if state.current_phase is not Phase.FINALIZE:
-        return False
-    finalize_receipts = state.receipts.get(Phase.FINALIZE.value)
-    return bool(finalize_receipts)
+    return state.current_phase is Phase.FINALIZE
 
 
 # ── M74 Phase 1D — stagnant-phase helpers ──────────────────────────────────

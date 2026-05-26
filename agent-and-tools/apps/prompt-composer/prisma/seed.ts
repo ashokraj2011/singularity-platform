@@ -777,7 +777,7 @@ const loopDeveloperSelfReviewTask = [
   "Goal: {{goal}}",
   "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
   "",
-  "Verification passed (or was explicitly unavailable). Now review your own work before human approval.",
+  "Verification passed (or was explicitly unavailable). Now review your own work AND commit it before the loop terminates.",
   "",
   "Required output fields:",
   "- recommended_for_approval: true ONLY if you'd ship this. False if anything in your diff makes you hesitate.",
@@ -786,14 +786,28 @@ const loopDeveloperSelfReviewTask = [
   "- diff_summary: {files_changed (LIST OF FILE PATHS, not a count), lines_added, lines_deleted, notable_changes}.",
   "- verification_summary: short paragraph on what VERIFY proved.",
   "",
-  "Allowed tools: review_diff, read_file.",
+  "Allowed tools: review_diff, read_file, finish_work_branch.",
+  "",
+  "// 2026-05-26 — CRITICAL ordering: in the SAME response that sets",
+  "// recommended_for_approval=true, you MUST also call finish_work_branch",
+  "// as a tool call. Reason: the loop terminates the moment the phase",
+  "// advances FROM SELF_REVIEW (the prior architecture gave FINALIZE",
+  "// its own turn but that caused infinite-loop-until-MAX_TURNS in",
+  "// practice — repro session 5f95ad4b dev attempt 68195c30). Calling",
+  "// finish_work_branch IN this turn ensures the wi/<workitem> branch",
+  "// has your commit before the loop exits and the workgraph guard",
+  "// (finishWorkBranchInvoked) verifies the dispatch.",
+  "//",
+  "// Skip finish_work_branch when recommended_for_approval=false (you're",
+  "// sending back for repair — no commit needed).",
   "",
   "If any criterion is `not_met` or `uncertain`, set recommended_for_approval=false and let the approver decide. False positives at this step waste human time; better to flag uncertainty.",
   phaseProtocol(
     'recommended_for_approval: true, acceptance_criteria_check: [{criterion: "<text>", status: "met|not_met|uncertain", evidence: "<short>"}], risk_summary: {risk_level: "low|medium|high", risks: ["<risk>"], rollback_notes: "<text>"}, diff_summary: {files_changed: ["src/path/to/File.java"], lines_added: 0, lines_deleted: 0, notable_changes: ["<change>"]}, verification_summary: "<short>"',
     "FINALIZE",
     [
-      "Setting recommended_for_approval=true here also opens the human approval gate; the stage halts at APPROVAL_PENDING until the operator advances.",
+      "When recommended_for_approval=true: also call finish_work_branch as a tool in the SAME response BEFORE submit_phase_output. The platform auto-pushes when the branch starts with wi/.",
+      "When recommended_for_approval=false: skip finish_work_branch; advance to REPAIR instead (next_phase=REPAIR).",
     ],
   ),
 ].join("\n");
@@ -1916,7 +1930,16 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
       },
       {
         phase: "SELF_REVIEW",
-        allowedTools: ["review_diff", "read_file"],
+        // (2026-05-26) finish_work_branch added — the dev SELF_REVIEW
+        // prompt now requires the agent to call it in the same turn as
+        // submit_phase_output(next_phase=FINALIZE). Reason: the FINALIZE
+        // phase terminates the loop immediately on entry (giving it
+        // its own turn caused infinite-loop-until-MAX_TURNS in repro
+        // session 5f95ad4b dev attempt 68195c30 — 56 LLM calls, zero
+        // finish_work_branch dispatches). Committing here ensures the
+        // wi/ branch has the work before the loop exits and the
+        // finishWorkBranchInvoked guard verifies the dispatch.
+        allowedTools: ["review_diff", "read_file", "finish_work_branch"],
         requiredOutputSchema: {
           required: ["recommended_for_approval", "acceptance_criteria_check", "risk_summary", "verification_summary"],
           properties: {
