@@ -592,6 +592,7 @@ services:
       # If a legacy caller still references this env var the proxy fall-back
       # returns 404 — preferred over silently routing to a dead host.
       COMPOSER_URL: http://prompt-composer:3004
+      PROMPT_COMPOSER_URL: http://prompt-composer:3004
       IAM_BASE_URL: http://iam-service:8100/api/v1
       IAM_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
       IAM_BOOTSTRAP_USERNAME: ${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
@@ -1070,11 +1071,22 @@ services:
       MCP_RUNNER_CPU_LIMIT: ${MCP_RUNNER_CPU_LIMIT:-1}
       MCP_RUNNER_MEMORY_LIMIT: ${MCP_RUNNER_MEMORY_LIMIT:-1g}
       MCP_RUNNER_PIDS_LIMIT: ${MCP_RUNNER_PIDS_LIMIT:-256}
+      # 2026-05-26 — persistent build-tool cache. When set, the runner
+      # bind-mounts this host path as /root inside the sandbox so mvn /
+      # gradle / pip / cargo / npm caches persist across tool invocations.
+      # Default: ./mcp-server/.docker-sandbox/.singularity/build-cache
+      # so local dev gets the speedup automatically; set to empty string
+      # to revert to the per-invocation tmpfs. See docker-exec.ts.
+      MCP_RUNNER_HOST_BUILD_CACHE_PATH: ${MCP_RUNNER_HOST_BUILD_CACHE_PATH-${PWD}/mcp-server/.docker-sandbox/.singularity/build-cache}
     ports:
       - "7110:7110"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${MCP_RUNNER_HOST_WORKSPACE_PATH:-${MCP_SANDBOX_HOST_PATH:-${PWD}/mcp-server/.docker-sandbox}}:${MCP_RUNNER_HOST_WORKSPACE_PATH:-${MCP_SANDBOX_HOST_PATH:-${PWD}/mcp-server/.docker-sandbox}}:rw
+      # Mount the host cache dir so the runner can see the path the
+      # spawned sandbox container will bind. The path matches what's
+      # passed to docker run -v inside docker-exec.ts.
+      - ${MCP_RUNNER_HOST_BUILD_CACHE_PATH-${PWD}/mcp-server/.docker-sandbox/.singularity/build-cache}:${MCP_RUNNER_HOST_BUILD_CACHE_PATH-${PWD}/mcp-server/.docker-sandbox/.singularity/build-cache}:rw
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:7110/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
       interval: 10s

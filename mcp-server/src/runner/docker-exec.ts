@@ -109,11 +109,22 @@ function dockerRunArgs(req: ExecuteRequest, receiptId: string, containerName: st
     //   - npm/pnpm/yarn → /root/.npm, /root/.local/share/pnpm
     //   - python/pip → /root/.cache/pip
     //   - cargo → /root/.cargo (when not pre-mounted)
-    // Without this tmpfs, mvn fails with "Could not create local repository
-    // at /root/.m2/repository" and the verification step never produces a
-    // useful receipt. tmpfs keeps the cache ephemeral (gone when the runner
-    // container exits) so there's no cross-invocation leakage.
-    "--tmpfs", `/root:rw,size=${runnerConfig.MCP_RUNNER_TMPFS_SIZE}`,
+    // Without this writable layer, mvn fails with "Could not create local
+    // repository at /root/.m2/repository" and the verification step never
+    // produces a useful receipt.
+    //
+    // Two modes (controlled by MCP_RUNNER_HOST_BUILD_CACHE_PATH):
+    //   • unset (default) → tmpfs at /root. Cache evaporates on container
+    //     exit; production isolation contract preserved. Cost: every mvn
+    //     invocation re-downloads all deps from Maven Central. Repro
+    //     2026-05-26 test-cert eeba07f1: a single `mvn clean install`
+    //     took 5m 21s cold; warm it would have been ~30s.
+    //   • set → bind-mount that host path as /root. Cache persists across
+    //     invocations; same workitem reuses deps from previous runs.
+    //     Trades cross-invocation isolation for speed. Use for local dev.
+    ...(runnerConfig.MCP_RUNNER_HOST_BUILD_CACHE_PATH
+      ? ["-v", `${runnerConfig.MCP_RUNNER_HOST_BUILD_CACHE_PATH}:/root:rw`]
+      : ["--tmpfs", `/root:rw,size=${runnerConfig.MCP_RUNNER_TMPFS_SIZE}`]),
     // Some images run as a non-root user (e.g. node:20-alpine sometimes
     // sets WORKDIR for `node` user). Provide /home with rw tmpfs too so
     // those paths can be written without conflicting with the read-only
