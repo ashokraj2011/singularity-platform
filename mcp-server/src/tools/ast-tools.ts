@@ -290,8 +290,26 @@ export const finishWorkBranchTool: ToolHandler = {
       { push, remote, verificationReceipts },
     );
     const after = await indexWorkspace("finish");
+    // (2026-05-26) Local commit is the binding success signal — if
+    // committed=true, the work is durable on the wi/<code> branch and
+    // downstream stages can fetch it from the source-cache mirror.
+    // A push failure (e.g. GIT_AUTH_INSUFFICIENT_SCOPE on a read-only
+    // token) is a warning, not a stage failure. The push_error /
+    // push_blocked_code / push_fix_commands fields stay in the output
+    // so operators see exactly why the push didn't reach origin.
+    //
+    // Earlier (b67ish) we required `!push || pushed === true` — that
+    // failed the entire stage whenever the configured MCP_GIT_TOKEN
+    // lacked write scope, even when the local commit succeeded.
+    // Repro 2026-05-26 dev attempt 22c90534: commit 348b089e landed
+    // (paths_touched: 3 files) but push 403'd, stage marked FAILED,
+    // workgraph guard fired FINALIZE_PROVENANCE_MISSING.
+    //
+    // Formal-verification block remains a hard failure — that's a
+    // policy refusal, not a connectivity issue.
+    const localCommitSucceeded = result.committed === true;
     return {
-      success: !result.formalVerificationBlocked && (!push || result.pushed === true),
+      success: !result.formalVerificationBlocked && (localCommitSucceeded || (!push || result.pushed === true)),
       output: {
         kind: result.committed ? "code_change" : "workspace_finish",
         paths_touched: result.changedPaths,
