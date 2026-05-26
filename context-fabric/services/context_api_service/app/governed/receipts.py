@@ -641,6 +641,82 @@ _PHASE_TO_MODEL: dict[Phase, type[_ReceiptBase]] = {
 }
 
 
+class ReviewPlanReceipt(_ReceiptBase):
+    """PLAN-phase output for reviewer roles (SECURITY, DEVOPS) where the
+    stage doesn't run tests.
+
+    The canonical PlanReceipt mandates `test_strategy.commands` because
+    DEVELOPER stages must declare what they'll verify in VERIFY. Security
+    audits and release-readiness reviews don't run a test suite — they
+    inspect code, dependencies, SBOMs, deployment configs. Forcing them
+    to invent a `commands` array they don't use produces "PlanReceipt
+    validation failed" loops where the agent can't make progress
+    (2026-05-26 RCA on session ef0e849e at security-review).
+
+    Schema differences from PlanReceipt:
+      - target_files: still required (must declare review scope)
+      - test_strategy: OPTIONAL (None when the stage is review-only)
+      - review_strategy: NEW, optional structured field for what they'll
+                         actually inspect (SAST/dependency scan/etc.)
+      - everything else: same shape and defaults
+    """
+    model_config = ConfigDict(extra="allow")
+
+    kind: Literal[ReceiptKind.PLAN] = ReceiptKind.PLAN
+    target_files: list[str] = Field(..., description="Files in scope for review.")
+    expected_edits: list[dict[str, Any]] = Field(default_factory=list)
+    symbols_to_inspect: list[str] = Field(default_factory=list)
+    # Optional for reviewers. Permissive coercion in case the agent
+    # supplies `{"commands": []}` — a TestStrategy with min_length=1 would
+    # reject that. Treat empty as "no tests for this stage".
+    test_strategy: TestStrategy | None = None
+    review_strategy: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional structured plan: approach, scanners, focus areas.",
+    )
+    risk_level: Literal["low", "medium", "high"] = "low"
+    external_side_effects_required: bool = False
+    assumptions: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    config_inspected_files: list[str] = Field(default_factory=list, max_length=1)
+
+    @field_validator("test_strategy", mode="before")
+    @classmethod
+    def _empty_strategy_to_none(cls, v: Any) -> Any:
+        """Reviewer agents sometimes emit `{commands: []}` literally, which
+        TestStrategy.min_length=1 would reject. Coerce empty → None."""
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            cmds = v.get("commands")
+            if not isinstance(cmds, list) or len(cmds) == 0:
+                return None
+        return v
+
+    @field_validator("open_questions", mode="before")
+    @classmethod
+    def _coerce_open_questions(cls, v: Any) -> Any:
+        """Agents sometimes emit `open_questions` as a list of dicts
+        (e.g. {question, blocking}) instead of strings. Stringify each
+        entry rather than rejecting — the question text is what matters
+        for the audit trail, structured per-question metadata can land
+        in `extra="allow"` fields if needed."""
+        if not isinstance(v, list):
+            return v
+        out: list[str] = []
+        for item in v:
+            if isinstance(item, str):
+                out.append(item)
+            elif isinstance(item, dict):
+                # Common keys: question, text, prompt.
+                q = item.get("question") or item.get("text") or item.get("prompt")
+                if isinstance(q, str) and q:
+                    out.append(q)
+            # Drop anything else silently — preserves audit shape without
+            # 400'ing on a malformed nested type.
+        return out
+
+
 # Stage-specific overrides. Keyed by (agent_role, phase) — when the loop
 # validator sees a stage whose policy declares one of these agent roles
 # AND the current phase is in this map, it uses the override instead of
@@ -653,6 +729,9 @@ _PHASE_TO_MODEL: dict[Phase, type[_ReceiptBase]] = {
 _AGENT_ROLE_PHASE_OVERRIDES: dict[tuple[str, Phase], type[_ReceiptBase]] = {
     ("PRODUCT_OWNER", Phase.PLAN): StoryIntakeReceipt,
     ("PRODUCT_OWNER", Phase.SELF_REVIEW): StoryIntakeReviewReceipt,
+    # M79 (2026-05-26) — reviewer roles where test_strategy is optional.
+    ("SECURITY", Phase.PLAN): ReviewPlanReceipt,
+    ("DEVOPS",   Phase.PLAN): ReviewPlanReceipt,
 }
 
 

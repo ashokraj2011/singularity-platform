@@ -1794,13 +1794,18 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
     riskPolicy: { external_side_effects_blocked_by_default: true },
     phases: [
       {
+        // M79 — reviewer PLAN allowlist includes file/AST read tools so the
+        // agent can actually inspect the code under review. test_strategy
+        // is intentionally NOT required (the Pydantic ReviewPlanReceipt
+        // makes it optional for reviewer roles; commands array doesn't fit
+        // audit semantics).
         phase: "PLAN",
-        allowedTools: ["repo_map", "find_symbol", "list_indexed_files", "review_diff"],
+        allowedTools: ["repo_map", "find_symbol", "list_indexed_files", "read_file", "get_ast_slice", "search_code", "grep_lines", "review_diff"],
         requiredOutputSchema: {
-          required: ["target_files", "test_strategy"],
+          required: ["target_files"],
           properties: {
             target_files: { type: "array" },
-            test_strategy: { type: "object", required: ["commands"], properties: { commands: { type: "array", items: { type: "string" } } } },
+            review_strategy: { type: "object" },
           },
         },
       },
@@ -1857,13 +1862,18 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
     riskPolicy: { external_side_effects_blocked_by_default: true },
     phases: [
       {
+        // M79 — reviewer PLAN allowlist includes file/AST read tools so the
+        // agent can actually inspect the code under review. test_strategy
+        // is intentionally NOT required (the Pydantic ReviewPlanReceipt
+        // makes it optional for reviewer roles; commands array doesn't fit
+        // audit semantics).
         phase: "PLAN",
-        allowedTools: ["repo_map", "find_symbol", "list_indexed_files", "review_diff"],
+        allowedTools: ["repo_map", "find_symbol", "list_indexed_files", "read_file", "get_ast_slice", "search_code", "grep_lines", "review_diff"],
         requiredOutputSchema: {
-          required: ["target_files", "test_strategy"],
+          required: ["target_files"],
           properties: {
             target_files: { type: "array" },
-            test_strategy: { type: "object", required: ["commands"], properties: { commands: { type: "array", items: { type: "string" } } } },
+            review_strategy: { type: "object" },
           },
         },
       },
