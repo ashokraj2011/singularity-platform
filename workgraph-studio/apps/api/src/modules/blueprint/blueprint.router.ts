@@ -382,6 +382,14 @@ type LoopStageDefinition = {
   repoAccess: boolean
   toolPolicy: StageToolPolicy
   promptProfileKey?: string
+  // Per-stage execution budget. When the workflow's WORKBENCH_TASK node
+  // declares `loopDefinition.stages[*].limits`, those values override the
+  // env-based WORKBENCH_*_MAX_STEPS defaults. Lets the workflow author
+  // tune budgets per stage (e.g. QA-review at 22, release-readiness at
+  // 18) without code changes or env vars. The runtime defaults (28 for
+  // mutating dev, 22 for verification, 14 read-only) remain the safety
+  // net when no per-stage limit is declared.
+  limits?: { maxSteps?: number; timeoutSec?: number }
 }
 
 type LoopDefinition = {
@@ -1887,7 +1895,18 @@ function normalizeLoopStage(raw: Record<string, unknown>, index: number, session
     repoAccess: typeof raw.repoAccess === 'boolean' ? raw.repoAccess : contextPolicy !== 'STORY_ONLY' && toolPolicy !== 'NONE',
     toolPolicy,
     promptProfileKey: typeof raw.promptProfileKey === 'string' && raw.promptProfileKey.trim() ? raw.promptProfileKey.trim() : undefined,
+    limits: normalizeStageLimits(raw.limits),
   }
+}
+
+function normalizeStageLimits(value: unknown): { maxSteps?: number; timeoutSec?: number } | undefined {
+  if (!isRecord(value)) return undefined
+  const out: { maxSteps?: number; timeoutSec?: number } = {}
+  const maxSteps = numberOr(value.maxSteps ?? value.max_steps ?? value.maxTurns ?? value.max_turns, NaN)
+  if (Number.isFinite(maxSteps) && maxSteps > 0) out.maxSteps = Math.floor(maxSteps)
+  const timeoutSec = numberOr(value.timeoutSec ?? value.timeout_sec ?? value.timeout, NaN)
+  if (Number.isFinite(timeoutSec) && timeoutSec > 0) out.timeoutSec = Math.floor(timeoutSec)
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 function normalizeStageContextPolicy(
@@ -1927,26 +1946,43 @@ function stageUsesRepoContext(stage: LoopStageDefinition): boolean {
 }
 
 function stageAllowsMutation(stage: LoopStageDefinition): boolean {
-  // The role check uses .includes('DEV') as a permissive fallback when
-  // explicit policy fields are missing, but 'DEVOPS' also contains 'DEV'
-  // and the release-readiness stage is read-only — it reviews the diff
-  // and produces a SelfReviewReceipt, never calls finish_work_branch.
-  // Without the exclusion, the FINALIZE_PROVENANCE_MISSING guard fires
-  // on every release-readiness attempt (repro 2026-05-26 attempt
-  // 7c6bd542 on WRK-984AD: stage marked FAILED despite a valid
-  // medium-risk SelfReviewReceipt with 3 findings + rollback_notes).
-  const role = normalizeAgentRole(stage.agentRole)
-  const isDevByRole = role.includes('DEV') && role !== 'DEVOPS' && !role.startsWith('DEVOPS_')
-  return stage.contextPolicy === 'CODE_EDIT' || stage.toolPolicy === 'MUTATION' || isDevByRole
+  // Source of truth: the workflow's WORKBENCH_TASK node declares each
+  // stage's policy via normalizeLoopStage (contextPolicy / toolPolicy).
+  // We trust those fields exclusively — no role-string heuristic.
+  //
+  // Earlier this function also returned true when agentRole.includes('DEV'),
+  // which incorrectly matched 'DEVOPS' (release-readiness) and triggered
+  // FINALIZE_PROVENANCE_MISSING on read-only review stages. The policy
+  // fields are populated by normalizeLoopStage with a signature-based
+  // fallback that already handles agent-role-vs-policy mapping cleanly,
+  // so the heuristic here was redundant and wrong.
+  return stage.contextPolicy === 'CODE_EDIT' || stage.toolPolicy === 'MUTATION'
 }
 
-// QA-review and any stage whose agent role is 'QA' runs a real VERIFY
-// phase with run_test / run_command. Caller uses this to pick the larger
-// QA-specific turn budget (see WORKBENCH_QA_MAX_STEPS comment). Kept
-// separate from stageAllowsMutation because QA reads + verifies but
-// must not mutate code.
+// Verification-running stages (e.g. qa-review) take longer because they
+// invoke run_test / run_command in the VERIFY phase. Driven by the
+// explicit toolPolicy='VERIFICATION' from the workflow's WORKBENCH_TASK
+// node — no role-string fallback for the same reason as above.
 function stageRunsVerification(stage: LoopStageDefinition): boolean {
-  return stage.toolPolicy === 'VERIFICATION' || normalizeAgentRole(stage.agentRole).includes('QA')
+  return stage.toolPolicy === 'VERIFICATION'
+}
+
+// Per-stage execution budget. Workflow-declared `stage.limits.maxSteps`
+// wins. If the WORKBENCH_TASK node didn't declare a budget for this
+// stage, fall back to env-based role-class defaults so existing
+// workflows keep working without migration:
+//   • mutating dev → WORKBENCH_DEVELOPER_MAX_STEPS (28)
+//   • verification  → WORKBENCH_QA_MAX_STEPS         (22)
+//   • read-only     → WORKBENCH_DEFAULT_MAX_STEPS    (14)
+// New workflows should set `limits.maxSteps` per stage rather than
+// relying on the env-based class fallback.
+function resolveStageMaxSteps(stage: LoopStageDefinition): number {
+  if (stage.limits?.maxSteps && stage.limits.maxSteps > 0) {
+    return stage.limits.maxSteps
+  }
+  if (stageAllowsMutation(stage)) return WORKBENCH_DEVELOPER_MAX_STEPS
+  if (stageRunsVerification(stage)) return WORKBENCH_QA_MAX_STEPS
+  return WORKBENCH_DEFAULT_MAX_STEPS
 }
 
 function stagePromptKey(stage: LoopStageDefinition): string {
@@ -3744,14 +3780,9 @@ async function runLoopStageExecute(
       // short-circuit stays tight.
       ...readPreferLaptopFlag(session.metadata),
     },
-    // Mirror the existing per-stage step cap; the multi-turn driver respects
-    // it as a safety cap separate from StagePolicy.limits.max_tool_calls.
-    // QA-review gets its own larger budget (22) because it runs a real
-    // VERIFY phase with long-running test commands; see WORKBENCH_QA_MAX_STEPS
-    // comment above.
-    maxTurns: isDeveloperStage
-      ? WORKBENCH_DEVELOPER_MAX_STEPS
-      : (stageRunsVerification(stage) ? WORKBENCH_QA_MAX_STEPS : WORKBENCH_DEFAULT_MAX_STEPS),
+    // Per-stage execution budget — workflow-declared limit wins, with
+    // env-based role-class defaults as the fallback. See resolveStageMaxSteps.
+    maxTurns: resolveStageMaxSteps(stage),
   })
 }
 
@@ -5565,11 +5596,21 @@ async function runStage(
   systemPromptAppend: string,
 ): Promise<ExecuteResponse> {
   const traceId = `blueprint-${session.id}-${stage.toLowerCase()}`
-  const executionConfig = readLoopState(session).executionConfig
+  const loopStateForStage = readLoopState(session)
+  const executionConfig = loopStateForStage.executionConfig
   const stageKey = stage.toLowerCase()
   const modelAlias = stageModelAlias(executionConfig, stageKey, humanStage(stage))
   const limits = workbenchExecutionLimits(executionConfig)
   const isDeveloperStage = stage === BlueprintStage.DEVELOPER
+  // Pull the stage definition off the workflow's loopDefinition so we
+  // can honor `limits.maxSteps` if the WORKBENCH_TASK node declared one.
+  // Falls back to env-based class defaults via resolveStageMaxSteps when
+  // the loopDefinition is silent.
+  const stageDefForLimits = loopStateForStage.loopDefinition.stages.find(s => s.key === stageKey)
+  const stageMaxSteps = stageDefForLimits ? resolveStageMaxSteps(stageDefForLimits)
+    : isDeveloperStage ? WORKBENCH_DEVELOPER_MAX_STEPS
+      : stage === BlueprintStage.QA ? WORKBENCH_QA_MAX_STEPS
+        : WORKBENCH_DEFAULT_MAX_STEPS
   const linkedWorkItem = await workflowWorkItemContext(session.workflowInstanceId)
   const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
     stageKey,
@@ -5637,9 +5678,7 @@ async function runStage(
       maxPromptChars: limits.maxPromptChars,
     },
     limits: {
-      maxSteps: isDeveloperStage
-        ? WORKBENCH_DEVELOPER_MAX_STEPS
-        : (stage === BlueprintStage.QA ? WORKBENCH_QA_MAX_STEPS : WORKBENCH_DEFAULT_MAX_STEPS),
+      maxSteps: stageMaxSteps,
       timeoutSec: 480,
       inputTokenBudget: limits.maxContextTokens,
       outputTokenBudget: limits.maxOutputTokens,
