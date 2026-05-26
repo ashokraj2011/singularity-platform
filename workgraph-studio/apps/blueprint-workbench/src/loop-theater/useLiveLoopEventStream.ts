@@ -176,6 +176,29 @@ export function useLiveLoopEventStream(opts: UseLiveLoopEventStreamOptions): Use
       }
     }
 
+    // Browser-state-aware reconnect. macOS App Nap, Chrome's tab freezer,
+    // laptop sleep, or any "your network just came back" event all dump
+    // an EventSource into a zombie state where onerror may not fire but
+    // no events are arriving either. Listen for the standard
+    // visibility/online signals and force a fresh connect when we wake
+    // up. Idempotent — if `es` is live, the listeners are no-ops.
+    function reviveIfNeeded() {
+      if (closed) return
+      // Treat any non-'live' status, or missing EventSource handle, as
+      // a stale connection worth re-establishing.
+      if (!es || es.readyState === EventSource.CLOSED) {
+        setStatus('reconnecting')
+        if (reconnectTimer) clearTimeout(reconnectTimer)
+        connect()
+      }
+    }
+    function onVisibility() {
+      if (document.visibilityState === 'visible') reviveIfNeeded()
+    }
+    function onOnline() { reviveIfNeeded() }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('online', onOnline)
+
     // Order matters: catch-up first so the user sees context immediately,
     // then SSE for new events. Catch-up populates seenIds so any event
     // that the SSE replays from the broadcast buffer is deduped.
@@ -186,6 +209,8 @@ export function useLiveLoopEventStream(opts: UseLiveLoopEventStreamOptions): Use
     return () => {
       closed = true
       if (reconnectTimer) clearTimeout(reconnectTimer)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('online', onOnline)
       es?.close()
       setStatus('closed')
     }

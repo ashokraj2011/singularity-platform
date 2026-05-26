@@ -366,6 +366,26 @@ export function LiveCockpit({
       }
     }
 
+    // Browser-state-aware reconnect — same pattern as
+    // useLiveLoopEventStream.ts. macOS App Nap / Chrome tab freezing /
+    // laptop sleep all leave EventSource in a zombie state; the standard
+    // visibilitychange + online events tell us the user's back so we
+    // force a fresh connect. Idempotent — when es is live we no-op.
+    function reviveIfNeeded() {
+      if (closed) return
+      if (!es || es.readyState === EventSource.CLOSED) {
+        setStatus('reconnecting')
+        if (reconnectTimer) clearTimeout(reconnectTimer)
+        connect()
+      }
+    }
+    function onVisibility() {
+      if (document.visibilityState === 'visible') reviveIfNeeded()
+    }
+    function onOnline() { reviveIfNeeded() }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('online', onOnline)
+
     catchUp().then(() => {
       if (!closed) connect()
     })
@@ -373,6 +393,8 @@ export function LiveCockpit({
     return () => {
       closed = true
       if (reconnectTimer) clearTimeout(reconnectTimer)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('online', onOnline)
       if (es) es.close()
       setStatus('idle')
     }
