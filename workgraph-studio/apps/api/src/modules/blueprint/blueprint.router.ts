@@ -53,7 +53,19 @@ function positiveIntEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 const WORKBENCH_DEFAULT_MODEL_ALIAS = process.env.WORKBENCH_DEFAULT_MODEL_ALIAS?.trim() || undefined
-const WORKBENCH_DEFAULT_MAX_STEPS = positiveIntEnv('WORKBENCH_MAX_STEPS', 8)
+// (2026-05-26) Bumped from 8 to 14 after design stage MAX_TURNS at
+// turn 8 on workflowInstance 8d42bedf — Architect spent 2 turns in
+// PLAN (repo_map) and 6 in EXPLORE (read_file, get_ast_slice, get_symbol,
+// search_code) before exhausting budget without ever reaching
+// SELF_REVIEW. The agent's last response was narrating more
+// exploration intent rather than producing output. 14 covers:
+//   PLAN  (2-3 turns to identify target files)
+// + EXPLORE (6-8 turns of reading + analyzing)
+// + SELF_REVIEW (2-3 turns to produce the design doc)
+// + 1-2 turn margin for retries on validation_error.
+// Developer stages keep their larger 28-turn budget — they have
+// ACT + VERIFY phases on top of the read-only sequence.
+const WORKBENCH_DEFAULT_MAX_STEPS = positiveIntEnv('WORKBENCH_MAX_STEPS', 14)
 // Developer stage needs more steps than read-only stages because each real
 // code change is the END of a sequence of: explore (4-6 steps), read target
 // files (2-3 steps), make N edits (N steps), add tests (1-2 steps), run
