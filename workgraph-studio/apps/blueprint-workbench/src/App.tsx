@@ -1,5 +1,56 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import type { ReactNode } from 'react'
+
+// M83 S2.2 — Monaco editor lazy-loaded so the workbench landing
+// page doesn't pull ~3MB of editor + workers. Triggers on first
+// open of the Code overlay (in practice when the operator clicks
+// "Edit" on a file). The default export is the React component.
+const MonacoEditor = lazy(() => import('@monaco-editor/react'))
+
+// M83 S2.3 — Monaco DiffEditor lazy-loaded behind the same chunk
+// so reviewing changes before commit doesn't double-fetch. The
+// named export is `DiffEditor`.
+const MonacoDiffEditor = lazy(() =>
+  import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })),
+)
+
+// Map a file path's extension to a Monaco language ID. Keep this
+// short — Monaco accepts unknown languages as plain text, so the
+// fallback is fine.
+function monacoLanguageForPath(p: string): string {
+  const lower = p.toLowerCase()
+  const ext = lower.includes('.') ? lower.slice(lower.lastIndexOf('.') + 1) : ''
+  switch (ext) {
+    case 'ts': case 'tsx': return 'typescript'
+    case 'js': case 'jsx': case 'mjs': case 'cjs': return 'javascript'
+    case 'java': return 'java'
+    case 'py': return 'python'
+    case 'go': return 'go'
+    case 'rs': return 'rust'
+    case 'rb': return 'ruby'
+    case 'kt': case 'kts': return 'kotlin'
+    case 'scala': return 'scala'
+    case 'swift': return 'swift'
+    case 'c': case 'h': return 'c'
+    case 'cpp': case 'cc': case 'cxx': case 'hpp': case 'hh': return 'cpp'
+    case 'cs': return 'csharp'
+    case 'json': return 'json'
+    case 'yaml': case 'yml': return 'yaml'
+    case 'xml': case 'pom': return 'xml'
+    case 'html': case 'htm': return 'html'
+    case 'css': return 'css'
+    case 'scss': case 'sass': return 'scss'
+    case 'md': case 'markdown': return 'markdown'
+    case 'sh': case 'bash': return 'shell'
+    case 'sql': return 'sql'
+    case 'dockerfile': return 'dockerfile'
+    case 'toml': return 'toml'
+    case 'ini': return 'ini'
+    default:
+      if (lower.endsWith('/dockerfile') || lower === 'dockerfile') return 'dockerfile'
+      return 'plaintext'
+  }
+}
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
@@ -2613,7 +2664,12 @@ function WorktreeBrowser({ sessionId, stage }: { sessionId: string; stage: LoopS
 // SSE through mcp-server. The browser EventSource API only supports GET,
 // so we use fetch + ReadableStream + a hand-rolled SSE parser. Three
 // event types: started, stdout/stderr, finished.
-type TestRunStatus = 'idle' | 'running' | 'done' | 'error'
+// M83 S3.3 — `interrupted` covers the case where the SSE stream
+// closes (network blip, container restart, nginx reload) before the
+// runner emits its `finished` frame. We surface it distinctly so the
+// operator knows the test almost-certainly didn't complete — no
+// receipt gets attached and a one-click Re-run is offered.
+type TestRunStatus = 'idle' | 'running' | 'done' | 'error' | 'interrupted'
 
 function WorktreeTestRunner({ sessionId }: { sessionId: string }) {
   const [command, setCommand] = useState<string>('mvn')
@@ -2621,6 +2677,12 @@ function WorktreeTestRunner({ sessionId }: { sessionId: string }) {
   const [status, setStatus] = useState<TestRunStatus>('idle')
   const [lines, setLines] = useState<Array<{ stream: 'stdout' | 'stderr' | 'meta'; text: string }>>([])
   const [summary, setSummary] = useState<{ exitCode: number | null; passed: boolean; durationMs: number; error?: string } | null>(null)
+  // M83 S3.2 — persisted-receipt state. After the run ends, we POST a
+  // human-origin VerificationReceipt to the attempt; this flag drives
+  // the inline banner so the operator sees "captured" vs "capture
+  // failed" rather than guessing whether the run got recorded.
+  const [persistState, setPersistState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [persistMessage, setPersistMessage] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const tailRef = useRef<HTMLDivElement | null>(null)
 
@@ -2647,8 +2709,51 @@ function WorktreeTestRunner({ sessionId }: { sessionId: string }) {
     setStatus('running')
     setLines([{ stream: 'meta', text: `$ ${command} ${argsText}` }])
     setSummary(null)
+    setPersistState('idle')
+    setPersistMessage(null)
     const args = argsText.split(/\s+/).filter(Boolean)
+    const fullCommand = `${command} ${argsText}`.trim()
     const startedAt = Date.now()
+    // M83 S3.2 — accumulate raw output so we can persist a meaningful
+    // excerpt with the receipt. We keep only the tail (~16KB) here
+    // since the backend slices to 4KB anyway and unbounded buffers
+    // on long runs would just pin memory.
+    let outputBuf = ''
+    const appendOutput = (text: string) => {
+      outputBuf += text + '\n'
+      if (outputBuf.length > 16_384) outputBuf = outputBuf.slice(-16_384)
+    }
+    // M83 S3.3 — flip to true only when the SSE 'finished' frame
+    // arrives. If the stream closes before that, we know the run was
+    // interrupted (network drop, container bounce) and the runner
+    // never told us the real exit code.
+    let gotFinished = false
+    const onFinished = async (payload: { exitCode: number | null; passed: boolean; durationMs: number; error?: string }) => {
+      gotFinished = true
+      // Fire-and-forget — the test result is what the operator cares
+      // about; the receipt is bookkeeping. Surface the outcome inline
+      // so they can re-trigger or contact us if persistence keeps
+      // failing.
+      setPersistState('saving')
+      setPersistMessage(null)
+      try {
+        const res = await api.worktreeAttachVerification(sessionId, {
+          command: fullCommand,
+          passed: payload.passed,
+          exitCode: payload.exitCode,
+          durationMs: payload.durationMs,
+          toolName: 'run_test_human',
+          output: outputBuf,
+          notes: payload.error,
+        })
+        setPersistState('saved')
+        setPersistMessage(`Receipt attached to attempt ${res.attemptId.slice(0, 8)}… (${res.totalReceipts} total).`)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setPersistState('error')
+        setPersistMessage(`Receipt not attached: ${msg}`)
+      }
+    }
     try {
       const resp = await fetch(`/api/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/run-test`, {
         method: 'POST',
@@ -2676,9 +2781,28 @@ function WorktreeTestRunner({ sessionId }: { sessionId: string }) {
         while (nl >= 0) {
           const frame = buf.slice(0, nl)
           buf = buf.slice(nl + 2)
-          handleSseFrame(frame, setLines, setStatus, setSummary, startedAt)
+          handleSseFrame(frame, setLines, setStatus, setSummary, startedAt, appendOutput, onFinished)
           nl = buf.indexOf('\n\n')
         }
+      }
+      // M83 S3.3 — clean stream close without a 'finished' frame =
+      // interrupt. Mark the run distinctly and prompt for re-run. We
+      // deliberately don't auto-retry: most test commands are
+      // non-idempotent (compile state, db rows, port allocations) so
+      // a silent retry could double-execute. The operator decides.
+      if (!gotFinished) {
+        const durationMs = Date.now() - startedAt
+        setLines(prev => [...prev, {
+          stream: 'meta',
+          text: `— stream interrupted at ${Math.round(durationMs / 100) / 10}s before runner reported completion. Click Re-run. —`,
+        }])
+        setStatus('interrupted')
+        setSummary({
+          exitCode: null,
+          passed: false,
+          durationMs,
+          error: 'Stream interrupted before runner reported completion',
+        })
       }
     } catch (err) {
       if ((err as { name?: string })?.name === 'AbortError') {
@@ -2735,15 +2859,49 @@ function WorktreeTestRunner({ sessionId }: { sessionId: string }) {
         {status === 'running' ? (
           <button type="button" className="ghost-button" onClick={abort}>Stop</button>
         ) : (
-          <button type="button" className="primary-button" onClick={runTest} disabled={!command.trim()}>Run</button>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={runTest}
+            disabled={!command.trim()}
+            // M83 S3.3 — relabel after an interrupted stream so the
+            // operator's path forward is obvious.
+            title={status === 'interrupted' ? 'Re-run after stream interruption' : undefined}
+          >
+            {status === 'interrupted' || status === 'error' ? 'Re-run' : 'Run'}
+          </button>
         )}
       </div>
       {summary && (
-        <div style={{ fontSize: 12, color: summary.passed ? 'var(--success, #6c6)' : 'var(--danger, #c66)' }}>
-          {summary.passed ? '✓ passed' : '✗ failed'}
+        <div style={{
+          fontSize: 12,
+          color: status === 'interrupted' ? 'var(--warn, #fa6)'
+            : summary.passed ? 'var(--success, #6c6)'
+              : 'var(--danger, #c66)',
+        }}>
+          {status === 'interrupted' ? '⚠ interrupted'
+            : summary.passed ? '✓ passed'
+              : '✗ failed'}
           {summary.exitCode !== null && ` · exit ${summary.exitCode}`}
           {` · ${Math.round(summary.durationMs / 100) / 10}s`}
           {summary.error && ` · ${summary.error}`}
+        </div>
+      )}
+      {/* M83 S3.2 — receipt-persist banner. The receipt rides the
+          approval gate alongside the agent's, so failure to attach
+          would silently break the human-verification path. Surfacing
+          the outcome inline lets the operator notice + retry. */}
+      {persistState !== 'idle' && (
+        <div style={{
+          fontSize: 11,
+          color: persistState === 'saved' ? 'var(--success, #6c6)'
+            : persistState === 'error' ? 'var(--danger, #c66)'
+              : 'var(--muted, #888)',
+          fontStyle: persistState === 'saving' ? 'italic' : undefined,
+        }}>
+          {persistState === 'saving' && '↑ attaching verification receipt…'}
+          {persistState === 'saved' && `✓ ${persistMessage}`}
+          {persistState === 'error' && persistMessage}
         </div>
       )}
       <div
@@ -2790,6 +2948,12 @@ function handleSseFrame(
   setStatus: React.Dispatch<React.SetStateAction<TestRunStatus>>,
   setSummary: React.Dispatch<React.SetStateAction<{ exitCode: number | null; passed: boolean; durationMs: number; error?: string } | null>>,
   startedAt: number,
+  // M83 S3.2 — optional sinks for the run-completion receipt path.
+  // appendOutput captures the streaming bytes into a closure buffer
+  // for later inclusion in the receipt; onFinished fires once the
+  // SSE 'finished' frame arrives so the caller can POST the receipt.
+  appendOutput?: (text: string) => void,
+  onFinished?: (payload: { exitCode: number | null; passed: boolean; durationMs: number; error?: string }) => void,
 ) {
   // Minimal SSE parser. Expects:
   //   event: <name>\n
@@ -2808,9 +2972,13 @@ function handleSseFrame(
   try { payload = JSON.parse(data) } catch { payload = data }
   const obj = (payload && typeof payload === 'object') ? (payload as Record<string, unknown>) : {}
   if (event === 'stdout') {
-    setLines(prev => [...prev, { stream: 'stdout', text: String(obj.line ?? '') }])
+    const text = String(obj.line ?? '')
+    setLines(prev => [...prev, { stream: 'stdout', text }])
+    appendOutput?.(text)
   } else if (event === 'stderr') {
-    setLines(prev => [...prev, { stream: 'stderr', text: String(obj.line ?? '') }])
+    const text = String(obj.line ?? '')
+    setLines(prev => [...prev, { stream: 'stderr', text }])
+    appendOutput?.(text)
   } else if (event === 'started') {
     setLines(prev => [...prev, { stream: 'meta', text: `running… (${String(obj.commandPreview ?? '')})` }])
   } else if (event === 'finished') {
@@ -2820,6 +2988,7 @@ function handleSseFrame(
     const error = typeof obj.error === 'string' ? obj.error : undefined
     setSummary({ exitCode, passed, durationMs, error })
     setStatus(passed ? 'done' : 'error')
+    onFinished?.({ exitCode, passed, durationMs, error })
   }
 }
 
@@ -3012,6 +3181,10 @@ function WorktreeFileView({ sessionId, path, canEdit }: { sessionId: string; pat
   const [commitMessage, setCommitMessage] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveResult, setSaveResult] = useState<string | null>(null)
+  // M83 S2.3 — toggle the in-editor view between the live Monaco
+  // editor and a side-by-side diff against the on-disk content.
+  // Off by default; flipping it doesn't lose the draft buffer.
+  const [showDiff, setShowDiff] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -3045,6 +3218,7 @@ function WorktreeFileView({ sessionId, path, canEdit }: { sessionId: string; pat
     setDraft('')
     setCommitMessage('')
     setSaveResult(null)
+    setShowDiff(false)
   }
   const saveEdit = async () => {
     if (!meta) return
@@ -3132,26 +3306,71 @@ function WorktreeFileView({ sessionId, path, canEdit }: { sessionId: string; pat
         </p>
       ) : editing ? (
         <>
-          <textarea
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            spellCheck={false}
-            rows={24}
-            disabled={saving}
-            style={{
-              width: '100%',
-              padding: 8,
+          {/* M83 S2.2 — Monaco editor. Lazy-loaded; Suspense
+              fallback keeps the layout from collapsing during the
+              first-open ~200ms chunk fetch. Read-only is disabled
+              by toggling the wrapping editing branch (we only
+              render Monaco when the operator clicked Edit). */}
+          <Suspense fallback={
+            <div style={{
+              minHeight: 320,
+              padding: 12,
               background: 'var(--code-bg, #0a0a0a)',
               border: '1px solid var(--border, #2a2a2a)',
-              color: 'inherit',
-              fontFamily: 'var(--font-mono, monospace)',
+              color: 'var(--muted, #888)',
               fontSize: 12,
-              lineHeight: 1.5,
-              resize: 'vertical',
-              minHeight: 240,
-              maxHeight: 'calc(100vh - 320px)',
-            }}
-          />
+              fontFamily: 'var(--font-mono, monospace)',
+            }}>
+              Loading editor…
+            </div>
+          }>
+            <div style={{
+              border: '1px solid var(--border, #2a2a2a)',
+              borderRadius: 4,
+              overflow: 'hidden',
+              height: 'calc(100vh - 360px)',
+              minHeight: 320,
+            }}>
+              {showDiff ? (
+                /* M83 S2.3 — diff against on-disk content. Editing
+                   is disabled in diff view; flip back to Editor to
+                   keep typing. The "original" side is `content`
+                   (the last fetched body) and the "modified" side
+                   is the live draft. */
+                <MonacoDiffEditor
+                  original={content ?? ''}
+                  modified={draft}
+                  language={monacoLanguageForPath(path)}
+                  theme="vs-dark"
+                  options={{
+                    readOnly: true,
+                    renderSideBySide: true,
+                    minimap: { enabled: false },
+                    fontSize: 12,
+                    automaticLayout: true,
+                  }}
+                />
+              ) : (
+                <MonacoEditor
+                  value={draft}
+                  language={monacoLanguageForPath(path)}
+                  theme="vs-dark"
+                  onChange={(v) => setDraft(v ?? '')}
+                  options={{
+                    readOnly: saving,
+                    minimap: { enabled: false },
+                    fontSize: 12,
+                    lineNumbers: 'on',
+                    scrollBeyondLastLine: false,
+                    tabSize: 2,
+                    wordWrap: 'off',
+                    renderWhitespace: 'selection',
+                    automaticLayout: true,
+                  }}
+                />
+              )}
+            </div>
+          </Suspense>
           <input
             type="text"
             value={commitMessage}
@@ -3169,6 +3388,18 @@ function WorktreeFileView({ sessionId, path, canEdit }: { sessionId: string; pat
               disabled={saving || draft === content}
             >
               {saving ? 'Saving…' : 'Save & commit'}
+            </button>
+            {/* M83 S2.3 — flip between Editor and DiffEditor so the
+                operator can review the change before clicking
+                Save. Disabled when there's nothing to diff. */}
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => setShowDiff(s => !s)}
+              disabled={saving || draft === content}
+              title="Side-by-side diff vs. on-disk content"
+            >
+              {showDiff ? 'Edit mode' : 'Show diff'}
             </button>
             <button
               type="button"

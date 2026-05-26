@@ -9,6 +9,7 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "@tanstack/react-query": "^5.100.5",
     "@vitejs/plugin-react": "^6.0.1",
     "lucide-react": "^1.11.0",
