@@ -15,6 +15,7 @@ import { resourcesRouter } from "./mcp/resources";
 import { eventsRouter } from "./mcp/events";
 import { discoveryRouter } from "./mcp/discovery";
 import { worktreeRouter } from "./mcp/worktree";
+import { worktreeTestRouter } from "./mcp/worktree-test";
 import { buildCodeContextPackage } from "./mcp/code-context";
 // M61 Wire E + Wire B P2 — best-effort callbacks to agent-runtime's
 // CapabilityWorldModel: repo fingerprint (drift detector) + AST index
@@ -112,10 +113,21 @@ app.use("/mcp/tools/call", requireMcpScope("tools:call"));
 // decisions happen UPSTREAM in context-fabric/app/governed/; mcp-server
 // just executes whatever the caller asked for.
 app.use("/mcp/tool-run", requireMcpScope("tools:call"));
-// M83 S1 — worktree browser endpoints. resources:read scope: same as
+// M83 S1 — worktree read endpoints. resources:read scope: same as
 // /mcp/resources — these are read-only views into the workitem's git
 // worktree, exposed for the workbench file-browser UI via workgraph-api.
-app.use("/mcp/worktree", requireMcpScope("resources:read"));
+// The /run-test endpoint (worktreeTestRouter) gets tools:call below
+// because it dispatches to the runner, not just reads the filesystem.
+// Express's scope middlewares match by path prefix; the GET /tree and
+// /file routes hit the resources:read mount first, while POST /run-test
+// matches the tools:call mount underneath worktreeTestRouter.
+app.use("/mcp/worktree", (req, res, next) => {
+  // Route /run-test through tools:call, everything else through resources:read.
+  if (req.method === "POST" && req.path.endsWith("/run-test")) {
+    return requireMcpScope("tools:call")(req, res, next);
+  }
+  return requireMcpScope("resources:read")(req, res, next);
+});
 app.use("/mcp/resources", requireMcpScope("resources:read"));
 app.use("/mcp/events", requireMcpScope("events:read"));
 app.use("/mcp", discoveryRouter);
@@ -236,6 +248,10 @@ app.use("/mcp", workRouter);
 app.use("/mcp", resourcesRouter);
 // M83 S1 — see comment near the requireMcpScope("resources:read") line.
 app.use("/mcp/worktree", worktreeRouter);
+// M83 S3 — POST /run-test on the same prefix. Same scope (resources:read)
+// because the actual side-effect is in the sandbox, which the runner
+// already gates; this endpoint just dispatches.
+app.use("/mcp/worktree", worktreeTestRouter);
 app.use("/mcp", eventsRouter);
 
 app.use(errorMiddleware);

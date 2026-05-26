@@ -988,6 +988,55 @@ blueprintRouter.get('/sessions/:id/worktree/file', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// M83 S3 — Test runner SSE proxy. The mcp-server endpoint returns
+// text/event-stream; we pipe the response straight through so the
+// workbench's EventSource gets the started → stdout/stderr → finished
+// stream as the runner produces it. workgraph-api's role here is auth
+// + session-to-workitem resolution; no buffering, no transformation.
+blueprintRouter.post('/sessions/:id/worktree/run-test', async (req, res, next) => {
+  try {
+    const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
+    if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    assertBlueprintAccess(session, req.user!.userId)
+    const workItemCode = await getWorktreeWorkItemCode(req.params.id)
+    const mcpUrl = config.MCP_SERVER_URL.replace(/\/+$/, '')
+    const upstream = await fetch(`${mcpUrl}/mcp/worktree/${encodeURIComponent(workItemCode)}/run-test`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.MCP_BEARER_TOKEN}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(req.body ?? {}),
+    })
+    if (!upstream.ok || !upstream.body) {
+      const text = await upstream.text().catch(() => '')
+      throw new ValidationError(`mcp-server worktree run-test returned ${upstream.status}: ${text.slice(0, 300)}`)
+    }
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    })
+    // Pipe the upstream SSE bytes straight to the client. Node 22's
+    // fetch returns a web ReadableStream; we drain it manually so we
+    // don't depend on a stream-utils import.
+    const reader = upstream.body.getReader()
+    const onAbort = () => { void reader.cancel().catch(() => undefined) }
+    req.on('close', onAbort)
+    try {
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        if (value) res.write(value)
+      }
+    } finally {
+      req.off('close', onAbort)
+      res.end()
+    }
+  } catch (err) { next(err) }
+})
+
 blueprintRouter.get('/sessions/:id/code-changes', async (req, res, next) => {
   try {
     const session = await prisma.blueprintSession.findUnique({

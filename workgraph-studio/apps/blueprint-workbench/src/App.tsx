@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -2556,17 +2556,247 @@ function WorktreeBrowser({ sessionId }: { sessionId: string }) {
           <p style={{ color: 'var(--danger, #c33)', padding: 4, fontSize: 13 }}>{rootError}</p>
         ) : renderTree('', 0)}
       </aside>
-      <section style={{ flex: 1, overflow: 'auto' }}>
-        {selectedPath ? (
-          <WorktreeFileView sessionId={sessionId} path={selectedPath} />
-        ) : (
-          <p style={{ color: 'var(--muted, #888)', padding: 12 }}>
-            Select a file from the tree to view its contents.
-          </p>
-        )}
+      <section style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flex: 1, overflow: 'auto' }}>
+          {selectedPath ? (
+            <WorktreeFileView sessionId={sessionId} path={selectedPath} />
+          ) : (
+            <p style={{ color: 'var(--muted, #888)', padding: 12 }}>
+              Select a file from the tree to view its contents.
+            </p>
+          )}
+        </div>
+        {/* M83 S3 — Test runner panel docked at the bottom of the
+            file viewer. Operator picks a preset (mvn / pytest / npm)
+            or types a custom command, clicks Run, and watches the
+            SSE-streamed output land in the terminal pane. */}
+        <WorktreeTestRunner sessionId={sessionId} />
       </section>
     </div>
   )
+}
+
+// ─── M83 S3 — Test runner panel ──────────────────────────────────────────
+// Posts to /api/blueprint/sessions/:id/worktree/run-test, which proxies
+// SSE through mcp-server. The browser EventSource API only supports GET,
+// so we use fetch + ReadableStream + a hand-rolled SSE parser. Three
+// event types: started, stdout/stderr, finished.
+type TestRunStatus = 'idle' | 'running' | 'done' | 'error'
+
+function WorktreeTestRunner({ sessionId }: { sessionId: string }) {
+  const [command, setCommand] = useState<string>('mvn')
+  const [argsText, setArgsText] = useState<string>('-B test')
+  const [status, setStatus] = useState<TestRunStatus>('idle')
+  const [lines, setLines] = useState<Array<{ stream: 'stdout' | 'stderr' | 'meta'; text: string }>>([])
+  const [summary, setSummary] = useState<{ exitCode: number | null; passed: boolean; durationMs: number; error?: string } | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const tailRef = useRef<HTMLDivElement | null>(null)
+
+  // Auto-scroll the terminal pane while a run is active. Snaps off
+  // when the operator scrolls up to read earlier output.
+  useEffect(() => {
+    if (status === 'running' && tailRef.current) {
+      tailRef.current.scrollTop = tailRef.current.scrollHeight
+    }
+  }, [lines, status])
+
+  const presets = useMemo(() => ([
+    { label: 'mvn -B test', command: 'mvn', args: ['-B', 'test'] },
+    { label: 'pytest -q', command: 'pytest', args: ['-q'] },
+    { label: 'npm test --silent', command: 'npm', args: ['test', '--silent'] },
+    { label: 'gradle test', command: 'gradle', args: ['test'] },
+    { label: 'go test ./...', command: 'go', args: ['test', './...'] },
+  ]), [])
+
+  const runTest = async () => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    setStatus('running')
+    setLines([{ stream: 'meta', text: `$ ${command} ${argsText}` }])
+    setSummary(null)
+    const args = argsText.split(/\s+/).filter(Boolean)
+    const startedAt = Date.now()
+    try {
+      const resp = await fetch(`/api/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/run-test`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'text/event-stream',
+          authorization: `Bearer ${getAuthToken()}`,
+        },
+        body: JSON.stringify({ command, args }),
+        signal: controller.signal,
+      })
+      if (!resp.ok || !resp.body) {
+        const text = await resp.text().catch(() => '')
+        throw new Error(`HTTP ${resp.status}: ${text.slice(0, 200)}`)
+      }
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        // SSE frames are separated by blank lines.
+        let nl = buf.indexOf('\n\n')
+        while (nl >= 0) {
+          const frame = buf.slice(0, nl)
+          buf = buf.slice(nl + 2)
+          handleSseFrame(frame, setLines, setStatus, setSummary, startedAt)
+          nl = buf.indexOf('\n\n')
+        }
+      }
+    } catch (err) {
+      if ((err as { name?: string })?.name === 'AbortError') {
+        setLines(prev => [...prev, { stream: 'meta', text: '— aborted by operator —' }])
+        setStatus('idle')
+      } else {
+        const msg = err instanceof Error ? err.message : String(err)
+        setLines(prev => [...prev, { stream: 'stderr', text: msg }])
+        setStatus('error')
+        setSummary({ exitCode: null, passed: false, durationMs: Date.now() - startedAt, error: msg })
+      }
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null
+    }
+  }
+
+  const abort = () => {
+    abortRef.current?.abort()
+  }
+
+  return (
+    <div style={{ borderTop: '1px solid var(--border, #2a2a2a)', padding: 8, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 360 }}>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <strong style={{ fontSize: 12 }}>Run tests</strong>
+        <select
+          value={`${command} ${argsText}`}
+          onChange={e => {
+            const preset = presets.find(p => `${p.command} ${p.args.join(' ')}` === e.target.value)
+            if (preset) { setCommand(preset.command); setArgsText(preset.args.join(' ')) }
+          }}
+          disabled={status === 'running'}
+          style={{ fontSize: 12, padding: 4 }}
+        >
+          {presets.map(p => (
+            <option key={p.label} value={`${p.command} ${p.args.join(' ')}`}>{p.label}</option>
+          ))}
+        </select>
+        <input
+          type="text"
+          value={command}
+          onChange={e => setCommand(e.target.value)}
+          disabled={status === 'running'}
+          style={{ width: 80, fontSize: 12, fontFamily: 'var(--font-mono, monospace)', padding: 4 }}
+          placeholder="cmd"
+        />
+        <input
+          type="text"
+          value={argsText}
+          onChange={e => setArgsText(e.target.value)}
+          disabled={status === 'running'}
+          style={{ flex: 1, fontSize: 12, fontFamily: 'var(--font-mono, monospace)', padding: 4, minWidth: 200 }}
+          placeholder="args (space-separated)"
+        />
+        {status === 'running' ? (
+          <button type="button" className="ghost-button" onClick={abort}>Stop</button>
+        ) : (
+          <button type="button" className="primary-button" onClick={runTest} disabled={!command.trim()}>Run</button>
+        )}
+      </div>
+      {summary && (
+        <div style={{ fontSize: 12, color: summary.passed ? 'var(--success, #6c6)' : 'var(--danger, #c66)' }}>
+          {summary.passed ? '✓ passed' : '✗ failed'}
+          {summary.exitCode !== null && ` · exit ${summary.exitCode}`}
+          {` · ${Math.round(summary.durationMs / 100) / 10}s`}
+          {summary.error && ` · ${summary.error}`}
+        </div>
+      )}
+      <div
+        ref={tailRef}
+        style={{
+          flex: 1,
+          minHeight: 120,
+          maxHeight: 240,
+          overflow: 'auto',
+          background: 'var(--code-bg, #0a0a0a)',
+          border: '1px solid var(--border, #2a2a2a)',
+          padding: 6,
+          fontFamily: 'var(--font-mono, monospace)',
+          fontSize: 11,
+          lineHeight: 1.4,
+          whiteSpace: 'pre-wrap',
+        }}
+      >
+        {lines.length === 0 ? (
+          <span style={{ color: 'var(--muted, #888)' }}>Output appears here.</span>
+        ) : (
+          lines.map((line, i) => (
+            <div
+              key={i}
+              style={{
+                color:
+                  line.stream === 'stderr' ? 'var(--danger, #c66)'
+                    : line.stream === 'meta' ? 'var(--muted, #888)'
+                      : undefined,
+              }}
+            >
+              {line.text}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+function handleSseFrame(
+  frame: string,
+  setLines: React.Dispatch<React.SetStateAction<Array<{ stream: 'stdout' | 'stderr' | 'meta'; text: string }>>>,
+  setStatus: React.Dispatch<React.SetStateAction<TestRunStatus>>,
+  setSummary: React.Dispatch<React.SetStateAction<{ exitCode: number | null; passed: boolean; durationMs: number; error?: string } | null>>,
+  startedAt: number,
+) {
+  // Minimal SSE parser. Expects:
+  //   event: <name>\n
+  //   data: <json>\n
+  // (possibly preceded by other fields we don't use).
+  let event = 'message'
+  let data = ''
+  for (const rawLine of frame.split('\n')) {
+    const line = rawLine.trimEnd()
+    if (!line) continue
+    if (line.startsWith('event:')) event = line.slice(6).trim()
+    else if (line.startsWith('data:')) data += (data ? '\n' : '') + line.slice(5).trim()
+  }
+  if (!data) return
+  let payload: unknown
+  try { payload = JSON.parse(data) } catch { payload = data }
+  const obj = (payload && typeof payload === 'object') ? (payload as Record<string, unknown>) : {}
+  if (event === 'stdout') {
+    setLines(prev => [...prev, { stream: 'stdout', text: String(obj.line ?? '') }])
+  } else if (event === 'stderr') {
+    setLines(prev => [...prev, { stream: 'stderr', text: String(obj.line ?? '') }])
+  } else if (event === 'started') {
+    setLines(prev => [...prev, { stream: 'meta', text: `running… (${String(obj.commandPreview ?? '')})` }])
+  } else if (event === 'finished') {
+    const exitCode = obj.exitCode === null || obj.exitCode === undefined ? null : Number(obj.exitCode)
+    const passed = obj.passed === true
+    const durationMs = typeof obj.durationMs === 'number' ? obj.durationMs : Date.now() - startedAt
+    const error = typeof obj.error === 'string' ? obj.error : undefined
+    setSummary({ exitCode, passed, durationMs, error })
+    setStatus(passed ? 'done' : 'error')
+  }
+}
+
+// Read the auth token from localStorage the same way the rest of the
+// workbench API client does. Inlined here so the run-test fetch can
+// pass it via Authorization header (the api.ts request() helper does
+// this automatically but we need raw fetch for SSE).
+function getAuthToken(): string {
+  return localStorage.getItem('workbench.token') ?? localStorage.getItem('token') ?? ''
 }
 
 function WorktreeFileView({ sessionId, path }: { sessionId: string; path: string }) {
