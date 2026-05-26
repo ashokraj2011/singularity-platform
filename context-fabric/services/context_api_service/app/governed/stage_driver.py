@@ -312,7 +312,89 @@ def _render_validation_error_message(validation_error: Any) -> dict[str, Any]:
     return {"role": "user", "content": "\n".join(parts)}
 
 
-def _render_narrate_without_act_message(state: PhaseState) -> dict[str, Any]:
+_MUTATING_PHASES = {Phase.ACT, Phase.REPAIR}
+
+
+# M83.y P3 (2026-05-27) — tools that count as "acting" in ACT/REPAIR.
+# Reads (read_file, list_files, etc.) explicitly do NOT count: in a
+# mutating phase, an agent that only reads is still narrating. The
+# bounce predicate below uses this set to catch the "I read the file
+# and diagnosed it, let me fix this:" failure where the model emits
+# substantive text but no actual mutation tool call.
+#
+# The list is conservative — anything that writes to the workspace,
+# runs tests/build, or persists git state counts as acting. New
+# mutating tools added downstream just need to land here too.
+_ACT_FULFILLING_TOOLS = frozenset({
+    "apply_patch",
+    "replace_text",
+    "write_file",
+    "create_file",
+    "delete_file",
+    "move_file",
+    "run_test",
+    "run_command",
+    "finish_work_branch",
+    "git_commit",
+    "git_push",
+})
+
+# Minimum length of stripped assistant text that counts as "substantive
+# narration" for the read-then-narrate bounce. Short acknowledgements
+# like "ok" or "let me check" are ambient; we only bounce when the
+# model is clearly building up to action without taking it. 80 chars
+# (~15 words) is the empirical floor — diagnostic prose always clears
+# this, and the "Let me fix this:" pattern from the screenshot
+# (~480 chars) trips it cleanly.
+_NARRATE_TEXT_THRESHOLD = 80
+
+
+def _is_narrate_only_in_mutating_phase(
+    state: PhaseState,
+    turn,
+) -> tuple[bool, str]:
+    """Detect the two narrate-without-act variants in one place.
+
+    Returns (should_bounce, variant) where variant is:
+      - "empty"      → no tool calls AT ALL (original M70.x trigger)
+      - "read-only"  → read tools ran but no mutation + substantive prose
+                       (the "Let me fix this:" failure from M83.y P3)
+      - ""           → no bounce needed
+    """
+    if state.current_phase not in _MUTATING_PHASES:
+        return False, ""
+    if turn.step.validation_error or turn.step.phase_advanced:
+        return False, ""
+
+    outcomes = turn.step.tool_outcomes or []
+    if not outcomes:
+        return True, "empty"
+
+    # Has any successful mutating tool dispatch fired this turn?
+    has_mutation = any(
+        (o.allowed and o.tool_success and o.tool_name in _ACT_FULFILLING_TOOLS)
+        for o in outcomes
+    )
+    if has_mutation:
+        return False, ""
+
+    # Tools ran but none of them mutated. Did the model emit substantive
+    # narration? If yes → read-then-narrate bounce.
+    assistant_text = ""
+    llm_msg = getattr(turn, "llm", None) or {}
+    if isinstance(llm_msg, dict):
+        raw_content = llm_msg.get("content") or ""
+        if isinstance(raw_content, str):
+            assistant_text = raw_content.strip()
+    if len(assistant_text) >= _NARRATE_TEXT_THRESHOLD:
+        return True, "read-only"
+    return False, ""
+
+
+def _render_narrate_without_act_message(
+    state: PhaseState,
+    variant: str = "empty",
+) -> dict[str, Any]:
     """Bounce the LLM when it emits assistant text in a mutating phase
     (ACT / REPAIR) without calling any tool or submit_phase_output.
 
@@ -336,8 +418,35 @@ def _render_narrate_without_act_message(state: PhaseState) -> dict[str, Any]:
     skip this — those phases sometimes legitimately emit a final summary
     text alongside submit_phase_output, or read-only exploration where
     no tool call is genuinely the right answer (rare but real).
+
+    M83.y P3 (2026-05-27) — `variant` distinguishes the two failures
+    this catches:
+      - "empty": no tool calls fired at all (original trigger).
+      - "read-only": read tools fired but no mutation, and the model
+        wrote substantive prose (e.g. "I diagnosed the issue at line
+        136 — Map.of() rejects nulls. Let me fix this:") without
+        actually emitting apply_patch. The message is tailored to
+        the symptom: "you've read enough, now patch."
     """
     phase = state.current_phase.value
+    if variant == "read-only":
+        return {
+            "role": "user",
+            "content": (
+                f"[NARRATE-WITHOUT-ACT] You are in {phase}. Your last "
+                "response read files and wrote prose explaining what "
+                "you'd like to change, but you didn't actually emit a "
+                "mutation tool call (apply_patch / replace_text / "
+                "write_file / create_file) and you didn't submit a "
+                "phase output. Reading and diagnosing is not enough — "
+                f"{phase} requires the mutation itself in the same turn "
+                "as the diagnosis, or a submit_phase_output that "
+                "captures what you already changed. Take the patch you "
+                "described and apply it now. Your next response MUST "
+                "include either a mutating tool call OR "
+                "submit_phase_output — prose alone is rejected."
+            ),
+        }
     return {
         "role": "user",
         "content": (
@@ -1007,14 +1116,25 @@ async def run_stage(
         # a clear correction so the next turn either calls a tool or
         # submits a receipt. Restricted to ACT / REPAIR because read-only
         # phases legitimately emit text-only responses sometimes.
-        _MUTATING_PHASES = {Phase.ACT, Phase.REPAIR}
-        if (
-            state.current_phase in _MUTATING_PHASES
-            and not turn.step.tool_outcomes
-            and not turn.step.validation_error
-            and not turn.step.phase_advanced
-        ):
-            history.append(_render_narrate_without_act_message(state))
+        #
+        # M83.y P3 (2026-05-27) — the original predicate missed the
+        # "read-then-narrate" failure (model calls read_file in the
+        # same turn it writes "Let me fix this:" without emitting the
+        # follow-up apply_patch). _is_narrate_only_in_mutating_phase
+        # catches both variants — empty turns AND read-only turns with
+        # substantive prose — and tells us which message variant to
+        # render. Repro from the field: develop attempt where the
+        # agent diagnosed Map.of(null) NPEs ("Lines 136 and 167 use
+        # Map.of() which rejects nulls. Let me fix this:") then
+        # stopped without calling apply_patch.
+        should_bounce, bounce_variant = _is_narrate_only_in_mutating_phase(state, turn)
+        if should_bounce:
+            log.info(
+                "narrate-without-act bounce phase=%s variant=%s",
+                state.current_phase.value,
+                bounce_variant,
+            )
+            history.append(_render_narrate_without_act_message(state, bounce_variant))
 
         turns_remaining = max_turns - (turn_idx + 1)
         if (
