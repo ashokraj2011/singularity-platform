@@ -73,8 +73,21 @@ _ALLOWED_TRANSITIONS: set[tuple[Phase, Phase]] = {
     # additive, not a re-route.
     (Phase.PLAN, Phase.SELF_REVIEW),
     (Phase.EXPLORE, Phase.ACT),
+    # Read-only stages such as ARCHITECT Plan/Design use PLAN -> EXPLORE ->
+    # SELF_REVIEW. They gather enough repo context to produce a handoff, but
+    # must never enter ACT/VERIFY because those phases imply mutation or test
+    # proof owned by Developer/QA.
+    (Phase.EXPLORE, Phase.SELF_REVIEW),
     (Phase.EXPLORE, Phase.EXPLORE),
     (Phase.EXPLORE, Phase.PLAN),      # go back to plan if exploration reveals scope error
+    # QA stages don't mutate (no ACT phase in QA StagePolicy) but DO run
+    # verifiers — the QA policy defines PLAN/EXPLORE/VERIFY/SELF_REVIEW.
+    # Without this edge, QA's canonical PLAN -> EXPLORE -> VERIFY path
+    # is impossible — the agent gets a "phase_transition_refused" the
+    # moment its prompt's `next_phase: VERIFY` lands, then narrates an
+    # apology instead of recovering. Repro 2026-05-26 attempt c0818b68
+    # on qa-review.
+    (Phase.EXPLORE, Phase.VERIFY),
     (Phase.ACT, Phase.VERIFY),
     (Phase.ACT, Phase.ACT),
     (Phase.VERIFY, Phase.SELF_REVIEW),
