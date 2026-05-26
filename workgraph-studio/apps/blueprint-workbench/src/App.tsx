@@ -2801,19 +2801,32 @@ function getAuthToken(): string {
 
 function WorktreeFileView({ sessionId, path }: { sessionId: string; path: string }) {
   const [content, setContent] = useState<string | null>(null)
-  const [meta, setMeta] = useState<{ sizeBytes: number; modifiedAt: string; encoding: 'utf-8' | 'base64' } | null>(null)
+  const [meta, setMeta] = useState<{ sizeBytes: number; modifiedAt: string; encoding: 'utf-8' | 'base64'; blobSha: string | null } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  // M83 S2 — edit mode + buffer. We keep editing/draft outside the
+  // load-effect so flipping fields doesn't clobber an in-flight edit.
+  // The commit-message input is optional; when blank, the backend
+  // generates a sensible default ("Human edit by <email>: <path>").
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [commitMessage, setCommitMessage] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saveResult, setSaveResult] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setError(null)
     setContent(null)
+    setEditing(false)
+    setDraft('')
+    setCommitMessage('')
+    setSaveResult(null)
     api.worktreeFile(sessionId, path).then(res => {
       if (cancelled) return
       setContent(res.content)
-      setMeta({ sizeBytes: res.sizeBytes, modifiedAt: res.modifiedAt, encoding: res.encoding })
+      setMeta({ sizeBytes: res.sizeBytes, modifiedAt: res.modifiedAt, encoding: res.encoding, blobSha: res.blobSha })
     }).catch((err: unknown) => {
       if (cancelled) return
       setError(err instanceof Error ? err.message : String(err))
@@ -2823,23 +2836,150 @@ function WorktreeFileView({ sessionId, path }: { sessionId: string; path: string
     return () => { cancelled = true }
   }, [sessionId, path])
 
+  const startEdit = () => {
+    setDraft(content ?? '')
+    setEditing(true)
+    setSaveResult(null)
+  }
+  const cancelEdit = () => {
+    setEditing(false)
+    setDraft('')
+    setCommitMessage('')
+    setSaveResult(null)
+  }
+  const saveEdit = async () => {
+    if (!meta) return
+    setSaving(true)
+    setSaveResult(null)
+    try {
+      const res = await api.worktreeWriteFile(sessionId, path, {
+        content: draft,
+        message: commitMessage.trim() || undefined,
+        // expectedSha = the blob sha we got at fetch time. If an agent
+        // attempt landed a parallel commit on this file while we were
+        // editing, the backend returns 409 STALE_EDIT and the operator
+        // re-fetches.
+        expectedSha: meta.blobSha ?? undefined,
+      })
+      if (!res.edited) {
+        setSaveResult('No-op: content matched HEAD.')
+        setEditing(false)
+        return
+      }
+      setSaveResult(
+        `Committed ${res.commitSha?.slice(0, 7) ?? '???'} on ${res.branch ?? 'wi/<code>'} ` +
+        `(+${res.linesAdded ?? '?'}/-${res.linesRemoved ?? '?'} by ${res.author?.email ?? 'operator'})`,
+      )
+      setContent(draft)
+      setMeta(prev => prev ? { ...prev, blobSha: res.blobSha ?? prev.blobSha, modifiedAt: new Date().toISOString() } : prev)
+      setEditing(false)
+      setCommitMessage('')
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setSaveResult(msg)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   if (loading) return <p style={{ padding: 12, color: 'var(--muted, #888)' }}>Loading {path}…</p>
   if (error) return <p style={{ padding: 12, color: 'var(--danger, #c33)' }}>{error}</p>
 
+  const isBinary = meta?.encoding === 'base64'
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 8 }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 12 }}>
-        <strong>{path}</strong>
-        {meta && (
-          <span style={{ color: 'var(--muted, #888)' }}>
-            {meta.sizeBytes.toLocaleString()} bytes · {meta.encoding} · modified {new Date(meta.modifiedAt).toLocaleString()}
-          </span>
-        )}
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 12, gap: 8 }}>
+        <strong style={{ wordBreak: 'break-all' }}>{path}</strong>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          {meta && (
+            <span style={{ color: 'var(--muted, #888)' }}>
+              {meta.sizeBytes.toLocaleString()} bytes · {meta.encoding}
+              {meta.blobSha && ` · ${meta.blobSha.slice(0, 7)}`}
+            </span>
+          )}
+          {/* M83 S2 — Edit button. Hidden for binary files (no useful
+              text edit). Save commits to wi/<code> attributed to the
+              operator's IAM identity (workgraph-api injects the
+              author from req.user). */}
+          {!isBinary && !editing && (
+            <button type="button" className="ghost-button" onClick={startEdit}>
+              Edit
+            </button>
+          )}
+        </div>
       </header>
-      {meta?.encoding === 'base64' ? (
+      {saveResult && (
+        <div style={{
+          fontSize: 12,
+          padding: '6px 8px',
+          background: saveResult.startsWith('Committed') ? 'var(--success-bg, #16331e)' : 'var(--warn-bg, #3a2a1a)',
+          color: saveResult.startsWith('Committed') ? 'var(--success, #8a8)' : 'var(--warn, #fa6)',
+          borderRadius: 4,
+        }}>
+          {saveResult}
+        </div>
+      )}
+      {isBinary ? (
         <p style={{ color: 'var(--muted, #888)', fontStyle: 'italic' }}>
           (Binary file. Content is base64-encoded; open on disk for the real bytes.)
         </p>
+      ) : editing ? (
+        <>
+          <textarea
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            spellCheck={false}
+            rows={24}
+            disabled={saving}
+            style={{
+              width: '100%',
+              padding: 8,
+              background: 'var(--code-bg, #0a0a0a)',
+              border: '1px solid var(--border, #2a2a2a)',
+              color: 'inherit',
+              fontFamily: 'var(--font-mono, monospace)',
+              fontSize: 12,
+              lineHeight: 1.5,
+              resize: 'vertical',
+              minHeight: 240,
+              maxHeight: 'calc(100vh - 320px)',
+            }}
+          />
+          <input
+            type="text"
+            value={commitMessage}
+            onChange={e => setCommitMessage(e.target.value)}
+            placeholder={`Optional commit message (default: "Human edit by <you>: ${path}")`}
+            maxLength={500}
+            disabled={saving}
+            style={{ width: '100%', padding: 6, fontSize: 12 }}
+          />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={saveEdit}
+              disabled={saving || draft === content}
+            >
+              {saving ? 'Saving…' : 'Save & commit'}
+            </button>
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={cancelEdit}
+              disabled={saving}
+            >
+              Cancel
+            </button>
+            {draft !== content && (
+              <span style={{ fontSize: 12, color: 'var(--muted, #888)', alignSelf: 'center' }}>
+                {draft.length - (content?.length ?? 0) >= 0 ? '+' : ''}
+                {draft.length - (content?.length ?? 0)} chars
+              </span>
+            )}
+          </div>
+        </>
       ) : (
         <pre
           style={{

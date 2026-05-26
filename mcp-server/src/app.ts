@@ -122,10 +122,12 @@ app.use("/mcp/tool-run", requireMcpScope("tools:call"));
 // /file routes hit the resources:read mount first, while POST /run-test
 // matches the tools:call mount underneath worktreeTestRouter.
 app.use("/mcp/worktree", (req, res, next) => {
-  // Route /run-test through tools:call, everything else through resources:read.
-  if (req.method === "POST" && req.path.endsWith("/run-test")) {
-    return requireMcpScope("tools:call")(req, res, next);
-  }
+  // Route mutating endpoints through tools:call; reads stay on
+  // resources:read. POST /run-test (M83 S3) and PUT /file (M83 S2)
+  // both dispatch work in the workitem worktree.
+  const isMutate = (req.method === "POST" && req.path.endsWith("/run-test"))
+    || (req.method === "PUT" && req.path.endsWith("/file"));
+  if (isMutate) return requireMcpScope("tools:call")(req, res, next);
   return requireMcpScope("resources:read")(req, res, next);
 });
 app.use("/mcp/resources", requireMcpScope("resources:read"));

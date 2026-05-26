@@ -647,7 +647,34 @@ export const api = {
       modifiedAt: string
       encoding: 'utf-8' | 'base64'
       content: string
+      blobSha: string | null
     }>(`/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/file?path=${encodeURIComponent(path)}`),
+  // M83 S2 — write a file edit to wi/<code> as a commit attributed to
+  // the operator. expectedSha is the file's last-known blob sha
+  // (returned from worktreeFile); when set, server refuses with 409
+  // STALE_EDIT if the branch tip moved (agent landed a parallel commit).
+  worktreeWriteFile: (
+    sessionId: string,
+    path: string,
+    body: { content: string; message?: string; expectedSha?: string },
+  ) =>
+    request<{
+      workItemCode: string
+      path: string
+      edited: boolean
+      reason?: string
+      commitSha?: string
+      headSha?: string
+      branch?: string
+      blobSha?: string
+      linesAdded?: number
+      linesRemoved?: number
+      author?: { name: string; email: string }
+      message?: string
+    }>(
+      `/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/file?path=${encodeURIComponent(path)}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
   sendBack: (id: string, stageKey: string, body: { targetStageKey: string; reason: string; requiredChanges?: string; blockingQuestions?: string[]; annotations?: SendBackAnnotation[] }) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/send-back`, { method: 'POST', body: JSON.stringify(body) }),
   finalize: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/finalize`, { method: 'POST' }),

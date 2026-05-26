@@ -988,6 +988,54 @@ blueprintRouter.get('/sessions/:id/worktree/file', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// M83 S2 — operator commits a file edit to wi/<code>. workgraph-api
+// injects the IAM identity (email + displayName) into the request so
+// mcp-server can attribute the git commit to the human, not the
+// platform account. expectedSha enables optimistic concurrency vs.
+// concurrent agent attempts on the same branch.
+blueprintRouter.put('/sessions/:id/worktree/file', async (req, res, next) => {
+  try {
+    const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
+    if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    assertBlueprintAccess(session, req.user!.userId)
+    if (typeof req.query.path !== 'string' || !req.query.path.trim()) {
+      throw new ValidationError("'path' query parameter is required")
+    }
+    const workItemCode = await getWorktreeWorkItemCode(req.params.id)
+    const params = new URLSearchParams({ path: req.query.path })
+    const mcpUrl = config.MCP_SERVER_URL.replace(/\/+$/, '')
+    // Inject the operator identity from the verified JWT. The client
+    // can't override this — even if it sends authorEmail/authorName
+    // in the body, we replace before forwarding to mcp-server.
+    const clientBody = (req.body ?? {}) as Record<string, unknown>
+    const proxyBody = {
+      ...clientBody,
+      authorEmail: req.user!.email,
+      authorName: req.user!.displayName,
+    }
+    const upstream = await fetch(`${mcpUrl}/mcp/worktree/${encodeURIComponent(workItemCode)}/file?${params.toString()}`, {
+      method: 'PUT',
+      headers: {
+        authorization: `Bearer ${config.MCP_BEARER_TOKEN}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(proxyBody),
+    })
+    const body = await upstream.json().catch(() => ({})) as { success?: boolean; data?: unknown; error?: { message?: string; code?: string } }
+    if (!upstream.ok) {
+      const code = body.error?.code
+      // 409 stale-sha is special — bubble it as a typed error so the
+      // workbench can re-fetch and re-apply rather than discard.
+      if (upstream.status === 409) {
+        res.status(409).json({ code: 'STALE_EDIT', message: body.error?.message ?? 'stale edit', upstreamCode: code })
+        return
+      }
+      throw new ValidationError(body.error?.message ?? `mcp-server worktree write returned ${upstream.status}`)
+    }
+    res.json(body.data ?? body)
+  } catch (err) { next(err) }
+})
+
 // M83 S3 — Test runner SSE proxy. The mcp-server endpoint returns
 // text/event-stream; we pipe the response straight through so the
 // workbench's EventSource gets the started → stdout/stderr → finished
