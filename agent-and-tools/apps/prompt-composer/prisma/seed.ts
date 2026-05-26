@@ -881,8 +881,27 @@ const loopQaVerifyTask = [
   "Allowed tools: read_file, run_test, run_command, recommended_verification, verification_unavailable, review_diff.",
   "",
   "Strategy: run the full test suite (not just targeted tests) + lint + typecheck if available. coverage.full_tests should be true if you actually ran them. status=failed means a regression — flag it but DO NOT mutate code; QA is read-only.",
+  "",
+  // (2026-05-26) Anti-markdown reminder. Repro: attempt 696e2b3d
+  // submitted a beautiful "## VERIFY Summary & Findings" markdown
+  // doc — every test result was there, just wrapped in prose. The
+  // validator rejected with "verification_result: Field required"
+  // because the markdown isn't a structured object. The agent then
+  // tried again with payload as a JSON-stringified version of the
+  // same markdown and got "payload was a string". This wording
+  // calls out the failure mode explicitly so the agent knows
+  // markdown summaries don't satisfy a JSON-object schema.
+  "CRITICAL — DO NOT emit a markdown summary. The receipt MUST be a JSON object. submit_phase_output expects:",
+  "  payload: { verification_result: { status: ..., commands_run: [...], coverage: {...} } }",
+  "NOT a markdown string. NOT a JSON-encoded string. A JSON OBJECT.",
+  "",
+  "If your test output reads naturally as prose, that's fine for the stdout_summary/stderr_summary fields — but the OUTER receipt envelope is structured. Resist the urge to wrap findings in `## Heading` markdown; the receipt schema does the structuring for you.",
+  "",
+  "When verification fails (status='failed'): include the failing commands in commands_run with their non-zero exit_code, and put a one-sentence reason at the top level. The Workbench renders this as a structured failure card — narrative prose ends up swallowed.",
+  "",
+  "When verification is unavailable (e.g. review_diff() returned no developer changes to verify, or the test suite couldn't run): use status='unavailable' with a `reason` like 'no developer diff captured for this attempt' or 'maven not available in sandbox'. Do NOT invent passed results.",
   phaseProtocol(
-    'verification_result: { status: "passed|failed|unavailable", reason: "<required when not passed>", coverage: { targeted_tests: true, full_tests: true, lint: false, typecheck: false, compile: false }, commands: [{ command: "<cmd>", exit_code: 0, duration_ms: 0, stdout_summary: "", stderr_summary: "" }] }',
+    'verification_result: { status: "passed|failed|unavailable", reason: "<required when not passed>", coverage: { targeted_tests: true, full_tests: true, lint: false, typecheck: false, compile: false }, commands_run: [{ command: "<cmd>", exit_code: 0, duration_ms: 0, stdout_summary: "", stderr_summary: "" }] }',
     "SELF_REVIEW",
   ),
 ].join("\n");
