@@ -14,6 +14,20 @@ export interface WorkspaceSourceRequest {
   sourceType?: string;
   sourceUri?: string;
   sourceRef?: string;
+  // (2026-05-26 M81) Workitem-scoped long-lived branch. When supplied, the
+  // materializer:
+  //   1. Resolves the source-cache mirror and `git fetch`es origin
+  //   2. Checks `refs/remotes/origin/<workitemBranch>` — if present, the
+  //      worktree HEAD lands on that branch (continuity across machines/sessions)
+  //   3. Otherwise, creates `<workitemBranch>` locally from sourceRef (typically
+  //      main) so subsequent commits land on it
+  // Every stage of the workflow that runs against the same workitemBranch
+  // shares the branch's history, so dev edits remain visible to security/QA
+  // without needing per-attempt worktree handoffs. Pair with the per-workitem
+  // sandbox layout (workspaceRootForRunContext returns the workitem root
+  // when attemptId is omitted) and the no-parallel-attempts guard in
+  // workgraph-api to eliminate the worktree-split failure mode.
+  workitemBranch?: string;
 }
 
 export interface WorkspaceSourceStatus {
@@ -25,6 +39,12 @@ export interface WorkspaceSourceStatus {
   headSha?: string;
   workspaceRoot?: string;
   message: string;
+  // (2026-05-26 M81) When workitemBranch was requested, this carries the
+  // active branch name + whether it was checked out from remote (vs created
+  // locally from sourceRef). Lets audit/UI distinguish "resuming a workitem"
+  // from "starting a fresh one".
+  workitemBranch?: string;
+  workitemBranchOrigin?: "remote" | "local-cache" | "created-from-source-ref";
 }
 
 async function git(args: string[], opts?: { cwd?: string; allowFail?: boolean; maxBuffer?: number }): Promise<string> {
@@ -298,6 +318,67 @@ async function materializeGitWorktreeFromCache(cloneUrl: string, sourceRef?: str
   await gitBare(mirror, ["worktree", "add", "--detach", "--force", root, commit], { maxBuffer: 60 * 1024 * 1024 });
 }
 
+/**
+ * M81 P1 (2026-05-26) — Long-lived workitem branch resolution.
+ *
+ * After the worktree is created (or re-checked-out), align its HEAD with the
+ * workitem branch:
+ *
+ *   1. `git fetch origin` to refresh the source-cache mirror.
+ *   2. If `refs/remotes/origin/<branch>` exists, check it out — picks up
+ *      prior commits from this workitem (continuity across machines / cache
+ *      wipes / session resets).
+ *   3. Otherwise look for a local branch in the source-cache mirror with the
+ *      same name — covers the case where the branch was created previously
+ *      but never pushed.
+ *   4. Otherwise create a new local branch off the current commit (which is
+ *      already on sourceRef per resolveMirrorCommit's work).
+ *
+ * Returns the origin of the branch so the audit/UI can distinguish "fresh
+ * workitem" from "resumed workitem".
+ */
+async function alignWorkitemBranch(
+  workitemBranch: string,
+): Promise<"remote" | "local-cache" | "created-from-source-ref"> {
+  // Best-effort fetch — failures here aren't fatal; if the remote is
+  // unreachable we just continue with whatever the local cache has.
+  await git(["fetch", "--prune", "origin", workitemBranch], { allowFail: true });
+  await git(["fetch", "--prune", "origin"], { allowFail: true });
+
+  // Existing local branch? (carries forward from prior local-only commits.)
+  const localExists = await git(
+    ["rev-parse", "--verify", `refs/heads/${workitemBranch}`],
+    { allowFail: true },
+  );
+
+  // Tracking ref present (remote has it).
+  const remoteExists = await git(
+    ["rev-parse", "--verify", `refs/remotes/origin/${workitemBranch}`],
+    { allowFail: true },
+  );
+
+  if (remoteExists) {
+    // Reset hard onto the remote tip so we don't accidentally carry stale
+    // local state. The worktree was just freshly created so there's nothing
+    // to lose.
+    if (localExists) {
+      await git(["checkout", workitemBranch], { allowFail: true });
+      await git(["reset", "--hard", `origin/${workitemBranch}`], { allowFail: true });
+    } else {
+      await git(["checkout", "-B", workitemBranch, `origin/${workitemBranch}`], { allowFail: true });
+    }
+    return "remote";
+  }
+  if (localExists) {
+    await git(["checkout", workitemBranch], { allowFail: true });
+    return "local-cache";
+  }
+  // Fresh start — branch off whatever HEAD points at (which is the resolved
+  // sourceRef commit per resolveMirrorCommit's earlier work).
+  await git(["checkout", "-b", workitemBranch], { allowFail: true });
+  return "created-from-source-ref";
+}
+
 async function materializeGitSource(cloneUrl: string, sourceRef?: string): Promise<string> {
   const expected = normalizeRemote(cloneUrl);
   const workspaceHasGit = fs.existsSync(path.join(sandboxRoot(), ".git"));
@@ -414,6 +495,24 @@ export async function ensureWorkspaceSource(
   const message = await materializeGitSource(cloneUrl, req.sourceRef);
   await configureGitIdentity();
 
+  // (M81 P1) — when a workitemBranch is requested, align HEAD with it so
+  // every subsequent tool call (read/edit/commit) operates on the branch.
+  // Skip when missing for backward compat (old callers still get the
+  // detached-HEAD behavior).
+  let workitemBranchOrigin: WorkspaceSourceStatus["workitemBranchOrigin"];
+  const branch = req.workitemBranch?.trim();
+  if (branch) {
+    try {
+      workitemBranchOrigin = await alignWorkitemBranch(branch);
+    } catch (err) {
+      // Branch alignment is best-effort. If git refuses (eg, branch name
+      // collides with a path), surface in status but don't fail the
+      // materialization — the worktree is still usable in detached state.
+      // eslint-disable-next-line no-console
+      console.warn(`[source-materializer] alignWorkitemBranch failed: ${(err as Error).message}`);
+    }
+  }
+
   const status: WorkspaceSourceStatus = {
     checkedOut: true,
     sourceType,
@@ -423,6 +522,8 @@ export async function ensureWorkspaceSource(
     headSha: await currentHead(),
     workspaceRoot: sandboxRoot(),
     message,
+    workitemBranch: branch,
+    workitemBranchOrigin,
   };
   events.publish({
     kind: "workspace.source.checked_out",

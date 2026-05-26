@@ -3655,20 +3655,34 @@ async function runLoopStageExecute(
       workflow_instance_id: session.workflowInstanceId ?? `blueprint-${session.id}`,
       workflow_node_id: readLoopState(session).workflowNodeId ?? session.phaseId ?? `blueprint-${stage.key}`,
       agent_run_id: isDeveloperStage ? attempt.id : undefined,
-      // M72 Slice C — pass attempt.id so mcp-server's
-      // workspaceRootForRunContext puts each concurrent attempt in its own
-      // .singularity/workitems/<workItem>/attempts/<attemptId>/ directory.
-      // Without this, two simultaneous attempts on the same WorkItem stomp
-      // on each other's git state.
-      attempt_id: attempt.id,
-      work_item_id: isDeveloperStage ? linkedWorkItem.workItemId : undefined,
-      work_item_code: isDeveloperStage ? linkedWorkItem.workItemCode : undefined,
+      // M81 P2/P4 (2026-05-26) — attempt_id is intentionally NOT passed.
+      // The M72 Slice C per-attempt isolation has been replaced by the
+      // no-parallel-attempts guard (e8cb38a), and the new long-lived
+      // workitem branch (wi/<workItemCode>) gives every stage attempt
+      // continuity into the prior work without needing a separate
+      // worktree. Passing attemptId here would put each call into its
+      // own .singularity/workitems/<workItem>/attempts/<id>/ directory,
+      // causing the worktree-split bug (different tools landing in
+      // different worktrees in the same logical attempt).
+      work_item_id: linkedWorkItem.workItemId,
+      work_item_code: linkedWorkItem.workItemCode,
       capability_id: session.capabilityId,
       agent_template_id: agentTemplateId,
       user_id: session.createdById ?? undefined,
       trace_id: traceId,
       branch_base: isDeveloperStage ? session.sourceRef ?? undefined : undefined,
-      branch_name: isDeveloperStage ? workbenchBranchName(session, stage, attempt, linkedWorkItem) : undefined,
+      // M81 P4 (2026-05-26) — workitem-scoped long-lived branch. ALL stages
+      // (not just developer) share the same wi/<workItemCode> branch so
+      // QA/security/devops see the developer's commits naturally. The
+      // mcp-server source-materializer (P1) checks remote first, then
+      // local cache, then creates from sourceRef. finish_work_branch (P3)
+      // auto-pushes when the active branch starts with wi/. Without a
+      // workItemCode we fall back to the legacy per-attempt name so old
+      // sessions still work.
+      branch_name: linkedWorkItem.workItemCode
+        ? `wi/${linkedWorkItem.workItemCode}`
+        : (isDeveloperStage ? workbenchBranchName(session, stage, attempt, linkedWorkItem) : undefined),
+      workitem_branch: linkedWorkItem.workItemCode ? `wi/${linkedWorkItem.workItemCode}` : undefined,
       source_type: usesRepoContext ? session.sourceType.toLowerCase() : undefined,
       source_uri: usesRepoContext ? session.sourceUri : undefined,
       source_ref: usesRepoContext ? session.sourceRef ?? undefined : undefined,

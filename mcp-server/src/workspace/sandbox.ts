@@ -82,15 +82,23 @@ export function workspaceRootForRunContext(req: WorkspaceRootRequest): string {
     || req.workItemId?.trim();
   if (!identity) return baseSandboxRoot();
   const base = path.join(workItemWorkspacesRoot(), safeWorkspaceSegment(identity, "workitem"));
-  // M72 Slice C — Append the attempt segment when caller supplied an
-  // attemptId so concurrent attempts on the same WorkItem land in
-  // separate directories. safeWorkspaceSegment strips path separators
-  // and unsafe chars; `attempts/` is hardcoded so the parent directory
-  // is grep-able for the janitor (M72C-followup) to enumerate.
-  const attempt = req.attemptId?.trim();
-  if (attempt) {
-    return path.join(base, "attempts", safeWorkspaceSegment(attempt, "attempt"));
-  }
+  // M81 P2 (2026-05-26) — Per-workitem layout. Previously M72 Slice C
+  // appended `attempts/<attemptId>/` so concurrent attempts on the
+  // same WorkItem couldn't stomp each other's worktrees. That isolation
+  // turned out to ALSO split a single logical run's tools across
+  // multiple worktrees when fast retries triggered a second mcp-server
+  // attempt mid-flight (repro: dev attempts c9309738 + 6cc728c0,
+  // 2026-05-26 — edits landed on worktree 3ca9692f while
+  // finish_work_branch ran against 5536e63e). The new no-parallel-
+  // attempts guard in workgraph-api (e8cb38a) eliminates the original
+  // concurrency need, so collapsing the layout to a single per-
+  // workitem worktree is now safe and aligns with the long-lived
+  // `wi/<workitemCode>` branch model from M81 P1.
+  //
+  // attemptId is kept on the interface for backward compat but
+  // intentionally ignored. Callers that still pass it just see the
+  // workitem root, which is the desired behavior.
+  void req.attemptId;
   return base;
 }
 

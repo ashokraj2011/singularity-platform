@@ -4,7 +4,7 @@ import {
   listIndexedFiles, statsForIndex,
 } from "../workspace/ast-index";
 import {
-  branchNameForWork, finishWorkBranch, prepareWorkBranch,
+  branchNameForWork, currentBranch, finishWorkBranch, prepareWorkBranch,
 } from "../workspace/git-workspace";
 
 export const indexWorkspaceTool: ToolHandler = {
@@ -266,7 +266,21 @@ export const finishWorkBranchTool: ToolHandler = {
   },
   async execute(args) {
     const before = await statsForIndex();
-    const push = args.push === true;
+    // (M81 P3, 2026-05-26) Auto-push when the worktree is on a long-lived
+    // workitem branch. The wi/<workitemCode> branch is the canonical
+    // destination for the workitem's history, so each successful
+    // finish_work_branch should land both the commit AND the push so
+    // downstream stages (security/qa) running on different machines or
+    // freshly-cloned worktrees see the diff. Agent can still opt OUT
+    // by explicitly passing push=false (e.g., for "preview commit only"
+    // dry-runs).
+    let push = args.push === true;
+    if (args.push === undefined) {
+      const activeBranch = await currentBranch().catch(() => undefined);
+      if (activeBranch && activeBranch.startsWith("wi/")) {
+        push = true;
+      }
+    }
     const remote = typeof args.remote === "string" ? args.remote : undefined;
     const verificationReceipts = Array.isArray(args.verificationReceipts)
       ? args.verificationReceipts.filter((receipt): receipt is Record<string, unknown> => Boolean(receipt && typeof receipt === "object" && !Array.isArray(receipt)))

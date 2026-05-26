@@ -54,6 +54,8 @@ import { getLocalTool } from "../tools/registry";
 import { recordToolInvocation } from "../audit/store";
 import { branchNameForWork, prepareWorkBranch } from "../workspace/git-workspace";
 import { withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbox";
+import { ensureWorkspaceSource } from "../workspace/source-materializer";
+import { indexWorkspace } from "../workspace/ast-index";
 
 export const toolRunRouter = Router();
 
@@ -82,9 +84,94 @@ export const ToolRunSchema = z.object({
       // (workgraph-api's `attemptId`) via the alias below.
       attemptId: z.string().optional(),
       attempt_id: z.string().optional(),
+      // (2026-05-24) Workspace source fields — when present, the runner
+      // calls ensureWorkspaceSource() before tool dispatch so the github
+      // (or local) repo is checked out into the sandbox. Without these,
+      // tools like repo_map / list_indexed_files run against an empty
+      // workspace because the legacy /mcp/invoke path that did the
+      // materialization was deleted in M71 Slice I but the replacement
+      // never inherited the responsibility. Both camelCase
+      // (workgraph-api's `sourceType`) and snake_case (context-fabric's
+      // `source_type`) are accepted to match the existing alias
+      // convention on attemptId/attempt_id.
+      sourceType: z.string().optional(),
+      source_type: z.string().optional(),
+      sourceUri: z.string().optional(),
+      source_uri: z.string().optional(),
+      sourceRef: z.string().optional(),
+      source_ref: z.string().optional(),
+      // M81 P4 (2026-05-26) — long-lived workitem branch. workgraph-api
+      // computes `wi/<workItemCode>` and sends it via workitem_branch
+      // (snake_case); ensureWorkspaceSource aligns the worktree HEAD
+      // with this branch so every stage attempt shares its history.
+      workitemBranch: z.string().optional(),
+      workitem_branch: z.string().optional(),
     })
     .default({}),
 });
+
+/**
+ * (2026-05-25) Lenient arg-name normalization.
+ *
+ * Models routinely emit camelCase / snake_case / "common name" aliases
+ * even when the tool's input_schema declares a specific field name.
+ * Claude haiku, GPT, and Copilot all have ingrained habits from other
+ * MCP-style toolkits (VS Code MCP, Cursor, gh copilot CLI) that use
+ * `filePath` / `file_path` / `diff` / `contents` etc. The model emits
+ * those aliases, the tool handler reads `args.path` (or whatever the
+ * canonical name is), gets `undefined`, and returns
+ * "path is required" — wasting a turn AND the agent has to figure out
+ * which spelling to try next.
+ *
+ * Rather than play whack-a-mole at each tool handler OR force a stricter
+ * schema validation (which Anthropic's input_schema doesn't strictly
+ * enforce anyway — it's a hint), we normalize aliases ONCE here, before
+ * dispatch. The canonical name wins when both are present. Aliases that
+ * don't apply to the target tool are harmlessly ignored by handlers
+ * that don't read them.
+ *
+ * Discovered by the 2026-05-25 develop-stage RCA: 8 of 15 mutation
+ * tool calls failed with "path is required" because Claude emitted
+ * `filePath` instead of `path`. Same model produced perfect
+ * `oldText`/`newText` shape — only the path alias was wrong.
+ */
+const ARG_ALIASES: Record<string, string[]> = {
+  // Path aliases — every file-targeting tool needs this.
+  path: ["filePath", "file_path", "filepath", "file"],
+  // Patch aliases — apply_patch.
+  patch: ["diff", "unified_diff", "unifiedDiff", "patchContent", "patch_content"],
+  // Content aliases — write_file.
+  content: ["contents", "body", "fileContent", "file_content", "text"],
+  // replace_text — both halves can come in snake_case.
+  oldText: ["old_text", "oldtext", "before", "search"],
+  newText: ["new_text", "newtext", "after", "replace"],
+  // replace_range — line numbers.
+  startLine: ["start_line", "startline", "from", "fromLine", "from_line"],
+  endLine: ["end_line", "endline", "to", "toLine", "to_line"],
+  replacement: ["replacement_text", "replacementText", "newContent", "new_content"],
+};
+
+export function normalizeToolArgs(args: Record<string, unknown>): {
+  normalized: Record<string, unknown>;
+  applied: Array<{ from: string; to: string }>;
+} {
+  const out: Record<string, unknown> = { ...args };
+  const applied: Array<{ from: string; to: string }> = [];
+  for (const [canonical, aliases] of Object.entries(ARG_ALIASES)) {
+    // Canonical already present (non-null/undefined/empty-string)? Keep it.
+    if (out[canonical] !== undefined && out[canonical] !== null && out[canonical] !== "") {
+      continue;
+    }
+    for (const alias of aliases) {
+      if (out[alias] !== undefined && out[alias] !== null) {
+        out[canonical] = out[alias];
+        applied.push({ from: alias, to: canonical });
+        break;
+      }
+    }
+  }
+  return { normalized: out, applied };
+}
 
 // M75 Slice 2 — outcome of one tool-run dispatch, in the shape both the
 // HTTP route and the WebSocket bridge expect to wrap (HTTP nests under
@@ -139,9 +226,67 @@ export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promis
     attemptId,
   });
 
+  // (2026-05-24) Workspace source materialization. The legacy
+  // /mcp/invoke endpoint did this before every agent loop; the new
+  // /mcp/tool-run path inherited none of it after the M71 cutover,
+  // leaving every tool to run against an empty sandbox. The materializer
+  // is idempotent (no-op when the workspace already has the right git
+  // remote and is clean), so calling it on every tool dispatch costs
+  // ~one git status check on the warm path and a one-time clone on the
+  // cold path. Without this, repo_map/list_indexed_files/read_file all
+  // see zero files and the ARCHITECT/DEVELOPER stages stall asking for
+  // clarification because they can't see the source.
+  const sourceType =
+    body.run_context.sourceType ?? body.run_context.source_type;
+  const sourceUri =
+    body.run_context.sourceUri ?? body.run_context.source_uri;
+  const sourceRef =
+    body.run_context.sourceRef ?? body.run_context.source_ref;
+  // M81 P4 (2026-05-26) — Long-lived workitem branch. workgraph-api now
+  // sends `workitem_branch: wi/<workItemCode>` for every stage attempt
+  // so the source-materializer (P1) aligns the worktree HEAD with this
+  // branch — preserving cross-stage continuity. Accept the camelCase
+  // alias too in case future callers normalize differently.
+  const workitemBranch =
+    body.run_context.workitemBranch ?? body.run_context.workitem_branch;
+
   const start = Date.now();
   try {
     const r = await withSandboxRoot(workspaceRoot, async () => {
+      if (sourceUri) {
+        try {
+          await ensureWorkspaceSource(
+            { sourceType, sourceUri, sourceRef, workitemBranch },
+            correlation,
+          );
+        } catch (err) {
+          // Materialization failure should NOT crash the tool dispatch
+          // — some tools (e.g. detect-no-tests-ran) work fine against
+          // an empty workspace. Surface the failure as a console
+          // warning so operators see it without breaking the loop.
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[tool-run] ensureWorkspaceSource failed (tool=${body.tool_name}): ${(err as Error).message}`,
+          );
+        }
+        // (2026-05-24) AST index bootstrap. Mirrors the legacy
+        // /mcp/invoke path (invoke.ts:3021 "invoke_start" call) so
+        // repo_map / symbol_search / list_indexed_files actually see
+        // the files we just materialized. Without this, the agent gets
+        // `totals.indexedFiles: 0` even when the workspace has real
+        // source files on disk and concludes the workspace is empty.
+        // indexWorkspace is idempotent — re-walking the tree is cheap
+        // on the warm path and the upsert per file is the same cost as
+        // the first call.
+        try {
+          await indexWorkspace("tool_run_bootstrap");
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[tool-run] indexWorkspace failed (tool=${body.tool_name}): ${(err as Error).message}`,
+          );
+        }
+      }
       const branchRequest = {
         workflowInstanceId: body.run_context.workflowInstanceId ?? body.run_context.runId,
         nodeId: body.run_context.nodeId ?? body.run_context.runStepId,
@@ -152,6 +297,21 @@ export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promis
       };
       if (body.tool_name === "finish_work_branch" && branchNameForWork(branchRequest)) {
         await prepareWorkBranch(branchRequest, correlation);
+      }
+      // (2026-05-25) Normalize common arg-name aliases before dispatch.
+      // The model sometimes emits `filePath` instead of `path`, `diff`
+      // instead of `patch`, etc. Without this every alias mismatch
+      // burned a turn on "path is required" errors. We mutate body.args
+      // in place so the local audit record + tool handler + output all
+      // see the same normalized shape, then log when the normalization
+      // actually fired so operators can spot misbehaving models.
+      const { normalized, applied } = normalizeToolArgs(body.args);
+      if (applied.length > 0) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[tool-run] normalized args for tool=${body.tool_name}: ${applied.map((a) => `${a.from}->${a.to}`).join(", ")}`,
+        );
+        body.args = normalized;
       }
       return handler.execute(body.args);
     });
