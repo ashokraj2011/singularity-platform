@@ -93,6 +93,18 @@ const IDS = {
     QA_EXPLORE:      "00000000-0000-0000-0000-0000071000f2",
     QA_VERIFY:       "00000000-0000-0000-0000-0000071000f4",
     QA_SELF_REVIEW:  "00000000-0000-0000-0000-0000071000f6",
+    // M80 (2026-05-26) — SECURITY phase profiles. UUID suffix uses 'e' for
+    // sEcurity (s is not hex) and the same phase-digit convention as QA/DEV.
+    // Reviewer roles use 3 phases: PLAN/EXPLORE/SELF_REVIEW; there's no
+    // ACT (read-only) and no VERIFY (review-only stages).
+    SEC_PLAN:        "00000000-0000-0000-0000-0000071000e1",
+    SEC_EXPLORE:     "00000000-0000-0000-0000-0000071000e2",
+    SEC_SELF_REVIEW: "00000000-0000-0000-0000-0000071000e6",
+    // DEVOPS phase profiles. UUID suffix 'b' for devOps (o is not a hex digit
+    // and 0 is already used; 'b' is the next free hex digit).
+    DOP_PLAN:        "00000000-0000-0000-0000-0000071000b1",
+    DOP_EXPLORE:     "00000000-0000-0000-0000-0000071000b2",
+    DOP_SELF_REVIEW: "00000000-0000-0000-0000-0000071000b6",
   },
   // M71 Slice E — Per-phase StagePromptBindings. Same suffix scheme as
   // phaseProfiles, just shifted to the 7101 prefix to make them distinct
@@ -112,6 +124,13 @@ const IDS = {
     QA_EXPLORE:      "00000000-0000-0000-0000-0000071010f2",
     QA_VERIFY:       "00000000-0000-0000-0000-0000071010f4",
     QA_SELF_REVIEW:  "00000000-0000-0000-0000-0000071010f6",
+    // M80 (2026-05-26) — SECURITY + DEVOPS phase bindings.
+    SEC_PLAN:        "00000000-0000-0000-0000-0000071010e1",
+    SEC_EXPLORE:     "00000000-0000-0000-0000-0000071010e2",
+    SEC_SELF_REVIEW: "00000000-0000-0000-0000-0000071010e6",
+    DOP_PLAN:        "00000000-0000-0000-0000-0000071010b1",
+    DOP_EXPLORE:     "00000000-0000-0000-0000-0000071010b2",
+    DOP_SELF_REVIEW: "00000000-0000-0000-0000-0000071010b6",
   },
 } as const;
 
@@ -890,6 +909,167 @@ const loopQaSelfReviewTask = [
   ),
 ].join("\n");
 
+// ── SECURITY / DEVOPS (reviewer roles, M80 2026-05-26) ────────────────────
+//
+// SECURITY and DEVOPS share the ReviewPlanReceipt shape and the read-only
+// review stage policy. Their phase templates differ from QA only in
+// vocabulary — QA inspects test coverage, SECURITY inspects threats and
+// dependencies, DEVOPS inspects deployability and rollback.
+//
+// Without these explicit bindings the resolver falls back to LOOP_DEFAULT,
+// which doesn't describe the receipt schema at all. Reviewer agents then
+// invent free-form output like `{summary, findings, risk_level}` with no
+// `target_files`, hitting "target_files: Field required" on every attempt
+// (repro 2026-05-26 on session ef0e849e, security-review attempts
+// ca36dffe/5bfe05dc/b08d8f61/a0c6cde8 all failed this way).
+
+const loopSecurityPlanTask = [
+  "Phase: PLAN — Security Review stage",
+  "",
+  "Goal: {{goal}}",
+  "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
+  "",
+  "Approved artifact context (the developer's work to review):",
+  "{{priorApprovedArtifacts}}",
+  "",
+  "Your task: plan the security review scope. Identify which files carry",
+  "security-sensitive surface (auth, input parsing, deserialization, file",
+  "I/O, network calls, secrets handling, dependencies) and what you'll",
+  "inspect for each.",
+  "",
+  "Required output fields (ReviewPlanReceipt shape — DO NOT improvise):",
+  "- target_files: list of repo-relative paths you'll inspect (REQUIRED — must be a non-empty list of strings).",
+  "- review_strategy: { approach: '<SAST/manual/dependency-scan>', focus_areas: ['<area>'], scanners: ['<tool>'] }",
+  "- risk_level: 'low' | 'medium' | 'high' — your current best guess; refine in SELF_REVIEW.",
+  "- assumptions: list of strings.",
+  "- open_questions: list of strings (one per blocking unknown).",
+  "",
+  "Allowed tools: repo_map, find_symbol, list_indexed_files, read_file, get_ast_slice, search_code, grep_lines, review_diff.",
+  "",
+  "Read the developer's diff FIRST via review_diff so you know what changed before deciding which files matter for security.",
+  phaseProtocol(
+    'target_files: ["<path1>", "<path2>"], review_strategy: { approach: "manual+SAST", focus_areas: ["input validation", "dependency drift"], scanners: ["semgrep"] }, risk_level: "low|medium|high", assumptions: ["<assumption>"], open_questions: ["<question>"]',
+    "EXPLORE",
+  ),
+].join("\n");
+
+const loopSecurityExploreTask = [
+  "Phase: EXPLORE — Security Review stage",
+  "",
+  "Goal: {{goal}}",
+  "",
+  "Inspect the files you identified in PLAN. Look specifically for:",
+  "- input validation gaps (especially around user-controlled strings, paths, queries)",
+  "- authorization/authentication bypasses introduced by the diff",
+  "- dependency additions / version bumps that affect known CVEs",
+  "- data exposure (logs, error messages, response bodies)",
+  "- secrets, tokens, or keys appearing in source",
+  "",
+  "Required output: context_used array (same shape as Developer EXPLORE).",
+  "",
+  "Allowed tools: read_file, get_ast_slice, search_code, grep_lines, review_diff.",
+  "",
+  phaseProtocol(
+    'context_used: [{type: "ast_slice|symbol|file|repo_map|dependency_slice", target: "<name or path>", reason: "<why for security>", token_estimate: 0}], implementation_findings: ["<finding 1>"], updated_target_files: ["<path>"]',
+    "SELF_REVIEW",
+  ),
+].join("\n");
+
+const loopSecuritySelfReviewTask = [
+  "Phase: SELF_REVIEW — Security Review stage",
+  "",
+  "Goal: {{goal}}",
+  "",
+  "Review complete. Compose the security-review certification.",
+  "",
+  "Required output fields:",
+  "- recommended_for_approval: true ONLY if every security-sensitive surface in the diff passed inspection. Be conservative — uncertainty = false.",
+  "- acceptance_criteria_check: array of {criterion, status, evidence}; one entry per applicable security criterion (auth, input-val, dep-risk, data-exposure, secrets).",
+  "- risk_summary: { risk_level: 'low|medium|high', risks: ['<risk1>', ...], rollback_notes: '<text>' }",
+  "- verification_summary: short paragraph on what passed/failed and what (if anything) needs follow-up.",
+  "",
+  "Allowed tools: read_file, review_diff.",
+  "",
+  "If you found a vulnerability or risk that the diff introduces, set recommended_for_approval=false and put the specific issue in risk_summary.risks with citation to file:line.",
+  phaseProtocol(
+    'recommended_for_approval: true, acceptance_criteria_check: [{criterion: "no SQL injection introduced", status: "met|not_met|uncertain", evidence: "<file:line or rationale>"}], risk_summary: {risk_level: "low|medium|high", risks: ["<risk>"], rollback_notes: "<text>"}, verification_summary: "<short paragraph>"',
+    "FINALIZE",
+  ),
+].join("\n");
+
+const loopDevopsPlanTask = [
+  "Phase: PLAN — Release Readiness stage",
+  "",
+  "Goal: {{goal}}",
+  "Stage: {{stageLabel}} ({{stageKey}}) — role {{agentRole}}",
+  "",
+  "Approved artifact context (the change being released):",
+  "{{priorApprovedArtifacts}}",
+  "",
+  "Your task: plan release-readiness inspection. Identify which files",
+  "and config affect deployability — Dockerfiles, k8s manifests, CI/CD",
+  "config, runbooks, environment-variable schemas, feature flags, schema",
+  "migrations — and what you'll check for each.",
+  "",
+  "Required output fields (ReviewPlanReceipt shape — DO NOT improvise):",
+  "- target_files: list of repo-relative paths you'll inspect (REQUIRED — must be a non-empty list of strings).",
+  "- review_strategy: { approach: '<config-review/runbook-check/...>', focus_areas: ['rollback', 'observability', 'environment'], scanners: ['<tool>'] }",
+  "- risk_level: 'low' | 'medium' | 'high'.",
+  "- assumptions: list of strings.",
+  "- open_questions: list of strings.",
+  "",
+  "Allowed tools: repo_map, find_symbol, list_indexed_files, read_file, get_ast_slice, search_code, grep_lines, review_diff.",
+  "",
+  "Read the developer's diff FIRST via review_diff. Pay special attention to any change in build/deploy/config files — those are your primary scope.",
+  phaseProtocol(
+    'target_files: ["<path1>", "<path2>"], review_strategy: { approach: "config+runbook", focus_areas: ["rollback safety", "observability"], scanners: [] }, risk_level: "low|medium|high", assumptions: ["<assumption>"], open_questions: ["<question>"]',
+    "EXPLORE",
+  ),
+].join("\n");
+
+const loopDevopsExploreTask = [
+  "Phase: EXPLORE — Release Readiness stage",
+  "",
+  "Goal: {{goal}}",
+  "",
+  "Inspect the deployability surface. Look for:",
+  "- breaking schema migrations (irreversible drops, type narrowing)",
+  "- new environment variables without defaults or docs",
+  "- feature flags missing rollout/rollback notes",
+  "- observability gaps (no metric / log / trace for the new code path)",
+  "- runbook impact (does an on-call need to know something new?)",
+  "",
+  "Required output: context_used array (same shape as Developer EXPLORE).",
+  "",
+  "Allowed tools: read_file, get_ast_slice, search_code, grep_lines, review_diff.",
+  phaseProtocol(
+    'context_used: [{type: "ast_slice|symbol|file|repo_map|dependency_slice", target: "<name or path>", reason: "<why for deployability>", token_estimate: 0}], implementation_findings: ["<finding>"], updated_target_files: ["<path>"]',
+    "SELF_REVIEW",
+  ),
+].join("\n");
+
+const loopDevopsSelfReviewTask = [
+  "Phase: SELF_REVIEW — Release Readiness stage",
+  "",
+  "Goal: {{goal}}",
+  "",
+  "Review complete. Compose the release-readiness certification.",
+  "",
+  "Required output fields:",
+  "- recommended_for_approval: true ONLY if rollback path is clear AND observability covers the new code AND no irreversible migrations land without a 2-phase plan.",
+  "- acceptance_criteria_check: array of {criterion, status, evidence}; one entry per relevant readiness criterion (rollback, observability, environment, runbook).",
+  "- risk_summary: { risk_level, risks, rollback_notes: '<concrete steps to roll back>' }",
+  "- verification_summary: short paragraph on what's release-ready and what isn't.",
+  "",
+  "Allowed tools: read_file, review_diff.",
+  "",
+  "rollback_notes must be CONCRETE — not 'revert the commit', but 'feature flag X off, run migration Y down, restart pods Z'.",
+  phaseProtocol(
+    'recommended_for_approval: true, acceptance_criteria_check: [{criterion: "rollback plan is concrete", status: "met|not_met|uncertain", evidence: "<cite runbook or rationale>"}], risk_summary: {risk_level: "low|medium|high", risks: ["<risk>"], rollback_notes: "<concrete steps>"}, verification_summary: "<short paragraph>"',
+    "FINALIZE",
+  ),
+].join("\n");
+
 // PHASE_PROMPTS — the registry the seed loop iterates. Each entry creates one
 // PromptProfile + one StagePromptBinding row. Stable IDs come from
 // IDS.phaseProfiles and IDS.phaseBindings; templates come from the constants
@@ -1086,6 +1266,84 @@ const PHASE_PROMPTS: PhasePromptEntry[] = [
     description: "M71 — QA in SELF_REVIEW: certification + traceability matrix.",
     taskTemplate: loopQaSelfReviewTask,
     roleLayerId: IDS.layers.role.QA,
+    attachMutationPolicy: false,
+  },
+  // SECURITY — 3 phases (PLAN, EXPLORE, SELF_REVIEW). M80 (2026-05-26):
+  // Previously no role-specific bindings → resolver fell back to
+  // LOOP_DEFAULT which doesn't describe ReviewPlanReceipt, agent
+  // submitted free-form output, every attempt failed
+  // "target_files: Field required".
+  {
+    profileId: IDS.phaseProfiles.SEC_PLAN,
+    bindingId: IDS.phaseBindings.SEC_PLAN,
+    stageKey: "loop.stage",
+    agentRole: "SECURITY",
+    phase: "PLAN",
+    profileName: "Security PLAN phase profile",
+    description: "M80 — Security reviewer in PLAN: define scope (target_files), focus areas, scanners.",
+    taskTemplate: loopSecurityPlanTask,
+    roleLayerId: IDS.layers.role.SECURITY,
+    attachMutationPolicy: false,
+  },
+  {
+    profileId: IDS.phaseProfiles.SEC_EXPLORE,
+    bindingId: IDS.phaseBindings.SEC_EXPLORE,
+    stageKey: "loop.stage",
+    agentRole: "SECURITY",
+    phase: "EXPLORE",
+    profileName: "Security EXPLORE phase profile",
+    description: "M80 — Security reviewer in EXPLORE: inspect security-sensitive surface.",
+    taskTemplate: loopSecurityExploreTask,
+    roleLayerId: IDS.layers.role.SECURITY,
+    attachMutationPolicy: false,
+  },
+  {
+    profileId: IDS.phaseProfiles.SEC_SELF_REVIEW,
+    bindingId: IDS.phaseBindings.SEC_SELF_REVIEW,
+    stageKey: "loop.stage",
+    agentRole: "SECURITY",
+    phase: "SELF_REVIEW",
+    profileName: "Security SELF_REVIEW phase profile",
+    description: "M80 — Security reviewer in SELF_REVIEW: certification + risk summary.",
+    taskTemplate: loopSecuritySelfReviewTask,
+    roleLayerId: IDS.layers.role.SECURITY,
+    attachMutationPolicy: false,
+  },
+  // DEVOPS — 3 phases (PLAN, EXPLORE, SELF_REVIEW). Same rationale as SECURITY.
+  {
+    profileId: IDS.phaseProfiles.DOP_PLAN,
+    bindingId: IDS.phaseBindings.DOP_PLAN,
+    stageKey: "loop.stage",
+    agentRole: "DEVOPS",
+    phase: "PLAN",
+    profileName: "DevOps PLAN phase profile",
+    description: "M80 — DevOps reviewer in PLAN: define release-readiness scope.",
+    taskTemplate: loopDevopsPlanTask,
+    roleLayerId: IDS.layers.role.DEVOPS,
+    attachMutationPolicy: false,
+  },
+  {
+    profileId: IDS.phaseProfiles.DOP_EXPLORE,
+    bindingId: IDS.phaseBindings.DOP_EXPLORE,
+    stageKey: "loop.stage",
+    agentRole: "DEVOPS",
+    phase: "EXPLORE",
+    profileName: "DevOps EXPLORE phase profile",
+    description: "M80 — DevOps reviewer in EXPLORE: inspect deployability surface.",
+    taskTemplate: loopDevopsExploreTask,
+    roleLayerId: IDS.layers.role.DEVOPS,
+    attachMutationPolicy: false,
+  },
+  {
+    profileId: IDS.phaseProfiles.DOP_SELF_REVIEW,
+    bindingId: IDS.phaseBindings.DOP_SELF_REVIEW,
+    stageKey: "loop.stage",
+    agentRole: "DEVOPS",
+    phase: "SELF_REVIEW",
+    profileName: "DevOps SELF_REVIEW phase profile",
+    description: "M80 — DevOps reviewer in SELF_REVIEW: release-readiness certification.",
+    taskTemplate: loopDevopsSelfReviewTask,
+    roleLayerId: IDS.layers.role.DEVOPS,
     attachMutationPolicy: false,
   },
 ];
