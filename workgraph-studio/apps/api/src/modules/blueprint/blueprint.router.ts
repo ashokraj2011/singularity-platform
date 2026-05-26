@@ -2237,6 +2237,34 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
     throw new ValidationError(`Stage ${stage.label} reached the max loop count (${state.loopDefinition.maxLoopsPerStage})`)
   }
 
+  // (2026-05-26) Refuse to start a new attempt while another is in-flight.
+  //
+  // Without this guard, a fast retry (user clicks "re-run" while the
+  // workbench still shows the running attempt, OR a server-side polling
+  // race) creates two concurrent attempts for the same stage. mcp-server
+  // allocates a fresh per-attempt worktree for each, so the agents run
+  // in parallel on DIFFERENT worktrees. The mutating tools land their
+  // edits in one worktree while finish_work_branch runs against another,
+  // producing the "success=True, committed=false, no changes to commit"
+  // failure mode — the tool literally has nothing to commit because the
+  // edits are stranded on a different worktree.
+  //
+  // Repro 2026-05-26 session ef0e849e: dev attempts c9309738 (06:43)
+  // and 6cc728c0 (06:45) overlapped by ~3 minutes; finish_work_branch
+  // on c9309738 landed in worktree 5536e63e but the replace_text edits
+  // had gone to worktree 3ca9692f.
+  const inflight = priorAttempts.find(a => a.status === 'RUNNING' || a.status === 'PAUSED')
+  if (inflight) {
+    throw new ValidationError(
+      `Stage ${stage.label} already has an in-flight attempt ` +
+      `(#${inflight.attemptNumber}, status=${inflight.status}). ` +
+      `Wait for it to finish or fail before starting another, or cancel ` +
+      `it explicitly via the workbench. Parallel attempts cause worktree ` +
+      `splits where edits land on one worktree and finish_work_branch ` +
+      `runs against another.`,
+    )
+  }
+
   const attempt: StageAttempt = {
     id: crypto.randomUUID(),
     stageKey: stage.key,
