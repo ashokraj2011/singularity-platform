@@ -218,15 +218,15 @@ def test_advance_phase_records_receipt_and_history():
 
 def test_advance_phase_sets_approval_pending_on_self_review_recommend():
     """SELF_REVIEW with recommended_for_approval=True flips the flag that
-    workgraph-api uses to open the approval gate.
+    the workbench's stage-level gate uses to surface approval to a human.
 
-    (2026-05-26) The receipt is produced when the agent submits FROM
-    SELF_REVIEW (not when entering it) — the SelfReviewReceipt is
-    the output of the SELF_REVIEW turn. The phase machine must
-    pause at SELF_REVIEW with approval_pending=True instead of
-    advancing to FINALIZE, so the human approval gate can open
-    and a subsequent resume call can give the agent a turn in
-    FINALIZE phase to call finish_work_branch.
+    The phase machine itself advances to FINALIZE in the same call —
+    the workgraph-api doesn't have a per-stage approval-resume path,
+    so clamping would deadlock the workflow. Instead the loop driver
+    gives the agent a turn IN FINALIZE phase (see
+    stage_driver._is_terminal_state) where it calls finish_work_branch
+    and submits the actual FinalizeReceipt. The approval_pending flag
+    is preserved for the workbench's downstream rendering.
     """
     state = PhaseState.fresh("loop.stage", "DEVELOPER")
     state = advance_phase(state, Phase.EXPLORE)
@@ -235,17 +235,16 @@ def test_advance_phase_sets_approval_pending_on_self_review_recommend():
     state = advance_phase(
         state, Phase.SELF_REVIEW, receipt={"kind": "verification_receipt"}
     )
-    # Now IN SELF_REVIEW. Agent submits its SelfReviewReceipt with
-    # recommended_for_approval=true and asks to advance to FINALIZE.
-    # The phase machine must clamp to SELF_REVIEW + set the flag.
+    # Now IN SELF_REVIEW. Agent submits SelfReviewReceipt with
+    # recommended_for_approval=true and next_phase=FINALIZE.
     state = advance_phase(
         state,
         Phase.FINALIZE,
         receipt={"kind": "self_review_receipt", "recommended_for_approval": True},
     )
     assert state.approval_pending is True
-    assert state.current_phase is Phase.SELF_REVIEW, (
-        "loop must stay at SELF_REVIEW so the human approval gate can open; "
+    assert state.current_phase is Phase.FINALIZE, (
+        "phase advances; workgraph approval gate uses approval_pending separately; "
         f"got {state.current_phase}"
     )
 

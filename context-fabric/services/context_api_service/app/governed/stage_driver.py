@@ -633,9 +633,30 @@ def _render_eval_feedback_message(feedback: Any) -> dict[str, Any] | None:
 
 
 def _is_terminal_state(state: PhaseState) -> bool:
-    """The stage is done when the machine reaches FINALIZE — there's no
-    way out of FINALIZE in the transition table."""
-    return state.current_phase is Phase.FINALIZE
+    """The stage is done when the machine reaches FINALIZE AND the agent
+    has actually produced a FinalizeReceipt in FINALIZE phase.
+
+    (2026-05-26) Previously this returned True the moment the phase
+    machine entered FINALIZE — meaning the SelfReviewReceipt's
+    submit_phase_output with next_phase=FINALIZE caused the loop to
+    exit immediately, in the same turn. The agent never got a turn
+    IN FINALIZE phase to call finish_work_branch, so the work was
+    never committed and downstream stages saw an empty diff.
+
+    The new check requires both:
+      1. The phase machine is at FINALIZE (transition table exited)
+      2. At least one receipt has been recorded in the FINALIZE bucket
+         — i.e. the agent took a turn in FINALIZE, called
+         finish_work_branch (or git_commit), and submitted the
+         FinalizeReceipt with the resulting branch_name/commit_sha.
+
+    Until both are true, the loop continues so the FINALIZE turn can
+    actually happen.
+    """
+    if state.current_phase is not Phase.FINALIZE:
+        return False
+    finalize_receipts = state.receipts.get(Phase.FINALIZE.value)
+    return bool(finalize_receipts)
 
 
 # ── M74 Phase 1D — stagnant-phase helpers ──────────────────────────────────

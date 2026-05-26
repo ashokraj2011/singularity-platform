@@ -290,30 +290,23 @@ def advance_phase(
     if state.current_phase is Phase.SELF_REVIEW and isinstance(receipt, dict):
         approval_pending = bool(receipt.get("recommended_for_approval", False))
 
-    # (2026-05-26) When SELF_REVIEW says "approve me", DON'T advance the
-    # phase machine. The spec design is that human approval happens
-    # BETWEEN SELF_REVIEW and FINALIZE — the operator clicks approve,
-    # workgraph-api clears approval_pending, then a resume execute call
-    # gets a turn IN FINALIZE phase where the agent can call
-    # finish_work_branch. Without this guard the loop would advance
-    # straight to FINALIZE, hit _is_terminal_state in stage_driver,
-    # and exit FINALIZED in the same turn the SelfReviewReceipt was
-    # submitted — meaning the agent never gets to call
-    # finish_work_branch and the work never gets committed. See
-    # blueprint.router's finishWorkBranchInvoked guard, which catches
-    # the symptom; this is the structural fix that lets the system
-    # actually reach FINALIZE through a human approval step.
-    effective_next_phase = next_phase
-    if (
-        state.current_phase is Phase.SELF_REVIEW
-        and next_phase is Phase.FINALIZE
-        and approval_pending
-    ):
-        effective_next_phase = Phase.SELF_REVIEW
+    # (2026-05-26) Approval_pending is recorded for workgraph-api's
+    # downstream gating, but we DON'T clamp the phase here. The
+    # workgraph-api doesn't have a per-stage approval-resume path —
+    # it treats stop_reason=COMPLETED as "advance to next stage"
+    # regardless of approval_pending. If we clamped to SELF_REVIEW
+    # here, dev would pause forever (no resume path exists) and
+    # downstream stages would never see a finished branch.
+    #
+    # Instead the loop driver gives the agent a turn IN FINALIZE
+    # phase (stage_driver._has_finalize_receipt check) so
+    # finish_work_branch actually runs in the same execute call.
+    # The human approval still happens at the workbench's
+    # stage-level gate (approval_pending surfaces there).
 
     return replace(
         state,
-        current_phase=effective_next_phase,
+        current_phase=next_phase,
         repair_attempts=new_repair,
         plan_rewinds=new_plan_rewinds,
         receipts=receipts,
