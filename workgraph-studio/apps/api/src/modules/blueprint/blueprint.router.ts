@@ -72,8 +72,17 @@ const WORKBENCH_DEFAULT_MAX_STEPS = positiveIntEnv('WORKBENCH_MAX_STEPS', 14)
 // files (2-3 steps), make N edits (N steps), add tests (1-2 steps), run
 // verification (1 step), finish (1 step). 16 was tight — Sonnet hit max_steps
 // with the replace_text call already queued in step 15 (see trace from
-// 2026-05-21 10:11). 28 gives ~50% headroom over the observed need.
-const WORKBENCH_DEVELOPER_MAX_STEPS = positiveIntEnv('WORKBENCH_DEVELOPER_MAX_STEPS', 28)
+// 2026-05-21 10:11). 28 gave ~50% headroom over the observed need.
+//
+// M88 (2026-05-27) — bumped 28 → 40 because the M86 per-phase budgets
+// sum to PLAN(5) + EXPLORE(10) + ACT(8) + VERIFY(5) + REPAIR(8) +
+// SELF_REVIEW(3) = 39, and a real repair cycle adds another ACT+VERIFY
+// pass (~6 turns). Repro from develop attempt 19a55e93 (2026-05-27):
+// the agent walked PLAN→EXPLORE→ACT→VERIFY→REPAIR cleanly but hit
+// MAX_TURNS at exactly 28 the moment REPAIR completed, before the
+// second ACT cycle could apply the fix. 40 gives one full repair
+// round-trip plus a margin; per-phase budgets remain the actual stops.
+const WORKBENCH_DEVELOPER_MAX_STEPS = positiveIntEnv('WORKBENCH_DEVELOPER_MAX_STEPS', 40)
 // QA-review needs more steps than the read-only default because it runs
 // PLAN + EXPLORE + VERIFY + SELF_REVIEW (4 phases) and the VERIFY phase
 // burns 1-3 turns on long-running test commands (run_test / run_command
@@ -922,6 +931,100 @@ blueprintRouter.post('/sessions/:id/stages/:stageKey/reset-attempts', async (req
       removedAttemptIds: removedAttempts.map(attempt => attempt.id),
       removedArtifactCount: removedArtifactIds.length,
       snapshotsDeleted: true,
+    })
+    res.json(await loadSession(session.id, req.user!.userId))
+  } catch (err) { next(err) }
+})
+
+// ── M89.e — Cancel in-flight attempt ───────────────────────────────────
+//
+// /reset-attempts (above) is the nuclear option — it deletes every
+// attempt + artifact for the stage and clears the chat. Too coarse for
+// the common case: "the agent is stuck or wedged; let me kill it and
+// re-run without losing the prior history."
+//
+// This endpoint is surgical. It finds the single in-flight attempt
+// (status=RUNNING or PAUSED) for the stage and marks it FAILED with a
+// human-attributed reason. Other attempts in the array stay intact.
+// The next call to start a stage attempt will then succeed (the
+// in-flight guard at L2947 looks for RUNNING/PAUSED).
+//
+// We don't proactively reach into context-fabric to cancel the live
+// run — CF's governed loop has its own internal max_turns + HTTP
+// timeout (15min envelope) which will reap the orphaned worker
+// eventually. Cancelling here is about unwedging the platform's
+// view of state so the operator can move forward immediately.
+//
+// Repro 2026-05-27 (the trigger for this slice): workgraph-api got
+// restarted mid-attempt; the BlueprintSession.metadata kept the
+// attempt at status=RUNNING forever; "Snapshot + run" refused with
+// "in-flight attempt" until the row was hand-patched in SQL.
+blueprintRouter.post('/sessions/:id/stages/:stageKey/cancel-attempt', async (req, res, next) => {
+  try {
+    const sessionId = String(req.params.id)
+    const requestedStageKey = String(req.params.stageKey)
+    const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
+    if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+    assertBlueprintAccess(session, req.user!.userId)
+
+    const state = readLoopState(session)
+    const stage = state.loopDefinition.stages.find(item => item.key === requestedStageKey || item.key === slug(requestedStageKey))
+    if (!stage) throw new ValidationError(`Unknown Workbench stage: ${requestedStageKey}`)
+
+    const inflight = state.stageAttempts.find(
+      a => a.stageKey === stage.key && (a.status === 'RUNNING' || a.status === 'PAUSED'),
+    )
+    if (!inflight) {
+      // Nothing to do — return the session as-is.
+      res.json(await loadSession(session.id, req.user!.userId))
+      return
+    }
+
+    const now = new Date().toISOString()
+    const nextState: LoopState = {
+      ...state,
+      stageAttempts: state.stageAttempts.map(a =>
+        a.id === inflight.id
+          ? {
+              ...a,
+              status: 'FAILED' as const,
+              completedAt: now,
+              failureReason: 'Cancelled by operator',
+            }
+          : a,
+      ),
+      reviewEvents: [
+        ...state.reviewEvents,
+        {
+          id: crypto.randomUUID(),
+          type: 'STAGE_ATTEMPT_CANCELLED',
+          stageKey: stage.key,
+          message: `Cancelled in-flight attempt #${inflight.attemptNumber} for ${stage.label}`,
+          actorId: req.user!.userId,
+          payload: {
+            stageKey: stage.key,
+            stageLabel: stage.label,
+            attemptId: inflight.id,
+            attemptNumber: inflight.attemptNumber,
+            priorStatus: inflight.status,
+          },
+          createdAt: now,
+        },
+      ],
+    }
+    await prisma.blueprintSession.update({
+      where: { id: session.id },
+      data: { metadata: stateToMetadata(session, nextState) as Record<string, unknown> },
+    })
+    await recordBlueprintAudit(session.id, 'BlueprintStageAttemptCancelled', req.user!.userId, {
+      capabilityId: session.capabilityId,
+      workflowInstanceId: session.workflowInstanceId,
+      workflowNodeId: state.workflowNodeId,
+      stageKey: stage.key,
+      stageLabel: stage.label,
+      attemptId: inflight.id,
+      attemptNumber: inflight.attemptNumber,
+      priorStatus: inflight.status,
     })
     res.json(await loadSession(session.id, req.user!.userId))
   } catch (err) { next(err) }

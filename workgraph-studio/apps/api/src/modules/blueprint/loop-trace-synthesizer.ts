@@ -91,10 +91,45 @@ interface LoopTracePhaseBlock {
   endedAt: string
 }
 
+// M89.b — Governance events extracted alongside the LLM steps.
+// These are the per-phase signals operators most care about when a
+// stage failed: did a phase complete cleanly, did the validator
+// reject a receipt, did the budget warning fire, etc. Each event
+// carries the stepIndex of the LLM call it follows (or null if the
+// event landed before any step) so the UI can render it inline.
+//
+// Wire format kept intentionally narrow — we only forward fields the
+// workbench needs to display. The raw audit event remains in
+// audit-gov for deeper inspection.
+export type LoopTraceGovEventKind =
+  | 'phase_completed'
+  | 'phase_output_invalid'
+  | 'phase_budget_exceeded'
+  | 'path_coverage_gap'
+  | 'auto_verify_completed'
+
+export interface LoopTraceGovernanceEvent {
+  kind: LoopTraceGovEventKind
+  phase: string | null
+  timestamp: string
+  /** Closest preceding step (null if event landed before any LLM call). */
+  stepIndex: number | null
+  /** Free-form details for hover/expanded view — never null, always populated. */
+  details: {
+    reason?: string
+    missingFields?: string[]
+    budget?: number
+    turnsInPhase?: number
+    uncoveredCount?: number
+  }
+}
+
 export interface LoopTraceResponse {
   traceId: string
   phases: LoopTracePhaseBlock[]
   steps: LoopTraceStep[]
+  /** M89.b — see LoopTraceGovernanceEvent. */
+  governanceEvents: LoopTraceGovernanceEvent[]
   summary: {
     totalSteps: number
     totalLlmCalls: number
@@ -151,6 +186,7 @@ export async function synthesizeLoopTrace(traceId: string): Promise<LoopTraceRes
     traceId,
     phases: [],
     steps: [],
+    governanceEvents: [],
     summary: {
       totalSteps: 0, totalLlmCalls: 0, totalToolInvocations: 0,
       totalCodeChanges: 0, changedPaths: [],
@@ -166,6 +202,13 @@ export async function synthesizeLoopTrace(traceId: string): Promise<LoopTraceRes
       'governed.tool_dispatched_via_laptop',
       'governed.tool_refused',
       'governed.tool_dispatch_failed',
+      // M89.b — governance events surfaced as a separate timeline
+      // strip in the workbench. See LoopTraceGovernanceEvent above.
+      'governed.phase_completed',
+      'governed.phase_output_invalid',
+      'governed.phase_budget_exceeded',
+      'governed.path_coverage_gap',
+      'governed.auto_verify_completed',
     ],
     limit: 500,
   })
@@ -183,9 +226,50 @@ export async function synthesizeLoopTrace(traceId: string): Promise<LoopTraceRes
   // fall between a response and the next request belong to that step
   // (they're the tools the agent emitted from that response).
   const steps: LoopTraceStep[] = []
+  const governanceEvents: LoopTraceGovernanceEvent[] = []
   let pendingRequest: AuditEvent | null = null
   let stepIndex = 0
+  // Map audit `kind` → narrow LoopTraceGovEventKind for the workbench wire.
+  const GOV_EVENT_MAP: Record<string, LoopTraceGovEventKind> = {
+    'governed.phase_completed': 'phase_completed',
+    'governed.phase_output_invalid': 'phase_output_invalid',
+    'governed.phase_budget_exceeded': 'phase_budget_exceeded',
+    'governed.path_coverage_gap': 'path_coverage_gap',
+    'governed.auto_verify_completed': 'auto_verify_completed',
+  }
   for (const evt of events) {
+    // M89.b — peel off governance events first; they don't affect step
+    // pairing but get rendered inline by the workbench.
+    const govKind = GOV_EVENT_MAP[evt.kind]
+    if (govKind) {
+      const p = asRecord(evt.payload)
+      const details: LoopTraceGovernanceEvent['details'] = {}
+      const reason = pickString(p, 'reason')
+      if (reason) details.reason = reason
+      const detailArr = Array.isArray(p.details) ? p.details : []
+      const missing = detailArr
+        .map((d) => (typeof d === 'object' && d !== null ? (d as Record<string, unknown>).field : null))
+        .filter((f): f is string => typeof f === 'string')
+      if (missing.length > 0) details.missingFields = missing
+      const budget = p.budget
+      if (typeof budget === 'number') details.budget = budget
+      const tinp = p.turns_in_phase
+      if (typeof tinp === 'number') details.turnsInPhase = tinp
+      const uncov = Array.isArray(p.uncovered)
+        ? p.uncovered
+        : Array.isArray(p.uncovered_files) ? p.uncovered_files : null
+      if (uncov) details.uncoveredCount = uncov.length
+      governanceEvents.push({
+        kind: govKind,
+        phase: pickPhase(p),
+        timestamp: evt.created_at,
+        // stepIndex = the last LLM step we've finished pairing. If we
+        // haven't seen any step yet (event before turn 0), this is null.
+        stepIndex: steps.length > 0 ? steps[steps.length - 1].stepIndex : null,
+        details,
+      })
+      continue
+    }
     if (evt.kind === 'governed.llm_request') {
       pendingRequest = evt
       continue
@@ -295,6 +379,7 @@ export async function synthesizeLoopTrace(traceId: string): Promise<LoopTraceRes
     traceId,
     phases: phaseBlocks,
     steps,
+    governanceEvents,
     summary: {
       totalSteps: steps.length,
       totalLlmCalls: steps.length,

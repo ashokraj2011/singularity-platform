@@ -856,7 +856,12 @@ async def governed_step(
 
     if phase_output is not None:
         try:
-            receipt = validate_phase_output(state.current_phase, phase_output, policy=policy)
+            # M87 — pass state so REPAIR can auto-fill retry_number +
+            # failure_summary from server-side data instead of failing
+            # validation on fields the platform already knows.
+            receipt = validate_phase_output(
+                state.current_phase, phase_output, policy=policy, state=state
+            )
         except PhaseOutputInvalid as exc:
             log.info(
                 "phase output invalid phase=%s details=%d",

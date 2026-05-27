@@ -554,6 +554,7 @@ EVENT EVENT
     String workflowTypeKey 
     Int typeVersion 
     Json typeSnapshot "❓"
+    String profile 
     Json eligibleWorkItemTypes 
     Boolean isDefaultForType 
     WorkItemRoutingMode defaultRoutingMode 
@@ -648,6 +649,7 @@ EVENT EVENT
     InstanceStatus status 
     Json context 
     String parentNodeId "❓"
+    String profile 
     DateTime startedAt "❓"
     DateTime completedAt "❓"
     DateTime archivedAt "❓"
@@ -1492,6 +1494,92 @@ EVENT EVENT
     DateTime updatedAt 
     }
   
+
+  "workbench_definitions" {
+    String id "🗝️"
+    String workflowNodeId 
+    String name 
+    Int version 
+    String goal "❓"
+    String sourceType "❓"
+    String sourceUri "❓"
+    String sourceRef "❓"
+    String capabilityId "❓"
+    String architectAgentTemplateId "❓"
+    String developerAgentTemplateId "❓"
+    String qaAgentTemplateId "❓"
+    Int maxLoopsPerStage 
+    Int maxTotalSendBacks 
+    String gateMode 
+    String finalPackKey "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "workbench_stages" {
+    String id "🗝️"
+    String stageKey 
+    String label 
+    String agentRole 
+    String agentTemplateId "❓"
+    String promptProfileKey "❓"
+    Int ordinal 
+    Float positionX "❓"
+    Float positionY "❓"
+    Boolean required 
+    Boolean terminal 
+    Boolean approvalRequired 
+    Boolean repoAccess 
+    String toolPolicy 
+    String contextPolicy 
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "workbench_expected_artifacts" {
+    String id "🗝️"
+    String kind 
+    String title 
+    String description "❓"
+    String format 
+    Boolean required 
+    Int ordinal 
+    Boolean editable 
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "workbench_stage_edges" {
+    String id "🗝️"
+    String kind 
+    String label "❓"
+    DateTime createdAt 
+    }
+  
+
+  "workbench_artifact_consumes" {
+    String id "🗝️"
+    Boolean required 
+    Boolean inferred 
+    DateTime createdAt 
+    }
+  
+
+  "workbench_stage_questions" {
+    String id "🗝️"
+    String questionId 
+    String text 
+    Boolean required 
+    Boolean freeform 
+    Int ordinal 
+    Json options "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
     "users" }o--|o teams : "team"
     "teams" }o--|o departments : "department"
     "team_variables" }o--|| teams : "team"
@@ -1624,4 +1712,11 @@ EVENT EVENT
     "pending_executions" }o--|| workflow_nodes : "node"
     "event_deliveries" }o--|| event_outbox : "outbox"
     "event_deliveries" }o--|| event_subscriptions : "subscription"
+    "workbench_stages" }o--|| workbench_definitions : "definition"
+    "workbench_expected_artifacts" }o--|| workbench_stages : "stage"
+    "workbench_stage_edges" }o--|| workbench_stages : "fromStage"
+    "workbench_stage_edges" }o--|| workbench_stages : "toStage"
+    "workbench_artifact_consumes" }o--|| workbench_stages : "consumerStage"
+    "workbench_artifact_consumes" }o--|| workbench_expected_artifacts : "producerArtifact"
+    "workbench_stage_questions" }o--|| workbench_stages : "stage"
 ```

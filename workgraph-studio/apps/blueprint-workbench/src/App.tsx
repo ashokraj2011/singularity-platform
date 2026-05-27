@@ -1553,6 +1553,18 @@ function NeoStageController({
     },
     onSuccess: onSession,
   })
+  // M89.e — Cancel the in-flight attempt for this stage. Sibling to
+  // resetAttemptsMutation but surgical: only marks the RUNNING/PAUSED
+  // attempt as FAILED so the operator can re-run without losing prior
+  // history. Use when the agent is stuck, the worker got orphaned by
+  // a server restart, or the operator just wants to abort.
+  const cancelInflightMutation = useMutation({
+    mutationFn: () => {
+      if (!stage) throw new Error('No stage selected')
+      return api.cancelInflightAttempt(session.id, stage.key)
+    },
+    onSuccess: onSession,
+  })
   const approvalMutation = useMutation({
     mutationFn: (decision: 'approved' | 'rejected') => {
       if (!stage) throw new Error('No stage selected')
@@ -1945,6 +1957,29 @@ function NeoStageController({
       busy: runMutation.isPending,
     }
     helperText = 'Stage is closed. Re-running creates a new attempt with the same inputs.'
+  }
+
+  // M89.e — universal kill switch. Visible the moment ANY attempt for
+  // this stage is RUNNING or PAUSED, regardless of intent. Covers the
+  // common "the cockpit is live but the agent is stuck and I want to
+  // start over" case, plus the wedged-after-server-restart case where
+  // an attempt is forever RUNNING with no live worker. Pushed onto
+  // secondaryActions so it lives next to "Reset attempts" / approval
+  // buttons depending on the intent.
+  const hasInflightAttempt =
+    !!stage &&
+    (session.stageAttempts ?? []).some(
+      a => a.stageKey === stage.key && (a.status === 'RUNNING' || a.status === 'PAUSED'),
+    )
+  if (hasInflightAttempt) {
+    secondaryActions = [
+      ...secondaryActions,
+      {
+        label: 'Cancel attempt',
+        onClick: () => cancelInflightMutation.mutate(),
+        busy: cancelInflightMutation.isPending,
+      },
+    ]
   }
 
   return (

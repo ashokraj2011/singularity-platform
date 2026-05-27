@@ -187,10 +187,38 @@ export type LoopTracePhaseBlock = {
   startedAt: string
   endedAt: string
 }
+// M89.b — Governance events surfaced alongside the LLM steps. Used by
+// LoopTrace to render inline phase boundaries, validator rejections,
+// budget warnings, etc — the same signals the bin/stage-trace.py CLI
+// shows in terminal form. stepIndex is the closest preceding LLM call,
+// so the UI can interleave these events with StepCards.
+export type LoopTraceGovEventKind =
+  | 'phase_completed'
+  | 'phase_output_invalid'
+  | 'phase_budget_exceeded'
+  | 'path_coverage_gap'
+  | 'auto_verify_completed'
+
+export type LoopTraceGovernanceEvent = {
+  kind: LoopTraceGovEventKind
+  phase: string | null
+  timestamp: string
+  stepIndex: number | null
+  details: {
+    reason?: string
+    missingFields?: string[]
+    budget?: number
+    turnsInPhase?: number
+    uncoveredCount?: number
+  }
+}
+
 export type LoopTraceResponse = {
   traceId: string
   phases: LoopTracePhaseBlock[]
   steps: LoopTraceStep[]
+  /** M89.b — see LoopTraceGovernanceEvent. Empty on older traces (pre-M89). */
+  governanceEvents?: LoopTraceGovernanceEvent[]
   summary: {
     totalSteps: number
     totalLlmCalls: number
@@ -608,6 +636,12 @@ export const api = {
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/settings`, { method: 'PATCH', body: JSON.stringify(body) }),
   resetStageAttempts: (id: string, stageKey: string) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/reset-attempts`, { method: 'POST' }),
+  // M89.e — Surgical cancel of the in-flight attempt for a stage.
+  // Unlike resetStageAttempts (which deletes everything), this only
+  // marks the RUNNING/PAUSED attempt as FAILED so the stage can be
+  // re-run without losing the prior attempt history.
+  cancelInflightAttempt: (id: string, stageKey: string) =>
+    request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/cancel-attempt`, { method: 'POST' }),
   snapshot: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/snapshot`, { method: 'POST' }),
   run: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/run`, { method: 'POST' }),
   runStage: (id: string, stageKey: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/run`, { method: 'POST' }),

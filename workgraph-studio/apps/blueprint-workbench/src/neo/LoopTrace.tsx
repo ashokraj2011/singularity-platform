@@ -10,9 +10,10 @@
  * proxies mcp-server's audit timeline. While the stage is RUNNING we poll
  * every 2.5s; otherwise we refetch only when the user manually requests it.
  */
+import type React from 'react'
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api, type LoopTraceResponse, type LoopTraceStep, type LoopTraceToolInvocation, type LoopStage, type LoopAttemptStatus } from '../api'
+import { api, type LoopTraceResponse, type LoopTraceStep, type LoopTraceToolInvocation, type LoopStage, type LoopAttemptStatus, type LoopTraceGovernanceEvent } from '../api'
 
 const KNOWN_PHASES = ['PLAN_DRAFT', 'EXPLORE', 'PLAN_CONFIRM', 'ACT', 'VERIFY', 'FINALIZE'] as const
 
@@ -115,9 +116,13 @@ export function LoopTrace({ sessionId, stage, attemptStatus }: LoopTraceProps) {
             No activity yet. The trace will populate as the agent runs.
           </div>
         )}
-        {(data?.steps ?? []).map((step) => (
-          <StepCard key={step.llmCallId} step={step} />
-        ))}
+        {/* M89.b — interleave governance events with step cards by
+            stepIndex. The CLI counterpart is bin/stage-trace.py — that
+            uses chronological order; we preserve order by attaching
+            each gov event to its preceding step. Events with
+            stepIndex=null (rare — fired before any step) render at the
+            very top. */}
+        {data && renderInterleaved(data.steps, data.governanceEvents ?? [])}
       </section>
 
       {data && data.summary.changedPaths.length > 0 && (
@@ -283,6 +288,111 @@ function ToolInvocationBlock({ tool, expanded }: { tool: LoopTraceToolInvocation
       )}
     </div>
   )
+}
+
+// M89.b — Render governance events interleaved with step cards. Each
+// event attaches to its preceding step via stepIndex; events with
+// stepIndex=null appear before the first step (rare, but real — e.g.
+// pre-loop policy events). Order preserved within the same stepIndex.
+function renderInterleaved(
+  steps: LoopTraceStep[],
+  events: LoopTraceGovernanceEvent[],
+): React.ReactNode[] {
+  const eventsBy = new Map<number | string, LoopTraceGovernanceEvent[]>()
+  for (const evt of events) {
+    const key = evt.stepIndex ?? '__prelude__'
+    const arr = eventsBy.get(key) ?? []
+    arr.push(evt)
+    eventsBy.set(key, arr)
+  }
+  const out: React.ReactNode[] = []
+  const prelude = eventsBy.get('__prelude__')
+  if (prelude) {
+    for (const evt of prelude) {
+      out.push(<GovernanceEventBanner key={`prelude-${evt.timestamp}`} evt={evt} />)
+    }
+  }
+  for (const step of steps) {
+    out.push(<StepCard key={step.llmCallId} step={step} />)
+    const attached = step.stepIndex != null ? eventsBy.get(step.stepIndex) : undefined
+    if (attached) {
+      for (const evt of attached) {
+        out.push(<GovernanceEventBanner key={`gov-${step.llmCallId}-${evt.timestamp}`} evt={evt} />)
+      }
+    }
+  }
+  return out
+}
+
+// Visual treatment per kind: bordered banner with an icon + headline +
+// terse details. Color-coded so an operator scanning the trace can
+// spot validator rejections (red), budget warnings (amber), and
+// successful phase completions (green) at a glance.
+function GovernanceEventBanner({ evt }: { evt: LoopTraceGovernanceEvent }) {
+  const { tone, icon, headline } = govEventDisplay(evt)
+  const time = new Date(evt.timestamp).toLocaleTimeString()
+  return (
+    <div
+      className={`loop-gov-event tone-${tone}`}
+      style={{
+        margin: '4px 0',
+        padding: '6px 10px',
+        borderLeft: `3px solid var(--gov-${tone}, #888)`,
+        background: `var(--gov-${tone}-bg, rgba(128,128,128,0.06))`,
+        borderRadius: 4,
+        fontSize: 12,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        fontFamily: 'var(--font-mono, monospace)',
+      }}
+    >
+      <span style={{ fontSize: 14 }}>{icon}</span>
+      <span style={{ fontWeight: 600 }}>{headline}</span>
+      {evt.phase && <span style={{ opacity: 0.6 }}>· {evt.phase}</span>}
+      <span style={{ marginLeft: 'auto', opacity: 0.55, fontSize: 11 }}>{time}</span>
+    </div>
+  )
+}
+
+function govEventDisplay(
+  evt: LoopTraceGovernanceEvent,
+): { tone: 'ok' | 'warn' | 'err' | 'info'; icon: string; headline: string } {
+  switch (evt.kind) {
+    case 'phase_completed':
+      return { tone: 'ok', icon: '✓', headline: `${evt.phase ?? 'phase'} completed` }
+    case 'phase_output_invalid': {
+      const fields = evt.details.missingFields?.join(', ')
+      return {
+        tone: 'err',
+        icon: '✗',
+        headline: `phase_output_invalid${fields ? ` — missing: ${fields}` : ''}${
+          evt.details.reason ? ` (${evt.details.reason})` : ''
+        }`,
+      }
+    }
+    case 'phase_budget_exceeded': {
+      const used = evt.details.turnsInPhase
+      const cap = evt.details.budget
+      return {
+        tone: 'warn',
+        icon: '⚠',
+        headline: `phase_budget_exceeded${used != null && cap != null ? ` ${used}/${cap}` : ''}`,
+      }
+    }
+    case 'path_coverage_gap': {
+      const n = evt.details.uncoveredCount
+      return {
+        tone: 'err',
+        icon: '✗',
+        headline: `path_coverage_gap${n != null ? ` — ${n} files uncovered` : ''}`,
+      }
+    }
+    case 'auto_verify_completed':
+      return { tone: 'info', icon: '•', headline: 'auto_verify_completed' }
+    default:
+      return { tone: 'info', icon: '·', headline: evt.kind }
+  }
 }
 
 function prettyPhaseName(phase: string): string {

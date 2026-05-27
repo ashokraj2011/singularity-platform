@@ -32,7 +32,7 @@ from .history_compression import DEFAULT_RECENT_TURNS, compress_history
 from .llm_client import LLMGatewayError
 from .loop import GovernedStepResult, ToolCallOutcome
 from .phase_state import Phase, PhaseState, advance_phase
-from .policy_loader import PolicyNotFoundError
+from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
 from .prompt_resolver import PromptNotFoundError
 from .turn import SUBMIT_PHASE_OUTPUT, TurnResult, run_turn
 
@@ -317,12 +317,28 @@ def _render_validation_error_message(validation_error: Any) -> dict[str, Any]:
         for d in details[:10]:  # cap so a verbose error doesn't blow the prompt
             if isinstance(d, dict):
                 loc = d.get("loc") or d.get("field") or "?"
-                msg = d.get("msg") or d.get("message") or str(d)
+                # M87 — `issue` is the key validators.py actually uses;
+                # `msg`/`message` are kept for back-compat with any
+                # legacy producer. Without `issue` in the lookup the
+                # renderer was falling through to `str(d)` and dumping
+                # the raw dict at the model.
+                msg = d.get("issue") or d.get("msg") or d.get("message") or str(d)
                 parts.append(f"  - {loc}: {msg}")
             else:
                 parts.append(f"  - {d}")
+    # M87 — phase-clarity nudge. Repro from develop attempt 93af88cb:
+    # after two REPAIR validation rejections, the model's next-turn
+    # thinking block read "I'm in VERIFY phase now and the previous
+    # REPAIR phase output was invalid…" — it interpreted the bounce as
+    # forward progress and called a VERIFY-only tool, which the gateway
+    # refused. The state machine never moved (validation_error does NOT
+    # advance phase), so explicitly say so.
     parts.append(
-        "Fix the receipt shape and submit submit_phase_output again. "
+        f"You are STILL in the {phase} phase — a validation error does NOT "
+        f"advance the phase. Do NOT call tools that are forbidden in {phase}. "
+        "Call submit_phase_output again with the same phase_output corrected."
+    )
+    parts.append(
         "You have one retry attempt before the stage aborts with "
         "VALIDATION_BLOCKED."
     )
@@ -993,6 +1009,20 @@ async def run_stage(
 
     result = StageRunResult(final_state=state)
 
+    # M86 — preload StagePolicy once at the top of the loop so the
+    # per-phase budget check (later in the iteration) has a real
+    # StagePolicy in scope. policy_loader caches with TTL so this is a
+    # no-op cost when run_turn fetches it again internally. None on
+    # PolicyNotFoundError → budget falls back to _DEFAULT_MAX_TURNS_PER_PHASE.
+    stage_policy: StagePolicy | None
+    try:
+        stage_policy = await load_stage_policy(stage_key, agent_role, bearer=bearer)
+    except PolicyNotFoundError:
+        stage_policy = None
+    except Exception as exc:  # pragma: no cover — defensive
+        log.warning("stage_policy preload failed stage=%s role=%s err=%s", stage_key, agent_role, exc)
+        stage_policy = None
+
     # M74 Phase 1D — stagnant-phase detector.
     #
     # Old behaviour: 2 consecutive turns with the same phase and no advance
@@ -1272,7 +1302,7 @@ async def run_stage(
             cur_phase = state.current_phase.value
             phase_turn_counts[cur_phase] = phase_turn_counts.get(cur_phase, 0) + 1
 
-        budget = _resolve_phase_budget(policy, state.current_phase)
+        budget = _resolve_phase_budget(stage_policy, state.current_phase)
         turns_in_phase = phase_turn_counts.get(cur_phase, 0)
         if budget > 0 and turns_in_phase >= budget and not _is_terminal_state(state):
             # First time over: inject a forcing message so the next
@@ -1289,7 +1319,7 @@ async def run_stage(
                 await emit_governed_event(
                     kind="governed.phase_budget_exceeded",
                     state=state,
-                    policy=policy,
+                    policy=stage_policy,
                     run_context=run_context,
                     payload={
                         "phase": cur_phase,

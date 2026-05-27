@@ -47,14 +47,117 @@ def test_extract_returns_empty_when_tool_failed() -> None:
     ) == []
 
 
-def test_extract_returns_empty_when_no_change_id() -> None:
-    """No change_id in the envelope means we can't bind. Returning
-    [] is correct — the EditReceipt validator will reject the file."""
+def test_extract_returns_empty_when_no_change_id_and_no_invocation_id() -> None:
+    """No change_id AND no tool_invocation_id fallback means we can't
+    bind. Returning [] is correct — the EditReceipt validator will
+    reject the file."""
     assert _extract_code_changes(
         tool_name="apply_patch",
         result={"file": "x.py"},
         tool_success=True,
+        # tool_invocation_id intentionally omitted
     ) == []
+
+
+def test_extract_falls_back_to_tool_invocation_id_when_no_change_id() -> None:
+    """(2026-05-25) mcp-server's mutating tools (apply_patch,
+    replace_text, write_file) emit `paths_touched` but NO
+    `code_change_id`. The dispatch's invocation id ties the EditReceipt
+    claim back to the audit-gov tool_dispatched event just as well —
+    fall back to it instead of falsely flagging the edit as unbacked.
+    """
+    out = _extract_code_changes(
+        tool_name="replace_text",
+        result={"file": "src/foo.py", "kind": "code_change"},
+        tool_success=True,
+        tool_invocation_id="inv-abc123",
+    )
+    assert out == [("src/foo.py", "inv-abc123")]
+
+
+def test_extract_handles_mcp_server_paths_touched_shape() -> None:
+    """The exact shape mcp-server's replace_text/apply_patch/write_file
+    return today: `paths_touched: [path]` plus diff/patch fields, no
+    code_change_id. Verified by inspecting mcp-audit.jsonl on a
+    successful develop attempt — the audit shows this output shape
+    verbatim. The old extractor returned [] because it only knew about
+    `files`/`changed_files` keys, never `paths_touched`. That made
+    every legitimate mutation look unbacked.
+    """
+    # Exact shape pulled from /workspace/.singularity/mcp-audit.jsonl
+    # on a real successful replace_text call (2026-05-25 develop run).
+    result = {
+        "kind": "code_change",
+        "paths_touched": ["src/test/java/org/example/rules/RuleEngineServiceTest.java"],
+        "diff": "diff --git a/... +new content",
+        "patch": "...",
+        "lines_added": 12,
+        "lines_removed": 0,
+    }
+    out = _extract_code_changes(
+        tool_name="replace_text",
+        result=result,
+        tool_success=True,
+        tool_invocation_id="da1abe62-ed7b-447b-b7b0-e933c2ec233b",
+    )
+    assert out == [
+        ("src/test/java/org/example/rules/RuleEngineServiceTest.java",
+         "da1abe62-ed7b-447b-b7b0-e933c2ec233b"),
+    ]
+
+
+def test_extract_accepts_paths_touched_with_multiple_files() -> None:
+    """apply_patch can touch multiple files in one call; mcp-server
+    reports them all in a single `paths_touched` list."""
+    out = _extract_code_changes(
+        tool_name="apply_patch",
+        result={
+            "kind": "code_change",
+            "paths_touched": ["src/a.py", "src/b.py", "src/c.py"],
+            "diff": "...",
+        },
+        tool_success=True,
+        tool_invocation_id="inv-batch",
+    )
+    assert sorted(out) == [
+        ("src/a.py", "inv-batch"),
+        ("src/b.py", "inv-batch"),
+        ("src/c.py", "inv-batch"),
+    ]
+
+
+def test_extract_explicit_change_id_wins_over_invocation_id() -> None:
+    """When a tool DOES emit a code_change_id, prefer it over the
+    fallback. Future-proofs the fix for tools that have their own
+    stable change-id mints (e.g. a git-commit-based change ID)."""
+    out = _extract_code_changes(
+        tool_name="apply_patch",
+        result={
+            "code_change_id": "real-cc-xyz",
+            "paths_touched": ["src/foo.py"],
+        },
+        tool_success=True,
+        tool_invocation_id="inv-fallback",
+    )
+    assert out == [("src/foo.py", "real-cc-xyz")]
+
+
+def test_extract_dedupes_paths_across_batch_and_single_shapes() -> None:
+    """If a tool somehow emits a path in both `paths_touched` AND
+    single `file`, we should record the file once, not twice. The
+    EditReceipt-provenance check is set-based so duplicates wouldn't
+    cause incorrectness — but they'd inflate state.produced_code_changes
+    and clutter audit-gov correlation queries."""
+    out = _extract_code_changes(
+        tool_name="apply_patch",
+        result={
+            "code_change_id": "cc-dup",
+            "paths_touched": ["src/foo.py"],
+            "file": "src/foo.py",
+        },
+        tool_success=True,
+    )
+    assert out == [("src/foo.py", "cc-dup")]
 
 
 def test_extract_handles_all_change_id_aliases() -> None:

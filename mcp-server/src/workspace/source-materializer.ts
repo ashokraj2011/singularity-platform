@@ -358,12 +358,40 @@ async function alignWorkitemBranch(
   );
 
   if (remoteExists) {
-    // Reset hard onto the remote tip so we don't accidentally carry stale
-    // local state. The worktree was just freshly created so there's nothing
-    // to lose.
+    // M89.d (2026-05-27) — the original comment here was: "Reset hard
+    // onto the remote tip so we don't accidentally carry stale local
+    // state. The worktree was just freshly created so there's nothing
+    // to lose." That assumption was wrong. ensureWorkspaceSource runs
+    // on EVERY /mcp/tool-run dispatch (see tool-run.ts:258), not just
+    // at session start. The hard reset therefore wiped the agent's
+    // in-flight edits between consecutive tool calls — repro from
+    // attempt 087ac35a where Sonnet's replace_text dispatches landed
+    // and then got reverted by the next tool-run's alignment pass.
+    //
+    // Now: when the worktree is already on the right branch and HAS
+    // dirty paths, LEAVE THEM ALONE. The dirty changes are the
+    // agent's pending edits; finish_work_branch will commit them.
+    // Only reset when (a) we're switching to this branch fresh, or
+    // (b) the worktree is clean (no edits to preserve).
     if (localExists) {
+      const currentBranch = (
+        await git(["rev-parse", "--abbrev-ref", "HEAD"], { allowFail: true })
+      ).trim();
+      const alreadyOnBranch = currentBranch === workitemBranch;
+      const dirty = await dirtyPaths();
+      if (alreadyOnBranch && dirty.length > 0) {
+        // Preserve in-flight edits. Skip both checkout and reset.
+        return "remote";
+      }
       await git(["checkout", workitemBranch], { allowFail: true });
-      await git(["reset", "--hard", `origin/${workitemBranch}`], { allowFail: true });
+      if (dirty.length === 0) {
+        // Clean worktree → safe to reset to remote tip and pick up
+        // any new commits pushed by another caller.
+        await git(["reset", "--hard", `origin/${workitemBranch}`], { allowFail: true });
+      }
+      // (If we got here with dirty=true but switched branches, the
+      // checkout above will have refused the switch when files
+      // conflict; either way we don't blow away the user's edits.)
     } else {
       await git(["checkout", "-B", workitemBranch, `origin/${workitemBranch}`], { allowFail: true });
     }
