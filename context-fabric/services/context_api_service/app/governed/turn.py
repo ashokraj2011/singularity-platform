@@ -35,8 +35,21 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+# M90.D (2026-05-27) — thinking-block audit capture gate. Default OFF.
+# Set AUDIT_CAPTURE_THINKING=true on the context-api container to
+# include thinking_blocks content in the governed.llm_response audit
+# payload (their counts + token totals are still emitted regardless).
+# Default-off because thinking content is the model's internal chain
+# of thought — useful for debugging but verbose, and Anthropic asks
+# that it not be persisted to user-facing surfaces. Operators who
+# need it for development can opt in via env.
+_AUDIT_CAPTURE_THINKING = os.environ.get("AUDIT_CAPTURE_THINKING", "").lower() in (
+    "1", "true", "yes", "on",
+)
 
 from .audit_emit import emit_governed_event
 from .llm_client import ChatResponse, ChatToolCall, LLMGatewayError, call_gateway_chat
@@ -477,23 +490,24 @@ async def run_turn(
                 {"id": tc.id, "name": tc.name, "args": tc.arguments}
                 for tc in response.tool_calls
             ],
-            # M83.r — thinking blocks content + counts. The privacy
-            # caveat from the earlier audit-payload exclusion is
-            # honored by: (1) operator-scope only — audit-gov search
-            # requires service auth, (2) per-call cap, (3) the
-            # workbench's LoopTrace is an operator-only debugging
-            # surface. Anthropic's "don't expose to end users"
-            # guidance is about consumer-product end users; operators
-            # debugging their own agent are the model's developers.
+            # M83.r — thinking blocks content + counts.
+            # M90.D (2026-05-27) — content gated by AUDIT_CAPTURE_THINKING.
+            # Default off; the count + token total still ship so the
+            # workbench can show the "thinking" chip. Content lights up
+            # only when an operator enables the env var for debugging.
+            # Reasoning: thinking is the model's internal chain of
+            # thought — useful for diagnosis, but verbose and not
+            # something we want in default audit payloads.
             "thinking_blocks": [
                 {
                     "thinking": (tb.get("thinking") or "")[:4000],
                     "redacted": tb.get("redacted", False),
                 }
                 for tb in (response.thinking_blocks or [])
-            ],
+            ] if _AUDIT_CAPTURE_THINKING else [],
             "thinking_block_count": len(response.thinking_blocks),
             "thinking_tokens": response.thinking_tokens,
+            "thinking_capture": "full" if _AUDIT_CAPTURE_THINKING else "counts_only",
         },
     )
 

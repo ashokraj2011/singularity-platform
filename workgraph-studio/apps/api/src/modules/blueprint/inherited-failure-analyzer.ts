@@ -54,6 +54,15 @@ export interface InheritedFailure {
 export interface FailureClassification {
   inheritedFailures: InheritedFailure[]
   regressionFailures: InheritedFailure[]
+  // M90.B (2026-05-27) — Third bucket for failures we can't classify
+  // with confidence. Populated when agentChangedPaths is empty (the
+  // caller couldn't determine which files the agent touched) — in
+  // that case we have no provenance to say a failure is inherited.
+  // The approval gate must NOT auto-pass on unknownFailures the way it
+  // can for inheritedFailures. Pre-M90.B, every failure here was
+  // dumped into inheritedFailures, which made an empty agentChangedPaths
+  // (from a CF outage) look like a green light for "all upstream-broken."
+  unknownFailures: InheritedFailure[]
   unparseable: Array<{ command: string; reason: string }>
 }
 
@@ -182,6 +191,7 @@ export function classifyFailures(
   const result: FailureClassification = {
     inheritedFailures: [],
     regressionFailures: [],
+    unknownFailures: [],
     unparseable: [],
   }
 
@@ -191,6 +201,12 @@ export function classifyFailures(
   const agentPathSet = new Set(
     agentChangedPaths.map(p => normalisePath(p)).filter(Boolean),
   )
+  // M90.B — when we have NO provenance at all about what the agent
+  // touched, every failure goes to unknownFailures. Distinguishing
+  // "no provenance" (this flag) from "provenance says this failure
+  // is in an untouched file" (the per-test branch below) is the
+  // whole point of the bucket — the gate has to react differently.
+  const hasProvenance = agentPathSet.size > 0
 
   const seen = new Set<string>()  // dedupe across receipts
 
@@ -227,8 +243,15 @@ export function classifyFailures(
       }
       if (isRegression) {
         result.regressionFailures.push(failure)
-      } else {
+      } else if (hasProvenance) {
+        // We know what the agent touched, this test isn't in it →
+        // confident inherited classification (pre-existing failure).
         result.inheritedFailures.push(failure)
+      } else {
+        // M90.B — no provenance about agent-touched paths. We can't
+        // distinguish "inherited" from "regression-on-untracked-file"
+        // so the gate must treat this as actionable, not auto-pass.
+        result.unknownFailures.push(failure)
       }
     }
   }

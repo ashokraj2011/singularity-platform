@@ -90,6 +90,11 @@ from .verify_synthesis import synthesize_verifier_run
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
 from .tool_gateway import PhaseToolForbidden, check_tool_allowed
 from .validators import PhaseOutputInvalid, validate_phase_output
+from .baseline_diff import (
+    enrich_verification_receipt,
+    extract_failing_tests_from_tool_output,
+    stash_baseline,
+)
 
 log = logging.getLogger(__name__)
 
@@ -631,6 +636,32 @@ async def governed_step(
                     bearer=bearer,
                     laptop_user_id=laptop_user_id,
                 )
+            # M90.A — Baseline test-failure capture. When the agent
+            # dispatches capture_test_baseline (per M70.4) and the tool
+            # succeeds, extract the failingTests set from the parsed
+            # output and stash it on state.receipts so the post-edit
+            # VerificationReceipt can be diffed against it (mirrors
+            # legacy invoke.ts:enrichWithBaselineDiff). We read the
+            # RAW outcome.result here BEFORE PII masking — failing
+            # test names like `org.foo.Bar.testBaz` aren't PII and we
+            # want a stable signature for diffing. Idempotent: only
+            # the first baseline of a stage is kept.
+            if (
+                tool_name == "capture_test_baseline"
+                and getattr(outcome, "tool_success", False)
+            ):
+                _bfail, _btotal = extract_failing_tests_from_tool_output(outcome.result)
+                stash_baseline(
+                    state.receipts,
+                    _bfail,
+                    _btotal,
+                    command=str(dispatch_args.get("command") or ""),
+                )
+                log.info(
+                    "baseline_diff: captured baseline failing=%d total=%s",
+                    len(_bfail), _btotal,
+                )
+
             # M75 Slice 5 — read provenance off the dispatch result.
             # Pre-Slice-5 ToolDispatchResult instances (defensive)
             # default served_by="http" via the dataclass — so getattr
@@ -878,6 +909,19 @@ async def governed_step(
                 severity="warn",
             )
             return result
+
+        # M90.A — Enrich VerificationReceipts with baseline diff.
+        # When a capture_test_baseline was dispatched earlier in the
+        # stage, the stash contains the pre-edit failing-test set.
+        # Computing the diff here gives the downstream approval gate
+        # (blueprint.router.ts:5860) the same baseline_diff +
+        # effective_passed signals the legacy MCP loop produced —
+        # pre-existing failures stop blocking approval.
+        if (
+            isinstance(receipt, dict)
+            and receipt.get("kind") == "verification_receipt"
+        ):
+            receipt = enrich_verification_receipt(receipt, state.receipts)
 
         result.receipt = receipt
 

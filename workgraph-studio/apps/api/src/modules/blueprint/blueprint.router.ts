@@ -3869,9 +3869,19 @@ async function saveStageVerdict(
     const classification = await analyzeAttemptFailures(latestAttempt).catch(() => null)
     const totalClassified = (classification?.inheritedFailures.length ?? 0)
       + (classification?.regressionFailures.length ?? 0)
+      // M90.B — include unknownFailures so the gate doesn't short-circuit
+      // to the generic legacy message when provenance was missing.
+      + (classification?.unknownFailures.length ?? 0)
     if (classification && totalClassified > 0) {
+      // M90.B — "inheritedOnly" requires GENUINE inherited classification.
+      // unknownFailures (empty provenance bucket) MUST NOT trigger the
+      // auto-remediation / soft-block path that inherited triggers.
       const inheritedOnly = classification.regressionFailures.length === 0
+                            && classification.unknownFailures.length === 0
                             && classification.inheritedFailures.length > 0
+      const unknownOnly = classification.regressionFailures.length === 0
+                          && classification.inheritedFailures.length === 0
+                          && classification.unknownFailures.length > 0
 
       // M78 Slice 4 — Auto-remediation. When the platform operator has
       // opted in via WORKGRAPH_AUTO_REMEDIATE_INHERITED_FAILURES AND all
@@ -3918,21 +3928,37 @@ async function saveStageVerdict(
         })
       }
 
-      const message = inheritedOnly
-        ? `Approval blocked: ${classification.inheritedFailures.length} test failure(s) are inherited from upstream — your agent's own changes didn't introduce them. Create a remediation work item to fix the upstream tests, or accept the risk to proceed.`
-        : `Approval blocked: ${classification.regressionFailures.length} new test regression(s) introduced by this attempt`
-          + (classification.inheritedFailures.length > 0
-              ? ` + ${classification.inheritedFailures.length} inherited failure(s). Send the stage back to fix the regressions; inherited failures need their own remediation WI.`
-              : '. Send the stage back so the agent can fix them.')
+      // M90.B — message shape per bucket. unknownOnly is its own variant
+      // because we genuinely don't know whether to push the operator
+      // toward send-back or remediation-WI — they have to look.
+      let message: string
+      if (inheritedOnly) {
+        message = `Approval blocked: ${classification.inheritedFailures.length} test failure(s) are inherited from upstream — your agent's own changes didn't introduce them. Create a remediation work item to fix the upstream tests, or accept the risk to proceed.`
+      } else if (unknownOnly) {
+        message = `Approval blocked: ${classification.unknownFailures.length} test failure(s) couldn't be classified — the platform has no record of which files this attempt touched, so we can't tell if these are inherited failures or new regressions. Inspect the stdout, then either send the stage back or accept the risk explicitly.`
+      } else {
+        message = `Approval blocked: ${classification.regressionFailures.length} new test regression(s) introduced by this attempt`
+        if (classification.inheritedFailures.length > 0) {
+          message += ` + ${classification.inheritedFailures.length} inherited failure(s).`
+        }
+        if (classification.unknownFailures.length > 0) {
+          message += ` + ${classification.unknownFailures.length} unclassified failure(s).`
+        }
+        message += ' Send the stage back to fix the regressions; inherited failures need their own remediation WI.'
+      }
       throw new ValidationError(message, {
         kind: 'verification_failure_analysis',
         inheritedOnly,
+        unknownOnly,
         inheritedFailures: classification.inheritedFailures,
         regressionFailures: classification.regressionFailures,
+        unknownFailures: classification.unknownFailures,
         unparseable: classification.unparseable,
         recommendedActions: inheritedOnly
           ? ['create_remediation_wi', 'accept_risk']
-          : ['send_back_to_develop'],
+          : unknownOnly
+            ? ['inspect_stdout', 'accept_risk', 'send_back_to_develop']
+            : ['send_back_to_develop'],
       })
     }
     throw new ValidationError(
@@ -5816,8 +5842,11 @@ async function analyzeAttemptFailures(attempt: StageAttempt): Promise<FailureCla
       )
     } catch {
       // context-fabric unreachable / 5xx — leave agentChangedPaths empty.
-      // Analyzer will then classify every failure as inherited; downstream
-      // UI still gets useful structured data, and operator can override.
+      // M90.B (2026-05-27) — the analyzer now puts every failure in
+      // `unknownFailures` (not `inheritedFailures`) when provenance is
+      // empty. This fixes the silent green-light from a CF outage that
+      // pre-M90.B made an empty provenance set look like "all failures
+      // are upstream-broken." Operator must explicitly judge each.
     }
   }
 
@@ -5841,9 +5870,11 @@ async function analyzeAttemptFailures(attempt: StageAttempt): Promise<FailureCla
   const classification = classifyFailures(receipts, agentChangedPaths)
   // If we couldn't parse a single failure and there's no agent-touched
   // path data, the classifier has nothing to say — return null so the
-  // caller falls back to the legacy message.
+  // caller falls back to the legacy message. M90.B — unknownFailures
+  // also counts as "something to surface" (don't lose the bucket).
   if (classification.inheritedFailures.length === 0
-      && classification.regressionFailures.length === 0) {
+      && classification.regressionFailures.length === 0
+      && classification.unknownFailures.length === 0) {
     return null
   }
   return classification

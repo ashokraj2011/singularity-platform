@@ -419,17 +419,19 @@ _DEFAULT_MAX_TURNS_PER_PHASE: dict[str, int] = {
 def _resolve_phase_budget(policy: StagePolicy, phase: Phase) -> int:
     """Per-phase turn cap. Falls back to defaults when policy doesn't
     pin a value for this phase. Returns 0 to mean "no per-phase cap"
-    (legacy behavior — stage-wide max_turns is the only limit)."""
+    (stage-wide max_turns is the only limit)."""
     limits = policy.limits if policy and isinstance(policy.limits, dict) else {}
     per_phase = limits.get("max_turns_per_phase")
     if isinstance(per_phase, dict):
-        raw = per_phase.get(phase.value)
-        if isinstance(raw, int) and raw > 0:
-            return raw
-        # Per-stage opt-out: explicit 0/null disables the per-phase cap
-        # for this specific phase even though others are enforced.
-        if raw == 0 or raw is None:
-            return _DEFAULT_MAX_TURNS_PER_PHASE.get(phase.value, 0)
+        # M90.D (2026-05-27) — the original wrote "explicit 0/null
+        # disables the per-phase cap" then fell through to the default
+        # anyway. The contract is now honored: explicit 0 disables;
+        # MISSING (key not in dict) inherits the default.
+        if phase.value in per_phase:
+            raw = per_phase[phase.value]
+            if isinstance(raw, int) and raw >= 0:
+                return raw   # explicit value, including 0 = disable
+            # Non-int / negative → fall through to default below.
     return _DEFAULT_MAX_TURNS_PER_PHASE.get(phase.value, 0)
 
 

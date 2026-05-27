@@ -57,6 +57,34 @@ import { withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbo
 import { ensureWorkspaceSource } from "../workspace/source-materializer";
 import { indexWorkspace } from "../workspace/ast-index";
 
+// M90.C (2026-05-27) — Selective workspace fail-fast.
+//
+// Pre-M90.C, ensureWorkspaceSource() swallowed materialization errors
+// silently and let the tool dispatch continue. That's safe for tools
+// that don't touch the workspace (parsers, classifiers, synthesizers)
+// but catastrophic for everything else — apply_patch against an empty
+// workspace produces a no-op "success" that the agent then "verifies"
+// against the also-empty workspace, while the operator gets a green
+// approval card pointing at a phantom commit.
+//
+// Allowlist of tools we KNOW are workspace-independent — pure functions
+// on stdout, audit lookups, or synthesizers. Every other tool gets a
+// hard refusal (WORKSPACE_MATERIALIZATION_FAILED) when materialization
+// errors. The allowlist is intentionally short; expand only when a new
+// tool is genuinely workspace-free.
+const _WORKSPACE_INDEPENDENT_TOOLS = new Set([
+  "detect_no_tests_ran",
+  "classify_push_error",
+  "recommended_verification",
+  "verification_unavailable",
+  // submit_phase_output / next_phase / etc. are CF-internal, never
+  // dispatched to mcp-server, so they don't need an entry here.
+]);
+
+export function isWorkspaceIndependentTool(name: string): boolean {
+  return _WORKSPACE_INDEPENDENT_TOOLS.has(name);
+}
+
 export const toolRunRouter = Router();
 
 export const ToolRunSchema = z.object({
@@ -260,14 +288,33 @@ export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promis
             correlation,
           );
         } catch (err) {
-          // Materialization failure should NOT crash the tool dispatch
-          // — some tools (e.g. detect-no-tests-ran) work fine against
-          // an empty workspace. Surface the failure as a console
-          // warning so operators see it without breaking the loop.
+          const reason = (err as Error).message;
+          // M90.C — selective fail-fast. Pre-M90.C this branch logged
+          // and continued for EVERY tool. Repo-dependent tools then
+          // ran against an empty/stale workspace and produced
+          // misleading "success" — apply_patch with no target file,
+          // run_test against an empty src/, etc. Now: tools that
+          // we KNOW are workspace-independent (parsers, synthesizers,
+          // classifiers) still continue; everything else refuses with
+          // a structured error so the agent gets a clear signal and
+          // the operator sees the materialization failure surfaced
+          // instead of swallowed.
           // eslint-disable-next-line no-console
           console.warn(
-            `[tool-run] ensureWorkspaceSource failed (tool=${body.tool_name}): ${(err as Error).message}`,
+            `[tool-run] ensureWorkspaceSource failed (tool=${body.tool_name}): ${reason}`,
           );
+          if (!isWorkspaceIndependentTool(body.tool_name)) {
+            throw new AppError(
+              `Cannot dispatch tool=${body.tool_name} — workspace materialization failed: ${reason}. ` +
+              `This tool requires a materialized repo workspace; running it against an empty sandbox ` +
+              `would produce misleading results. Retry the stage once the source-materializer issue ` +
+              `is resolved, or expand isWorkspaceIndependentTool() if this tool genuinely doesn't ` +
+              `need the workspace.`,
+              503,
+              "WORKSPACE_MATERIALIZATION_FAILED",
+              { tool_name: body.tool_name, cause: reason },
+            );
+          }
         }
         // (2026-05-24) AST index bootstrap. Mirrors the legacy
         // /mcp/invoke path (invoke.ts:3021 "invoke_start" call) so
