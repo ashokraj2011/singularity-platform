@@ -7,6 +7,7 @@ import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, restartNode, startInstance } from './runtime/WorkflowRuntime'
+import { promoteWorkbenchToTables } from './lib/promote-workbench'
 import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { getWorkflowBudgetOverview } from './runtime/budget'
@@ -255,6 +256,23 @@ workflowInstancesRouter.patch('/:id/nodes/:nodeId', validate(updateNodeSchema), 
         performedById: req.user!.userId,
       },
     })
+    // M84.s4 follow-up — when a WORKBENCH_TASK node's config changes,
+    // re-promote the legacy loopDefinition JSON into the first-class
+    // tables so the canvas + new API readers see the edits immediately
+    // (instead of waiting for activateWorkbenchTask to fire on the
+    // next workflow run). Best-effort: a promotion error here doesn't
+    // fail the save, just leaves the canvas showing stale data until
+    // the next refresh. The s2 service write-through already covers
+    // the API-driven edit path; this covers the legacy-form-save path.
+    if (node.nodeType === 'WORKBENCH_TASK') {
+      try {
+        await promoteWorkbenchToTables(prisma, node.id, node.config)
+      } catch {
+        // Silent — see comment above. The next workflow activation
+        // will re-promote, and the canvas's lazy-promote on GET is
+        // a third safety net.
+      }
+    }
     res.json(node)
   } catch (err) {
     next(err)
