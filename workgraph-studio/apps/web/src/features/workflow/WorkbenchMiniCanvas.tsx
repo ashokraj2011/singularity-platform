@@ -104,41 +104,91 @@ export function WorkbenchMiniCanvas({
   const positions = useMemo(() => layoutStages(data?.stages ?? []), [data?.stages])
   const height = canvasHeight(data?.stages ?? [])
 
+  // Wrap every state — loading, error, empty, populated — in the same
+  // dashed-frame chrome so operators always SEE the canvas slot and
+  // recognise it as part of the Workbench tab. Before this fix the
+  // empty/error states were small unlabelled boxes that looked like
+  // form validation messages.
+  const Frame = ({ children, status }: { children: React.ReactNode; status?: string }) => (
+    <div style={{
+      border: '2px dashed #6b7280',
+      borderRadius: 10,
+      padding: 16,
+      background: '#fafbfc',
+      marginBottom: 14,
+    }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #e5e7eb',
+      }}>
+        <div>
+          <strong style={{ fontSize: 13, color: '#111' }}>📐 Workbench mini-canvas</strong>
+          {status && <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 8 }}>· {status}</span>}
+        </div>
+        <button
+          type="button"
+          onClick={() => refetch()}
+          disabled={isFetching}
+          style={{
+            fontSize: 11, padding: '4px 10px',
+            border: '1px solid #ccc', borderRadius: 4,
+            background: isFetching ? '#eee' : '#fff',
+            cursor: isFetching ? 'wait' : 'pointer',
+          }}
+        >
+          {isFetching ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
+      {children}
+    </div>
+  )
+
   if (isLoading) {
     return (
-      <div style={{ padding: 16, color: '#888', fontSize: 12, fontStyle: 'italic' }}>
-        Loading workbench definition…
-      </div>
+      <Frame status="loading…">
+        <div style={{ padding: 16, color: '#888', fontSize: 12, fontStyle: 'italic' }}>
+          Loading workbench definition…
+        </div>
+      </Frame>
     )
   }
   if (error) {
     return (
-      <div style={{
-        padding: 12,
-        border: '1px solid #c33',
-        borderRadius: 6,
-        color: '#c33',
-        fontSize: 12,
-      }}>
-        Failed to load definition: {(error as Error).message}
-      </div>
+      <Frame status="error">
+        <div style={{
+          padding: 12, border: '1px solid #c33', borderRadius: 6,
+          color: '#c33', fontSize: 12,
+        }}>
+          Failed to load definition: {(error as Error).message}
+        </div>
+      </Frame>
     )
   }
   if (!data || data.stages.length === 0) {
     return (
-      <div style={{
-        padding: 24,
-        border: '1px dashed #aaa',
-        borderRadius: 8,
-        color: '#888',
-        fontSize: 13,
-        textAlign: 'center',
-      }}>
-        <strong>No stages yet.</strong>
-        <div style={{ marginTop: 6, fontSize: 12 }}>
-          Add stages in the form below and they'll appear here as a graph.
+      <Frame status="no stages yet">
+        <div style={{
+          padding: 24, color: '#555', fontSize: 13, textAlign: 'center',
+        }}>
+          <strong style={{ fontSize: 14 }}>This workbench has no stages defined yet.</strong>
+          <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+            Once you add stages in the form below and save the node, they'll appear
+            here as agent blocks with arrows between them.
+          </div>
+          <div style={{
+            marginTop: 14, padding: 10, background: '#fff8e6',
+            border: '1px solid #f5d97a', borderRadius: 6,
+            fontSize: 11, color: '#7a5e00', textAlign: 'left',
+          }}>
+            <strong>Possible reasons:</strong>
+            <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
+              <li>This node was just dragged onto the canvas and hasn't been saved yet.</li>
+              <li>Save the node, then click <em>Refresh</em> above.</li>
+              <li>If you've already added stages in the form and still see this, click <em>Refresh</em> — the canvas reads from the new first-class tables which sync on save.</li>
+            </ul>
+          </div>
         </div>
-      </div>
+      </Frame>
     )
   }
 
@@ -150,43 +200,9 @@ export function WorkbenchMiniCanvas({
   const stageById = new Map(data.stages.map(s => [s.id, s]))
 
   return (
-    <div style={{
-      border: '1.5px dashed #888',
-      borderRadius: 10,
-      padding: 16,
-      background: '#fafbfc',
-      marginBottom: 14,
-    }}>
-      {/* Header strip */}
-      <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 10,
-      }}>
-        <div>
-          <strong style={{ fontSize: 13 }}>{data.name}</strong>
-          <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
-            {data.stages.length} stage{data.stages.length === 1 ? '' : 's'} ·{' '}
-            {data.edges.filter(e => e.kind === 'FORWARD').length} forward,{' '}
-            {data.edges.filter(e => e.kind === 'SEND_BACK').length} send-back
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={() => refetch()}
-          disabled={isFetching}
-          style={{
-            fontSize: 11,
-            padding: '4px 10px',
-            border: '1px solid #ccc',
-            borderRadius: 4,
-            background: isFetching ? '#eee' : '#fff',
-            cursor: isFetching ? 'wait' : 'pointer',
-          }}
-        >
-          {isFetching ? 'Refreshing…' : 'Refresh'}
-        </button>
+    <Frame status={`${data.stages.length} stage${data.stages.length === 1 ? '' : 's'} · ${data.edges.filter(e => e.kind === 'FORWARD').length} forward · ${data.edges.filter(e => e.kind === 'SEND_BACK').length} send-back`}>
+      <div style={{ marginBottom: 8, fontSize: 12, color: '#444' }}>
+        <strong>{data.name}</strong>
       </div>
 
       {/* SVG canvas */}
@@ -328,6 +344,6 @@ export function WorkbenchMiniCanvas({
       <div style={{ fontSize: 10, color: '#999', marginTop: 8 }}>
         Solid = forward · Dashed red = send-back · ★ = terminal · ● = approval gate
       </div>
-    </div>
+    </Frame>
   )
 }
