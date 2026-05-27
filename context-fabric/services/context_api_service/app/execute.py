@@ -1769,6 +1769,14 @@ class GovernedStageRequest(BaseModel):
     # Safety cap on the number of LLM turns this call may consume. Defaults
     # to the module constant; callers can pass a lower number for thin runs.
     max_turns: int = Field(default=DEFAULT_MAX_TURNS, ge=1, le=200)
+    # M91.A — workflow-resolved policy. When the caller (workgraph-api)
+    # has resolved the workflow's stage intent (tool_policy / repo_access /
+    # context_policy / prompt_profile_key from workflow_design_nodes.config)
+    # it ships them here as a structured field. CF uses this to override
+    # the DB-seeded StagePolicy's per-phase allowed_tools. Optional —
+    # legacy callers omitting this get the unfiltered base policy
+    # (back-compat).
+    stage_execution_policy: Optional[dict[str, Any]] = None
 
 
 @router.post("/api/v1/execute-governed-stage")
@@ -1799,6 +1807,21 @@ async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
     if _thinking_budget < 0:
         _thinking_budget = 0
 
+    # M91.A — parse incoming StageExecutionPolicy (if provided) into
+    # the Pydantic model. Wrapped in try/except so a malformed
+    # override doesn't fail the whole request — we log a warning,
+    # ignore the override, and proceed with the base DB-seeded policy.
+    _exec_policy = None
+    if req.stage_execution_policy is not None:
+        try:
+            from .governed.stage_execution_policy import StageExecutionPolicy as _SEP
+            _exec_policy = _SEP.model_validate(req.stage_execution_policy)
+        except Exception as _exc:  # pragma: no cover — defensive
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "stage_execution_policy parse failed: %s", _exc,
+            )
+
     try:
         outcome: StageRunResult = await run_stage(
             state=state,
@@ -1811,6 +1834,7 @@ async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
             bearer=req.bearer,
             max_turns=req.max_turns,
             thinking_budget=_thinking_budget or None,
+            exec_policy=_exec_policy,
         )
     except PolicyNotFoundError as exc:
         raise HTTPException(

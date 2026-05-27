@@ -211,6 +211,26 @@ export interface GovernedStageRequest {
   // via resolveStageTimeoutSec() so workflow-declared
   // `stage.limits.timeoutSec` wins over the role-class default.
   timeout_sec?: number
+  // M91.A (2026-05-27) — Workflow-resolved stage execution policy.
+  // Mirrors the StageExecutionPolicy Pydantic model on the CF side.
+  // CF uses this as an override layer on top of the DB-seeded
+  // StagePolicy: per-phase allowed_tools are filtered by tool_policy
+  // / repo_access. Optional — omitting it falls back to the seeded
+  // base policy verbatim.
+  stage_execution_policy?: StageExecutionPolicy
+}
+
+// M91.A — workflow's resolved stage intent. Built by blueprint.router
+// from workflow_design_nodes.config + workflow defaults at the moment
+// of stage spawn, shipped to CF as runtime authority on tool exposure.
+export interface StageExecutionPolicy {
+  stage_key: string
+  agent_role?: string
+  context_policy?: string
+  tool_policy?: string
+  repo_access?: boolean
+  prompt_profile_key?: string
+  approval_required?: boolean
 }
 
 // M71 Slice F — Governed-stage response shape. Mirrors StageRunResult.to_dict()

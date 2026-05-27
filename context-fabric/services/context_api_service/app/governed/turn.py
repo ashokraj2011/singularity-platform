@@ -66,6 +66,7 @@ from .prompt_resolver import (
     ResolvedPrompt,
     resolve_phase_prompt,
 )
+from .stage_execution_policy import StageExecutionPolicy, apply_execution_policy
 from .tool_gateway import allowed_tools_for
 from .tool_schemas import schema_for_tool
 
@@ -351,6 +352,11 @@ async def run_turn(
     # the returned TurnResult.llm carries thinking_blocks for history
     # threading + operator inspection in LoopTrace.
     thinking_budget: int | None = None,
+    # M91.A — workflow-resolved policy override. When set, narrows the
+    # DB-seeded StagePolicy's per-phase allowed_tools by the workflow
+    # designer's tool_policy / repo_access fields. None preserves
+    # legacy behavior (DB seed verbatim).
+    exec_policy: StageExecutionPolicy | None = None,
 ) -> TurnResult:
     """Run one LLM turn end-to-end:
 
@@ -375,6 +381,12 @@ async def run_turn(
 
     # 1. Policy.
     policy = await load_stage_policy(stage_key, agent_role, bearer=bearer)
+    # M91.A — apply workflow-resolved override (filters per-phase
+    # allowed_tools by tool_policy + repo_access). No-op when
+    # exec_policy is None. The DB seed remains the source of phase
+    # definitions, budgets, validators; the override only NARROWS
+    # which specific tools are exposed to the LLM this turn.
+    policy = apply_execution_policy(policy, exec_policy)
 
     # Architecture gap #5 (2026-05-23) — code-context-package
     # integration. When the stage opts in via

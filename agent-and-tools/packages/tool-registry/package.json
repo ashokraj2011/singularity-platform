@@ -1,0 +1,18 @@
+{
+  "name": "@agentandtools/tool-registry",
+  "version": "1.0.0",
+  "description": "Canonical tool schemas + categories shared across CF, mcp-server, and workgraph-web. See README for the source-of-truth contract.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src/tools.json"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}

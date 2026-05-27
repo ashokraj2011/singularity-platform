@@ -963,6 +963,46 @@ function NeoInput({ value, onChange, placeholder, multiline = false }: {
   )
 }
 
+// M91.C — Effective-tools preview for the stage-policy form. Renders a
+// small caption right under the Tool policy / Repo access fields that
+// shows the actual runtime tool list the operator's selection will
+// produce. Fetches from /api/tool-registry/effective so the data is
+// the same canonical registry CF + mcp-server will consume — designer
+// fields stop being aspirational.
+function EffectiveToolsPreview({ toolPolicy }: { toolPolicy: string | undefined }) {
+  const { data, isLoading } = useQuery<{ tools: string[]; tool_policy: string | null }>({
+    queryKey: ['tool-registry-effective', toolPolicy],
+    queryFn: () => api.get(`/tool-registry/effective?toolPolicy=${encodeURIComponent(toolPolicy ?? '')}`).then(r => r.data),
+    enabled: Boolean(toolPolicy),
+    staleTime: 60_000,
+  })
+  if (!toolPolicy) return null
+  const tools = data?.tools ?? []
+  return (
+    <div style={{
+      marginTop: 6,
+      padding: '6px 8px',
+      borderRadius: 4,
+      border: '1px solid rgba(245,242,234,0.1)',
+      background: 'rgba(245,242,234,0.03)',
+      fontSize: 11,
+      lineHeight: 1.45,
+      fontFamily: 'var(--font-mono, monospace)',
+    }}>
+      <div style={{ opacity: 0.6, marginBottom: 2 }}>
+        Effective runtime tools{isLoading ? ' (loading…)' : ` (${tools.length})`}:
+      </div>
+      <div style={{ color: tools.length === 0 ? 'var(--warn, #fa6)' : 'inherit' }}>
+        {tools.length === 0
+          ? toolPolicy === 'NONE'
+            ? '— story-only, no tools exposed —'
+            : '— none —'
+          : tools.join(', ')}
+      </div>
+    </div>
+  )
+}
+
 function ModelAliasPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const { data } = useQuery({
     queryKey: ['llm-model-catalog'],
@@ -1578,6 +1618,13 @@ function WorkbenchTab({
                   Repo access
                 </label>
               </div>
+
+              {/* M91.C — Effective runtime tools preview. Fetches from
+                  /api/tool-registry/effective with the operator's current
+                  toolPolicy and renders the resulting tool list. Closes
+                  the credibility gap of the policy fields by showing
+                  exactly what the agent will see at runtime. */}
+              <EffectiveToolsPreview toolPolicy={stage.toolPolicy} />
 
               <div style={{ marginTop: 8 }}>
                 <FieldLabel>Prompt profile key</FieldLabel>

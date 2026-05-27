@@ -59,6 +59,38 @@ export function executeReqToGovernedStageReq(req: ExecuteRequest, opts: {
     ...(req.artifacts ? { artifacts: req.artifacts } : {}),
     ...(req.globals ? { globals: req.globals } : {}),
   }
+  // M91.A (2026-05-27) — Build the workflow's resolved
+  // StageExecutionPolicy from the same `vars` fields the caller already
+  // populated for template substitution. CF treats this as the
+  // override layer on top of the DB-seeded StagePolicy; tool_policy /
+  // repo_access from the workflow designer's NodeInspector now actually
+  // narrow the runtime tool set instead of being decorative. We populate
+  // only when the caller actually set the fields — an empty policy
+  // would be a no-op anyway, but skipping the object keeps the wire
+  // payload smaller for legacy callers.
+  const stageExecPolicy: GovernedStageRequest['stage_execution_policy'] = (() => {
+    const contextPolicy = typeof vars.stageContextPolicy === 'string'
+      ? vars.stageContextPolicy as string : undefined
+    const toolPolicy = typeof vars.stageToolPolicy === 'string'
+      ? vars.stageToolPolicy as string : undefined
+    const repoAccess = typeof vars.stageRepoAccess === 'boolean'
+      ? vars.stageRepoAccess as boolean : undefined
+    const promptProfileKey = typeof vars.promptProfileKey === 'string'
+      && (vars.promptProfileKey as string).length > 0
+      ? vars.promptProfileKey as string : undefined
+    if (contextPolicy === undefined && toolPolicy === undefined
+        && repoAccess === undefined && promptProfileKey === undefined) {
+      return undefined
+    }
+    return {
+      stage_key: stageKey,
+      agent_role: opts.agentRole,
+      context_policy: contextPolicy,
+      tool_policy: toolPolicy,
+      repo_access: repoAccess,
+      prompt_profile_key: promptProfileKey,
+    }
+  })()
   return {
     stage_key: stageKey,
     agent_role: opts.agentRole,
@@ -68,6 +100,7 @@ export function executeReqToGovernedStageReq(req: ExecuteRequest, opts: {
     bearer: undefined,
     max_turns: opts.maxTurns ?? 25,
     model_alias: req.model_overrides?.modelAlias,
+    ...(stageExecPolicy ? { stage_execution_policy: stageExecPolicy } : {}),
   }
 }
 

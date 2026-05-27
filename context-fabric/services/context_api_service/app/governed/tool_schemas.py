@@ -372,6 +372,92 @@ TOOL_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 
+# M91.A (2026-05-27) — Tool categorisation. Lets a StageExecutionPolicy
+# filter the tool union by category (READ_ONLY keeps only `read`,
+# MUTATION lets everything through, VERIFICATION keeps `read+run`, etc.)
+# Unlisted tools default to `unknown` → conservatively allowed only when
+# tool_policy=MUTATION (the "full kit" mode). Add new tools here when
+# they ship so the policy filter knows which bucket they belong to.
+TOOL_CATEGORY: dict[str, str] = {
+    # READ — pure-information tools that don't touch the workspace
+    "read_file":              "read",
+    "list_files":             "read",
+    "list_indexed_files":     "read",
+    "repo_map":               "read",
+    "get_ast_slice":          "read",
+    "find_symbol":            "read",
+    "symbol_search":          "read",
+    "search_code":            "read",
+    "grep_lines":             "read",
+    "get_dependencies":       "read",
+    "read_workitem":          "read",
+    "read_repo_instructions": "read",
+    # MUTATE — writes to the workspace
+    "apply_patch":            "mutate",
+    "replace_text":           "mutate",
+    "replace_range":          "mutate",
+    "write_file":             "mutate",
+    "create_file":            "mutate",
+    # RUN — verifier dispatch (runs commands against the workspace)
+    "run_test":               "run",
+    "run_command":            "run",
+    "capture_test_baseline":  "run",
+    # FINALIZE — git state mutations
+    "finish_work_branch":     "finalize",
+    "review_diff":            "finalize",
+    # VERIFY_META — synthesizer / null-fallback for VERIFY phase
+    "recommended_verification":  "verify_meta",
+    "verification_unavailable":  "verify_meta",
+    # ANALYZER — pure functions on stdout/stderr (workspace-independent)
+    "detect_no_tests_ran":    "analyzer",
+    "classify_push_error":    "analyzer",
+}
+
+
+# tool_policy enum → set of categories allowed.
+# The mapping is structural — adding a category requires updating every
+# tool_policy that should expose it. Story Intake (`NONE`) gets the
+# empty set, so even the analyzer / verify_meta tools are stripped.
+# That's intentional — Story Intake is no-tools-at-all by spec.
+_TOOL_POLICY_CATEGORIES: dict[str, set[str]] = {
+    "NONE":         set(),
+    "READ_ONLY":    {"read", "verify_meta", "analyzer"},
+    "VERIFICATION": {"read", "run", "verify_meta", "analyzer"},
+    "MUTATION":     {"read", "mutate", "run", "finalize", "verify_meta", "analyzer"},
+}
+
+
+def categories_for_tool_policy(tool_policy: str | None) -> set[str] | None:
+    """Resolve the allowed tool-category set for a `tool_policy` enum.
+
+    Returns None when the input doesn't match a known policy — caller
+    should interpret that as "no filter applied" (i.e. fall back to
+    the seeded StagePolicy.phases[*].allowed_tools verbatim).
+    """
+    if not tool_policy:
+        return None
+    key = str(tool_policy).strip().upper().replace("-", "_")
+    return _TOOL_POLICY_CATEGORIES.get(key)
+
+
+def tool_passes_policy(tool_name: str, tool_policy: str | None) -> bool:
+    """True when `tool_name`'s category is allowed under `tool_policy`.
+
+    Unknown categories (tool not in TOOL_CATEGORY) are kept only when
+    the policy is MUTATION (the "everything" tier) — that's the
+    fail-safe direction: we'd rather expose a new tool we forgot to
+    classify than silently strip something the agent needs in DEV stages.
+    """
+    cats = categories_for_tool_policy(tool_policy)
+    if cats is None:
+        return True   # no filter
+    category = TOOL_CATEGORY.get(tool_name, "unknown")
+    if category == "unknown":
+        # Unknown tools only pass under MUTATION (full kit).
+        return str(tool_policy).strip().upper() == "MUTATION"
+    return category in cats
+
+
 def schema_for_tool(tool_name: str) -> dict[str, Any]:
     """Look up the input schema for a tool. Falls back to the lenient
     `{type: "object"}` shape for unknown tools so dispatch isn't

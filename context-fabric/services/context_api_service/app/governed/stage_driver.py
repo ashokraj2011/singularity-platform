@@ -33,6 +33,7 @@ from .llm_client import LLMGatewayError
 from .loop import GovernedStepResult, ToolCallOutcome
 from .phase_state import Phase, PhaseState, advance_phase
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
+from .stage_execution_policy import StageExecutionPolicy, apply_execution_policy
 from .prompt_resolver import PromptNotFoundError
 from .turn import SUBMIT_PHASE_OUTPUT, TurnResult, run_turn
 
@@ -974,6 +975,11 @@ async def run_stage(
     # whether the resolved model is Anthropic Claude 4+. Pass-through
     # to every run_turn() invocation in this stage.
     thinking_budget: int | None = None,
+    # M91.A — workflow-resolved policy override. Threaded to every
+    # run_turn() call so the per-turn tool descriptor list is
+    # filtered consistently across the stage. See
+    # stage_execution_policy.py for the override semantics.
+    exec_policy: StageExecutionPolicy | None = None,
 ) -> StageRunResult:
     """Drive an entire stage by repeatedly calling `run_turn`.
 
@@ -1019,6 +1025,10 @@ async def run_stage(
     stage_policy: StagePolicy | None
     try:
         stage_policy = await load_stage_policy(stage_key, agent_role, bearer=bearer)
+        # M91.A — apply workflow override so the M86 budget logic
+        # operates on the EFFECTIVE policy (e.g. NONE strips all
+        # phases of tools, so the budget can be relaxed).
+        stage_policy = apply_execution_policy(stage_policy, exec_policy)
     except PolicyNotFoundError:
         stage_policy = None
     except Exception as exc:  # pragma: no cover — defensive
@@ -1112,6 +1122,7 @@ async def run_stage(
                     run_context=run_context,
                     bearer=bearer,
                     thinking_budget=thinking_budget,
+                    exec_policy=exec_policy,
                 )
                 last_llm_error = None
                 break

@@ -28,6 +28,7 @@ import { agentsRouter } from './modules/agent/agents.router'
 import { agentRunsRouter } from './modules/agent/agent-runs.router'
 import { toolsRouter } from './modules/tool/tools.router'
 import { toolRunsRouter } from './modules/tool/tool-runs.router'
+import { toolRegistryRouter } from './modules/tool-registry/tool-registry.router'
 import { auditRouter } from './modules/audit/audit.router'
 import { curationRouter } from './modules/audit/curation.router'
 import { documentsRouter } from './modules/document/documents.router'
@@ -133,6 +134,10 @@ export function createApp(): Express {
   app.use('/api/agent-runs', authMiddleware, agentRunsRouter)
   app.use('/api/tools', authMiddleware, toolsRouter)
   app.use('/api/tool-runs', authMiddleware, toolRunsRouter)
+  // M91.B (2026-05-27) — canonical tool registry. Reads the embedded
+  // mirror of agent-and-tools/packages/tool-registry/src/tools.json.
+  // Designer (M91.C) consumes via fetch instead of bundling.
+  app.use('/api/tool-registry', authMiddleware, toolRegistryRouter)
   app.use('/api/audit', authMiddleware, auditRouter)
   // Operator curation gate (task #111) — proxies audit-gov's engine
   // dataset endpoints. Mounted at /api/engine so the path mirrors
