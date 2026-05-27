@@ -89,7 +89,11 @@ _PARALLEL_DISPATCH_CONCURRENCY = 6
 from .verify_synthesis import synthesize_verifier_run
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
 from .tool_gateway import PhaseToolForbidden, check_tool_allowed
-from .validators import PhaseOutputInvalid, validate_phase_output
+from .validators import (
+    PhaseOutputInvalid,
+    check_context_receipt_substance,
+    validate_phase_output,
+)
 from .baseline_diff import (
     enrich_verification_receipt,
     extract_failing_tests_from_tool_output,
@@ -975,6 +979,50 @@ async def governed_step(
             receipt = enrich_verification_receipt(receipt, state.receipts)
 
         result.receipt = receipt
+
+        # M92.C (2026-05-27) — require_context_receipt enforcement.
+        # When the stage policy declares `context_policy.require_context_receipt`
+        # true, an EXPLORE-phase submission must carry real evidence
+        # (≥1 context_used entry or ≥1 implementation_finding). Pre-M92.C
+        # the flag was seeded but unread: every default-empty ContextReceipt
+        # passed Pydantic and the agent jumped EXPLORE→ACT having
+        # demonstrated zero exploration. Now we surface a structured
+        # validation error so the LLM gets a recoverable bounce ("populate
+        # context_used or implementation_findings") rather than silently
+        # advancing.
+        if (
+            state.current_phase is Phase.EXPLORE
+            and next_phase is not None
+            and isinstance(receipt, dict)
+        ):
+            ctx_issues = check_context_receipt_substance(receipt, policy)
+            if ctx_issues is not None:
+                log.info(
+                    "context receipt insubstantial phase=EXPLORE stage=%s",
+                    state.stage_key,
+                )
+                err_payload = {
+                    "error_code": "CONTEXT_RECEIPT_EMPTY",
+                    "phase": Phase.EXPLORE.value,
+                    "reason": (
+                        "context_policy.require_context_receipt is enabled for "
+                        "this stage and the ContextReceipt has no substantive "
+                        "evidence of exploration. Add at least one context_used "
+                        "entry (the repo_map / symbol / file you read) or one "
+                        "implementation_finding, then re-submit EXPLORE."
+                    ),
+                    "details": ctx_issues,
+                }
+                result.validation_error = err_payload
+                await emit_governed_event(
+                    kind="governed.context_receipt_empty",
+                    state=state,
+                    policy=policy,
+                    run_context=run_context,
+                    payload=err_payload,
+                    severity="warn",
+                )
+                return result
 
         # M74 Phase 1B — path-coverage check at ACT → VERIFY (and ACT → REPAIR,
         # since both transitions imply "we're done editing this round"). Refuse

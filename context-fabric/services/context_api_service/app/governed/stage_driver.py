@@ -1003,6 +1003,23 @@ async def run_stage(
     """
     history = list(initial_history or [])
 
+    # M92.B — Story Intake / no-repo short-circuit. When the workflow's
+    # StageExecutionPolicy declares `repo_access=False` (canonical case:
+    # PRODUCT_OWNER intake with context_policy=STORY_ONLY + tool_policy=NONE),
+    # propagate that signal into the run_context so mcp-server's /mcp/tool-run
+    # skips ensureWorkspaceSource() + indexWorkspace() entirely. Even though
+    # CF's tool gateway already filters the allowlist to non-repo categories,
+    # mcp-server still tried to clone+materialise on every dispatch — a slow
+    # no-op on a story stage that has no source repo URI at all. This makes
+    # the intent explicit at the wire level so the executor doesn't guess.
+    if exec_policy is not None and exec_policy.repo_access is False:
+        run_context = dict(run_context or {})
+        run_context.setdefault("repo_access", False)
+        log.info(
+            "run_stage: repo_access=False — propagating short-circuit to mcp-server stage=%s role=%s",
+            stage_key, agent_role,
+        )
+
     # M74 Phase 2B — closed-loop wiring. When workgraph-api launches a
     # retry attempt after a prior failed eval gate, it threads structured
     # judge feedback into vars.eval_feedback. We render it as a system-

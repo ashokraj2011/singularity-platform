@@ -12,6 +12,7 @@ from context_api_service.app.governed.phase_state import Phase
 from context_api_service.app.governed.policy_loader import PhasePolicy, StagePolicy
 from context_api_service.app.governed.validators import (
     PhaseOutputInvalid,
+    check_context_receipt_substance,
     validate_phase_output,
 )
 
@@ -392,3 +393,92 @@ def test_finalize_has_no_receipt_model_but_doesnt_raise():
     parsed = validate_phase_output(Phase.FINALIZE, payload)
     assert parsed["kind"] == "finalize_artifact"
     assert parsed["branch_name"] == "sg/WI-123"
+
+
+# ── M92.C — require_context_receipt substance check ────────────────────────
+
+
+def _policy_with_context_policy(ctx_policy: dict) -> StagePolicy:
+    """Minimal StagePolicy carrying just the context_policy dict — the
+    substance check looks nowhere else, so a stub phase row is enough."""
+    pp = PhasePolicy(
+        phase=Phase.EXPLORE,
+        allowed_tools=frozenset(),
+        forbidden_tools=frozenset(),
+        required_output_schema={},
+        max_input_tokens=None,
+        max_output_tokens=None,
+        max_tool_calls=None,
+    )
+    return StagePolicy(
+        policy_id="t",
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        version=1,
+        status="ACTIVE",
+        approval_model={},
+        limits={},
+        context_policy=ctx_policy,
+        edit_policy={},
+        verification_policy={},
+        risk_policy={},
+        phases={Phase.EXPLORE: pp},
+    )
+
+
+def test_context_substance_passes_when_policy_off():
+    """Default behaviour: when require_context_receipt isn't set, an
+    empty ContextReceipt is fine. Existing flows must not regress."""
+    receipt = {"kind": "context_receipt", "context_used": [], "implementation_findings": []}
+    policy = _policy_with_context_policy({})
+    assert check_context_receipt_substance(receipt, policy) is None
+
+
+def test_context_substance_passes_with_findings():
+    """A finding is substance — no need for a separate context_used list."""
+    receipt = {
+        "kind": "context_receipt",
+        "context_used": [],
+        "implementation_findings": ["BaseOperator.evaluate handles short-circuit"],
+    }
+    policy = _policy_with_context_policy({"require_context_receipt": True})
+    assert check_context_receipt_substance(receipt, policy) is None
+
+
+def test_context_substance_passes_with_context_used():
+    """A context_used entry alone is enough."""
+    receipt = {
+        "kind": "context_receipt",
+        "context_used": [{"type": "symbol", "target": "BaseOperator.evaluate", "reason": "core logic"}],
+        "implementation_findings": [],
+    }
+    policy = _policy_with_context_policy({"require_context_receipt": True})
+    assert check_context_receipt_substance(receipt, policy) is None
+
+
+def test_context_substance_refuses_empty_when_required():
+    """The core case M92.C catches: policy requires evidence, agent
+    submitted an empty receipt. The bounce must enumerate the missing
+    fields so the LLM can self-correct."""
+    receipt = {"kind": "context_receipt", "context_used": [], "implementation_findings": []}
+    policy = _policy_with_context_policy({"require_context_receipt": True})
+    issues = check_context_receipt_substance(receipt, policy)
+    assert issues is not None
+    assert len(issues) == 1
+    assert issues[0]["field"] == "context_used"
+    assert "require_context_receipt" in issues[0]["issue"]
+
+
+def test_context_substance_ignores_non_context_receipts():
+    """Defensive: a non-ContextReceipt (e.g. caller passed an EditReceipt
+    by mistake) shouldn't trigger the check — Pydantic would have
+    rejected it upstream anyway."""
+    receipt = {"kind": "edit_receipt", "edits": [{"file": "a.py"}]}
+    policy = _policy_with_context_policy({"require_context_receipt": True})
+    assert check_context_receipt_substance(receipt, policy) is None
+
+
+def test_context_substance_passes_when_policy_is_none():
+    """No policy → no enforcement. Unit tests + legacy callers."""
+    receipt = {"kind": "context_receipt", "context_used": [], "implementation_findings": []}
+    assert check_context_receipt_substance(receipt, None) is None

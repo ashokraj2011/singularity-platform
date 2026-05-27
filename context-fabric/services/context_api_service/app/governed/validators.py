@@ -116,6 +116,72 @@ def _autofill_repair_receipt(
     return enriched
 
 
+# M92.C (2026-05-27) — context-receipt substance check.
+#
+# `require_context_receipt` is a boolean nested under
+# StagePolicy.context_policy that several seeded policies set to True
+# (PRODUCT_OWNER review, develop, qa). Pre-M92.C, nothing consumed it —
+# the Pydantic ContextReceipt model has default-empty lists for every
+# field, so the agent could submit an empty `{}` (no context_used, no
+# implementation_findings) and the EXPLORE→ACT transition still
+# succeeded with zero evidence that exploration actually happened.
+#
+# This check refuses the transition when context_policy declares the
+# requirement AND the receipt is structurally empty (no context items
+# and no findings). The agent's bounce message tells it exactly which
+# field to fill — a recoverable validation error, NOT a hard refusal.
+#
+# The check is opt-in (false / missing → no enforcement) so legacy
+# policies aren't broken by tightening the schema.
+def check_context_receipt_substance(
+    receipt: dict[str, Any],
+    policy: StagePolicy | None,
+) -> list[dict[str, Any]] | None:
+    """Inspect a ContextReceipt for evidence of real exploration.
+
+    Returns a structured-issues list when `policy.context_policy.require_context_receipt`
+    is True AND the receipt has neither `context_used` entries nor
+    `implementation_findings`. Returns None (the silent-pass shape) when
+    the policy doesn't require it OR the receipt has substance.
+
+    Pure function over the parsed receipt dict — callers wrap it into a
+    PhaseOutputInvalid so the bounce reaches the LLM as a normal
+    validation retry rather than a 500.
+    """
+    if policy is None:
+        return None
+    ctx_policy = policy.context_policy
+    if not isinstance(ctx_policy, dict) or not ctx_policy.get("require_context_receipt"):
+        return None
+    # Only meaningful for actual ContextReceipts. Defensive: if validator
+    # dispatch somehow returned a different kind, don't second-guess.
+    if not isinstance(receipt, dict) or receipt.get("kind") not in (
+        "context_receipt",
+        "CONTEXT",
+        "context",
+    ):
+        return None
+    context_used = receipt.get("context_used") or []
+    findings = receipt.get("implementation_findings") or []
+    if (isinstance(context_used, list) and context_used) or (
+        isinstance(findings, list) and findings
+    ):
+        return None
+    return [
+        {
+            "field": "context_used",
+            "issue": (
+                "context_policy.require_context_receipt is set for this stage, "
+                "but the ContextReceipt has no context_used entries and no "
+                "implementation_findings. Populate at least one of these with "
+                "what you read (repo_map / symbol / ast_slice targets) or "
+                "what you learned, then re-submit the EXPLORE phase output."
+            ),
+            "type": "value_error.empty_context",
+        }
+    ]
+
+
 def _check_policy_required(
     payload: dict[str, Any], required_schema: dict[str, Any]
 ) -> list[dict[str, Any]]:

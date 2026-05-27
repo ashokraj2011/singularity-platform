@@ -130,6 +130,16 @@ export const ToolRunSchema = z.object({
       // with this branch so every stage attempt shares its history.
       workitemBranch: z.string().optional(),
       workitem_branch: z.string().optional(),
+      // M92.B (2026-05-27) — Story Intake / no-repo short-circuit. When
+      // context-fabric's StageExecutionPolicy says `repo_access=false`
+      // (canonical case: PRODUCT_OWNER intake — STORY_ONLY context_policy
+      // + tool_policy=NONE), set this to false to skip workspace
+      // materialization entirely. CF's tool gateway should already
+      // refuse any repo-touching tool in this state; if one slips
+      // through, the dispatch below refuses with
+      // WORKSPACE_DISABLED_BY_POLICY (defence-in-depth).
+      repo_access: z.boolean().optional(),
+      repoAccess: z.boolean().optional(),
     })
     .default({}),
 });
@@ -274,10 +284,41 @@ export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promis
   const workitemBranch =
     body.run_context.workitemBranch ?? body.run_context.workitem_branch;
 
+  // M92.B (2026-05-27) — Story Intake / no-repo short-circuit. When CF
+  // signals `repo_access=false` (workflow's StageExecutionPolicy says
+  // STORY_ONLY / tool_policy=NONE) we MUST NOT clone or materialise
+  // anything. The git-clone runs as a slow no-op on intake stages
+  // that have no source repo URI at all; worse, when an intake stage
+  // happens to inherit a sourceUri from upstream state, materialising
+  // pollutes the sandbox for a stage that's supposed to be context-only.
+  //
+  // Defence-in-depth: if a repo-touching tool slips past CF's gateway
+  // and gets dispatched in this mode, refuse it with a structured
+  // error rather than silently letting it operate on an empty sandbox.
+  // CF's policy filter (stage_execution_policy._filter_phase_tools)
+  // already strips read/mutate/run/finalize tools when repo_access is
+  // False, so this branch should only ever fire if something upstream
+  // is misconfigured.
+  const repoAccessDisabled =
+    body.run_context.repo_access === false ||
+    body.run_context.repoAccess === false;
+  if (repoAccessDisabled && !isWorkspaceIndependentTool(body.tool_name)) {
+    throw new AppError(
+      `Cannot dispatch tool=${body.tool_name} — repo_access is disabled by ` +
+      `stage policy (story-only / no-repo stage). This tool needs the ` +
+      `workspace, which the workflow has refused to materialise for this ` +
+      `stage. If this tool genuinely should run on a context-only stage, ` +
+      `change its category to analyzer/verify_meta in tools.json.`,
+      403,
+      "WORKSPACE_DISABLED_BY_POLICY",
+      { tool_name: body.tool_name, repo_access: false },
+    );
+  }
+
   const start = Date.now();
   try {
     const r = await withSandboxRoot(workspaceRoot, async () => {
-      if (sourceUri) {
+      if (sourceUri && !repoAccessDisabled) {
         try {
           await ensureWorkspaceSource(
             { sourceType, sourceUri, sourceRef, workitemBranch },

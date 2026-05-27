@@ -145,6 +145,21 @@ jobs:
       - name: bin/check-codegen-manifest.sh
         run: bash bin/check-codegen-manifest.sh
 
+  # M91.F — Tool registry has 4 mirrors (canonical + CF + workgraph-api +
+  # mcp-server). They MUST stay byte-identical at the JSON-content level.
+  # This job fails the PR if a contributor updates one mirror and forgets
+  # the others. Stdlib-only Python, so no setup beyond actions/setup-python.
+  tool-registry-drift:
+    name: tool-registry mirrors agree (M91.F)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: bin/check-tool-registry-drift.py
+        run: python3 bin/check-tool-registry-drift.py --verbose
+
   # ─── Python service (context-fabric) ────────────────────────────────────────
   python-syntax:
     name: python syntax (context-fabric)
