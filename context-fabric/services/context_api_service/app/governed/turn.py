@@ -471,12 +471,20 @@ async def run_turn(
 
     # 2. Prompt — phase-specific if a binding exists, falls back via the
     # composer's ladder otherwise.
+    #
+    # M93.F (2026-05-27) — When the workflow's StageExecutionPolicy pins a
+    # specific prompt_profile_key, forward it to the composer so the
+    # named StagePromptBinding is used directly (bypassing the
+    # (stage_key, agent_role) resolver ladder). Pre-M93.F this field
+    # on the Pydantic model was documented but not consumed — runtime
+    # prompts ignored the workflow's pinned profile.
     prompt = await resolve_phase_prompt(
         stage_key=stage_key,
         agent_role=agent_role,
         phase=state.current_phase,
         vars=vars,
         bearer=bearer,
+        prompt_profile_key=(exec_policy.prompt_profile_key if exec_policy is not None else None),
     )
 
     # 3. Messages + tool descriptors.

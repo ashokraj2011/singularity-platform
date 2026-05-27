@@ -57,8 +57,10 @@ class ResolvedPrompt:
     phase: str | None
 
 
-# (stage_key, agent_role, phase) → (expires_at, ResolvedPrompt)
-_cache: dict[tuple[str, str | None, str | None], tuple[float, ResolvedPrompt]] = {}
+# M93.F — Cache key is now (stage_key, agent_role, phase, profile_key)
+# so workflows targeting different prompt profiles don't share cached
+# prompts. profile_key=None matches the pre-M93.F resolver-ladder path.
+_cache: dict[tuple[str, str | None, str | None, str | None], tuple[float, ResolvedPrompt]] = {}
 
 
 def clear_cache() -> None:
@@ -73,6 +75,7 @@ async def resolve_phase_prompt(
     phase: Phase | None,
     vars: dict[str, Any] | None = None,
     bearer: str | None = None,
+    prompt_profile_key: str | None = None,
 ) -> ResolvedPrompt:
     """Fetch the rendered prompt for (stage_key, agent_role, phase).
 
@@ -88,11 +91,24 @@ async def resolve_phase_prompt(
     RENDERED task. Cache key must include vars OR we skip the cache
     when vars are present. Pragmatic choice: skip the cache when vars are
     present (the common case), use it only for prompt-engineering inspection.
+
+    M93.F (2026-05-27) — `prompt_profile_key` is the workflow's
+    explicit pick of a StagePromptBinding by key (set on the WorkbenchStage
+    via the designer). When present, prompt-composer bypasses its
+    normal resolver ladder and binds the named profile directly
+    (stage-prompts.service.ts:129). Optional — empty/None preserves the
+    pre-M93.F resolver behaviour. The override is included in the
+    cache key so workflows targeting different profiles don't collide
+    in CF's local cache.
     """
     phase_str = phase.value if phase is not None else None
+    # Normalise empty string → None so the cache key + payload stay tidy.
+    profile_key = prompt_profile_key.strip() if isinstance(prompt_profile_key, str) else None
+    if not profile_key:
+        profile_key = None
 
     if not vars:
-        cache_key = (stage_key, agent_role, phase_str)
+        cache_key = (stage_key, agent_role, phase_str, profile_key)
         now = time.time()
         hit = _cache.get(cache_key)
         if hit and hit[0] > now:
@@ -110,6 +126,8 @@ async def resolve_phase_prompt(
         body["phase"] = phase_str
     if vars:
         body["vars"] = vars
+    if profile_key:
+        body["promptProfileKey"] = profile_key
 
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
@@ -144,6 +162,8 @@ async def resolve_phase_prompt(
     )
 
     if not vars:
-        _cache[(stage_key, agent_role, phase_str)] = (time.time() + _CACHE_TTL_SEC, resolved)
+        # M93.F — profile_key participates in the cache key so workflows
+        # targeting different profile keys don't share cached prompts.
+        _cache[(stage_key, agent_role, phase_str, profile_key)] = (time.time() + _CACHE_TTL_SEC, resolved)
 
     return resolved

@@ -1808,18 +1808,44 @@ async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
         _thinking_budget = 0
 
     # M91.A — parse incoming StageExecutionPolicy (if provided) into
-    # the Pydantic model. Wrapped in try/except so a malformed
-    # override doesn't fail the whole request — we log a warning,
-    # ignore the override, and proceed with the base DB-seeded policy.
+    # the Pydantic model.
+    #
+    # M93.E (2026-05-27) — Loud failure on malformed policy. Pre-M93.E
+    # we swallowed the validation error, logged a warning, and silently
+    # proceeded with the unfiltered DB-seeded policy. That made bad
+    # policy look like it worked: the operator got a 200 from the
+    # endpoint while the workflow's tool_policy / repo_access pinning
+    # was ignored at runtime. Now we 400 with the per-field Pydantic
+    # error so callers see the shape they got wrong. The check is
+    # cheap (Pydantic validate of a small model) and runs before any
+    # side-effect, so there's nothing to roll back.
     _exec_policy = None
     if req.stage_execution_policy is not None:
+        from pydantic import ValidationError as _PydanticValidationError
+        from .governed.stage_execution_policy import StageExecutionPolicy as _SEP
         try:
-            from .governed.stage_execution_policy import StageExecutionPolicy as _SEP
             _exec_policy = _SEP.model_validate(req.stage_execution_policy)
-        except Exception as _exc:  # pragma: no cover — defensive
-            import logging as _logging
-            _logging.getLogger(__name__).warning(
-                "stage_execution_policy parse failed: %s", _exc,
+        except _PydanticValidationError as _exc:
+            details = [
+                {
+                    "field": ".".join(str(p) for p in err.get("loc", [])) or "<root>",
+                    "issue": err.get("msg", "invalid"),
+                    "type": err.get("type", "value_error"),
+                }
+                for err in _exc.errors()
+            ]
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_code": "STAGE_EXECUTION_POLICY_INVALID",
+                    "message": (
+                        "stage_execution_policy failed Pydantic validation. "
+                        "Fix the listed fields and resend; CF will not silently "
+                        "fall back to the DB-seeded policy because that hides "
+                        "the workflow's tool/repo pinning from runtime."
+                    ),
+                    "details": details,
+                },
             )
 
     try:

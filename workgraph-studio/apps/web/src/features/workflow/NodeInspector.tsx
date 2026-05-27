@@ -969,15 +969,57 @@ function NeoInput({ value, onChange, placeholder, multiline = false }: {
 // produce. Fetches from /api/tool-registry/effective so the data is
 // the same canonical registry CF + mcp-server will consume — designer
 // fields stop being aspirational.
-function EffectiveToolsPreview({ toolPolicy }: { toolPolicy: string | undefined }) {
-  const { data, isLoading } = useQuery<{ tools: string[]; tool_policy: string | null }>({
-    queryKey: ['tool-registry-effective', toolPolicy],
-    queryFn: () => api.get(`/tool-registry/effective?toolPolicy=${encodeURIComponent(toolPolicy ?? '')}`).then(r => r.data),
-    enabled: Boolean(toolPolicy),
+//
+// M93.H (2026-05-27) — Preview now takes ALL THREE
+// StageExecutionPolicy filter dimensions (context_policy + tool_policy
+// + repo_access), not just tool_policy. Pre-M93.H the preview could
+// claim 14 tools (under MUTATION) when runtime exposed 4 (because the
+// stage also had repoAccess=false, which the preview ignored). The
+// preview now composes the same filter chain as CF's
+// _filter_phase_tools so what you see is what CF builds.
+//
+// Caveat: this still doesn't intersect with the DB-seeded
+// StagePolicy.phases[*].allowed_tools that lives in prompt-composer.
+// CF further narrows by that at runtime. The preview's intent is
+// "what your designer pinning produces from the canonical registry"
+// — not a drop-in for runtime ground truth. Add a stage-level
+// intersection if/when prompt-composer's resolve endpoint gets
+// surfaced through workgraph-api.
+function EffectiveToolsPreview({
+  toolPolicy,
+  contextPolicy,
+  repoAccess,
+}: {
+  toolPolicy: string | undefined
+  contextPolicy?: string | undefined
+  repoAccess?: boolean | undefined
+}) {
+  const enabled = Boolean(toolPolicy || contextPolicy || repoAccess === false)
+  const { data, isLoading } = useQuery<{
+    tools: string[]
+    tool_policy: string | null
+    context_policy: string | null
+    repo_access: boolean | null
+  }>({
+    queryKey: ['tool-registry-effective', toolPolicy, contextPolicy, repoAccess],
+    queryFn: () => {
+      const qs = new URLSearchParams()
+      if (toolPolicy) qs.set('toolPolicy', toolPolicy)
+      if (contextPolicy) qs.set('contextPolicy', contextPolicy)
+      if (repoAccess !== undefined) qs.set('repoAccess', repoAccess ? 'true' : 'false')
+      return api.get(`/tool-registry/effective?${qs.toString()}`).then(r => r.data)
+    },
+    enabled,
     staleTime: 60_000,
   })
-  if (!toolPolicy) return null
+  if (!enabled) return null
   const tools = data?.tools ?? []
+  // Friendlier empty message tries to identify WHICH filter zeroed
+  // the list so the operator can fix the right knob.
+  const emptyHint =
+    repoAccess === false ? '— repo access disabled; only story-only tools left —'
+    : contextPolicy === 'STORY_ONLY' || toolPolicy === 'NONE' ? '— story-only, no tools exposed —'
+    : '— none —'
   return (
     <div style={{
       marginTop: 6,
@@ -993,11 +1035,7 @@ function EffectiveToolsPreview({ toolPolicy }: { toolPolicy: string | undefined 
         Effective runtime tools{isLoading ? ' (loading…)' : ` (${tools.length})`}:
       </div>
       <div style={{ color: tools.length === 0 ? 'var(--warn, #fa6)' : 'inherit' }}>
-        {tools.length === 0
-          ? toolPolicy === 'NONE'
-            ? '— story-only, no tools exposed —'
-            : '— none —'
-          : tools.join(', ')}
+        {tools.length === 0 ? emptyHint : tools.join(', ')}
       </div>
     </div>
   )
@@ -1624,7 +1662,11 @@ function WorkbenchTab({
                   toolPolicy and renders the resulting tool list. Closes
                   the credibility gap of the policy fields by showing
                   exactly what the agent will see at runtime. */}
-              <EffectiveToolsPreview toolPolicy={stage.toolPolicy} />
+              <EffectiveToolsPreview
+                toolPolicy={stage.toolPolicy}
+                contextPolicy={stage.contextPolicy}
+                repoAccess={stage.repoAccess}
+              />
 
               <div style={{ marginTop: 8 }}>
                 <FieldLabel>Prompt profile key</FieldLabel>

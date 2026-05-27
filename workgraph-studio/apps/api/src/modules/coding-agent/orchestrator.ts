@@ -287,6 +287,16 @@ export interface CodingStageGovernedRequest {
   // server) the per-stage timeout inside context-fabric's loop driver.
   // Unset = the CF client's hardcoded 15-minute ceiling.
   timeoutSec?: number
+  // M93.D (2026-05-27) — Workflow's resolved StageExecutionPolicy.
+  // Pre-M93.D the blueprint coding path silently dropped this even when
+  // the workflow designer had pinned a tool_policy / repo_access on the
+  // stage: M91.A's tool filtering only ran in the generic adapter path.
+  // CF treats it as an override layer on top of the DB-seeded StagePolicy;
+  // tool_policy / repo_access / context_policy filter the per-phase
+  // allowed_tools, prompt_profile_key overrides which StagePromptBinding
+  // resolves. Optional — legacy callers omitting this still get the
+  // unfiltered base policy (back-compat preserved).
+  stageExecutionPolicy?: GovernedStageRequest['stage_execution_policy']
 }
 
 export async function runCodingStageGoverned(
@@ -303,6 +313,10 @@ export async function runCodingStageGoverned(
     run_context: input.runContext ?? {},
     max_turns: input.maxTurns,
     timeout_sec: input.timeoutSec,
+    // M93.D — pass through when the caller supplied one. Empty
+    // stage_execution_policy isn't sent so CF sees a clean "no override"
+    // signal (back-compat with pre-M93.D wire).
+    ...(input.stageExecutionPolicy ? { stage_execution_policy: input.stageExecutionPolicy } : {}),
   }
   const response = await contextFabricClient.executeGovernedStage(stageRequest)
   return adaptGovernedStageToCodingRun(response, input.policy)

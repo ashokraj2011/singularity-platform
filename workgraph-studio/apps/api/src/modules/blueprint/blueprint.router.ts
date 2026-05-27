@@ -4583,11 +4583,56 @@ async function runLoopStageExecute(
       })
     : null
 
+  // M93.D (2026-05-27) — Build the workflow's resolved StageExecutionPolicy
+  // from the WorkbenchStage row's policy fields. Pre-M93.D the blueprint
+  // path put these in `vars` (so per-phase prompts could interpolate
+  // them) but did NOT pass them as a structured stage_execution_policy
+  // to context-fabric — meaning M91.A's runtime tool filtering only
+  // ran for non-blueprint callers. tool_policy=READ_ONLY pinned on a
+  // QA stage in the designer was decoration for every real coding
+  // session that ran through here.
+  //
+  // CF's apply_execution_policy treats this as an override layer on top
+  // of the DB-seeded StagePolicy:
+  //   - tool_policy / repo_access filter the per-phase allowed_tools.
+  //   - context_policy is recorded for audit (M93.G will make it bind).
+  //   - prompt_profile_key overrides StagePromptBinding resolution
+  //     (M93.F wires this through resolve_phase_prompt).
+  //
+  // We populate only when the WorkbenchStage actually has the fields
+  // set; an empty policy would be a no-op anyway, but skipping the
+  // object keeps the wire payload smaller and keeps CF's
+  // "no override → use base policy" path identical to pre-M91.A
+  // behaviour for stages the operator hasn't pinned anything on.
+  const stageExecutionPolicy = (() => {
+    const contextPolicy = stage.contextPolicy?.trim() || undefined
+    const toolPolicy = stage.toolPolicy?.trim() || undefined
+    // usesRepoContext was computed earlier in this function as the
+    // effective repo-access decision for the stage; that's the truth
+    // we want to ship (not raw stage.repoAccess which may be the
+    // operator's literal toggle pre-derivation).
+    const repoAccess: boolean | undefined =
+      typeof stage.repoAccess === 'boolean' ? stage.repoAccess : usesRepoContext
+    const promptProfileKey = stage.promptProfileKey?.trim() || undefined
+    if (!contextPolicy && !toolPolicy && repoAccess === undefined && !promptProfileKey) {
+      return undefined
+    }
+    return {
+      stage_key: stage.key,
+      agent_role: stage.agentRole ?? undefined,
+      context_policy: contextPolicy,
+      tool_policy: toolPolicy,
+      repo_access: repoAccess,
+      prompt_profile_key: promptProfileKey,
+    }
+  })()
+
   return runCodingStageGoverned({
     stageKey: stage.key,
     agentRole: stage.agentRole,
     policy,
     modelAlias,
+    stageExecutionPolicy,
     vars: {
       // (2026-05-25) Spread the full stageVars bundle FIRST so all the
       // operator-facing context (capturedDecisions, latestAccepted,
