@@ -913,6 +913,16 @@ services:
       MINIO_SECRET_KEY: workgraph_secret
       MINIO_BUCKET: workgraph-documents
       WORKGRAPH_INTERNAL_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}
+      # M84.s6 — when 'true', the first-class WorkbenchStage tables are the
+      # sole source of truth: the legacy loopDefinition JSON-blob write-through
+      # (workbench-definitions.service), the form-save PATCH promote
+      # (instances.router), and the executor's activate-time promote
+      # (WorkbenchTaskExecutor) all become no-ops. Default 'false' keeps the
+      # bidirectional mirror in place so the existing NodeInspector accordion
+      # form (which still mutates config.workbench.loopDefinition directly)
+      # keeps working. Flip to 'true' after the form has been rewired to
+      # the M84.s2 API.
+      WORKBENCH_TABLES_AUTHORITATIVE: ${WORKBENCH_TABLES_AUTHORITATIVE:-false}
       CORS_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5176,http://localhost:5180
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
       AUTH_PROVIDER: iam

@@ -267,6 +267,13 @@ export async function getDefinition(
  * same `next` chain rebuilt from FORWARD edges.
  */
 async function writeThroughToLegacy(nodeId: string): Promise<void> {
+  // M84.s6 — WORKBENCH_TABLES_AUTHORITATIVE=true means the operator has
+  // declared tables are the only source of truth and the legacy JSON
+  // blob no longer needs to mirror them. Skipping the write-through
+  // here completes the cutover for API-driven edits; the form-save
+  // PATCH and the executor's promote-on-activate are gated by the
+  // same env var.
+  if (process.env.WORKBENCH_TABLES_AUTHORITATIVE === 'true') return
   const view = await prisma.workbenchDefinition.findUnique({
     where: { workflowNodeId: nodeId },
     include: {

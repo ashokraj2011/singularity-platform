@@ -68,26 +68,29 @@ export async function activateWorkbenchTask(
   // error here doesn't block the activation, but operators get a
   // warning event so the divergence is observable.
   //
-  // M84.s6 (TODO, deferred) — once the inspector edits via the
-  // M84.s2 API exclusively, remove this promotion call and have
-  // the executor READ from the first-class tables instead of
-  // re-rendering the JSON. Track via task #192. Until then, JSON
-  // remains the source of truth at runtime and tables are a
-  // mirror; this two-way sync is intentional to keep the cutover
-  // safe (the runtime never reads partially-migrated state).
-  try {
-    const { stageCount, promoted } = await promoteWorkbenchToTables(prisma, node.id, nextConfig)
-    if (promoted) {
-      await logEvent('WorkbenchTablesPromoted', 'WorkflowNode', node.id, undefined, {
+  // M84.s6 — when WORKBENCH_TABLES_AUTHORITATIVE=true the operator
+  // has opted out of JSON-blob authority (full cutover). The promote
+  // call becomes a no-op: tables are the source of truth and there's
+  // nothing to mirror. Until the NodeInspector legacy accordion form
+  // is rewired to mutate via the M84.s2 API (and blueprint-workbench
+  // reads loopDefinition from the API instead of URL params), the
+  // mirror stays on by default so JSON edits still reach the canvas.
+  const tablesAuthoritative = process.env.WORKBENCH_TABLES_AUTHORITATIVE === 'true'
+  if (!tablesAuthoritative) {
+    try {
+      const { stageCount, promoted } = await promoteWorkbenchToTables(prisma, node.id, nextConfig)
+      if (promoted) {
+        await logEvent('WorkbenchTablesPromoted', 'WorkflowNode', node.id, undefined, {
+          instanceId: instance.id,
+          stageCount,
+        })
+      }
+    } catch (err) {
+      await logEvent('WorkbenchTablesPromoteFailed', 'WorkflowNode', node.id, undefined, {
         instanceId: instance.id,
-        stageCount,
+        error: err instanceof Error ? err.message : String(err),
       })
     }
-  } catch (err) {
-    await logEvent('WorkbenchTablesPromoteFailed', 'WorkflowNode', node.id, undefined, {
-      instanceId: instance.id,
-      error: err instanceof Error ? err.message : String(err),
-    })
   }
 
   const eventId = await logEvent('WorkbenchTaskPrepared', 'WorkflowNode', node.id, undefined, {

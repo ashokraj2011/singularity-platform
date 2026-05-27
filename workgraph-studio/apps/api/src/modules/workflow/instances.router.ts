@@ -264,7 +264,12 @@ workflowInstancesRouter.patch('/:id/nodes/:nodeId', validate(updateNodeSchema), 
     // fail the save, just leaves the canvas showing stale data until
     // the next refresh. The s2 service write-through already covers
     // the API-driven edit path; this covers the legacy-form-save path.
-    if (node.nodeType === 'WORKBENCH_TASK') {
+    //
+    // M84.s6 — WORKBENCH_TABLES_AUTHORITATIVE=true skips the promote
+    // because the operator opted into table-authoritative mode and
+    // the form should no longer be writing JSON in the first place.
+    if (node.nodeType === 'WORKBENCH_TASK'
+        && process.env.WORKBENCH_TABLES_AUTHORITATIVE !== 'true') {
       try {
         await promoteWorkbenchToTables(prisma, node.id, node.config)
       } catch {
