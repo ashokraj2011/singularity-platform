@@ -72,6 +72,13 @@ const createTemplateSchema = z.object({
   budgetPolicy: z.record(z.unknown()).optional(),
   // CAPABILITY_WORKBENCH_BRIDGE → 4-stage loop (Intake → Design → Develop → QA)
   starter:      z.enum(['EMPTY', 'CAPABILITY_WORKBENCH_BRIDGE']).optional(),
+  // M85.s2 — workflow profile. 'main' = top-level orchestration
+  // (default). 'workbench' = standalone agent-loop template; its
+  // nodes are stages and the M84 WorkbenchDefinition tables are
+  // attached to the template itself. blueprint-workbench only
+  // renders 'workbench' instances; the main workflow designer
+  // shows workbench-only node types only on 'workbench' templates.
+  profile:      z.enum(['main', 'workbench']).default('main').optional(),
 })
 
 const updateTemplateSchema = z.object({
@@ -120,7 +127,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, res, next) => {
   try {
-    const { name, description, teamId, capabilityId, workflowTypeKey: rawWorkflowTypeKey, eligibleWorkItemTypes, isDefaultForType, defaultRoutingMode, metadata, variables, budgetPolicy, starter } =
+    const { name, description, teamId, capabilityId, workflowTypeKey: rawWorkflowTypeKey, eligibleWorkItemTypes, isDefaultForType, defaultRoutingMode, metadata, variables, budgetPolicy, starter, profile } =
       req.body as z.infer<typeof createTemplateSchema>
     if (starter === 'CAPABILITY_WORKBENCH_BRIDGE' && !capabilityId) {
       throw new ValidationError('Capability is required for the Workbench agent-team approval starter')
@@ -155,6 +162,7 @@ workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, re
         metadata:     metadata as any ?? {},
         variables:    normalizedVariables as unknown as Prisma.InputJsonValue,
         budgetPolicy: normalizeBudgetPolicy(withTemplateGovernanceDefaults(budgetPolicy, metadata)) as unknown as Prisma.InputJsonValue,
+        profile:      profile ?? 'main',
       },
     })
 
@@ -919,10 +927,20 @@ workflowTemplatesRouter.get('/', async (req, res, next) => {
     const workflowTypeKey = typeof req.query.workflowTypeKey === 'string' && req.query.workflowTypeKey.trim()
       ? normalizeMetadataKey(req.query.workflowTypeKey)
       : undefined
+    // M85.s2 — profile filter. Accepts 'main', 'workbench', or a
+    // comma-separated combination (e.g. ?profile=main,workbench
+    // returns both). Absent → returns everything (back-compat).
+    const profileRaw = typeof req.query.profile === 'string' && req.query.profile.trim()
+      ? req.query.profile.trim()
+      : undefined
+    const profileFilter = profileRaw
+      ? profileRaw.split(',').map(p => p.trim()).filter(Boolean)
+      : undefined
     const where: Prisma.WorkflowWhereInput = {
       archivedAt: showArchived ? { not: null } : null,
       ...(capabilityId ? { capabilityId } : {}),
       ...(workflowTypeKey ? { workflowTypeKey } : {}),
+      ...(profileFilter && profileFilter.length > 0 ? { profile: { in: profileFilter } } : {}),
     }
     const [templates, total] = await Promise.all([
       prisma.workflow.findMany({ where, skip: pg.skip, take: pg.take, orderBy: { name: 'asc' } }),

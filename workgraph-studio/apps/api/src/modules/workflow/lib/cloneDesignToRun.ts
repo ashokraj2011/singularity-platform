@@ -161,7 +161,7 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
   // ── 1. Load the workflow + its design graph from the dedicated design tables
   const workflow = await prisma.workflow.findUnique({
     where:  { id: templateId },
-    select: { id: true, teamId: true, variables: true, name: true, capabilityId: true, budgetPolicy: true },
+    select: { id: true, teamId: true, variables: true, name: true, capabilityId: true, budgetPolicy: true, profile: true },
   })
   if (!workflow) throw new Error(`Workflow ${templateId} not found`)
 
@@ -252,6 +252,10 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
         context:     initialContext as Prisma.InputJsonValue,
         createdById: opts.createdById,
         initiativeId: opts.initiativeId,
+        // M85.s2 — instance inherits profile from the template so
+        // blueprint-workbench can filter on the instance row directly
+        // without joining the template every time.
+        profile:     workflow.profile ?? 'main',
       },
     })
 
