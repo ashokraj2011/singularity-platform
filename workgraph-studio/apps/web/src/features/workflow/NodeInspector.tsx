@@ -21,6 +21,7 @@ import { WidgetListEditor } from '../forms/widgets/WidgetListEditor'
 import { WidgetEditor } from '../forms/widgets/WidgetEditor'
 import { RuntimeWidgetForm, type RuntimeFormSubmitTarget } from '../forms/widgets/RuntimeWidgetForm'
 import type { UploadedDocument } from '../../lib/uploadAttachment'
+import { WorkbenchMiniCanvas } from './WorkbenchMiniCanvas'
 
 const CUSTOM_NODE_ICONS: Record<string, React.ElementType> = {
   Box, Bot, User, CheckCircle, GitMerge, Package, Wrench, Shield, GitBranch,
@@ -1265,9 +1266,14 @@ function ArtifactsTab({
 function WorkbenchTab({
   config,
   onChange,
+  nodeId,
 }: {
   config: WorkbenchConfig | undefined
   onChange: (config: WorkbenchConfig) => void
+  // M84.s4 — passed through so the mini-canvas can fetch
+  // /api/workflow-nodes/:nodeId/workbench. Optional because preview /
+  // template editors render WorkbenchTab without a real node id.
+  nodeId?: string
 }) {
   const wb = config ?? defaultWorkbenchConfig()
   const stages = wb.loopDefinition.stages
@@ -1400,6 +1406,27 @@ function WorkbenchTab({
           This node pauses the workflow, opens the Workbench modal, and returns the approved implementation pack as node output.
         </p>
       </div>
+
+      {/* M84.s5 — "block inside a block" mini-canvas of the workbench
+          graph. Reads from /api/workflow-nodes/:nodeId/workbench
+          (M84.s2). Read-only for now — the legacy form below remains
+          the edit surface. Click a stage box to scroll the form to
+          that stage's section. Hidden when nodeId isn't available
+          (e.g. preview/template-editor contexts). */}
+      {nodeId && (
+        <WorkbenchMiniCanvas
+          nodeId={nodeId}
+          onSelectStage={stageKey => {
+            // Scroll the matching stage card into view if it's
+            // rendered below. The data-stage-key attribute is set
+            // on each stage card's outer div.
+            const el = document.querySelector(`[data-stage-key="${stageKey}"]`)
+            if (el && 'scrollIntoView' in el) {
+              (el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' })
+            }
+          }}
+        />
+      )}
 
       {errors.length > 0 && (
         <div style={{
@@ -3850,6 +3877,7 @@ export function NodeInspector({
               <WorkbenchTab
                 config={config.workbench}
                 onChange={workbench => setConfig(c => ({ ...c, workbench }))}
+                nodeId={node.id}
               />
             )}
 

@@ -3,6 +3,7 @@ import { prisma } from '../../../../lib/prisma'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import { listRuntimeCapabilities, type RuntimeCapability } from '../../../../lib/agent-and-tools/client'
 import { activateHumanTask } from './HumanTaskExecutor'
+import { promoteWorkbenchToTables } from '../../lib/promote-workbench'
 
 type JsonObject = Record<string, unknown>
 
@@ -59,6 +60,35 @@ export async function activateWorkbenchTask(
       config: nextConfig as Prisma.InputJsonValue,
     },
   })
+
+  // M84.s3 — mirror the legacy loopDefinition JSON into the
+  // first-class workbench tables so the new inspector / canvas
+  // (M84.s4-s5) and any reader of the WorkbenchDefinition graph
+  // see fresh data after every node activation. Best-effort: an
+  // error here doesn't block the activation, but operators get a
+  // warning event so the divergence is observable.
+  //
+  // M84.s6 (TODO, deferred) — once the inspector edits via the
+  // M84.s2 API exclusively, remove this promotion call and have
+  // the executor READ from the first-class tables instead of
+  // re-rendering the JSON. Track via task #192. Until then, JSON
+  // remains the source of truth at runtime and tables are a
+  // mirror; this two-way sync is intentional to keep the cutover
+  // safe (the runtime never reads partially-migrated state).
+  try {
+    const { stageCount, promoted } = await promoteWorkbenchToTables(prisma, node.id, nextConfig)
+    if (promoted) {
+      await logEvent('WorkbenchTablesPromoted', 'WorkflowNode', node.id, undefined, {
+        instanceId: instance.id,
+        stageCount,
+      })
+    }
+  } catch (err) {
+    await logEvent('WorkbenchTablesPromoteFailed', 'WorkflowNode', node.id, undefined, {
+      instanceId: instance.id,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
 
   const eventId = await logEvent('WorkbenchTaskPrepared', 'WorkflowNode', node.id, undefined, {
     instanceId: instance.id,
