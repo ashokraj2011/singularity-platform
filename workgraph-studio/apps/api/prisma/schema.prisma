@@ -2096,3 +2096,195 @@ model FeatureFlag {
 
   @@map("feature_flags")
 }
+
+// ─── M84 — FIRST-CLASS WORKBENCH STAGES ─────────────────────────────────────
+// Operators couldn't make sense of the old workbench: the whole loop was a
+// JSON blob on WorkflowNode.config with no canvas representation, no
+// drag-reorder, and no visible artifact flow between stages. M84 promotes
+// stages, edges, expected artifacts, and artifact handoffs to first-class
+// rows so the canvas can render a subgraph ("block inside a block") and the
+// inspector can edit individual stages without rewriting the entire JSON.
+//
+// Cutover is staged across M84.s1 → s6:
+//   • s1 — these models + backfill from existing JSON (this slice)
+//   • s2 — REST API + service layer
+//   • s3 — runtime executor reads from tables
+//   • s4 — inspector UI writes via API
+//   • s5 — canvas mini-graph rendering
+//   • s6 — drop the legacy JSON path
+//
+// Until s6 lands, WorkflowNode.config still carries the legacy loopDefinition
+// JSON blob and the runtime reads from it. The new tables are a SECONDARY
+// source that the backfill keeps in sync — a write-through pattern.
+
+model WorkbenchDefinition {
+  id                       String   @id @default(uuid())
+  workflowNodeId           String   @unique   // 1:1 with the WORKBENCH_TASK WorkflowNode
+  name                     String                // e.g. "Capability implementation workbench loop"
+  version                  Int      @default(1)
+  goal                     String?               // operator-stated goal for the loop
+  // Source repository the loop operates on. Mirrors the legacy
+  // workbench config so the runtime can keep the same materializer
+  // path during cutover.
+  sourceType               String?               // 'github' | 'localdir'
+  sourceUri                String?
+  sourceRef                String?
+  capabilityId             String?               // IAM capability this loop implements
+  // Agent template fallbacks — used when a stage doesn't pin its own
+  // agentTemplateId. The architect/developer/qa split mirrors the
+  // historical role taxonomy; new roles default to no fallback.
+  architectAgentTemplateId String?
+  developerAgentTemplateId String?
+  qaAgentTemplateId        String?
+  // Loop budget knobs.
+  maxLoopsPerStage         Int      @default(3)
+  maxTotalSendBacks        Int      @default(6)
+  gateMode                 String   @default("manual")  // 'manual' | 'auto'
+  finalPackKey             String?               // context key the approval pack writes to
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  stages WorkbenchStage[]
+
+  @@index([workflowNodeId])
+  @@map("workbench_definitions")
+}
+
+model WorkbenchStage {
+  id               String   @id @default(uuid())
+  definitionId     String
+  definition       WorkbenchDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  // Operator-defined key, unique within a definition. e.g. "STORY_INTAKE",
+  // "DESIGN", "DEVELOP", "QA". The legacy loopDefinition used these keys to
+  // chain stages via `next`; M84 uses ordinal + edges instead, but we keep
+  // the key as a stable identifier for receipts/audit-gov correlation.
+  stageKey         String
+  label            String                // human label e.g. "Story Intake"
+  agentRole        String                // PRODUCT_OWNER / ARCHITECT / DEVELOPER / QA / ...
+  agentTemplateId  String?               // overrides definition-level fallback when set
+  promptProfileKey String?
+  // Ordering — drives the default forward chain when no explicit edges
+  // exist. Drag-reorder updates this. ordinal 0 = first stage.
+  ordinal          Int      @default(0)
+  // Canvas position when the operator pinned one (subgraph rendering).
+  // Auto-laid out from ordinal when both are null.
+  positionX        Float?
+  positionY        Float?
+  // Stage flags.
+  required         Boolean  @default(true)
+  terminal         Boolean  @default(false)
+  approvalRequired Boolean  @default(true)
+  repoAccess       Boolean  @default(false)
+  // Policy strings — kept as strings rather than enums so prompt-composer's
+  // StagePolicy rows (which use the same vocabulary) stay the source of
+  // truth. Adding a new policy value doesn't require a migration here.
+  toolPolicy       String   @default("NONE")    // NONE | READ_ONLY | MUTATION | VERIFICATION
+  contextPolicy    String   @default("NONE")    // STORY_ONLY | REPO_READ_ONLY | CODE_EDIT | VERIFY_ONLY | EVIDENCE_REVIEW
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  expectedArtifacts WorkbenchExpectedArtifact[]
+  questions         WorkbenchStageQuestion[]
+  outgoingEdges     WorkbenchStageEdge[] @relation("WorkbenchEdgeFrom")
+  incomingEdges     WorkbenchStageEdge[] @relation("WorkbenchEdgeTo")
+  consumes          WorkbenchArtifactConsumes[]
+
+  @@unique([definitionId, stageKey])
+  @@index([definitionId, ordinal])
+  @@map("workbench_stages")
+}
+
+model WorkbenchExpectedArtifact {
+  id          String   @id @default(uuid())
+  stageId     String
+  stage       WorkbenchStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  // Machine key — e.g. "story_brief", "solution_architecture",
+  // "code_change". The artifact-handoff edge (WorkbenchArtifactConsumes)
+  // resolves by this kind, so changing it after consumers are wired is a
+  // breaking change. UI surfaces a rename warning.
+  kind        String
+  title       String
+  description String?
+  format      String   @default("MARKDOWN")    // MARKDOWN | TEXT | JSON | CODE
+  required    Boolean  @default(true)
+  // Display order within the stage's "produces" list. Doesn't affect
+  // runtime — purely cosmetic for the inspector.
+  ordinal     Int      @default(0)
+  // M82 — editable artifacts (operator can override after the agent
+  // emits one). Mirrors the legacy LoopExpectedArtifact.editable flag.
+  editable    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  consumedBy WorkbenchArtifactConsumes[]
+
+  @@unique([stageId, kind])
+  @@index([stageId, ordinal])
+  @@map("workbench_expected_artifacts")
+}
+
+model WorkbenchStageEdge {
+  id          String   @id @default(uuid())
+  // Forward edge: from.next = to. Send-back edge: when in `to` the
+  // operator/agent decides to regress, `from` is an upstream stage
+  // eligible to receive the send-back. The legacy
+  // `allowedSendBackTo: stageKey[]` is fully expressed as one
+  // SEND_BACK edge per allowed target.
+  fromStageId String
+  fromStage   WorkbenchStage @relation("WorkbenchEdgeFrom", fields: [fromStageId], references: [id], onDelete: Cascade)
+  toStageId   String
+  toStage     WorkbenchStage @relation("WorkbenchEdgeTo", fields: [toStageId], references: [id], onDelete: Cascade)
+  kind        String   // 'FORWARD' | 'SEND_BACK'
+  // Optional label for the canvas — typically auto-generated from
+  // artifact-handoff resolution, but operators can override.
+  label       String?
+  createdAt   DateTime @default(now())
+
+  @@unique([fromStageId, toStageId, kind])
+  @@index([fromStageId])
+  @@index([toStageId])
+  @@map("workbench_stage_edges")
+}
+
+model WorkbenchArtifactConsumes {
+  id                 String   @id @default(uuid())
+  // The stage that REQUIRES this artifact as input.
+  consumerStageId    String
+  consumerStage      WorkbenchStage @relation(fields: [consumerStageId], references: [id], onDelete: Cascade)
+  // The specific artifact (produced by some upstream stage) that
+  // satisfies the requirement. Resolved by (producerStage, kind).
+  producerArtifactId String
+  producerArtifact   WorkbenchExpectedArtifact @relation(fields: [producerArtifactId], references: [id], onDelete: Cascade)
+  required           Boolean  @default(true)
+  // When true, this binding was filled in automatically by name-matching
+  // (the legacy inference path). false = operator pinned it explicitly.
+  // The UI shows inferred bindings with a "✦ inferred" badge in lighter
+  // color until they're confirmed.
+  inferred           Boolean  @default(false)
+  createdAt          DateTime @default(now())
+
+  @@unique([consumerStageId, producerArtifactId])
+  @@index([consumerStageId])
+  @@map("workbench_artifact_consumes")
+}
+
+model WorkbenchStageQuestion {
+  id         String   @id @default(uuid())
+  stageId    String
+  stage      WorkbenchStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  // Operator-defined id used in audit trails and answer payloads.
+  questionId String
+  text       String
+  required   Boolean  @default(false)
+  freeform   Boolean  @default(true)
+  // Display order within the stage.
+  ordinal    Int      @default(0)
+  // Optional structured answer set. Shape: [{label, impact?, recommended?}].
+  options    Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([stageId, questionId])
+  @@index([stageId, ordinal])
+  @@map("workbench_stage_questions")
+}
