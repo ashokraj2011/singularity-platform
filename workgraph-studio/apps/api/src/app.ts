@@ -19,6 +19,7 @@ import { workflowInstancesRouter } from './modules/workflow/instances.router'
 import { insightsRouter } from './modules/workflow/insights.router'
 import { triggersRouter, webhookRouter } from './modules/workflow/triggers/triggers.router'
 import { customNodeTypesRouter } from './modules/workflow/custom-node-types.router'
+import { workbenchDefinitionsRouter } from './modules/workflow/workbench-definitions.router'
 import { tasksRouter } from './modules/task/tasks.router'
 import { approvalsRouter } from './modules/approval/approvals.router'
 import { consumableTypesRouter } from './modules/consumable/consumable-types.router'
@@ -110,6 +111,11 @@ export function createApp(): Express {
   app.use('/api/workflow-instances', authMiddleware, insightsRouter)
   app.use('/api/workflow-triggers', authMiddleware, triggersRouter)
   app.use('/api/custom-node-types', authMiddleware, customNodeTypesRouter)
+  // M84.s2 — first-class workbench definitions. The :nodeId param
+  // identifies the WORKBENCH_TASK WorkflowNode that owns the
+  // definition tree. mergeParams: true on the router lets handlers
+  // read it via req.params.nodeId.
+  app.use('/api/workflow-nodes/:nodeId/workbench', authMiddleware, workbenchDefinitionsRouter)
   // Webhook receiver is intentionally unauthenticated; secret-gated.
   app.use('/api/triggers/webhook', webhookRouter)
   app.use('/api/tasks', authMiddleware, tasksRouter)
