@@ -1,0 +1,494 @@
+{
+  "tools": {
+    "apply_patch": {
+      "category": "mutate",
+      "input_schema": {
+        "properties": {
+          "patch": {
+            "description": "Unified diff patch text. Must include 'diff --git', '--- a/...', '+++ b/...' headers and standard @@ hunks.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "patch"
+        ],
+        "type": "object"
+      }
+    },
+    "capture_test_baseline": {
+      "category": "run",
+      "input_schema": {
+        "properties": {
+          "args": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "description": "Same as run_test's command. Run this BEFORE editing \u2014 the receipt is tagged as the baseline so subsequent run_test calls auto-diff against it (pre-existing failures pass the gate; only new regressions block).",
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      }
+    },
+    "classify_push_error": {
+      "category": "analyzer",
+      "input_schema": {
+        "properties": {
+          "stderr": {
+            "description": "Captured git push stderr.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stderr"
+        ],
+        "type": "object"
+      }
+    },
+    "create_file": {
+      "category": "mutate",
+      "input_schema": {
+        "properties": {
+          "content": {
+            "description": "Initial file contents.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Workspace-relative file path (e.g. 'src/foo/Bar.java').",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "type": "object"
+      }
+    },
+    "detect_no_tests_ran": {
+      "category": "analyzer",
+      "input_schema": {
+        "properties": {
+          "command": {
+            "description": "Optional command for context.",
+            "type": "string"
+          },
+          "stdout": {
+            "description": "Captured test-runner stdout.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stdout"
+        ],
+        "type": "object"
+      }
+    },
+    "find_symbol": {
+      "category": "read",
+      "input_schema": {
+        "properties": {
+          "kind": {
+            "description": "Optional filter: 'class' | 'method' | 'field' | 'function'.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Symbol name to locate (class, method, field).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    "finish_work_branch": {
+      "category": "finalize",
+      "input_schema": {
+        "properties": {
+          "message": {
+            "description": "Commit message. Required when there are pending changes.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "get_ast_slice": {
+      "category": "read",
+      "input_schema": {
+        "properties": {
+          "endLine": {
+            "description": "1-indexed inclusive ending line.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Workspace-relative file path (e.g. 'src/foo/Bar.java').",
+            "type": "string"
+          },
+          "startLine": {
+            "description": "1-indexed inclusive starting line.",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "startLine",
+          "endLine"
+        ],
+        "type": "object"
+      }
+    },
+    "get_dependencies": {
+      "category": "read",
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Workspace-relative file path (e.g. 'src/foo/Bar.java').",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "grep_lines": {
+      "category": "read",
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Optional subtree.",
+            "type": "string"
+          },
+          "pattern": {
+            "description": "Regex or literal text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      }
+    },
+    "list_files": {
+      "category": "read",
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Workspace-relative directory.",
+            "type": "string"
+          },
+          "pattern": {
+            "description": "Optional glob (e.g. '*.java').",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "list_indexed_files": {
+      "category": "read",
+      "input_schema": {
+        "properties": {
+          "pattern": {
+            "description": "Optional glob to filter the AST index.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "read_file": {
+      "category": "read",
+      "input_schema": {
+        "properties": {
+          "endLine": {
+            "description": "1-indexed inclusive ending line.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Workspace-relative file path (e.g. 'src/foo/Bar.java').",
+            "type": "string"
+          },
+          "startLine": {
+            "description": "1-indexed inclusive starting line.",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "read_repo_instructions": {
+      "category": "read",
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Optional path; defaults to standard locations (CLAUDE.md, AGENTS.md).",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "read_workitem": {
+      "category": "read",
+      "input_schema": {
+        "properties": {
+          "work_item_id": {
+            "description": "Optional override; defaults to the run_context's work_item_id.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "recommended_verification": {
+      "category": "verify_meta",
+      "input_schema": {
+        "properties": {
+          "changed_paths": {
+            "description": "Files the agent's edits touched. The synthesizer uses these to pick the smallest verifier scope.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "replace_range": {
+      "category": "mutate",
+      "input_schema": {
+        "properties": {
+          "endLine": {
+            "description": "1-indexed inclusive ending line.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "newText": {
+            "description": "Replacement text for lines startLine..endLine inclusive.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Workspace-relative file path (e.g. 'src/foo/Bar.java').",
+            "type": "string"
+          },
+          "startLine": {
+            "description": "1-indexed inclusive starting line.",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "startLine",
+          "endLine",
+          "newText"
+        ],
+        "type": "object"
+      }
+    },
+    "replace_text": {
+      "category": "mutate",
+      "input_schema": {
+        "properties": {
+          "newText": {
+            "description": "Replacement text. Empty string deletes oldText.",
+            "type": "string"
+          },
+          "oldText": {
+            "description": "Exact text to find. Must be unique within the file or the tool refuses (use a longer surrounding context to disambiguate).",
+            "type": "string"
+          },
+          "path": {
+            "description": "Workspace-relative file path (e.g. 'src/foo/Bar.java').",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "oldText",
+          "newText"
+        ],
+        "type": "object"
+      }
+    },
+    "repo_map": {
+      "category": "read",
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Optional subtree to map.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "review_diff": {
+      "category": "finalize",
+      "input_schema": {
+        "properties": {
+          "paths": {
+            "description": "Optional paths to scope the diff to.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "run_command": {
+      "category": "run",
+      "input_schema": {
+        "properties": {
+          "args": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "description": "Shell-style verifier command (e.g. 'mvn test' or 'pytest tests/').",
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "timeout_sec": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      }
+    },
+    "run_test": {
+      "category": "run",
+      "input_schema": {
+        "properties": {
+          "args": {
+            "description": "Optional positional args passed to command.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "description": "Shell-style verifier command (e.g. 'mvn test' or 'pytest tests/').",
+            "type": "string"
+          },
+          "cwd": {
+            "description": "Optional subdirectory (relative to workspace root).",
+            "type": "string"
+          },
+          "timeout_sec": {
+            "description": "Hard cap; default per-runner.",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      }
+    },
+    "search_code": {
+      "category": "read",
+      "input_schema": {
+        "properties": {
+          "path": {
+            "description": "Optional subtree to scope the search.",
+            "type": "string"
+          },
+          "pattern": {
+            "description": "Regex or literal text to find across the workspace.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "type": "object"
+      }
+    },
+    "symbol_search": {
+      "category": "read",
+      "input_schema": {
+        "properties": {
+          "query": {
+            "description": "Symbol substring or qualified name to search for.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      }
+    },
+    "verification_unavailable": {
+      "category": "verify_meta",
+      "input_schema": {
+        "properties": {
+          "reason": {
+            "description": "One-line explanation why a verifier couldn't run (e.g. 'no test framework configured', 'verifier-registry returned no candidates'). Reviewers decide if the gap is acceptable.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      }
+    },
+    "write_file": {
+      "category": "mutate",
+      "input_schema": {
+        "properties": {
+          "content": {
+            "description": "Full file contents \u2014 overwrites the file at path.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Workspace-relative file path (e.g. 'src/foo/Bar.java').",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "version": 1
+}

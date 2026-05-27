@@ -67,19 +67,15 @@ import { indexWorkspace } from "../workspace/ast-index";
 // against the also-empty workspace, while the operator gets a green
 // approval card pointing at a phantom commit.
 //
-// Allowlist of tools we KNOW are workspace-independent — pure functions
-// on stdout, audit lookups, or synthesizers. Every other tool gets a
-// hard refusal (WORKSPACE_MATERIALIZATION_FAILED) when materialization
-// errors. The allowlist is intentionally short; expand only when a new
-// tool is genuinely workspace-free.
-const _WORKSPACE_INDEPENDENT_TOOLS = new Set([
-  "detect_no_tests_ran",
-  "classify_push_error",
-  "recommended_verification",
-  "verification_unavailable",
-  // submit_phase_output / next_phase / etc. are CF-internal, never
-  // dispatched to mcp-server, so they don't need an entry here.
-]);
+// M91.D (2026-05-27) — adopted the canonical tool-registry as the
+// single source for which tools are workspace-independent. Previously
+// the allowlist was a hand-maintained Set of four names here; now it
+// derives from the registry's `category` field (analyzer +
+// verify_meta = workspace-independent). When a new such tool ships,
+// add it to tools.json and the runtime picks it up automatically.
+// See mcp-server/src/tools/tools-registry.ts for the implementation.
+import { workspaceIndependentTools } from "../tools/tools-registry";
+const _WORKSPACE_INDEPENDENT_TOOLS = workspaceIndependentTools();
 
 export function isWorkspaceIndependentTool(name: string): boolean {
   return _WORKSPACE_INDEPENDENT_TOOLS.has(name);
