@@ -748,6 +748,27 @@ export async function startWorkItemTarget(
   if (target.childWorkflowInstanceId) throw new ValidationError('This WorkItem target already has a child workflow run')
 
   await assertTemplatePermission(userId, templateId, 'start')
+
+  // M93.C — Refuse workbench-profile templates at the API boundary. Even
+  // though M93.C filters them out of the UI dropdown, an older client or
+  // a direct API caller could still POST a workbench template id here.
+  // Starting one as a WorkItem's child produces a workbench-profile
+  // WorkflowInstance that no surface knows how to open: blueprint-
+  // workbench refuses non-bound sessions (M85.s5) and RunViewerPage
+  // isn't designed for the loop-stage view. Workbench templates run
+  // nested via a parent main workflow's CALL_WORKFLOW node, whose
+  // executor copies template.profile to the child instance (M85.s4).
+  const startedTemplate = await prisma.workflow.findUnique({
+    where: { id: templateId },
+    select: { profile: true, name: true },
+  })
+  if (startedTemplate?.profile === 'workbench') {
+    throw new ValidationError(
+      `"${startedTemplate.name}" is a workbench-profile template — it can only run as a sub-workflow ` +
+      `inside a main workflow's CALL_WORKFLOW node. Pick a main-profile template, or create a main ` +
+      `workflow whose CALL_WORKFLOW node points at this workbench template.`,
+    )
+  }
   const vars = {
     ...asRecord(target.workItem.input),
     workItemId,

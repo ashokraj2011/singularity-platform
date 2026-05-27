@@ -648,16 +648,19 @@ function WorkItemInlinePanel({
   const openClarifications = (workItem?.clarifications ?? []).filter(item => item.status === 'OPEN')
   const workflowCapabilityId = activeTarget?.targetCapabilityId ?? createDraft.targetCapabilityId
 
+  // M93.C — Same profile=main filter as WorkItemsPage / WorkDetailPage.
+  // The pre-start workflow picker on the run viewer is also a WorkItem-
+  // attach surface; workbench templates can't be its target.
   const workflowsQuery = useQuery<WorkflowTemplateOption[]>({
     queryKey: ['run-workitem-workflows', workflowCapabilityId],
     enabled: Boolean(workflowCapabilityId && (!activeTarget || !activeTarget.childWorkflowInstanceId)),
-    queryFn: () => api.get('/workflows', { params: { capabilityId: workflowCapabilityId, size: 100 } })
+    queryFn: () => api.get('/workflows', { params: { capabilityId: workflowCapabilityId, size: 100, profile: 'main' } })
       .then(r => unwrapItems<WorkflowTemplateOption>(r.data)),
   })
   const allWorkflowsQuery = useQuery<WorkflowTemplateOption[]>({
     queryKey: ['run-workitem-workflows-all'],
     enabled: Boolean(workflowCapabilityId && ((workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0) || workflowsQuery.isError)),
-    queryFn: () => api.get('/workflows', { params: { size: 100 } })
+    queryFn: () => api.get('/workflows', { params: { size: 100, profile: 'main' } })
       .then(r => unwrapItems<WorkflowTemplateOption>(r.data)),
   })
   const workflowOptions = workflowsQuery.data?.length

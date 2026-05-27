@@ -115,15 +115,18 @@ function WorkItemDetail({ id }: { id: string }) {
     !['SUBMITTED', 'APPROVED'].includes(activeTarget.status) &&
     !['COMPLETED', 'ARCHIVED'].includes(workItem?.status ?? ''),
   )
+  // M93.C — Same profile=main filter as WorkItemsPage. WorkItems attach
+  // to main workflows only; workbench-profile templates run nested via
+  // CALL_WORKFLOW. See WorkItemsPage.tsx for the longer rationale.
   const workflowsQuery = useQuery<WorkflowTemplateRow[]>({
     queryKey: ['runtime-workitem-workflows', activeTarget?.targetCapabilityId],
     enabled: Boolean(activeTarget?.targetCapabilityId),
-    queryFn: () => api.get('/workflows', { params: { capabilityId: activeTarget?.targetCapabilityId, size: 100 } }).then(r => unwrapItems<WorkflowTemplateRow>(r.data)),
+    queryFn: () => api.get('/workflows', { params: { capabilityId: activeTarget?.targetCapabilityId, size: 100, profile: 'main' } }).then(r => unwrapItems<WorkflowTemplateRow>(r.data)),
   })
   const allWorkflowsQuery = useQuery<WorkflowTemplateRow[]>({
     queryKey: ['runtime-workitem-workflows-all'],
     enabled: Boolean(activeTarget?.targetCapabilityId && ((workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0) || workflowsQuery.isError)),
-    queryFn: () => api.get('/workflows', { params: { size: 100 } }).then(r => unwrapItems<WorkflowTemplateRow>(r.data)),
+    queryFn: () => api.get('/workflows', { params: { size: 100, profile: 'main' } }).then(r => unwrapItems<WorkflowTemplateRow>(r.data)),
   })
   const workflowOptions = workflowsQuery.data?.length ? workflowsQuery.data : allWorkflowsQuery.data ?? []
   const missingCapabilityWorkflows = workflowsQuery.isError || (workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0)

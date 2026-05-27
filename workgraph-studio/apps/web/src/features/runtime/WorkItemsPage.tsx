@@ -68,10 +68,20 @@ export function WorkItemsPage() {
   const { labelForCapability } = useCapabilityLabels()
   const selectedTargetCapability = labelForCapability(selectedTarget?.targetCapabilityId)
 
+  // M93.C — Filter to profile=main. A WorkItem's child workflow MUST be
+  // a main-profile template; workbench-profile templates are sub-workflows
+  // dispatched nested via CALL_WORKFLOW (their CallWorkflowExecutor
+  // inherits profile from the parent template — see M85.s4). Without this
+  // filter the dropdown was including workbench templates the operator
+  // could pick but couldn't actually start (the resulting run would be
+  // profile=workbench, blueprint-workbench would refuse, RunViewerPage
+  // wouldn't render). Symptom users reported: "Attach workflow and run
+  // is not working" — dropdown empty when only workbench templates
+  // matched the capability, or silent failure when one was picked.
   const workflowsQuery = useQuery<WorkflowOption[]>({
     queryKey: ['workitems-board-workflows', selectedTarget?.targetCapabilityId],
     enabled: Boolean(selectedTarget?.targetCapabilityId && !selectedTarget?.childWorkflowInstanceId),
-    queryFn: () => api.get('/workflows', { params: { capabilityId: selectedTarget?.targetCapabilityId, size: 100 } })
+    queryFn: () => api.get('/workflows', { params: { capabilityId: selectedTarget?.targetCapabilityId, size: 100, profile: 'main' } })
       .then(r => unwrapItems<WorkflowOption>(r.data)),
   })
   const allWorkflowsQuery = useQuery<WorkflowOption[]>({
@@ -81,7 +91,7 @@ export function WorkItemsPage() {
       !selectedTarget?.childWorkflowInstanceId &&
       ((workflowsQuery.isSuccess && (workflowsQuery.data ?? []).length === 0) || workflowsQuery.isError),
     ),
-    queryFn: () => api.get('/workflows', { params: { size: 100 } }).then(r => unwrapItems<WorkflowOption>(r.data)),
+    queryFn: () => api.get('/workflows', { params: { size: 100, profile: 'main' } }).then(r => unwrapItems<WorkflowOption>(r.data)),
   })
   const workflowOptions = workflowsQuery.data?.length
     ? workflowsQuery.data
@@ -390,7 +400,8 @@ export function WorkItemsPage() {
                   )}
                   {!selectedTarget.childWorkflowInstanceId && !workflowsQuery.isLoading && !allWorkflowsQuery.isLoading && workflowOptions.length === 0 && (
                     <p style={{ margin: '8px 0 0', color: '#b91c1c', fontSize: 12 }}>
-                      Create or publish a workflow for this capability in Workflow Manager, then refresh this page.
+                      No <strong>main</strong>-profile workflow templates available. WorkItems attach to main workflows only — workbench templates run as sub-workflows via a parent's CALL_WORKFLOW node.
+                      Create or publish a main workflow in Workflow Manager, then refresh this page.
                     </p>
                   )}
 
