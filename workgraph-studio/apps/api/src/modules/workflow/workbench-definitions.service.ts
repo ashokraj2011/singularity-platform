@@ -22,6 +22,7 @@ import { prisma } from '../../lib/prisma'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { logEvent, createReceipt } from '../../lib/audit'
+import { promoteWorkbenchToTables } from './lib/promote-workbench'
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -120,12 +121,12 @@ export async function getDefinition(
 ): Promise<WorkbenchDefinitionView | null> {
   const node = await prisma.workflowNode.findUnique({
     where: { id: nodeId },
-    select: { id: true, instanceId: true },
+    select: { id: true, instanceId: true, config: true, nodeType: true },
   })
   if (!node) throw new NotFoundError('WorkflowNode', nodeId)
   await assertInstancePermission(userId, node.instanceId, 'view')
 
-  const def = await prisma.workbenchDefinition.findUnique({
+  let def = await prisma.workbenchDefinition.findUnique({
     where: { workflowNodeId: nodeId },
     include: {
       stages: {
@@ -137,6 +138,35 @@ export async function getDefinition(
       },
     },
   })
+  // M84.s2-followup — lazy promote on read. When the WorkbenchDefinition
+  // row is missing but the node carries a legacy loopDefinition JSON
+  // (the common case for nodes created after the s1 backfill ran),
+  // promote on-the-fly so the inspector / canvas never gets a 404.
+  // Pre-M84 nodes without any loopDefinition still return null — that's
+  // a legitimate empty state for a freshly-dragged node.
+  if (!def && node.nodeType === 'WORKBENCH_TASK') {
+    try {
+      const { promoted } = await promoteWorkbenchToTables(prisma, nodeId, node.config)
+      if (promoted) {
+        def = await prisma.workbenchDefinition.findUnique({
+          where: { workflowNodeId: nodeId },
+          include: {
+            stages: {
+              include: {
+                expectedArtifacts: { orderBy: { ordinal: 'asc' } },
+                questions: { orderBy: { ordinal: 'asc' } },
+              },
+              orderBy: { ordinal: 'asc' },
+            },
+          },
+        })
+      }
+    } catch {
+      // Promote failed (bad JSON shape, partial config) — fall through
+      // to the null return so the UI shows the empty-state hint instead
+      // of a 500.
+    }
+  }
   if (!def) return null
 
   // Edges + consumes are scoped to stages but stored in flat tables.

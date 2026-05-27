@@ -26,7 +26,9 @@
 import { Router, type Request } from 'express'
 import { z } from 'zod'
 import { validate } from '../../middleware/validate'
-import { NotFoundError } from '../../lib/errors'
+// NotFoundError no longer needed at the router level — service throws
+// it for genuinely-missing nodes; an empty definition returns an
+// empty-shell view instead of 404.
 import * as service from './workbench-definitions.service'
 
 export const workbenchDefinitionsRouter: Router = Router({ mergeParams: true })
@@ -113,7 +115,26 @@ const pinConsumesSchema = z.object({
 workbenchDefinitionsRouter.get('/', async (req, res, next) => {
   try {
     const view = await service.getDefinition(nodeIdOf(req), req.user!.userId)
-    if (!view) throw new NotFoundError('WorkbenchDefinition', nodeIdOf(req))
+    if (!view) {
+      // M84.s2-followup — return an empty-shell instead of 404 when
+      // the node exists but has no definition yet. The UI distinguishes
+      // "no stages yet, please add some" from "node doesn't exist" by
+      // checking stages.length. 404 still fires for an actual missing
+      // node (caught inside getDefinition before reaching here).
+      res.json({
+        data: {
+          id: null,
+          workflowNodeId: nodeIdOf(req),
+          name: 'Workbench loop',
+          version: 1,
+          stages: [],
+          edges: [],
+          consumes: [],
+          empty: true,
+        },
+      })
+      return
+    }
     res.json({ data: view })
   } catch (err) { next(err) }
 })
