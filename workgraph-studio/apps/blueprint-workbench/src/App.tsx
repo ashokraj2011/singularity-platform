@@ -1170,6 +1170,12 @@ function WorkbenchNeo({
             onOpenArtifacts={() => { setOverlay('artifacts'); onSection('artifacts') }}
             onOpenTerminal={() => { setOverlay('terminal'); onSection('terminal') }}
             onOpenCode={() => setOverlay('code')}
+            // M83.t (2026-05-27) — open the LoopTrace overlay which
+            // already renders every turn's "Assistant said:" reasoning
+            // text from audit-gov. Without this chip the data was
+            // accessible but invisible — operators had to navigate
+            // away from the stage card to find it.
+            onOpenLoop={() => { setOverlay('loop'); onSection('loop') }}
           />
           <FinalizeStrip session={session} onSession={onSession} />
         </div>
@@ -1448,6 +1454,7 @@ function NeoStageController({
   onOpenArtifacts,
   onOpenTerminal,
   onOpenCode,
+  onOpenLoop,
 }: {
   session: BlueprintSession
   stage: LoopStage | undefined
@@ -1460,6 +1467,11 @@ function NeoStageController({
   // rendered when the workitem has a materialized worktree, but the
   // gate happens server-side; the chip is unconditional in the UI.
   onOpenCode: () => void
+  // M83.t — chip → opens the LoopTrace overlay. Shows every turn's
+  // assistant text + tool calls + tool results from audit-gov.
+  // Operators get the full reasoning trail, not just the final
+  // response text in LATEST STAGE OUTPUT.
+  onOpenLoop: () => void
 }) {
   const [answers, setAnswers] = useState<Record<string, DecisionAnswer>>({})
   const [feedback, setFeedback] = useState('')
@@ -1814,6 +1826,13 @@ function NeoStageController({
       )}
       <button type="button" className="focus-badge link" onClick={onOpenArtifacts}>artifacts →</button>
       <button type="button" className="focus-badge link" onClick={onOpenTerminal}>event log →</button>
+      {/* M83.t (2026-05-27) — every turn the agent took, with the
+          assistant text ("I read the file because…", "Let me fix
+          this:") plus emitted tool calls + tool results. Lifted
+          from audit-gov via the existing /loop-trace endpoint
+          (LoopTrace component, which already worked but was
+          buried under the Loop tab). */}
+      <button type="button" className="focus-badge link" onClick={onOpenLoop}>thinking →</button>
       {/* M83 S1 — file browser of the wi/<code> worktree. Backend
           refuses the open if the workitem isn't materialized yet,
           which surfaces as a friendly error in the overlay. */}
