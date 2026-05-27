@@ -67,6 +67,10 @@ type WorkflowTemplate = {
   archivedAt?: string
   currentVersion: number
   variables?: TemplateVariableDef[]
+  // M93.B — profile distinguishes top-level workflows ('main') from
+  // agent-loop sub-workflows ('workbench'). Returned verbatim from the
+  // Workflow row by /workflow-templates. Defaults to 'main' server-side.
+  profile?: 'main' | 'workbench'
 }
 
 const WORKFLOW_TYPES = ['SDLC', 'BUSINESS', 'DATA_PIPELINE', 'INFRASTRUCTURE', 'COMPLIANCE', 'OTHER'] as const
@@ -347,6 +351,16 @@ export function WorkflowsListPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const qc = useQueryClient()
   const [tab, setTab] = useState<'instances' | 'templates'>('templates')
+  // M93.B — Workflow profile sub-toggle on the Workflows tab.
+  //   'main'      → top-level orchestrations (the default — what most
+  //                 operators want by default; matches the pre-M93 view).
+  //   'workbench' → agent-loop sub-workflows. Discoverable separately so
+  //                 the main list isn't cluttered with templates that
+  //                 only run nested.
+  //   'all'       → both. Useful for cross-cutting search.
+  // Default 'main' = no behavioural change for existing users; explicit
+  // opt-in to see workbench templates.
+  const [profileTab, setProfileTab] = useState<'main' | 'workbench' | 'all'>('main')
   const [showArchived, setShowArchived] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<WorkflowInstance | null>(null)
   const [importOpen, setImportOpen] = useState(false)
@@ -359,6 +373,15 @@ export function WorkflowsListPage() {
   const [createCapabilityId, setCreateCapabilityId] = useState<string>(activeContext?.capabilityId ?? '')
   const [createTeamId, setCreateTeamId] = useState<string>(activeContext?.teamId ?? '')
   const [createStarter, setCreateStarter] = useState<WorkflowStarter>('EMPTY')
+  // M93 — Explicit workflow type at creation time.
+  //   'main'      → top-level workflow with manual Start, full node palette.
+  //   'workbench' → agent-loop sub-workflow dispatched by a parent's
+  //                 CALL_WORKFLOW node. No Start button, restricted palette.
+  // Drives Workflow.profile on the server, which in turn drives:
+  //   - WorkflowStudioPage gating (Start Run hidden, palette filtered)
+  //   - blueprint-workbench accepting/refusing the run instance
+  //   - List-page tabs (Main vs Workbench) when those land.
+  const [createProfile, setCreateProfile] = useState<'main' | 'workbench'>('main')
   const [createDesc, setCreateDesc] = useState('')
   const [createMeta, setCreateMeta] = useState<TemplateMetadata>(emptyMeta())
   const [createStep, setCreateStep] = useState<'identity' | 'config' | 'tags'>('identity')
@@ -385,12 +408,17 @@ export function WorkflowsListPage() {
   })
 
   const { data: templatesData, isLoading: templatesLoading } = useQuery({
-    queryKey: ['workflow-templates', showArchived, capabilityFilter],
+    queryKey: ['workflow-templates', showArchived, capabilityFilter, profileTab],
     queryFn: () => api.get('/workflow-templates', {
       params: {
         size: 100,
         ...(showArchived ? { archived: 'true' } : {}),
         ...(capabilityFilter ? { capabilityId: capabilityFilter } : {}),
+        // M93.B — Server-side profile filter. 'all' omits the param so
+        // the backend returns everything (back-compat). 'main' /
+        // 'workbench' map directly to the ?profile= filter the templates
+        // router already supports.
+        ...(profileTab !== 'all' ? { profile: profileTab } : {}),
       },
     }).then(r => r.data),
   })
@@ -462,7 +490,7 @@ export function WorkflowsListPage() {
   })
 
   const createWorkflowMut = useMutation({
-    mutationFn: ({ name, description, metadata, workflowTypeKey, eligibleWorkItemTypes, defaultRoutingMode, capabilityId, teamId, starter }: {
+    mutationFn: ({ name, description, metadata, workflowTypeKey, eligibleWorkItemTypes, defaultRoutingMode, capabilityId, teamId, starter, profile }: {
       name: string
       description: string
       metadata: TemplateMetadata
@@ -472,8 +500,11 @@ export function WorkflowsListPage() {
       capabilityId?: string
       teamId?: string
       starter: WorkflowStarter
+      // M93 — workflow type. 'main' (default) or 'workbench'. Persists
+      // as Workflow.profile on the server.
+      profile?: 'main' | 'workbench'
     }) =>
-      api.post('/workflow-templates', { name, description, metadata, workflowTypeKey, eligibleWorkItemTypes, defaultRoutingMode, capabilityId, teamId, starter }).then(r => r.data as { id: string; designInstanceId?: string }),
+      api.post('/workflow-templates', { name, description, metadata, workflowTypeKey, eligibleWorkItemTypes, defaultRoutingMode, capabilityId, teamId, starter, profile }).then(r => r.data as { id: string; designInstanceId?: string }),
     onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ['workflow-templates'] })
       setCreateOpen(false)
@@ -483,6 +514,7 @@ export function WorkflowsListPage() {
       setCreateCapabilityId('')
       setCreateTeamId('')
       setCreateStarter('EMPTY')
+      setCreateProfile('main')
       setCreateStep('identity')
       setTab('templates')
       // Drop the user straight into the studio, on the freshly-created design.
@@ -657,6 +689,46 @@ export function WorkflowsListPage() {
           <TabBtn id="templates" label="Workflows" />
           <TabBtn id="instances" label="Runs" />
         </div>
+
+        {/* M93.B — Profile sub-toggle. Only meaningful on the Workflows
+            (templates) tab; runs aren't currently filtered by profile
+            since a workbench run is always launched via a parent. */}
+        {tab === 'templates' && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 4, marginBottom: 16,
+            background: 'var(--color-surface-container)', borderRadius: 10, padding: 4,
+            width: 'fit-content',
+          }}>
+            {(['main', 'workbench', 'all'] as const).map(pt => {
+              const active = profileTab === pt
+              const accent = pt === 'workbench' ? '#7c3aed' : pt === 'main' ? 'var(--color-primary)' : '#475569'
+              const label = pt === 'main' ? 'Main' : pt === 'workbench' ? 'Workbench' : 'All'
+              const title = pt === 'main'
+                ? 'Top-level orchestrations with manual triggers'
+                : pt === 'workbench'
+                  ? 'Agent-loop sub-workflows dispatched by parent main workflows'
+                  : 'Both main and workbench templates'
+              return (
+                <button
+                  key={pt}
+                  onClick={() => setProfileTab(pt)}
+                  title={title}
+                  style={{
+                    padding: '6px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                    fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
+                    background: active
+                      ? (pt === 'workbench' ? 'rgba(124,58,237,0.12)' : pt === 'main' ? 'rgba(0,132,61,0.10)' : 'rgba(71,85,105,0.10)')
+                      : 'transparent',
+                    color: active ? accent : 'var(--color-outline)',
+                    transition: 'all 0.12s',
+                  }}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+        )}
 
         <div style={{
           display: 'grid',
@@ -926,6 +998,12 @@ export function WorkflowsListPage() {
                     {/* Metadata badges */}
                     {tmpl.metadata && (
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+                        {/* M93.B — profile chip. Only show for workbench
+                            templates; 'main' is the implicit default and
+                            adding a "Main" badge to every row is noise. */}
+                        {tmpl.profile === 'workbench' && (
+                          <MetaBadge color="#7c3aed">Workbench</MetaBadge>
+                        )}
                         {(tmpl.workflowTypeKey || tmpl.metadata.workflowType) && (
                           <MetaBadge color="#6366f1">{TYPE_LABEL[tmpl.workflowTypeKey ?? tmpl.metadata.workflowType ?? ''] ?? tmpl.workflowTypeKey ?? tmpl.metadata.workflowType}</MetaBadge>
                         )}
@@ -1152,6 +1230,51 @@ export function WorkflowsListPage() {
               {/* ── STEP 1: Identity ─────────────────────────────────── */}
               {createStep === 'identity' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  {/* M93 — Workflow type. Picked FIRST so downstream prompts
+                      (capability, starter, palette) reflect the choice. */}
+                  <Field label="Workflow type *">
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                      {(['main', 'workbench'] as const).map(profile => {
+                        const selected = createProfile === profile
+                        const accent = profile === 'workbench' ? '#7c3aed' : '#0ea5e9'
+                        const title = profile === 'workbench' ? 'Workbench (agent loop)' : 'Main workflow'
+                        const description = profile === 'workbench'
+                          ? 'A sub-workflow dispatched by a parent main workflow. No manual start — it runs as the inner agent loop for a stage. Designer shows a workbench-only palette (stages, gates, human handoffs).'
+                          : 'A top-level orchestration. Has a manual "Start Run" trigger and the full node palette (timers, signals, work items, sub-calls).'
+                        return (
+                          <button
+                            key={profile}
+                            type="button"
+                            onClick={() => setCreateProfile(profile)}
+                            style={{
+                              textAlign: 'left',
+                              padding: 12,
+                              borderRadius: 12,
+                              border: selected ? `1.5px solid ${accent}` : '1px solid #e2e8f0',
+                              background: selected ? `${accent}10` : '#fff',
+                              color: '#0f172a',
+                              cursor: 'pointer',
+                              boxShadow: selected ? `0 10px 24px ${accent}16` : 'none',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 7 }}>
+                              <span style={{
+                                width: 26, height: 26, borderRadius: 8,
+                                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                background: `${accent}16`, color: accent,
+                              }}>
+                                {profile === 'workbench' ? <Braces size={14} /> : <GitBranch size={14} />}
+                              </span>
+                              <span style={{ fontSize: 12, fontWeight: 800 }}>{title}</span>
+                            </div>
+                            <p style={{ margin: 0, fontSize: 11, lineHeight: 1.45, color: '#64748b' }}>
+                              {description}
+                            </p>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </Field>
                   <Field label="Workflow name *">
                     <input autoFocus value={createName} onChange={e => setCreateName(e.target.value)}
                       placeholder="e.g. Customer Onboarding"
@@ -1431,6 +1554,7 @@ export function WorkflowsListPage() {
                       capabilityId: createCapabilityId || undefined,
                       teamId: createTeamId || undefined,
                       starter: createStarter,
+                      profile: createProfile,
                     })}
                     disabled={createWorkflowMut.isPending || !createName.trim() || starterRequiresCapability}
                     style={{

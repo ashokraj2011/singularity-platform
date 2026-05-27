@@ -2310,12 +2310,27 @@ export function WorkflowStudioPage() {
   // it's the primary entity; in run mode it's the parent for capability /
   // permission / variable resolution.
   const workflowId = isDesignMode ? designWorkflowId : runInstance?.templateId
-  const { data: template } = useQuery<{ id: string; status?: string; name: string; teamId?: string; capabilityId?: string | null; variables?: TemplateVariableDef[]; budgetPolicy?: Record<string, unknown> | null }>({
+  const { data: template } = useQuery<{ id: string; status?: string; name: string; teamId?: string; capabilityId?: string | null; variables?: TemplateVariableDef[]; budgetPolicy?: Record<string, unknown> | null; profile?: string }>({
     queryKey: ['workflow-templates', workflowId],
     queryFn: () => api.get(`/workflow-templates/${workflowId}`).then(r => r.data),
     enabled: !!workflowId,
     staleTime: 30_000,
   })
+
+  // M93 — Workbench-profile workflows have a fundamentally different runtime
+  // contract than main workflows: they aren't launched manually, they're
+  // dispatched by a parent main workflow's CALL_WORKFLOW node (or opened
+  // directly in blueprint-workbench when bound to a WorkItem). Two designer-
+  // level consequences:
+  //   1. No "Start Run" button — there's no user-facing "trigger" for a
+  //      workbench template; it runs as part of a stage's agent loop.
+  //   2. Restricted node palette — only nodes that make sense inside an
+  //      agent-loop sub-graph (WORKBENCH_TASK for stages, plus the boundary
+  //      and human-handoff markers) appear. The "Main"-only nodes
+  //      (CALL_WORKFLOW, work-item creation, scheduled triggers, signals,
+  //      data sinks) are filtered out so a workbench template can't
+  //      accidentally include something blueprint-workbench can't render.
+  const isWorkbenchProfile = template?.profile === 'workbench'
 
   // Synthesise an instance-shaped object for the rest of the component to
   // consume uniformly.  In design mode the "instance" is a façade over the
@@ -2807,10 +2822,40 @@ export function WorkflowStudioPage() {
   const panelMuted  = isLight ? '#64748b' : '#475569'
   const panelBdr    = isLight ? 'rgba(148,163,184,0.28)' : 'rgba(255,255,255,0.07)'
   const nodeSearchTerm = nodeSearch.trim().toLowerCase()
+  // M93 — Workbench-profile palette filter.
+  //
+  // A workbench template runs as the inner agent-loop sub-graph that
+  // blueprint-workbench renders for each WorkbenchStage. The runtime
+  // surface is narrower than a main workflow's:
+  //   * Boundaries — START / END (the canvas needs entry/exit markers)
+  //   * Stages — WORKBENCH_TASK (each node IS a phase of the agent loop)
+  //   * Human handoffs — HUMAN_TASK / APPROVAL (between stages)
+  //   * Routing — DECISION_GATE / PARALLEL_FORK / PARALLEL_JOIN /
+  //               INCLUSIVE_GATEWAY (branch on prior receipt outcomes)
+  //
+  // Everything else is filtered out: scheduled triggers (no manual start),
+  // WORK_ITEM creation (the parent owns that), CALL_WORKFLOW (no
+  // nesting), TIMER / SIGNAL_* (event-driven primitives don't apply
+  // inside a stage), DATA_SINK / SET_CONTEXT (parent-level), GIT_PUSH /
+  // TOOL_REQUEST (the agent calls those via tool dispatch, not as
+  // workflow nodes), AGENT_TASK (legacy — use WORKBENCH_TASK instead).
+  //
+  // Main workflows keep the full palette (regression-free).
+  const _WORKBENCH_ALLOWED_NODE_TYPES = new Set([
+    'START', 'END',
+    'WORKBENCH_TASK',
+    'HUMAN_TASK', 'APPROVAL',
+    'DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY',
+  ])
   const filteredNodeGroups = NODE_GROUPS
     .map(group => ({
       ...group,
       types: group.types.filter(type => {
+        // Workbench profile narrows the palette first; search filter
+        // runs on the already-narrowed set.
+        if (isWorkbenchProfile && !_WORKBENCH_ALLOWED_NODE_TYPES.has(type)) {
+          return false
+        }
         const label = NODE_LABELS[type] ?? type
         const description = NODE_DESCRIPTIONS[type] ?? ''
         return !nodeSearchTerm
@@ -2821,14 +2866,20 @@ export function WorkflowStudioPage() {
       }),
     }))
     .filter(group => group.types.length > 0)
-  const filteredTriggerPresets = TRIGGER_PRESETS.filter(preset => {
-    const description = NODE_DESCRIPTIONS[preset.type] ?? ''
-    return !nodeSearchTerm
-      || preset.label.toLowerCase().includes(nodeSearchTerm)
-      || preset.type.toLowerCase().includes(nodeSearchTerm)
-      || description.toLowerCase().includes(nodeSearchTerm)
-      || 'triggers'.includes(nodeSearchTerm)
-  })
+  // M93 — Trigger presets (Scheduled Start / Event Trigger / Server Time
+  // Init) are all main-workflow concepts. A workbench template is
+  // never triggered directly — hide the section entirely so the
+  // operator doesn't drag one in only to have validation refuse later.
+  const filteredTriggerPresets = isWorkbenchProfile
+    ? []
+    : TRIGGER_PRESETS.filter(preset => {
+        const description = NODE_DESCRIPTIONS[preset.type] ?? ''
+        return !nodeSearchTerm
+          || preset.label.toLowerCase().includes(nodeSearchTerm)
+          || preset.type.toLowerCase().includes(nodeSearchTerm)
+          || description.toLowerCase().includes(nodeSearchTerm)
+          || 'triggers'.includes(nodeSearchTerm)
+      })
   const filteredCustomNodeTypes = customNodeTypes.filter(ct => !nodeSearchTerm
     || ct.label.toLowerCase().includes(nodeSearchTerm)
     || ct.name.toLowerCase().includes(nodeSearchTerm)
@@ -3085,8 +3136,13 @@ export function WorkflowStudioPage() {
           )}
 
           {/* Design mode: quick "Start Run" — navigates back to workflows list
-              with the run modal pre-opened so the user can name + override vars. */}
-          {isDesignMode && rfNodes.length > 0 && (
+              with the run modal pre-opened so the user can name + override vars.
+              M93 — Hidden for profile=workbench templates: a workbench template
+              has no manual trigger; it's invoked by a parent main workflow's
+              CALL_WORKFLOW node or opened in blueprint-workbench when bound
+              to a WorkItem. Showing "Start Run" would only lead the user to
+              the run modal which would refuse with PROFILE_MISMATCH. */}
+          {isDesignMode && rfNodes.length > 0 && !isWorkbenchProfile && (
             <button
               onClick={() => navigate(`/workflows?run=${designWorkflowId}`)}
               title="Start a run of this workflow"
@@ -3100,6 +3156,24 @@ export function WorkflowStudioPage() {
             >
               <Play size={11} /> Start Run
             </button>
+          )}
+
+          {/* M93 — Workbench-profile chip in place of the Start Run button.
+              Makes the lifecycle contract visible: this template is a
+              sub-workflow, not a main-runnable thing. */}
+          {isDesignMode && isWorkbenchProfile && (
+            <span
+              title="Workbench-profile templates are dispatched by a parent main workflow's CALL_WORKFLOW node. They have no manual Start trigger."
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5,
+                padding: '4px 11px', borderRadius: 999, fontSize: 10, fontWeight: 800, flexShrink: 0,
+                background: 'rgba(124,58,237,0.10)',
+                border: '1px solid rgba(124,58,237,0.32)',
+                color: '#7c3aed', letterSpacing: '0.10em', textTransform: 'uppercase',
+              }}
+            >
+              Workbench template
+            </span>
           )}
 
           {validationResult && (
