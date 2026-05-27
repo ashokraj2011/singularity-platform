@@ -2462,6 +2462,13 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
 function WorktreeBrowser({ sessionId, stage }: { sessionId: string; stage: LoopStage | undefined }) {
   const canEdit = stage?.toolPolicy === 'MUTATION'
   const canRunTools = stage?.toolPolicy === 'MUTATION' || stage?.toolPolicy === 'VERIFICATION'
+  // M83.z2 — manual bind state. The operator can paste a workItemCode
+  // (or full UUID) to recover when the workflow didn't auto-bind.
+  // Local-only state; result triggers a tree reload via key bump.
+  const [bindInput, setBindInput] = useState('')
+  const [bindBusy, setBindBusy] = useState(false)
+  const [bindResult, setBindResult] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
   // Track which directories are expanded — keyed by their absolute path
   // inside the workitem root. We keep a tree of cached entries here too
   // so re-expanding doesn't re-fetch.
@@ -2490,7 +2497,7 @@ function WorktreeBrowser({ sessionId, stage }: { sessionId: string; stage: LoopS
       if (!cancelled) setLoadingPath(null)
     })
     return () => { cancelled = true }
-  }, [sessionId])
+  }, [sessionId, reloadKey])
 
   const loadDir = async (path: string) => {
     if (cache[path]) return
@@ -2505,6 +2512,39 @@ function WorktreeBrowser({ sessionId, stage }: { sessionId: string; stage: LoopS
       setCache(prev => ({ ...prev, [path]: [{ name: `! ${msg.slice(0, 120)}`, type: 'other' }] }))
     } finally {
       setLoadingPath(null)
+    }
+  }
+
+  // M83.z2 — perform the bind. Either workItemCode (e.g. "WRK-984AD")
+  // or a full UUID is accepted; server enforces exactly one. On
+  // success we clear local cache + bump reloadKey so the tree refetch
+  // sees the new binding.
+  const bindWorkItem = async () => {
+    const trimmed = bindInput.trim()
+    if (!trimmed) return
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)
+    setBindBusy(true)
+    setBindResult(null)
+    try {
+      const res = await api.bindWorkItem(sessionId, isUuid
+        ? { workItemId: trimmed }
+        : { workItemCode: trimmed })
+      setBindResult(
+        `Bound to ${res.workItem.workCode} — ${res.workItem.title}`
+        + (res.replacedPrevious ? ` (replaced ${res.replacedPrevious})` : ''),
+      )
+      // Reset every cached piece so the next render fetches fresh.
+      setExpanded(new Set(['']))
+      setCache({})
+      setSelectedPath(null)
+      setRootMeta(null)
+      setRootError(null)
+      setReloadKey(k => k + 1)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setBindResult(`Bind failed: ${msg}`)
+    } finally {
+      setBindBusy(false)
     }
   }
 
@@ -2621,7 +2661,51 @@ function WorktreeBrowser({ sessionId, stage }: { sessionId: string; stage: LoopS
           </div>
         )}
         {rootError ? (
-          <p style={{ color: 'var(--danger, #c33)', padding: 4, fontSize: 13 }}>{rootError}</p>
+          <div style={{ padding: 4 }}>
+            <p style={{ color: 'var(--danger, #c33)', fontSize: 13, margin: '0 0 12px 0' }}>{rootError}</p>
+            {/* M83.z2 — operator recovery: paste a workItemCode
+                (e.g. "WRK-984AD") or a UUID to bind this session.
+                The bind handler picks the right endpoint shape based
+                on whether the input looks like a UUID. */}
+            <div style={{ fontSize: 12, color: 'var(--muted, #888)', marginBottom: 6 }}>
+              Bind to a WorkItem:
+            </div>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+              <input
+                type="text"
+                value={bindInput}
+                onChange={e => setBindInput(e.target.value)}
+                placeholder="WRK-984AD or UUID"
+                disabled={bindBusy}
+                onKeyDown={e => { if (e.key === 'Enter' && !bindBusy) void bindWorkItem() }}
+                style={{
+                  flex: 1,
+                  padding: 4,
+                  fontSize: 12,
+                  fontFamily: 'var(--font-mono, monospace)',
+                  minWidth: 0,
+                }}
+              />
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => void bindWorkItem()}
+                disabled={bindBusy || !bindInput.trim()}
+                style={{ fontSize: 12, padding: '4px 10px' }}
+              >
+                {bindBusy ? '…' : 'Bind'}
+              </button>
+            </div>
+            {bindResult && (
+              <div style={{
+                fontSize: 11,
+                padding: '4px 6px',
+                color: bindResult.startsWith('Bound') ? 'var(--success, #6c6)' : 'var(--danger, #c66)',
+              }}>
+                {bindResult}
+              </div>
+            )}
+          </div>
         ) : renderTree('', 0)}
       </aside>
       <section style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' }}>

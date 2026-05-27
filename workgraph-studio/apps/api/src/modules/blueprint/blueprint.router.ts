@@ -945,6 +945,122 @@ async function getWorktreeWorkItemCode(sessionId: string): Promise<string> {
   return ctx.workItemCode
 }
 
+// M83.z2 (2026-05-27) — Manual session ↔ WorkItem binding.
+//
+// Normal flow: workflow runs, WORKBENCH_TASK node activates, the
+// runtime sets `workflowInstance.context._workItem` via routeWorkItem(),
+// and getWorktreeWorkItemCode() resolves cleanly from there.
+//
+// This endpoint is the recovery path when that didn't happen — e.g.
+// the workflow stalled before reaching WORKBENCH_TASK, or the
+// operator opened the workbench on a session whose workflow context
+// is missing the binding for some other reason. Without this, the
+// only fix is to restart the whole workflow.
+//
+// Resolves the WorkItem by id OR workCode (operator can use either),
+// validates the operator has access to it, then patches the linked
+// workflow instance's context to set `_workItem`. Subsequent worktree
+// API calls resolve normally. Audited as
+// `BlueprintSessionBoundToWorkItem` so the operator action is on
+// record in audit-gov.
+const bindWorkItemSchema = z.object({
+  workItemId: z.string().uuid().optional(),
+  workItemCode: z.string().min(1).max(80).optional(),
+}).refine(
+  data => Boolean(data.workItemId) !== Boolean(data.workItemCode),
+  { message: 'Provide exactly one of workItemId or workItemCode' },
+)
+
+blueprintRouter.post(
+  '/sessions/:id/bind-workitem',
+  validate(bindWorkItemSchema),
+  async (req, res, next) => {
+    try {
+      const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
+      if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+      assertBlueprintAccess(session, req.user!.userId)
+
+      if (!session.workflowInstanceId) {
+        throw new ValidationError(
+          'Cannot bind: this session has no workflowInstanceId. ' +
+          'The bind path updates the workflow instance context — a session without one ' +
+          'needs to be attached to a workflow first via the normal stage-run path.',
+        )
+      }
+
+      const body = req.body as z.infer<typeof bindWorkItemSchema>
+      const workItem = body.workItemId
+        ? await prisma.workItem.findUnique({ where: { id: body.workItemId } })
+        : await prisma.workItem.findUnique({ where: { workCode: body.workItemCode! } })
+      if (!workItem) {
+        throw new NotFoundError('WorkItem', body.workItemId ?? body.workItemCode!)
+      }
+
+      const instance = await prisma.workflowInstance.findUnique({
+        where: { id: session.workflowInstanceId },
+        select: { id: true, context: true },
+      })
+      if (!instance) {
+        throw new NotFoundError('WorkflowInstance', session.workflowInstanceId)
+      }
+
+      const previousContext = isRecord(instance.context) ? instance.context : {}
+      const previousWorkItem = isRecord(previousContext._workItem) ? previousContext._workItem : null
+      const previousWorkCode = jsonStringField(previousWorkItem ?? {}, 'workCode')
+
+      // Patch — preserve any unrelated context keys. _workItem shape
+      // mirrors what work-item-routing.service.ts:routeWorkItem writes
+      // so downstream readers (workflowWorkItemContext, branch naming,
+      // mcp-server materializer) see an identical structure.
+      const nextContext: Prisma.InputJsonValue = {
+        ...previousContext,
+        _workItem: {
+          id: workItem.id,
+          workCode: workItem.workCode,
+          title: workItem.title,
+          // The boundManually marker lets audit-gov distinguish operator
+          // binds from runtime binds when investigating "how did this
+          // session get attached to this workitem" later.
+          boundManually: true,
+          boundAt: new Date().toISOString(),
+          boundByUserId: req.user!.userId,
+          ...(previousWorkCode ? { previousWorkCode } : {}),
+        } as Prisma.InputJsonValue,
+      }
+
+      await prisma.workflowInstance.update({
+        where: { id: instance.id },
+        data: { context: nextContext },
+      })
+
+      await recordBlueprintAudit(
+        session.id,
+        'BlueprintSessionBoundToWorkItem',
+        req.user!.userId,
+        {
+          workflowInstanceId: instance.id,
+          workItemId: workItem.id,
+          workItemCode: workItem.workCode,
+          workItemTitle: workItem.title,
+          previousWorkCode,
+        },
+      )
+
+      res.json({
+        ok: true,
+        sessionId: session.id,
+        workflowInstanceId: instance.id,
+        workItem: {
+          id: workItem.id,
+          workCode: workItem.workCode,
+          title: workItem.title,
+        },
+        replacedPrevious: previousWorkCode ?? null,
+      })
+    } catch (err) { next(err) }
+  },
+)
+
 blueprintRouter.get('/sessions/:id/worktree/tree', async (req, res, next) => {
   try {
     const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })

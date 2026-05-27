@@ -712,6 +712,21 @@ export const api = {
       `/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/file?path=${encodeURIComponent(path)}`,
       { method: 'PUT', body: JSON.stringify(body) },
     ),
+  // M83.z2 — Manually bind a session to a WorkItem when the workflow
+  // didn't bind one automatically. Accepts either workItemId (UUID)
+  // or workItemCode (e.g. "WRK-984AD") — server enforces exactly one.
+  // After this returns ok, the worktree endpoints resolve cleanly.
+  bindWorkItem: (sessionId: string, body: { workItemId?: string; workItemCode?: string }) =>
+    request<{
+      ok: boolean
+      sessionId: string
+      workflowInstanceId: string
+      workItem: { id: string; workCode: string; title: string }
+      replacedPrevious: string | null
+    }>(
+      `/blueprint/sessions/${encodeURIComponent(sessionId)}/bind-workitem`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
   // M83 S3.2 — Attach a human-origin verification receipt to the
   // latest stage attempt. Called by the Test Runner panel when a
   // manual run finishes so the approval gate sees the human evidence
