@@ -366,6 +366,83 @@ _ACT_FULFILLING_TOOLS = frozenset({
 _NARRATE_TEXT_THRESHOLD = 80
 
 
+# M86 — Default per-phase turn budgets. The stage-wide max_turns (default
+# 25) is too coarse: an agent that spends 28 turns reading files in
+# EXPLORE never reaches ACT, fails MAX_TURNS, produces zero edits, and
+# the M83.y P2 auto-remediation can't help (no code change to classify).
+# Per-phase caps force the loop to advance. Override per stage via
+# StagePolicy.limits.max_turns_per_phase (a dict in JSON).
+#
+# Sized empirically for a single develop attempt:
+#   PLAN         5  — task pack synthesis from prior receipts, mostly
+#                      a writing exercise once the plan is clear.
+#   EXPLORE      10 — file reads + symbol search; deeper exploration
+#                      is usually a sign of bad starting context, not
+#                      a need for more turns.
+#   ACT          8  — the actual edits; tightly bounded.
+#   VERIFY       5  — run_test + capture results; 1-3 commands typical.
+#   REPAIR       8  — same shape as ACT plus the diagnosis.
+#   SELF_REVIEW  3  — produce a SelfReviewReceipt; no tools needed.
+#   FINALIZE     2  — submit the final pack; near-zero tool calls.
+#
+# Hard halt at 2x: PLAN at 10 turns, EXPLORE at 20, etc. The mid-cap
+# nudge fires once; if the model ignores it and burns another cap-worth
+# of turns without advancing, the stage halts with stop_reason
+# PHASE_BUDGET_EXCEEDED so the operator gets a clean signal.
+_DEFAULT_MAX_TURNS_PER_PHASE: dict[str, int] = {
+    "PLAN":        5,
+    "EXPLORE":     10,
+    "ACT":         8,
+    "VERIFY":      5,
+    "REPAIR":      8,
+    "SELF_REVIEW": 3,
+    "FINALIZE":    2,
+}
+
+
+def _resolve_phase_budget(policy: StagePolicy, phase: Phase) -> int:
+    """Per-phase turn cap. Falls back to defaults when policy doesn't
+    pin a value for this phase. Returns 0 to mean "no per-phase cap"
+    (legacy behavior — stage-wide max_turns is the only limit)."""
+    limits = policy.limits if policy and isinstance(policy.limits, dict) else {}
+    per_phase = limits.get("max_turns_per_phase")
+    if isinstance(per_phase, dict):
+        raw = per_phase.get(phase.value)
+        if isinstance(raw, int) and raw > 0:
+            return raw
+        # Per-stage opt-out: explicit 0/null disables the per-phase cap
+        # for this specific phase even though others are enforced.
+        if raw == 0 or raw is None:
+            return _DEFAULT_MAX_TURNS_PER_PHASE.get(phase.value, 0)
+    return _DEFAULT_MAX_TURNS_PER_PHASE.get(phase.value, 0)
+
+
+def _render_phase_budget_message(
+    state: PhaseState,
+    turns_in_phase: int,
+    budget: int,
+) -> dict[str, Any]:
+    """Forcing message when a phase exceeds its budget. Tells the
+    model exactly what to do (submit phase_output) and what the
+    consequence is (stage fails on the next cap). Operators can
+    grep audit-gov for [PHASE-BUDGET-EXCEEDED] to find stuck stages."""
+    phase = state.current_phase.value
+    return {
+        "role": "user",
+        "content": (
+            f"[PHASE-BUDGET-EXCEEDED] You have spent {turns_in_phase} turns in "
+            f"phase {phase} (budget: {budget}). The loop expects you to "
+            "submit_phase_output and advance by now. Whatever exploration "
+            "you've done is enough — synthesize what you have and submit "
+            "the receipt for this phase. On your VERY NEXT response, you "
+            "MUST call submit_phase_output with the receipt for "
+            f"{phase}. If you spend another {budget} turns in this phase "
+            "without advancing, the stage will be halted with "
+            "PHASE_BUDGET_EXCEEDED and the operator will see the failure."
+        ),
+    }
+
+
 def _is_narrate_only_in_mutating_phase(
     state: PhaseState,
     turn,
@@ -979,6 +1056,16 @@ async def run_stage(
     _VALIDATION_RETRY_BUDGET = 2
     consecutive_validation_errors = 0
 
+    # M86 — per-phase turn budget. Tracks how many turns the model
+    # has spent in each phase since the last advance. Reset when
+    # the phase advances; we want the cap to apply per visit, not
+    # globally (a stage that legitimately re-enters EXPLORE after
+    # a send-back-style rewind gets a fresh budget).
+    phase_turn_counts: dict[str, int] = {}
+    phase_budget_warned: set[str] = set()  # phases where we've already
+                                            # injected the mid-cap nudge,
+                                            # to avoid spamming every turn.
+
     for turn_idx in range(max_turns):
         last_llm_error: LLMGatewayError | None = None
         for llm_attempt in range(LLM_RETRY_ATTEMPTS + 1):
@@ -1168,6 +1255,60 @@ async def run_stage(
             and not _is_terminal_state(state)
         ):
             history.append(_render_phase_deadline_message(state, turns_remaining))
+
+        # M86 — per-phase turn budget. Increment the counter for the
+        # phase the turn ENDED in (post-advance), reset on advance so a
+        # legit "PLAN → EXPLORE → PLAN" rewind doesn't carry stale
+        # counts. Then check the budget.
+        if turn.step.phase_advanced:
+            # Phase changed this turn — reset counts for the OLD phase
+            # so a re-entry later gets a fresh budget, and start the
+            # NEW phase at 1 (this turn counts toward it).
+            phase_turn_counts[turn.step.from_phase] = 0
+            phase_budget_warned.discard(turn.step.from_phase)
+            cur_phase = state.current_phase.value
+            phase_turn_counts[cur_phase] = 1
+        else:
+            cur_phase = state.current_phase.value
+            phase_turn_counts[cur_phase] = phase_turn_counts.get(cur_phase, 0) + 1
+
+        budget = _resolve_phase_budget(policy, state.current_phase)
+        turns_in_phase = phase_turn_counts.get(cur_phase, 0)
+        if budget > 0 and turns_in_phase >= budget and not _is_terminal_state(state):
+            # First time over: inject a forcing message so the next
+            # turn is strongly biased toward submit_phase_output. The
+            # message is idempotent — we only inject once per visit
+            # so the agent isn't drowning in nudges.
+            if cur_phase not in phase_budget_warned:
+                phase_budget_warned.add(cur_phase)
+                log.info(
+                    "phase budget exceeded: phase=%s turns_in_phase=%d budget=%d",
+                    cur_phase, turns_in_phase, budget,
+                )
+                history.append(_render_phase_budget_message(state, turns_in_phase, budget))
+                await emit_governed_event(
+                    kind="governed.phase_budget_exceeded",
+                    state=state,
+                    policy=policy,
+                    run_context=run_context,
+                    payload={
+                        "phase": cur_phase,
+                        "turns_in_phase": turns_in_phase,
+                        "budget": budget,
+                    },
+                    severity="warn",
+                )
+            # Hard halt at 2x budget — the model was warned and kept
+            # spinning. Stop cleanly with a distinct stop_reason so the
+            # operator sees PHASE_BUDGET_EXCEEDED rather than the
+            # blanket MAX_TURNS.
+            if turns_in_phase >= budget * 2:
+                log.warning(
+                    "phase budget halt: phase=%s turns=%d cap=%d",
+                    cur_phase, turns_in_phase, budget * 2,
+                )
+                result.stop_reason = "PHASE_BUDGET_EXCEEDED"
+                return result
 
     if await _try_architect_self_review_fallback(result, state, run_context):
         return result
