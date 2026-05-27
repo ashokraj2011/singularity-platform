@@ -617,6 +617,19 @@ model Workflow {
   workflowTypeKey String               @default("GENERAL")
   typeVersion    Int                   @default(1)
   typeSnapshot   Json?
+  // M85.s1 — workflow profile. Distinguishes templates that the
+  // operator designs as standalone workbench loops from the main
+  // workflows that orchestrate them. Possible values:
+  //   • 'main'           — top-level workflow (default)
+  //   • 'workbench'      — a workbench loop template; nodes are stages
+  //   • 'workbench-host' — legacy main workflow that contains an inline
+  //                        WORKBENCH_TASK node (pre-M85; flagged so the
+  //                        cutover can find them)
+  // The blueprint-workbench UI filters to profile='workbench' only;
+  // the main workflow designer hides workbench-only node types from
+  // 'main' templates. String rather than enum so adding new profiles
+  // (e.g. 'codepath', 'review') in future doesn't require a migration.
+  profile        String                @default("main")
   eligibleWorkItemTypes Json           @default("[]")
   isDefaultForType Boolean             @default(false)
   defaultRoutingMode WorkItemRoutingMode @default(MANUAL)
@@ -810,6 +823,10 @@ model WorkflowInstance {
   parentInstanceId  String?
   parentNodeId      String?
   parent            WorkflowInstance?  @relation("Subworkflows", fields: [parentInstanceId], references: [id])
+  // M85.s1 — inherited from the template's profile at clone time. Cached
+  // here so runtime / UI queries don't have to join the template every
+  // time. blueprint-workbench filters on this directly.
+  profile           String             @default("main")
   children          WorkflowInstance[] @relation("Subworkflows")
   phases            WorkflowPhase[]
   nodes             WorkflowNode[]
