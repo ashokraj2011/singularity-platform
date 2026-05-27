@@ -325,6 +325,11 @@ async def run_turn(
     model_alias: str | None = None,
     run_context: dict[str, Any] | None = None,
     bearer: str | None = None,
+    # M83.r — Anthropic extended thinking budget. None / 0 → off.
+    # When >0, the gateway enables thinking on Anthropic providers and
+    # the returned TurnResult.llm carries thinking_blocks for history
+    # threading + operator inspection in LoopTrace.
+    thinking_budget: int | None = None,
 ) -> TurnResult:
     """Run one LLM turn end-to-end:
 
@@ -443,6 +448,7 @@ async def run_turn(
         tools=tools,
         model_alias=model_alias,
         bearer=bearer,
+        thinking_budget=thinking_budget,
     )
 
     await emit_governed_event(
@@ -458,6 +464,16 @@ async def run_turn(
             "provider": response.provider,
             "model": response.model,
             "estimated_cost": response.estimated_cost,
+            # M83.r — thinking telemetry. Count + token budget consumed
+            # so operators can spot stages where thinking is doing real
+            # work vs being unused. We deliberately DO NOT include the
+            # thinking content itself in the audit payload; thinking
+            # text can contain sensitive intermediate reasoning that
+            # ought to stay model-internal. The workbench surfaces
+            # content via a separate operator-only path (TurnResult.llm
+            # → attempt record → LoopTrace UI).
+            "thinking_block_count": len(response.thinking_blocks),
+            "thinking_tokens": response.thinking_tokens,
         },
     )
 
@@ -537,6 +553,13 @@ async def run_turn(
                 "model_alias": response.model_alias,
                 "estimated_cost": response.estimated_cost,
                 "tool_call_count": len(response.tool_calls),
+                # M83.r — thinking blocks captured from the LLM response.
+                # stage_driver threads these back into the next assistant
+                # message via ChatMessage.thinking_blocks (required for
+                # Anthropic tool-use continuation). Workbench LoopTrace
+                # surfaces them as a "Deep reasoning" expandable section.
+                "thinking_blocks": [dict(tb) for tb in response.thinking_blocks],
+                "thinking_tokens": response.thinking_tokens,
             },
             prompt={
                 "binding_id": prompt.binding_id,

@@ -1785,6 +1785,20 @@ async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
     else:
         state = PhaseState.fresh(req.stage_key, req.agent_role)
 
+    # M83.r — Anthropic extended thinking ("deep reasoning"). Default
+    # via env DEEP_REASONING_BUDGET_TOKENS (0 = off). Operators can
+    # set 4096-8192 globally; per-stage tuning will land later via
+    # StagePolicy.limits.thinking_budget. Today we apply the same
+    # default to every stage so operators see the reasoning trail in
+    # the workbench's LoopTrace overlay without per-stage config.
+    import os as _os
+    try:
+        _thinking_budget = int(_os.environ.get("DEEP_REASONING_BUDGET_TOKENS", "0"))
+    except ValueError:
+        _thinking_budget = 0
+    if _thinking_budget < 0:
+        _thinking_budget = 0
+
     try:
         outcome: StageRunResult = await run_stage(
             state=state,
@@ -1796,6 +1810,7 @@ async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
             run_context=req.run_context,
             bearer=req.bearer,
             max_turns=req.max_turns,
+            thinking_budget=_thinking_budget or None,
         )
     except PolicyNotFoundError as exc:
         raise HTTPException(

@@ -182,11 +182,28 @@ def _history_from_turn(turn: TurnResult) -> list[dict[str, Any]]:
     else:
         normalized_content = raw_content
     if normalized_content or tool_calls_block:
-        messages.append({
+        # M83.r — thread thinking blocks back into history when the
+        # turn produced any. Required for Anthropic tool-use
+        # continuation: if a turn with thinking+tool_use isn't
+        # echoed back with the same thinking blocks (signatures
+        # intact) in the next assistant message, the next tool_result
+        # message 400s. The gateway's Anthropic converter consumes
+        # ChatMessage.thinking_blocks and emits them as `thinking`
+        # content blocks BEFORE the tool_use blocks (correct order
+        # per Anthropic docs). Non-Anthropic providers ignore.
+        thinking_blocks_raw = turn.llm.get("thinking_blocks") or []
+        thinking_blocks = (
+            [tb for tb in thinking_blocks_raw if isinstance(tb, dict)]
+            if isinstance(thinking_blocks_raw, list) else []
+        )
+        assistant_msg: dict[str, Any] = {
             "role": "assistant",
             "content": normalized_content,
             "tool_calls": tool_calls_block,
-        })
+        }
+        if thinking_blocks:
+            assistant_msg["thinking_blocks"] = thinking_blocks
+        messages.append(assistant_msg)
 
     # One tool message per outcome. Reuse the id we computed for the
     # assistant tool_use block above so they always match.
@@ -856,6 +873,12 @@ async def run_stage(
     bearer: str | None = None,
     max_turns: int = DEFAULT_MAX_TURNS,
     history_recent_turns: int = DEFAULT_RECENT_TURNS,
+    # M83.r — Anthropic extended thinking budget (tokens). None / 0 →
+    # off. Default is None at this layer; the workgraph-api caller
+    # picks the value based on env (DEEP_REASONING_BUDGET_TOKENS) and
+    # whether the resolved model is Anthropic Claude 4+. Pass-through
+    # to every run_turn() invocation in this stage.
+    thinking_budget: int | None = None,
 ) -> StageRunResult:
     """Drive an entire stage by repeatedly calling `run_turn`.
 
@@ -969,6 +992,7 @@ async def run_stage(
                     model_alias=model_alias,
                     run_context=run_context,
                     bearer=bearer,
+                    thinking_budget=thinking_budget,
                 )
                 last_llm_error = None
                 break

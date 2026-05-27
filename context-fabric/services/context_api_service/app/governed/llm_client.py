@@ -104,9 +104,22 @@ class ChatResponse:
     model: str
     model_alias: str | None = None
     estimated_cost: float | None = None
+    # M83.r — Anthropic extended thinking. List of {thinking, signature}
+    # dicts. Empty list when extended thinking was off or the provider
+    # doesn't support it. Stage_driver threads these back into the
+    # assistant message of the next turn (required for tool-use
+    # continuation).
+    thinking_blocks: list[dict[str, Any]] = field(default_factory=list)
+    thinking_tokens: int = 0
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ChatResponse":
+        thinking_raw = raw.get("thinking_blocks")
+        thinking_blocks: list[dict[str, Any]] = []
+        if isinstance(thinking_raw, list):
+            for tb in thinking_raw:
+                if isinstance(tb, dict):
+                    thinking_blocks.append(tb)
         return cls(
             content=str(raw.get("content") or ""),
             tool_calls=[
@@ -122,6 +135,8 @@ class ChatResponse:
             model=str(raw.get("model") or ""),
             model_alias=raw.get("model_alias"),
             estimated_cost=raw.get("estimated_cost"),
+            thinking_blocks=thinking_blocks,
+            thinking_tokens=int(raw.get("thinking_tokens") or 0),
         )
 
 
@@ -133,6 +148,11 @@ async def call_gateway_chat(
     temperature: float | None = None,
     max_output_tokens: int | None = None,
     bearer: str | None = None,
+    # M83.r — Anthropic extended thinking budget (in tokens). When >0,
+    # the gateway enables thinking on Anthropic providers and the
+    # response carries thinking_blocks. Ignored by non-Anthropic
+    # providers. None / 0 → off.
+    thinking_budget: int | None = None,
 ) -> ChatResponse:
     """POST one chat completion to llm-gateway.
 
@@ -169,6 +189,8 @@ async def call_gateway_chat(
         body["temperature"] = temperature
     if max_output_tokens is not None:
         body["max_output_tokens"] = max_output_tokens
+    if thinking_budget is not None and thinking_budget > 0:
+        body["thinking_budget"] = int(thinking_budget)
 
     headers = {"content-type": "application/json"}
     token = bearer or _GATEWAY_BEARER

@@ -217,12 +217,27 @@ resourcesRouter.get("/audit/loop-trace/:traceId", (req, res) => {
       latencyMs: t.latency_ms,
       timestamp: t.timestamp,
     }));
+    // M83.r — extended thinking content + token count. Read from the
+    // audit row when present (CF stage_driver writes `thinking_blocks`
+    // and `thinking_tokens` into the llm_call record). Missing for
+    // pre-M83.r calls and for non-Anthropic providers; LoopTrace UI
+    // hides the section in that case.
+    const thinkingBlocksRaw = (call as { thinking_blocks?: unknown }).thinking_blocks;
+    const thinkingBlocks = Array.isArray(thinkingBlocksRaw)
+      ? thinkingBlocksRaw.filter(
+          (b): b is { thinking: string; signature?: string; redacted?: boolean } =>
+            typeof b === "object" && b !== null && typeof (b as { thinking?: unknown }).thinking === "string",
+        )
+      : [];
+    const thinkingTokens = typeof (call as unknown as { thinking_tokens?: unknown }).thinking_tokens === "number"
+      ? (call as unknown as { thinking_tokens: number }).thinking_tokens
+      : 0;
     return {
       llmCallId: call.id,
       stepIndex: call.step_index ?? null,
       phase: call.phase ?? null,
       model: { provider: call.provider, model: call.model, alias: call.model_alias ?? null },
-      tokens: { input: call.input_tokens, output: call.output_tokens },
+      tokens: { input: call.input_tokens, output: call.output_tokens, thinking: thinkingTokens },
       finishReason: call.finish_reason,
       latencyMs: call.latency_ms,
       timestamp: call.timestamp,
@@ -231,6 +246,10 @@ resourcesRouter.get("/audit/loop-trace/:traceId", (req, res) => {
       responseToolCalls: call.response_tool_calls ?? [],
       toolInvocations: stepTools,
       error: call.error ?? null,
+      // M83.r — Anthropic extended thinking blocks. Each: {thinking,
+      // signature?, redacted?}. UI renders as collapsible "Deep
+      // reasoning" panel. Empty list when off / unsupported.
+      thinkingBlocks,
     };
   });
 

@@ -160,7 +160,10 @@ export type LoopTraceStep = {
   stepIndex: number | null
   phase: string | null
   model: { provider: string; model: string; alias: string | null }
-  tokens: { input: number; output: number }
+  // M83.r — thinking is the Anthropic extended-thinking token count
+  // for this step (separate from output_tokens). 0 / undefined for
+  // non-Anthropic providers or when thinking is off.
+  tokens: { input: number; output: number; thinking?: number }
   finishReason: 'stop' | 'tool_call' | 'length' | 'error'
   latencyMs: number
   timestamp: string
@@ -169,6 +172,11 @@ export type LoopTraceStep = {
   responseToolCalls: Array<{ name: string; args_preview: string }>
   toolInvocations: LoopTraceToolInvocation[]
   error?: string | null
+  // M83.r — Anthropic extended thinking blocks. Empty for steps that
+  // didn't use extended thinking. Each block: {thinking, signature?,
+  // redacted?}. signature is opaque + not needed for display; redacted
+  // means Anthropic encrypted the content for safety reasons.
+  thinkingBlocks?: Array<{ thinking: string; signature?: string; redacted?: boolean }>
 }
 export type LoopTracePhaseBlock = {
   phase: string

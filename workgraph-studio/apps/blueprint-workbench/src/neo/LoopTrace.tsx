@@ -169,6 +169,49 @@ function StepCard({ step }: { step: LoopTraceStep }) {
         </div>
       )}
 
+      {/* M83.r — Anthropic extended thinking ("deep reasoning")
+          blocks. The model's hidden chain-of-thought, separate from
+          the visible response text. Collapsed by default because it
+          can be long; click to expand. Token count shows alongside
+          so operators can see when thinking is doing real work vs
+          being unused. Hidden entirely when no thinking blocks
+          captured (non-Anthropic, thinking off, or pre-M83.r). */}
+      {step.thinkingBlocks && step.thinkingBlocks.length > 0 && (
+        <details className="loop-step-thinking">
+          <summary>
+            <strong>Deep reasoning</strong>
+            <span style={{
+              fontSize: 11,
+              color: 'var(--muted, #888)',
+              marginLeft: 8,
+              fontWeight: 'normal',
+            }}>
+              {step.thinkingBlocks.length} block{step.thinkingBlocks.length === 1 ? '' : 's'}
+              {step.tokens.thinking ? ` · ${step.tokens.thinking} tokens` : ''}
+            </span>
+          </summary>
+          {step.thinkingBlocks.map((tb, i) => (
+            <pre
+              key={i}
+              style={{
+                margin: '6px 0',
+                padding: 8,
+                background: 'var(--code-bg, #0a0a0a)',
+                borderLeft: tb.redacted ? '3px solid var(--warn, #fa6)' : '3px solid var(--accent, #6cf)',
+                fontFamily: 'var(--font-mono, monospace)',
+                fontSize: 12,
+                lineHeight: 1.5,
+                whiteSpace: 'pre-wrap',
+                color: tb.redacted ? 'var(--muted, #888)' : 'inherit',
+                fontStyle: tb.redacted ? 'italic' : 'normal',
+              }}
+            >
+              {tb.redacted ? '⚠ Anthropic safety filter redacted this thinking block.' : tb.thinking}
+            </pre>
+          ))}
+        </details>
+      )}
+
       {step.responseToolCalls.length > 0 && (
         <div className="loop-step-toolcalls">
           <strong>Emitted tool calls:</strong>

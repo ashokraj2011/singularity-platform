@@ -100,7 +100,28 @@ def _to_anthropic(messages: List[ChatMessage]):
                         "input": raw_input,
                     })
                 if use_blocks:
-                    out.append({"role": "assistant", "content": use_blocks})
+                    # M83.r — thinking blocks must precede tool_use in the
+                    # assistant message. Anthropic validates this ordering
+                    # on tool-result continuation turns; getting it wrong
+                    # 400s the next call with "unexpected content block
+                    # order". When extended thinking is OFF, m.thinking_blocks
+                    # is None and we skip cleanly.
+                    content_blocks: List[Dict[str, Any]] = []
+                    if m.thinking_blocks:
+                        for tb in m.thinking_blocks:
+                            if not isinstance(tb, dict):
+                                continue
+                            thinking_text = tb.get("thinking")
+                            sig = tb.get("signature")
+                            if not isinstance(thinking_text, str) or not isinstance(sig, str):
+                                continue
+                            content_blocks.append({
+                                "type": "thinking",
+                                "thinking": thinking_text,
+                                "signature": sig,
+                            })
+                    content_blocks.extend(use_blocks)
+                    out.append({"role": "assistant", "content": content_blocks})
                     continue
         # (2026-05-24 RCA) Anthropic's Messages API 400s on assistant
         # content with trailing whitespace. Defensive strip here so a
@@ -159,6 +180,30 @@ async def respond(
         # asyncio.gather, for mutating tools it serializes.
         body["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": False}
 
+    # M83.r — Anthropic extended thinking. Only sent when the caller
+    # asked for it (thinking_budget > 0); Claude 3.x silently ignores
+    # the field but newer models (Sonnet 4.x, Opus 4.x) use it. Anthropic
+    # docs: minimum effective budget 1024, sensible default 4096-8192.
+    # max_tokens must be at least 1+budget_tokens for the response to
+    # have any room beyond the thinking — we extend it here so the
+    # caller's max_output_tokens still controls the visible-output cap.
+    if req.thinking_budget and req.thinking_budget > 0:
+        budget = max(1024, int(req.thinking_budget))
+        body["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        # Anthropic requires max_tokens > budget_tokens. If the caller
+        # didn't set enough headroom, bump max_tokens to budget + 4096
+        # so the visible reply still has reasonable room. Don't bump
+        # above 32k to avoid runaway costs.
+        current_max = int(body.get("max_tokens") or 4096)
+        needed_max = budget + 4096
+        if current_max <= budget:
+            body["max_tokens"] = min(32_000, needed_max)
+        # Temperature must be 1 (or omitted) with extended thinking —
+        # the docs are explicit: "thinking is incompatible with
+        # temperature ≠ 1, top_p ≠ 1, top_k ≠ -1". Quietly normalize
+        # rather than 400 the call.
+        body.pop("temperature", None)
+
     url = f"{provider_base_url('anthropic').rstrip('/')}/v1/messages"
     headers = {
         "content-type": "application/json",
@@ -198,6 +243,11 @@ async def respond(
     data = res.json()
     text_content = ""
     tool_calls: List[ToolCall] = []
+    # M83.r — capture thinking blocks. Anthropic emits them as content
+    # blocks with type="thinking", carrying the reasoning text plus an
+    # opaque signature. Callers thread them back into history via
+    # ChatMessage.thinking_blocks (required for tool-use continuation).
+    thinking_blocks: List[Dict[str, Any]] = []
     for block in data.get("content") or []:
         if block.get("type") == "text":
             text_content += block.get("text") or ""
@@ -207,6 +257,27 @@ async def respond(
                 name=block.get("name") or "",
                 args=block.get("input") or {},
             ))
+        elif block.get("type") == "thinking":
+            thinking_text = block.get("thinking")
+            signature = block.get("signature")
+            if isinstance(thinking_text, str) and isinstance(signature, str):
+                thinking_blocks.append({
+                    "thinking": thinking_text,
+                    "signature": signature,
+                })
+        elif block.get("type") == "redacted_thinking":
+            # Anthropic encrypts thinking blocks that tripped a safety
+            # filter — they come back without the plaintext but the
+            # signature still needs to be threaded for continuation.
+            # We store an empty-thinking marker so the converter still
+            # emits the block on the next turn.
+            sig = block.get("data") or block.get("signature")
+            if isinstance(sig, str):
+                thinking_blocks.append({
+                    "thinking": "[redacted by Anthropic safety filter]",
+                    "signature": sig,
+                    "redacted": True,
+                })
 
     stop = data.get("stop_reason")
     if tool_calls:
@@ -221,6 +292,12 @@ async def respond(
         finish_reason = "stop"
 
     usage = data.get("usage") or {}
+    # M83.r — Anthropic returns thinking-token usage under cache-aware
+    # accounting; older response shapes may put it under
+    # `cache_creation_input_tokens` or roll it into output_tokens. The
+    # documented field is `thinking_tokens` (Anthropic, late-2025 docs).
+    # Falling back to 0 keeps cost math safe when the field is absent.
+    thinking_tokens_raw = usage.get("thinking_tokens") or 0
     return ChatCompletionResponse(
         content=text_content,
         tool_calls=tool_calls or None,
@@ -231,4 +308,6 @@ async def respond(
         provider="anthropic",
         model=resolved_model,
         model_alias=model_alias,
+        thinking_blocks=thinking_blocks or None,
+        thinking_tokens=int(thinking_tokens_raw) if isinstance(thinking_tokens_raw, (int, float)) else 0,
     )
