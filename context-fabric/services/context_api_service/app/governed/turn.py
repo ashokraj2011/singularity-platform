@@ -67,6 +67,7 @@ from .prompt_resolver import (
     resolve_phase_prompt,
 )
 from .tool_gateway import allowed_tools_for
+from .tool_schemas import schema_for_tool
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +168,13 @@ def _build_tool_descriptors(policy: StagePolicy, phase: Phase) -> list[dict[str,
     descriptors: list[dict[str, Any]] = []
     for tool_name in sorted(union.keys()):
         scopes = sorted(union[tool_name])
+        # M90.E (2026-05-27) — real per-tool input_schema from
+        # tool_schemas.py, falling back to {type: "object"} for any
+        # tool not in the registry. Pre-M90.E every tool got the bare
+        # fallback, causing the LLM to emit wrong arg names and burn
+        # turns on schema-shape errors. The registry is module-constant
+        # → still byte-stable across the stage → M72A cache-stability
+        # contract preserved.
         descriptors.append({
             "name": tool_name,
             # Scope hint lives in the description so cache stays stable —
@@ -181,7 +189,7 @@ def _build_tool_descriptors(policy: StagePolicy, phase: Phase) -> list[dict[str,
                 f"Calling it outside its scope returns PHASE_TOOL_FORBIDDEN; "
                 f"choose a tool whose scope includes the current phase."
             ),
-            "input_schema": {"type": "object"},
+            "input_schema": schema_for_tool(tool_name),
         })
     # The meta-tool. The phase output schema lives in the prompt; we don't
     # try to mirror it as JSON Schema here (too many phase-specific shapes
@@ -382,6 +390,29 @@ async def run_turn(
     # any error degrades to the existing prompt without breaking
     # the loop.
     ctx_policy = policy.context_policy if policy else {}
+
+    # M90.F (2026-05-27) — surface context_policy fields to prompt vars
+    # so per-phase templates can reference them. Pre-M90.F the seed
+    # defined ast_first / full_file_read_requires_justification /
+    # large_file_threshold_lines / require_context_receipt but nothing
+    # consumed them. Now: they land in vars["context_policy"] and
+    # individual top-level keys for template author convenience.
+    # The loop.py runtime separately consumes large_file_threshold_lines
+    # to emit governed.large_file_read audit events; the rest of the
+    # fields are advisory until they're baked into prompt templates.
+    if isinstance(ctx_policy, dict):
+        vars.setdefault("context_policy", dict(ctx_policy))
+        if ctx_policy.get("ast_first") is not None:
+            vars.setdefault("policy_ast_first", bool(ctx_policy.get("ast_first")))
+        if ctx_policy.get("full_file_read_requires_justification") is not None:
+            vars.setdefault(
+                "policy_full_file_read_requires_justification",
+                bool(ctx_policy.get("full_file_read_requires_justification")),
+            )
+        thr = ctx_policy.get("large_file_threshold_lines")
+        if isinstance(thr, int) and thr > 0:
+            vars.setdefault("policy_large_file_threshold_lines", thr)
+
     if isinstance(ctx_policy, dict) and ctx_policy.get("include_code_context_package"):
         goal_text = ""
         if isinstance(vars.get("goal"), str):

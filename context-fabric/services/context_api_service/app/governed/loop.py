@@ -752,6 +752,57 @@ async def governed_step(
                         severity="warn",
                     )
 
+            # M90.F (2026-05-27) — soft large-file-read warning. The
+            # StagePolicy.context_policy.large_file_threshold_lines field
+            # existed in seeds (DEVELOP=500) but was never consumed. Now:
+            # when a read_file dispatch returns a result that exceeds the
+            # threshold (counted by '\n' chars), we emit a
+            # governed.large_file_read audit event with the line count and
+            # the policy guidance. Soft enforcement (no refusal) — the
+            # agent still gets the content, but operators reviewing the
+            # audit trail can see when the agent is repeatedly reading
+            # huge files instead of using get_ast_slice. Pairs with
+            # ast_first policy guidance once it's wired into the prompts.
+            if (
+                tool_name == "read_file"
+                and outcome.tool_success
+                and isinstance(ctx_policy, dict)
+            ):
+                _raw_threshold = ctx_policy.get("large_file_threshold_lines")
+                if isinstance(_raw_threshold, int) and _raw_threshold > 0:
+                    # Count newlines in any string field of the result.
+                    # The mcp-server read_file response shape is roughly
+                    # {content: "..."} or {text: "..."} depending on
+                    # version; handle both lenient.
+                    _result_text = ""
+                    if isinstance(outcome.result, dict):
+                        _result_text = (
+                            outcome.result.get("content")
+                            or outcome.result.get("text")
+                            or outcome.result.get("body")
+                            or ""
+                        )
+                    elif isinstance(outcome.result, str):
+                        _result_text = outcome.result
+                    if isinstance(_result_text, str) and _result_text:
+                        _line_count = _result_text.count("\n") + 1
+                        if _line_count > _raw_threshold:
+                            await emit_governed_event(
+                                kind="governed.large_file_read",
+                                state=state,
+                                policy=policy,
+                                run_context=run_context,
+                                payload={
+                                    "tool_name": tool_name,
+                                    "path": _read_path or "<unknown>",
+                                    "line_count": _line_count,
+                                    "threshold_lines": _raw_threshold,
+                                    "ast_first_policy": bool(ctx_policy.get("ast_first")),
+                                    "tool_invocation_id": outcome.tool_invocation_id,
+                                },
+                                severity="info",
+                            )
+
             # Code-review fix #2 (2026-05-23) — EditReceipt provenance
             # binding. When a mutating tool (apply_patch / replace_text /
             # create_file / write_file / finish_work_branch) succeeds it
