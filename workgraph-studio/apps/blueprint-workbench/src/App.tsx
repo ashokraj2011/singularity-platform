@@ -1207,7 +1207,14 @@ function WorkbenchNeo({
         </NeoOverlayShell>
       )}
       {overlay === 'code' && (
-        <NeoOverlayShell title="Code · wi/<workitem>" onClose={() => closeOverlay()}>
+        // M83.z (2026-05-27) — title was hardcoded to `Code ·
+        // wi/<workitem>` (literal angle brackets), which read like
+        // a UI typo when the session wasn't bound to a workitem.
+        // The real workItemCode now renders inside the panel
+        // header (line ~2612) once worktreeTree resolves; the
+        // overlay chrome just says "Code" so there's no misleading
+        // placeholder when binding hasn't happened.
+        <NeoOverlayShell title="Code" onClose={() => closeOverlay()}>
           <WorktreeBrowser sessionId={session.id} stage={activeStage} />
         </NeoOverlayShell>
       )}
@@ -2633,14 +2640,45 @@ function WorktreeBrowser({ sessionId, stage }: { sessionId: string; stage: LoopS
             read-only review stages this panel is hidden — the
             operator can browse the code but not spawn runner
             containers from a stage that's supposed to be a
-            structural review. */}
-        {canRunTools && <WorktreeTestRunner sessionId={sessionId} />}
+            structural review.
+            M83.z (2026-05-27) — also gate on rootMeta: the runner
+            + API caller can't function without a workspace bound
+            to the session (worktree resolver returns 400 with the
+            "no resolved workItemCode" message), and rendering them
+            in that state was misleading — they look operational
+            but every click hits the same backend error. */}
+        {canRunTools && rootMeta && <WorktreeTestRunner sessionId={sessionId} />}
         {/* M83 S4 v1 — API caller. Same gating: only shown when
-            the stage permits tool execution. */}
-        {canRunTools && <WorkitemApiCaller sessionId={sessionId} />}
-        {/* When tools are gated off, give the operator a hint so
-            they understand WHY the panels are missing rather than
-            silently rendering an empty area. */}
+            the stage permits tool execution AND the session is
+            bound to a workspace. */}
+        {canRunTools && rootMeta && <WorkitemApiCaller sessionId={sessionId} />}
+        {/* M83.z — when there's no worktree yet, surface a clear
+            explanation that names the path forward. This is the
+            common state when the operator clicked Code on a
+            session whose WORKBENCH_TASK node hasn't activated
+            (workflow hasn't reached the develop/qa stage yet), or
+            on a standalone session that was never wired into a
+            workflow. */}
+        {canRunTools && !rootMeta && (
+          <div style={{
+            borderTop: '1px solid var(--border, #2a2a2a)',
+            padding: '12px 16px',
+            fontSize: 12,
+            color: 'var(--warn, #fa6)',
+            fontStyle: 'italic',
+          }}>
+            Test runner + API caller are hidden because this session isn't
+            bound to a worktree yet.
+            {rootError ? ` Worktree lookup said: "${rootError}"` : ''}
+            {' '}They appear once the workflow's WORKBENCH_TASK node activates
+            and binds a WorkItem (typically when the workflow reaches the
+            develop stage).
+          </div>
+        )}
+        {/* When tools are gated off by stage policy (not by missing
+            worktree), give the operator a hint so they understand
+            WHY the panels are missing rather than silently
+            rendering an empty area. */}
         {!canRunTools && stage && (
           <div style={{
             borderTop: '1px solid var(--border, #2a2a2a)',
