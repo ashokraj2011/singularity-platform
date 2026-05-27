@@ -51,6 +51,13 @@ export async function activateCallWorkflow(
       parentNodeId: node.id,
       context: childCtx as Prisma.InputJsonValue,
       status: 'DRAFT',
+      // M85.s4 — inherit profile from the called template. Pointing
+      // a CALL_WORKFLOW at a workbench-profile template now produces
+      // a workbench-profile child instance, which blueprint-workbench
+      // (M85.s5) picks up automatically. No new node type needed —
+      // the architecture flip ("workbench is its own workflow") is
+      // achieved by template profile + child instance inheritance.
+      profile: template.profile ?? 'main',
     },
   })
 

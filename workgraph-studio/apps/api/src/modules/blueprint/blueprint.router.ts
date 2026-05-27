@@ -642,6 +642,36 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
           ?? `Workflow run ${body.workflowInstanceId.trim()} was not found. Open the Workbench from an active workflow run/task so consumables can be published.`,
       )
     }
+
+    // M85.s5 — blueprint-workbench only renders 'workbench'-profile
+    // instances. When the caller is attaching this session to a real
+    // workflow run, verify the run's profile. 'main' profile instances
+    // are meant for the standard workflow viewer, not the workbench.
+    //
+    // Two opt-outs:
+    //   • Sessions WITHOUT a workflowInstanceId (standalone / preview
+    //     blueprints) — allowed, since they have no parent run to check
+    //     against. blueprint-workbench will refuse the file-browser /
+    //     test-runner panels for these via the existing bind-workitem
+    //     path (M83.z2).
+    //   • If the env flag WORKBENCH_ALLOW_MAIN_PROFILE=true is set —
+    //     escape hatch for migration / debugging.
+    if (workflowLink.workflowInstanceId) {
+      const linkedInstance = await prisma.workflowInstance.findUnique({
+        where: { id: workflowLink.workflowInstanceId },
+        select: { profile: true, name: true },
+      })
+      const allowMain = (process.env.WORKBENCH_ALLOW_MAIN_PROFILE ?? '').toLowerCase() === 'true'
+      if (linkedInstance && linkedInstance.profile !== 'workbench' && !allowMain) {
+        throw new ValidationError(
+          `Workflow run "${linkedInstance.name}" has profile='${linkedInstance.profile}'. ` +
+          `The workbench only opens workflows with profile='workbench'. ` +
+          `Either: (a) point the parent workflow's CALL_WORKFLOW node at a workbench-profile template ` +
+          `so its child run inherits the right profile, or (b) open this run in the standard workflow viewer instead.`,
+        )
+      }
+    }
+
     const initialLoopDefinition = applyLoopLimitSettings(normalizeLoopDefinition(body.loopDefinition, body), body)
     const resolvedWorkflowInstanceId = workflowLink.workflowInstanceId ?? null
     const resolvedBrowserRunId = body.browserRunId?.trim() || workflowLink.browserRunId
