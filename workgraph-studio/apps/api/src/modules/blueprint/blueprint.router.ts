@@ -9,6 +9,7 @@ import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { classifyFailures, type FailureClassification } from './inherited-failure-analyzer'
+import { synthesizeLoopTrace } from './loop-trace-synthesizer'
 import { createWorkItem } from '../work-items/work-items.service'
 import { createReceipt, logEvent, publishOutbox } from '../../lib/audit'
 import { contextFabricClient, ContextFabricError, type ExecuteResponse } from '../../lib/context-fabric/client'
@@ -926,34 +927,21 @@ blueprintRouter.post('/sessions/:id/stages/:stageKey/reset-attempts', async (req
   } catch (err) { next(err) }
 })
 
-// ── M45 — Loop trace proxy for the Workbench Loop tab ───────────────────
-// Builds the deterministic trace_id from session + stage (same convention
-// used at line ~2900: `blueprint-${session.id}-${stage.key}`), proxies to
-// mcp-server's /mcp/audit/loop-trace/:traceId, and returns the structured
-// timeline the UI consumes. The UI polls this while a run is RUNNING.
+// ── M45 — Loop trace for the Workbench Loop tab ─────────────────────────
+// Builds the deterministic trace_id from session + stage and synthesizes
+// the step/phase timeline from audit-gov events. Previously proxied to
+// mcp-server's /mcp/audit/loop-trace, but that store has no data for
+// post-M71 governed runs (context-fabric emits to audit-gov instead).
+// The synthesizer pulls governed.llm_request/response + tool_dispatched
+// events for the trace and pairs them into steps.
 blueprintRouter.get('/sessions/:id/stages/:stageKey/loop-trace', async (req, res, next) => {
   try {
     const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
     if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
     assertBlueprintAccess(session, req.user!.userId)
     const traceId = `blueprint-${session.id}-${req.params.stageKey}`
-    const mcpUrl = config.MCP_SERVER_URL.replace(/\/+$/, '')
-    const upstream = await fetch(`${mcpUrl}/mcp/audit/loop-trace/${encodeURIComponent(traceId)}`, {
-      headers: { authorization: `Bearer ${config.MCP_BEARER_TOKEN}` },
-    })
-    if (!upstream.ok) {
-      const text = await upstream.text().catch(() => '')
-      // 4xx from mcp-server usually means trace not found — return an empty
-      // shell rather than surfacing an error, so the UI can render a
-      // "no activity yet" state.
-      if (upstream.status === 404) {
-        res.json({ traceId, phases: [], steps: [], summary: { totalSteps: 0, totalLlmCalls: 0, totalToolInvocations: 0, totalCodeChanges: 0, changedPaths: [] } })
-        return
-      }
-      throw new Error(`mcp-server returned ${upstream.status}: ${text.slice(0, 300)}`)
-    }
-    const body = await upstream.json() as { success?: boolean; data?: unknown }
-    res.json(body.data ?? body)
+    const trace = await synthesizeLoopTrace(traceId)
+    res.json(trace)
   } catch (err) { next(err) }
 })
 

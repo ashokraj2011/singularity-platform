@@ -463,15 +463,35 @@ async def run_turn(
             "tool_call_count": len(response.tool_calls),
             "provider": response.provider,
             "model": response.model,
+            "model_alias": response.model_alias,
+            "latency_ms": response.latency_ms,
             "estimated_cost": response.estimated_cost,
-            # M83.r — thinking telemetry. Count + token budget consumed
-            # so operators can spot stages where thinking is doing real
-            # work vs being unused. We deliberately DO NOT include the
-            # thinking content itself in the audit payload; thinking
-            # text can contain sensitive intermediate reasoning that
-            # ought to stay model-internal. The workbench surfaces
-            # content via a separate operator-only path (TurnResult.llm
-            # → attempt record → LoopTrace UI).
+            # M83.r + loop-trace-rewire — surface the response content
+            # AND the structured tool calls so the workbench LoopTrace
+            # UI can reconstruct the per-step view from audit-gov
+            # events instead of relying on mcp-server's audit store
+            # (which has no data post-M71). Capped to avoid bloating
+            # the events table; the workbench truncates further.
+            "content": (response.content or "")[:8000],
+            "tool_calls": [
+                {"id": tc.id, "name": tc.name, "args": tc.arguments}
+                for tc in response.tool_calls
+            ],
+            # M83.r — thinking blocks content + counts. The privacy
+            # caveat from the earlier audit-payload exclusion is
+            # honored by: (1) operator-scope only — audit-gov search
+            # requires service auth, (2) per-call cap, (3) the
+            # workbench's LoopTrace is an operator-only debugging
+            # surface. Anthropic's "don't expose to end users"
+            # guidance is about consumer-product end users; operators
+            # debugging their own agent are the model's developers.
+            "thinking_blocks": [
+                {
+                    "thinking": (tb.get("thinking") or "")[:4000],
+                    "redacted": tb.get("redacted", False),
+                }
+                for tb in (response.thinking_blocks or [])
+            ],
             "thinking_block_count": len(response.thinking_blocks),
             "thinking_tokens": response.thinking_tokens,
         },
