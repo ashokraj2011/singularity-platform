@@ -626,6 +626,7 @@ const loopDeveloperPlanTask = [
   "NOT-ACTIONABLE (M95): if the story's premise is already satisfied — there is genuinely nothing to do (e.g. the reported tests already pass, the bug does not reproduce, the requested change is already present) — DO NOT invent busywork or fabricate edits just to fill the schema. Instead declare it honestly:",
   "  - Set actionable: \"no\" (or \"blocked\" if a prerequisite is missing and a human must decide).",
   "  - target_files: [] is allowed in this case.",
+  "  - test_strategy.commands: STILL REQUIRED — put the command(s) you actually ran to prove there's nothing to do (e.g. ['mvn test']). This is the same command cited in not_actionable_evidence, NOT a fabrication. Never leave it empty; the schema rejects an empty list.",
   "  - not_actionable_reason: one sentence on WHY there is nothing to do.",
   "  - not_actionable_evidence: the PROOF you gathered — the exact command + result (e.g. \"mvn test → BUILD SUCCESS, 142 passed, 0 failures\"). A no-op claim MUST be substantiated; the validator rejects actionable=no without both fields.",
   "  The loop will halt here and route to a human for confirmation — it will NOT proceed to ACT/VERIFY. This is the correct, honest outcome when there is no work; fabricating a diff is not.",
