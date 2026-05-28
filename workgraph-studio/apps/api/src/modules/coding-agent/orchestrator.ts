@@ -353,12 +353,15 @@ export function adaptGovernedStageToCodingRun(
   policy: CodingStagePolicy,
 ): CodingRunResult {
   const stopReason = resp.stop_reason
+  // M95 — NOT_ACTIONABLE is a legitimate terminal (the agent proved there's
+  // nothing to do), NOT a failure. Treat it like APPROVAL_PENDING: the stage
+  // COMPLETES and surfaces to the human gate for confirmation, rather than
+  // being marked FAILED (which would look like the agent broke).
+  const completedReasons = ['FINALIZED', 'APPROVAL_PENDING', 'NOT_ACTIONABLE']
   const status: CodingRunStatus =
-    stopReason === 'FINALIZED' || stopReason === 'APPROVAL_PENDING' ? 'COMPLETED'
-      : 'FAILED'
+    completedReasons.includes(stopReason ?? '') ? 'COMPLETED' : 'FAILED'
   const executeStatus: ExecuteResponse['status'] =
-    stopReason === 'FINALIZED' || stopReason === 'APPROVAL_PENDING' ? 'COMPLETED'
-      : 'FAILED'
+    completedReasons.includes(stopReason ?? '') ? 'COMPLETED' : 'FAILED'
 
   // Walk all turns and harvest tool-result payloads into the legacy slots.
   const codeChangeIds: string[] = []

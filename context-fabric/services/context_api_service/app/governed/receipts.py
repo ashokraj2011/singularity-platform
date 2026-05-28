@@ -89,6 +89,47 @@ class PlanReceipt(_ReceiptBase):
     # the StagePolicy.requiredOutputSchema (which uses maxItems: 1).
     config_inspected_files: list[str] = Field(default_factory=list, max_length=1)
 
+    # M95 (2026-05-28) — Not-actionable / no-op terminal.
+    #
+    # The loop previously had NO way for the agent to say "the premise is
+    # already satisfied — there is nothing to do" (e.g. a "fix the bugs"
+    # story against a repo whose tests all pass). The agent was forced
+    # either to fabricate edits (to satisfy EditReceipt.edits min_length=1)
+    # or to bounce on PHASE_EDIT_UNBACKED / PHASE_COVERAGE_GAP. Neither
+    # surfaces the truth.
+    #
+    # `actionable` lets the PLAN phase declare the outcome:
+    #   "yes"     — normal: proceed PLAN → EXPLORE → ACT → VERIFY.
+    #   "no"      — nothing to do; the story premise is already satisfied.
+    #   "blocked" — cannot proceed (e.g. missing prerequisite), needs a
+    #               human decision; distinct from a clarification question.
+    # When not "yes", the loop short-circuits to a human-confirmation halt
+    # (M95.2/M95.3) instead of forcing fabricated work — and BOTH a reason
+    # and evidence are mandatory so "nothing to do" is a substantiated
+    # claim, not an agent shortcut.
+    actionable: Literal["yes", "no", "blocked"] = "yes"
+    not_actionable_reason: str | None = None
+    not_actionable_evidence: str | None = None
+
+    @model_validator(mode="after")
+    def _not_actionable_requires_justification(self) -> "PlanReceipt":
+        if self.actionable in ("no", "blocked"):
+            if not (self.not_actionable_reason and self.not_actionable_reason.strip()):
+                raise ValueError(
+                    f"PlanReceipt: actionable={self.actionable!r} requires a non-empty "
+                    "`not_actionable_reason` — explain WHY there is nothing to do (or what "
+                    "blocks it), e.g. 'all tests in the suite already pass; the reported "
+                    "bug is not reproducible'."
+                )
+            if not (self.not_actionable_evidence and self.not_actionable_evidence.strip()):
+                raise ValueError(
+                    f"PlanReceipt: actionable={self.actionable!r} requires non-empty "
+                    "`not_actionable_evidence` — the proof you gathered, e.g. the command "
+                    "you ran and its result ('mvn test → 0 failures, 142 passed'). A "
+                    "'nothing to do' verdict must be substantiated, not asserted."
+                )
+        return self
+
 
 # ─── CONTEXT (EXPLORE phase) ─────────────────────────────────────────────────
 

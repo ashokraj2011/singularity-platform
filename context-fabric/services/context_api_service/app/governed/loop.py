@@ -157,6 +157,12 @@ class GovernedStepResult:
     # so the LLM sees the verifier output before producing its
     # VerificationReceipt. None on non-ACT advances or when no edits.
     synthetic_verifier: dict[str, Any] | None = None
+    # M95 — set when a PLAN receipt declared actionable != "yes" (the
+    # premise is already satisfied / blocked). Carries {actionable,
+    # reason, evidence}. stage_driver halts the stage as NOT_ACTIONABLE
+    # so it surfaces to the human-confirmation gate instead of forcing
+    # fabricated ACT work. None on normal turns.
+    not_actionable: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -168,6 +174,7 @@ class GovernedStepResult:
             "tool_outcomes": [asdict(o) for o in self.tool_outcomes],
             "validation_error": self.validation_error,
             "synthetic_verifier": self.synthetic_verifier,
+            "not_actionable": self.not_actionable,
         }
 
 
@@ -979,6 +986,44 @@ async def governed_step(
             receipt = enrich_verification_receipt(receipt, state.receipts)
 
         result.receipt = receipt
+
+        # M95 (2026-05-28) — Not-actionable / no-op short-circuit.
+        # When the PLAN phase declares actionable != "yes" (the premise is
+        # already satisfied, or it's blocked), DON'T march the agent into
+        # ACT/VERIFY — that would force fabricated edits (EditReceipt.edits
+        # has min_length=1) or bounce on PHASE_EDIT_UNBACKED. Instead emit a
+        # governed.story_no_op event (severity info — a legitimate terminal,
+        # not an error) and flag the result so stage_driver halts the stage
+        # as NOT_ACTIONABLE, surfacing to the human-confirmation gate with
+        # the agent's reason + evidence. The receipt's own model validator
+        # (M95.1) already guaranteed both are present.
+        if (
+            state.current_phase is Phase.PLAN
+            and isinstance(receipt, dict)
+            and receipt.get("kind") == "plan_receipt"
+            and str(receipt.get("actionable") or "yes") != "yes"
+        ):
+            verdict = str(receipt.get("actionable"))
+            result.not_actionable = {
+                "actionable": verdict,
+                "reason": receipt.get("not_actionable_reason"),
+                "evidence": receipt.get("not_actionable_evidence"),
+            }
+            log.info(
+                "story not actionable phase=PLAN stage=%s verdict=%s",
+                state.stage_key, verdict,
+            )
+            await emit_governed_event(
+                kind="governed.story_no_op",
+                state=state,
+                policy=policy,
+                run_context=run_context,
+                payload=result.not_actionable,
+                severity="info",
+            )
+            # Do not advance the phase. The stage halts here; the human gate
+            # confirms (or overrides) the no-op verdict.
+            return result
 
         # M92.C (2026-05-27) — require_context_receipt enforcement.
         # When the stage policy declares `context_policy.require_context_receipt`

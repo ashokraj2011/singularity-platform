@@ -120,6 +120,74 @@ def test_plan_receipt_config_files_default_empty():
     assert parsed["config_inspected_files"] == []
 
 
+# ── M95 — not-actionable / no-op PLAN verdict ──────────────────────────────
+
+
+def test_plan_receipt_actionable_defaults_yes():
+    """Backward-compat: a normal PLAN with no `actionable` field defaults to
+    'yes' so existing flows are unchanged."""
+    payload = {
+        "target_files": ["a.py"],
+        "test_strategy": {"commands": ["pytest"]},
+        "risk_level": "low",
+    }
+    parsed = validate_phase_output(Phase.PLAN, payload)
+    assert parsed["actionable"] == "yes"
+
+
+def test_plan_receipt_not_actionable_with_reason_and_evidence_passes():
+    """A no-op verdict is valid when both reason + evidence are present, and
+    target_files may legitimately be empty (nothing to touch)."""
+    payload = {
+        "target_files": [],
+        "test_strategy": {"commands": ["mvn test"]},
+        "risk_level": "low",
+        "actionable": "no",
+        "not_actionable_reason": "All tests already pass; the reported bug is not reproducible.",
+        "not_actionable_evidence": "mvn test → BUILD SUCCESS, 142 passed, 0 failures.",
+    }
+    parsed = validate_phase_output(Phase.PLAN, payload)
+    assert parsed["actionable"] == "no"
+    assert parsed["target_files"] == []
+
+
+def test_plan_receipt_not_actionable_without_reason_refused():
+    """A 'nothing to do' claim must be substantiated — missing reason is refused."""
+    with pytest.raises(PhaseOutputInvalid) as exc:
+        validate_phase_output(Phase.PLAN, {
+            "target_files": [],
+            "test_strategy": {"commands": ["mvn test"]},
+            "actionable": "no",
+            "not_actionable_evidence": "mvn test → 0 failures",
+        })
+    assert any("not_actionable_reason" in d["issue"] or "not_actionable_reason" in d["field"]
+               for d in exc.value.details)
+
+
+def test_plan_receipt_not_actionable_without_evidence_refused():
+    """A 'nothing to do' claim without proof (evidence) is refused — no
+    asserting a no-op without showing the work."""
+    with pytest.raises(PhaseOutputInvalid) as exc:
+        validate_phase_output(Phase.PLAN, {
+            "target_files": [],
+            "test_strategy": {"commands": ["mvn test"]},
+            "actionable": "no",
+            "not_actionable_reason": "Nothing to fix.",
+        })
+    assert any("not_actionable_evidence" in d["issue"] or "not_actionable_evidence" in d["field"]
+               for d in exc.value.details)
+
+
+def test_plan_receipt_blocked_requires_justification_too():
+    """`blocked` is treated like `no` for the justification requirement."""
+    with pytest.raises(PhaseOutputInvalid):
+        validate_phase_output(Phase.PLAN, {
+            "target_files": [],
+            "test_strategy": {"commands": ["mvn test"]},
+            "actionable": "blocked",
+        })
+
+
 # ── VERIFY ─────────────────────────────────────────────────────────────────
 
 

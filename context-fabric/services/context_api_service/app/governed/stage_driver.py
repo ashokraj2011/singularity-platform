@@ -62,11 +62,17 @@ class StageRunResult:
     final_state: PhaseState
     turns: list[dict[str, Any]] = field(default_factory=list)
     # Why we stopped looping. One of: "FINALIZED", "APPROVAL_PENDING",
-    # "VALIDATION_BLOCKED", "POLICY_BLOCKED", "MAX_TURNS", "LLM_ERROR".
+    # "NOT_ACTIONABLE", "VALIDATION_BLOCKED", "POLICY_BLOCKED", "MAX_TURNS",
+    # "LLM_ERROR".
     stop_reason: str = ""
     # When stop_reason == "LLM_ERROR", carries the gateway's error_code.
     error_code: str | None = None
     error_message: str | None = None
+    # M95 — when stop_reason == "NOT_ACTIONABLE", carries {actionable,
+    # reason, evidence} from the PLAN receipt so workgraph-api / the
+    # approval gate can render "Story not actionable — pending human
+    # confirmation" with the agent's justification.
+    not_actionable: dict[str, Any] | None = None
     # Aggregated counters — workgraph-api stamps these on the audit row.
     total_input_tokens: int = 0
     total_output_tokens: int = 0
@@ -80,6 +86,7 @@ class StageRunResult:
             "stop_reason": self.stop_reason,
             "error_code": self.error_code,
             "error_message": self.error_message,
+            "not_actionable": self.not_actionable,
             "totals": {
                 "input_tokens": self.total_input_tokens,
                 "output_tokens": self.total_output_tokens,
@@ -1226,6 +1233,18 @@ async def run_stage(
         result.final_state = state
 
         # Halt conditions, in priority order.
+
+        # M95 — Not-actionable / no-op terminal. When PLAN declared
+        # actionable != "yes", the loop short-circuited (loop.py) and set
+        # step.not_actionable. Halt the stage NOW with a distinct reason so
+        # the caller (workgraph-api) routes it to the human-confirmation
+        # gate as "Story not actionable" rather than a normal approval or a
+        # validation failure. Highest priority — it supersedes everything.
+        if turn.step.not_actionable:
+            result.not_actionable = turn.step.not_actionable
+            result.stop_reason = "NOT_ACTIONABLE"
+            return result
+
         if state.approval_pending and state.current_phase is Phase.SELF_REVIEW:
             result.stop_reason = "APPROVAL_PENDING"
             return result
