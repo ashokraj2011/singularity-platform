@@ -170,53 +170,80 @@ async function main(): Promise<void> {
   })
   console.log(`✓ Created workbench template ${workbench.id}`)
 
-  // ── 1a. Design nodes — one per stage. Lay out vertically so the
-  //       designer canvas auto-reads sensibly. Edges added below. ─
-  const designNodeByKey: Record<string, string> = {}
-  for (const [idx, stage] of WORKBENCH_STAGES.entries()) {
-    const nodeRow = await prisma.workflowDesignNode.create({
-      data: {
-        workflowId: workbench.id,
-        nodeType: 'AGENT_TASK' as NodeType,
+  // ── 1a. SINGLE WORKBENCH_TASK design node holding the full loop.
+  //
+  // (2026-05-28) Operator decision: the agent loop should open the
+  // INTERACTIVE blueprint-workbench (:5176), where all four stages
+  // (Story Intake → Design → Develop → QA) run in one rich session
+  // with artifacts + approval gates. The interactive workbench is
+  // driven by a WORKBENCH_TASK node carrying a `config.workbench`
+  // loopDefinition — NOT by AGENT_TASK nodes (those run headless via
+  // context-fabric and have no workbench UI). The prior shape (4
+  // AGENT_TASK stage nodes) produced a child run with nothing to
+  // "open" at :5176.
+  //
+  // So the workbench template is now a single WORKBENCH_TASK node.
+  // The run viewer's WorkbenchTaskInlinePanel renders its "Open
+  // WorkbenchNeo" button → buildWorkbenchLaunchUrl deep-links to
+  // :5176 with this loopDefinition. Source/goal are Mustache
+  // placeholders hydrated from the spawned instance's vars at
+  // activation (WorkbenchTaskExecutor).
+  const workbenchConfig = {
+    profile: 'blueprint',
+    gateMode: 'manual',
+    sourceType: 'github',
+    sourceUri: '{{instance.vars.repoUrl}}',
+    sourceRef: '',
+    goal: '{{instance.vars.story}}',
+    fallbackGoal: 'Produce an approved implementation contract pack.',
+    capabilityId: CAPABILITY_ID,
+    agentBindings: {
+      productOwnerAgentTemplateId: PRODUCT_OWNER_AGENT,
+      architectAgentTemplateId: ARCHITECT_AGENT,
+      developerAgentTemplateId: DEVELOPER_AGENT,
+      qaAgentTemplateId: QA_AGENT,
+    },
+    loopDefinition: {
+      version: 1,
+      name: 'Capability implementation workbench loop',
+      maxLoopsPerStage: 3,
+      maxTotalSendBacks: 6,
+      stages: WORKBENCH_STAGES.map((stage, idx) => ({
+        key: stage.key,
         label: stage.label,
-        positionX: 100,
-        positionY: 60 + idx * 140,
-        config: {
-          standard: {
-            agentRole: stage.agentRole,
-            agentTemplateId: stage.agentTemplateId,
-            stageKey: stage.key,
-          },
-          stageMetadata: {
-            terminal: stage.terminal,
-            approvalRequired: stage.approvalRequired,
-            toolPolicy: stage.toolPolicy,
-            contextPolicy: stage.contextPolicy,
-            repoAccess: stage.repoAccess,
-            expectedArtifacts: stage.expectedArtifacts,
-            sendBackTo: stage.sendBackTo,
-          },
-        } as Prisma.InputJsonValue,
-      },
-    })
-    designNodeByKey[stage.key] = nodeRow.id
+        agentRole: stage.agentRole,
+        agentTemplateId: stage.agentTemplateId,
+        next: idx < WORKBENCH_STAGES.length - 1 ? WORKBENCH_STAGES[idx + 1]!.key : undefined,
+        terminal: stage.terminal,
+        required: true,
+        approvalRequired: stage.approvalRequired,
+        allowedSendBackTo: stage.sendBackTo,
+        toolPolicy: stage.toolPolicy,
+        contextPolicy: stage.contextPolicy,
+        repoAccess: stage.repoAccess,
+        expectedArtifacts: stage.expectedArtifacts.map(a => ({
+          kind: a.kind, title: a.title, required: a.required, format: a.format,
+        })),
+      })),
+    },
+    outputs: { finalPackKey: 'finalImplementationPack' },
   }
-  console.log(`  + ${WORKBENCH_STAGES.length} stage design nodes`)
 
-  // ── 1b. Forward edges between consecutive stages. ───────────────
-  for (let i = 0; i < WORKBENCH_STAGES.length - 1; i++) {
-    const from = designNodeByKey[WORKBENCH_STAGES[i]!.key]!
-    const to = designNodeByKey[WORKBENCH_STAGES[i + 1]!.key]!
-    await prisma.workflowDesignEdge.create({
-      data: {
-        workflowId: workbench.id,
-        sourceNodeId: from,
-        targetNodeId: to,
-        edgeType: 'SEQUENTIAL',
-      },
-    })
-  }
-  console.log(`  + ${WORKBENCH_STAGES.length - 1} forward design edges`)
+  await prisma.workflowDesignNode.create({
+    data: {
+      workflowId: workbench.id,
+      nodeType: 'WORKBENCH_TASK' as NodeType,
+      label: 'Blueprint Workbench',
+      positionX: 320,
+      positionY: 220,
+      executionLocation: 'SERVER',
+      config: {
+        assignmentMode: 'TEAM_QUEUE',
+        workbench: workbenchConfig,
+      } as Prisma.InputJsonValue,
+    },
+  })
+  console.log('  + 1 WORKBENCH_TASK design node (loop: Story Intake → Design → Develop → QA)')
 
   // ── 1c. M84 first-class WorkbenchDefinition + Stage rows. The
   //       executor's promote-on-activate will keep this in sync at
