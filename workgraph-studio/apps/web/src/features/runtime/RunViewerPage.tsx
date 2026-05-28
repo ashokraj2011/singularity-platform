@@ -488,6 +488,25 @@ function CallWorkflowInlinePanel({ node }: { node: RunNode }) {
   const childInstanceId = typeof node.config?._childInstanceId === 'string'
     ? node.config._childInstanceId
     : null
+
+  // M94.8 (2026-05-28) — One-click into the workbench. Fetch the child
+  // instance's nodes; if a WORKBENCH_TASK exists, build the same
+  // blueprint-workbench (:5176) launch URL the WorkbenchTaskInlinePanel
+  // uses and offer "Open Workbench" directly — no intermediate
+  // Mission-Control hop. Falls back to "Open agent sub-run" (the child's
+  // run timeline) when the child has no workbench node (e.g. AGENT_TASK
+  // stages that run headless).
+  const { data: childNodes = [] } = useQuery<RunNode[]>({
+    queryKey: ['run-instance', childInstanceId, 'nodes'],
+    queryFn: () => api.get(`/workflow-instances/${childInstanceId}/nodes`).then(r => r.data),
+    enabled: Boolean(childInstanceId),
+    refetchInterval: 5_000,
+  })
+  const workbenchNode = childNodes.find(n => n.nodeType === 'WORKBENCH_TASK')
+  const workbenchUrl = workbenchNode && childInstanceId
+    ? buildWorkbenchLaunchUrl(childInstanceId, workbenchNode.id, asRecord(workbenchNode.config?.workbench), 'neo')
+    : null
+
   return (
     <div style={{
       marginTop: 10,
@@ -506,15 +525,26 @@ function CallWorkflowInlinePanel({ node }: { node: RunNode }) {
           </strong>
           <p style={{ margin: '3px 0 0', fontSize: 11, lineHeight: 1.45, color: '#5b21b6' }}>
             {childInstanceId
-              ? 'This stage dispatched the agent loop as a sub-workflow. Open it to watch or drive each agent stage (Story Intake → Design → Develop → QA); this run advances automatically when the sub-workflow completes.'
+              ? (workbenchUrl
+                  ? 'This stage runs the agent workbench (Story Intake → Design → Develop → QA). Open WorkbenchNeo to drive each stage with artifacts + approvals; this run advances automatically when the workbench finalizes.'
+                  : 'This stage dispatched the agent loop as a sub-workflow. Open it to watch or drive each agent stage; this run advances automatically when the sub-workflow completes.')
               : 'The agent sub-workflow is being spawned. Refresh in a moment to open it.'}
           </p>
         </div>
       </div>
       {childInstanceId && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button type="button" style={smallPrimaryButton} onClick={() => navigate(`/runs/${childInstanceId}`)}>
-            <ExternalLink size={13} /> Open agent sub-run
+          {workbenchUrl && (
+            <a href={workbenchUrl} target="_blank" rel="opener" style={smallPrimaryButton}>
+              <ExternalLink size={13} /> Open Workbench
+            </a>
+          )}
+          <button
+            type="button"
+            style={workbenchUrl ? smallSecondaryButton : smallPrimaryButton}
+            onClick={() => navigate(`/runs/${childInstanceId}`)}
+          >
+            <ExternalLink size={13} /> {workbenchUrl ? 'View sub-run' : 'Open agent sub-run'}
           </button>
         </div>
       )}
