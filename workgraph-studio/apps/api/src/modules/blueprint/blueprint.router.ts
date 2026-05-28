@@ -3843,6 +3843,47 @@ async function createInheritedFailureRemediation(
   }
 }
 
+// M94.2 (2026-05-28) — Multinode helpers. ⚠️ NOT RUNTIME-VERIFIED.
+//
+// multinodeEnabled() centralizes the WORKBENCH_MULTINODE flag read so
+// every multinode branch agrees on the toggle. Default off → all M94
+// behavior is inert until M94.5 cutover.
+function multinodeEnabled(): boolean {
+  return (process.env.WORKBENCH_MULTINODE ?? '').toLowerCase() === 'true'
+}
+
+// advanceMultinodeStageNode — in the 4-stage-nodes model, complete the
+// WORKBENCH_TASK node that owns `stageKey` so the runtime advances to the
+// next stage-node. The node is identified by config.workbench.stageKey
+// (pinned by M94.3's graph generator). Idempotent: skips when no node
+// pins the stage (single-node mode) or the node is already COMPLETED.
+//
+// ⚠️ This calls the workflow runtime's advance() with NO stack
+// verification. When verifying: confirm exactly one node matches the
+// stageKey, that advance() doesn't re-fire on an already-completed node,
+// and that the terminal (QA) node's advance flows into the child END →
+// parent CALL_WORKFLOW resume.
+async function advanceMultinodeStageNode(
+  workflowInstanceId: string,
+  stageKey: string,
+  actorId?: string,
+): Promise<void> {
+  const nodes = await prisma.workflowNode.findMany({
+    where: { instanceId: workflowInstanceId },
+    select: { id: true, status: true, config: true },
+  })
+  const target = nodes.find(n => {
+    const cfg = isRecord(n.config) ? n.config : {}
+    const wb = isRecord(cfg.workbench) ? cfg.workbench : {}
+    const pinned = typeof wb.stageKey === 'string' ? wb.stageKey : ''
+    return pinned && pinned.toUpperCase() === stageKey.toUpperCase()
+  })
+  if (!target) return            // single-node mode: no per-stage node pin
+  if (target.status === 'COMPLETED') return  // idempotent re-entry guard
+  const { advance } = await import('../workflow/runtime/WorkflowRuntime')
+  await advance(workflowInstanceId, target.id, { _multinodeStageCompleted: stageKey }, actorId)
+}
+
 async function saveStageVerdict(
   sessionId: string,
   stageKey: string,
@@ -4085,6 +4126,37 @@ async function saveStageVerdict(
       metadata: stateToMetadata(session, nextState),
     },
   })
+
+  // M94.2 (2026-05-28) — Multinode per-node completion. ⚠️ NOT RUNTIME-VERIFIED.
+  //
+  // In the literal "4 independent stage-nodes" model (Option A), each
+  // stage of the loop is owned by its own WORKBENCH_TASK node in the
+  // child workbench-profile workflow. When a stage is ACCEPTED here, the
+  // owning workflow node must complete so the runtime advances to the
+  // next stage-node (which will resume this same shared session — M94.1).
+  // In single-node mode this hook is a no-op: no node pins a stageKey, so
+  // advanceMultinodeStageNode finds nothing and returns. Gated behind
+  // WORKBENCH_MULTINODE so production is untouched until M94.5 flips it.
+  //
+  // ⚠️ This advance() wiring has NOT been verified against a running stack.
+  // Known risks to check when verifying: (a) double-advance with the
+  // finalization path (attachFinalPackToWorkflowNode also calls advance —
+  // guarded below to skip in multinode); (b) ordering vs. the next node's
+  // session-resume; (c) the terminal QA node advancing into the child END.
+  if (accepted && multinodeEnabled() && session.workflowInstanceId) {
+    try {
+      await advanceMultinodeStageNode(session.workflowInstanceId, stage.key, actorId)
+    } catch (err) {
+      // Best-effort — a failed node advance must not roll back the verdict
+      // save. Surfaced in audit-gov so the stuck node is observable.
+      await recordBlueprintAudit(session.id, 'BlueprintMultinodeAdvanceFailed', actorId, {
+        workflowInstanceId: session.workflowInstanceId,
+        stageKey: stage.key,
+        error: err instanceof Error ? err.message : String(err),
+      }).catch(() => undefined)
+    }
+  }
+
   await transitionAttemptConsumables(
     latestAttempt.artifactIds ?? [],
     accepted ? 'APPROVED' : 'REJECTED',
@@ -6649,6 +6721,24 @@ async function completeLinkedWorkbenchTask({
       finalPackId,
       completedBy: actorId,
     })
+  }
+
+  // M94.2 (2026-05-28) — ⚠️ NOT RUNTIME-VERIFIED. In multinode mode the
+  // per-stage verdict hook (advanceMultinodeStageNode) already completes
+  // each stage-node, including the terminal QA node which flows into the
+  // child END. The single-node finalization advance below would target
+  // the session's origin node (Story Intake), which is long-completed —
+  // re-advancing it risks a double-advance / wrong-node error. So skip
+  // the finalization advance entirely when multinode is on; node
+  // completion is the verdict hook's job there.
+  if (multinodeEnabled()) {
+    await logEvent('BlueprintWorkflowFinalizeSkippedMultinode', 'WorkflowNode', nodeId, actorId, {
+      instanceId,
+      sessionId,
+      finalPackId,
+      reason: 'multinode-per-stage-advance-owns-completion',
+    })
+    return
   }
 
   try {

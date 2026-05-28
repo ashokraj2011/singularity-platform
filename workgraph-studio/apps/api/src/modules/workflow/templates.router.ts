@@ -173,6 +173,12 @@ workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, re
         actorId: req.user!.userId,
         authHeader: req.headers.authorization,
         goal: description?.trim() || name,
+        // M94.3 — fields needed to spawn the child workbench-profile
+        // workflow in multinode mode. Harmless in single-node mode.
+        parentName: name,
+        teamId: ownerTeamId,
+        workflowTypeKey,
+        metadata,
       })
     }
 
@@ -203,16 +209,65 @@ async function createCapabilityWorkbenchBridgeGraph({
   actorId,
   authHeader,
   goal,
+  parentName,
+  teamId,
+  workflowTypeKey,
+  metadata,
 }: {
   workflowId: string
   capabilityId: string
   actorId: string
   authHeader?: string
   goal: string
+  // M94.3 — present only from the create handler; used to spawn the
+  // child workbench-profile workflow in multinode mode.
+  parentName?: string
+  teamId?: string | null
+  workflowTypeKey?: string
+  metadata?: unknown
 }) {
   const { bindings, warnings } = await resolveStarterAgentBindings(capabilityId, authHeader)
   const workbenchGoal = goal || 'Produce an approved implementation contract pack.'
   const workbenchConfig = buildWorkbenchConfig(capabilityId, bindings, workbenchGoal)
+
+  // M94.3 (2026-05-28) — ⚠️ NOT RUNTIME-VERIFIED. Multinode graph shape.
+  //
+  // When WORKBENCH_MULTINODE=true, the agentic starter produces the
+  // operator-requested "phases as nodes" layout: a profile=workbench
+  // CHILD workflow whose canvas is START → Story Intake → Design →
+  // Develop → QA → END (each a WORKBENCH_TASK pinned to one stageKey via
+  // config.workbench.stageKey), plus a MAIN workflow that dispatches it:
+  // START → CALL_WORKFLOW(child) → APPROVAL → GIT_PUSH → END. M85.s4 makes
+  // the child instance inherit profile=workbench at spawn; M94.1's
+  // shared-session resolution threads one BlueprintSession across the
+  // four stage nodes; M94.2's verdict hook completes each node as its
+  // stage is accepted.
+  //
+  // When off, the existing single-node graph (one opaque WORKBENCH_TASK
+  // holding the 4-stage loopDefinition) is built — byte-for-byte the
+  // pre-M94 behavior.
+  const multinode = (process.env.WORKBENCH_MULTINODE ?? '').toLowerCase() === 'true'
+  // The child workflow needs a non-null teamId (Workflow.teamId is
+  // required). The main workflow was just created with a resolved
+  // ownerTeamId, which the create handler threads here; only build the
+  // multinode bridge when we actually have one. Fall through to the
+  // single-node graph otherwise so the starter never hard-fails.
+  if (multinode && teamId) {
+    await buildMultinodeWorkbenchBridge({
+      mainWorkflowId: workflowId,
+      capabilityId,
+      actorId,
+      goal: workbenchGoal,
+      bindings,
+      warnings,
+      workbenchConfig,
+      parentName: parentName ?? 'Workbench',
+      teamId,
+      workflowTypeKey: workflowTypeKey ?? 'GENERAL',
+      metadata,
+    })
+    return
+  }
 
   const [startNode, workbenchNode, approvalNode, gitPushNode, endNode] = await prisma.$transaction(async tx => {
     const start = await tx.workflowDesignNode.create({
@@ -327,6 +382,216 @@ async function createCapabilityWorkbenchBridgeGraph({
       gitPush: gitPushNode.id,
       end: endNode.id,
     },
+    warnings,
+  })
+}
+
+// M94.3 (2026-05-28) — ⚠️ NOT RUNTIME-VERIFIED. Multinode bridge builder.
+//
+// Produces the operator-requested "phases as nodes" layout:
+//
+//   CHILD (profile=workbench):
+//     START → Story Intake → Design → Develop → QA → END
+//     (each phase a WORKBENCH_TASK pinned to one stageKey via
+//      config.workbench.stageKey; every node carries the FULL 4-stage
+//      loopDefinition so whichever activates first seeds the shared
+//      session — M94.1 — with all stages, then each node owns its slice)
+//
+//   MAIN (the already-created workflowId, profile=main):
+//     START → CALL_WORKFLOW(child) → APPROVAL → GIT_PUSH → END
+//     (CALL_WORKFLOW target lives in config.standard.templateId, which is
+//      what CallWorkflowExecutor reads; M85.s4 makes the spawned child
+//      instance inherit profile=workbench)
+//
+// The whole branch is inert unless WORKBENCH_MULTINODE=true (checked by
+// the caller). ⚠️ The runtime threading (M94.1 session share + M94.2
+// per-node completion) has NOT been verified against a running stack.
+async function buildMultinodeWorkbenchBridge({
+  mainWorkflowId,
+  capabilityId,
+  actorId,
+  bindings,
+  warnings,
+  workbenchConfig,
+  parentName,
+  teamId,
+  workflowTypeKey,
+  metadata,
+}: {
+  mainWorkflowId: string
+  capabilityId: string
+  actorId: string
+  goal: string
+  bindings: StarterAgentBindings
+  warnings: string[]
+  workbenchConfig: ReturnType<typeof buildWorkbenchConfig>
+  parentName: string
+  teamId: string
+  workflowTypeKey: string
+  metadata?: unknown
+}) {
+  // Stages come straight off the canonical loopDefinition so the node
+  // chain matches the loop (Story Intake → Design → Develop → QA).
+  const stages = workbenchConfig.loopDefinition.stages
+
+  // 1. Create the CHILD workbench-profile workflow row.
+  const child = await prisma.workflow.create({
+    data: {
+      name: `${parentName} — Workbench`,
+      description: 'Agent-loop sub-workflow (Story Intake → Design → Develop → QA). Dispatched by the parent main workflow.',
+      teamId,
+      capabilityId: capabilityId || null,
+      createdById: actorId,
+      workflowTypeKey,
+      defaultRoutingMode: 'MANUAL',
+      metadata: (metadata as Prisma.InputJsonValue) ?? {},
+      profile: 'workbench',
+    },
+  })
+
+  // 2. Build the CHILD graph: START → <stage nodes> → END.
+  await prisma.$transaction(async tx => {
+    const childStart = await tx.workflowDesignNode.create({
+      data: {
+        workflowId: child.id,
+        nodeType: 'START' as any,
+        label: 'Start',
+        config: {},
+        executionLocation: 'SERVER' as any,
+        positionX: 80,
+        positionY: 220,
+      },
+    })
+
+    let prevId = childStart.id
+    let x = 320
+    const stageNodeIds: Record<string, string> = {}
+    for (const stage of stages) {
+      const stageNode = await tx.workflowDesignNode.create({
+        data: {
+          workflowId: child.id,
+          nodeType: 'WORKBENCH_TASK' as any,
+          label: String(stage.label ?? stage.key),
+          config: {
+            assignmentMode: 'DIRECT_USER',
+            assignedToId: actorId,
+            // Full loopDefinition on every node so the first to activate
+            // seeds the shared session with all stages (M94.1); stageKey
+            // pins WHICH stage this node owns (M94.2 verdict hook reads it).
+            workbench: { ...workbenchConfig, stageKey: stage.key, multinode: true },
+            outputArtifacts: workbenchOutputBindings(),
+            starterWarnings: warnings,
+          } as Prisma.InputJsonValue,
+          executionLocation: 'SERVER' as any,
+          positionX: x,
+          positionY: 220,
+        },
+      })
+      stageNodeIds[stage.key] = stageNode.id
+      await tx.workflowDesignEdge.create({
+        data: { workflowId: child.id, sourceNodeId: prevId, targetNodeId: stageNode.id, edgeType: 'SEQUENTIAL' as any },
+      })
+      prevId = stageNode.id
+      x += 250
+    }
+
+    const childEnd = await tx.workflowDesignNode.create({
+      data: {
+        workflowId: child.id,
+        nodeType: 'END' as any,
+        label: 'Done',
+        config: {},
+        executionLocation: 'SERVER' as any,
+        positionX: x,
+        positionY: 220,
+      },
+    })
+    await tx.workflowDesignEdge.create({
+      data: { workflowId: child.id, sourceNodeId: prevId, targetNodeId: childEnd.id, edgeType: 'SEQUENTIAL' as any },
+    })
+  })
+
+  // 3. Build the MAIN graph: START → CALL_WORKFLOW(child) → APPROVAL → GIT_PUSH → END.
+  await prisma.$transaction(async tx => {
+    const start = await tx.workflowDesignNode.create({
+      data: {
+        workflowId: mainWorkflowId,
+        nodeType: 'START' as any,
+        label: 'Start',
+        config: {},
+        executionLocation: 'SERVER' as any,
+        positionX: 80,
+        positionY: 220,
+      },
+    })
+    const callChild = await tx.workflowDesignNode.create({
+      data: {
+        workflowId: mainWorkflowId,
+        nodeType: 'CALL_WORKFLOW' as any,
+        label: 'Run agent workbench',
+        // CallWorkflowExecutor reads templateId from config.standard.templateId.
+        config: { standard: { templateId: child.id } } as Prisma.InputJsonValue,
+        executionLocation: 'SERVER' as any,
+        positionX: 330,
+        positionY: 220,
+      },
+    })
+    const approval = await tx.workflowDesignNode.create({
+      data: {
+        workflowId: mainWorkflowId,
+        nodeType: 'APPROVAL' as any,
+        label: 'Human final sign-off',
+        config: {
+          assignmentMode: 'DIRECT_USER',
+          assignedToId: actorId,
+          subject: 'Blueprint final implementation pack',
+          formWidgets: [
+            { id: 'approvalNotes', type: 'textarea', label: 'Approval notes', required: false, placeholder: 'Capture rollout conditions, risk acceptance, or follow-up work.' },
+          ],
+        } as Prisma.InputJsonValue,
+        executionLocation: 'SERVER' as any,
+        positionX: 610,
+        positionY: 220,
+      },
+    })
+    const gitPush = await tx.workflowDesignNode.create({
+      data: {
+        workflowId: mainWorkflowId,
+        nodeType: 'GIT_PUSH' as any,
+        label: 'Push approved branch',
+        config: { remote: 'origin', requireApproval: true } as Prisma.InputJsonValue,
+        executionLocation: 'SERVER' as any,
+        positionX: 870,
+        positionY: 220,
+      },
+    })
+    const end = await tx.workflowDesignNode.create({
+      data: {
+        workflowId: mainWorkflowId,
+        nodeType: 'END' as any,
+        label: 'Done',
+        config: {},
+        executionLocation: 'SERVER' as any,
+        positionX: 1130,
+        positionY: 220,
+      },
+    })
+    await tx.workflowDesignEdge.createMany({
+      data: [
+        { workflowId: mainWorkflowId, sourceNodeId: start.id,     targetNodeId: callChild.id, edgeType: 'SEQUENTIAL' as any },
+        { workflowId: mainWorkflowId, sourceNodeId: callChild.id, targetNodeId: approval.id,  edgeType: 'SEQUENTIAL' as any },
+        { workflowId: mainWorkflowId, sourceNodeId: approval.id,  targetNodeId: gitPush.id,   edgeType: 'SEQUENTIAL' as any },
+        { workflowId: mainWorkflowId, sourceNodeId: gitPush.id,   targetNodeId: end.id,       edgeType: 'SEQUENTIAL' as any },
+      ],
+    })
+  })
+
+  await logEvent('WorkflowStarterApplied', 'Workflow', mainWorkflowId, actorId, {
+    starter: 'CAPABILITY_WORKBENCH_BRIDGE',
+    multinode: true,
+    capabilityId,
+    childWorkflowId: child.id,
+    childStageCount: stages.length,
     warnings,
   })
 }
