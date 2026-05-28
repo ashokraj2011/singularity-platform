@@ -393,12 +393,17 @@ function StepCard({
             <WorkbenchTaskInlinePanel node={node} instanceId={instanceId} instanceContext={instanceContext} />
           )}
 
+          {/* M94.7 — CALL_WORKFLOW: link to the spawned agent sub-run. */}
+          {isActive && node.nodeType === 'CALL_WORKFLOW' && (
+            <CallWorkflowInlinePanel node={node} />
+          )}
+
           {isActive && node.nodeType === 'APPROVAL' && !hasFormWidgets && (
             <ApprovalInlinePanel node={node} instanceId={instanceId} />
           )}
 
           {/* Active step without form: simple "Mark complete" prompt */}
-          {isActive && node.nodeType !== 'WORK_ITEM' && node.nodeType !== 'WORKBENCH_TASK' && node.nodeType !== 'APPROVAL' && (!fillKind || !hasFormWidgets) && (
+          {isActive && node.nodeType !== 'WORK_ITEM' && node.nodeType !== 'WORKBENCH_TASK' && node.nodeType !== 'CALL_WORKFLOW' && node.nodeType !== 'APPROVAL' && (!fillKind || !hasFormWidgets) && (
             <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.20)' }}>
               <p style={{ fontSize: 11, color: '#0c4a6e' }}>
                 Waiting for the runtime to advance.  HUMAN_TASK / APPROVAL nodes show a form-fill here when they're claimable;
@@ -460,6 +465,59 @@ function WorkbenchTaskInlinePanel({
           <ExternalLink size={13} /> Open WorkbenchNeo
         </a>
       </div>
+    </div>
+  )
+}
+
+// M94.7 (2026-05-28) — Inline panel for an ACTIVE CALL_WORKFLOW node.
+//
+// When a workflow reaches a CALL_WORKFLOW stage (e.g. the agentic
+// starter's "Run agent loop"), the node spawns a child sub-workflow and
+// then waits for it to complete. Previously the run view showed only the
+// generic "Waiting for the runtime to advance" text with no way to reach
+// the child — so an operator couldn't open the agent workbench/sub-run
+// once it reached that stage. This panel surfaces a direct link to the
+// child sub-run (where the agent stages + their live events render, and
+// any WORKBENCH_TASK stage shows its own "Open WorkbenchNeo" button).
+//
+// The child instance id is stamped on the node config as _childInstanceId
+// by CallWorkflowExecutor once the child is spawned. Before that (brief
+// window between activation and spawn) we show a spawning state.
+function CallWorkflowInlinePanel({ node }: { node: RunNode }) {
+  const navigate = useNavigate()
+  const childInstanceId = typeof node.config?._childInstanceId === 'string'
+    ? node.config._childInstanceId
+    : null
+  return (
+    <div style={{
+      marginTop: 10,
+      padding: 12,
+      borderRadius: 10,
+      background: 'rgba(124,58,237,0.06)',
+      border: '1px solid rgba(124,58,237,0.22)',
+      display: 'grid',
+      gap: 10,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
+        <GitFork size={16} style={{ color: '#7c3aed', marginTop: 2 }} />
+        <div>
+          <strong style={{ display: 'block', fontSize: 12, color: 'var(--color-on-surface)' }}>
+            Agent sub-workflow {childInstanceId ? 'running' : 'starting…'}
+          </strong>
+          <p style={{ margin: '3px 0 0', fontSize: 11, lineHeight: 1.45, color: '#5b21b6' }}>
+            {childInstanceId
+              ? 'This stage dispatched the agent loop as a sub-workflow. Open it to watch or drive each agent stage (Story Intake → Design → Develop → QA); this run advances automatically when the sub-workflow completes.'
+              : 'The agent sub-workflow is being spawned. Refresh in a moment to open it.'}
+          </p>
+        </div>
+      </div>
+      {childInstanceId && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button type="button" style={smallPrimaryButton} onClick={() => navigate(`/runs/${childInstanceId}`)}>
+            <ExternalLink size={13} /> Open agent sub-run
+          </button>
+        </div>
+      )}
     </div>
   )
 }
