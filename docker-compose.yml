@@ -923,6 +923,15 @@ services:
       # keeps working. Flip to 'true' after the form has been rewired to
       # the M84.s2 API.
       WORKBENCH_TABLES_AUTHORITATIVE: ${WORKBENCH_TABLES_AUTHORITATIVE:-false}
+      # M94 (2026-05-28) — Multinode workbench. When 'true', the agentic
+      # starter generates a profile=workbench child workflow with each
+      # phase (Story Intake / Design / Develop / QA) as its own
+      # WORKBENCH_TASK node, threaded by a single shared BlueprintSession
+      # (keyed by the child workflowInstanceId). Default 'false' = the
+      # legacy single-node graph. ⚠️ The multinode runtime threading is
+      # NOT YET stack-verified — keep off in production until the M94.5
+      # E2E checklist passes.
+      WORKBENCH_MULTINODE: ${WORKBENCH_MULTINODE:-false}
       CORS_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5176,http://localhost:5180
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
       AUTH_PROVIDER: iam
