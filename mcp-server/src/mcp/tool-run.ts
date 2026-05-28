@@ -73,8 +73,17 @@ import { indexWorkspace } from "../workspace/ast-index";
 // derives from the registry's `category` field (analyzer +
 // verify_meta = workspace-independent). When a new such tool ships,
 // add it to tools.json and the runtime picks it up automatically.
-// See mcp-server/src/tools/tools-registry.ts for the implementation.
-import { workspaceIndependentTools } from "../tools/tools-registry";
+// See mcp-server/src/tools/tool-registry-loader.ts for the implementation.
+//
+// NOTE: the module file is `tool-registry-loader.ts`, deliberately NOT
+// `tools-registry.ts`. A sibling data file `tools-registry.json` lives in
+// the same directory, and Node's extensionless module resolution tries
+// `.json` BEFORE ts-node's `.ts` — so `import ... from "../tools/tools-registry"`
+// silently resolved to the JSON manifest (keys: tools, version) instead of
+// the TS module, making `workspaceIndependentTools` undefined at load time
+// and crash-looping the dev tool-runner. Keeping distinct basenames removes
+// the ambiguity in both ts-node (dev) and compiled (prod) modes.
+import { workspaceIndependentTools } from "../tools/tool-registry-loader";
 const _WORKSPACE_INDEPENDENT_TOOLS = workspaceIndependentTools();
 
 export function isWorkspaceIndependentTool(name: string): boolean {
