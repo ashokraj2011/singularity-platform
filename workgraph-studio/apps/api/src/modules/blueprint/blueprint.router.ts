@@ -686,6 +686,50 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
     const resolvedWorkflowInstanceId = workflowLink.workflowInstanceId ?? null
     const resolvedBrowserRunId = body.browserRunId?.trim() || workflowLink.browserRunId
     const resolvedWorkflowNodeId = resolvedWorkflowInstanceId || resolvedBrowserRunId ? workflowLink.workflowNodeId : undefined
+
+    // M94.1 (2026-05-28) — Shared-session resolution for the multinode
+    // workbench model. In the literal "4 independent stage-nodes" design
+    // (Option A), each of the child workbench-profile workflow's
+    // WORKBENCH_TASK nodes (Story Intake / Design / Develop / QA) hits
+    // this endpoint as it activates. We MUST NOT mint a fresh session per
+    // node — that would fork the loop state, artifacts, receipts, and the
+    // shared wi/<code> branch into four disjoint sessions. Instead, the
+    // FIRST node to activate creates the session; every subsequent node
+    // for the SAME workflow instance resumes it. Keying by
+    // workflowInstanceId (the child instance) is what makes one session
+    // thread across all four nodes — artifact + receipt continuity then
+    // comes for free from the existing per-session metadata.
+    //
+    // Gated behind WORKBENCH_MULTINODE so single-node behavior (one node =
+    // one full-loop session) is byte-for-byte unchanged when off. We only
+    // reuse a session that's still live (not COMPLETED/ABANDONED) so a
+    // re-run after completion starts clean.
+    const multinodeEnabled = (process.env.WORKBENCH_MULTINODE ?? '').toLowerCase() === 'true'
+    if (multinodeEnabled && resolvedWorkflowInstanceId) {
+      const existing = await prisma.blueprintSession.findFirst({
+        where: {
+          workflowInstanceId: resolvedWorkflowInstanceId,
+          status: { notIn: [BlueprintSessionStatus.COMPLETED, BlueprintSessionStatus.ABANDONED] },
+        },
+        orderBy: { createdAt: 'asc' },
+        include: {
+          snapshots: { orderBy: { createdAt: 'desc' }, take: 1 },
+          stageRuns: { orderBy: { createdAt: 'desc' } },
+          artifacts: { orderBy: { createdAt: 'desc' } },
+        },
+      })
+      if (existing) {
+        // Resume the instance-shared session. Record which node triggered
+        // the resume so the audit trail shows the cross-node hops.
+        await recordBlueprintAudit(existing.id, 'BlueprintSessionResumedForNode', req.user!.userId, {
+          workflowInstanceId: resolvedWorkflowInstanceId,
+          workflowNodeId: resolvedWorkflowNodeId,
+          reason: 'multinode-shared-session',
+        })
+        res.json(shapeSession(existing))
+        return
+      }
+    }
     const governanceMode = body.governanceMode
       ?? await resolveWorkbenchGovernanceMode(resolvedWorkflowInstanceId)
     const agentTemplateIds = resolveSessionAgentTemplateIds(body, initialLoopDefinition)
