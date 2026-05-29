@@ -93,6 +93,11 @@ const updateTemplateSchema = z.object({
   metadata:     metadataSchema,
   variables:    z.array(variableDefSchema).optional(),
   budgetPolicy: z.record(z.unknown()).nullable().optional(),
+  // M85.s2 introduced the profile column but only the create route set it.
+  // Allow editing it so a workflow can be moved between Main and Workbench
+  // without hand-editing the DB (e.g. a template that embeds a WORKBENCH_TASK
+  // must be 'workbench' for blueprint-workbench's M85.s5 guard to open it).
+  profile:      z.enum(['main', 'workbench']).optional(),
 })
 
 function withTemplateGovernanceDefaults(budgetPolicy: unknown, metadata: unknown): Record<string, unknown> {
@@ -1173,6 +1178,7 @@ workflowTemplatesRouter.patch('/:id', validate(updateTemplateSchema), async (req
         ...(body.metadata     !== undefined ? { metadata:     body.metadata as any }                                   : {}),
         ...(body.variables    !== undefined ? { variables:    body.variables as unknown as Prisma.InputJsonValue }     : {}),
         ...(body.budgetPolicy !== undefined ? { budgetPolicy: normalizeBudgetPolicy(withTemplateGovernanceDefaults(body.budgetPolicy, metadataForBudgetDefaults)) as unknown as Prisma.InputJsonValue } : {}),
+        ...(body.profile      !== undefined ? { profile:      body.profile }                                            : {}),
       },
     })
     await logEvent('TemplateUpdated', 'WorkflowTemplate', t.id, req.user!.userId, {
