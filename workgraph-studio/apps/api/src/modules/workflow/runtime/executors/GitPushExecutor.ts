@@ -8,6 +8,7 @@ type JsonObject = Record<string, unknown>
 type WorkspaceEvidence = {
   branch?: string
   commitSha?: string
+  patch?: string
   changedPaths: string[]
   workspaceRoot?: string
   codeChangeIds?: string[]
@@ -67,6 +68,14 @@ function stringAt(root: unknown, path: string): string | undefined {
     return undefined
   }, root)
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function rawStringAt(root: unknown, path: string): string | undefined {
+  const value = path.split('.').reduce<unknown>((cursor, key) => {
+    if (isRecord(cursor)) return cursor[key]
+    return undefined
+  }, root)
+  return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
 function stringsAt(root: unknown, path: string): string[] {
@@ -160,7 +169,7 @@ function derivedWorkbenchBranch(
   evidence: WorkspaceEvidence,
   workItemCode?: string,
 ): string | undefined {
-  if (evidence.branch) return evidence.branch
+  if (evidence.branch && !isDefaultSourceBranch(evidence.branch)) return evidence.branch
   if (workItemCode) return `wi/${branchSegment(workItemCode, 'workitem')}`
   const hasWorkbenchCodeChange =
     (evidence.source ?? '').startsWith('blueprint-workbench')
@@ -172,6 +181,47 @@ function derivedWorkbenchBranch(
     ? `${evidence.attemptNumber ?? 1}-${branchSegment(evidence.attemptId, 'attempt').slice(0, 12)}`
     : `${evidence.attemptNumber ?? 1}`
   return `sg/${branchSegment(instance.id, 'workflow')}/${stage}/${attempt}`.slice(0, 180)
+}
+
+function isDefaultSourceBranch(branch: string | undefined): boolean {
+  return branch === 'main' || branch === 'master'
+}
+
+async function hydrateFromMcpFinishReceipt(evidence: WorkspaceEvidence): Promise<WorkspaceEvidence> {
+  const ids = evidence.codeChangeIds ?? []
+  if (ids.length === 0) return evidence
+
+  for (const id of [...ids].reverse()) {
+    try {
+      const response = await fetch(`${config.MCP_SERVER_URL.replace(/\/$/, '')}/mcp/resources/tool-invocations/${encodeURIComponent(id)}`, {
+        headers: { authorization: `Bearer ${config.MCP_BEARER_TOKEN}` },
+        signal: AbortSignal.timeout(5_000),
+      })
+      if (!response.ok) continue
+      const body = await response.json() as { data?: unknown }
+      const record = isRecord(body.data) ? body.data : {}
+      if (stringAt(record, 'tool_name') !== 'finish_work_branch') continue
+      const output = isRecord(record.output) ? record.output : {}
+      return {
+        ...evidence,
+        branch: stringAt(output, 'branch') ?? evidence.branch,
+        commitSha: stringAt(output, 'commit_sha') ?? stringAt(output, 'commitSha') ?? evidence.commitSha,
+        patch: rawStringAt(output, 'patch') ?? evidence.patch,
+        workspaceRoot: stringAt(output, 'workspaceRoot') ?? stringAt(output, 'workspace_root') ?? evidence.workspaceRoot,
+        changedPaths: uniqueStrings([
+          ...evidence.changedPaths,
+          ...stringsAt(output, 'paths_touched'),
+          ...stringsAt(output, 'changedPaths'),
+          ...stringsAt(output, 'changed_paths'),
+        ]),
+      }
+    } catch {
+      // Best-effort enrichment only. If the Agent Runtime receipt has aged
+      // out or the service is unavailable, the caller still falls back to
+      // the artifact-level evidence and surfaces the usual retryable block.
+    }
+  }
+  return evidence
 }
 
 function codeArtifactEvidence(payload: JsonObject, source: string): WorkspaceEvidence {
@@ -237,7 +287,7 @@ async function latestWorkbenchCodeChangeEvidence(instance: WorkflowInstance): Pr
     }
   }
 
-  return evidence
+  return hydrateFromMcpFinishReceipt(evidence)
 }
 
 async function latestWorkspaceEvidence(instance: WorkflowInstance): Promise<WorkspaceEvidence> {
@@ -381,6 +431,8 @@ async function callMcpFinishWorkBranch(args: {
   workItemCode?: string
   branchName?: string
   workspaceRoot?: string
+  expectedCommitSha?: string
+  patch?: string
 }): Promise<JsonObject> {
   const response = await fetch(`${config.MCP_SERVER_URL.replace(/\/$/, '')}/mcp/work/finish-branch`, {
     method: 'POST',
@@ -392,6 +444,8 @@ async function callMcpFinishWorkBranch(args: {
       message: args.message,
       push: true,
       remote: args.remote,
+      expectedCommitSha: args.expectedCommitSha,
+      patch: args.patch,
       runContext: {
         traceId: `git-push-${args.instance.id}-${args.node.id}`,
         runId: args.instance.id,
@@ -427,12 +481,13 @@ export async function activateGitPush(
   const context = (instance.context ?? {}) as JsonObject
   const workItem = isRecord(context._workItem) ? context._workItem : {}
   const evidence = await latestWorkspaceEvidence(instance)
+  const evidenceBranch = isDefaultSourceBranch(evidence.branch) ? undefined : evidence.branch
   const workItemId = cfgString(node, 'workItemId')
     ?? stringAt(workItem, 'id')
   const workItemCode = cfgString(node, 'workItemCode')
     ?? stringAt(workItem, 'workCode')
   const branchName = cfgString(node, 'branchName')
-    ?? evidence.branch
+    ?? evidenceBranch
     ?? stringAt(context, 'workspaceBranch')
     ?? derivedWorkbenchBranch(instance, evidence, workItemCode)
   const message = cfgString(node, 'message')
@@ -516,6 +571,8 @@ export async function activateGitPush(
       workItemCode: evidence.workspaceRoot ? undefined : workItemCode,
       branchName,
       workspaceRoot: evidence.workspaceRoot,
+      expectedCommitSha: evidence.commitSha,
+      patch: evidence.patch,
     })
   } catch (err) {
     const output: GitPushOutput = {

@@ -25,7 +25,7 @@ import { v4 as uuidv4 } from "uuid";
 import { AppError } from "../shared/errors";
 import { finishWorkBranchTool } from "../tools/ast-tools";
 import { recordToolInvocation } from "../audit/store";
-import { branchNameForWork, prepareWorkBranch } from "../workspace/git-workspace";
+import { applyPatchToCleanWorkspace, branchNameForWork, currentHeadSha, prepareWorkBranch } from "../workspace/git-workspace";
 import { withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbox";
 import { redactSecrets } from "../security/redact";
 
@@ -35,6 +35,8 @@ const FinishBranchSchema = z.object({
   message: z.string().optional(),
   remote: z.string().default("origin"),
   push: z.boolean().default(true),
+  expectedCommitSha: z.string().optional(),
+  patch: z.string().optional(),
   runContext: z
     .object({
       traceId: z.string().optional(),
@@ -89,11 +91,28 @@ workRouter.post("/work/finish-branch", async (req, res) => {
       if (branchNameForWork(branchRequest)) {
         await prepareWorkBranch(branchRequest, correlation);
       }
-      return finishWorkBranchTool.execute({
+      const headSha = await currentHeadSha();
+      const patchRestore = body.expectedCommitSha
+        && headSha
+        && headSha !== body.expectedCommitSha
+        && body.patch?.trim()
+        ? await applyPatchToCleanWorkspace(body.patch)
+        : undefined;
+      if (patchRestore && !patchRestore.applied && patchRestore.skippedReason !== "patch already present in workspace") {
+        throw new Error(`approved patch could not be restored before push: ${patchRestore.skippedReason}`);
+      }
+      const result = await finishWorkBranchTool.execute({
         message: body.message,
         push: body.push,
         remote: body.remote,
       });
+      if (patchRestore && result.output && typeof result.output === "object") {
+        Object.assign(result.output as Record<string, unknown>, {
+          patch_restored: patchRestore.applied,
+          patch_restore_note: patchRestore.skippedReason,
+        });
+      }
+      return result;
     });
     const rec = recordToolInvocation({
       correlation,

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { config } from "../config";
@@ -108,6 +109,37 @@ async function git(args: string[], opts?: { allowFail?: boolean; maxBuffer?: num
 async function gitPath(relativePath: string): Promise<string> {
   const resolved = await git(["rev-parse", "--git-path", relativePath]);
   return path.isAbsolute(resolved) ? resolved : path.join(sandboxRoot(), resolved);
+}
+
+export async function applyPatchToCleanWorkspace(patch: string): Promise<{ applied: boolean; skippedReason?: string }> {
+  const trimmedPatch = patch.trim();
+  if (!trimmedPatch) return { applied: false, skippedReason: "empty patch" };
+
+  await ensureGitRepo();
+  const dirty = await dirtyPaths();
+  if (dirty.length > 0) {
+    return { applied: false, skippedReason: `workspace has uncommitted changes: ${dirty.join(", ")}` };
+  }
+
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "singularity-patch-"));
+  const patchFile = path.join(tempDir, "approved.patch");
+  await fs.promises.writeFile(patchFile, patch.endsWith("\n") ? patch : `${patch}\n`, "utf8");
+  try {
+    try {
+      await git(["apply", "--check", patchFile], { maxBuffer: 20 * 1024 * 1024 });
+      await git(["apply", "--whitespace=nowarn", patchFile], { maxBuffer: 20 * 1024 * 1024 });
+      return { applied: true };
+    } catch (err) {
+      try {
+        await git(["apply", "--reverse", "--check", patchFile], { maxBuffer: 20 * 1024 * 1024 });
+        return { applied: false, skippedReason: "patch already present in workspace" };
+      } catch {
+        throw err;
+      }
+    }
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 type PushBlockedCode = NonNullable<FinishBranchResult["pushBlockedCode"]>;
@@ -447,11 +479,19 @@ export async function prepareWorkBranch(
 
 export async function dirtyPaths(): Promise<string[]> {
   await ensureGitRepo();
-  const porcelain = await git(["status", "--porcelain"], { allowFail: true });
+  const { stdout } = await execFileP("git", ["status", "--porcelain"], {
+    cwd: sandboxRoot(),
+    maxBuffer: 10 * 1024 * 1024,
+    env: process.env,
+  }).catch(() => ({ stdout: "" }));
+  const porcelain = String(stdout);
   return porcelain.split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => line.slice(3).trim())
+    .filter((line) => line.trim())
+    .map((line) => {
+      const changedPath = line.slice(3).trim();
+      const renameIndex = changedPath.lastIndexOf(" -> ");
+      return renameIndex >= 0 ? changedPath.slice(renameIndex + 4).trim() : changedPath;
+    })
     .filter(Boolean);
 }
 
