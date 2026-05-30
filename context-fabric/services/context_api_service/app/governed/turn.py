@@ -357,6 +357,15 @@ async def run_turn(
     # designer's tool_policy / repo_access fields. None preserves
     # legacy behavior (DB seed verbatim).
     exec_policy: StageExecutionPolicy | None = None,
+    # M98 P3 (2026-05-29) — per-attempt code-context cache. run_stage()
+    # passes a dict that lives for exactly one attempt; run_turn() stores
+    # the built code_context_package markdown here keyed by its build
+    # inputs and reuses it across turns instead of re-AST-indexing the
+    # repo on every turn. None (the default, used by execute.py + tests)
+    # preserves the rebuild-every-turn behavior. Kept OUT of run_context
+    # on purpose: dispatch.py ships run_context to mcp-server on every
+    # tool call, so stashing multi-KB markdown there would bloat the wire.
+    code_context_cache: dict[str, Any] | None = None,
 ) -> TurnResult:
     """Run one LLM turn end-to-end:
 
@@ -437,37 +446,85 @@ async def run_turn(
                 run_context.get("capability_id")
                 or run_context.get("capabilityId")
             )
-        pkg, reason = await build_code_context_for_governed_turn(
-            task_text=goal_text,
-            capability_id=capability_id,
-            run_context=run_context,
+
+        # M98 P3 (2026-05-29) — reuse the package across turns within an
+        # attempt. build_code_context_for_governed_turn() POSTs to
+        # mcp-server's /mcp/code-context/build, which AST-indexes the repo
+        # (a 45s-budget round trip). Its only inputs — goal_text +
+        # capability_id — are constant for the life of an attempt, yet
+        # pre-M98 we rebuilt the package on EVERY turn, paying that index
+        # cost N times for an N-turn attempt. The package is an orientation
+        # map of the *existing* repo, not ground truth (the agent reads
+        # live file state through its own tools), so serving it after the
+        # agent's in-flight edits is acceptable — and matches the legacy
+        # /execute path, which built it once per attempt, not per turn.
+        # GOVERNED_CODE_CONTEXT_CACHE=0 forces the old rebuild-every-turn
+        # behavior for debugging.
+        cache_sig = [goal_text, capability_id or ""]
+        cache_enabled = (
+            code_context_cache is not None
+            and os.environ.get("GOVERNED_CODE_CONTEXT_CACHE", "1").lower()
+            not in ("0", "false", "no")
         )
-        if pkg is not None:
-            md = package_markdown(pkg)
-            if md:
-                vars["code_context_package"] = md
-                vars["code_context_package_id"] = pkg.get("context_package_id", "")
-                await emit_governed_event(
-                    kind="governed.code_context_attached",
-                    state=state,
-                    policy=policy,
-                    run_context=run_context,
-                    payload={
-                        "context_package_id": pkg.get("context_package_id"),
-                        "markdown_bytes": len(md),
-                    },
-                )
-        else:
-            # Surfaces the reason in audit-gov so operators see the
-            # degradation without it changing agent behavior.
+        cached = code_context_cache if cache_enabled else None
+
+        if (
+            isinstance(cached, dict)
+            and cached.get("sig") == cache_sig
+            and isinstance(cached.get("md"), str)
+            and cached.get("md")
+        ):
+            vars["code_context_package"] = cached["md"]
+            vars["code_context_package_id"] = cached.get("pkg_id", "")
             await emit_governed_event(
-                kind="governed.code_context_skipped",
+                kind="governed.code_context_cache_hit",
                 state=state,
                 policy=policy,
                 run_context=run_context,
-                payload={"reason": reason or "unknown"},
-                severity="warn",
+                payload={
+                    "context_package_id": cached.get("pkg_id"),
+                    "markdown_bytes": len(cached["md"]),
+                },
             )
+        else:
+            pkg, reason = await build_code_context_for_governed_turn(
+                task_text=goal_text,
+                capability_id=capability_id,
+                run_context=run_context,
+            )
+            if pkg is not None:
+                md = package_markdown(pkg)
+                if md:
+                    vars["code_context_package"] = md
+                    vars["code_context_package_id"] = pkg.get("context_package_id", "")
+                    # Cache successes only. A transient mcp-server failure
+                    # shouldn't poison the rest of the attempt — leaving the
+                    # cache empty lets the next turn retry the build.
+                    if cache_enabled and code_context_cache is not None:
+                        code_context_cache["sig"] = cache_sig
+                        code_context_cache["md"] = md
+                        code_context_cache["pkg_id"] = pkg.get("context_package_id", "")
+                    await emit_governed_event(
+                        kind="governed.code_context_attached",
+                        state=state,
+                        policy=policy,
+                        run_context=run_context,
+                        payload={
+                            "context_package_id": pkg.get("context_package_id"),
+                            "markdown_bytes": len(md),
+                        },
+                    )
+            else:
+                # Surfaces the reason in audit-gov so operators see the
+                # degradation without it changing agent behavior.
+                await emit_governed_event(
+                    kind="governed.code_context_skipped",
+                    state=state,
+                    policy=policy,
+                    run_context=run_context,
+                    payload={"reason": reason or "unknown"},
+                    severity="warn",
+                )
 
     # 2. Prompt — phase-specific if a binding exists, falls back via the
     # composer's ladder otherwise.

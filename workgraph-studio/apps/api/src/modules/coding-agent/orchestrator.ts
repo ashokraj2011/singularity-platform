@@ -600,6 +600,18 @@ export function adaptGovernedStageToCodingRun(
       // mark develop COMPLETED when finishWorkBranchInvoked is false.
       finishWorkBranchInvoked,
       finishWorkBranchResult,
+      // (2026-05-29) Git Push evidence chain. The governed loop commits on
+      // a real branch via finish_work_branch, but that branch was never
+      // surfaced to buildActualCodeChangeEvidence, so workspaceBranch landed
+      // empty and GitPushExecutor hit NO_COMMIT_TO_PUSH even with edits.
+      // Map the committed branch + sha + touched paths here so the artifact
+      // carries them through.
+      workspaceBranch: finishWorkBranchResult?.branch_name,
+      workspaceCommitSha: finishWorkBranchResult?.commit_sha,
+      changedPaths: Array.from(new Set([
+        ...(finishWorkBranchResult?.paths_committed ?? []),
+        ...codeChangeRecords.flatMap((r) => r.paths_touched ?? []),
+      ])),
       governed: {
         stopReason: resp.stop_reason,
         errorCode: resp.error_code,

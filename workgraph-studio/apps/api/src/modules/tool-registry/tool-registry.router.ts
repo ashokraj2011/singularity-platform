@@ -18,7 +18,7 @@
  * registry is not sensitive — operators inspecting the workflow
  * designer already have a session.
  */
-import { Router } from 'express'
+import { Router, type Router as ExpressRouter } from 'express'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 import manifest from './tools.json'
@@ -121,7 +121,7 @@ function effectiveToolsForPolicy(toolPolicy: string | undefined): string[] {
   return effectiveToolsForFilter({ toolPolicy })
 }
 
-export const toolRegistryRouter = Router()
+export const toolRegistryRouter: ExpressRouter = Router()
 
 // GET /api/tool-registry — full manifest.
 toolRegistryRouter.get('/', (_req, res) => {

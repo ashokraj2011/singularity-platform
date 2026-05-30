@@ -838,6 +838,61 @@ blueprintRouter.get('/sessions/:id', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// M98 P2 — Lightweight session status. The full GET /sessions/:id eagerly
+// loads snapshots + stageRuns + artifacts and reshapes the whole blob; a live
+// "is the current stage done yet?" poll only needs a handful of fields. The
+// workbench polls this (cheap — no relation includes) while a stage is RUNNING
+// and refetches the full session only when something actually changed
+// (session.updatedAt advances on every metadata write, so it's a reliable
+// single change signal).
+blueprintRouter.get('/sessions/:id/status', async (req, res, next) => {
+  try {
+    const session = await prisma.blueprintSession.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true,
+        goal: true,
+        status: true,
+        metadata: true,
+        updatedAt: true,
+        createdById: true,
+        architectAgentTemplateId: true,
+        developerAgentTemplateId: true,
+        qaAgentTemplateId: true,
+        workflowInstanceId: true,
+        phaseId: true,
+      },
+    })
+    if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    assertBlueprintAccess(session, req.user!.userId)
+
+    const loop = readLoopState(session)
+    const currentStageKey = loop.currentStageKey
+    const attemptsForStage = currentStageKey
+      ? loop.stageAttempts.filter(a => a.stageKey === currentStageKey)
+      : []
+    const latestAttempt = attemptsForStage.length
+      ? attemptsForStage.reduce((best, a) => (a.attemptNumber >= best.attemptNumber ? a : best))
+      : undefined
+
+    res.json({
+      id: session.id,
+      status: session.status,
+      currentStageKey,
+      updatedAt: session.updatedAt.toISOString(),
+      latestAttempt: latestAttempt
+        ? {
+            id: latestAttempt.id,
+            stageKey: latestAttempt.stageKey,
+            attemptNumber: latestAttempt.attemptNumber,
+            status: latestAttempt.status,
+            verdict: latestAttempt.verdict ?? null,
+          }
+        : null,
+    })
+  } catch (err) { next(err) }
+})
+
 blueprintRouter.patch('/sessions/:id/settings', validate(updateSessionSettingsSchema), async (req, res, next) => {
   try {
     const body = req.body as UpdateSessionSettingsInput
@@ -1058,7 +1113,7 @@ blueprintRouter.post('/sessions/:id/stages/:stageKey/cancel-attempt', async (req
     }
     await prisma.blueprintSession.update({
       where: { id: session.id },
-      data: { metadata: stateToMetadata(session, nextState) as Record<string, unknown> },
+      data: { metadata: stateToMetadata(session, nextState) as Prisma.InputJsonValue },
     })
     await recordBlueprintAudit(session.id, 'BlueprintStageAttemptCancelled', req.user!.userId, {
       capabilityId: session.capabilityId,
@@ -4910,6 +4965,27 @@ async function createLoopStageArtifacts(
   const ctx = snapshot ? buildSnapshotContext(snapshot) : emptySnapshotContext()
   const response = isUsefulModelResponse(result.finalResponse) ? result.finalResponse ?? '' : ''
   const executionFallback = buildExecutionFallbackMarkdown(result)
+  // (2026-05-29) Deterministic branch fallback for code-change evidence.
+  // The governed loop commits on the same branch run_context declared
+  // (wi/<code>, or the per-attempt workbench branch), but when its
+  // finish_work_branch result didn't surface a branch, the artifact would
+  // record an empty workspaceBranch and dead-end GitPushExecutor at
+  // NO_COMMIT_TO_PUSH. Recompute that branch name the same way run_context
+  // does so the evidence carries it. Mirrors the branch_name logic at the
+  // run_context build site above. Only resolved for code-change stages to
+  // avoid an extra WorkItem lookup on plan/design attempts.
+  const isCodeChangeStage =
+    (stage.expectedArtifacts ?? []).some(artifact => isCodeChangeArtifactKind(artifact.kind))
+    || normalizeAgentRole(stage.agentRole).includes('DEV')
+  let codeChangeEvidenceFallback: { workspaceBranch?: string } | undefined
+  if (isCodeChangeStage) {
+    const linkedWorkItem = await workflowWorkItemContext(session.workflowInstanceId)
+    codeChangeEvidenceFallback = {
+      workspaceBranch: linkedWorkItem.workItemCode
+        ? `wi/${linkedWorkItem.workItemCode}`
+        : workbenchBranchName(session, stage, attempt, linkedWorkItem),
+    }
+  }
   const commonPayload = {
     workflowInstanceId: session.workflowInstanceId ?? undefined,
     workflowNodeId: readLoopState(session).workflowNodeId ?? undefined,
@@ -4942,7 +5018,7 @@ async function createLoopStageArtifacts(
   if ((stage.expectedArtifacts ?? []).length > 0) {
     specs.push(...(stage.expectedArtifacts ?? []).map(artifact => {
       if (isCodeChangeArtifactKind(artifact.kind)) {
-        const evidence = buildActualCodeChangeEvidence(session, ctx, result)
+        const evidence = buildActualCodeChangeEvidence(session, ctx, result, codeChangeEvidenceFallback)
         return {
           kind: 'actual_code_change',
           title: `Actual MCP/git code-change evidence v${attempt.attemptNumber}`,
@@ -4987,7 +5063,7 @@ async function createLoopStageArtifacts(
       { kind: 'approved_spec_draft', title: `Spec draft v${attempt.attemptNumber}`, content: buildApprovedSpec(session, ctx, response) },
     )
   } else if (normalizeAgentRole(stage.agentRole).includes('DEV')) {
-    const codeChangeEvidence = buildActualCodeChangeEvidence(session, ctx, result)
+    const codeChangeEvidence = buildActualCodeChangeEvidence(session, ctx, result, codeChangeEvidenceFallback)
     specs.push(
       { kind: 'developer_task_pack', title: `Developer task pack v${attempt.attemptNumber}`, content: buildDeveloperTaskPack(session, ctx, response) },
       {
@@ -7757,15 +7833,25 @@ function isCodeChangeArtifactKind(kind: string) {
   return ['actual_code_change', 'code_change_evidence', 'simulated_code_change', 'simulated_code-change'].includes(kind)
 }
 
-function buildActualCodeChangeEvidence(session: ArtifactSession, ctx: SnapshotContext, result: ExecuteResponse): Required<CodeChangeEvidence> {
+function buildActualCodeChangeEvidence(
+  session: ArtifactSession,
+  ctx: SnapshotContext,
+  result: ExecuteResponse,
+  // (2026-05-29) Last-resort branch/root when the governed loop didn't
+  // surface them. The committed branch is deterministic (wi/<code> or the
+  // workbench branch name) and the workspace root is known by convention,
+  // so we can backfill rather than emit empty evidence that dead-ends
+  // GitPushExecutor at NO_COMMIT_TO_PUSH.
+  fallback?: { workspaceBranch?: string; workspaceRoot?: string },
+): Required<CodeChangeEvidence> {
   const codeChangeIds = (result.correlation?.codeChangeIds ?? []).filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
   const changedPaths = uniqueStrings([
     ...(result.workspace?.changedPaths ?? []),
     ...(result.correlation?.changedPaths ?? []),
   ].filter((path): path is string => typeof path === 'string' && path.trim().length > 0))
-  const workspaceBranch = result.workspace?.workspaceBranch ?? result.correlation?.workspaceBranch ?? ''
+  const workspaceBranch = result.workspace?.workspaceBranch ?? result.correlation?.workspaceBranch ?? fallback?.workspaceBranch ?? ''
   const workspaceCommitSha = result.workspace?.workspaceCommitSha ?? result.correlation?.workspaceCommitSha ?? ''
-  const workspaceRoot = result.workspace?.workspaceRoot ?? result.correlation?.workspaceRoot ?? ''
+  const workspaceRoot = result.workspace?.workspaceRoot ?? result.correlation?.workspaceRoot ?? fallback?.workspaceRoot ?? ''
   const astIndexStatus = result.workspace?.astIndexStatus ?? result.correlation?.astIndexStatus ?? ''
   const actual = codeChangeIds.length > 0
   const fallbackPaths = changedPaths.length ? changedPaths : inferChangePaths(ctx, session.goal)

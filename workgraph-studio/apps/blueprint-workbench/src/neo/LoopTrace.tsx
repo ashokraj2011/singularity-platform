@@ -11,7 +11,7 @@
  * every 2.5s; otherwise we refetch only when the user manually requests it.
  */
 import type React from 'react'
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type LoopTraceResponse, type LoopTraceStep, type LoopTraceToolInvocation, type LoopStage, type LoopAttemptStatus, type LoopTraceGovernanceEvent } from '../api'
 
@@ -37,6 +37,12 @@ export function LoopTrace({ sessionId, stage, attemptStatus }: LoopTraceProps) {
     enabled: Boolean(stageKey),
     refetchInterval: isLive ? POLL_MS_RUNNING : POLL_MS_IDLE,
     refetchOnWindowFocus: true,
+    // M98 P1 — treat a just-fetched trace as fresh until just before the
+    // next poll so remounts/focus don't trigger an extra fetch+render on
+    // top of the interval. React Query's default structural sharing keeps
+    // the data reference stable when bytes are identical, so the memoized
+    // render below skips work entirely on a no-change poll.
+    staleTime: (isLive ? POLL_MS_RUNNING : POLL_MS_IDLE) - 250,
   })
 
   const data = query.data
@@ -61,6 +67,16 @@ export function LoopTrace({ sessionId, stage, attemptStatus }: LoopTraceProps) {
 
   // Identify the current/most-recent phase for ribbon highlighting.
   const lastPhase = data?.steps[data.steps.length - 1]?.phase ?? null
+
+  // M98 P1 — rebuild the interleaved step/event node list only when the
+  // underlying arrays actually change reference. Paired with React Query
+  // structural sharing, a no-change poll reuses the same `steps`/
+  // `governanceEvents` references, so this memo (and the per-card React.memo
+  // below) keep per-poll render work at O(new steps) instead of O(all steps).
+  const interleaved = useMemo(
+    () => (data ? renderInterleaved(data.steps, data.governanceEvents ?? []) : null),
+    [data?.steps, data?.governanceEvents],
+  )
 
   if (!stageKey) {
     return <div className="loop-trace-empty">Select a stage to view its agent loop.</div>
@@ -122,7 +138,7 @@ export function LoopTrace({ sessionId, stage, attemptStatus }: LoopTraceProps) {
             each gov event to its preceding step. Events with
             stepIndex=null (rare — fired before any step) render at the
             very top. */}
-        {data && renderInterleaved(data.steps, data.governanceEvents ?? [])}
+        {interleaved}
       </section>
 
       {data && data.summary.changedPaths.length > 0 && (
@@ -146,7 +162,26 @@ function SummaryPill({ label, value, tone }: { label: string; value: string; ton
   )
 }
 
-function StepCard({ step }: { step: LoopTraceStep }) {
+// M98 P1 — a completed step never mutates; the only post-hoc changes are
+// on the newest in-flight step (tool results landing, finishReason
+// resolving). This compact signature captures exactly those mutation
+// signals so the memo comparator re-renders the live step while skipping
+// every settled card on each 2.5s poll.
+function stepSignature(s: LoopTraceStep): string {
+  return [
+    s.llmCallId,
+    s.stepIndex,
+    s.finishReason,
+    s.error ? 1 : 0,
+    s.responseText?.length ?? 0,
+    s.thinkingBlocks?.length ?? 0,
+    s.responseToolCalls.length,
+    s.toolInvocations.length,
+    s.toolInvocations.map((t) => (t.success ? '1' : '0')).join(''),
+  ].join('|')
+}
+
+const StepCard = memo(function StepCard({ step }: { step: LoopTraceStep }) {
   const [expanded, setExpanded] = useState(false)
   const phase = step.phase ? prettyPhaseName(step.phase) : '—'
   const time = new Date(step.timestamp).toLocaleTimeString()
@@ -256,7 +291,7 @@ function StepCard({ step }: { step: LoopTraceStep }) {
       )}
     </article>
   )
-}
+}, (prev, next) => stepSignature(prev.step) === stepSignature(next.step))
 
 function ToolInvocationBlock({ tool, expanded }: { tool: LoopTraceToolInvocation; expanded: boolean }) {
   const outputStr = useMemo(() => {
@@ -328,7 +363,7 @@ function renderInterleaved(
 // terse details. Color-coded so an operator scanning the trace can
 // spot validator rejections (red), budget warnings (amber), and
 // successful phase completions (green) at a glance.
-function GovernanceEventBanner({ evt }: { evt: LoopTraceGovernanceEvent }) {
+const GovernanceEventBanner = memo(function GovernanceEventBanner({ evt }: { evt: LoopTraceGovernanceEvent }) {
   const { tone, icon, headline } = govEventDisplay(evt)
   const time = new Date(evt.timestamp).toLocaleTimeString()
   return (
@@ -353,7 +388,13 @@ function GovernanceEventBanner({ evt }: { evt: LoopTraceGovernanceEvent }) {
       <span style={{ marginLeft: 'auto', opacity: 0.55, fontSize: 11 }}>{time}</span>
     </div>
   )
-}
+}, (prev, next) =>
+  // Governance events are immutable once emitted; (timestamp, kind) is
+  // effectively a unique identity, so a no-change poll skips re-render.
+  prev.evt.timestamp === next.evt.timestamp
+  && prev.evt.kind === next.evt.kind
+  && prev.evt.stepIndex === next.evt.stepIndex
+  && prev.evt.phase === next.evt.phase)
 
 function govEventDisplay(
   evt: LoopTraceGovernanceEvent,

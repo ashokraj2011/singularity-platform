@@ -36,6 +36,7 @@ from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
 from .stage_execution_policy import StageExecutionPolicy, apply_execution_policy
 from .prompt_resolver import PromptNotFoundError
 from .turn import SUBMIT_PHASE_OUTPUT, TurnResult, run_turn
+from .verify_synthesis import SyntheticVerifierResult, synthesize_verifier_run
 
 log = logging.getLogger(__name__)
 
@@ -62,8 +63,14 @@ class StageRunResult:
     final_state: PhaseState
     turns: list[dict[str, Any]] = field(default_factory=list)
     # Why we stopped looping. One of: "FINALIZED", "APPROVAL_PENDING",
-    # "NOT_ACTIONABLE", "VALIDATION_BLOCKED", "POLICY_BLOCKED", "MAX_TURNS",
-    # "LLM_ERROR".
+    # "NOT_ACTIONABLE", "VALIDATION_BLOCKED", "POLICY_BLOCKED",
+    # "PHASE_BUDGET_EXCEEDED", "MAX_TURNS", "LLM_ERROR", and the M96 salvage
+    # outcomes "SALVAGED_VERIFY_FAILED" / "SALVAGED_VERIFY_UNAVAILABLE" (the
+    # orchestrator recovered real edits a stuck mutating phase produced and
+    # ran the verifier; a passing verifier instead yields "APPROVAL_PENDING").
+    # Only FINALIZED / APPROVAL_PENDING / NOT_ACTIONABLE map to COMPLETED in
+    # workgraph-api; the SALVAGED_* reasons remain FAILED but preserve the
+    # edits + verifier evidence for the next attempt / human review.
     stop_reason: str = ""
     # When stop_reason == "LLM_ERROR", carries the gateway's error_code.
     error_code: str | None = None
@@ -964,6 +971,341 @@ def _is_transient_llm_error(exc: LLMGatewayError) -> bool:
     return exc.upstream_status in {429, 500, 502, 503, 504}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# M96 — salvage path for a productive-but-unpackaged mutating phase.
+#
+# Failure class (repro: develop attempt 3f8db8d7, work item WRK-DCA8D): the
+# agent dispatched real, correct mutating tools (apply_patch / replace_text /
+# …) — `state.produced_code_changes` is populated with confirmed
+# code_change_ids — but never submitted a VALID EditReceipt, so it never
+# advanced out of ACT. Every existing guard (validation-retry budget, stagnant
+# detector, narrate-without-act bounce, per-phase turn budget) is a NUDGE that,
+# once exhausted, HALTS the stage FAILED and DISCARDS the correct edits. The
+# operator then re-runs from scratch and the agent re-derives the same diff.
+#
+# Salvage closes that hole honestly. When a mutating phase is about to halt
+# FAILED but the agent demonstrably produced code changes, the orchestrator:
+#   (a) synthesizes the EditReceipt the agent should have submitted, from the
+#       OBSERVED tool outcomes (state.produced_code_changes — the same
+#       provenance the loop.py ACT→VERIFY check trusts);
+#   (b) runs the REAL verifier on those edits (synthesize_verifier_run — the
+#       same external oracle the happy path uses, never fabricated);
+#   (c) routes the verified result forward:
+#         • verifier PASSED      → advance to SELF_REVIEW with
+#                                  recommended_for_approval=True →
+#                                  stop_reason APPROVAL_PENDING. The human gate
+#                                  still opens; we NEVER auto-finalize.
+#         • verifier FAILED      → stay in VERIFY, stop_reason
+#                                  SALVAGED_VERIFY_FAILED (FAILED status, but
+#                                  the edits + verifier evidence are persisted
+#                                  for the next attempt / human review).
+#         • verifier UNAVAILABLE → stay in VERIFY, stop_reason
+#                                  SALVAGED_VERIFY_UNAVAILABLE.
+#
+# Everything synthesized here is tagged `salvaged: true` so the audit trail and
+# Workbench never pretend the AGENT packaged it — the ORCHESTRATOR did, from
+# real observed outcomes. New stop_reasons default to FAILED in workgraph-api's
+# adapter (only FINALIZED/APPROVAL_PENDING/NOT_ACTIONABLE map to COMPLETED), so
+# a salvaged-but-unverified stage can never masquerade as a clean pass.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _salvageable_changed_paths(state: PhaseState) -> list[str]:
+    """Normalised file paths that carry at least one bound code_change_id.
+
+    `produced_code_changes` maps normalised path → list[code_change_id],
+    accumulated by governed_step's dispatch wrapper on every SUCCESSFUL
+    mutating-tool outcome. A non-empty value is hard provenance that a real
+    edit landed against that path — exactly the evidence a hand-written
+    EditReceipt would need to pass the loop.py ACT→VERIFY provenance check.
+    """
+    out: list[str] = []
+    for path, change_ids in (state.produced_code_changes or {}).items():
+        if not isinstance(path, str) or not path.strip():
+            continue
+        if change_ids:  # ≥1 bound code_change_id = confirmed mutation
+            out.append(path.strip())
+    return out
+
+
+def _synthesize_edit_receipt(paths: list[str]) -> dict[str, Any]:
+    """Build the EditReceipt the agent SHOULD have submitted, from observed
+    mutating-tool outcomes. Shape matches receipts.EditReceipt (edits[]
+    min_length=1; edit_type ∈ the allowed enum)."""
+    return {
+        "kind": "edit_receipt",
+        "edits": [
+            {
+                "file": p,
+                "edit_type": "apply_patch",
+                "reason": (
+                    "Salvaged by the orchestrator from observed mutating-tool "
+                    "outcomes — the agent edited this file (confirmed "
+                    "code_change_id provenance) but did not package a valid "
+                    "EditReceipt before its budget was exhausted."
+                ),
+            }
+            for p in paths
+        ],
+        "skipped_targets": [],
+        "salvaged": True,
+        "summary": (
+            f"Orchestrator-salvaged EditReceipt covering {len(paths)} file(s) "
+            "with confirmed code-change provenance."
+        ),
+    }
+
+
+def _synthesize_verification_receipt(synth: SyntheticVerifierResult) -> dict[str, Any]:
+    """Map a SyntheticVerifierResult onto a VerificationReceipt dict
+    (receipts.VerificationReceipt → .verification_result).
+
+      ran + tool_success   → status=passed  (exit_code forced to 0 so the
+                              VerificationResultPayload validator's
+                              "passed ⇒ all exit codes 0" rule holds)
+      ran + not tool_success → status=failed
+      skipped / unavailable  → status=unavailable (reason mandatory)
+    commands_run is non-empty for passed/failed (validator requires it).
+    """
+    if synth.kind == "ran":
+        passed = bool(synth.tool_success)
+        command_result = {
+            "command": synth.command or "(salvaged verifier command)",
+            "exit_code": 0 if passed else (
+                synth.exit_code if isinstance(synth.exit_code, int) and synth.exit_code != 0 else 1
+            ),
+            "duration_ms": synth.duration_ms or 0,
+            "stdout_summary": synth.stdout_summary or "",
+            "stderr_summary": synth.stderr_summary or "",
+        }
+        return {
+            "kind": "verification_receipt",
+            "verification_result": {
+                "status": "passed" if passed else "failed",
+                "commands_run": [command_result],
+                "salvaged": True,
+            },
+        }
+    reason = synth.reason or "orchestrator could not run a verifier on the salvaged edits"
+    return {
+        "kind": "verification_receipt",
+        "verification_result": {
+            "status": "unavailable",
+            "commands_run": [],
+            "reason": reason,
+            "salvaged": True,
+        },
+    }
+
+
+def _synthesize_self_review_receipt(
+    *, passed: bool, paths: list[str]
+) -> dict[str, Any]:
+    """Build a SelfReviewReceipt dict. recommended_for_approval mirrors the
+    verifier verdict; acceptance_criteria_check is left empty so the
+    SelfReviewReceipt validator's not_met/uncertain guard can't trip — the
+    HUMAN approval gate (which this opens) is the binding decision."""
+    return {
+        "kind": "self_review_receipt",
+        "summary": (
+            "Orchestrator-salvaged self review. The agent produced verified code "
+            "changes but did not complete SELF_REVIEW within budget; the "
+            "orchestrator packaged the observed edits and the verifier result for "
+            "human approval."
+        ),
+        "acceptance_criteria_check": [],
+        "risk_summary": {
+            "risk_level": "medium",
+            "risks": [
+                "Receipt synthesized by the orchestrator rather than the agent — "
+                "review the diff before approving."
+            ],
+            "rollback_notes": None,
+        },
+        "diff_summary": {
+            "files_changed": list(paths),
+            "lines_added": 0,
+            "lines_deleted": 0,
+            "notable_changes": [],
+        },
+        "verification_summary": (
+            "Verifier passed on the salvaged edits."
+            if passed
+            else "Verifier did not pass on the salvaged edits."
+        ),
+        "recommended_for_approval": bool(passed),
+        "salvaged": True,
+    }
+
+
+def _synthetic_verifier_turn(
+    synth: SyntheticVerifierResult,
+    *,
+    from_phase: str,
+    turn_idx: int,
+) -> dict[str, Any]:
+    """A turns[] entry carrying the salvaged verifier outcome in the SAME
+    tool_outcome envelope shape workgraph-api's adapter harvests verification
+    receipts from (orchestrator.ts: kind=='verification_result' OR
+    tool_name=='run_test'). Marked `salvaged`+`synthetic` so audit/UI can
+    distinguish it from an agent-dispatched run_test."""
+    ran = synth.kind == "ran"
+    passed = bool(ran and synth.tool_success)
+    result_envelope: dict[str, Any] = {
+        "kind": "verification_result",
+        "id": synth.tool_invocation_id,
+        "command": synth.command,
+        "passed": passed,
+        "exit_code": synth.exit_code if isinstance(synth.exit_code, int) else (0 if passed else 1),
+        "unavailable": not ran,
+        "stdout_excerpt": (synth.stdout_summary or "")[:4000],
+        "stderr_excerpt": (synth.stderr_summary or "")[:4000],
+        "salvaged": True,
+        "synthetic": True,
+        "reason": synth.reason,
+    }
+    outcome = {
+        "tool_name": "run_test",
+        "phase": Phase.VERIFY.value,
+        "allowed": True,
+        "refusal_reason": None,
+        "allowed_tools": None,
+        "result": result_envelope,
+        "duration_ms": synth.duration_ms,
+        "tool_invocation_id": synth.tool_invocation_id,
+        "tool_success": passed,
+        "tool_error": None if ran else (synth.reason or "verifier unavailable"),
+        "dispatch_error": None,
+    }
+    return {
+        "turn_index": turn_idx,
+        "from_phase": from_phase,
+        "to_phase": Phase.VERIFY.value,
+        "phase_advanced": True,
+        "tool_outcomes": [outcome],
+        "validation_error": None,
+        "llm": {},
+        "prompt": None,
+        "salvaged": True,
+    }
+
+
+async def _salvage_mutating_phase(
+    result: StageRunResult,
+    state: PhaseState,
+    *,
+    stage_policy: StagePolicy | None,
+    run_context: dict[str, Any] | None,
+    bearer: str | None,
+    turn_idx: int,
+    trigger: str,
+) -> bool:
+    """M96 — last-resort salvage for a mutating phase about to halt FAILED.
+
+    Returns True when the salvage fired — the caller MUST `return result`
+    immediately (stop_reason + final_state are already set). Returns False when
+    there's nothing to salvage (current phase isn't mutating, or no observed
+    code changes, or the forced transition is refused), in which case the
+    caller falls through to its original FAILED halt.
+    """
+    if state.current_phase not in _MUTATING_PHASES:
+        return False
+    paths = _salvageable_changed_paths(state)
+    if not paths:
+        return False
+
+    from_phase = state.current_phase.value
+    edit_receipt = _synthesize_edit_receipt(paths)
+
+    # Run the REAL verifier on the observed edits — same external oracle the
+    # happy path uses. Documented as never-raising; the except is defensive.
+    try:
+        synth = await synthesize_verifier_run(
+            edit_receipt,
+            work_item_id=(run_context or {}).get("work_item_id")
+            or (run_context or {}).get("workItemId"),
+            workspace_id=(run_context or {}).get("workspace_id")
+            or (run_context or {}).get("workspaceId"),
+            run_context=run_context,
+            bearer=bearer,
+        )
+    except Exception as exc:  # pragma: no cover — synthesize never raises
+        log.warning("salvage: verifier synthesis raised (defensive): %s", exc)
+        synth = SyntheticVerifierResult(
+            kind="unavailable", reason=f"orchestrator error: {exc!s}"
+        )
+
+    ran = synth.kind == "ran"
+    passed = bool(ran and synth.tool_success)
+
+    # 1. ACT/REPAIR → VERIFY with the salvaged EditReceipt.
+    try:
+        state = advance_phase(state, Phase.VERIFY, receipt=edit_receipt)
+    except ValueError as exc:
+        # Transition refused (e.g. repair-attempt cap). Can't salvage cleanly;
+        # leave the caller's FAILED halt in place.
+        log.warning("salvage: %s→VERIFY refused: %s", from_phase, exc)
+        return False
+
+    # 2. Record the synthetic verifier turn so workgraph-api harvests the
+    #    verification receipt from the tool_outcome stream.
+    result.turns.append(
+        _synthetic_verifier_turn(synth, from_phase=Phase.VERIFY.value, turn_idx=turn_idx + 1)
+    )
+    result.total_tool_calls += 1
+
+    verification_receipt = _synthesize_verification_receipt(synth)
+
+    if passed:
+        # 3a. VERIFY → SELF_REVIEW (verification receipt), then SELF_REVIEW
+        #     self-loop with recommended_for_approval=True so approval_pending
+        #     flips and the human gate opens. We never auto-advance to FINALIZE.
+        state = advance_phase(state, Phase.SELF_REVIEW, receipt=verification_receipt)
+        state = advance_phase(
+            state,
+            Phase.SELF_REVIEW,
+            receipt=_synthesize_self_review_receipt(passed=True, paths=paths),
+        )
+        result.stop_reason = "APPROVAL_PENDING"
+        salvage_outcome = "approval_pending"
+    else:
+        # 3b. Verifier didn't pass — stay in VERIFY, persist the evidence.
+        #     Distinct stop_reason so operators see WHY (still FAILED status in
+        #     workgraph-api, but the edits + verifier output are saved).
+        state = advance_phase(state, Phase.VERIFY, receipt=verification_receipt)
+        if ran:
+            result.stop_reason = "SALVAGED_VERIFY_FAILED"
+            salvage_outcome = "verify_failed"
+        else:
+            result.stop_reason = "SALVAGED_VERIFY_UNAVAILABLE"
+            salvage_outcome = "verify_unavailable"
+
+    result.final_state = state
+
+    await emit_governed_event(
+        kind="governed.phase_salvaged",
+        state=state,
+        policy=stage_policy,
+        run_context=run_context,
+        payload={
+            "trigger": trigger,
+            "from_phase": from_phase,
+            "salvaged_paths": paths,
+            "verifier_kind": synth.kind,
+            "verifier_passed": passed,
+            "outcome": salvage_outcome,
+            "stop_reason": result.stop_reason,
+            "turn_idx": turn_idx,
+        },
+        severity="warn",
+    )
+    log.warning(
+        "phase salvaged: trigger=%s from_phase=%s paths=%d verifier=%s passed=%s → %s",
+        trigger, from_phase, len(paths), synth.kind, passed, result.stop_reason,
+    )
+    return True
+
+
 async def run_stage(
     *,
     state: PhaseState,
@@ -1122,6 +1464,24 @@ async def run_stage(
     _VALIDATION_RETRY_BUDGET = 2
     consecutive_validation_errors = 0
 
+    # M96.2 — cumulative (non-consecutive) per-phase validation-error counter.
+    #
+    # The consecutive counter above resets on ANY non-validation step, which
+    # is the right call for a transient shape error in an otherwise-healthy
+    # session. But it has a blind spot: an agent that alternates
+    # bad-receipt → tool-call → bad-receipt → tool-call never trips the
+    # consecutive budget (each validation error is "isolated" by the
+    # intervening tool call) yet makes no real progress toward a valid
+    # receipt. Repro: develop attempt 3f8db8d7 spent 29 turns in ACT with
+    # repeated EditReceipt validation failures interspersed with reads/edits,
+    # never converging. The cumulative counter catches that pattern: once a
+    # SINGLE phase has accumulated more than _VALIDATION_CUMULATIVE_BUDGET
+    # validation errors (across the whole visit, consecutive or not), treat
+    # it as blocked. Reset on phase advance (alongside phase_turn_counts) so a
+    # legitimate re-entry gets a fresh budget.
+    _VALIDATION_CUMULATIVE_BUDGET = 4
+    validation_errors_in_phase: dict[str, int] = {}
+
     # M86 — per-phase turn budget. Tracks how many turns the model
     # has spent in each phase since the last advance. Reset when
     # the phase advances; we want the cap to apply per visit, not
@@ -1131,6 +1491,14 @@ async def run_stage(
     phase_budget_warned: set[str] = set()  # phases where we've already
                                             # injected the mid-cap nudge,
                                             # to avoid spamming every turn.
+
+    # M98 P3 — per-attempt code-context cache. Lives for exactly this
+    # run_stage() call (one attempt) and is GC'd when it returns. run_turn()
+    # builds the AST-indexed code_context_package on the first turn that
+    # needs it and reuses the rendered markdown for the remaining turns
+    # instead of re-indexing the repo every turn. See turn.py for the
+    # cache shape + the GOVERNED_CODE_CONTEXT_CACHE opt-out.
+    code_context_cache: dict[str, Any] = {}
 
     for turn_idx in range(max_turns):
         last_llm_error: LLMGatewayError | None = None
@@ -1147,6 +1515,7 @@ async def run_stage(
                     bearer=bearer,
                     thinking_budget=thinking_budget,
                     exec_policy=exec_policy,
+                    code_context_cache=code_context_cache,
                 )
                 last_llm_error = None
                 break
@@ -1255,8 +1624,33 @@ async def run_stage(
 
         if turn.step.validation_error and not turn.step.phase_advanced:
             consecutive_validation_errors += 1
-            if consecutive_validation_errors > _VALIDATION_RETRY_BUDGET:
-                # Retries exhausted. Original safety property preserved:
+            # M96.2 — cumulative per-phase counter (resets only on advance).
+            _vphase = state.current_phase.value
+            validation_errors_in_phase[_vphase] = (
+                validation_errors_in_phase.get(_vphase, 0) + 1
+            )
+            cumulative_validation_errors = validation_errors_in_phase[_vphase]
+            if (
+                consecutive_validation_errors > _VALIDATION_RETRY_BUDGET
+                or cumulative_validation_errors > _VALIDATION_CUMULATIVE_BUDGET
+            ):
+                # Retries exhausted (consecutive) OR the phase has churned
+                # through too many validation errors overall (M96.2). Before
+                # halting FAILED, try to salvage real edits the agent produced
+                # but never packaged into a valid receipt (M96.1). The salvage
+                # runs the real verifier and routes the outcome forward; if it
+                # fires, stop_reason + final_state are already set.
+                if await _salvage_mutating_phase(
+                    result,
+                    state,
+                    stage_policy=stage_policy,
+                    run_context=run_context,
+                    bearer=bearer,
+                    turn_idx=turn_idx,
+                    trigger="validation_blocked",
+                ):
+                    return result
+                # Nothing to salvage. Original safety property preserved:
                 # surface to the caller rather than burn the entire turn
                 # budget on a stuck LLM.
                 result.stop_reason = "VALIDATION_BLOCKED"
@@ -1272,9 +1666,12 @@ async def run_stage(
             # zeroes when the next turn validates.
             continue
         else:
-            # Reset the counter on any non-validation step. A single
-            # bad receipt in the middle of an otherwise-healthy session
-            # shouldn't be remembered forever.
+            # Reset the consecutive counter on any non-validation step. A
+            # single bad receipt in the middle of an otherwise-healthy
+            # session shouldn't be remembered forever. The CUMULATIVE
+            # per-phase counter is NOT reset here — it only resets on a
+            # phase advance (M96.2), so an alternating
+            # bad-receipt → tool-call pattern still trips eventually.
             consecutive_validation_errors = 0
 
         # M74 Phase 1D — stagnant-phase guard with novelty exception.
@@ -1290,6 +1687,19 @@ async def run_stage(
         else:
             stagnant_turns += 1
             if stagnant_turns >= _STAGNANT_THRESHOLD:
+                # M96.1 — before declaring the phase stuck, salvage any real
+                # edits the agent produced. A stuck mutating phase that already
+                # mutated files is exactly the discard-correct-work case.
+                if await _salvage_mutating_phase(
+                    result,
+                    state,
+                    stage_policy=stage_policy,
+                    run_context=run_context,
+                    bearer=bearer,
+                    turn_idx=turn_idx,
+                    trigger="policy_blocked",
+                ):
+                    return result
                 result.stop_reason = "POLICY_BLOCKED"
                 return result
 
@@ -1345,6 +1755,10 @@ async def run_stage(
             # NEW phase at 1 (this turn counts toward it).
             phase_turn_counts[turn.step.from_phase] = 0
             phase_budget_warned.discard(turn.step.from_phase)
+            # M96.2 — the cumulative validation-error counter is per-phase-visit;
+            # clear the OLD phase so a legit re-entry (e.g. REPAIR→VERIFY→REPAIR)
+            # gets a fresh budget rather than inheriting stale churn.
+            validation_errors_in_phase[turn.step.from_phase] = 0
             cur_phase = state.current_phase.value
             phase_turn_counts[cur_phase] = 1
         else:
@@ -1386,10 +1800,36 @@ async def run_stage(
                     "phase budget halt: phase=%s turns=%d cap=%d",
                     cur_phase, turns_in_phase, budget * 2,
                 )
+                # M96.1 — salvage real edits before the hard budget halt.
+                if await _salvage_mutating_phase(
+                    result,
+                    state,
+                    stage_policy=stage_policy,
+                    run_context=run_context,
+                    bearer=bearer,
+                    turn_idx=turn_idx,
+                    trigger="phase_budget_exceeded",
+                ):
+                    return result
                 result.stop_reason = "PHASE_BUDGET_EXCEEDED"
                 return result
 
     if await _try_architect_self_review_fallback(result, state, run_context):
+        return result
+
+    # M96.1 — the loop ran out of turns. If the agent produced real edits in a
+    # mutating phase but never packaged them, salvage rather than discard. The
+    # architect read-only fallback above is mutually exclusive (read-only stages
+    # never enter ACT/REPAIR), so the order is safe.
+    if await _salvage_mutating_phase(
+        result,
+        state,
+        stage_policy=stage_policy,
+        run_context=run_context,
+        bearer=bearer,
+        turn_idx=turn_idx,
+        trigger="max_turns",
+    ):
         return result
 
     result.stop_reason = "MAX_TURNS"

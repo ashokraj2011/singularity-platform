@@ -404,6 +404,48 @@ function filterPendingAdvances(context: Record<string, unknown>, resetNodeIds: s
   else delete context._pendingAdvance
 }
 
+// M98 — Degrade an unexpected server-node executor error into a recoverable
+// BLOCKED node + PAUSED instance instead of letting it bubble up and strand the
+// run with no clear recovery path. Used for GIT_PUSH: the local commit is
+// already durable, so a push/transport failure must never be terminal. The
+// operator can fix the cause and retry, or use force-complete to advance.
+// (GitPushExecutor already self-blocks on classified push errors; this catches
+// the *unexpected* throws it can't classify.)
+async function degradeNodeToBlocked(
+  instance: WorkflowInstance,
+  node: WorkflowNode,
+  err: unknown,
+  actorId?: string,
+): Promise<void> {
+  const reason = err instanceof Error ? err.message : String(err)
+  await prisma.$transaction([
+    prisma.workflowNode.update({
+      where: { id: node.id },
+      data: { status: 'BLOCKED', completedAt: new Date() },
+    }),
+    prisma.workflowInstance.update({
+      where: { id: instance.id },
+      data: { status: 'PAUSED' },
+    }),
+    prisma.workflowMutation.create({
+      data: {
+        instanceId: instance.id,
+        nodeId: node.id,
+        mutationType: 'NODE_SOFT_BLOCKED',
+        beforeState: { status: node.status } as Prisma.InputJsonValue,
+        afterState: { status: 'BLOCKED', reason } as Prisma.InputJsonValue,
+        performedById: actorId,
+      },
+    }),
+  ])
+  await logEvent('WorkflowNodeSoftBlocked', 'WorkflowNode', node.id, actorId, {
+    instanceId: instance.id,
+    nodeType: node.nodeType,
+    reason,
+  })
+  await publishOutbox('WorkflowNode', node.id, 'NodeSoftBlocked', { instanceId: instance.id, nodeId: node.id })
+}
+
 function executableNodeType(node: WorkflowNode): string {
   if (node.nodeType !== 'CUSTOM') return node.nodeType
   const cfg = (node.config ?? {}) as Record<string, unknown>
@@ -445,8 +487,18 @@ async function executeServerNode(
       await activateToolRequest(node, instance)
       break
     case 'GIT_PUSH': {
-      const result = await activateGitPush(node, instance, actorId)
-      if (result.pushed) await advance(instance.id, node.id, result.output, actorId)
+      // M98 — never let a git push problem hard-fail the run. activateGitPush
+      // already self-blocks on classified push errors (BLOCKED + PAUSED); this
+      // guard catches any *unexpected* throw and degrades it the same way so a
+      // transport/credential hiccup is always recoverable (retry or
+      // "Complete & advance"), never a stranded run.
+      let pushResult: Awaited<ReturnType<typeof activateGitPush>> | null = null
+      try {
+        pushResult = await activateGitPush(node, instance, actorId)
+      } catch (err) {
+        await degradeNodeToBlocked(instance, node, err, actorId)
+      }
+      if (pushResult?.pushed) await advance(instance.id, node.id, pushResult.output, actorId)
       break
     }
     case 'POLICY_CHECK': {
@@ -600,6 +652,99 @@ export async function restartNode(
   await scheduleDeadlines(refreshedNode)
 
   return { restartedNodeId: nodeId, resetNodeIds }
+}
+
+/**
+ * M98 — Operator escape hatch: force a node to COMPLETED with a recorded
+ * comment, then advance the workflow downstream.
+ *
+ * Unlike restartNode() (which re-runs the node) this accepts the node as DONE
+ * as-is and moves on. It is the manual override for a run that got stuck
+ * because a node FAILED / BLOCKED (e.g. a GitHub push the operator finished by
+ * hand, or a stage that can't proceed automatically) so the workflow can be
+ * advanced without re-executing the node.
+ *
+ * Works on any non-COMPLETED node regardless of WHY the run is stuck. The key
+ * move is flipping the instance back to ACTIVE first: advance() queues (rather
+ * than runs) when the instance is not ACTIVE, so without this a force-complete
+ * on a FAILED/PAUSED instance would silently do nothing downstream.
+ *
+ * The operator comment is captured in a dedicated NODE_MANUAL_COMPLETION
+ * WorkflowMutation (audit trail) and merged into the run context under
+ * _manualCompletions so downstream stages can see the human note.
+ */
+export async function forceCompleteNode(
+  instanceId: string,
+  nodeId: string,
+  comment: string,
+  output: Record<string, unknown> = {},
+  actorId?: string,
+): Promise<void> {
+  const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
+  const node = await prisma.workflowNode.findFirst({ where: { id: nodeId, instanceId } })
+  if (!node) throw new ValidationError('Workflow node was not found in this run')
+  if (node.status === 'COMPLETED') {
+    throw new ValidationError('This node is already completed')
+  }
+
+  const note = comment.trim()
+  if (!note) throw new ValidationError('A comment is required to manually complete a node')
+
+  // Clear stuck/blocked markers and re-open the instance so advance() runs
+  // inline rather than queuing the transition (advance() gates on ACTIVE).
+  const baseContext = clearBlockedContext((instance.context ?? {}) as Record<string, unknown>)
+  const priorCompletions = Array.isArray(baseContext._manualCompletions)
+    ? (baseContext._manualCompletions as unknown[])
+    : []
+  const manualEntry = {
+    nodeId,
+    nodeLabel: node.label,
+    comment: note,
+    actorId: actorId ?? null,
+    previousStatus: node.status,
+    at: new Date().toISOString(),
+  }
+  const nextContext: Record<string, unknown> = {
+    ...baseContext,
+    _manualCompletions: [...priorCompletions, manualEntry],
+  }
+
+  await prisma.$transaction([
+    // Drop any in-flight client/desktop execution claim so a stale runner
+    // can't later report status for a node we're closing out manually.
+    prisma.pendingExecution.deleteMany({ where: { instanceId, nodeId } }),
+    prisma.workflowInstance.update({
+      where: { id: instanceId },
+      data: {
+        status: 'ACTIVE',
+        completedAt: null,
+        context: nextContext as unknown as Prisma.InputJsonValue,
+      },
+    }),
+    prisma.workflowMutation.create({
+      data: {
+        instanceId,
+        nodeId,
+        mutationType: 'NODE_MANUAL_COMPLETION',
+        beforeState: { status: node.status, instanceStatus: instance.status } as Prisma.InputJsonValue,
+        afterState: { status: 'COMPLETED', comment: note } as Prisma.InputJsonValue,
+        performedById: actorId,
+      },
+    }),
+  ])
+
+  await logEvent('WorkflowNodeManuallyCompleted', 'WorkflowNode', nodeId, actorId, {
+    instanceId,
+    previousStatus: node.status,
+    instanceStatusBefore: instance.status,
+    comment: note,
+  })
+  await publishOutbox('WorkflowNode', nodeId, 'NodeManuallyCompleted', { instanceId, nodeId })
+
+  // advance() reads the instance fresh — now ACTIVE — so it runs inline:
+  // marks the node COMPLETED, merges output, fires on_complete attachments,
+  // activates downstream nodes, and completes the instance if this was terminal.
+  await advance(instanceId, nodeId, { ...output, _manualCompletion: manualEntry }, actorId)
 }
 
 /**

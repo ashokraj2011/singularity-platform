@@ -107,6 +107,7 @@ import {
 } from './api'
 import { AppSwitcher } from './components/AppSwitcher'
 import { LoopRail } from './neo/LoopRail'
+import { CopilotExportButton } from './neo/CopilotExportButton'
 import { LiveCockpit } from './neo/LiveCockpit'
 import { FocusPane, computeFocusIntent, type FocusAction } from './neo/FocusPane'
 import { NeoNotifier } from './neo/NeoNotifier'
@@ -238,6 +239,50 @@ export default function App() {
     setActiveSession(session)
     void queryClient.invalidateQueries({ queryKey: ['blueprintSessions'] })
   }
+
+  // M98 P2 — Live status refresh. The session list is fetched once (no
+  // refetchInterval), so when the backend agent advances a stage on its own
+  // the workbench shows stale status until a manual refresh. While the active
+  // session has a stage in flight, poll the cheap status endpoint; when the
+  // session's `updatedAt` advances we know something changed and refresh — the
+  // sidebar list (which re-derives the active session for list-backed sessions)
+  // plus, for locally-created sessions the selection effect pins, the full
+  // session payload. This avoids re-loading the whole session blob every poll.
+  const activeSessionId = activeSession?.id
+  const activeSessionLive = Boolean(
+    activeSession &&
+      (activeSession.status === 'RUNNING' ||
+        (activeSession.stageAttempts ?? []).some(a => a.status === 'RUNNING' || a.status === 'PAUSED')),
+  )
+  const sessionStatusQuery = useQuery({
+    queryKey: ['blueprintSessionStatus', activeSessionId],
+    queryFn: () => api.sessionStatus(activeSessionId!),
+    enabled: hasToken && Boolean(activeSessionId) && activeSessionLive,
+    refetchInterval: activeSessionLive ? 4000 : false,
+    staleTime: 3750,
+  })
+  const lastStatusUpdatedAt = useRef<string | null>(null)
+  useEffect(() => {
+    lastStatusUpdatedAt.current = null
+  }, [activeSessionId])
+  useEffect(() => {
+    const updatedAt = sessionStatusQuery.data?.updatedAt
+    const polledId = sessionStatusQuery.data?.id
+    if (!updatedAt || !polledId || polledId !== activeSessionId) return
+    if (lastStatusUpdatedAt.current === null) {
+      lastStatusUpdatedAt.current = updatedAt
+      return
+    }
+    if (updatedAt === lastStatusUpdatedAt.current) return
+    lastStatusUpdatedAt.current = updatedAt
+    void queryClient.invalidateQueries({ queryKey: ['blueprintSessions'] })
+    if (localCreatedSessionIds.has(polledId)) {
+      void api
+        .getSession(polledId)
+        .then(full => setActiveSession(prev => (prev && prev.id === full.id ? full : prev)))
+        .catch(() => {})
+    }
+  }, [sessionStatusQuery.data?.updatedAt, sessionStatusQuery.data?.id, activeSessionId, localCreatedSessionIds, queryClient])
 
   if (!hasToken) {
     return <AuthGate onAuthed={() => setAuthTick(v => v + 1)} />
@@ -1157,7 +1202,13 @@ function WorkbenchNeo({
             else delete next[stageKey]
             updateStageModelMutation.mutate({ id: session.id, body: { stageModelAliases: next } })
           }}
-          footer={<NeoThemePicker value={look} onChange={setLook} />}
+          footer={
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {/* M97.6 — export this loop as a portable GitHub Copilot playbook */}
+              <CopilotExportButton nodeId={session.workflowNodeId ?? null} />
+              <NeoThemePicker value={look} onChange={setLook} />
+            </div>
+          }
         />
 
         <div className="neo-center-column">
@@ -2036,6 +2087,11 @@ function DeveloperCodeReview({
     queryFn: () => api.codeChanges(session.id, stage.key),
     enabled: Boolean(latest),
     refetchInterval: latest.status === 'RUNNING' ? 3000 : false,
+    // M98 P1 — treat a fresh fetch as current until just before the next
+    // 3s poll; with React Query structural sharing the `items` reference
+    // stays stable on a no-change poll, so the buildReviewFiles memo below
+    // doesn't rebuild the diff views.
+    staleTime: 2750,
     retry: 1,
   })
   const files = useMemo(

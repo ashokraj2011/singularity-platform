@@ -6,7 +6,7 @@ import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
-import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, restartNode, startInstance } from './runtime/WorkflowRuntime'
+import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, restartNode, forceCompleteNode, startInstance } from './runtime/WorkflowRuntime'
 import { promoteWorkbenchToTables } from './lib/promote-workbench'
 import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
@@ -68,6 +68,14 @@ const failNodeSchema = z.object({
   message: z.string().min(1),
   code: z.string().optional(),
   details: z.record(z.unknown()).optional(),
+})
+
+// M98 — Operator manual completion. A comment is mandatory so the audit trail
+// always records WHY the node was forced complete (e.g. "pushed by hand after
+// the GitHub token expired").
+const forceCompleteSchema = z.object({
+  comment: z.string().min(1).max(1000),
+  output: z.record(z.unknown()).optional(),
 })
 
 const createPhaseSchema = z.object({
@@ -407,6 +415,28 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/restart', async (req, res, next
       prisma.workflowNode.findUnique({ where: { id: nodeId } }),
     ])
     res.json({ ...result, instance, node })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// M98 — Manually complete a stuck node with an operator comment and advance the
+// workflow. Unlike /restart (re-runs the node) this accepts the node as done
+// and moves downstream. Works on any non-COMPLETED node (FAILED, BLOCKED,
+// ACTIVE, PENDING) regardless of whether the run is FAILED/PAUSED — the runtime
+// re-opens the instance before advancing.
+workflowInstancesRouter.post('/:id/nodes/:nodeId/force-complete', validate(forceCompleteSchema), async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    const nodeId = req.params.nodeId as string
+    await assertInstancePermission(req.user!.userId, id, 'edit')
+    const { comment, output } = req.body as z.infer<typeof forceCompleteSchema>
+    await forceCompleteNode(id, nodeId, comment, output ?? {}, req.user!.userId)
+    const [instance, node] = await Promise.all([
+      prisma.workflowInstance.findUnique({ where: { id }, include: { nodes: true, edges: true } }),
+      prisma.workflowNode.findUnique({ where: { id: nodeId } }),
+    ])
+    res.json({ instance, node })
   } catch (err) {
     next(err)
   }

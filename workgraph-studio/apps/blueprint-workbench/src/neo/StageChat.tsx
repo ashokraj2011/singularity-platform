@@ -37,6 +37,9 @@ export function StageChat({ sessionId, stage, seedThread }: StageChatProps) {
     queryFn: () => api.listStageMessages(sessionId, stageKey!),
     enabled: Boolean(stageKey),
     refetchInterval: POLL_MS,
+    // M98 P1 — keep a just-fetched thread fresh until just before the next
+    // poll so remounts/focus don't pile an extra fetch on the interval.
+    staleTime: POLL_MS - 250,
     initialData: seedThread ? { items: seedThread } : undefined,
   })
 

@@ -18,6 +18,15 @@ const BLUEPRINT_WORKBENCH_URL = import.meta.env.VITE_BLUEPRINT_WORKBENCH_URL
   ?? `${window.location.protocol}//${window.location.hostname}:5176/`
 const BLUEPRINT_WORKBENCH_ORIGIN = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href).origin
 
+// Terminal workflow-instance statuses — mirror of the runtime's own set in
+// WorkflowRuntime.ts (COMPLETED | CANCELLED | FAILED). Once a run reaches one
+// of these it can no longer change, so the live polls should fall silent
+// instead of hammering the API at 5s forever on a finished run.
+const TERMINAL_RUN_STATUSES = new Set(['COMPLETED', 'CANCELLED', 'FAILED'])
+function isTerminalRunStatus(status: string | undefined | null): boolean {
+  return TERMINAL_RUN_STATUSES.has((status ?? '').toUpperCase())
+}
+
 /**
  * Step-by-step run viewer.  Lays out the run as a vertical timeline of steps;
  * the *current* step expands inline with the form-fill panel, completed steps
@@ -52,19 +61,29 @@ export function RunViewerPage() {
   }>({
     queryKey: ['run-instance', id],
     queryFn:  () => api.get(`/workflow-instances/${id}`).then(r => r.data),
-    enabled: !!id, refetchInterval: 5_000,
+    enabled: !!id,
+    // Poll only while the run is still live; stop once it reaches a terminal
+    // status. staleTime just under the interval keeps remounts/focus from
+    // piling an extra fetch onto the 5s cadence.
+    refetchInterval: (query) =>
+      isTerminalRunStatus(query.state.data?.status) ? false : 5_000,
+    staleTime: 4_750,
   })
+
+  // Derived from the instance status above; gates the nodes/edges polls so
+  // they also fall silent on a finished run instead of polling indefinitely.
+  const isRunLive = !isTerminalRunStatus(instance?.status)
 
   const { data: nodes = [] } = useQuery<RunNode[]>({
     queryKey: ['run-instance', id, 'nodes'],
     queryFn:  () => api.get(`/workflow-instances/${id}/nodes`).then(r => r.data),
-    enabled: !!id, refetchInterval: 5_000,
+    enabled: !!id, refetchInterval: isRunLive ? 5_000 : false, staleTime: 4_750,
   })
 
   const { data: edges = [] } = useQuery<RunEdge[]>({
     queryKey: ['run-instance', id, 'edges'],
     queryFn:  () => api.get(`/workflow-instances/${id}/edges`).then(r => r.data),
-    enabled: !!id, refetchInterval: 5_000,
+    enabled: !!id, refetchInterval: isRunLive ? 5_000 : false, staleTime: 4_750,
   })
 
   // Order nodes topologically (best-effort) so the timeline reads in
@@ -209,6 +228,25 @@ function StepCard({
     },
   })
   const canRestart = node.status === 'COMPLETED' || node.status === 'FAILED' || node.status === 'BLOCKED'
+
+  // M98 — Operator escape hatch: mark any non-completed node done with a
+  // comment and advance the workflow. Unblocks runs stuck on a failed/blocked
+  // node (e.g. a GitHub push the operator finished by hand).
+  const [showComplete, setShowComplete] = useState(false)
+  const [completeComment, setCompleteComment] = useState('')
+  const forceCompleteMut = useMutation({
+    mutationFn: (comment: string) =>
+      api.post(`/workflow-instances/${instanceId}/nodes/${node.id}/force-complete`, { comment }).then(r => r.data),
+    onSuccess: () => {
+      setShowComplete(false)
+      setCompleteComment('')
+      queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId] })
+      queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId, 'nodes'] })
+      queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId, 'edges'] })
+    },
+  })
+  const canForceComplete = node.status !== 'COMPLETED' && node.status !== 'SKIPPED'
+
   const restartLabel = node.nodeType === 'GIT_PUSH' && blockDetails?.retryable
     ? (restartMut.isPending ? 'Retrying push...' : 'Retry push')
     : (restartMut.isPending ? 'Restarting...' : 'Restart stage')
@@ -273,6 +311,23 @@ function StepCard({
               {node.nodeType}
             </span>
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+              {canForceComplete && (
+                <button
+                  type="button"
+                  style={{
+                    ...smallSecondaryButton,
+                    padding: '5px 8px',
+                    fontSize: 10,
+                    opacity: forceCompleteMut.isPending ? 0.65 : 1,
+                  }}
+                  disabled={forceCompleteMut.isPending}
+                  onClick={() => setShowComplete(v => !v)}
+                  title="Mark this node complete with a comment and advance the workflow without re-running it"
+                >
+                  <CheckCircle2 size={12} />
+                  {forceCompleteMut.isPending ? 'Completing...' : 'Complete & advance'}
+                </button>
+              )}
               {canRestart && (
                 <button
                   type="button"
@@ -292,6 +347,70 @@ function StepCard({
               )}
             </div>
           </div>
+
+          {/* M98 — Inline operator comment box for manual completion */}
+          {showComplete && canForceComplete && (
+            <div style={{
+              marginTop: 10,
+              padding: 10,
+              borderRadius: 8,
+              background: 'rgba(34,197,94,0.06)',
+              border: '1px solid rgba(34,197,94,0.30)',
+              display: 'grid',
+              gap: 8,
+            }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: '#166534' }}>
+                Manually complete this node and advance the workflow. Add a comment explaining why (it is recorded in the audit trail).
+              </span>
+              <textarea
+                value={completeComment}
+                onChange={e => setCompleteComment(e.target.value)}
+                placeholder="e.g. Pushed the branch to GitHub by hand after the token was rotated."
+                rows={3}
+                maxLength={1000}
+                style={{
+                  width: '100%',
+                  resize: 'vertical',
+                  padding: '8px 10px',
+                  borderRadius: 7,
+                  border: '1px solid var(--color-outline-variant)',
+                  fontSize: 11,
+                  fontFamily: 'inherit',
+                  boxSizing: 'border-box',
+                }}
+              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <button
+                  type="button"
+                  style={{
+                    ...smallPrimaryButton,
+                    background: '#16a34a',
+                    padding: '6px 10px',
+                    fontSize: 11,
+                    opacity: !completeComment.trim() || forceCompleteMut.isPending ? 0.55 : 1,
+                  }}
+                  disabled={!completeComment.trim() || forceCompleteMut.isPending}
+                  onClick={() => forceCompleteMut.mutate(completeComment.trim())}
+                >
+                  <CheckCircle2 size={12} />
+                  {forceCompleteMut.isPending ? 'Completing...' : 'Confirm complete'}
+                </button>
+                <button
+                  type="button"
+                  style={{ ...smallSecondaryButton, padding: '6px 10px', fontSize: 11 }}
+                  disabled={forceCompleteMut.isPending}
+                  onClick={() => { setShowComplete(false); setCompleteComment('') }}
+                >
+                  Cancel
+                </button>
+              </div>
+              {forceCompleteMut.isError && (
+                <p style={{ margin: 0, fontSize: 11, color: '#991b1b' }}>
+                  {(forceCompleteMut.error as Error).message}
+                </p>
+              )}
+            </div>
+          )}
 
           {blockDetails && (
             <div style={{

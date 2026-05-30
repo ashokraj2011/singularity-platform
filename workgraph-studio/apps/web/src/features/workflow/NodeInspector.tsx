@@ -10,6 +10,7 @@ import {
   Box, Star, Briefcase, Database, Globe, Mail, Phone,
   Calendar, AlertTriangle, Search, Filter, Activity,
   GitFork, ShieldAlert, SlidersHorizontal, Play, Square, Braces,
+  Download,
 } from 'lucide-react'
 import type { Node } from 'reactflow'
 import { fetchAgents, fetchStudioAgents, deriveStudioAgent, fetchTools, fetchCapabilities, registrySource, type RegistryAgent } from '../../lib/registry'
@@ -1467,6 +1468,45 @@ function WorkbenchTab({
     updateStage(stageIndex, { expectedArtifacts: (stage.expectedArtifacts ?? []).filter((_, i) => i !== artifactIndex) })
   }
 
+  // M97 — Download this workbench definition as a single GitHub Copilot
+  // playbook file. `agent-md` is the format the Copilot CLI runs directly;
+  // `yaml` is a pure structured playbook. Resolves prompts server-side, so
+  // this hits the live definition (not the unsaved form state) — save first
+  // for edits to be reflected.
+  const [copilotBusy, setCopilotBusy] = useState(false)
+  const [copilotError, setCopilotError] = useState<string | null>(null)
+  const downloadCopilot = async (format: 'agent-md' | 'yaml') => {
+    if (!nodeId) return
+    setCopilotBusy(true)
+    setCopilotError(null)
+    try {
+      const res = await api.get(`/workflow-nodes/${nodeId}/workbench/export-copilot`, {
+        params: { format },
+        responseType: 'blob',
+      })
+      const cd = (res.headers['content-disposition'] as string | undefined) ?? ''
+      const match = cd.match(/filename="([^"]+)"/)
+      const filename = match?.[1] ?? (format === 'yaml' ? 'workbench.workflow.yaml' : 'workbench.agent.md')
+      const url = URL.createObjectURL(res.data as Blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      const status = (err as { response?: { status?: number } }).response?.status
+      setCopilotError(
+        status === 404
+          ? 'Add at least one stage (and save) before exporting.'
+          : 'Export failed — is prompt-composer running?',
+      )
+    } finally {
+      setCopilotBusy(false)
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{
@@ -1483,6 +1523,53 @@ function WorkbenchTab({
         <p style={{ fontSize: 10, color: '#94a3b8', lineHeight: 1.55 }}>
           This node pauses the workflow, opens the Workbench modal, and returns the approved implementation pack as node output.
         </p>
+
+        {/* M97 — Export this loop as a portable GitHub Copilot playbook. */}
+        {nodeId && (
+          <div style={{ marginTop: 10, borderTop: '1px solid rgba(255,183,134,0.16)', paddingTop: 9 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                disabled={copilotBusy}
+                onClick={() => downloadCopilot('agent-md')}
+                title="Download a .agent.md file the GitHub Copilot CLI runs directly"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  fontSize: 10, fontWeight: 700, color: '#ffb786',
+                  padding: '5px 9px', borderRadius: 7, cursor: copilotBusy ? 'default' : 'pointer',
+                  border: '1px solid rgba(255,183,134,0.35)', background: 'rgba(255,183,134,0.10)',
+                  opacity: copilotBusy ? 0.6 : 1,
+                }}
+              >
+                {copilotBusy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                Download for Copilot (.agent.md)
+              </button>
+              <button
+                type="button"
+                disabled={copilotBusy}
+                onClick={() => downloadCopilot('yaml')}
+                title="Download a pure structured YAML playbook"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  fontSize: 10, fontWeight: 700, color: '#94a3b8',
+                  padding: '5px 9px', borderRadius: 7, cursor: copilotBusy ? 'default' : 'pointer',
+                  border: '1px solid rgba(148,163,184,0.30)', background: 'rgba(148,163,184,0.08)',
+                  opacity: copilotBusy ? 0.6 : 1,
+                }}
+              >
+                <Download size={12} />
+                .yaml
+              </button>
+            </div>
+            <p style={{ fontSize: 9, color: '#64748b', lineHeight: 1.5, marginTop: 6 }}>
+              One file: agent learnings, per-stage prompts, the stage workflow, and the documents to create.
+              MCP tools are supplied by your Copilot CLI. Save edits first — the export reads the saved definition.
+            </p>
+            {copilotError && (
+              <p style={{ fontSize: 9, color: '#fca5a5', marginTop: 4 }}>{copilotError}</p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* M84.s5 — "block inside a block" mini-canvas of the workbench

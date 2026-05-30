@@ -335,6 +335,43 @@ function isPushFinishToolCall(tc: ToolCall): boolean {
   return tc.name === "finish_work_branch" && tc.args?.push === true;
 }
 
+function stringField(value: unknown, key: string): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = (value as Record<string, unknown>)[key];
+  return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+}
+
+function stringArrayField(value: unknown, key: string): string[] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = (value as Record<string, unknown>)[key];
+  if (!Array.isArray(raw)) return undefined;
+  const items = raw.map(String).map((item) => item.trim()).filter(Boolean);
+  return items.length ? Array.from(new Set(items)) : undefined;
+}
+
+function captureFinishWorkBranchWorkspace(state: LoopState, output: unknown): void {
+  if (!state.workspace || !output || typeof output !== "object" || Array.isArray(output)) return;
+  const branch = stringField(output, "branch");
+  const commitSha = stringField(output, "commit_sha") ?? stringField(output, "commitSha");
+  const workspaceRoot = stringField(output, "workspaceRoot") ?? stringField(output, "workspace_root");
+  const changedPaths = stringArrayField(output, "paths_touched")
+    ?? stringArrayField(output, "changedPaths")
+    ?? stringArrayField(output, "changed_paths");
+
+  if (commitSha) state.workspace.commitSha = commitSha;
+  if (changedPaths) state.workspace.changedPaths = changedPaths;
+  if (workspaceRoot) state.workspace.workspaceRoot = workspaceRoot;
+  if (branch) {
+    state.workspace.branch = {
+      branch,
+      baseBranch: state.workspace.branch?.baseBranch,
+      headSha: commitSha ?? state.workspace.branch?.headSha,
+      workspaceRoot: workspaceRoot ?? state.workspace.workspaceRoot ?? sandboxRoot(),
+      reused: state.workspace.branch?.reused ?? true,
+    };
+  }
+}
+
 /**
  * M56 Slice B — Per-phase token + cost rollup.
  *
@@ -1793,6 +1830,9 @@ Please review the errors above, correct the code, and explain how you resolved t
           state.workspace?.workspaceRoot,
         );
         state.toolInvocationIds.push(result.record.id);
+        if (tc.name === "finish_work_branch" && result.record.success !== false) {
+          captureFinishWorkBranchWorkspace(state, result.record.output);
+        }
         if (result.codeChange) {
           state.codeChangeIds.push(result.codeChange.id);
           if (result.codeChange.paths_touched) {
@@ -2344,6 +2384,9 @@ async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome
         state.workspace.workspaceRoot,
       );
       state.toolInvocationIds.push(result.record.id);
+      if (tc.name === "finish_work_branch" && result.record.success !== false) {
+        captureFinishWorkBranchWorkspace(state, result.record.output);
+      }
       if (result.codeChange) {
         state.codeChangeIds.push(result.codeChange.id);
         if (result.codeChange.paths_touched) {
@@ -3433,6 +3476,9 @@ invokeRouter.post("/resume", async (req, res) => {
       state.workspace?.workspaceRoot,
     );
     state.toolInvocationIds.push(result.record.id);
+    if (tc.name === "finish_work_branch" && result.record.success !== false) {
+      captureFinishWorkBranchWorkspace(state, result.record.output);
+    }
     if (result.codeChange) state.codeChangeIds.push(result.codeChange.id);
     state.verificationReceipts.push(...enrichedReceiptsFromOutput(state, result.record.output, result.record.id, tc.name));
     // M39 / M39.B — mask resumed-tool output (async path for NER support).

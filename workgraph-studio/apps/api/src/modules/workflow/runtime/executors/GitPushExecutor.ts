@@ -13,6 +13,9 @@ type WorkspaceEvidence = {
   codeChangeIds?: string[]
   source?: string
   warning?: string
+  stageKey?: string
+  attemptId?: string
+  attemptNumber?: number
 }
 
 type GitPushOutput = {
@@ -74,6 +77,16 @@ function stringsAt(root: unknown, path: string): string[] {
   return Array.isArray(value) ? value.map(String).filter(Boolean) : []
 }
 
+function numberAt(root: unknown, path: string): number | undefined {
+  const value = path.split('.').reduce<unknown>((cursor, key) => {
+    if (isRecord(cursor)) return cursor[key]
+    return undefined
+  }, root)
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value)
+  return undefined
+}
+
 function findWorkspaceEvidence(value: unknown): WorkspaceEvidence {
   const stack: unknown[] = [value]
   const seen = new Set<unknown>()
@@ -132,6 +145,35 @@ function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.map(value => value.trim()).filter(Boolean)))
 }
 
+function branchSegment(value: string, fallback: string): string {
+  const cleaned = value
+    .trim()
+    .replace(/[^A-Za-z0-9._/-]+/g, '-')
+    .replace(/\/+/g, '/')
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/^-+|-+$/g, '')
+  return cleaned || fallback
+}
+
+function derivedWorkbenchBranch(
+  instance: WorkflowInstance,
+  evidence: WorkspaceEvidence,
+  workItemCode?: string,
+): string | undefined {
+  if (evidence.branch) return evidence.branch
+  if (workItemCode) return `wi/${branchSegment(workItemCode, 'workitem')}`
+  const hasWorkbenchCodeChange =
+    (evidence.source ?? '').startsWith('blueprint-workbench')
+    && ((evidence.codeChangeIds?.length ?? 0) > 0 || evidence.changedPaths.length > 0)
+  if (!hasWorkbenchCodeChange) return undefined
+
+  const stage = branchSegment(evidence.stageKey ?? 'develop', 'develop')
+  const attempt = evidence.attemptId
+    ? `${evidence.attemptNumber ?? 1}-${branchSegment(evidence.attemptId, 'attempt').slice(0, 12)}`
+    : `${evidence.attemptNumber ?? 1}`
+  return `sg/${branchSegment(instance.id, 'workflow')}/${stage}/${attempt}`.slice(0, 180)
+}
+
 function codeArtifactEvidence(payload: JsonObject, source: string): WorkspaceEvidence {
   const nested = findWorkspaceEvidence(payload)
   return {
@@ -142,6 +184,9 @@ function codeArtifactEvidence(payload: JsonObject, source: string): WorkspaceEvi
       ...stringsAt(payload, 'diff.paths'),
     ]),
     source,
+    stageKey: stringAt(payload, 'stageKey') ?? nested.stageKey,
+    attemptId: stringAt(payload, 'attemptId') ?? nested.attemptId,
+    attemptNumber: numberAt(payload, 'version') ?? nested.attemptNumber,
   }
 }
 
@@ -305,7 +350,17 @@ function pushFixCommands(code: string, remote: string): string[] {
     return ['git remote -v', 'git remote set-url ' + remote + ' <ssh-or-https-repo-url>', './singularity.sh doctor git']
   }
   if (code === 'NO_COMMIT_TO_PUSH') {
-    return ['Re-run the Developer stage with a writable MCP workspace.', 'Approve the captured code diff, then retry Git Push.']
+    // (2026-05-29) Two distinct conditions reach this code: (1) no push
+    // target could be resolved (no WorkItem, no branchName, no workspace
+    // evidence), and (2) the Developer stage genuinely captured no diff
+    // (or it's unapproved). The branch/WorkItem remedy leads because the
+    // common dead-end is a run with no WorkItem and no branchName — the
+    // old "re-run Develop" advice misled operators into re-running a stage
+    // that had in fact produced edits.
+    return [
+      'Attach this run to a WorkItem, or set the Git Push node\'s branchName, so the push target is known.',
+      'If the Developer stage did capture a diff, approve it (or re-run Develop on a writable MCP workspace) so the commit evidence is present.',
+    ]
   }
   if (code === 'APPROVAL_REQUIRED') {
     return ['Complete the Human approval node before retrying Git Push.']
@@ -379,8 +434,7 @@ export async function activateGitPush(
   const branchName = cfgString(node, 'branchName')
     ?? evidence.branch
     ?? stringAt(context, 'workspaceBranch')
-    ?? (workItemCode ? `work/${workItemCode}` : undefined)
-  const evidenceBackedBranch = Boolean(evidence.branch && branchName === evidence.branch)
+    ?? derivedWorkbenchBranch(instance, evidence, workItemCode)
   const message = cfgString(node, 'message')
     ?? `Push Singularity work ${workItemCode ?? workItemId ?? instance.id}`
 
@@ -459,7 +513,7 @@ export async function activateGitPush(
       remote,
       message,
       workItemId,
-      workItemCode: evidenceBackedBranch || evidence.workspaceRoot ? undefined : workItemCode,
+      workItemCode: evidence.workspaceRoot ? undefined : workItemCode,
       branchName,
       workspaceRoot: evidence.workspaceRoot,
     })

@@ -35,7 +35,11 @@ from context_api_service.app.governed.prompt_resolver import ResolvedPrompt
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 
-def _policy(allowed: list[str], phase: Phase = Phase.PLAN) -> StagePolicy:
+def _policy(
+    allowed: list[str],
+    phase: Phase = Phase.PLAN,
+    context_policy: dict | None = None,
+) -> StagePolicy:
     pp = PhasePolicy(
         phase=phase,
         allowed_tools=frozenset(allowed),
@@ -53,7 +57,7 @@ def _policy(allowed: list[str], phase: Phase = Phase.PLAN) -> StagePolicy:
         status="ACTIVE",
         approval_model={},
         limits={"max_repair_attempts": 3},
-        context_policy={},
+        context_policy=context_policy or {},
         edit_policy={},
         verification_policy={},
         risk_policy={},
@@ -507,12 +511,12 @@ async def test_run_turn_happy_path_phase_advance(monkeypatch):
         captured["loaded_policy"] = (stage_key, agent_role)
         return _policy([], phase=Phase.PLAN)
 
-    async def fake_resolve_prompt(*, stage_key, agent_role, phase, vars=None, bearer=None):
+    async def fake_resolve_prompt(*, stage_key, agent_role, phase, vars=None, bearer=None, **_kwargs):
         captured["resolved_prompt"] = (stage_key, agent_role, phase.value if phase else None)
         return _prompt()
 
     async def fake_call_gateway(*, messages, tools, model_alias=None, temperature=None,
-                                max_output_tokens=None, bearer=None):
+                                max_output_tokens=None, bearer=None, **_kwargs):
         captured["messages"] = messages
         captured["tool_count"] = len(tools)
         # Simulate the LLM emitting submit_phase_output with a valid PLAN receipt.
@@ -639,3 +643,144 @@ async def test_run_turn_validation_error_does_not_advance(monkeypatch):
     assert turn.step.phase_advanced is False
     assert turn.step.validation_error is not None
     assert turn.step.validation_error["error_code"] == "PHASE_OUTPUT_INVALID"
+
+
+# ── M98 P3: per-attempt code_context_package cache ──────────────────────────
+
+
+def _advancing_response() -> ChatResponse:
+    """A submit_phase_output the PLAN validator accepts (PLAN → EXPLORE)."""
+    return ChatResponse(
+        content="planning done",
+        tool_calls=[ChatToolCall(
+            id="t1",
+            name=SUBMIT_PHASE_OUTPUT,
+            arguments={
+                "payload": {
+                    "target_files": ["src/eval.py"],
+                    "test_strategy": {"commands": ["pytest tests/"]},
+                    "risk_level": "low",
+                },
+                "next_phase": "EXPLORE",
+            },
+        )],
+        finish_reason="tool_calls",
+        input_tokens=10, output_tokens=5, latency_ms=1,
+        provider="mock", model="mock-fast",
+    )
+
+
+def _patch_context_turn(monkeypatch, *, build_fn, seen_vars):
+    """Wire the four upstreams run_turn() touches when the policy opts into
+    include_code_context_package. build_fn is the (counting) stand-in for
+    the mcp-server AST round trip; seen_vars captures the prompt vars each
+    turn so the test can assert the package markdown was injected."""
+    async def fake_load_stage_policy(stage_key, agent_role, *, bearer=None):
+        return _policy([], phase=Phase.PLAN,
+                       context_policy={"include_code_context_package": True})
+
+    async def fake_resolve_prompt(*, vars=None, **_kwargs):
+        seen_vars.append(dict(vars or {}))
+        return _prompt()
+
+    async def fake_call_gateway(**_kwargs):
+        return _advancing_response()
+
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.load_stage_policy", fake_load_stage_policy)
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.resolve_phase_prompt", fake_resolve_prompt)
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.call_gateway_chat", fake_call_gateway)
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.build_code_context_for_governed_turn", build_fn)
+
+
+@pytest.mark.asyncio
+async def test_code_context_built_once_and_reused_across_turns(monkeypatch):
+    """The AST-built code_context_package is fetched once per attempt and
+    reused on later turns. run_stage() shares one code_context_cache dict
+    across all its run_turn() calls, so the second turn must hit the cache
+    instead of re-POSTing to mcp-server's /mcp/code-context/build."""
+    build_calls: list[str] = []
+    seen_vars: list[dict] = []
+
+    async def fake_build(*, task_text, capability_id, run_context):
+        build_calls.append(task_text)
+        return {"context_package_id": "ctx-1", "packageMarkdown": "# relevant code"}, None
+
+    _patch_context_turn(monkeypatch, build_fn=fake_build, seen_vars=seen_vars)
+
+    cache: dict = {}
+    for _ in range(2):
+        await run_turn(
+            state=PhaseState.fresh("loop.stage", "DEVELOPER"),
+            stage_key="loop.stage",
+            agent_role="DEVELOPER",
+            vars={"goal": "Fix the NPE"},
+            run_context={"capability_id": "cap-1"},
+            code_context_cache=cache,
+        )
+
+    # Built exactly once despite two turns.
+    assert build_calls == ["Fix the NPE"]
+    # Both turns still received the package markdown in their prompt vars.
+    assert len(seen_vars) == 2
+    assert all(v.get("code_context_package") == "# relevant code" for v in seen_vars)
+    assert all(v.get("code_context_package_id") == "ctx-1" for v in seen_vars)
+
+
+@pytest.mark.asyncio
+async def test_code_context_rebuilds_every_turn_without_cache(monkeypatch):
+    """Backwards-compat contract: when no cache dict is threaded (the
+    default — execute.py's legacy single-turn path + older callers), the
+    package is rebuilt every turn exactly as it was pre-M98."""
+    build_calls: list[str] = []
+    seen_vars: list[dict] = []
+
+    async def fake_build(*, task_text, capability_id, run_context):
+        build_calls.append(task_text)
+        return {"context_package_id": "ctx-1", "packageMarkdown": "# relevant code"}, None
+
+    _patch_context_turn(monkeypatch, build_fn=fake_build, seen_vars=seen_vars)
+
+    for _ in range(2):
+        await run_turn(
+            state=PhaseState.fresh("loop.stage", "DEVELOPER"),
+            stage_key="loop.stage",
+            agent_role="DEVELOPER",
+            vars={"goal": "Fix the NPE"},
+            run_context={"capability_id": "cap-1"},
+            # code_context_cache omitted → None → no caching.
+        )
+
+    assert build_calls == ["Fix the NPE", "Fix the NPE"]  # rebuilt each turn
+
+
+@pytest.mark.asyncio
+async def test_code_context_cache_disabled_by_env(monkeypatch):
+    """GOVERNED_CODE_CONTEXT_CACHE=0 forces the old rebuild-every-turn
+    behavior even when a cache dict is present (debug/rollback escape hatch)."""
+    monkeypatch.setenv("GOVERNED_CODE_CONTEXT_CACHE", "0")
+    build_calls: list[str] = []
+    seen_vars: list[dict] = []
+
+    async def fake_build(*, task_text, capability_id, run_context):
+        build_calls.append(task_text)
+        return {"context_package_id": "ctx-1", "packageMarkdown": "# relevant code"}, None
+
+    _patch_context_turn(monkeypatch, build_fn=fake_build, seen_vars=seen_vars)
+
+    cache: dict = {}
+    for _ in range(2):
+        await run_turn(
+            state=PhaseState.fresh("loop.stage", "DEVELOPER"),
+            stage_key="loop.stage",
+            agent_role="DEVELOPER",
+            vars={"goal": "Fix the NPE"},
+            run_context={"capability_id": "cap-1"},
+            code_context_cache=cache,
+        )
+
+    assert build_calls == ["Fix the NPE", "Fix the NPE"]  # env opt-out wins
+    assert cache == {}  # nothing cached when disabled

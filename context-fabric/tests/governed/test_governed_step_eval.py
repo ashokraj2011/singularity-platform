@@ -262,6 +262,67 @@ SCENARIOS: list[dict] = [
         "expect_to_phase": Phase.VERIFY,
         "expect_validation": False,
     },
+    # ── 8. REGRESSION — develop attempt 3f8db8d7 (WRK-DCA8D), M96 ──────────
+    #
+    # Repro: the agent made a REAL edit (apply_patch dispatched cleanly,
+    # code_change provenance recorded) but then submitted an EditReceipt the
+    # validator refuses — here a bad `edit_type` ("modify" is not in the
+    # apply_patch/replace_text/… enum). On the live run this recurred for 29
+    # turns: edit lands → receipt won't validate → no advance → retry →
+    # repeat, never converging, the stage failed VALIDATION_BLOCKED and the
+    # CORRECT edit was discarded.
+    #
+    # This single-turn fixture pins the per-turn symptom: a malformed
+    # EditReceipt must NOT advance and MUST surface a validation_error (so
+    # the loop can feed it back for self-correction). The MULTI-turn
+    # dimension — that an alternating bad-receipt → tool-call pattern is now
+    # caught by the cumulative per-phase counter (M96.2) and the produced
+    # edits are salvaged forward rather than discarded (M96.1) — is covered
+    # end-to-end in tests/test_phase_salvage.py
+    # (test_cumulative_counter_trips_on_alternating_pattern,
+    #  test_salvage_passed_opens_approval_gate). Together they close the
+    # failure class: the receipt still has to be valid to advance cleanly,
+    # but a stuck phase that produced real work no longer throws it away.
+    {
+        "name": "ACT→VERIFY: edit landed but malformed EditReceipt refused (3f8db8d7)",
+        "initial_phase": Phase.ACT,
+        "allowed_tools": {
+            Phase.ACT: ["apply_patch"],
+            Phase.VERIFY: ["run_test"],
+        },
+        "tool_calls": [
+            {"tool_name": "apply_patch", "args": {"path": "src/main/java/Foo.java", "patch": "..."}},
+        ],
+        "tool_results": {
+            "apply_patch": ToolDispatchResult(
+                result={
+                    "kind": "code_change",
+                    "paths_touched": ["src/main/java/Foo.java"],
+                    "diff": "...",
+                    "patch": "...",
+                    "lines_added": 3,
+                    "lines_removed": 1,
+                },
+                duration_ms=20,
+                tool_invocation_id="ti-3f8db8d7-act",
+                tool_success=True,
+                tool_error=None,
+            ),
+        },
+        "phase_output": {
+            # The edit is real (provenance above), but edit_type="modify" is
+            # NOT a member of the EditEntry enum → PHASE_OUTPUT_INVALID.
+            "edits": [
+                {"file": "src/main/java/Foo.java", "edit_type": "modify", "reason": "fix NPE"},
+            ],
+            "skipped_targets": [],
+        },
+        "next_phase": Phase.VERIFY,
+        "expect_outcomes_n": 1,
+        "expect_allowed": [0],       # the edit itself dispatched fine
+        "expect_advance": False,     # …but the malformed receipt cannot advance
+        "expect_validation": True,   # validation_error surfaced for self-correction
+    },
 ]
 
 

@@ -10,7 +10,7 @@
  * Entry: rendered by App.tsx when `?theater=<traceIdPrefix>` is in the
  * URL. Replaces the normal workbench shell for that session.
  */
-import { useEffect, useMemo, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 import { Activity, Brain, Bot, CheckCircle2, GitCommit, Wrench, XCircle } from 'lucide-react'
 import { useLiveLoopEventStream } from './useLiveLoopEventStream'
 import type { SceneAction } from './eventToScene'
@@ -108,7 +108,11 @@ export function LoopTheater({ traceIdPrefix, standalone = false }: LoopTheaterPr
   )
 }
 
-function SceneRow({ scene }: { scene: SceneAction }) {
+// M98 P1 — the SSE stream appends scenes and keeps existing entries'
+// object references stable, so React.memo's default shallow prop compare
+// (prev.scene === next.scene) re-renders only the newly-arrived row instead
+// of every bubble on each event.
+const SceneRow = memo(function SceneRow({ scene }: { scene: SceneAction }) {
   switch (scene.kind) {
     case 'llm-speaks':
       return (
@@ -194,7 +198,7 @@ function SceneRow({ scene }: { scene: SceneAction }) {
     default:
       return null
   }
-}
+})
 
 function collectPhases(scenes: SceneAction[]): string[] {
   const seen = new Set<string>()

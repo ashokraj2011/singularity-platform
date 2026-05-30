@@ -30,6 +30,13 @@ import { validate } from '../../middleware/validate'
 // it for genuinely-missing nodes; an empty definition returns an
 // empty-shell view instead of 404.
 import * as service from './workbench-definitions.service'
+import { promptComposerClient, PromptComposerError } from '../../lib/prompt-composer/client'
+import {
+  buildCopilotAgentMd,
+  buildCopilotYaml,
+  exportFilename,
+  type ExportStagePrompt,
+} from './workbench-copilot-export'
 
 export const workbenchDefinitionsRouter: Router = Router({ mergeParams: true })
 
@@ -234,6 +241,132 @@ workbenchDefinitionsRouter.get('/', async (req, res, next) => {
     }
     res.json({ data: view })
   } catch (err) { next(err) }
+})
+
+// M97 — Build the Mustache vars the stage prompt templates expect, from the
+// *static* definition (no runtime session). prompt-composer's task templates
+// reference {{goal}}, {{stageKey}}, {{artifacts}}, etc.; without these the
+// exported prompt renders with empty placeholders. We mirror the key names
+// from blueprint.router.ts:buildLoopStageVars so the same DB-managed templates
+// fill in cleanly. Runtime-only fields (operator chat, prior attempts, captured
+// decisions) get their natural empty-state lines — there is no live session to
+// draw them from at export time.
+function buildExportStageVars(
+  def: service.WorkbenchDefinitionView,
+  stage: service.WorkbenchStageView,
+): Record<string, string> {
+  const repoAware = stage.repoAccess
+  const artifacts = stage.expectedArtifacts.length
+    ? stage.expectedArtifacts
+        .map(a => `- ${a.title} (${a.kind})${a.required ? ' [required]' : ''}${a.description ? `: ${a.description}` : ''}`)
+        .join('\n')
+    : '- No explicit artifact contract; produce the stage default artifact pack.'
+  const questions = stage.questions.length
+    ? stage.questions.map(q => `- ${q.questionId}: ${q.text}${q.required ? ' (required)' : ''}`).join('\n')
+    : '- No configured questions.'
+  const isDeveloperStage = stage.agentRole.toUpperCase().includes('DEV')
+  const implementationDirective = isDeveloperStage
+    ? [
+        'Use the approved artifact context as the implementation backlog for this attempt.',
+        'If the Goal is generic, derive the concrete change from Story Intake, Plan, and Design artifacts instead of asking the operator to restate the task.',
+        'If the approved behavior already exists in code, make a verifiable codebase change such as focused tests or documentation updates that prove the accepted contract.',
+        'A Developer attempt is not approvable until MCP returns a real code_change receipt plus verification evidence.',
+      ].join(' ')
+    : ''
+  return {
+    goal: def.goal ?? '',
+    stageKey: stage.stageKey,
+    stageLabel: stage.label,
+    agentRole: stage.agentRole,
+    stageDescription: stage.label || 'No description supplied.',
+    artifacts,
+    questions,
+    latestAccepted: 'No accepted stages yet.',
+    priorApprovedArtifacts: '- No prior approved artifacts (static export).',
+    implementationDirective,
+    capturedDecisions: '- No stakeholder decisions captured yet.',
+    sendBacks: '- No send-backs yet.',
+    stageContextPolicy: stage.contextPolicy,
+    stageToolPolicy: stage.toolPolicy,
+    stageRepoAccess: repoAware ? 'true' : 'false',
+    promptProfileKey: stage.promptProfileKey ?? '',
+    sourceType: repoAware ? def.sourceType ?? '' : '',
+    sourceUri: repoAware ? def.sourceUri ?? '' : '',
+    sourceRef: repoAware ? def.sourceRef ?? '' : '',
+    sourceRefSuffix: repoAware && def.sourceRef ? ` @ ${def.sourceRef}` : '',
+    operatorChat: '- No operator guidance.',
+    priorAttemptLearnings: '',
+    priorAttemptAnnotations: '',
+  }
+}
+
+// M97 — Export the workbench definition as a single portable GitHub Copilot
+// playbook. `?format=agent-md` (default) returns a `.agent.md` custom-agent
+// file the Copilot CLI runs directly; `?format=yaml` returns a pure structured
+// playbook for callers with their own harness. MCP/tools are supplied by the
+// operator's CLI environment — the file only names the per-stage tool policy.
+workbenchDefinitionsRouter.get('/export-copilot', async (req, res, next) => {
+  try {
+    const nodeId = nodeIdOf(req)
+    const format = (req.query.format === 'yaml' ? 'yaml' : 'agent-md') as 'agent-md' | 'yaml'
+
+    const def = await service.getDefinition(nodeId, req.user!.userId)
+    if (!def || def.stages.length === 0) {
+      res.status(404).json({
+        error: {
+          code: 'NO_WORKBENCH_DEFINITION',
+          message: 'This node has no workbench stages to export yet.',
+        },
+      })
+      return
+    }
+
+    // Resolve each stage's prompt in parallel. A single failed resolve must
+    // not sink the whole export — fall back to a noted placeholder so the
+    // operator still gets a usable file (and can see which stage is unbound).
+    const prompts: Record<string, ExportStagePrompt> = {}
+    await Promise.all(
+      def.stages.map(async stage => {
+        try {
+          const r = await promptComposerClient.resolveStage({
+            stageKey: stage.stageKey,
+            agentRole: stage.agentRole,
+            promptProfileKey: stage.promptProfileKey ?? undefined,
+            vars: buildExportStageVars(def, stage),
+          })
+          prompts[stage.stageKey] = {
+            task: r.task ?? '',
+            systemPromptAppend: r.systemPromptAppend ?? '',
+            extraContext: r.extraContext ?? '',
+            resolved: true,
+          }
+        } catch (err) {
+          const note =
+            err instanceof PromptComposerError
+              ? `prompt-composer ${err.status}`
+              : 'prompt-composer unavailable'
+          prompts[stage.stageKey] = {
+            task: '',
+            systemPromptAppend: '',
+            extraContext: '',
+            resolved: false,
+            note,
+          }
+        }
+      }),
+    )
+
+    const body =
+      format === 'yaml'
+        ? buildCopilotYaml({ def, prompts })
+        : buildCopilotAgentMd({ def, prompts })
+
+    res.setHeader('Content-Disposition', `attachment; filename="${exportFilename(def, format)}"`)
+    res.setHeader('Content-Type', format === 'yaml' ? 'application/x-yaml; charset=utf-8' : 'text/markdown; charset=utf-8')
+    res.send(body)
+  } catch (err) {
+    next(err)
+  }
 })
 
 workbenchDefinitionsRouter.patch('/', validate(patchDefinitionSchema), async (req, res, next) => {

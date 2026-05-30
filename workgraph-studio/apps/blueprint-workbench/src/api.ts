@@ -27,6 +27,26 @@ export type LoopAttemptStatus =
   | 'BLOCKED'
   | 'ACCEPTED_WITH_RISK'
 
+// M98 P2 — Lightweight session status (GET /blueprint/sessions/:id/status).
+// A cheap polling shape with no snapshots / stageRuns / artifacts — just enough
+// to notice a backend-driven stage transition while the operator watches. The
+// session's `updatedAt` advances on every metadata write, so the workbench
+// treats it as a single change signal and only refetches the full session when
+// it moves.
+export type BlueprintSessionStatusLite = {
+  id: string
+  status: SessionStatus
+  currentStageKey: string | null
+  updatedAt: string
+  latestAttempt: {
+    id: string
+    stageKey: string
+    attemptNumber: number
+    status: LoopAttemptStatus
+    verdict: LoopVerdict | null
+  } | null
+}
+
 export type LookupCapability = {
   id: string
   capability_id?: string
@@ -631,6 +651,10 @@ function unwrap<T>(data: unknown): T[] {
 
 export const api = {
   listSessions: () => request<{ items: BlueprintSession[] }>('/blueprint/sessions'),
+  getSession: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}`),
+  // M98 P2 — cheap status poll backing the workbench live-status refresh.
+  sessionStatus: (id: string) =>
+    request<BlueprintSessionStatusLite>(`/blueprint/sessions/${encodeURIComponent(id)}/status`),
   createSession: (body: CreateSessionRequest) => request<BlueprintSession>('/blueprint/sessions', { method: 'POST', body: JSON.stringify(body) }),
   updateSettings: (id: string, body: WorkbenchExecutionConfig & { maxLoopsPerStage?: number; maxTotalSendBacks?: number }) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/settings`, { method: 'PATCH', body: JSON.stringify(body) }),
