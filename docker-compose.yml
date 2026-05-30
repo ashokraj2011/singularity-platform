@@ -1180,6 +1180,11 @@ services:
       MCP_GIT_AUTH_MODE: ${MCP_GIT_AUTH_MODE:-disabled}
       MCP_GIT_PUSH_REMOTE: ${MCP_GIT_PUSH_REMOTE:-origin}
       MCP_GIT_TOKEN_ENV: ${MCP_GIT_TOKEN_ENV:-GITHUB_TOKEN}
+      # Pass the operator's preferred token env through as well. The runtime
+      # resolves process.env[MCP_GIT_TOKEN_ENV] before falling back to
+      # MCP_GIT_TOKEN, so new tokens placed in GITHUB_TOKEN take effect
+      # without copying secrets into two env vars.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       MCP_GIT_TOKEN: ${MCP_GIT_TOKEN:-}
       MCP_GIT_USERNAME: ${MCP_GIT_USERNAME:-x-access-token}
       MCP_GIT_SSH_KEY_PATH: ${MCP_GIT_SSH_KEY_PATH:-}
