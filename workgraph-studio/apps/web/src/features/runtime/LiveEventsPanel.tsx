@@ -107,7 +107,7 @@ export function LiveEventsPanel({ runId }: { runId: string }) {
     async function poll(sinceId?: string) {
       if (stopped) return
       try {
-        const url = new URL(`/api/workflow-instances/${runId}/events`, window.location.origin)
+        const url = new URL(`${import.meta.env.BASE_URL}api/workflow-instances/${runId}/events`, window.location.origin)
         if (sinceId) url.searchParams.set('since_id', sinceId)
         const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
         if (!r.ok) {
@@ -127,7 +127,7 @@ export function LiveEventsPanel({ runId }: { runId: string }) {
       if (!stopped) pollTimer = setTimeout(() => poll(sinceId), 1500)
     }
 
-    const streamUrl = new URL(`/api/workflow-instances/${runId}/events/stream`, window.location.origin)
+    const streamUrl = new URL(`${import.meta.env.BASE_URL}api/workflow-instances/${runId}/events/stream`, window.location.origin)
     streamUrl.searchParams.set('access_token', token)
     streamUrl.searchParams.set('max_idle_seconds', '120')
     es = new EventSource(streamUrl.toString())
