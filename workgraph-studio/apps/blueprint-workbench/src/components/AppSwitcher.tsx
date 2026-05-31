@@ -10,17 +10,14 @@ type AppLink = {
   icon: ComponentType<{ size?: number; style?: CSSProperties }>
 }
 
-function localUrl(port: number, path = '') {
-  return `${window.location.protocol}//${window.location.hostname}:${port}${path}`
-}
-
+// M100 P3 — same-origin path prefixes for cross-app nav under the edge gateway.
 function useAppLinks(): AppLink[] {
   return useMemo(() => [
-    { id: 'operations', label: 'Operations', href: import.meta.env.VITE_LINK_OPERATIONS_PORTAL ?? localUrl(5180, '/operations'), description: 'Health, setup, audit', icon: ServerCog },
-    { id: 'agent-studio', label: 'Agent Studio', href: import.meta.env.VITE_LINK_AGENT_ADMIN ?? localUrl(3000), description: 'Agents, tools, capabilities', icon: Bot },
-    { id: 'workflow', label: 'Workflow Manager', href: import.meta.env.VITE_LINK_WORKGRAPH_DESIGNER ?? localUrl(5174), description: 'Runs, WorkItems, approvals', icon: Workflow },
-    { id: 'workbench', label: 'Blueprint Workbench', href: import.meta.env.VITE_LINK_BLUEPRINT_WORKBENCH ?? localUrl(5176, '/?ui=neo'), description: 'Guided delivery cockpit', icon: Wrench },
-    { id: 'iam', label: 'Identity & Access', href: import.meta.env.VITE_LINK_IAM_ADMIN ?? localUrl(5175), description: 'Users, teams, roles', icon: ShieldCheck },
+    { id: 'operations', label: 'Operations', href: import.meta.env.VITE_LINK_OPERATIONS_PORTAL ?? '/operations', description: 'Health, setup, audit', icon: ServerCog },
+    { id: 'agent-studio', label: 'Agent Studio', href: import.meta.env.VITE_LINK_AGENT_ADMIN ?? '/agent', description: 'Agents, tools, capabilities', icon: Bot },
+    { id: 'workflow', label: 'Workflow Manager', href: import.meta.env.VITE_LINK_WORKGRAPH_DESIGNER ?? '/workflow', description: 'Runs, WorkItems, approvals', icon: Workflow },
+    { id: 'workbench', label: 'Blueprint Workbench', href: import.meta.env.VITE_LINK_BLUEPRINT_WORKBENCH ?? '/workbench/?ui=neo', description: 'Guided delivery cockpit', icon: Wrench },
+    { id: 'iam', label: 'Identity & Access', href: import.meta.env.VITE_LINK_IAM_ADMIN ?? '/iam', description: 'Users, teams, roles', icon: ShieldCheck },
   ], [])
 }
 

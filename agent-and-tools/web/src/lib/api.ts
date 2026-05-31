@@ -212,7 +212,8 @@ export type IamTeam = { id: string; team_key?: string; name: string; bu_id?: str
 export type IamBusinessUnit = { id: string; bu_key?: string; name: string };
 
 export function workgraphRunInsightsUrl(runId: string): string {
-  const base = process.env.NEXT_PUBLIC_WORKGRAPH_WEB_URL ?? "http://localhost:5174";
+  // M100 P3 — same-origin path prefix under the edge gateway (was localhost:5174).
+  const base = process.env.NEXT_PUBLIC_WORKGRAPH_WEB_URL ?? "/workflow";
   return `${base.replace(/\/$/, "")}/runs/${encodeURIComponent(runId)}/insights`;
 }
 

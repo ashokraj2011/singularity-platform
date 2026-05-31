@@ -17,10 +17,12 @@ export function localUrl(port: number, path = "") {
 }
 
 export function controlPlaneApps(): ControlPlaneApp[] {
-  const workgraphBase = process.env.NEXT_PUBLIC_LINK_WORKGRAPH_DESIGNER ?? localUrl(5174);
-  const workbenchBase = process.env.NEXT_PUBLIC_LINK_BLUEPRINT_WORKBENCH ?? localUrl(5176, "/?ui=neo");
-  const identityBase = process.env.NEXT_PUBLIC_LINK_IAM_ADMIN ?? localUrl(5175);
-  const operationsBase = process.env.NEXT_PUBLIC_LINK_OPERATIONS_PORTAL ?? localUrl(5180, "/operations");
+  // M100 P3 — same-origin path prefixes under the edge gateway (was localUrl(port)).
+  // NEXT_PUBLIC_LINK_* overrides remain for split-origin deployments.
+  const workgraphBase = process.env.NEXT_PUBLIC_LINK_WORKGRAPH_DESIGNER ?? "/workflow";
+  const workbenchBase = process.env.NEXT_PUBLIC_LINK_BLUEPRINT_WORKBENCH ?? "/workbench/?ui=neo";
+  const identityBase = process.env.NEXT_PUBLIC_LINK_IAM_ADMIN ?? "/iam";
+  const operationsBase = process.env.NEXT_PUBLIC_LINK_OPERATIONS_PORTAL ?? "/operations";
 
   return [
     {

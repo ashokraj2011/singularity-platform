@@ -5,7 +5,8 @@ import { ExternalLink, Info } from "lucide-react";
 import { runtimeApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 
-const WORKGRAPH_WEB_URL = process.env.NEXT_PUBLIC_WORKGRAPH_WEB_URL ?? "http://localhost:5174";
+// M100 P3 — same-origin path prefix under the edge gateway (was localhost:5174).
+const WORKGRAPH_WEB_URL = process.env.NEXT_PUBLIC_WORKGRAPH_WEB_URL ?? "/workflow";
 
 export default function RuntimeExecutionDetailPage({ params }: { params: { id: string } }) {
   const id = decodeURIComponent(params.id);
