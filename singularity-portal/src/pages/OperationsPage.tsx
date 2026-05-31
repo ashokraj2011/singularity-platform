@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity, AlertTriangle, Boxes, CheckCircle2, ClipboardList, Copy, Database, FileText,
@@ -221,6 +222,12 @@ const opsTabs: Array<{ key: OpsTab; label: string; icon: typeof SlidersHorizonta
   { key: 'capabilities', label: 'Capabilities', icon: Power, description: 'Feature flags & kill switches' },
 ]
 
+// M100 P3.2 — deep-linkable tabs: nav entries point at /operations?tab=<key>.
+const VALID_TABS = opsTabs.map((t) => t.key) as OpsTab[]
+function tabFromParam(v: string | null): OpsTab | null {
+  return v && (VALID_TABS as string[]).includes(v) ? (v as OpsTab) : null
+}
+
 function stateFromQuery(q: { isSuccess: boolean; isError: boolean; data?: unknown }): HealthState {
   if (q.isSuccess) return 'ONLINE'
   if (q.isError) return 'OFFLINE'
@@ -264,7 +271,24 @@ function CodeLine({ command }: { command: string }) {
 }
 
 export function OperationsPage() {
-  const [activeTab, setActiveTab] = useState<OpsTab>('setup')
+  // M100 P3.2 — initialise the active tab from ?tab= so AppSwitcher/AppLayout
+  // can deep-link into a specific Operations surface; keep the URL in sync as
+  // the operator clicks tabs (shareable links).
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [activeTab, setActiveTab] = useState<OpsTab>(() => tabFromParam(searchParams.get('tab')) ?? 'setup')
+  useEffect(() => {
+    const t = tabFromParam(searchParams.get('tab'))
+    if (t && t !== activeTab) setActiveTab(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
+  function selectTab(key: OpsTab) {
+    setActiveTab(key)
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('tab', key)
+      return next
+    }, { replace: true })
+  }
   const healthQueries = useQueries({
     queries: services.map((svc) => ({
       queryKey: ['ops-health', svc.id],
@@ -414,7 +438,7 @@ export function OperationsPage() {
           <button
             key={tab.key}
             type="button"
-            onClick={() => setActiveTab(tab.key)}
+            onClick={() => selectTab(tab.key)}
             className={cn(
               'flex items-start gap-3 rounded-xl border px-4 py-3 text-left transition',
               activeTab === tab.key
