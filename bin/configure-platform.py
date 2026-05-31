@@ -779,10 +779,10 @@ def command_write(args: argparse.Namespace) -> None:
         write_env(path, updates, dry_run=getattr(args, "dry_run", False))
     if getattr(args, "dry_run", False):
         return
-    print("\nDone. Restart affected containers after env changes:")
+    print("\nDone. Reload affected containers after env changes:")
     print("  ./singularity.sh restart context-api")
     print("  ./singularity.sh restart llm-gateway")
-    print("  ./singularity.sh restart mcp-server-demo")
+    print("  ./singularity.sh recreate mcp-server-demo   # M101: reads its env_file — needs recreate, not restart")
     print("  ./singularity.sh restart formal-verifier")
     print("  ./singularity.sh restart workgraph-api")
     print("  ./singularity.sh restart workgraph-web")

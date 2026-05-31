@@ -129,6 +129,17 @@ case "$cmd" in
     docker compose restart "$target"
     ;;
 
+  recreate)
+    # M101 — `restart` only bounces the process; it does NOT re-read a
+    # service's env_file or ${...} interpolation. Use `recreate` after editing
+    # a service's .env (e.g. mcp-server/.env git config) so the new values are
+    # actually loaded into a fresh container.
+    require_compose
+    target="${1:?usage: $0 recreate <service>}"
+    info "recreating $target (reloads its env_file / .env) …"
+    docker compose up -d --force-recreate --no-deps "$target"
+    ;;
+
   status|ps)
     require_compose
     docker compose ps
