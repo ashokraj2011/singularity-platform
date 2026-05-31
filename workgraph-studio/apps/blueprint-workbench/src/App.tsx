@@ -1159,6 +1159,20 @@ function WorkbenchNeo({
   }, [activeSection])
 
   const activeStage = stages.find(stage => stage.key === activeStageKey) ?? stages[0]
+  // (2026-05-31) Steer & rerun — post operator guidance to the stage chat, then
+  // reset + rerun the active stage so the agent picks it up on a fresh attempt
+  // (the {{operatorChat}} prompt var is assembled at run-start). Cancels any
+  // in-flight attempt first (best-effort) so a stuck/running stage restarts
+  // cleanly. This is the "interact with the existing phase" path: the message
+  // reaches the agent's work on this stage immediately, via a fresh attempt.
+  const steerAndRerun = async (content: string) => {
+    if (!session || !activeStage) return
+    await api.postStageMessage(session.id, activeStage.key, { content })
+    try { await api.cancelInflightAttempt(session.id, activeStage.key) } catch { /* no in-flight attempt to cancel */ }
+    if (!session.snapshots[0]) await api.snapshot(session.id)
+    const updated = await api.runStage(session.id, activeStage.key)
+    onSession(updated)
+  }
   const activeAttempt = session && activeStage ? attemptsFor(session, activeStage.key).at(-1) : undefined
   const canReview = Boolean(session && activeStage && activeAttempt && isDeveloperStage(activeStage))
 
@@ -1254,6 +1268,7 @@ function WorkbenchNeo({
           sessionId={session.id}
           stage={activeStage}
           seedThread={activeStage ? session.stageChats?.[activeStage.key] : undefined}
+          onApplyNow={steerAndRerun}
         />
       </div>
 
