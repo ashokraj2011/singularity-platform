@@ -2,7 +2,7 @@
 import { useRef, useState } from "react";
 import useSWR from "swr";
 import { useSearchParams } from "next/navigation";
-import { identityApi, runtimeApi, workgraphApi, workgraphRunInsightsUrl, type IamBusinessUnit, type IamTeam } from "@/lib/api";
+import { apiPath, identityApi, runtimeApi, workgraphApi, workgraphRunInsightsUrl, type IamBusinessUnit, type IamTeam } from "@/lib/api";
 import { CAPABILITY_ROLE_OPTIONS, capabilityRoleLabel } from "@/lib/capabilityRoles";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Archive, Bot, CheckCircle2, ExternalLink, Pencil, PlayCircle, Plus, RefreshCw, Rocket, Save, Sparkles, Upload, X } from "lucide-react";
@@ -1689,7 +1689,7 @@ function KnowledgeUploadCard({
       for (const f of arr) fd.append("files", f, f.name);
 
       const res = await fetch(
-        `/api/runtime/capabilities/${encodeURIComponent(capabilityId)}/knowledge-artifacts/upload`,
+        apiPath(`/api/runtime/capabilities/${encodeURIComponent(capabilityId)}/knowledge-artifacts/upload`),
         { method: "POST", body: fd },
       );
       if (!res.ok) {
@@ -2103,7 +2103,7 @@ function TuningTab({ capabilityId }: { capabilityId: string }) {
     if (!task.trim()) return;
     setBusy(true); setError(null); setData(null);
     try {
-      const res = await fetch(COMPOSER_DEBUG_URL, {
+      const res = await fetch(apiPath(COMPOSER_DEBUG_URL), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ capabilityId, task }),

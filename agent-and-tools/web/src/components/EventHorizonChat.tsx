@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Bot, RefreshCcw, Send, Sparkles, Trash2, X } from "lucide-react";
-import { authHeaders, runtimeApi } from "@/lib/api";
+import { apiPath, authHeaders, runtimeApi } from "@/lib/api";
 
 type ChatMessage = {
   id: string;
@@ -142,7 +142,7 @@ export function EventHorizonChat() {
 
   // M37.4 — fetch the EventHorizonAction catalog once on first mount.
   useEffect(() => {
-    fetch("/api/event-horizon/actions?surface=capability-admin")
+    fetch(apiPath("/api/event-horizon/actions?surface=capability-admin"))
       .then((r) => (r.ok ? r.json() : []))
       .then((data) => setActions(Array.isArray(data) ? data : []))
       .catch((err) => console.warn("[EventHorizonChat] failed to load action catalog:", err));
@@ -207,7 +207,7 @@ export function EventHorizonChat() {
   async function callEventHorizon(text: string, actionIntent?: ActionIntent | null): Promise<string> {
     const sid = activeSessionId();
     const capability = (ctx.capability?.id ?? ctx.capability?.capabilityId ?? ctx.capability?.capability_id ?? capabilityId ?? DEFAULT_CAPABILITY_ID) as string;
-    const res = await fetch("/api/workgraph/event-horizon/chat", {
+    const res = await fetch(apiPath("/api/workgraph/event-horizon/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({
