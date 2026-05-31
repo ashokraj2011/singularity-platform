@@ -1,14 +1,23 @@
 import { ReactNode } from 'react'
-import { NavLink, useNavigate } from 'react-router-dom'
+import { Link, NavLink, useNavigate } from 'react-router-dom'
 import {
   Home, Workflow, Bot, Users, BarChart3, ExternalLink, ServerCog,
-  LogOut, ChevronRight, Zap, Wrench, Hammer,
+  LogOut, ChevronRight, Zap, Wrench, Hammer, Gauge, ShieldCheck, FileText, Power,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/auth.store'
 import { env } from '@/lib/env'
 import { cn } from '@/lib/cn'
 import { BrandLockup } from './BrandLockup'
 import { AppSwitcher } from './AppSwitcher'
+import { ReadinessStrip } from './ReadinessStrip'
+
+// M100 P3.2 — first-class deep-links into existing Operations surfaces.
+const operationsNav = [
+  { to: '/operations?tab=readiness', label: 'Readiness',    icon: Gauge },
+  { to: '/operations?tab=trust',     label: 'Trust & Eval', icon: ShieldCheck },
+  { to: '/operations?tab=audit',     label: 'Audit & Cost', icon: FileText },
+  { to: '/operations?tab=capabilities', label: 'Capabilities', icon: Power },
+]
 
 const internalNav = [
   { to: '/', label: 'Dashboard', icon: Home, end: true },
@@ -136,6 +145,35 @@ export function AppLayout({ children }: { children: ReactNode }) {
             ))}
           </div>
 
+          {/* Operations: deep-links into existing Operations surfaces (M100 P3.2) */}
+          <div className="mb-5">
+            <p
+              className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest"
+              style={{ color: 'rgba(245,242,234,0.35)' }}
+            >
+              Operations
+            </p>
+            {operationsNav.map((item) => (
+              <Link
+                key={item.to}
+                to={item.to}
+                className="flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors mb-0.5"
+                style={{ color: 'rgba(245,242,234,0.65)' }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'rgba(245,242,234,0.06)'
+                  e.currentTarget.style.color = 'var(--brand-warm-white)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent'
+                  e.currentTarget.style.color = 'rgba(245,242,234,0.65)'
+                }}
+              >
+                <item.icon className="w-4 h-4 shrink-0" style={{ color: 'rgba(245,242,234,0.5)' }} />
+                <span>{item.label}</span>
+              </Link>
+            ))}
+          </div>
+
           <div>
             <p
               className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest"
@@ -213,6 +251,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       </aside>
 
       <main className="flex-1 overflow-y-auto">
+        <ReadinessStrip />
         <div className="mx-auto max-w-6xl px-8 py-8">{children}</div>
       </main>
     </div>
