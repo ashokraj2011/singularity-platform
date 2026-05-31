@@ -3140,14 +3140,21 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   // had gone to worktree 3ca9692f.
   const inflight = priorAttempts.find(a => a.status === 'RUNNING' || a.status === 'PAUSED')
   if (inflight) {
-    throw new ValidationError(
-      `Stage ${stage.label} already has an in-flight attempt ` +
-      `(#${inflight.attemptNumber}, status=${inflight.status}). ` +
-      `Wait for it to finish or fail before starting another, or cancel ` +
-      `it explicitly via the workbench. Parallel attempts cause worktree ` +
-      `splits where edits land on one worktree and finish_work_branch ` +
-      `runs against another.`,
-    )
+    // (2026-05-31) Idempotent run. A second run request while an attempt is
+    // already in-flight is almost always benign — the workflow runtime
+    // auto-started the stage (WORKBENCH_TASK) and the operator then clicked Run
+    // against a stale view, or a UI double-submit. Creating a 2nd attempt would
+    // split the worktree (edits land on one worktree, finish_work_branch runs on
+    // another), so the guard must still NOT start a parallel attempt — but it
+    // should NOT throw a scary error on the operator's first click either.
+    // No-op: return the current session so the UI just shows the running
+    // attempt. To intentionally restart, use Reset & rerun (cancel + run).
+    await recordBlueprintAudit(session.id, 'BlueprintStageRunNoopInflight', actorId, {
+      stageKey: stage.key,
+      attemptNumber: inflight.attemptNumber,
+      status: inflight.status,
+    })
+    return loadSession(session.id, actorId)
   }
 
   const attempt: StageAttempt = {
