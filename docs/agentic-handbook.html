@@ -600,7 +600,7 @@
     <section id="legacy-shift">
       <h2>The Architectural Shift: Legacy invite.ts vs. context-fabric</h2>
       <p>
-        Prior to Milestone 71, the entire LLM ↔ tool execution loop was housed in a massive ~5,000-line monolithic TypeScript endpoint at <code>mcp-server/src/mcp/invoke.ts</code>. In modern Singularity, this endpoint is a 410-returning shim. The loop was refactored into the Python-based <code>context-fabric/services/context_api_service/app/governed</code> modules.
+        Prior to Milestone 71, the entire LLM ↔ tool execution loop was housed in a large ~4,600-line monolithic TypeScript endpoint at <code>mcp-server/src/mcp/invoke.ts</code>. In modern Singularity, the cloud <code>POST /mcp/invoke</code> route returns <code>410 Gone</code> (re-enableable only via <code>MCP_LEGACY_INVOKE_ENABLED</code> for incident recovery); the loop body is retained but dormant for the platform path. The active loop was refactored into the Python-based <code>context-fabric/services/context_api_service/app/governed</code> modules.
       </p>
 
       <div class="glass-card" style="margin: 1.5rem 0; padding: 1.5rem;">

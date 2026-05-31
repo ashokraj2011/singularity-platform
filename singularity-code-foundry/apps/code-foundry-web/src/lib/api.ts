@@ -6,10 +6,13 @@
  * deployment the SPA is served by the same host as the API, so the
  * same relative paths work without any proxy.
  *
- * Bearer token is read from VITE_FOUNDRY_TOKEN at build time, or from
- * localStorage at runtime (so an operator can paste a token without
- * rebuilding). Localhost requests skip auth entirely thanks to the API
- * side's bearer middleware logic.
+ * Auth model (M100 P0, 2026-05-31): the SERVICE token is no longer read
+ * from a build-time env var (that baked it into the browser bundle). The
+ * same-origin `/api` proxy injects the service token server-side from the
+ * FOUNDRY_TOKEN env (see vite.config.ts). The only token the client sets is
+ * an OPERATOR-pasted one from localStorage('foundry.token') — that's the
+ * user's own credential, not a shared secret. Localhost requests skip auth
+ * entirely thanks to the API side's bearer middleware logic.
  */
 export interface RunSummary {
   id: string
@@ -102,11 +105,11 @@ class ApiError extends Error {
 }
 
 function getToken(): string | null {
-  // Build-time injection
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const fromEnv = (import.meta as any).env?.VITE_FOUNDRY_TOKEN as string | undefined
-  if (fromEnv && fromEnv !== 'dev-codegen-service-token') return fromEnv
-  // Runtime override
+  // M100 P0 — the SERVICE token is NOT read from a build-time env var anymore
+  // (that baked it into the browser bundle). The same-origin `/api` proxy
+  // injects it server-side from FOUNDRY_TOKEN (see vite.config.ts). The only
+  // token the client supplies is an OPERATOR-pasted one from localStorage —
+  // the user's own credential, not a shared secret.
   try {
     const v = localStorage.getItem('foundry.token')
     if (v) return v

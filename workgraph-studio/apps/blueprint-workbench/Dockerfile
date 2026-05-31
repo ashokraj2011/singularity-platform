@@ -17,6 +17,12 @@ COPY apps/blueprint-workbench ./apps/blueprint-workbench
 RUN pnpm --filter blueprint-workbench build
 
 FROM nginx:1.27-alpine AS runner
+# M100 P0 (2026-05-31) — the audit-gov service token is injected into the
+# nginx `/audit-gov/` proxy server-side (NOT baked into the browser bundle).
+# Override at build time with `--build-arg AUDIT_GOV_TOKEN=<real-token>`;
+# the printf below interpolates it into a `proxy_set_header Authorization`
+# line so same-origin /audit-gov requests from the SPA carry no credential.
+ARG AUDIT_GOV_TOKEN=dev-audit-gov-service-token
 # M69 Loop Theater — Phase 1 needs /audit-gov/* to reach the
 # audit-governance-service container so the theater can fetch the event
 # history for a trace. SSE for live tail (Phase 2) needs proxy_buffering
@@ -43,6 +49,6 @@ FROM nginx:1.27-alpine AS runner
 # request() retries 502/503/504 once after 1.5s). Reads only —
 # the client retry is disabled for POST/PUT/PATCH/DELETE so an
 # accidental double-mutation can't happen.
-RUN printf 'server {\n  listen 80;\n  root /usr/share/nginx/html;\n  index index.html;\n\n  resolver 127.0.0.11 ipv6=off valid=10s;\n  set $workgraph_api http://workgraph-api:8080;\n  set $audit_gov http://host.docker.internal:8500;\n\n  add_header Cache-Control "no-store, no-cache, must-revalidate" always;\n  add_header Pragma "no-cache" always;\n  add_header Expires "0" always;\n\n  location = /health {\n    default_type application/json;\n    return 200 "{\"status\":\"ok\",\"service\":\"blueprint-workbench\",\"mode\":\"nginx\"}";\n  }\n\n  location /api/ {\n    proxy_pass $workgraph_api;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto $scheme;\n    proxy_read_timeout 600s;\n    proxy_connect_timeout 5s;\n    proxy_next_upstream error timeout http_502 http_503 http_504;\n    proxy_next_upstream_tries 2;\n  }\n\n  location /audit-gov/ {\n    rewrite ^/audit-gov/(.*)$ /$1 break;\n    proxy_pass $audit_gov;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_buffering off;\n    proxy_read_timeout 3600s;\n  }\n\n  location /assets/ { try_files $uri =404; }\n  location / { try_files $uri $uri/ /index.html; }\n}\n' > /etc/nginx/conf.d/default.conf
+RUN printf 'server {\n  listen 80;\n  root /usr/share/nginx/html;\n  index index.html;\n\n  resolver 127.0.0.11 ipv6=off valid=10s;\n  set $workgraph_api http://workgraph-api:8080;\n  set $audit_gov http://host.docker.internal:8500;\n\n  add_header Cache-Control "no-store, no-cache, must-revalidate" always;\n  add_header Pragma "no-cache" always;\n  add_header Expires "0" always;\n\n  location = /health {\n    default_type application/json;\n    return 200 "{\"status\":\"ok\",\"service\":\"blueprint-workbench\",\"mode\":\"nginx\"}";\n  }\n\n  location /api/ {\n    proxy_pass $workgraph_api;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto $scheme;\n    proxy_read_timeout 600s;\n    proxy_connect_timeout 5s;\n    proxy_next_upstream error timeout http_502 http_503 http_504;\n    proxy_next_upstream_tries 2;\n  }\n\n  location /audit-gov/ {\n    rewrite ^/audit-gov/(.*)$ /$1 break;\n    proxy_pass $audit_gov;\n    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header Authorization "Bearer %s";\n    proxy_buffering off;\n    proxy_read_timeout 3600s;\n  }\n\n  location /assets/ { try_files $uri =404; }\n  location / { try_files $uri $uri/ /index.html; }\n}\n' "$AUDIT_GOV_TOKEN" > /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/blueprint-workbench/dist /usr/share/nginx/html
 EXPOSE 80
