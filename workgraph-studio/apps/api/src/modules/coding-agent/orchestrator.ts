@@ -406,6 +406,11 @@ export function adaptGovernedStageToCodingRun(
     branch_name?: string
     commit_sha?: string
     paths_committed?: string[]
+    // (2026-05-31) mcp-server's finish_work_branch output also carries the
+    // absolute worktree root the commit lives in. Capturing it lets Git Push
+    // pin to the exact worktree (authoritative `workspaceRoot`) instead of
+    // re-deriving a fragile guess from the branch name → NO_COMMIT_TO_PUSH.
+    workspaceRoot?: string
   } | null = null
   // (2026-05-25) Mirror context-fabric's loop._extract_code_changes
   // logic: a mutating tool is "evidence of a real code change" iff
@@ -520,13 +525,22 @@ export function adaptGovernedStageToCodingRun(
         if (outcome.tool_name === 'finish_work_branch' && outcome.tool_success !== false) {
           finishWorkBranchInvoked = true
           finishWorkBranchResult = {
-            branch_name: typeof rec.branch_name === 'string' ? rec.branch_name : undefined,
+            // (2026-05-31) The finish_work_branch tool emits `branch` (and
+            // `paths_touched`), not `branch_name`/`paths_committed` — so the
+            // branch was silently lost here and only recovered downstream by the
+            // workbench-name fallback (which has no equivalent for the root).
+            // Read the real field with a legacy fallback.
+            branch_name: typeof rec.branch_name === 'string' ? rec.branch_name
+              : typeof rec.branch === 'string' ? rec.branch : undefined,
             commit_sha: typeof rec.commit_sha === 'string' ? rec.commit_sha : undefined,
             paths_committed: Array.isArray(rec.paths_committed)
               ? rec.paths_committed.filter((p): p is string => typeof p === 'string')
               : Array.isArray(rec.paths_touched)
                 ? rec.paths_touched.filter((p): p is string => typeof p === 'string')
                 : undefined,
+            // Absolute worktree root the commit lives in — lets Git Push pin to
+            // the exact tree instead of re-deriving a guess from the branch name.
+            workspaceRoot: typeof rec.workspaceRoot === 'string' ? rec.workspaceRoot : undefined,
           }
         }
         // Verification receipt extraction.
@@ -612,6 +626,11 @@ export function adaptGovernedStageToCodingRun(
         ...(finishWorkBranchResult?.paths_committed ?? []),
         ...codeChangeRecords.flatMap((r) => r.paths_touched ?? []),
       ])),
+      // (2026-05-31) Surface the real worktree root so buildActualCodeChangeEvidence
+      // records workspace_root and GitPushExecutor forwards it to /mcp/work/finish-branch
+      // as the authoritative root — pinning the push to the worktree that holds the
+      // commit instead of re-deriving an empty branch → NO_COMMIT_TO_PUSH.
+      workspaceRoot: finishWorkBranchResult?.workspaceRoot,
       governed: {
         stopReason: resp.stop_reason,
         errorCode: resp.error_code,
