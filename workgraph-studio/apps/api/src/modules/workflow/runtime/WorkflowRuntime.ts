@@ -940,7 +940,35 @@ export async function failNode(
     return { retried: false, recovered: true, instanceFailed: false }
   }
 
-  // No error handler; fail the instance.
+  // (2026-05-31) Failure isolation is the DEFAULT for every node type. A single
+  // node failure must NOT cascade into failing the whole run + SAGA compensations
+  // (which would undo / strand every previously-completed node — "all nodes
+  // fail"). The node is already marked FAILED above; pause the instance so ONLY
+  // the failing node shows failed, completed nodes are preserved, and the run
+  // stays resumable (fix the cause + retry the node, or cancel to terminate).
+  // ERROR_BOUNDARY edges (handled above) remain the way to express explicit
+  // recovery routing.
+  //
+  // Workflows that genuinely need fail-fast + SAGA rollback can opt a node into
+  // the legacy cascade behavior with config.failurePolicy = 'CASCADE'.
+  const failurePolicy = String(cfg.failurePolicy ?? '').toUpperCase()
+  if (failurePolicy !== 'CASCADE') {
+    await prisma.workflowInstance.update({
+      where: { id: instanceId },
+      data: { status: 'PAUSED' },
+    })
+    await logEvent('WorkflowNodeFailureIsolated', 'WorkflowNode', nodeId, actorId, {
+      instanceId,
+      nodeType: executableNodeType(node),
+      error: failure,
+      note: 'Node failure isolated; instance paused (not failed), completed nodes preserved, no compensations.',
+    })
+    await publishOutbox('WorkflowInstance', instanceId, 'WorkflowPaused', { instanceId, blockedNodeId: nodeId })
+    return { retried: false, recovered: false, instanceFailed: false }
+  }
+
+  // failurePolicy = CASCADE (opt-in) — legacy fail-fast: mark the instance FAILED
+  // and run SAGA compensations for completed nodes that declared compensationConfig.
   await prisma.workflowInstance.update({
     where: { id: instanceId },
     data: { status: 'FAILED', completedAt: new Date() },
