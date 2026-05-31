@@ -270,18 +270,21 @@ const StepCard = memo(function StepCard({ step }: { step: LoopTraceStep }) {
       )}
 
       {expanded && step.promptPreview.length > 0 && (
-        <div className="loop-step-prompt">
-          <strong>Prompt preview ({step.promptPreview.length} messages)</strong>
-          <ol>
+        <details className="loop-step-prompt">
+          <summary><strong>Full prompt sent ({step.promptPreview.length} messages)</strong></summary>
+          <ol className="loop-prompt-messages">
             {step.promptPreview.map((m, i) => (
-              <li key={i}>
-                <span className={`prompt-role role-${m.role}`}>{m.role}</span>
+              <li key={i} className="loop-prompt-message">
+                <span className={`prompt-role role-${m.role}`}>{m.role.toUpperCase()}</span>
                 {m.tool_name && <span className="prompt-toolname"> · {m.tool_name}</span>}
-                <span className="prompt-content">{m.content_preview}</span>
+                <pre
+                  className="prompt-content"
+                  style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 360, overflow: 'auto', margin: '4px 0 0' }}
+                >{m.content_preview}</pre>
               </li>
             ))}
           </ol>
-        </div>
+        </details>
       )}
 
       {step.error && (

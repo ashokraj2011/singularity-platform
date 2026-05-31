@@ -2386,14 +2386,17 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
   }, [session.artifacts])
   const visible = artifacts.filter(artifact => !activeStageKey || !artifact.stageKey || artifact.stageKey === activeStageKey || artifact.kind === 'final_implementation_pack')
   const active = visible.find(artifact => artifact.id === activeArtifactId) ?? visible[0]
-  // M82 S1 — derive editability from the workflow's loopDefinition.
-  // Any stage that declares this artifact kind with editable=true grants
-  // the operator the right to overwrite. Read-only by default.
+  // (2026-05-31) Universal editability: every artifact is editable while the
+  // blueprint is in flight, and locks once the work is finalized (session
+  // APPROVED/COMPLETED). Per-stage approval locks (an accepted stage attempt)
+  // are enforced server-side by editArtifactContent, which returns a clear
+  // error if an accepted stage's artifact is edited.
   const isActiveEditable = useMemo(() => {
     if (!active) return false
-    const stages = session.loopDefinition?.stages ?? []
-    return stages.some(stage => (stage.expectedArtifacts ?? []).some(a => a.kind === active.kind && a.editable === true))
-  }, [active, session.loopDefinition])
+    const status = (session as { status?: string }).status
+    if (status === 'APPROVED' || status === 'COMPLETED') return false
+    return true
+  }, [active, session])
   const editArtifactMutation = useMutation({
     mutationFn: ({ id, content, reason }: { id: string; content: string; reason?: string }) =>
       api.editArtifact(session.id, id, { content, reason }),

@@ -519,20 +519,22 @@ export const capabilityService = {
         // fall back to the runtime verifier-registry heuristics.
         const testCommands = input.testCommands ?? [];
         const buildCommands = input.buildCommands ?? [];
-        const hasAnything = agentRules.length > 0 || primaryLanguage || buildSystem
-          || testCommands.length > 0 || buildCommands.length > 0;
-        if (hasAnything) {
-          await upsertWorldModel({
-            capabilityId: capability.id,
-            agentRules,
-            primaryLanguage,
-            buildSystem,
-            testCommands,
-            buildCommands,
-          });
-        }
+        // Always create the world-model row on onboarding, even when the
+        // discovery pass found nothing yet (empty rules/commands). The upsert
+        // is idempotent and the row is enriched later by the AST / distillation
+        // / drift-refresh workers. Guaranteeing the row exists means
+        // context-fabric's per-phase injection never silently 404s for an
+        // onboarded capability.
+        await upsertWorldModel({
+          capabilityId: capability.id,
+          agentRules,
+          primaryLanguage,
+          buildSystem,
+          testCommands,
+          buildCommands,
+        });
       } catch (err) {
-        warnings.push(`World-model seed skipped: ${(err as Error).message}`);
+        warnings.push(`World-model seed failed: ${(err as Error).message}`);
       }
 
       const candidates = [
@@ -757,14 +759,14 @@ export const capabilityService = {
         const buildSystem = pickPrimaryBuildSystem(repositoryProfiles);
         const testCommands = input.testCommands ?? [];
         const buildCommands = input.buildCommands ?? [];
-        if (agentRules.length > 0 || primaryLanguage || buildSystem || testCommands.length > 0 || buildCommands.length > 0) {
-          await upsertWorldModel({
-            capabilityId: capability.id,
-            agentRules, primaryLanguage, buildSystem, testCommands, buildCommands,
-          });
-        }
+        // Always create the world-model row (see sync path above). Idempotent
+        // upsert; enriched later by AST / distillation / drift-refresh workers.
+        await upsertWorldModel({
+          capabilityId: capability.id,
+          agentRules, primaryLanguage, buildSystem, testCommands, buildCommands,
+        });
       } catch (err) {
-        warnings.push(`World-model seed skipped: ${(err as Error).message}`);
+        warnings.push(`World-model seed failed: ${(err as Error).message}`);
       }
 
       const candidates = [
