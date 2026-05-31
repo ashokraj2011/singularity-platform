@@ -1989,13 +1989,40 @@ function parseGitHub(url: string): { owner: string; repo: string } {
   return { owner, repo: repoRaw.replace(/\.git$/, "") };
 }
 
+/**
+ * MCP-mediated GitHub access. Platform policy: GitHub egress only happens
+ * through the MCP server — even during capability onboarding. These helpers
+ * call mcp-server's /mcp/source/* endpoints (which hold any GITHUB_TOKEN and
+ * are the single GitHub egress point) instead of hitting api.github.com /
+ * raw.githubusercontent.com directly.
+ */
+async function mcpSourcePost(path: string, body: Record<string, unknown>): Promise<unknown> {
+  const base = (process.env.MCP_SERVER_URL ?? "").replace(/\/+$/, "");
+  if (!base) {
+    throw new Error("MCP_SERVER_URL is not configured; GitHub access must go through the MCP server.");
+  }
+  const token = process.env.MCP_BEARER_TOKEN ?? "";
+  const res = await fetch(`${base}${path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`MCP source request ${path} failed (${res.status})`);
+  return res.json();
+}
+
+async function fetchRepoTreeViaMcp(repoUrl: string, branch: string): Promise<Array<{ path?: string; type?: string; size?: number }>> {
+  const data = await mcpSourcePost("/mcp/source/tree", { repoUrl, branch }) as { tree?: Array<{ path?: string; type?: string; size?: number }> };
+  return data.tree ?? [];
+}
+
 async function discoverGitHubRepoWithProfile(repoUrl: string, branch: string): Promise<{ docs: DiscoveryDoc[]; profile: RepositoryProfile }> {
   const { owner, repo } = parseGitHub(repoUrl);
-  const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
-  const treeResp = await fetch(treeUrl, { headers: { accept: "application/vnd.github+json" } });
-  if (!treeResp.ok) throw new Error(`GitHub tree lookup failed (${treeResp.status})`);
-  const tree = await treeResp.json() as { tree?: Array<{ path?: string; type?: string; size?: number }> };
-  const blobs = (tree.tree ?? [])
+  const blobs = (await fetchRepoTreeViaMcp(repoUrl, branch))
     .filter(item => item.type === "blob" && item.path);
   const candidates = blobs
     .filter(item => item.type === "blob" && item.path && isDiscoveryPath(item.path) && (item.size ?? 0) <= 250_000)
@@ -2005,7 +2032,7 @@ async function discoverGitHubRepoWithProfile(repoUrl: string, branch: string): P
   const sourceByPath = new Map<string, string>();
   for (const item of candidates) {
     const itemPath = item.path!;
-    const content = (await fetchGitHubRaw(owner, repo, branch, itemPath)).slice(0, DISCOVERY_SOURCE_CHAR_CAP);
+    const content = (await fetchRepoFileViaMcp(repoUrl, branch, itemPath)).slice(0, DISCOVERY_SOURCE_CHAR_CAP);
     if (!content) continue;
     sourceByPath.set(itemPath, content);
     total += content.length;
@@ -2023,11 +2050,9 @@ async function discoverGitHubRepoWithProfile(repoUrl: string, branch: string): P
   return { docs, profile };
 }
 
-async function fetchGitHubRaw(owner: string, repo: string, branch: string, itemPath: string): Promise<string> {
-  const raw = `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(branch)}/${itemPath.split("/").map(encodeURIComponent).join("/")}`;
-  const res = await fetch(raw);
-  if (!res.ok) return "";
-  return res.text();
+async function fetchRepoFileViaMcp(repoUrl: string, branch: string, itemPath: string): Promise<string> {
+  const data = await mcpSourcePost("/mcp/source/file", { repoUrl, branch, path: itemPath }) as { content?: string };
+  return data.content ?? "";
 }
 
 async function buildRepositoryProfileFromTree(input: {
@@ -2061,7 +2086,7 @@ async function buildRepositoryProfileFromTree(input: {
     if (sourceByPath.has(path)) continue;
     const blob = input.blobs.find(item => item.path === path);
     if ((blob?.size ?? 0) > 250_000) continue;
-    const content = await fetchGitHubRaw(input.owner, input.repo, input.branch, path);
+    const content = await fetchRepoFileViaMcp(input.repoUrl, input.branch, path);
     if (content) sourceByPath.set(path, content.slice(0, DISCOVERY_SOURCE_CHAR_CAP));
   }
 

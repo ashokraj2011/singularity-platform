@@ -16,6 +16,7 @@ import { eventsRouter } from "./mcp/events";
 import { discoveryRouter } from "./mcp/discovery";
 import { worktreeRouter } from "./mcp/worktree";
 import { worktreeTestRouter } from "./mcp/worktree-test";
+import { sourceDiscoverRouter } from "./mcp/source-discover";
 import { buildCodeContextPackage } from "./mcp/code-context";
 // M61 Wire E + Wire B P2 — best-effort callbacks to agent-runtime's
 // CapabilityWorldModel: repo fingerprint (drift detector) + AST index
@@ -132,6 +133,9 @@ app.use("/mcp/worktree", (req, res, next) => {
 });
 app.use("/mcp/resources", requireMcpScope("resources:read"));
 app.use("/mcp/events", requireMcpScope("events:read"));
+// Centralized GitHub source discovery for capability onboarding. Read-only
+// repo tree / file reads, so they ride the resources:read scope.
+app.use("/mcp/source", requireMcpScope("resources:read"));
 app.use("/mcp", discoveryRouter);
 app.post("/mcp/embed", async (req, res) => {
   const parsed = z.object({
@@ -254,6 +258,7 @@ app.use("/mcp/worktree", worktreeRouter);
 // because the actual side-effect is in the sandbox, which the runner
 // already gates; this endpoint just dispatches.
 app.use("/mcp/worktree", worktreeTestRouter);
+app.use("/mcp", sourceDiscoverRouter);
 app.use("/mcp", eventsRouter);
 
 app.use(errorMiddleware);
