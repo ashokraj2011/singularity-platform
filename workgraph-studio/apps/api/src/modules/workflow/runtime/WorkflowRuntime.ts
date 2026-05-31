@@ -940,30 +940,35 @@ export async function failNode(
     return { retried: false, recovered: true, instanceFailed: false }
   }
 
-  // (2026-05-31) Isolate Git Push failures to the node. A push failure is
-  // operator-recoverable (the local commit is durable; fix the cause and retry
-  // just this node), so it must NEVER cascade into failing the whole run + SAGA
-  // compensations (which would undo every completed node — "all nodes failed").
-  // The node is already FAILED above; pause the instance so only this node shows
-  // failed and the run stays resumable. Mirrors degradeNodeToBlocked semantics
-  // for the case where the failure arrives via failNode (no ERROR_BOUNDARY edge)
-  // rather than the activateGitPush self-block path.
-  if (executableNodeType(node) === 'GIT_PUSH') {
+  // (2026-05-31) Failure isolation is the DEFAULT for every node type. A single
+  // node failure must NOT cascade into failing the whole run + SAGA compensations
+  // (which would undo / strand every previously-completed node — "all nodes
+  // fail"). The node is already marked FAILED above; pause the instance so ONLY
+  // the failing node shows failed, completed nodes are preserved, and the run
+  // stays resumable (fix the cause + retry the node, or cancel to terminate).
+  // ERROR_BOUNDARY edges (handled above) remain the way to express explicit
+  // recovery routing.
+  //
+  // Workflows that genuinely need fail-fast + SAGA rollback can opt a node into
+  // the legacy cascade behavior with config.failurePolicy = 'CASCADE'.
+  const failurePolicy = String(cfg.failurePolicy ?? '').toUpperCase()
+  if (failurePolicy !== 'CASCADE') {
     await prisma.workflowInstance.update({
       where: { id: instanceId },
       data: { status: 'PAUSED' },
     })
     await logEvent('WorkflowNodeFailureIsolated', 'WorkflowNode', nodeId, actorId, {
       instanceId,
-      nodeType: 'GIT_PUSH',
+      nodeType: executableNodeType(node),
       error: failure,
-      note: 'Git Push failure isolated to node; instance paused (not failed), no compensations run.',
+      note: 'Node failure isolated; instance paused (not failed), completed nodes preserved, no compensations.',
     })
     await publishOutbox('WorkflowInstance', instanceId, 'WorkflowPaused', { instanceId, blockedNodeId: nodeId })
     return { retried: false, recovered: false, instanceFailed: false }
   }
 
-  // No error handler; fail the instance.
+  // failurePolicy = CASCADE (opt-in) — legacy fail-fast: mark the instance FAILED
+  // and run SAGA compensations for completed nodes that declared compensationConfig.
   await prisma.workflowInstance.update({
     where: { id: instanceId },
     data: { status: 'FAILED', completedAt: new Date() },
