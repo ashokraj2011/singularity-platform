@@ -2,9 +2,10 @@
 import useSWR from "swr";
 import { Users } from "lucide-react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { apiPath } from "@/lib/api";
 
 const fetcher = async () => {
-  const res = await fetch("/api/client-runners");
+  const res = await fetch(apiPath("/api/client-runners"));
   return res.json() as Promise<{ runners: Record<string, unknown>[] }>;
 };
 

@@ -1,12 +1,17 @@
-// M100 P1 — prefix every API path with the Next basePath so that behind the
-// single-origin edge gateway (basePath '/agent') client fetches go to
-// /agent/api/* (matching the basePath-prefixed Next rewrites). Raw fetch() is
-// NOT auto-prefixed by Next, so we do it here. Empty standalone (no basePath).
+// M100 P1 — under the Next basePath (/agent behind the edge gateway) every
+// client API call must hit /agent/api/* (Next auto-prefixes both its API route
+// handlers AND its rewrite sources, but NOT raw fetch). Rather than prefix every
+// call site, the central req()/reqEnv() wrappers prepend the base path via
+// apiPath(); raw fetch() callers import apiPath. Bases stay bare here.
+// Empty standalone (no basePath) → apiPath is a no-op.
 const BP = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
-const AGENT_BASE = `${BP}/api/agents`;
-const TOOL_BASE = `${BP}/api/tools`;
-const AUDIT_GOV_BASE = `${BP}/api/audit-gov`;
-const WORKGRAPH_BASE = `${BP}/api/workgraph`;
+export function apiPath(p: string): string {
+  return p.startsWith("/") ? `${BP}${p}` : p;
+}
+const AGENT_BASE = "/api/agents";
+const TOOL_BASE = "/api/tools";
+const AUDIT_GOV_BASE = "/api/audit-gov";
+const WORKGRAPH_BASE = "/api/workgraph";
 
 export class ApiError extends Error {
   constructor(
@@ -72,7 +77,7 @@ export function authHeaders(): Record<string, string> {
 async function req<T>(url: string, opts?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, { ...opts, headers: { "Content-Type": "application/json", ...authHeaders(), ...(opts?.headers ?? {}) } });
+    res = await fetch(apiPath(url), { ...opts, headers: { "Content-Type": "application/json", ...authHeaders(), ...(opts?.headers ?? {}) } });
   } catch (err) {
     throw new ApiError((err as Error).message || "Network request failed");
   }
@@ -170,7 +175,7 @@ type Envelope<T> = { success: boolean; data: T; error: { code: string; message: 
 async function reqEnv<T>(url: string, opts?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, { ...opts, headers: { "Content-Type": "application/json", ...authHeaders(), ...(opts?.headers ?? {}) } });
+    res = await fetch(apiPath(url), { ...opts, headers: { "Content-Type": "application/json", ...authHeaders(), ...(opts?.headers ?? {}) } });
   } catch (err) {
     throw new ApiError((err as Error).message || "Network request failed");
   }
@@ -207,7 +212,8 @@ export type IamTeam = { id: string; team_key?: string; name: string; bu_id?: str
 export type IamBusinessUnit = { id: string; bu_key?: string; name: string };
 
 export function workgraphRunInsightsUrl(runId: string): string {
-  const base = process.env.NEXT_PUBLIC_WORKGRAPH_WEB_URL ?? "http://localhost:5174";
+  // M100 P3 — same-origin path prefix under the edge gateway (was localhost:5174).
+  const base = process.env.NEXT_PUBLIC_WORKGRAPH_WEB_URL ?? "/workflow";
   return `${base.replace(/\/$/, "")}/runs/${encodeURIComponent(runId)}/insights`;
 }
 

@@ -38,8 +38,8 @@ export function CapabilityDetailPage() {
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading…</div>
   if (!cap) return <div className="p-8 text-sm text-gray-500">Capability not found.</div>
   const agentToolsCapabilityHref = UUID_RE.test(cap.capability_id)
-    ? `http://localhost:3000/capabilities/${cap.capability_id}`
-    : 'http://localhost:3000/capabilities'
+    ? `/agent/capabilities/${cap.capability_id}`
+    : '/agent/capabilities'
 
   async function handleAddRel() {
     if (!relTarget.trim()) return

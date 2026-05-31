@@ -130,10 +130,14 @@ const defaultWorkbenchGoal = 'Create a governed planning, design, development, Q
 // the LLM and agent talked to each other during a run. See loop-theater/.
 type WorkbenchSection = 'workflow' | 'artifacts' | 'terminal' | 'loop' | 'replay' | 'theater'
 
+// M100 P3 — under the single-origin edge gateway, workgraph-web and the
+// workbench share the current origin, so postMessage targets / origin checks
+// default to window.location.origin (was hardcoded :5174 / :5176). The
+// VITE_*_ORIGIN overrides remain for split-origin deployments.
 const WORKGRAPH_WEB_ORIGIN = normalizeOrigin(import.meta.env.VITE_WORKGRAPH_WEB_ORIGIN)
-  ?? `${window.location.protocol}//${window.location.hostname}:5174`
+  ?? window.location.origin
 const WORKBENCH_ORIGIN = normalizeOrigin(import.meta.env.VITE_BLUEPRINT_WORKBENCH_ORIGIN)
-  ?? `${window.location.protocol}//${window.location.hostname}:5176`
+  ?? window.location.origin
 
 type WorkbenchHydratedDefaults = {
   browserRunId?: string

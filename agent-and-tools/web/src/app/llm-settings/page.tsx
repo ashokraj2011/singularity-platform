@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Cpu, HardDrive, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
+import { apiPath } from "@/lib/api";
 
 type GatewayResult = {
   ok: boolean;
@@ -100,7 +101,7 @@ export default function LlmSettingsPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/llm-settings", { cache: "no-store" });
+      const res = await fetch(apiPath("/api/llm-settings"), { cache: "no-store" });
       const data = await res.json() as LlmSettings;
       if (!res.ok) throw new Error(JSON.stringify(data).slice(0, 400));
       setSettings(data);

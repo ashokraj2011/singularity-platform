@@ -25,7 +25,7 @@ export function CapabilitiesListPage() {
         title="Capabilities"
         subtitle="Identity references for capabilities bootstrapped in Agent Studio"
         action={
-          <a href="http://localhost:3000/capabilities" target="_blank" rel="noreferrer">
+          <a href="/agent/capabilities" target="_blank" rel="noreferrer">
             <Button className="bg-[#00843D] hover:bg-[#006830]">
               <ExternalLink className="w-4 h-4 mr-1.5" /> Bootstrap in Agent Studio
             </Button>

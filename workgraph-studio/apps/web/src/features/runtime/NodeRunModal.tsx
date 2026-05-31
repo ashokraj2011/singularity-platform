@@ -30,7 +30,11 @@ import { uploadAttachment, attachLink, type UploadedDocument } from '../../lib/u
 import { api } from '../../lib/api'
 
 const BLUEPRINT_WORKBENCH_URL = import.meta.env.VITE_BLUEPRINT_WORKBENCH_URL
-  ?? `${window.location.protocol}//${window.location.hostname}:5176/`
+  // M100 P3 — same-origin under the edge gateway (was :5176). The launch URL is
+  // built via new URL(this, location.href) → http://<edge>/workbench/?…, and
+  // BLUEPRINT_WORKBENCH_ORIGIN derives from .origin (stays the current origin,
+  // valid for the postMessage target).
+  ?? '/workbench/'
 const BLUEPRINT_WORKBENCH_ORIGIN = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href).origin
 
 interface Props {
