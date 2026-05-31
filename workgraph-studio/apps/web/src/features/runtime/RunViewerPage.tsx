@@ -1492,7 +1492,13 @@ function blockingDetailsForNode(
     .find(([key, value]) => key.startsWith('_blockedBy') && value && typeof value === 'object' && !Array.isArray(value))?.[1]
   const blocked = Object.keys(direct).length > 0 ? direct : asRecord(fallback)
   const source = Object.keys(blocked).length > 0 ? blocked : lastError
-  if (node.status !== 'BLOCKED' && node.status !== 'FAILED' && Object.keys(source).length === 0) return null
+  // (2026-05-31) Only the node that is actually BLOCKED or FAILED shows a
+  // blocking/failure banner. `source` falls back to the INSTANCE-level
+  // _blockedBy* context (shared by every node in the run), so a single Git Push
+  // block was leaking the same "Blocking reason / FIX COMMANDS" onto every card
+  // — including COMPLETED Start / Workbench / sign-off nodes. Gate strictly on
+  // THIS node's own status so the banner appears only where the failure lives.
+  if (node.status !== 'BLOCKED' && node.status !== 'FAILED') return null
 
   const pushError = stringField(source, 'pushError')
   const message =
