@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ComponentType, CSSProperties, FocusEvent } from 'react'
-import { Bot, ExternalLink, Grid3X3, ServerCog, ShieldCheck, Workflow, Wrench } from 'lucide-react'
+import { Bot, ExternalLink, Grid3X3, Hammer, ServerCog, ShieldCheck, Workflow, Wrench } from 'lucide-react'
 import { env } from '@/lib/env'
 
 type AppLink = {
@@ -16,6 +16,7 @@ const appLinks: AppLink[] = [
   { id: 'agent-studio', label: 'Agent Studio', href: env.links.agentAdmin, description: 'Agents, tools, capabilities', icon: Bot },
   { id: 'workflow', label: 'Workflow Manager', href: env.links.workgraphDesigner, description: 'Runs, WorkItems, approvals', icon: Workflow },
   { id: 'workbench', label: 'Blueprint Workbench', href: `${env.links.blueprintWorkbench}/?ui=neo`, description: 'Guided delivery cockpit', icon: Wrench },
+  { id: 'foundry', label: 'Code Foundry', href: env.links.codeFoundry, description: 'Spec-driven code generation', icon: Hammer },
   { id: 'iam', label: 'Identity & Access', href: env.links.iamAdmin, description: 'Users, teams, roles', icon: ShieldCheck },
 ]
 

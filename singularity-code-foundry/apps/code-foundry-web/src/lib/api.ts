@@ -104,6 +104,11 @@ class ApiError extends Error {
   }
 }
 
+// M100 P1 — prefix every API path with the Vite base so that behind the
+// single-origin edge gateway (base '/foundry/') requests go to /foundry/api/*
+// and route to this app; standalone (base '/') it stays /api/*.
+const API_PREFIX = import.meta.env.BASE_URL.replace(/\/$/, '')
+
 function getToken(): string | null {
   // M100 P0 — the SERVICE token is NOT read from a build-time env var anymore
   // (that baked it into the browser bundle). The same-origin `/api` proxy
@@ -124,7 +129,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   const token = getToken()
   if (token) headers.set('Authorization', `Bearer ${token}`)
-  const res = await fetch(path, { ...init, headers })
+  const res = await fetch(`${API_PREFIX}${path}`, { ...init, headers })
   let body: unknown
   const ct = res.headers.get('content-type') ?? ''
   if (ct.includes('application/json')) body = await res.json()

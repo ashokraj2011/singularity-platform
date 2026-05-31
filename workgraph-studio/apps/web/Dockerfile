@@ -17,6 +17,11 @@ RUN pnpm install --frozen-lockfile || pnpm install
 
 FROM base AS build
 WORKDIR /app
+# M100 P1 — single-origin base path. The edge gateway serves this app under
+# /workflow/; BASE_PATH makes Vite namespace asset + API URLs. Default '/'
+# keeps the standalone :5174 image unchanged.
+ARG BASE_PATH=/
+ENV BASE_PATH=${BASE_PATH}
 COPY --from=deps /app/node_modules ./node_modules
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
 COPY apps/web ./apps/web

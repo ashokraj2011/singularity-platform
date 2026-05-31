@@ -21,6 +21,9 @@ function healthPlugin(): Plugin {
 }
 
 export default defineConfig({
+  // M100 P1 — served under /workbench/ behind the edge gateway; BASE_PATH
+  // namespaces asset + API URLs. Default '/' keeps the standalone :5176 build.
+  base: process.env.BASE_PATH ?? '/',
   plugins: [healthPlugin(), react()],
   server: {
     port: 5176,

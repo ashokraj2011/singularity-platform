@@ -14,6 +14,13 @@ ENV AGENT_SERVICE_URL=$AGENT_SERVICE_URL
 ENV TOOL_SERVICE_URL=$TOOL_SERVICE_URL
 ENV AGENT_RUNTIME_URL=$AGENT_RUNTIME_URL
 ENV PROMPT_COMPOSER_URL=$PROMPT_COMPOSER_URL
+# M100 P1 — single-origin base path (served under /agent by the edge gateway).
+# BASE_PATH sets Next basePath; NEXT_PUBLIC_BASE_PATH is inlined into the client
+# bundle so raw fetch() calls hit /agent/api/*. Empty defaults keep root build.
+ARG BASE_PATH=
+ARG NEXT_PUBLIC_BASE_PATH=
+ENV BASE_PATH=$BASE_PATH
+ENV NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1

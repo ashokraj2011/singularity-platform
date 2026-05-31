@@ -37,7 +37,7 @@ export function CopilotExportButton({ nodeId }: { nodeId: string | null | undefi
     try {
       const token = getToken()
       const res = await fetch(
-        `/api/workflow-nodes/${nodeId}/workbench/export-copilot?format=${format}`,
+        `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/workflow-nodes/${nodeId}/workbench/export-copilot?format=${format}`,
         { headers: token ? { authorization: `Bearer ${token}` } : {} },
       )
       if (!res.ok) {

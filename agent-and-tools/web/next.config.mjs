@@ -1,6 +1,16 @@
+// M100 P1 — single-origin support. Behind the edge gateway this app is mounted
+// under /agent; Next basePath prefixes pages, _next assets, AND the /api/*
+// rewrite sources automatically. Unset (or '/') keeps the standalone :3000
+// build at root. basePath must be a non-root path, so only set it when given.
+const rawBasePath =
+  process.env.BASE_PATH && process.env.BASE_PATH !== "/"
+    ? process.env.BASE_PATH.replace(/\/$/, "")
+    : undefined;
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
+  ...(rawBasePath ? { basePath: rawBasePath } : {}),
   async rewrites() {
     return [
       // Prompt Composer — owns prompt assembly (M3 cutover from agent-runtime)

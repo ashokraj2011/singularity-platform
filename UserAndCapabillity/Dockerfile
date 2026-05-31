@@ -5,6 +5,10 @@ RUN npm install --no-audit --no-fund
 
 FROM node:20-alpine AS build
 WORKDIR /app
+# M100 P1 — single-origin base path (served under /iam/ by the edge gateway).
+# Default '/' keeps the standalone :5175 image unchanged.
+ARG BASE_PATH=/
+ENV BASE_PATH=${BASE_PATH}
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

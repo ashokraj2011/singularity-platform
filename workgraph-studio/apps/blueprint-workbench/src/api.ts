@@ -1,3 +1,5 @@
+import { API_BASE, sharedAuthToken } from './base'
+
 export type SourceType = 'github' | 'localdir'
 export type Stage = string
 export type SessionStatus = 'DRAFT' | 'SNAPSHOTTED' | 'RUNNING' | 'COMPLETED' | 'APPROVED' | 'FAILED'
@@ -530,6 +532,10 @@ const PSEUDO_LOGIN_EMAIL = import.meta.env.VITE_PSEUDO_LOGIN_EMAIL ?? 'admin@sin
 const PSEUDO_LOGIN_PASSWORD = import.meta.env.VITE_PSEUDO_LOGIN_PASSWORD ?? 'Admin1234!'
 
 export function getToken() {
+  // M100 P2 — prefer the canonical portal session (shared localStorage under
+  // the single origin), then fall back to the legacy 'workgraph-auth' store.
+  const shared = sharedAuthToken()
+  if (shared) return shared
   try {
     const raw = localStorage.getItem('workgraph-auth')
     if (!raw) return null
@@ -581,10 +587,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   // actually completed before the connection broke.
   const method = (init.method ?? 'GET').toUpperCase()
   const canRetry = method === 'GET' || method === 'HEAD' || method === 'OPTIONS'
-  let res = await fetch(`/api${path}`, { ...init, headers })
+  let res = await fetch(`${API_BASE}${path}`, { ...init, headers })
   if (canRetry && (res.status === 502 || res.status === 503 || res.status === 504)) {
     await new Promise(resolve => setTimeout(resolve, 1500))
-    res = await fetch(`/api${path}`, { ...init, headers })
+    res = await fetch(`${API_BASE}${path}`, { ...init, headers })
   }
   if (!res.ok) {
     const text = await res.text().catch(() => '')

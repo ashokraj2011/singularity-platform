@@ -23,12 +23,16 @@ export const env = {
   mcpBase:           pick('/api/mcp',      import.meta.env.VITE_MCP_BASE_URL),
   auditGovBase:      pick('/api/gov',      import.meta.env.VITE_AUDIT_GOV_BASE_URL),
 
-  // Deep-link targets (always absolute — they open external apps)
+  // M100 P3 — nav targets. Under the edge gateway every UI shares the portal's
+  // origin, so these default to same-origin PATH PREFIXES (not localhost URLs).
+  // The VITE_LINK_* overrides remain for deployments that still split origins.
+  // operationsPortal is '' because Operations is a route of THIS app (/operations).
   links: {
-    operationsPortal:   import.meta.env.VITE_LINK_OPERATIONS_PORTAL   ?? 'http://localhost:5180',
-    agentAdmin:        import.meta.env.VITE_LINK_AGENT_ADMIN        ?? 'http://localhost:3000',
-    iamAdmin:          import.meta.env.VITE_LINK_IAM_ADMIN          ?? 'http://localhost:5175',
-    workgraphDesigner: import.meta.env.VITE_LINK_WORKGRAPH_DESIGNER ?? 'http://localhost:5174',
-    blueprintWorkbench: import.meta.env.VITE_LINK_BLUEPRINT_WORKBENCH ?? 'http://localhost:5176',
+    operationsPortal:   import.meta.env.VITE_LINK_OPERATIONS_PORTAL   ?? '',
+    agentAdmin:         import.meta.env.VITE_LINK_AGENT_ADMIN         ?? '/agent',
+    iamAdmin:           import.meta.env.VITE_LINK_IAM_ADMIN           ?? '/iam',
+    workgraphDesigner:  import.meta.env.VITE_LINK_WORKGRAPH_DESIGNER  ?? '/workflow',
+    blueprintWorkbench: import.meta.env.VITE_LINK_BLUEPRINT_WORKBENCH ?? '/workbench',
+    codeFoundry:        import.meta.env.VITE_LINK_CODE_FOUNDRY        ?? '/foundry',
   },
 }

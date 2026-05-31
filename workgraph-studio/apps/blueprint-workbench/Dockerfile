@@ -11,6 +11,10 @@ RUN pnpm install --frozen-lockfile || pnpm install
 
 FROM base AS build
 WORKDIR /app
+# M100 P1 — single-origin base path (served under /workbench/ by the edge
+# gateway). Default '/' keeps the standalone image unchanged.
+ARG BASE_PATH=/
+ENV BASE_PATH=${BASE_PATH}
 COPY --from=deps /app/node_modules ./node_modules
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
 COPY apps/blueprint-workbench ./apps/blueprint-workbench

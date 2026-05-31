@@ -466,6 +466,9 @@ services:
       # override it via CODEGEN_SERVICE_TOKEN. The old build-time
       # VITE_FOUNDRY_TOKEN embed is gone (it leaked the token into the bundle).
       FOUNDRY_TOKEN: ${CODEGEN_SERVICE_TOKEN:-dev-codegen-service-token}
+      # M100 P1 — served under /foundry/ by the edge gateway. This is a Vite DEV
+      # server, so the base path is read at runtime (not a build arg).
+      BASE_PATH: /foundry/
     ports:
       - "5181:5181"
     volumes:
@@ -485,6 +488,10 @@ services:
     build:
       context: ./agent-and-tools/web
       dockerfile: Dockerfile
+      # M100 P1 — served under /agent by the edge gateway (Next basePath).
+      args:
+        BASE_PATH: /agent
+        NEXT_PUBLIC_BASE_PATH: /agent
     container_name: singularity-agent-web
     # M65 Slice 2A — compose profiles.
     profiles: [full]
@@ -1005,6 +1012,9 @@ services:
     build:
       context: ./workgraph-studio
       dockerfile: apps/web/Dockerfile
+      # M100 P1 — served under /workflow/ by the edge gateway.
+      args:
+        BASE_PATH: /workflow/
     container_name: singularity-workgraph-web
     # M65 Slice 2A — compose profiles.
     profiles: [full]
@@ -1025,6 +1035,10 @@ services:
     build:
       context: ./workgraph-studio
       dockerfile: apps/blueprint-workbench/Dockerfile
+      # M100 P1 — served under /workbench/ by the edge gateway. AUDIT_GOV_TOKEN
+      # stays the M100 P0 server-side-injection build arg.
+      args:
+        BASE_PATH: /workbench/
     container_name: singularity-blueprint-workbench
     # M65 Slice 2A — compose profiles.
     profiles: [full]
@@ -1048,6 +1062,9 @@ services:
     build:
       context: ./UserAndCapabillity
       dockerfile: Dockerfile
+      # M100 P1 — served under /iam/ by the edge gateway.
+      args:
+        BASE_PATH: /iam/
     container_name: singularity-user-and-capability
     # M65 Slice 2A — compose profiles.
     profiles: [full]
@@ -1323,6 +1340,35 @@ services:
       resources:
         limits:
           memory: 512M
+          cpus: '0.5'
+
+  # ─────────────────────────────────────────────────────────────────────
+  # M100 P1 — Edge gateway: the single operator origin. Path-prefix routes to
+  # all six UIs (/ portal, /agent, /workflow, /workbench, /foundry, /iam).
+  # Additive: the per-app host ports still work standalone. code-foundry-web is
+  # in the `code-foundry` profile so it is NOT a hard dependency here; the
+  # gateway resolves upstreams lazily and 502s a prefix only if its app is down.
+  # ─────────────────────────────────────────────────────────────────────
+  edge-gateway:
+    build:
+      context: ./edge-gateway
+      dockerfile: Dockerfile
+    container_name: singularity-edge-gateway
+    profiles: [full]
+    # 8085 — 8090 is reserved for PLATFORM_REGISTRY_URL. This is the single
+    # operator origin once Phase 1 is deployed.
+    ports:
+      - "8085:80"
+    depends_on:
+      - portal
+      - agent-web
+      - workgraph-web
+      - blueprint-workbench
+      - user-and-capability
+    deploy:
+      resources:
+        limits:
+          memory: 256M
           cpus: '0.5'
 
 volumes:

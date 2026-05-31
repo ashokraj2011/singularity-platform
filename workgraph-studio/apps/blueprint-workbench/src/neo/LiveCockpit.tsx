@@ -43,7 +43,9 @@ interface CockpitEvent {
 
 type CockpitStatus = 'connecting' | 'streaming' | 'reconnecting' | 'idle' | 'error'
 
-const AUDIT_GOV_BASE = '/audit-gov'
+// M100 P1 — base-relative so it resolves under the edge-gateway prefix
+// (/workbench/audit-gov) and standalone (/audit-gov). Mirrors src/base.ts.
+const AUDIT_GOV_BASE = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/audit-gov`
 const EVENT_CAP = 200      // ring buffer; oldest drops when exceeded
 
 // Event kinds we render. Anything not in here is filtered out so the

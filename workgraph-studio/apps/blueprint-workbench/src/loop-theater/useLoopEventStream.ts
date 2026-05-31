@@ -23,7 +23,9 @@ import { eventToScene, deriveToolCallScene, type AuditEvent, type SceneAction } 
 // the same-origin `/audit-gov` requests the browser makes carry no credential.
 // This removes the "service token baked into a browser build" exposure flagged
 // in the M100 plan. See vite.config.ts + Dockerfile for the injection sites.
-const AUDIT_GOV_BASE = '/audit-gov'
+// M100 P1 — base-relative so it resolves under the edge-gateway prefix
+// (/workbench/audit-gov) and standalone (/audit-gov). Mirrors src/base.ts.
+const AUDIT_GOV_BASE = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/audit-gov`
 
 interface UseLoopEventStreamOptions {
   /** Trace ID prefix to filter events by. The audit-gov /search endpoint

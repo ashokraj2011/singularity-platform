@@ -2987,7 +2987,7 @@ function WorktreeTestRunner({ sessionId }: { sessionId: string }) {
       }
     }
     try {
-      const resp = await fetch(`/api/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/run-test`, {
+      const resp = await fetch(`${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/run-test`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

@@ -1,7 +1,12 @@
-const AGENT_BASE = "/api/agents";
-const TOOL_BASE = "/api/tools";
-const AUDIT_GOV_BASE = "/api/audit-gov";
-const WORKGRAPH_BASE = "/api/workgraph";
+// M100 P1 — prefix every API path with the Next basePath so that behind the
+// single-origin edge gateway (basePath '/agent') client fetches go to
+// /agent/api/* (matching the basePath-prefixed Next rewrites). Raw fetch() is
+// NOT auto-prefixed by Next, so we do it here. Empty standalone (no basePath).
+const BP = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+const AGENT_BASE = `${BP}/api/agents`;
+const TOOL_BASE = `${BP}/api/tools`;
+const AUDIT_GOV_BASE = `${BP}/api/audit-gov`;
+const WORKGRAPH_BASE = `${BP}/api/workgraph`;
 
 export class ApiError extends Error {
   constructor(
