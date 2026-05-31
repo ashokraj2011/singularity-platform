@@ -460,9 +460,12 @@ services:
     environment:
       NODE_ENV: development
       VITE_FOUNDRY_API_URL: http://code-foundry-api:3005
-      # When the operator sets CODEGEN_SERVICE_TOKEN to a non-default
-      # value, propagate it to the SPA build so fetch() can send it.
-      VITE_FOUNDRY_TOKEN: ${CODEGEN_SERVICE_TOKEN:-dev-codegen-service-token}
+      # M100 P0 (2026-05-31) — the service token is injected SERVER-SIDE by the
+      # Vite `/api` proxy (see vite.config.ts), never baked into the browser
+      # bundle. FOUNDRY_TOKEN is read by the proxy at request time; operators
+      # override it via CODEGEN_SERVICE_TOKEN. The old build-time
+      # VITE_FOUNDRY_TOKEN embed is gone (it leaked the token into the bundle).
+      FOUNDRY_TOKEN: ${CODEGEN_SERVICE_TOKEN:-dev-codegen-service-token}
     ports:
       - "5181:5181"
     volumes:
