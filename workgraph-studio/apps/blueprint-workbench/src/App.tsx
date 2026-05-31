@@ -1938,6 +1938,16 @@ function NeoStageController({
   )
 
   // Decide the primary CTA based on intent.
+  // (2026-05-31) Computed before the intent switch so the Run actions can be
+  // gated on it: never offer an enabled Run/Re-run while an attempt is already
+  // in-flight (e.g. the workflow runtime auto-started the stage via WORKBENCH_TASK).
+  // Backstops the server-side idempotent guard so the operator never clicks into
+  // an "already has an in-flight attempt" conflict.
+  const hasInflightAttempt =
+    !!stage &&
+    (session.stageAttempts ?? []).some(
+      a => a.stageKey === stage.key && (a.status === 'RUNNING' || a.status === 'PAUSED'),
+    )
   let primaryAction: FocusAction | undefined
   let secondaryActions: FocusAction[] = []
   let helperText: string | undefined
@@ -1957,6 +1967,7 @@ function NeoStageController({
       label: session.snapshots[0] ? 'Run stage' : 'Snapshot + run',
       onClick: () => runMutation.mutate(),
       busy: runMutation.isPending,
+      disabled: hasInflightAttempt,
     }
     helperText = session.snapshots[0]
       ? 'Sends task + context to the agent loop.'
@@ -2027,7 +2038,7 @@ function NeoStageController({
       label: session.snapshots[0] ? 'Re-run stage' : 'Snapshot + re-run',
       onClick: () => runMutation.mutate(),
       busy: runMutation.isPending,
-      disabled: stageAttemptCount >= maxLoopsForStage,
+      disabled: hasInflightAttempt || stageAttemptCount >= maxLoopsForStage,
     }
     secondaryActions = [
       { label: 'Reset attempts', onClick: () => resetAttemptsMutation.mutate(), busy: resetAttemptsMutation.isPending },
@@ -2040,6 +2051,7 @@ function NeoStageController({
       label: 'Run again',
       onClick: () => runMutation.mutate(),
       busy: runMutation.isPending,
+      disabled: hasInflightAttempt,
     }
     helperText = 'Stage is closed. Re-running creates a new attempt with the same inputs.'
   }
@@ -2051,11 +2063,6 @@ function NeoStageController({
   // an attempt is forever RUNNING with no live worker. Pushed onto
   // secondaryActions so it lives next to "Reset attempts" / approval
   // buttons depending on the intent.
-  const hasInflightAttempt =
-    !!stage &&
-    (session.stageAttempts ?? []).some(
-      a => a.stageKey === stage.key && (a.status === 'RUNNING' || a.status === 'PAUSED'),
-    )
   if (hasInflightAttempt) {
     secondaryActions = [
       ...secondaryActions,
