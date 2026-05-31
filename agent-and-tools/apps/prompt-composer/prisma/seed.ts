@@ -306,7 +306,18 @@ const loopIntakeTask = [
   "Intake rules:",
   "- Capture only the business story, user value, scope, acceptance criteria, priority, urgency, risks, and open clarification questions.",
   "- Do not inspect, mention, infer, or request repository files, source snapshots, branches, code symbols, tests, package manifests, or tool output.",
-  "- If implementation details are needed, write them as questions for the Plan stage instead of guessing.",
+  "- If implementation details are needed, write them as a Plan-stage handoff note inside story_brief — NOT as an open question or a risk.",
+  "",
+  "Question discipline (this is the #1 cause of intake stalling — read carefully):",
+  "- open_questions is ONLY for ambiguities a human stakeholder must resolve before the story can be understood: unclear business goal, undefined user, missing or contradictory acceptance criteria, ambiguous scope or priority.",
+  "- A fact that a later stage can discover by reading the repository is NOT an open question and NOT a risk. This includes: where a class/enum/function/service lives, its exact name, existing code patterns or conventions, whether tests or integration tests exist, test-file locations, and package/build details. NEVER put these in open_questions or risks — they are the Plan/Explore stage's job. If useful, drop them as a one-line \"Plan stage should confirm: …\" note inside story_brief.",
+  "- Ask AT MOST 3 open_questions, and only genuinely blocking ones. If you have more candidates, keep the 3 that most block understanding the ask and discard the rest (they are Plan-stage items, not intake questions).",
+  "- Prefer recording a reasonable, explicit assumption in story_brief over asking a non-blocking question.",
+  "",
+  "Convergence rule (do not loop — you have a tight per-phase turn budget):",
+  "- If story_brief, acceptance_criteria, and scope are clear enough for a planner to begin, you are DONE: submit the PLAN payload with next_phase SELF_REVIEW. Do not keep asking for more detail.",
+  "- If the Captured stakeholder decisions or Operator guidance already answer a question, fold the answer into story_brief or acceptance_criteria and do NOT re-ask it.",
+  "- On a re-run where captured decisions are present, treat the story as answered: incorporate the answers and finalize. Do not invent new questions unless an answer exposed a brand-new blocking product ambiguity.",
   "",
   "Phase protocol (governed loop):",
   "",
@@ -441,6 +452,7 @@ const loopIntakeExtraContext = [
   "- Do not use code tools, source snapshots, repo instructions, AST context, code context packages, or world-model code rules.",
   "- Focus on the WorkItem/story request, acceptance examples, constraints, scope boundaries, priority, risks, and missing product information.",
   "- Handoff implementation questions to the Plan stage; do not solve them here.",
+  "- Converge fast: aim to finalize within one or two turns. Repository-discoverable unknowns (file/class/enum names and locations, existing patterns, test locations) are Plan-stage work — never intake questions or risks.",
 ].join("\n");
 
 // ─────────────────────────────────────────────────────────────
@@ -1701,6 +1713,13 @@ const STAGE_POLICIES: SeedStagePolicy[] = [
       max_repair_attempts: 1,
       max_context_tokens: 8000,
       max_tool_calls: 0,
+      // Intake is single-pass: produce the brief, self-review, finalize.
+      // Tighter than the global default (PLAN 5 / SELF_REVIEW 3, hard-halt
+      // at 2x) so the stage fails fast to the operator instead of burning
+      // ~10 turns of clarifying-question churn before PHASE_BUDGET_EXCEEDED.
+      // Flows to context-fabric stage_driver._resolve_phase_budget via the
+      // prompt-composer /stage-policies/resolve limits payload.
+      max_turns_per_phase: { PLAN: 3, SELF_REVIEW: 2 },
     },
     contextPolicy: { ast_first: false, full_file_read_requires_justification: true },
     editPolicy: { patch_first: false, write_file_existing_file: "forbidden" },
