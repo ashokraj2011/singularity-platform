@@ -15,7 +15,8 @@ import { CapabilityPicker } from '../../components/lookup/EntityPickers'
 import { useCapabilityLabels } from './useCapabilityLabels'
 
 const BLUEPRINT_WORKBENCH_URL = import.meta.env.VITE_BLUEPRINT_WORKBENCH_URL
-  ?? `${window.location.protocol}//${window.location.hostname}:5176/`
+  // M100 P3 — same-origin under the edge gateway (was :5176).
+  ?? '/workbench/'
 const BLUEPRINT_WORKBENCH_ORIGIN = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href).origin
 
 // Terminal workflow-instance statuses — mirror of the runtime's own set in

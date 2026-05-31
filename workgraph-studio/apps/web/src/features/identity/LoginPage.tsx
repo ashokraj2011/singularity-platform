@@ -7,7 +7,10 @@ import { useAuthStore } from '../../store/auth.store'
 import { useActiveContextStore, type Membership } from '../../store/activeContext.store'
 
 const AUTH_PROVIDER  = (import.meta.env.VITE_AUTH_PROVIDER ?? 'iam') as 'local' | 'iam'
-const IAM_LOGIN_URL  = import.meta.env.VITE_IAM_LOGIN_URL  ?? 'http://localhost:5175/login'
+// M100 P3 — same-origin under the edge gateway (was :5175). Note: under the
+// single origin, RequireAuth bounces unauthenticated users to the portal /login
+// before this standalone page is reached; this default just avoids a dead :5175.
+const IAM_LOGIN_URL  = import.meta.env.VITE_IAM_LOGIN_URL  ?? '/iam/login'
 
 // Local-dev shortcut support. When VITE_PSEUDO_IAM_URL is set, this can still
 // point at pseudo-IAM; otherwise the default follows the current compose stack's

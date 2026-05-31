@@ -1,0 +1,14 @@
+# M100 P3 — keep local dev env files out of the production image builds.
+#
+# Shared build context for apps/web AND apps/blueprint-workbench. Vite reads
+# .env.local at build time; apps/web/.env.local pins VITE_BLUEPRINT_WORKBENCH_URL
+# =http://localhost:5176 and VITE_IAM_LOGIN_URL=http://localhost:5175/login for
+# split-origin dev, which OVERRIDE the same-origin '/workbench/' and '/iam/login'
+# defaults in source and bake the old cross-app links into the bundle. Excluding
+# env files lets the image fall back to the same-origin defaults.
+#
+# NOTE: do NOT exclude node_modules/dist here — the pnpm workspace build relies
+# on the monorepo layout in this context; excluding them breaks `pnpm --filter`.
+**/.env
+**/.env.local
+**/.env.*.local
