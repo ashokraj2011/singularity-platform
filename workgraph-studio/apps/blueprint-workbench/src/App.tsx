@@ -1620,6 +1620,21 @@ function NeoStageController({
     },
     onSuccess: onSession,
   })
+  // (2026-05-31) Reset & rerun — one-click recovery for a stuck stage. Cancels
+  // the in-flight attempt (the common server-restart-orphaned "forever RUNNING"
+  // case), ensures a workspace snapshot exists, then re-runs the stage. Saves
+  // the operator the two-step Cancel-attempt → find-Run dance.
+  const resetAndRerunMutation = useMutation({
+    mutationFn: async () => {
+      if (!stage) throw new Error('No stage selected')
+      await api.cancelInflightAttempt(session.id, stage.key)
+      if (!session.snapshots[0]) {
+        await api.snapshot(session.id)
+      }
+      return api.runStage(session.id, stage.key)
+    },
+    onSuccess: onSession,
+  })
   const approvalMutation = useMutation({
     mutationFn: (decision: 'approved' | 'rejected') => {
       if (!stage) throw new Error('No stage selected')
@@ -1673,7 +1688,7 @@ function NeoStageController({
   const confidence = latest?.gateRecommendation?.confidence
   const pendingApproval = pendingApprovalFor(latest)
 
-  const rawError = runMutation.error ?? verdictMutation.error ?? sendBackMutation.error ?? resetAttemptsMutation.error ?? approvalMutation.error
+  const rawError = runMutation.error ?? verdictMutation.error ?? sendBackMutation.error ?? resetAttemptsMutation.error ?? cancelInflightMutation.error ?? resetAndRerunMutation.error ?? approvalMutation.error
   const mutationErrorMessage = rawError?.message ?? null
   // M78 Slice 2 — When the error carries a structured failure-analysis
   // payload (only emitted today for develop-stage approval blocks where
@@ -1933,7 +1948,7 @@ function NeoStageController({
       : 'A workspace snapshot will be created first.'
   } else if (intent === 'running') {
     primaryAction = undefined
-    helperText = 'The cockpit on the right shows tool calls and tokens as they happen.'
+    helperText = 'The cockpit on the right shows tool calls and tokens as they happen. If the stage looks stuck (e.g., no activity after a server restart), use "Reset & rerun" to cancel the orphaned attempt and start it over.'
   } else if (intent === 'mcp-approval') {
     primaryAction = {
       label: 'Approve MCP action',
@@ -2029,6 +2044,11 @@ function NeoStageController({
   if (hasInflightAttempt) {
     secondaryActions = [
       ...secondaryActions,
+      {
+        label: 'Reset & rerun',
+        onClick: () => resetAndRerunMutation.mutate(),
+        busy: resetAndRerunMutation.isPending,
+      },
       {
         label: 'Cancel attempt',
         onClick: () => cancelInflightMutation.mutate(),
