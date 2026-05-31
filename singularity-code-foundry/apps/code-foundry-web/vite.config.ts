@@ -15,6 +15,20 @@ export default defineConfig({
       '/api': {
         target: process.env.VITE_FOUNDRY_API_URL ?? 'http://localhost:3005',
         changeOrigin: true,
+        // M100 P0 (2026-05-31) — inject the foundry SERVICE TOKEN server-side
+        // from FOUNDRY_TOKEN env so it never lands in the browser bundle.
+        // The client only sets Authorization when an OPERATOR pasted a token
+        // (localStorage); for the default service path the proxy adds it here.
+        // Default keeps the dev token so local flow is unchanged.
+        configure: (proxy) => {
+          const token = process.env.FOUNDRY_TOKEN || 'dev-codegen-service-token'
+          proxy.on('proxyReq', (proxyReq) => {
+            // Don't clobber an operator-supplied Authorization (localStorage path).
+            if (!proxyReq.getHeader('authorization')) {
+              proxyReq.setHeader('authorization', `Bearer ${token}`)
+            }
+          })
+        },
       },
     },
   },

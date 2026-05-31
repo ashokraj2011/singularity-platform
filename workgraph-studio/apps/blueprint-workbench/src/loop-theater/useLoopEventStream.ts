@@ -15,12 +15,15 @@ import { useEffect, useRef, useState } from 'react'
 import { eventToScene, deriveToolCallScene, type AuditEvent, type SceneAction } from './eventToScene'
 
 // In dev, audit-gov is reachable via the Vite proxy added in vite.config.ts.
-// In prod, this URL will be replaced by a workgraph-api passthrough.
+// In prod, the nginx `/audit-gov/` location proxies to audit-gov.
+//
+// M100 P0 (2026-05-31) — security hardening. The audit-gov service token is
+// no longer held in the browser bundle. Both the dev Vite proxy and the prod
+// nginx config inject the Authorization header server-side from an env var, so
+// the same-origin `/audit-gov` requests the browser makes carry no credential.
+// This removes the "service token baked into a browser build" exposure flagged
+// in the M100 plan. See vite.config.ts + Dockerfile for the injection sites.
 const AUDIT_GOV_BASE = '/audit-gov'
-
-// Dev-default token. Production builds should never bake this in — see
-// follow-up note in vite.config.ts about moving to a server-side proxy.
-const AUDIT_GOV_TOKEN = 'dev-audit-gov-service-token'
 
 interface UseLoopEventStreamOptions {
   /** Trace ID prefix to filter events by. The audit-gov /search endpoint
@@ -78,9 +81,11 @@ export function useLoopEventStream(opts: UseLoopEventStreamOptions): UseLoopEven
 
     fetch(url, {
       method: 'POST',
+      // M100 P0 — no Authorization header here on purpose. The same-origin
+      // `/audit-gov` proxy (Vite in dev, nginx in prod) injects the service
+      // token server-side so it never reaches the browser bundle.
       headers: {
         'content-type': 'application/json',
-        authorization: `Bearer ${AUDIT_GOV_TOKEN}`,
       },
       body,
     })
