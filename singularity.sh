@@ -236,7 +236,7 @@ EOF
     fi
     info "configuring strict office mode (GitHub Copilot only) …"
     python3 "$SCRIPT_DIR/bin/configure-platform.py" office-copilot-only "$@"
-    ok "office Copilot-only config written. Restart services with \`$0 restart mcp-server-demo\` or \`$0 up\`."
+    ok "office Copilot-only config written. Restart services with \`$0 recreate mcp-server-demo\` or \`$0 up\`."
     ;;
 
   fidelity|fidelity-copilot-only|fidelity-only)
@@ -246,7 +246,7 @@ EOF
     fi
     info "configuring Fidelity mode (GitHub Copilot headless only) …"
     python3 "$SCRIPT_DIR/bin/configure-platform.py" fidelity-copilot-only "$@"
-    ok "Fidelity Copilot-only config written. Restart services with \`$0 restart mcp-server-demo\` or \`$0 up\`."
+    ok "Fidelity Copilot-only config written. Restart services with \`$0 recreate mcp-server-demo\` or \`$0 up\`."
     ;;
 
   help|--help|-h|"")
