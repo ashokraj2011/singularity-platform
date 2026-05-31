@@ -940,6 +940,29 @@ export async function failNode(
     return { retried: false, recovered: true, instanceFailed: false }
   }
 
+  // (2026-05-31) Isolate Git Push failures to the node. A push failure is
+  // operator-recoverable (the local commit is durable; fix the cause and retry
+  // just this node), so it must NEVER cascade into failing the whole run + SAGA
+  // compensations (which would undo every completed node — "all nodes failed").
+  // The node is already FAILED above; pause the instance so only this node shows
+  // failed and the run stays resumable. Mirrors degradeNodeToBlocked semantics
+  // for the case where the failure arrives via failNode (no ERROR_BOUNDARY edge)
+  // rather than the activateGitPush self-block path.
+  if (executableNodeType(node) === 'GIT_PUSH') {
+    await prisma.workflowInstance.update({
+      where: { id: instanceId },
+      data: { status: 'PAUSED' },
+    })
+    await logEvent('WorkflowNodeFailureIsolated', 'WorkflowNode', nodeId, actorId, {
+      instanceId,
+      nodeType: 'GIT_PUSH',
+      error: failure,
+      note: 'Git Push failure isolated to node; instance paused (not failed), no compensations run.',
+    })
+    await publishOutbox('WorkflowInstance', instanceId, 'WorkflowPaused', { instanceId, blockedNodeId: nodeId })
+    return { retried: false, recovered: false, instanceFailed: false }
+  }
+
   // No error handler; fail the instance.
   await prisma.workflowInstance.update({
     where: { id: instanceId },
