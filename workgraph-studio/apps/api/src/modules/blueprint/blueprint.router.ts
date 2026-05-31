@@ -2805,11 +2805,12 @@ function normalizeExpectedArtifacts(input: unknown): LoopExpectedArtifact[] {
         description: typeof raw.description === 'string' && raw.description.trim() ? raw.description.trim() : undefined,
         required: raw.required !== false,
         format,
-        // M82 S1 — opt-in. Workflow authors set { editable: true } on
-        // artifact kinds the operator should be able to overwrite (e.g.
-        // story brief, plan, design doc). Defaults to false so reviewer
-        // outputs (security review, qa findings) stay read-only.
-        editable: raw.editable === true,
+        // (2026-05-31) Universal editability: every artifact is editable by
+        // default while work is in flight. Authors can still opt OUT per kind
+        // with { editable: false }. The binding read-only guard is now the
+        // approval lock in editArtifactContent (session APPROVED/COMPLETED, or
+        // a stage attempt the operator accepted) — not this static flag.
+        editable: raw.editable !== false,
       }
     })
     .filter((artifact): artifact is LoopExpectedArtifact => Boolean(artifact))
@@ -4251,6 +4252,27 @@ async function saveStageVerdict(
 // hardcoded allowlist. Reviewer outputs (security findings, qa
 // receipts) stay read-only by default; story briefs and design docs
 // can opt in.
+/**
+ * (2026-05-31) Artifact IDs locked because the loop stage attempt that
+ * produced them has been accepted by the operator (acceptedAt set = approved /
+ * marked done). Edits to these are refused so an approved result can't be
+ * silently rewritten. Non-loop (blueprint-mode) sessions return an empty set —
+ * those are guarded by the session-level APPROVED/COMPLETED lock instead.
+ */
+function approvedArtifactIds(session: Parameters<typeof readLoopState>[0]): Set<string> {
+  const locked = new Set<string>()
+  try {
+    const state = readLoopState(session)
+    for (const attempt of state.stageAttempts ?? []) {
+      if (!attempt.acceptedAt) continue
+      for (const id of attempt.artifactIds ?? []) locked.add(id)
+    }
+  } catch {
+    // Not a loop session (or no loop state) — session-level lock applies.
+  }
+  return locked
+}
+
 async function editArtifactContent(
   sessionId: string,
   artifactId: string,
@@ -4266,15 +4288,20 @@ async function editArtifactContent(
     throw new NotFoundError('BlueprintArtifact', artifactId)
   }
 
-  // Check the loopDefinition for the editable opt-in on this kind. Any
-  // stage that lists the artifact kind with editable=true is enough.
-  const state = readLoopState(session)
-  const editable = state.loopDefinition.stages.some(stage =>
-    (stage.expectedArtifacts ?? []).some(a => a.kind === artifact.kind && a.editable === true),
-  )
-  if (!editable) {
+  // (2026-05-31) Universal editability with an approval lock. Every artifact is
+  // editable while work is in flight; it locks once the work is approved so an
+  // operator edit can't silently rewrite an approved result. Two signals:
+  //   1. session finalized — the blueprint was APPROVED or COMPLETED.
+  //   2. per-stage (loop profile) — the artifact was produced by a stage
+  //      attempt the operator accepted (acceptedAt set = approved / marked done).
+  if (session.status === 'APPROVED' || session.status === 'COMPLETED') {
     throw new ValidationError(
-      `Artifact kind '${artifact.kind}' is not editable. Set editable: true on the expectedArtifacts entry in the workflow node's loopDefinition to allow operator overrides.`,
+      `This blueprint is ${String(session.status).toLowerCase()}; its artifacts are locked. Edits are only allowed before final approval.`,
+    )
+  }
+  if (approvedArtifactIds(session).has(artifact.id)) {
+    throw new ValidationError(
+      `This artifact's stage has been approved; it is now read-only. Edits are only allowed before a stage is approved.`,
     )
   }
 

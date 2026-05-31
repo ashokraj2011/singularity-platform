@@ -51,6 +51,16 @@ _AUDIT_CAPTURE_THINKING = os.environ.get("AUDIT_CAPTURE_THINKING", "").lower() i
     "1", "true", "yes", "on",
 )
 
+# (2026-05-31) — full-prompt audit capture gate. Default ON.
+# When enabled, the governed.llm_request event carries the COMPLETE composed
+# message array (system + user + tool-result history) sent to the LLM that
+# turn, so operators see the entire prompt per phase in the Workbench loop
+# trace. Uncapped by operator choice. Disable with CF_CAPTURE_FULL_PROMPT=false
+# if audit-store size becomes a concern (prompts include repo code/snippets).
+_CAPTURE_FULL_PROMPT = os.environ.get("CF_CAPTURE_FULL_PROMPT", "true").lower() in (
+    "1", "true", "yes", "on",
+)
+
 from .audit_emit import emit_governed_event
 from .llm_client import ChatResponse, ChatToolCall, LLMGatewayError, call_gateway_chat
 from .code_context import (
@@ -603,17 +613,29 @@ async def run_turn(
 
     # Audit the LLM call now — useful for cost accounting even when the
     # call fails. The completion event lands after the response below.
+    request_payload: dict[str, Any] = {
+        "binding_id": prompt.binding_id,
+        "prompt_profile_id": prompt.prompt_profile_id,
+        "tool_count": len(tools),
+        "history_messages": len(history),
+    }
+    if _CAPTURE_FULL_PROMPT:
+        # Full composed prompt for the Workbench "Full prompt sent" panel.
+        # Uncapped (operator choice). Tool names included so the operator sees
+        # what was offered; full tool JSON schemas are omitted (large +
+        # cache-stable, recoverable from the tool-registry).
+        request_payload["messages"] = messages
+        request_payload["tool_names"] = [
+            ((t.get("function") or {}).get("name") if isinstance(t, dict) else None)
+            or (t.get("name") if isinstance(t, dict) else None)
+            for t in tools
+        ]
     await emit_governed_event(
         kind="governed.llm_request",
         state=state,
         policy=policy,
         run_context=run_context,
-        payload={
-            "binding_id": prompt.binding_id,
-            "prompt_profile_id": prompt.prompt_profile_id,
-            "tool_count": len(tools),
-            "history_messages": len(history),
-        },
+        payload=request_payload,
     )
 
     # 4. LLM call.

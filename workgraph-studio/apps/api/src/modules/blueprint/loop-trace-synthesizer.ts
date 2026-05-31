@@ -298,11 +298,23 @@ export async function synthesizeLoopTrace(traceId: string): Promise<LoopTraceRes
         finishReason: (pickString(respPayload, 'finish_reason') ?? 'stop') as LoopTraceStep['finishReason'],
         latencyMs: pickNumber(respPayload, 'latency_ms'),
         timestamp: evt.created_at,
-        promptPreview: [], // governed.llm_request payload doesn't carry the
-                           // full prompt — only counts. The Loop tab's
-                           // expand-to-see-prompt feature stays empty until
-                           // we add a separate "governed.prompt_built" event
-                           // (deferred — operators rarely need it).
+        // (2026-05-31) The governed.llm_request event now carries the full
+        // composed `messages` array (context-fabric, gated by
+        // CF_CAPTURE_FULL_PROMPT, default on). Render the ENTIRE prompt —
+        // uncapped per operator choice — so the Loop tab's "Full prompt sent"
+        // panel shows exactly what each phase sent to the model.
+        promptPreview: (Array.isArray(reqPayload.messages) ? reqPayload.messages : [])
+          .filter((m): m is Record<string, unknown> => typeof m === 'object' && m !== null)
+          .map(m => {
+            const c = (m as Record<string, unknown>).content
+            const content = typeof c === 'string' ? c : JSON.stringify(c, null, 2)
+            return {
+              role: pickString(m, 'role') ?? 'unknown',
+              content_preview: content,
+              tool_call_id: pickString(m, 'tool_call_id'),
+              tool_name: pickString(m, 'tool_name') ?? pickString(m, 'name'),
+            }
+          }),
         responseText: pickString(respPayload, 'content') ?? null,
         responseToolCalls: toolCallsRaw
           .filter((tc): tc is Record<string, unknown> => typeof tc === 'object' && tc !== null)
