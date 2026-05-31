@@ -1162,8 +1162,23 @@ services:
     # compose. Tried moving to a `demo` profile in M67 — the depends_on
     # graph broke. Keep here unless context-api's dep is rewritten.
     profiles: [full]
-    # M33 — env_file removed. Provider keys must only be passed to the
-    # llm-gateway service. mcp-server reads zero provider credentials.
+    # M101 — service-local git config. mcp-server follows its OWN
+    # mcp-server/.env (env_file below) for git push/auth/token settings, so
+    # each deployment is self-contained: edit mcp-server/.env on that host and
+    # recreate this service — no root-.env ${...} interpolation to keep in sync.
+    # `required: false` → a host without the file still boots (git push stays
+    # OFF until configured — fail-safe).
+    #
+    # M33 still holds: provider keys are NOT here. mcp-server reads zero
+    # provider credentials; every LLM call routes through llm-gateway. Keep
+    # provider secrets OUT of mcp-server/.env.
+    #
+    # Precedence note: docker-compose `environment:` OVERRIDES `env_file`, so
+    # the git vars below were removed from `environment:` — otherwise their
+    # ${...:-default} values would mask whatever mcp-server/.env sets.
+    env_file:
+      - path: ./mcp-server/.env
+        required: false
     environment:
       NODE_ENV: development
       PORT: 7100
@@ -1193,20 +1208,19 @@ services:
       # receipt. To re-tighten in production, set MCP_RUNNER_NETWORK_MODE=none
       # in .env and pre-populate the cache directories with a custom image.
       MCP_RUNNER_NETWORK_MODE: ${MCP_RUNNER_NETWORK_MODE:-bridge}
-      MCP_WORK_BRANCH_PUSH_ON_FINISH: ${MCP_WORK_BRANCH_PUSH_ON_FINISH:-false}
-      MCP_WORK_BRANCH_PUSH_REMOTE: ${MCP_GIT_PUSH_REMOTE:-origin}
-      MCP_GIT_PUSH_ENABLED: ${MCP_GIT_PUSH_ENABLED:-false}
-      MCP_GIT_AUTH_MODE: ${MCP_GIT_AUTH_MODE:-disabled}
-      MCP_GIT_PUSH_REMOTE: ${MCP_GIT_PUSH_REMOTE:-origin}
-      MCP_GIT_TOKEN_ENV: ${MCP_GIT_TOKEN_ENV:-GITHUB_TOKEN}
-      # Pass the operator's preferred token env through as well. The runtime
-      # resolves process.env[MCP_GIT_TOKEN_ENV] before falling back to
-      # MCP_GIT_TOKEN, so new tokens placed in GITHUB_TOKEN take effect
-      # without copying secrets into two env vars.
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      MCP_GIT_TOKEN: ${MCP_GIT_TOKEN:-}
-      MCP_GIT_USERNAME: ${MCP_GIT_USERNAME:-x-access-token}
-      MCP_GIT_SSH_KEY_PATH: ${MCP_GIT_SSH_KEY_PATH:-}
+      # ── Git push / auth / token config — M101 ────────────────────────────
+      # These now come from mcp-server/.env (env_file above), NOT from
+      # root-.env ${...} interpolation, so the service follows its own env on
+      # every host. Set there:
+      #   MCP_GIT_AUTH_MODE (disabled|ssh|token), MCP_GIT_PUSH_ENABLED,
+      #   MCP_GIT_TOKEN_ENV, GITHUB_TOKEN (or MCP_GIT_TOKEN),
+      #   MCP_WORK_BRANCH_PUSH_ON_FINISH, MCP_WORK_BRANCH_PUSH_REMOTE,
+      #   MCP_GIT_PUSH_REMOTE, MCP_GIT_USERNAME, MCP_GIT_SSH_KEY_PATH.
+      # Token resolution (git-workspace.ts:340):
+      #   process.env[MCP_GIT_TOKEN_ENV] → MCP_GIT_TOKEN → GITHUB_TOKEN → GH_TOKEN.
+      # The redacted boot log ("[mcp-server] git-auth ...") prints which of
+      # these actually resolved at startup so you can confirm per host.
+      # SSH_AUTH_SOCK stays here — container ssh-agent socket (infra, not config).
       SSH_AUTH_SOCK: ${MCP_GIT_SSH_AUTH_SOCK:-/ssh-agent}
       # ── M33 — Central LLM Gateway ────────────────────────────────────────
       # MCP no longer holds provider keys. Every LLM call routes through the
