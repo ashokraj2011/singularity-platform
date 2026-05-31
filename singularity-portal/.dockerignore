@@ -1,0 +1,15 @@
+# M100 P3 — keep local dev artifacts out of the production image build.
+#
+# Critical: Vite reads .env.local at build time. The dev .env.local pins
+# VITE_LINK_* to localhost:<port> (split-origin dev), which would OVERRIDE the
+# same-origin '/workflow' etc. defaults in src/lib/env.ts and bake the old
+# cross-app links into the shipped bundle. Excluding env files here lets the
+# image build fall back to the same-origin defaults. Runtime overrides (if a
+# split-origin deployment needs them) are passed as build args / env, not files.
+node_modules
+dist
+.git
+.env
+.env.local
+.env.*.local
+*.log
