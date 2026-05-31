@@ -104,17 +104,25 @@ export function FocusPane({
         <p className="focus-error" role="alert">{inlineError}</p>
       )}
 
-      {primaryAction && (
+      {/* (2026-05-31) Render the action footer whenever there's a primary
+          action OR any secondary actions. Previously gated on primaryAction
+          alone, which hid the entire footer — including the "Reset & rerun" /
+          "Cancel attempt" recovery actions — exactly in the intent==='running'
+          state (where primaryAction is undefined), i.e. when a stage is stuck
+          and the operator most needs them. */}
+      {(primaryAction || (secondaryActions ?? []).length > 0) && (
         <div className="focus-actions">
-          <button
-            type="button"
-            className="focus-primary"
-            onClick={primaryAction.onClick}
-            disabled={primaryAction.disabled || primaryAction.busy}
-          >
-            {primaryAction.busy ? <span className="spin" aria-hidden>↻</span> : null}
-            <span>{primaryAction.label}</span>
-          </button>
+          {primaryAction && (
+            <button
+              type="button"
+              className="focus-primary"
+              onClick={primaryAction.onClick}
+              disabled={primaryAction.disabled || primaryAction.busy}
+            >
+              {primaryAction.busy ? <span className="spin" aria-hidden>↻</span> : null}
+              <span>{primaryAction.label}</span>
+            </button>
+          )}
           {helperText && <p className="focus-helper">{helperText}</p>}
           {(secondaryActions ?? []).length > 0 && (
             <div className="focus-secondary-row">
