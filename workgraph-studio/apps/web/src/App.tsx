@@ -1,5 +1,11 @@
+import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { useAuthStore } from './store/auth.store'
+import { sharedAuthToken, redirectToPortalLogin } from './lib/sharedAuth'
+
+// M100 P1 — when served under the edge gateway (base e.g. '/workflow/') the
+// router basename matches the prefix; standalone (base '/') it is '/'.
+const ROUTER_BASENAME = import.meta.env.BASE_URL.replace(/\/$/, '') || '/'
 import { AppLayout } from './components/AppLayout'
 import { LoginPage } from './features/identity/LoginPage'
 import { ContextPickerPage } from './features/identity/ContextPickerPage'
@@ -26,8 +32,16 @@ import { RunWorkflowPage } from './features/runtime/RunWorkflowPage'
 import { EventHorizonChat } from './components/EventHorizonChat'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const token = useAuthStore(s => s.token)
-  if (!token) return <Navigate to="/login" replace />
+  // M100 P2 — prefer the canonical portal session (shared localStorage under
+  // the single origin); fall back to this app's own store standalone.
+  const storeToken = useAuthStore(s => s.token)
+  const token = sharedAuthToken() ?? storeToken
+  useEffect(() => {
+    // Absolute redirect (NOT <Navigate>) so under the edge gateway we reach the
+    // portal's '/login' at the origin root, not basename-prefixed '/workflow/login'.
+    if (!token) redirectToPortalLogin()
+  }, [token])
+  if (!token) return null
   return <>{children}</>
 }
 
@@ -41,7 +55,7 @@ function NavigateLegacyWorkflowInstance() {
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={ROUTER_BASENAME}>
       <Routes>
         <Route path="/login"          element={<LoginPage />} />
         <Route path="/context-picker" element={<RequireAuth><ContextPickerPage /></RequireAuth>} />

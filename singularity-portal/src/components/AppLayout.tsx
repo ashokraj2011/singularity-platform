@@ -2,7 +2,7 @@ import { ReactNode } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   Home, Workflow, Bot, Users, BarChart3, ExternalLink, ServerCog,
-  LogOut, ChevronRight, Zap,
+  LogOut, ChevronRight, Zap, Wrench, Hammer,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/auth.store'
 import { env } from '@/lib/env'
@@ -17,9 +17,11 @@ const internalNav = [
 ]
 
 const externalNav: { label: string; href: string; icon: typeof Workflow; subtitle: string }[] = [
-  { label: 'Workflow Manager',   href: env.links.workgraphDesigner, icon: Workflow, subtitle: 'Design, run, and review workflows' },
-  { label: 'Agent Studio',       href: env.links.agentAdmin,        icon: Bot,      subtitle: 'Agents, prompts, tools, learning' },
-  { label: 'Identity & Access',  href: env.links.iamAdmin,          icon: Users,    subtitle: 'Users, teams, roles, capabilities' },
+  { label: 'Workflow Manager',   href: env.links.workgraphDesigner,  icon: Workflow, subtitle: 'Design, run, and review workflows' },
+  { label: 'Blueprint Workbench', href: `${env.links.blueprintWorkbench}/?ui=neo`, icon: Wrench, subtitle: 'Guided delivery cockpit' },
+  { label: 'Agent Studio',       href: env.links.agentAdmin,         icon: Bot,      subtitle: 'Agents, prompts, tools, learning' },
+  { label: 'Code Foundry',       href: env.links.codeFoundry,        icon: Hammer,   subtitle: 'Spec-driven code generation' },
+  { label: 'Identity & Access',  href: env.links.iamAdmin,           icon: Users,    subtitle: 'Users, teams, roles, capabilities' },
 ]
 
 export function AppLayout({ children }: { children: ReactNode }) {

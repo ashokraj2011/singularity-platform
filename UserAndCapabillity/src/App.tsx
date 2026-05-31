@@ -19,9 +19,12 @@ import { AuthzCheckPage } from '@/pages/authz/AuthzCheckPage'
 import { AuditEventsPage } from '@/pages/audit/AuditEventsPage'
 import { EventHorizonChat } from '@/components/EventHorizonChat'
 
+// M100 P1 — router basename matches the edge-gateway prefix ('/iam'); '/' standalone.
+const ROUTER_BASENAME = import.meta.env.BASE_URL.replace(/\/$/, '') || '/'
+
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={ROUTER_BASENAME}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route

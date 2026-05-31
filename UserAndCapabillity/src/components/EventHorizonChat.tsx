@@ -173,7 +173,7 @@ export function EventHorizonChat() {
   async function callEventHorizon(text: string) {
     const sid = activeSessionId()
     const capability = String(ctx.capability?.id ?? ctx.capability?.capability_id ?? capabilityId ?? '00000000-0000-0000-0000-00000000aaaa')
-    const res = await fetch('/api/wg/event-horizon/chat', {
+    const res = await fetch(`${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/wg/event-horizon/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
