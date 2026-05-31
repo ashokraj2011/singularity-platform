@@ -21,12 +21,19 @@ interface StageChatProps {
   stage: LoopStage | undefined
   /** seed thread from session.metadata.stageChats — avoids a flash on first render */
   seedThread?: StageChatMessage[]
+  /**
+   * (2026-05-31) "Steer & rerun" — when provided, the panel shows a
+   * "Send & apply now" action that posts the message AND resets + reruns the
+   * active stage so the agent applies the guidance immediately (on a fresh
+   * attempt), rather than only on the operator's next manual run.
+   */
+  onApplyNow?: (content: string) => Promise<void>
 }
 
 const POLL_MS = 5000
 const MAX_MESSAGE_LEN = 4000
 
-export function StageChat({ sessionId, stage, seedThread }: StageChatProps) {
+export function StageChat({ sessionId, stage, seedThread, onApplyNow }: StageChatProps) {
   const stageKey = stage?.key
   const qc = useQueryClient()
   const [draft, setDraft] = useState('')
@@ -52,6 +59,17 @@ export function StageChat({ sessionId, stage, seedThread }: StageChatProps) {
       setDraft('')
     },
   })
+  // "Send & apply now" — post the guidance then reset + rerun this stage so the
+  // agent applies it on a fresh attempt. The orchestration (post + cancel +
+  // snapshot + run) lives in the parent (WorkbenchNeo.steerAndRerun); here we
+  // just trigger it and refresh the thread.
+  const applyNow = useMutation({
+    mutationFn: (content: string) => onApplyNow!(content),
+    onSuccess: () => {
+      setDraft('')
+      qc.invalidateQueries({ queryKey: ['stageMessages', sessionId, stageKey] })
+    },
+  })
 
   // Auto-scroll to bottom whenever messages change.
   useEffect(() => {
@@ -74,7 +92,7 @@ export function StageChat({ sessionId, stage, seedThread }: StageChatProps) {
     )
   }
 
-  const canSend = draft.trim().length > 0 && draft.length <= MAX_MESSAGE_LEN && !post.isPending
+  const canSend = draft.trim().length > 0 && draft.length <= MAX_MESSAGE_LEN && !post.isPending && !applyNow.isPending
 
   return (
     <section className="neo-stage-chat" aria-label={`Stage chat: ${stage.label}`}>
@@ -131,15 +149,28 @@ export function StageChat({ sessionId, stage, seedThread }: StageChatProps) {
         />
         <div className="chat-compose-actions">
           <span className="chat-hint">
-            {post.isError ? (
-              <span className="chat-error">{(post.error as Error).message}</span>
+            {post.isError || applyNow.isError ? (
+              <span className="chat-error">{((post.error ?? applyNow.error) as Error).message}</span>
+            ) : onApplyNow ? (
+              <>⌘/Ctrl + Enter: hint for next run · "Apply now" reruns this stage</>
             ) : (
               <>⌘/Ctrl + Enter to send · applied on next stage run</>
             )}
           </span>
-          <button type="submit" disabled={!canSend}>
+          <button type="submit" className="chat-send-hint" disabled={!canSend}>
             {post.isPending ? 'Sending…' : 'Send hint'}
           </button>
+          {onApplyNow && (
+            <button
+              type="button"
+              className="chat-apply-now"
+              disabled={!canSend}
+              title="Post this guidance and immediately reset + rerun this stage so the agent applies it now"
+              onClick={() => { const v = draft.trim(); if (v && canSend) applyNow.mutate(v) }}
+            >
+              {applyNow.isPending ? 'Applying…' : 'Send & apply now'}
+            </button>
+          )}
         </div>
       </form>
     </section>
