@@ -10,6 +10,9 @@ import { approveBudgetIncreaseFromApproval } from '../workflow/runtime/budget'
 import { activateAgentTask } from '../workflow/runtime/executors/AgentTaskExecutor'
 import { activateApproval } from '../workflow/runtime/executors/ApprovalExecutor'
 import { approveWorkItem, requestWorkItemRework } from '../work-items/work-items.service'
+import { config } from '../../config'
+import { authzCheck } from '../../lib/iam/client'
+import { loadCallerContext, ROLE_LOOKUP_BUDGET } from '../../lib/iam/callerContext'
 
 export const approvalsRouter: Router = Router()
 
@@ -66,13 +69,81 @@ approvalsRouter.get('/', async (req, res, next) => {
   }
 })
 
+/**
+ * Resolve PENDING approval requests the caller can act on by *delegated*
+ * routing rather than a direct `assignedToId`:
+ *   TEAM_QUEUE  → request.teamId ∈ caller's teams
+ *   ROLE_BASED  → caller holds the role on request.capabilityId (IAM authz)
+ *
+ * These rows carry no `assignedToId`, so without read-time resolution they are
+ * invisible in every inbox. The work-item parent-approval gate
+ * (work-items.service.ts maybeRequestParentApproval) creates exactly this shape
+ * — `roleKey:'owner'` + `capabilityId`, no assignee — when a work item has no
+ * creator, which is why a successful workflow's escalated work item could never
+ * be approved and therefore never reached COMPLETED. Mirrors the runtime inbox
+ * (runtime.router.ts).
+ */
+async function resolveDelegatedApprovalIds(userId: string): Promise<string[]> {
+  const ctx = await loadCallerContext(userId)
+
+  const candidates = await prisma.approvalRequest.findMany({
+    where: {
+      status: 'PENDING',
+      assignedToId: null,
+      OR: [
+        { roleKey: { not: null }, capabilityId: { not: null } },
+        ...(ctx.teamIds.length > 0 ? [{ teamId: { in: ctx.teamIds } }] : []),
+      ],
+    },
+    select: { id: true, roleKey: true, capabilityId: true, teamId: true },
+    orderBy: { createdAt: 'desc' },
+    take: 200,
+  })
+
+  const eligible: string[] = []
+  const roleCandidates: { id: string; capabilityId: string }[] = []
+  for (const c of candidates) {
+    if (c.teamId && ctx.teamIds.includes(c.teamId)) {
+      eligible.push(c.id)
+    } else if (c.roleKey && c.capabilityId) {
+      roleCandidates.push({ id: c.id, capabilityId: c.capabilityId })
+    }
+  }
+
+  if (roleCandidates.length > 0) {
+    if (config.AUTH_PROVIDER === 'iam' && ctx.iamUserId) {
+      const capped = roleCandidates.slice(0, ROLE_LOOKUP_BUDGET)
+      const checks = await Promise.all(
+        capped.map(c =>
+          authzCheck(ctx.iamUserId!, c.capabilityId, 'claim_task', { resourceType: 'ApprovalRequest', resourceId: c.id })
+            .then(r => (r.allowed ? c.id : null))
+            .catch(() => null),
+        ),
+      )
+      for (const id of checks) if (id) eligible.push(id)
+    } else {
+      // Non-IAM mode (local dev / single tenant): surface role-based approvals
+      // rather than stranding them, matching the runtime inbox's work-item
+      // eligibility fallback when IAM is not the authority.
+      for (const c of roleCandidates) eligible.push(c.id)
+    }
+  }
+
+  return eligible
+}
+
 approvalsRouter.get('/my-approvals', async (req, res, next) => {
   try {
     const pg = parsePagination(req.query as Record<string, unknown>)
     const userId = req.user!.userId
     const statusFilter = req.query.status as string | undefined
 
-    const where: Record<string, unknown> = { assignedToId: userId }
+    // Direct assignments PLUS delegated (role/team) PENDING approvals resolved
+    // at read time — otherwise role-based work-item approvals never surface.
+    const delegatedIds = await resolveDelegatedApprovalIds(userId)
+    const where: Record<string, unknown> = delegatedIds.length > 0
+      ? { OR: [{ assignedToId: userId }, { id: { in: delegatedIds } }] }
+      : { assignedToId: userId }
     if (statusFilter) where.status = statusFilter
 
     const [requests, total] = await Promise.all([
