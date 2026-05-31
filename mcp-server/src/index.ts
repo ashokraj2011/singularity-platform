@@ -41,6 +41,9 @@ function bootLaptopMode(): void {
   });
   client.start();
   log.info({ bridgeUrl, deviceId: ensureDeviceId(), deviceName }, "[laptop-mode] relay client started");
+  // M101 — redacted git-auth boot diagnostic (laptop runs the loop locally and
+  // may push). Token value never logged — only source/length/class.
+  log.info(gitAuthDiagnostic(), "[laptop-mode] git-auth (redacted — token value never logged)");
 
   // Keep node alive (the relay-client uses internal timers + WS, but if the
   // WS fails permanently and backoff exits, we still want the process to
@@ -49,6 +52,40 @@ function bootLaptopMode(): void {
   const shutdown = () => { client.stop(); clearInterval(keepAlive); process.exit(0); };
   process.on("SIGINT",  shutdown);
   process.on("SIGTERM", shutdown);
+}
+
+/**
+ * M101 — redacted git-auth diagnostic. Mirrors the token resolution order in
+ * git-workspace.ts:340 (process.env[MCP_GIT_TOKEN_ENV] → MCP_GIT_TOKEN →
+ * GITHUB_TOKEN → GH_TOKEN) and reports WHICH source resolved, plus the token's
+ * length and class prefix — NEVER its value. The class prefix (e.g.
+ * "github_pat", "ghp") is the documented, non-secret token-type label.
+ */
+function gitAuthDiagnostic(): Record<string, unknown> {
+  const tokenEnvName = config.MCP_GIT_TOKEN_ENV || "GITHUB_TOKEN";
+  let token: string | undefined;
+  let source = "(none)";
+  if (process.env[tokenEnvName]) { token = process.env[tokenEnvName]; source = tokenEnvName; }
+  else if (config.MCP_GIT_TOKEN)  { token = config.MCP_GIT_TOKEN;  source = "MCP_GIT_TOKEN"; }
+  else if (process.env.GITHUB_TOKEN) { token = process.env.GITHUB_TOKEN; source = "GITHUB_TOKEN"; }
+  else if (process.env.GH_TOKEN)  { token = process.env.GH_TOKEN;  source = "GH_TOKEN"; }
+
+  let tokenClass = "none";
+  if (token) {
+    const m = token.match(/^(github_pat|ghp|gho|ghu|ghs|ghr)_/);
+    tokenClass = m ? m[1] : "opaque";
+  }
+  return {
+    authMode: config.MCP_GIT_AUTH_MODE,
+    pushEnabled: config.MCP_GIT_PUSH_ENABLED,
+    tokenEnv: tokenEnvName,
+    tokenSource: source,
+    tokenPresent: Boolean(token),
+    tokenLen: token ? token.length : 0,
+    tokenClass,
+    pushRemote: config.MCP_GIT_PUSH_REMOTE,
+    username: config.MCP_GIT_USERNAME,
+  };
 }
 
 function bootServerMode(): void {
@@ -93,6 +130,10 @@ function bootServerMode(): void {
       },
       "[mcp-server] listening",
     );
+    // M101 — redacted git-auth boot diagnostic. On any host, this one line
+    // tells you which token actually resolved (source env var, length, class)
+    // and whether push is enabled — without ever logging the token value.
+    log.info(gitAuthDiagnostic(), "[mcp-server] git-auth (redacted — token value never logged)");
     // Bug-fix (M-fix) — fire-and-forget cache warm. Without this, the
     // first /llm/models call after boot would synchronously probe the
     // gateway (adding 100-2000ms latency). With this, the cache is warm
