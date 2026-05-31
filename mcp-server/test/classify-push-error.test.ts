@@ -80,4 +80,60 @@ describe("M70.8 — push error classifier", () => {
       ).toBe("GIT_PUSH_REJECTED");
     });
   });
+
+  // M99 S1.4 — discrete codes split out of the generic GIT_PUSH_REJECTED /
+  // GIT_AUTH_INSUFFICIENT_SCOPE buckets.
+  describe("M99 S1.4 — discrete push-failure codes", () => {
+    it("GH006 protected-branch routes to GIT_BRANCH_PROTECTED (not auth-scope)", () => {
+      expect(
+        classifyPushError("remote: error: GH006: Protected branch update failed for refs/heads/main.\nremote: error: At least 1 approving review is required."),
+      ).toBe("GIT_BRANCH_PROTECTED");
+    });
+
+    it("'protected branch' phrasing → GIT_BRANCH_PROTECTED", () => {
+      expect(
+        classifyPushError("remote: Cannot push to this protected branch"),
+      ).toBe("GIT_BRANCH_PROTECTED");
+    });
+
+    it("missing upstream → GIT_NO_UPSTREAM", () => {
+      expect(
+        classifyPushError("fatal: The current branch wi/RULE-1 has no upstream branch.\nTo push the current branch and set the remote as upstream, use\n\n    git push --set-upstream origin wi/RULE-1"),
+      ).toBe("GIT_NO_UPSTREAM");
+    });
+
+    it("unrelated histories → GIT_REMOTE_MISMATCH", () => {
+      expect(
+        classifyPushError("fatal: refusing to merge unrelated histories"),
+      ).toBe("GIT_REMOTE_MISMATCH");
+    });
+
+    it("regression guard: non-fast-forward 'remote contains work' stays GIT_PUSH_REJECTED", () => {
+      expect(
+        classifyPushError("hint: Updates were rejected because the remote contains work that you do\nhint: not have locally."),
+      ).toBe("GIT_PUSH_REJECTED");
+    });
+
+    it("regression guard: bare GH013 rule-violation hook stays GIT_PUSH_REJECTED", () => {
+      expect(
+        classifyPushError("remote: pre-receive hook declined\nremote: error: GH013: Repository rule violations found"),
+      ).toBe("GIT_PUSH_REJECTED");
+    });
+
+    it("fix commands: GIT_BRANCH_PROTECTED suggests a PR, not a token edit", () => {
+      const blob = fixCommandsForPushBlock("GIT_BRANCH_PROTECTED", "origin").join("\n");
+      expect(blob).toMatch(/pull request|feature branch/i);
+      expect(blob).not.toMatch(/Contents:\s*Write/i);
+    });
+
+    it("fix commands: GIT_NO_UPSTREAM suggests push -u", () => {
+      const blob = fixCommandsForPushBlock("GIT_NO_UPSTREAM", "origin").join("\n");
+      expect(blob).toMatch(/push -u origin/);
+    });
+
+    it("fix commands: GIT_REMOTE_MISMATCH suggests checking the remote URL", () => {
+      const blob = fixCommandsForPushBlock("GIT_REMOTE_MISMATCH", "origin").join("\n");
+      expect(blob).toMatch(/remote -v|set-url/);
+    });
+  });
 });

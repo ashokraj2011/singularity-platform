@@ -26,9 +26,11 @@ def sqlite_conn(db_path: str) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def row_to_dict(row: sqlite3.Row | None) -> dict | None:
+def row_to_dict(row: sqlite3.Row | dict | None) -> dict | None:
     if row is None:
         return None
+    if isinstance(row, dict):
+        return dict(row)
     return {k: row[k] for k in row.keys()}
 
 

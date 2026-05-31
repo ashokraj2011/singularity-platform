@@ -73,6 +73,49 @@ from .tool_schemas import schema_for_tool
 log = logging.getLogger(__name__)
 
 
+def _render_policy_facts(
+    ctx_policy: dict[str, Any], vars: dict[str, Any]
+) -> str:
+    """M99 S3.2 — render resolved policy facts (+ localization summary) into
+    one compact markdown block for `{{policy_facts}}` in a prompt template.
+
+    Replaces scattered static per-phase prose with the ACTUAL resolved values
+    for this stage. Returns "" when there are no facts worth stating, so a
+    template that references the var renders nothing rather than an empty
+    header. Pure + side-effect-free; safe to call every turn.
+    """
+    lines: list[str] = []
+    if ctx_policy.get("ast_first"):
+        lines.append(
+            "- Prefer AST tools (find_symbol / get_ast_slice) over full-file "
+            "reads; read whole files only when a slice genuinely won't do."
+        )
+    thr = ctx_policy.get("large_file_threshold_lines")
+    if isinstance(thr, int) and thr > 0:
+        if ctx_policy.get("full_file_read_requires_justification"):
+            lines.append(
+                f"- Reads over {thr} lines are REFUSED unless you pass a "
+                "`justification` argument explaining why a targeted slice "
+                "won't work."
+            )
+        else:
+            lines.append(
+                f"- Reads over {thr} lines are flagged; keep reads focused."
+            )
+    if ctx_policy.get("require_context_receipt"):
+        lines.append(
+            "- EXPLORE must produce a substantive ContextReceipt (≥1 "
+            "context_used entry or implementation_finding) before advancing."
+        )
+    # Localization summary (S1.1) — only present when the platform localized.
+    loc_summary = vars.get("localization_summary")
+    if isinstance(loc_summary, str) and loc_summary.strip():
+        lines.append(f"- Localization: {loc_summary.strip()}")
+    if not lines:
+        return ""
+    return "## Policy & context facts for this stage\n" + "\n".join(lines)
+
+
 # Synthetic meta-tool the LLM calls to submit its phase output + declare
 # the next phase. NEVER dispatched to mcp-server. The loop catches the call
 # by name and routes the payload through the receipt validator.
@@ -433,6 +476,16 @@ async def run_turn(
         thr = ctx_policy.get("large_file_threshold_lines")
         if isinstance(thr, int) and thr > 0:
             vars.setdefault("policy_large_file_threshold_lines", thr)
+
+        # M99 S3.2 — render the resolved policy facts (+ any localization
+        # summary the stage_driver injected) into ONE compact markdown block
+        # so a prompt template can drop in `{{policy_facts}}` instead of
+        # repeating static per-phase/tool prose. CF owns the rendering; the
+        # template-author side (referencing the var) is a prompt-composer
+        # seed follow-up. setdefault so an upstream caller can override; the
+        # block is empty-string when there are no facts (template renders
+        # nothing). Advisory: changes nothing until a template references it.
+        vars.setdefault("policy_facts", _render_policy_facts(ctx_policy, vars))
 
     if isinstance(ctx_policy, dict) and ctx_policy.get("include_code_context_package"):
         goal_text = ""

@@ -251,6 +251,39 @@ model CapabilityWorldModel {
   // succeeds; astIndexFiles is a sanity-check budget input.
   astIndexedAt      DateTime?
   astIndexFiles     Int      @default(0)
+  // M99 S4.2 (2026-05-31) — world-model enrichment. The verification spec
+  // ("Centralize Agentic Coding Around Context Fabric") flagged these as
+  // named-but-missing. All additive JSON columns with safe defaults so the
+  // migration is a no-op on existing rows; bootstrap / refresh workers fill
+  // them. See world-model.service.ts for the TS shapes.
+  //
+  // repoPatterns: detected conventions/structural patterns — each entry
+  //   { kind, pattern, example?, confidence? } (e.g. kind="test_layout",
+  //   pattern="tests live in src/__tests__ adjacent to source").
+  repoPatterns      Json     @default("[]")
+  // entrypoints: how the app is started/exercised — each entry
+  //   { kind, target, command? } where kind ∈ main | server | cli | worker.
+  //   Distinct from runCommands (which are commands); entrypoints are the
+  //   code locations + their invocation.
+  entrypoints       Json     @default("[]")
+  // knownFailures: pre-existing/flaky failures the agent should not treat
+  //   as regressions — each entry { test, reason?, firstSeenAt?, flaky? }.
+  //   Distinct from CapabilityBootstrapRun.errors (bootstrap-time errors).
+  knownFailures     Json     @default("[]")
+  // skillFileSummaries: distilled summaries of skill/instruction files
+  //   (SKILL.md, .claude/skills/*, docs the agent should know about) —
+  //   each entry { source, summary, sha256? }. Distinct from agentRules
+  //   (verbatim ambient rules); these are summarized references.
+  skillFileSummaries Json    @default("[]")
+  // codeConventions: parsed/structured conventions (vs the raw text in
+  //   agentRules) — each entry { topic, rule, source? } (e.g.
+  //   topic="imports", rule="absolute imports from src root").
+  codeConventions   Json     @default("[]")
+  // M99 S4.2 — auto-refresh bookkeeping. When the drift detector trips and
+  // the auto-refresh worker is enabled, it stamps the last attempt here so
+  // operators can see the world model is self-healing (vs the pre-M99
+  // observational-only drift behavior). Null until the first auto-refresh.
+  lastAutoRefreshAt DateTime?
   generatedAt       DateTime @default(now())
   refreshedAt       DateTime @updatedAt
 

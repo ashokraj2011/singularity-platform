@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from context_fabric_shared.sqlite import sqlite_conn, rows_to_dicts, row_to_dict
+from context_fabric_shared.database import db_conn, resolve_database_target, rows_to_dicts, row_to_dict
 from .config import settings
 
 
+def _target() -> str:
+    return resolve_database_target("METRICS_LEDGER_DATABASE_URL", "METRICS_LEDGER_DB", settings.db_path)
+
+
 def init_db() -> None:
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS token_savings_runs (
@@ -63,14 +67,17 @@ def init_db() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_capability ON llm_calls(capability_id);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_run ON llm_calls(run_id);")
-        cols = {row["name"] for row in conn.execute("PRAGMA table_info(llm_calls)").fetchall()}
-        if "capability_type" not in cols:
-            conn.execute("ALTER TABLE llm_calls ADD COLUMN capability_type TEXT;")
+        if conn.is_postgres:
+            conn.execute("ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS capability_type TEXT;")
+        else:
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(llm_calls)").fetchall()}
+            if "capability_type" not in cols:
+                conn.execute("ALTER TABLE llm_calls ADD COLUMN capability_type TEXT;")
 
 
 def insert_run(data: dict) -> str:
     run_id = str(uuid.uuid4())
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         conn.execute(
             """
             INSERT INTO token_savings_runs
@@ -94,7 +101,7 @@ def insert_run(data: dict) -> str:
 
 def list_runs(where: str = "", params: tuple = (), limit: int = 100) -> list[dict]:
     sql = "SELECT * FROM token_savings_runs " + where + " ORDER BY created_at DESC LIMIT ?"
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         rows = conn.execute(sql, (*params, limit)).fetchall()
     return rows_to_dicts(rows)
 
@@ -111,13 +118,13 @@ def aggregate(where: str = "", params: tuple = ()) -> dict:
       COALESCE(SUM(estimated_cost_saved), 0) AS estimated_cost_saved
     FROM token_savings_runs {where}
     """
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         row = conn.execute(sql, params).fetchone()
     return row_to_dict(row) or {}
 
 
 def best_mode() -> str | None:
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         row = conn.execute(
             """
             SELECT optimization_mode, AVG(percent_saved) AS avg_savings, COUNT(*) AS cnt
@@ -133,7 +140,7 @@ def best_mode() -> str | None:
 
 def insert_llm_call(data: dict) -> str:
     call_id = data.get("id") or str(uuid.uuid4())
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         conn.execute(
             """
             INSERT INTO llm_calls
@@ -170,7 +177,7 @@ def insert_llm_call(data: dict) -> str:
 
 def list_llm_calls(where: str = "", params: tuple = (), limit: int = 100) -> list[dict]:
     sql = "SELECT * FROM llm_calls " + where + " ORDER BY created_at DESC LIMIT ?"
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         rows = conn.execute(sql, (*params, limit)).fetchall()
     return rows_to_dicts(rows)
 
@@ -181,7 +188,7 @@ def llm_cost_per_converged_capability(capability_id: str | None = None) -> dict:
     if capability_id:
         where += " AND capability_id = ?"
         params = (capability_id,)
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         row = conn.execute(
             f"""
             SELECT
@@ -205,7 +212,7 @@ def llm_cost_per_converged_capability_type(capability_type: str | None = None) -
     if capability_type:
         where += " AND capability_type = ?"
         params = (capability_type,)
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         rows = conn.execute(
             f"""
             SELECT

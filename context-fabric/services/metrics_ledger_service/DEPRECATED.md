@@ -11,7 +11,7 @@ The platform had two parallel homes for LLM-call analytics:
   with FTS (M63), risk classifier (M63), live tail (M63), cost
   denormalisation via the cost worker, and (as of M65 Slice 1A) the
   `token_savings_runs` table.
-- `metrics-ledger-service` (this directory, SQLite, since M30) — a
+- `metrics-ledger-service` (this directory; legacy SQLite, now Postgres-capable for migration, since M30) — a
   separate sidecar that received POST writes for token-savings runs
   and per-LLM-call rollups.
 
@@ -25,9 +25,10 @@ Slice 1B (this) removed the running container.
 ## What stays
 
 - This source tree (for one operator cycle, in case anyone reads the
-  SQLite file directly from the host mount).
+  old host-mounted data directly).
 - The `data/metrics_ledger/metrics_ledger.db` file on the host volume
-  (untouched).
+  (untouched). `bin/migrate-context-fabric-sqlite-to-postgres.py` can
+  backfill it into `singularity_context_fabric` before deletion.
 - A stale `settings.metrics_ledger_url` field in `context_api_service`
   config — kept only because the deprecated `/chat/respond` endpoint
   (HTTP `Sunset: 2026-07-01`) still references it. The actual writes

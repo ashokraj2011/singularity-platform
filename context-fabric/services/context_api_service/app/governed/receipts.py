@@ -36,6 +36,17 @@ class ReceiptKind(str, Enum):
     # brief + acceptance criteria, not file edits.
     STORY_INTAKE = "story_intake_receipt"
     STORY_INTAKE_REVIEW = "story_intake_review_receipt"
+    # M99 (2026-05-30) — platform-authored automation receipts. Unlike the
+    # entries above, these are NOT produced by the agent via
+    # submit_phase_output; the PLATFORM builds them during the M99
+    # automation steps (localization / baseline / auto-verify / git
+    # preflight) and persists them for audit. They are intentionally kept
+    # out of _PHASE_TO_MODEL / receipt_for_phase so the phase-output
+    # validator never expects an agent to supply them.
+    LOCALIZATION = "localization_receipt"
+    BASELINE = "baseline_receipt"
+    AUTO_VERIFICATION = "auto_verification_receipt"
+    GIT_PREFLIGHT = "git_preflight_receipt"
 
 
 class _ReceiptBase(BaseModel):
@@ -1001,6 +1012,95 @@ class ReviewPlanReceipt(_ReceiptBase):
                     out.append(q)
             # Skip anything else silently.
         return out
+
+
+# ─── M99 — platform-authored automation receipts ─────────────────────────────
+# Built by the platform (not the agent) during the M99 automation steps and
+# persisted on PhaseState.receipts + emitted to audit-gov. They follow the
+# _ReceiptBase shape so storage/serialization stay uniform, but they never
+# pass through validate_phase_output. All fields default so a partially
+# populated receipt (e.g. a localizer that only found target_files) still
+# serializes cleanly.
+
+
+class LocalizationReceipt(_ReceiptBase):
+    """M99 S1.1 — compact localization map built before ACT.
+
+    Records the files/symbols/tests the platform localized (via repo_map +
+    symbol_search + ast_search + code_context_package) so the editor works
+    against a focused target set instead of broad repo context.
+    """
+
+    kind: Literal[ReceiptKind.LOCALIZATION] = ReceiptKind.LOCALIZATION
+    target_files: list[str] = Field(default_factory=list)
+    target_symbols: list[str] = Field(default_factory=list)
+    target_tests: list[str] = Field(default_factory=list)
+    queries: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+    code_context_package_id: str | None = None
+    summary: str | None = None
+    origin: str = "platform"
+
+
+class BaselineReceipt(_ReceiptBase):
+    """M99 S2.1 — pre-mutation test baseline.
+
+    Replaces the `__baseline__` sentinel previously stashed inside the
+    receipts dict. Captures the set of already-failing tests before any
+    edit so post-edit verification can tell new regressions apart from
+    inherited failures.
+    """
+
+    kind: Literal[ReceiptKind.BASELINE] = ReceiptKind.BASELINE
+    captured: bool = False
+    tests_ran: bool = False
+    failing_tests: list[str] = Field(default_factory=list)
+    commands_run: list[str] = Field(default_factory=list)
+    reason: str | None = None
+    summary: str | None = None
+    origin: str = "platform"
+
+
+class AutoVerificationReceipt(_ReceiptBase):
+    """M99 S2.2 — persisted form of SyntheticVerifierResult.
+
+    The platform runs verification after edits (verify_synthesis
+    .synthesize_verifier_run) and records the outcome as a first-class
+    receipt; pre-M99 this lived only as an unpersisted dataclass rendered
+    into the prompt.
+    """
+
+    kind: Literal[ReceiptKind.AUTO_VERIFICATION] = ReceiptKind.AUTO_VERIFICATION
+    status: str | None = None  # passed / failed / unavailable
+    tests_ran: bool = False
+    failing_tests: list[str] = Field(default_factory=list)
+    new_failures: list[str] = Field(default_factory=list)
+    commands_run: list[str] = Field(default_factory=list)
+    summary: str | None = None
+    origin: str = "auto"
+
+
+class GitPreflightReceipt(_ReceiptBase):
+    """M99 S1.3 — pre-push classification.
+
+    Built by git_push_preflight before the workflow's push stage so
+    auth/branch problems surface with a precise blocked_code + fix
+    commands BEFORE the push is attempted (vs the legacy post-failure
+    classification).
+    """
+
+    kind: Literal[ReceiptKind.GIT_PREFLIGHT] = ReceiptKind.GIT_PREFLIGHT
+    ok: bool = False
+    remote: str | None = None
+    branch: str | None = None
+    # GIT_AUTH_MISSING / GIT_AUTH_INSUFFICIENT_SCOPE / GIT_BRANCH_PROTECTED /
+    # GIT_NO_UPSTREAM / GIT_REMOTE_MISMATCH / NO_COMMIT_TO_PUSH / GIT_REMOTE_UNREACHABLE
+    blocked_code: str | None = None
+    fix_commands: list[str] = Field(default_factory=list)
+    retryable: bool | None = None
+    has_commit: bool | None = None
+    message: str | None = None
+    origin: str = "platform"
 
 
 # Stage-specific overrides. Keyed by (agent_role, phase) — when the loop

@@ -142,6 +142,12 @@ PROMOTED PROMOTED
     Json architectureSlice 
     DateTime astIndexedAt "❓"
     Int astIndexFiles 
+    Json repoPatterns 
+    Json entrypoints 
+    Json knownFailures 
+    Json skillFileSummaries 
+    Json codeConventions 
+    DateTime lastAutoRefreshAt "❓"
     DateTime generatedAt 
     DateTime refreshedAt 
     }

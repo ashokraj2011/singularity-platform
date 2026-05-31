@@ -37,6 +37,16 @@ from .stage_execution_policy import StageExecutionPolicy, apply_execution_policy
 from .prompt_resolver import PromptNotFoundError
 from .turn import SUBMIT_PHASE_OUTPUT, TurnResult, run_turn
 from .verify_synthesis import SyntheticVerifierResult, synthesize_verifier_run
+# M99 S1.1 — deterministic pre-ACT localization (platform-driven, gated OFF
+# by default via governed_automation; see localization.py).
+# M99 S1.3 — git push preflight (platform-driven, same gating; see git_preflight.py).
+# M99 S2.1 — platform-driven auto-baseline (same gating; see auto_baseline.py).
+from .governed_automation import automation_enabled
+from .localization import synthesize_localization
+from .git_preflight import synthesize_git_preflight
+from .auto_baseline import synthesize_baseline
+from .baseline_diff import BASELINE_STASH_KEY
+from .receipts import BaselineReceipt, GitPreflightReceipt, LocalizationReceipt
 
 log = logging.getLogger(__name__)
 
@@ -297,6 +307,46 @@ def _render_auto_verify_message(synth: dict[str, Any]) -> dict[str, Any]:
             "could not pick a command."
         ),
     }
+
+
+# M99 S2.2 — sentinel for the AutoVerificationReceipt in state.receipts.
+_AUTO_VERIFICATION_KEY = "__auto_verification__"
+
+
+def _auto_verification_receipt_from_synth(synth: dict[str, Any]) -> dict[str, Any]:
+    """M99 S2.2 — map the auto-verify synth dict (SyntheticVerifierResult.
+    to_dict() shape from loop.py) onto an AutoVerificationReceipt dict.
+
+    kind="ran"+tool_success → passed; kind="ran"+!tool_success → failed;
+    kind in {skipped, unavailable} → unavailable. The failing-test set is
+    not parsed here (the synth only carries stdout/stderr summaries); the
+    authoritative regression diff lives on the VerificationReceipt via
+    baseline_diff.enrich_verification_receipt. This receipt is the audit
+    record that the platform DID run a verifier and what it observed.
+    """
+    from .receipts import AutoVerificationReceipt  # local import: avoids a cycle at module load
+
+    kind = synth.get("kind")
+    if kind == "ran":
+        status = "passed" if synth.get("tool_success") else "failed"
+        tests_ran = True
+    else:
+        status = "unavailable"
+        tests_ran = False
+    command = synth.get("command")
+    commands_run = [str(command)] if command else []
+    summary_bits = []
+    if synth.get("reason"):
+        summary_bits.append(str(synth["reason"]))
+    if synth.get("exit_code") is not None:
+        summary_bits.append(f"exit={synth['exit_code']}")
+    return AutoVerificationReceipt(
+        status=status,
+        tests_ran=tests_ran,
+        commands_run=commands_run,
+        summary="; ".join(summary_bits) or None,
+        origin="auto",
+    ).model_dump(mode="json")
 
 
 def _render_validation_error_message(validation_error: Any) -> dict[str, Any]:
@@ -1306,6 +1356,222 @@ async def _salvage_mutating_phase(
     return True
 
 
+# M99 S1.1 — sentinel key for the localization receipt in state.receipts.
+# Mirrors baseline_diff.BASELINE_STASH_KEY: double-underscore-wrapped so
+# receipt readers that iterate phase buckets skip it, and it rides the
+# existing to_dict/from_dict persistence without a schema change. Stored as
+# a single-element list to match the dict[str, list[dict]] receipts shape.
+_LOCALIZATION_KEY = "__localization__"
+
+
+async def _maybe_run_localization(
+    *,
+    state: PhaseState,
+    vars: dict[str, Any] | None,
+    run_context: dict[str, Any] | None,
+    bearer: str | None,
+    exec_policy: StageExecutionPolicy | None,
+    stage_policy: StagePolicy | None,
+) -> None:
+    """M99 S1.1 — run the deterministic pre-ACT localization sweep once.
+
+    No-op unless automation_enabled(exec_policy, "localize") — i.e. BOTH
+    CF_AGENTIC_CODING_V2_ENABLED and exec_policy.auto_localize are on
+    (OFF by default → strict no-op in Phase 0).
+
+    On run, stashes a LocalizationReceipt dict under the `__localization__`
+    sentinel in state.receipts (the receipts dict is mutable even though
+    PhaseState is frozen — same pattern as baseline_diff.stash_baseline)
+    and — when targets were found — injects it into `vars` for prompt
+    rendering. Emits governed.localization_completed. NEVER raises: a failed
+    sweep is logged and the stage proceeds unchanged (shadow mode).
+    """
+    if not automation_enabled(exec_policy, "localize"):
+        return
+    try:
+        _v = vars or {}
+        loc_task: str | None = None
+        if isinstance(_v.get("goal"), str):
+            loc_task = _v["goal"]
+        elif isinstance(_v.get("task"), str):
+            loc_task = _v["task"]
+        _rc = run_context or {}
+        cap = _rc.get("capability_id") or _rc.get("capabilityId")
+        wid = _rc.get("work_item_id") or _rc.get("workItemId")
+        wsid = _rc.get("workspace_id") or _rc.get("workspaceId")
+        loc_result = await synthesize_localization(
+            task_text=loc_task,
+            capability_id=cap,
+            work_item_id=wid,
+            workspace_id=wsid,
+            run_context=run_context,
+            bearer=bearer,
+        )
+        receipt_dict = LocalizationReceipt(
+            **loc_result.to_receipt_payload()
+        ).model_dump(mode="json")
+        # Persist under the sentinel (in-place mutation of the mutable
+        # receipts dict; PhaseState itself is frozen).
+        state.receipts[_LOCALIZATION_KEY] = [receipt_dict]
+        if loc_result.found_anything and vars is not None:
+            # Advisory until S3.2 bakes it into the ACT template; templates
+            # that don't reference it simply ignore the var.
+            vars["localization_receipt"] = receipt_dict
+            vars["localization_summary"] = loc_result.summary or ""
+        await emit_governed_event(
+            kind="governed.localization_completed",
+            state=state,
+            policy=stage_policy,
+            run_context=run_context,
+            payload={
+                "found": loc_result.found_anything,
+                "files": len(loc_result.target_files),
+                "symbols": len(loc_result.target_symbols),
+                "tests": len(loc_result.target_tests),
+                "sources": loc_result.sources,
+                "reason": loc_result.reason,
+            },
+            severity="info" if loc_result.found_anything else "warn",
+        )
+    except Exception as exc:  # pragma: no cover — defensive; shadow must never break the stage
+        log.warning("M99 localization sweep failed (non-fatal): %s", exc)
+
+
+# M99 S1.3 — sentinel key for the git-preflight receipt in state.receipts.
+# Same double-underscore convention as _LOCALIZATION_KEY / BASELINE_STASH_KEY
+# so phase-bucket readers skip it.
+_GIT_PREFLIGHT_KEY = "__git_preflight__"
+
+
+async def _maybe_run_git_preflight(
+    *,
+    state: PhaseState,
+    vars: dict[str, Any] | None,
+    run_context: dict[str, Any] | None,
+    bearer: str | None,
+    exec_policy: StageExecutionPolicy | None,
+    stage_policy: StagePolicy | None,
+) -> None:
+    """M99 S1.3 — run the git push preflight once per attempt (shadow).
+
+    No-op unless automation_enabled(exec_policy, "preflight") — i.e. BOTH
+    CF_GIT_PREFLIGHT_ENABLED and exec_policy.git_preflight_required are on
+    (OFF by default). On run, dispatches the git_push_preflight tool, stashes
+    a GitPreflightReceipt under the `__git_preflight__` sentinel, and — when a
+    block is detected — injects it into vars for visibility. SHADOW: never
+    blocks the stage. NEVER raises.
+    """
+    if not automation_enabled(exec_policy, "preflight"):
+        return
+    try:
+        _rc = run_context or {}
+        branch = (
+            _rc.get("branch_name")
+            or _rc.get("branchName")
+            or _rc.get("workitem_branch")
+            or _rc.get("workitemBranch")
+        )
+        remote = _rc.get("remote")
+        wid = _rc.get("work_item_id") or _rc.get("workItemId")
+        wsid = _rc.get("workspace_id") or _rc.get("workspaceId")
+        pf = await synthesize_git_preflight(
+            branch=branch,
+            remote=remote,
+            work_item_id=wid,
+            workspace_id=wsid,
+            run_context=run_context,
+            bearer=bearer,
+        )
+        receipt_dict = GitPreflightReceipt(**pf.to_receipt_payload()).model_dump(mode="json")
+        state.receipts[_GIT_PREFLIGHT_KEY] = [receipt_dict]
+        if not pf.ok and vars is not None:
+            vars["git_preflight_receipt"] = receipt_dict
+        await emit_governed_event(
+            kind="governed.git_preflight_completed",
+            state=state,
+            policy=stage_policy,
+            run_context=run_context,
+            payload={
+                "ok": pf.ok,
+                "blocked_code": pf.blocked_code,
+                "branch": pf.branch,
+                "remote": pf.remote,
+                "reason": pf.reason,
+            },
+            severity="info" if pf.ok else "warn",
+        )
+    except Exception as exc:  # pragma: no cover — defensive; shadow must never break the stage
+        log.warning("M99 git preflight failed (non-fatal): %s", exc)
+
+
+async def _maybe_run_auto_baseline(
+    *,
+    state: PhaseState,
+    run_context: dict[str, Any] | None,
+    bearer: str | None,
+    exec_policy: StageExecutionPolicy | None,
+    stage_policy: StagePolicy | None,
+) -> None:
+    """M99 S2.1 — capture a pre-mutation test baseline once per attempt.
+
+    No-op unless automation_enabled(exec_policy, "baseline") — i.e. BOTH
+    CF_AUTO_BASELINE_ENABLED and exec_policy.auto_baseline are on (OFF by
+    default). When on, runs BEFORE the turn loop (hence before any ACT
+    mutation), stashes the baseline into state.receipts via
+    baseline_diff.stash_baseline (so the existing post-edit
+    enrich_verification_receipt path works unchanged) AND persists a
+    BaselineReceipt under the `__baseline__` sentinel's sibling
+    `baseline_receipt` slot. Idempotent (baseline_diff keeps the first).
+    NEVER raises.
+
+    This makes the spec's "capture_test_baseline is automatically called
+    before the first mutating tool" claim TRUE — pre-M99 it was reactive
+    (loop.py only stashed IF the agent dispatched the tool).
+    """
+    if not automation_enabled(exec_policy, "baseline"):
+        return
+    # Don't re-baseline if the agent (or a prior call) already did.
+    if state.receipts.get(BASELINE_STASH_KEY):
+        return
+    try:
+        _rc = run_context or {}
+        wid = _rc.get("work_item_id") or _rc.get("workItemId")
+        wsid = _rc.get("workspace_id") or _rc.get("workspaceId")
+        result = await synthesize_baseline(
+            state_receipts=state.receipts,
+            work_item_id=wid,
+            workspace_id=wsid,
+            run_context=run_context,
+            bearer=bearer,
+        )
+        receipt_dict = BaselineReceipt(**result.to_receipt_payload()).model_dump(mode="json")
+        # Persist the receipt alongside the stash (distinct sentinel so the
+        # stash's own shape — used by enrich_verification_receipt — is
+        # untouched).
+        state.receipts[_BASELINE_RECEIPT_KEY] = [receipt_dict]
+        await emit_governed_event(
+            kind="governed.auto_baseline_completed",
+            state=state,
+            policy=stage_policy,
+            run_context=run_context,
+            payload={
+                "captured": result.captured,
+                "failing_tests": len(result.failing_tests),
+                "commands_run": result.commands_run,
+                "reason": result.reason,
+            },
+            severity="info" if result.captured else "warn",
+        )
+    except Exception as exc:  # pragma: no cover — defensive; must never break the stage
+        log.warning("M99 auto-baseline failed (non-fatal): %s", exc)
+
+
+# M99 S2.1 — sentinel for the BaselineReceipt. Distinct from baseline_diff's
+# BASELINE_STASH_KEY ("__baseline__"), which holds the raw diff-stash shape;
+# this holds the structured receipt for audit/UI.
+_BASELINE_RECEIPT_KEY = "__baseline_receipt__"
+
+
 async def run_stage(
     *,
     state: PhaseState,
@@ -1500,6 +1766,44 @@ async def run_stage(
     # cache shape + the GOVERNED_CODE_CONTEXT_CACHE opt-out.
     code_context_cache: dict[str, Any] = {}
 
+    # M99 S1.1 — deterministic pre-ACT localization (Phase 1: SHADOW).
+    # Runs ONCE per attempt, gated OFF by default. Extracted to a helper so
+    # the gate + sweep + receipt-stash logic is unit-testable without driving
+    # the full LLM turn loop. Shadow semantics: additive context only — never
+    # blocks, never changes phase; any failure degrades silently.
+    await _maybe_run_localization(
+        state=state,
+        vars=vars,
+        run_context=run_context,
+        bearer=bearer,
+        exec_policy=exec_policy,
+        stage_policy=stage_policy,
+    )
+
+    # M99 S1.3 — git push preflight (Phase 1: SHADOW). Same one-per-attempt,
+    # gated-OFF-by-default pattern as localization. Classifies push viability
+    # before the workflow's push stage so auth/branch problems surface early.
+    await _maybe_run_git_preflight(
+        state=state,
+        vars=vars,
+        run_context=run_context,
+        bearer=bearer,
+        exec_policy=exec_policy,
+        stage_policy=stage_policy,
+    )
+
+    # M99 S2.1 — platform-driven auto-baseline. Runs BEFORE the turn loop so
+    # the baseline is captured ahead of any ACT mutation (makes the spec's
+    # "auto baseline before first mutating tool" claim true). Gated OFF by
+    # default; idempotent with any agent-dispatched baseline.
+    await _maybe_run_auto_baseline(
+        state=state,
+        run_context=run_context,
+        bearer=bearer,
+        exec_policy=exec_policy,
+        stage_policy=stage_policy,
+    )
+
     for turn_idx in range(max_turns):
         last_llm_error: LLMGatewayError | None = None
         for llm_attempt in range(LLM_RETRY_ATTEMPTS + 1):
@@ -1588,6 +1892,19 @@ async def run_stage(
         synth = turn.step.synthetic_verifier
         if synth:
             history.append(_render_auto_verify_message(synth))
+            # M99 S2.2 — persist the auto-verify result as a first-class
+            # AutoVerificationReceipt (pre-M99 it lived only as the unpersisted
+            # SyntheticVerifierResult rendered into the prompt). Gated by
+            # automation_enabled(..., "verify") — OFF by default, so this is a
+            # no-op until rollout; the auto-verify BEHAVIOR (M74 1A) is
+            # unchanged either way. Stashed under a sentinel; never raises.
+            if automation_enabled(exec_policy, "verify") and isinstance(synth, dict):
+                try:
+                    state.receipts[_AUTO_VERIFICATION_KEY] = [
+                        _auto_verification_receipt_from_synth(synth)
+                    ]
+                except Exception as exc:  # pragma: no cover — defensive
+                    log.warning("M99 auto-verification receipt persist failed (non-fatal): %s", exc)
 
         # M74 Phase 3A — sliding-window history compression. Without this
         # the message log grows linearly with turn count (25 turns × ~4

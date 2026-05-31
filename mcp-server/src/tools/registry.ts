@@ -217,6 +217,8 @@ import {
 import { runCommandTool, runTestTool, verificationUnavailableTool, captureTestBaselineTool } from "./command";
 import { formalVerifyTool } from "./formal-verify";
 import { repoMapTool, recommendedVerificationTool, reviewDiffTool } from "./workflow-tools";
+// M99 S1.2 — localize / structured-edit / git-preflight tools (ship dark).
+import { M99_TOOLS } from "./m99-tools";
 import {
   queryLearningStateTool,
   querySimilarCapabilitiesTool,
@@ -269,6 +271,22 @@ const REGISTRY = new Map<string, ToolHandler>([
   [recommendedVerificationTool.descriptor.name, recommendedVerificationTool],
   [reviewDiffTool.descriptor.name, reviewDiffTool],
 ]);
+
+// M99 S1.2 — six new AER tools (localize/structured-edit/git-preflight).
+// Registered behind CF_AGENTIC_CODING_V2_ENABLED so they ship DARK: the
+// descriptors live in tools.json unconditionally (keeping the registry drift
+// check green), but the executable handlers only join REGISTRY when the env
+// rollout flag is on — mirroring the context-fabric automation gate. Read at
+// import time; a config reload (container restart) picks up the flip without
+// a rebuild.
+{
+  const v2 = (process.env.CF_AGENTIC_CODING_V2_ENABLED ?? "").trim().toLowerCase();
+  if (v2 && !["0", "false", "no", "off"].includes(v2)) {
+    for (const tool of M99_TOOLS) {
+      REGISTRY.set(tool.descriptor.name, tool);
+    }
+  }
+}
 
 export function listLocalTools(): ToolDescriptor[] {
   return Array.from(REGISTRY.values()).map((t) => t.descriptor);

@@ -92,6 +92,18 @@ const envSchema = z.object({
   // then expand. ContractReplay / EventHorizonChat / PromptComposer
   // stay on legacy until their adapters land in follow-ups.
   CONTEXT_FABRIC_USE_GOVERNED_FOR_NON_BLUEPRINT: z.coerce.boolean().default(false),
+
+  // M99 S3.1 — Phase-3 rollout flag for "Centralize Agentic Coding Around
+  // Context Fabric". When true, NON-blueprint AGENT_TASK coding nodes default
+  // to the governed path even without a per-node useGovernedExecutor toggle —
+  // i.e. governed becomes the Workbench default, with the legacy /execute
+  // path reachable only by an explicit per-node opt-OUT. Distinct from
+  // CONTEXT_FABRIC_USE_GOVERNED_FOR_NON_BLUEPRINT (the earlier task-#119
+  // opt-IN); this is the broader default-flip the spec's Phase 3 calls for.
+  // Off by default — ships dark; flip per-deployment once Phase 1/2 are
+  // validated in shadow. The CF env flags (CF_AGENTIC_CODING_V2_ENABLED etc.)
+  // gate the automation behaviors independently.
+  WORKGRAPH_FORCE_GOVERNED_CODING: z.coerce.boolean().default(false),
 })
 
 // M35.1 — production-class envs refuse to start with weak secrets.

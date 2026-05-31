@@ -3,8 +3,8 @@
 Asserts at boot:
   - IAM_BASE_URL reachable AND bootstrap creds mint a real JWT (the
     fix for the `Bearer ` empty-token 502 that bit us in demo prep)
-  - CALL_LOG_DB / EVENTS_STORE_DB paths are writable (the `/data` Read-only
-    file system error that 503-ed every request)
+  - Context Fabric durable stores are reachable. In Postgres mode this probes
+    the configured database URL; in legacy SQLite mode it checks writable paths.
   - audit-gov reachable (it's the silent dependency of every emit)
 
 Returns ok=True if all pass; ok=False with failing check names otherwise.
@@ -19,6 +19,7 @@ from typing import List, Optional
 
 import httpx
 
+from context_fabric_shared.database import is_postgres_target, resolve_database_target
 from .config import settings
 
 
@@ -58,6 +59,29 @@ async def _check_db_writable(env_var: str, default: str) -> InvariantResult:
             details={"path": str(path)},
         )
     return InvariantResult(name=f"sqlite_writable_{env_var.lower()}", ok=True, details={"path": str(path)})
+
+
+async def _check_store_backend(name: str, postgres_env: str, sqlite_env: str, default_sqlite: str) -> InvariantResult:
+    target = resolve_database_target(postgres_env, sqlite_env, default_sqlite)
+    if not is_postgres_target(target):
+        return await _check_db_writable(sqlite_env, default_sqlite)
+    try:
+        import psycopg
+
+        with psycopg.connect(target, connect_timeout=3) as conn:
+            conn.execute("SELECT 1")
+        return InvariantResult(
+            name=f"postgres_reachable_{name}",
+            ok=True,
+            details={"env": postgres_env, "database": target.rsplit("@", 1)[-1]},
+        )
+    except Exception as e:
+        return InvariantResult(
+            name=f"postgres_reachable_{name}",
+            ok=False,
+            reason=f"Postgres unreachable: {e}",
+            details={"env": postgres_env},
+        )
 
 
 async def _check_iam_reachable() -> InvariantResult:
@@ -120,8 +144,8 @@ async def _check_audit_gov_reachable() -> InvariantResult:
 async def run_invariant_checks() -> dict:
     """Run all checks in parallel. Returns {ok: bool, checks: [..]}."""
     results: List[InvariantResult] = await asyncio.gather(
-        _check_db_writable("CALL_LOG_DB", "/data/call_log.db"),
-        _check_db_writable("EVENTS_STORE_DB", "/data/call_log_events.db"),
+        _check_store_backend("call_log", "CALL_LOG_DATABASE_URL", "CALL_LOG_DB", "/data/call_log.db"),
+        _check_store_backend("events_store", "EVENTS_STORE_DATABASE_URL", "EVENTS_STORE_DB", "/data/call_log_events.db"),
         _check_iam_reachable(),
         _check_iam_bootstrap_works(),
         _check_audit_gov_reachable(),

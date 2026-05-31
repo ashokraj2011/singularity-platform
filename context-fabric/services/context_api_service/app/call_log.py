@@ -19,14 +19,22 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from context_fabric_shared.sqlite import sqlite_conn, row_to_dict, rows_to_dicts
+from context_fabric_shared.database import db_conn, resolve_database_target, row_to_dict, rows_to_dicts
 
 
 DB_PATH = os.environ.get("CALL_LOG_DB", "/data/call_log.db")
+DB_TARGET = resolve_database_target("CALL_LOG_DATABASE_URL", "CALL_LOG_DB", "/data/call_log.db")
+
+
+def refresh_db_target() -> None:
+    global DB_PATH, DB_TARGET
+    DB_PATH = os.environ.get("CALL_LOG_DB", "/data/call_log.db")
+    DB_TARGET = resolve_database_target("CALL_LOG_DATABASE_URL", "CALL_LOG_DB", DB_PATH)
 
 
 def init_db() -> None:
-    with sqlite_conn(DB_PATH) as conn:
+    refresh_db_target()
+    with db_conn(DB_TARGET) as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS call_log (
@@ -64,12 +72,13 @@ def init_db() -> None:
             """
         )
         # Older databases predate the M9.z columns; add idempotently.
+        alter_prefix = "ALTER TABLE call_log ADD COLUMN IF NOT EXISTS" if conn.is_postgres else "ALTER TABLE call_log ADD COLUMN"
         for stmt in (
-            "ALTER TABLE call_log ADD COLUMN continuation_token TEXT",
-            "ALTER TABLE call_log ADD COLUMN pending_tool_name TEXT",
-            "ALTER TABLE call_log ADD COLUMN pending_tool_args_json TEXT",
-            "ALTER TABLE call_log ADD COLUMN code_change_ids_json TEXT NOT NULL DEFAULT '[]'",
-            "ALTER TABLE call_log ADD COLUMN tenant_id TEXT",
+            f"{alter_prefix} continuation_token TEXT",
+            f"{alter_prefix} pending_tool_name TEXT",
+            f"{alter_prefix} pending_tool_args_json TEXT",
+            f"{alter_prefix} code_change_ids_json TEXT NOT NULL DEFAULT '[]'",
+            f"{alter_prefix} tenant_id TEXT",
         ):
             try:
                 conn.execute(stmt)
@@ -87,7 +96,7 @@ def insert(record: dict) -> str:
     started_at = record.get("started_at") or datetime.now(timezone.utc).isoformat()
     pending_args = record.get("pending_tool_args")
     pending_args_json = json.dumps(pending_args) if pending_args is not None else None
-    with sqlite_conn(DB_PATH) as conn:
+    with db_conn(DB_TARGET) as conn:
         conn.execute(
             """
             INSERT INTO call_log (
@@ -144,7 +153,7 @@ def update_after_resume(call_id: str, record: dict) -> None:
     started_at / workflow correlation."""
     pending_args = record.get("pending_tool_args")
     pending_args_json = json.dumps(pending_args) if pending_args is not None else None
-    with sqlite_conn(DB_PATH) as conn:
+    with db_conn(DB_TARGET) as conn:
         conn.execute(
             """
             UPDATE call_log SET
@@ -191,7 +200,7 @@ def update_after_resume(call_id: str, record: dict) -> None:
 
 
 def get_by_continuation_token(token: str) -> Optional[dict]:
-    with sqlite_conn(DB_PATH) as conn:
+    with db_conn(DB_TARGET) as conn:
         cur = conn.execute("SELECT * FROM call_log WHERE continuation_token = ? ORDER BY started_at DESC LIMIT 1", (token,))
         row = row_to_dict(cur.fetchone())
         if not row:
@@ -230,13 +239,13 @@ def _hydrate(row: Optional[dict]) -> Optional[dict]:
 
 
 def get_by_id(call_id: str) -> Optional[dict]:
-    with sqlite_conn(DB_PATH) as conn:
+    with db_conn(DB_TARGET) as conn:
         cur = conn.execute("SELECT * FROM call_log WHERE id = ?", (call_id,))
         return _hydrate(row_to_dict(cur.fetchone()))
 
 
 def list_by_trace(trace_id: str, limit: int = 50) -> list[dict]:
-    with sqlite_conn(DB_PATH) as conn:
+    with db_conn(DB_TARGET) as conn:
         cur = conn.execute(
             "SELECT * FROM call_log WHERE trace_id = ? ORDER BY started_at DESC LIMIT ?",
             (trace_id, limit),
@@ -252,13 +261,13 @@ def list_by_workflow(workflow_run_id: str, limit: int = 50, tenant_id: Optional[
         params.append(tenant_id)
     sql += " ORDER BY started_at DESC LIMIT ?"
     params.append(limit)
-    with sqlite_conn(DB_PATH) as conn:
+    with db_conn(DB_TARGET) as conn:
         cur = conn.execute(sql, params)
         return [r for r in (_hydrate(d) for d in rows_to_dicts(cur.fetchall())) if r]
 
 
 def list_recent(limit: int = 50) -> list[dict]:
-    with sqlite_conn(DB_PATH) as conn:
+    with db_conn(DB_TARGET) as conn:
         cur = conn.execute(
             "SELECT * FROM call_log ORDER BY started_at DESC LIMIT ?", (limit,)
         )

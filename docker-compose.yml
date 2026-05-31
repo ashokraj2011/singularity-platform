@@ -540,15 +540,17 @@ services:
     # context-memory routes its summarizer through MCP, never hits a provider
     # or LLM gateway directly.
     environment:
-      CONTEXT_MEMORY_DB: /data/context_memory.db
+      CONTEXT_FABRIC_DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity_context_fabric
       MCP_SERVER_URL: http://mcp-server-demo:7100
       MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       SUMMARIZER_MODEL_ALIAS: ${SUMMARIZER_MODEL_ALIAS:-}
     ports:
       - "8002:8002"
-    volumes:
-      - ./context-fabric/data/context_memory:/data
     depends_on:
+      at-postgres:
+        condition: service_healthy
+      at-postgres-bootstrap:
+        condition: service_completed_successfully
       llm-gateway:
         condition: service_healthy
     # M35.3 — resource limits (memory service: 2G memory / 1 CPU)
@@ -560,10 +562,9 @@ services:
 
   # M65 Slice 1B — metrics-ledger removed.
   #
-  # Token-savings analytics moved to audit-gov (M65 Slice 1A). The
-  # SQLite file under context-fabric/data/metrics_ledger/ is left on
-  # disk for one operator cycle in case any external scripts read it
-  # directly; deletion is a follow-up after no callers are observed.
+  # Token-savings analytics moved to audit-gov (M65 Slice 1A). The old
+  # host file under context-fabric/data/metrics_ledger/ is only retained
+  # as an operator archive; the runtime Context Fabric store is Postgres.
   # Source code stays in tree at context-fabric/services/metrics_ledger_service/
   # marked deprecated; will be removed in M66.
 
@@ -583,9 +584,9 @@ services:
       # localhost hop is cheap and a future cleanup can switch it to a
       # direct function call.
       CONTEXT_MEMORY_URL: http://localhost:8000
-      # M67 Slice 1C — was context-memory's own env. SQLite path for the
-      # bundled memory routes (insert_message, get_messages, etc).
-      CONTEXT_MEMORY_DB: /data/context_memory.db
+      # M67 Slice 1C — was context-memory's own store; now backed by
+      # Postgres through CONTEXT_FABRIC_DATABASE_URL.
+      CONTEXT_FABRIC_DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity_context_fabric
       SUMMARIZER_MODEL_ALIAS: ${SUMMARIZER_MODEL_ALIAS:-}
       # M65 Slice 1B — METRICS_LEDGER_URL removed. /metrics/dashboard and
       # /sessions/{id}/metrics now proxy to audit-gov (AUDIT_GOV_URL below).
@@ -646,13 +647,11 @@ services:
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
     ports:
       - "8000:8000"
-    volumes:
-      # M67 Slice 1C — Mount context-memory's SQLite path so the folded-in
-      # memory routes share the same data directory the standalone service
-      # used. Existing context_memory.db file is preserved across the
-      # cutover (no data migration needed).
-      - ./context-fabric/data/context_memory:/data
     depends_on:
+      at-postgres:
+        condition: service_healthy
+      at-postgres-bootstrap:
+        condition: service_completed_successfully
       iam-service:
         condition: service_healthy
       llm-gateway:

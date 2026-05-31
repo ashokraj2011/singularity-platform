@@ -3,12 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Singularity Agentic Programming Handbook</title>
-  <!-- Google Fonts -->
+  <title>Singularity — Agentic Programming & Planning Handbook</title>
+  
+  <!-- Google Fonts: Outfit (modern sans) & JetBrains Mono (code) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
-  <!-- MermaidJS for Dynamic Diagrams -->
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- MermaidJS for Responsive Diagrams -->
   <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
   <script>
     mermaid.initialize({
@@ -17,32 +19,41 @@
         background: '#111625',
         primaryColor: '#00f2fe',
         primaryTextColor: '#fff',
-        lineColor: '#4facfe',
+        lineColor: '#7f5af0',
         secondaryColor: '#1a1f35'
       }
     });
   </script>
+
   <style>
-    /* Premium Vanilla CSS Styling */
+    /* -------------------------------------------------------------
+       PREMIUM GLASSMORPHISM & NEON DESIGN SYSTEM
+       ------------------------------------------------------------- */
     :root {
-      --bg-main: #090d16;
-      --bg-gradient: linear-gradient(135deg, #090d16 0%, #111625 100%);
-      --bg-card: rgba(20, 26, 42, 0.6);
-      --bg-card-hover: rgba(26, 34, 56, 0.8);
+      --bg-main: #06090f;
+      --bg-darker: #03050a;
+      --bg-gradient: radial-gradient(circle at 50% 0%, #0d1527 0%, #06090f 75%);
+      --bg-card: rgba(13, 20, 38, 0.45);
+      --bg-card-hover: rgba(18, 28, 54, 0.65);
       --border-color: rgba(255, 255, 255, 0.05);
-      --border-hover: rgba(0, 242, 254, 0.3);
-      --text-main: #e2e8f0;
+      --border-highlight: rgba(0, 242, 254, 0.25);
+      --text-main: #f1f5f9;
       --text-muted: #94a3b8;
+      
+      /* Neon Accents */
       --accent-cyan: #00f2fe;
-      --accent-blue: #4facfe;
-      --accent-violet: #7f5af0;
+      --accent-indigo: #7f5af0;
       --accent-purple: #ae3ec9;
       --accent-green: #2ecc71;
+      --accent-amber: #f59e0b;
       --accent-red: #ff5e62;
-      --font-outfit: 'Outfit', sans-serif;
+      
+      --font-sans: 'Outfit', sans-serif;
       --font-mono: 'JetBrains Mono', monospace;
-      --shadow-glow: 0 0 20px rgba(0, 242, 254, 0.15);
-      --transition-speed: 0.3s;
+      
+      --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      --shadow-glow: 0 0 25px rgba(0, 242, 254, 0.15);
+      --shadow-soft: 0 10px 30px rgba(0, 0, 0, 0.5);
     }
 
     * {
@@ -51,313 +62,287 @@
       padding: 0;
     }
 
-    body {
-      background: var(--bg-main);
-      background-image: var(--bg-gradient);
-      background-attachment: fixed;
-      font-family: var(--font-outfit);
-      color: var(--text-main);
-      line-height: 1.6;
-      padding: 0;
-      overflow-x: hidden;
+    html {
+      scroll-behavior: smooth;
     }
 
-    /* Scrollbar */
+    body {
+      background-color: var(--bg-main);
+      background-image: var(--bg-gradient);
+      background-attachment: fixed;
+      font-family: var(--font-sans);
+      color: var(--text-main);
+      line-height: 1.65;
+      overflow-x: hidden;
+      display: flex;
+      min-height: 100vh;
+    }
+
+    /* Scrollbar Styling */
     ::-webkit-scrollbar {
       width: 8px;
+      height: 8px;
     }
     ::-webkit-scrollbar-track {
-      background: var(--bg-main);
+      background: var(--bg-darker);
     }
     ::-webkit-scrollbar-thumb {
-      background: rgba(255, 255, 255, 0.1);
+      background: rgba(255, 255, 255, 0.08);
       border-radius: 4px;
     }
     ::-webkit-scrollbar-thumb:hover {
-      background: var(--accent-blue);
+      background: var(--accent-cyan);
     }
 
-    /* Container */
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 2rem;
-    }
-
-    /* Header */
-    header {
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      background: rgba(9, 13, 22, 0.7);
-      border-bottom: 1px solid var(--border-color);
+    /* -------------------------------------------------------------
+       LAYOUT STRUCTURE
+       ------------------------------------------------------------- */
+    
+    /* Sticky Sidebar Navigation */
+    aside {
+      width: 320px;
+      background: rgba(3, 5, 10, 0.85);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-right: 1px solid var(--border-color);
+      padding: 2.5rem 1.5rem;
       position: sticky;
       top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 2rem;
+      flex-shrink: 0;
       z-index: 100;
-      padding: 1rem 0;
-      box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
     }
 
-    .header-content {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 0 2rem;
-    }
-
-    .logo-container {
+    .logo-area {
       display: flex;
       align-items: center;
-      gap: 0.75rem;
+      gap: 0.8rem;
     }
 
-    .logo-symbol {
-      width: 32px;
-      height: 32px;
-      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
-      border-radius: 8px;
-      position: relative;
+    .logo-icon {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-indigo));
+      border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
       font-weight: 800;
       color: var(--bg-main);
       box-shadow: 0 0 15px rgba(0, 242, 254, 0.4);
+      font-size: 1.25rem;
     }
 
     .logo-text {
-      font-size: 1.5rem;
+      font-size: 1.4rem;
       font-weight: 800;
-      letter-spacing: 1px;
-      background: linear-gradient(to right, #fff, var(--text-muted));
+      letter-spacing: 0.5px;
+      background: linear-gradient(to right, #ffffff, #94a3b8);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
 
-    .meta-tags {
+    .nav-list {
+      list-style: none;
       display: flex;
-      gap: 1rem;
+      flex-direction: column;
+      gap: 0.4rem;
     }
 
-    .tag {
-      font-size: 0.8rem;
-      font-family: var(--font-mono);
-      padding: 0.25rem 0.75rem;
-      border-radius: 50px;
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid var(--border-color);
-      color: var(--text-muted);
-    }
-
-    .tag.highlight {
-      border-color: var(--accent-cyan);
-      color: var(--accent-cyan);
-      box-shadow: 0 0 10px rgba(0, 242, 254, 0.1);
-    }
-
-    /* Hero Banner */
-    .hero-banner {
-      background: radial-gradient(circle at top right, rgba(79, 172, 254, 0.1), transparent 60%),
-                  radial-gradient(circle at bottom left, rgba(0, 242, 254, 0.05), transparent 50%);
-      border: 1px solid var(--border-color);
-      border-radius: 20px;
-      padding: 4rem 3rem;
-      text-align: center;
-      margin: 3rem 0;
-      position: relative;
-      overflow: hidden;
-      box-shadow: var(--shadow-glow);
-    }
-
-    .hero-banner::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 2px;
-      background: linear-gradient(90deg, transparent, var(--accent-cyan), var(--accent-blue), transparent);
-    }
-
-    h1 {
-      font-size: 3rem;
-      font-weight: 800;
-      line-height: 1.2;
-      margin-bottom: 1.5rem;
-      background: linear-gradient(135deg, #fff 30%, var(--accent-blue) 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-
-    .subtitle {
-      font-size: 1.2rem;
-      color: var(--text-muted);
-      max-width: 800px;
-      margin: 0 auto 2.5rem;
-      font-weight: 300;
-    }
-
-    .accent-phrase {
-      color: var(--accent-cyan);
-      font-weight: 600;
-      text-shadow: 0 0 10px rgba(0, 242, 254, 0.2);
-    }
-
-    /* Navigation grid */
-    .nav-shortcuts {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 1rem;
-      margin-bottom: 4rem;
-    }
-
-    .nav-btn {
+    .nav-item a {
       display: block;
+      color: var(--text-muted);
       text-decoration: none;
-      color: var(--text-main);
-      padding: 1.25rem;
-      background: var(--bg-card);
-      border: 1px solid var(--border-color);
-      border-radius: 12px;
+      font-size: 0.95rem;
+      font-weight: 500;
+      padding: 0.6rem 0.9rem;
+      border-radius: 8px;
+      transition: var(--transition);
+      border-left: 2px solid transparent;
+    }
+
+    .nav-item a:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.02);
+      padding-left: 1.1rem;
+    }
+
+    .nav-item.active a {
+      color: var(--accent-cyan);
+      background: rgba(0, 242, 254, 0.05);
+      border-left-color: var(--accent-cyan);
       font-weight: 600;
-      transition: all var(--transition-speed);
-      backdrop-filter: blur(8px);
-      text-align: center;
     }
 
-    .nav-btn:hover {
-      background: var(--bg-card-hover);
-      border-color: var(--accent-cyan);
-      transform: translateY(-2px);
-      box-shadow: 0 4px 15px rgba(0, 242, 254, 0.1);
+    /* Main Content Container */
+    main {
+      flex: 1;
+      padding: 3rem 4rem;
+      max-width: 1200px;
+      margin: 0 auto;
     }
 
-    /* Section styling */
-    section {
-      margin-bottom: 5rem;
-      scroll-margin-top: 100px;
+    /* -------------------------------------------------------------
+       TYPOGRAPHY & ACCENTS
+       ------------------------------------------------------------- */
+    h1 {
+      font-size: 2.8rem;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      line-height: 1.15;
+      margin-bottom: 1rem;
+      background: linear-gradient(135deg, #ffffff 40%, var(--accent-cyan) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
     }
 
-    .section-title {
-      font-size: 2rem;
+    h2 {
+      font-size: 1.9rem;
       font-weight: 700;
-      margin-bottom: 2rem;
+      letter-spacing: -0.2px;
+      margin-top: 4rem;
+      margin-bottom: 1.5rem;
       display: flex;
       align-items: center;
-      gap: 0.75rem;
-      position: relative;
+      gap: 0.6rem;
     }
 
-    .section-title::after {
-      content: '';
-      flex-grow: 1;
-      height: 1px;
-      background: linear-gradient(90deg, rgba(255, 255, 255, 0.1), transparent);
-    }
-
-    .section-icon {
+    h2::before {
+      content: '❖';
       color: var(--accent-cyan);
+      font-size: 1.2rem;
     }
 
-    /* Info Cards Grid */
-    .card-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-      gap: 1.5rem;
-      margin-bottom: 3rem;
-    }
-
-    .card {
-      background: var(--bg-card);
-      border: 1px solid var(--border-color);
-      border-radius: 16px;
-      padding: 2rem;
-      transition: all var(--transition-speed);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      position: relative;
-    }
-
-    .card:hover {
-      border-color: var(--border-hover);
-      transform: translateY(-3px);
-      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
-    }
-
-    .card-icon {
-      width: 48px;
-      height: 48px;
-      border-radius: 12px;
-      background: rgba(79, 172, 254, 0.1);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--accent-cyan);
-      font-size: 1.5rem;
-      margin-bottom: 1.25rem;
-      border: 1px solid rgba(0, 242, 254, 0.1);
-    }
-
-    .card-title {
-      font-size: 1.25rem;
+    h3 {
+      font-size: 1.3rem;
       font-weight: 600;
+      margin-top: 2rem;
       margin-bottom: 0.75rem;
       color: #fff;
     }
 
-    .card-desc {
+    p {
       color: var(--text-muted);
-      font-size: 0.95rem;
+      font-size: 1.05rem;
+      margin-bottom: 1.5rem;
+      line-height: 1.7;
     }
 
-    /* Diagram wrapper */
-    .diagram-container {
+    .highlight-text {
+      color: var(--accent-cyan);
+      font-weight: 600;
+    }
+
+    /* -------------------------------------------------------------
+       PREMIUM PANELS AND CARDS
+       ------------------------------------------------------------- */
+    .glass-card {
       background: var(--bg-card);
       border: 1px solid var(--border-color);
       border-radius: 16px;
-      padding: 2.5rem;
+      padding: 2.2rem;
+      margin: 2rem 0;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      box-shadow: var(--shadow-soft);
+      transition: var(--transition);
+    }
+
+    .glass-card:hover {
+      border-color: var(--border-highlight);
+      box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4), var(--shadow-glow);
+    }
+
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.5rem;
+      margin: 2rem 0;
+    }
+
+    .stat-card {
+      background: rgba(13, 20, 38, 0.25);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .stat-card-icon {
+      font-size: 1.8rem;
+      color: var(--accent-cyan);
+      margin-bottom: 0.4rem;
+    }
+
+    .stat-card-title {
+      font-weight: 600;
+      font-size: 1.1rem;
+      color: #fff;
+    }
+
+    .stat-card-desc {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+
+    /* Diagrams & Visuals */
+    .diagram-container {
+      background: rgba(3, 5, 10, 0.4);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 2rem;
       margin: 2rem 0;
       display: flex;
       justify-content: center;
       align-items: center;
-      backdrop-filter: blur(12px);
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+      overflow-x: auto;
     }
 
-    .mermaid {
-      width: 100%;
+    .diagram-container .mermaid {
       background: transparent !important;
+      width: 100%;
     }
 
-    /* Interactive Tabs Section */
-    .tabs-wrapper {
-      margin: 2.5rem 0;
+    /* -------------------------------------------------------------
+       INTERACTIVE ELEMENTS (TABS)
+       ------------------------------------------------------------- */
+    .tabs-container {
+      margin: 2rem 0;
       border: 1px solid var(--border-color);
       border-radius: 16px;
       background: var(--bg-card);
       overflow: hidden;
+      box-shadow: var(--shadow-soft);
     }
 
     .tabs-header {
       display: flex;
-      background: rgba(9, 13, 22, 0.5);
+      background: rgba(3, 5, 10, 0.5);
       border-bottom: 1px solid var(--border-color);
       overflow-x: auto;
     }
 
     .tab-btn {
-      padding: 1.25rem 2rem;
+      padding: 1.1rem 1.6rem;
       background: transparent;
       border: none;
       color: var(--text-muted);
-      font-family: var(--font-outfit);
+      font-family: var(--font-sans);
       font-weight: 600;
-      font-size: 1rem;
+      font-size: 0.95rem;
       cursor: pointer;
-      transition: all var(--transition-speed);
-      border-bottom: 2px solid transparent;
+      transition: var(--transition);
+      border-bottom: 2.5px solid transparent;
       white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
     }
 
     .tab-btn:hover {
@@ -372,107 +357,133 @@
     }
 
     .tabs-content {
-      padding: 2.5rem;
+      padding: 2.2rem;
     }
 
     .tab-pane {
       display: none;
-      animation: fadeIn var(--transition-speed) ease-in-out;
+      animation: tabFadeIn var(--transition) forwards;
     }
 
     .tab-pane.active {
       display: block;
     }
 
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(4px); }
+    @keyframes tabFadeIn {
+      from { opacity: 0; transform: translateY(6px); }
       to { opacity: 1; transform: translateY(0); }
     }
 
-    /* Code highlights */
+    /* -------------------------------------------------------------
+       CODE SYNTAX HIGHLIGHTING (CUSTOM THEME)
+       ------------------------------------------------------------- */
     pre {
-      background: #06090f;
-      border: 1px solid var(--border-color);
+      background: #03050a;
+      border: 1px solid rgba(255, 255, 255, 0.03);
       border-radius: 12px;
-      padding: 1.5rem;
+      padding: 1.4rem;
       overflow-x: auto;
-      margin: 1.5rem 0;
+      margin: 1.2rem 0;
+      box-shadow: inset 0 2px 10px rgba(0,0,0,0.8);
     }
 
     code {
       font-family: var(--font-mono);
-      font-size: 0.9rem;
-      color: #7dd3fc;
+      font-size: 0.88rem;
+      color: #cbd5e1;
     }
 
-    .keyword { color: #f43f5e; }
-    .function { color: #38bdf8; }
-    .string { color: #34d399; }
-    .comment { color: var(--text-muted); font-style: italic; }
-    .decorator { color: #c084fc; }
+    .k { color: #ff5e62; font-weight: 600; } /* Keyword */
+    .f { color: #4facfe; } /* Function */
+    .s { color: #2ecc71; } /* String */
+    .c { color: var(--text-muted); font-style: italic; } /* Comment */
+    .d { color: #ae3ec9; } /* Decorator / Annotation */
+    .n { color: #f59e0b; } /* Number */
+    .p { color: #a5b4fc; } /* Parameter/Prop */
 
-    /* Highlights table */
-    .provenance-table {
+    /* Inline code */
+    code:not(.block) {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      color: var(--accent-cyan);
+      font-size: 0.9em;
+    }
+
+    /* -------------------------------------------------------------
+       BUILT-IN TABLES & LISTS
+       ------------------------------------------------------------- */
+    table {
       width: 100%;
       border-collapse: collapse;
       margin: 1.5rem 0;
-      font-size: 0.95rem;
     }
 
-    .provenance-table th, .provenance-table td {
-      padding: 1rem;
+    th, td {
+      padding: 1rem 1.2rem;
       border: 1px solid var(--border-color);
       text-align: left;
     }
 
-    .provenance-table th {
-      background: rgba(9, 13, 22, 0.5);
+    th {
+      background: rgba(3, 5, 10, 0.5);
       color: #fff;
       font-weight: 600;
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
 
-    .provenance-table tr:hover {
+    tbody tr:hover {
       background: rgba(255, 255, 255, 0.01);
     }
 
-    /* Highlights status list */
-    .status-list {
-      list-style: none;
+    /* Callout Panels */
+    .callout {
+      margin: 1.5rem 0;
+      padding: 1.25rem 1.75rem;
+      border-radius: 10px;
+      border-left: 4px solid var(--accent-cyan);
+      background: rgba(0, 242, 254, 0.03);
       display: flex;
       flex-direction: column;
-      gap: 0.75rem;
-      margin: 1.5rem 0;
+      gap: 0.5rem;
     }
 
-    .status-item {
+    .callout.warn {
+      border-left-color: var(--accent-amber);
+      background: rgba(245, 158, 11, 0.03);
+    }
+
+    .callout.danger {
+      border-left-color: var(--accent-red);
+      background: rgba(255, 94, 98, 0.03);
+    }
+
+    .callout-title {
+      font-weight: 700;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
       display: flex;
       align-items: center;
-      gap: 0.75rem;
-      padding: 0.75rem 1rem;
-      background: rgba(255, 255, 255, 0.02);
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
+      gap: 0.4rem;
     }
 
-    .status-badge {
-      font-size: 0.8rem;
-      font-family: var(--font-mono);
-      padding: 0.15rem 0.5rem;
-      border-radius: 4px;
-      font-weight: 700;
-    }
+    .callout.info .callout-title { color: var(--accent-cyan); }
+    .callout.warn .callout-title { color: var(--accent-amber); }
+    .callout.danger .callout-title { color: var(--accent-red); }
 
-    .badge-passed { background: rgba(46, 204, 113, 0.2); color: var(--accent-green); border: 1px solid var(--accent-green); }
-    .badge-failed { background: rgba(255, 94, 98, 0.2); color: var(--accent-red); border: 1px solid var(--accent-red); }
-    .badge-warn { background: rgba(230, 126, 34, 0.2); color: #e67e22; border: 1px solid #e67e22; }
-
-    /* Footer */
+    /* Footer styling */
     footer {
       border-top: 1px solid var(--border-color);
       padding: 3rem 0;
       margin-top: 6rem;
-      background: rgba(9, 13, 22, 0.8);
       text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
     }
 
     .footer-text {
@@ -484,398 +495,600 @@
       display: flex;
       justify-content: center;
       gap: 1.5rem;
-      margin-top: 1.5rem;
     }
 
     .footer-link {
       color: var(--accent-cyan);
       text-decoration: none;
       font-size: 0.9rem;
-      transition: color var(--transition-speed);
+      transition: var(--transition);
     }
 
     .footer-link:hover {
       color: #fff;
     }
+
+    /* Responsive */
+    @media (max-width: 900px) {
+      body {
+        flex-direction: column;
+      }
+      aside {
+        width: 100%;
+        height: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--border-color);
+        position: static;
+        padding: 1.5rem;
+      }
+      main {
+        padding: 2rem 1.5rem;
+      }
+    }
   </style>
 </head>
 <body>
 
-  <!-- Sticky Header -->
-  <header>
-    <div class="header-content">
-      <div class="logo-container">
-        <div class="logo-symbol">Σ</div>
-        <div class="logo-text">Singularity</div>
-      </div>
-      <div class="meta-tags">
-        <span class="tag">Milestone 74</span>
-        <span class="tag highlight">Context-Fabric: Active</span>
-        <span class="tag">Security: Governed</span>
-      </div>
+  <!-- Sticky Left Sidebar -->
+  <aside>
+    <div class="logo-area">
+      <div class="logo-icon">Σ</div>
+      <div class="logo-text">Singularity</div>
     </div>
-  </header>
+    
+    <nav>
+      <ul class="nav-list">
+        <li class="nav-item active"><a href="#intro">1. The Stateful Brain</a></li>
+        <li class="nav-item"><a href="#legacy-shift">2. Legacy vs Modern</a></li>
+        <li class="nav-item"><a href="#planning-core">3. The Context Planner</a></li>
+        <li class="nav-item"><a href="#execution-loop">4. Turn Loop Dataflow</a></li>
+        <li class="nav-item"><a href="#receipts-explorer">5. Receipts Explorer</a></li>
+        <li class="nav-item"><a href="#m74-restorations">6. M74 Quality Gates</a></li>
+        <li class="nav-item"><a href="#pii-masking">7. PII Masking Engine</a></li>
+      </ul>
+    </nav>
+  </aside>
 
-  <div class="container">
+  <!-- Main Content Area -->
+  <main>
     
     <!-- Hero Banner -->
-    <div class="hero-banner">
-      <h1>The Brain of Agentic Coding</h1>
-      <p class="subtitle">Discover how the <span class="accent-phrase">Context-Fabric</span> microservice drives stateful execution, prompt optimization, structural phase validation, and safety governance while keeping sandboxes completely stateless.</p>
-      
-      <!-- Quick Navigation -->
-      <div class="nav-shortcuts">
-        <a href="#architecture" class="nav-btn">1. Topology & Topology</a>
-        <a href="#execution-flow" class="nav-btn">2. Multi-turn Sequence</a>
-        <a href="#phase-machine" class="nav-btn">3. Phase States</a>
-        <a href="#m74-restorations" class="nav-btn">4. M74 Restorations</a>
-        <a href="#pii-masking" class="nav-btn">5. PII Masking Engine</a>
-      </div>
-    </div>
+    <header>
+      <h1>Agentic Programming &amp; Planning Handbook</h1>
+      <p class="subtitle" style="font-size: 1.25rem; font-weight: 300; margin-bottom: 3rem; color: var(--text-muted);">
+        A detailed architectural look at how agentic programming is coordinated on Singularity, using 
+        <span class="highlight-text">context-fabric</span> as the stateful, governed brain.
+      </p>
+    </header>
 
-    <!-- Section 1: Architecture & Topology -->
-    <section id="architecture">
-      <h2 class="section-title">
-        <span class="section-icon">❖</span> 1. High-Level Architecture
-      </h2>
-      <p class="subtitle" style="margin-bottom: 2rem;">Singularity enforces a strict execution segregation rule: <span class="accent-phrase">Business engines orchestrate; Sandboxes execute.</span> Context-Fabric sits at the center of the lifecycle, owning state persistence and policy checking while delegates execute dumb tool scripts.</p>
+    <!-- Section 1: The Stateful Brain -->
+    <section id="intro">
+      <h2>Why Context-Fabric is the Real Player</h2>
+      <p>
+        In many agentic frameworks, the developer loop is hosted in the same process that executes file updates and terminal commands. In the Singularity Platform, we enforce a strict <span class="highlight-text">Security Segregation Rule</span>: 
+        <strong>"Business engines orchestrate; Sandboxes execute."</strong>
+      </p>
       
+      <p>
+        The <code>mcp-server</code> (the sandbox) is a completely stateless executor. It has no understanding of context, the current stage of the ticket, the conversation history, or the safety bounds of the files it modifies. It simply accepts targeted, sandboxed instructions (e.g., "replace this block of text" or "run this test script") and reports back with results.
+      </p>
+
+      <p>
+        The **Real Player** is the <span class="highlight-text">context-fabric</span> microservice. Built as a Python FastAPI suite under <code>context-fabric/services/context_api_service</code>, it owns all state, history, planning rules, masking logic, and quality checks.
+      </p>
+
       <div class="card-grid">
-        <div class="card">
-          <div class="card-icon">🧠</div>
-          <h3 class="card-title">Stateful Context-Fabric</h3>
-          <p class="card-desc">Written in Python. Manages multi-turn orchestration (`stage_driver.py`), single-turn execution (`turn.py`), state transition checks (`phase_state.py`), and validation oracles (`loop.py`). Owns all context and state caches.</p>
+        <div class="stat-card">
+          <div class="stat-card-icon">🗄️</div>
+          <div class="stat-card-title">State &amp; History</div>
+          <div class="stat-card-desc">Keeps the multi-turn memory buffer alive across restarts, compaction iterations, and manual approval pauses using the <code>call_log</code> and <code>events_store</code> databases.</div>
         </div>
-        <div class="card">
-          <div class="card-icon">📦</div>
-          <h3 class="card-title">Stateless MCP Server</h3>
-          <p class="card-desc">Written in TypeScript. A lightweight, sandboxed tool host exposed via `/mcp/tool-run`. Serves files and runs isolated terminal commands. Possesses zero understanding of the active stage, phase state, or history.</p>
+        <div class="stat-card">
+          <div class="stat-card-icon">👮</div>
+          <div class="stat-card-title">Phase Governance</div>
+          <div class="stat-card-desc">Translates free-form LLM outputs into structured, validated phase receipts and denies execution of files that bypass the active policy.</div>
         </div>
-        <div class="card">
-          <div class="card-icon">🎭</div>
-          <h3 class="card-title">Prompt Composer</h3>
-          <p class="card-desc">Serves as the prompt assembly library. Keeps reusable templates, lessons, stage prompts, and prompt profiles. Compressed by a sidecar stopwords compressor when limits are exceeded.</p>
-        </div>
-      </div>
-
-      <h3 style="font-size: 1.5rem; font-weight: 600; margin-bottom: 1.5rem; text-align: center;">System Topography Diagram</h3>
-      <div class="diagram-container">
-        <div class="mermaid">
-          graph TD
-              subgraph CF [context-fabric Service]
-                  SD[stage_driver.py: Multi-Turn Driver] -->|turns loop| T[turn.py: Single-Turn Compiler]
-                  T -->|checks permissions| L[loop.py: Governance Oracle]
-                  L -->|enforces rules| PS[phase_state.py: Phase Machine]
-                  L -->|handles PII mapping| PM[pii_mask.py: Masking Engine]
-              end
-              subgraph Composer [prompt-composer]
-                  T -->|fetches assembly| PC[Prompt Repository]
-              end
-              subgraph Sandbox [mcp-server / sandbox]
-                  L -->|POSTs allowed calls| TR[tool-run.ts: Stateless Executor]
-              end
-              subgraph Gateway [llm-gateway]
-                  T -->|POSTs chat completions| GW[Gateway Wrapper]
-              end
-              GW -->|executes inference| Provider[LLM Provider / Anthropic, Gemini, OpenAI]
-              style CF fill:#131a30,stroke:#4facfe,stroke-width:2px;
-              style Sandbox fill:#0a2a1a,stroke:#2ecc71,stroke-width:1px;
-              style Gateway fill:#2a1a3a,stroke:#ae3ec9,stroke-width:1px;
+        <div class="stat-card">
+          <div class="stat-card-icon">🎭</div>
+          <div class="stat-card-title">PII De-identification</div>
+          <div class="stat-card-desc">Maintains a secure, stateful key-value token mapping across turns so the LLM never communicates raw emails or API keys with providers.</div>
         </div>
       </div>
     </section>
 
-    <!-- Section 2: Multi-Turn Execution Sequence -->
-    <section id="execution-flow">
-      <h2 class="section-title">
-        <span class="section-icon">⚙</span> 2. Multi-turn Sequence
-      </h2>
-      <p class="subtitle" style="margin-bottom: 2rem;">A workflow node execution translates to a multi-turn conversation. `stage_driver.py` initiates a loop that gathers prompts, resolves tools, invokes the LLM, filters tool dispatches, and handles phase advancement.</p>
+    <!-- Section 2: Legacy vs Modern -->
+    <section id="legacy-shift">
+      <h2>The Architectural Shift: Legacy invite.ts vs. context-fabric</h2>
+      <p>
+        Prior to Milestone 71, the entire LLM ↔ tool execution loop was housed in a massive ~5,000-line monolithic TypeScript endpoint at <code>mcp-server/src/mcp/invoke.ts</code>. In modern Singularity, this endpoint is a 410-returning shim. The loop was refactored into the Python-based <code>context-fabric/services/context_api_service/app/governed</code> modules.
+      </p>
+
+      <div class="glass-card" style="margin: 1.5rem 0; padding: 1.5rem;">
+        <table>
+          <thead>
+            <tr>
+              <th>Responsibility</th>
+              <th>Legacy State (Pre-M71 invoke.ts)</th>
+              <th>Modern State (context-fabric governed)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Multi-turn LLM Loop</strong></td>
+              <td>Monolithic server-side TS controller in mcp-server.</td>
+              <td>Driven modularly by <span class="highlight-text">stage_driver.py</span> and <span class="highlight-text">turn.py</span> in context-fabric.</td>
+            </tr>
+            <tr>
+              <td><strong>Phase Enforcement</strong></td>
+              <td>Advisory instructions injected in LLM system prompts.</td>
+              <td>Enforced structurally by Pydantic models in <span class="highlight-text">receipts.py</span> and transition map in <span class="highlight-text">phase_state.py</span>.</td>
+            </tr>
+            <tr>
+              <td><strong>PII Protection</strong></td>
+              <td>Lost across approval gate pauses or session timeouts.</td>
+              <td>Persisted statefully in context-fabric via <span class="highlight-text">pii_mask.py</span>.</td>
+            </tr>
+            <tr>
+              <td><strong>Validation Failures</strong></td>
+              <td>Fatal error immediately aborted the run.</td>
+              <td>Interactive self-correction loops with validation budget.</td>
+            </tr>
+            <tr>
+              <td><strong>Path Coverage Check</strong></td>
+              <td><code>finish_gate_premature</code> in TS.</td>
+              <td>Restored via <span class="highlight-text">path_coverage.py</span>. Validates edits cover all planned files.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Section 3: The Context Planner -->
+    <section id="planning-core">
+      <h2>Deep Dive: How Agentic Coding is done in the Context Planner</h2>
+      <p>
+        The "Context Planner" is the governance framework that maps the progression of the agent from an empty slate to a verified code change. An agent cannot write code or inspect files arbitrarily without declaring its plan in a structured <span class="highlight-text">PlanReceipt</span>.
+      </p>
+
+      <p>
+        The core planning lifecycle goes through the following structured phases, mapped in <code>phase_state.py</code>:
+      </p>
+
+      <div class="callout info">
+        <div class="callout-title">The Structural Phase Map</div>
+        <code>PLAN ➔ EXPLORE ➔ ACT ➔ VERIFY ➔ [REPAIR] ➔ SELF_REVIEW ➔ FINALIZE</code>
+      </div>
+
+      <h3>1. The Planning Stage (PLAN Phase &amp; PlanReceipt)</h3>
+      <p>
+        When a stage begins, the agent is placed in the <code>PLAN</code> phase. Its tool allowlist is highly restricted (typically limited to <code>read_file</code> or <code>repo_map</code>). The agent must submit a <code>PlanReceipt</code>.
+      </p>
+      <p>
+        Key fields in the Pydantic <code>PlanReceipt</code> structure (defined in <code>receipts.py</code>):
+      </p>
+      <ul>
+        <li><code>target_files</code>: The list of files the agent expects to edit. This field triggers subsequent path-coverage validations.</li>
+        <li><code>symbols_to_inspect</code>: Symbols/classes to analyze.</li>
+        <li><code>test_strategy</code>: Contains <code>commands</code>, which is the list of scripts/tests the agent intends to run to verify its work. Mandatory for code stages.</li>
+        <li><code>actionable</code>: Can be <code>"yes"</code>, <code>"no"</code> (story premise already satisfied), or <code>"blocked"</code>. Short-circuits the run to human verification if <code>"no"</code> or <code>"blocked"</code>, avoiding fabricated tool execution.</li>
+      </ul>
+
+      <h3>2. Role-Specific Overrides</h3>
+      <p>
+        To prevent validation failures when running non-coding tasks (e.g. security audits or release-readiness reviews), <code>receipts.py</code> overrides planning schemas based on the <code>agent_role</code>:
+      </p>
+      <ul>
+        <li><strong>Reviewer Roles (SECURITY, DEVOPS)</strong>: Uses <code>ReviewPlanReceipt</code>. The <code>test_strategy</code> becomes optional (since auditors do not run tests), and a <code>review_strategy</code> is introduced.</li>
+        <li><strong>Intake Roles (PRODUCT_OWNER)</strong>: Uses <code>StoryIntakeReceipt</code>. The fields shift entirely to <code>story_brief</code> (markdown) and <code>acceptance_criteria</code> (pass/fail assertions).</li>
+      </ul>
+
+      <h3>3. Enforcement &amp; Code Change Provenance</h3>
+      <p>
+        Once a plan is approved and the agent transitions through <code>EXPLORE</code> (reads context) to <code>ACT</code> (applies changes), two strict validation filters run in the background inside <code>loop.py</code>:
+      </p>
+      
+      <div class="glass-card">
+        <h4>A. Path Coverage Gap (check_path_coverage in path_coverage.py)</h4>
+        <p style="font-size: 0.95rem;">
+          Asserts that every file listed in the plan's <code>target_files</code> is covered by either an edit block in the <code>EditReceipt.edits</code> array or listed in the <code>EditReceipt.skipped_targets</code> list. Unplanned files can be touched (over-coverage is allowed), but missing planned targets triggers a <code>PHASE_COVERAGE_GAP</code> error.
+        </p>
+        
+        <h4>B. Edit Provenance (PHASE_EDIT_UNBACKED)</h4>
+        <p style="font-size: 0.95rem;">
+          To prevent the agent from submitting a fake receipt claiming it edited files without executing mutating tools, <code>loop.py</code> tracks every successful tool invocation of <code>apply_patch</code>, <code>replace_text</code>, etc., and extracts their <code>code_change_id</code> or <code>tool_invocation_id</code>. If an entry in the EditReceipt is not backed by one of these recorded tokens, it is rejected as <code>PHASE_EDIT_UNBACKED</code>.
+        </p>
+      </div>
+    </section>
+
+    <!-- Section 4: Turn Loop Dataflow -->
+    <section id="execution-loop">
+      <h2>Multi-turn Conductor Sequence</h2>
+      <p>
+        When `workgraph-api` invokes `POST /execute` on `context-fabric`, it kicks off a loop of turns driven by <code>stage_driver.py</code>. The diagram below illustrates the exact execution data flow:
+      </p>
 
       <div class="diagram-container">
         <div class="mermaid">
           sequenceDiagram
               autonumber
+              participant Client as workgraph-api
               participant Driver as stage_driver.py
               participant Turn as turn.py
-              participant LLM as LLM (via Gateway)
               participant Oracle as loop.py
               participant Sandbox as mcp-server
+              participant LLM as LLM (via Gateway)
 
-              Driver->>Turn: run_turn(state, history)
-              activate Turn
-              Note over Turn: Resolves prompt via Prompt Composer.<br/>Generates stable tool descriptors with phase scope guidelines.
-              Turn->>LLM: call_gateway_chat(messages, tools)
-              LLM-->>Turn: returns text + tool_calls (JSON)
-              deactivate Turn
-              activate Turn
-              Note over Turn: Separates regular tool calls from submit_phase_output
-              Turn->>Oracle: governed_step(tool_calls, phase_output, next_phase)
-              activate Oracle
+              Client->>Driver: POST /execute (stage_key, state)
+              activate Driver
               
-              loop For each regular tool call
-                  Note over Oracle: Verifies tool in phase allowlist (tool_gateway.py)
-                  Oracle->>Sandbox: POST /mcp/tool-run
-                  Sandbox-->>Oracle: returns result payload
+              loop Turn Loop (max_turns = 25)
+                  Driver->>Turn: run_turn(state, history)
+                  activate Turn
+                  Turn->>LLM: POST chat/completions (messages, tools)
+                  LLM-->>Turn: returns text + tool_calls (JSON)
+                  deactivate Turn
+                  
+                  activate Turn
+                  Turn->>Oracle: governed_step(tool_calls, phase_output)
+                  activate Oracle
+                  
+                  loop For each tool call
+                      Oracle->>Oracle: check_tool_allowed(phase, tool_name)
+                      alt Allowed
+                          Oracle->>Sandbox: POST /mcp/tool-run (args)
+                          Sandbox-->>Oracle: returns result
+                          Oracle->>Oracle: record code_change_id
+                      else Refused
+                          Oracle-->>Oracle: record tool_refusal
+                      end
+                  end
+                  
+                  alt phase_output submitted
+                      Oracle->>Oracle: validate_phase_output(phase_output)
+                      alt Valid
+                          Oracle->>Oracle: check_path_coverage() & edit_provenance()
+                          Oracle->>Oracle: advance_phase()
+                      else Invalid
+                          Oracle-->>Oracle: return validation_error
+                      end
+                  end
+                  
+                  Oracle-->>Turn: GovernedStepResult
+                  deactivate Oracle
+                  Turn-->>Driver: TurnResult
+                  deactivate Turn
+                  
+                  Driver->>Driver: check halt criteria (FINALIZED / APPROVAL_PENDING / VALIDATION_BLOCKED)
               end
-
-              alt submit_phase_output exists
-                  Note over Oracle: Validates payload against Pydantic receipt model.<br/>Runs path coverage & edit-provenance validations.<br/>Fires synthetic auto-verifier test commands.
-                  Oracle->>Sandbox: POST /mcp/tool-run (run_test)
-                  Sandbox-->>Oracle: exit_code, stdout, stderr
-                  Note over Oracle: Bumps state variables & transition phase
-              end
-
-              Oracle-->>Turn: returns GovernedStepResult
-              deactivate Oracle
-              Turn-->>Driver: returns TurnResult
-              deactivate Turn
               
-              Note over Driver: Compresses history via Sliding Window (breadcrumbs).<br/>Checks halt criteria (FINALIZE, BLOCKED).
+              Driver-->>Client: Return final_state + audit_turns
+              deactivate Driver
         </div>
       </div>
     </section>
 
-    <!-- Section 3: Phase State Machine -->
-    <section id="phase-machine">
-      <h2 class="section-title">
-        <span class="section-icon">⇶</span> 3. Structural Phase State Machine
-      </h2>
-      <p class="subtitle" style="margin-bottom: 2rem;">Unlike legacy architectures where behavior was controlled via advisory prompt instructions, `context-fabric` enforces deterministic phase transitions. A model cannot slide to a succeeding phase without committing a valid structured receipt.</p>
+    <!-- Section 5: Receipts Explorer -->
+    <section id="receipts-explorer">
+      <h2>Interactive Receipts Explorer</h2>
+      <p>
+        Click through the tabs below to inspect the structure, required Pydantic properties, and JSON examples for the structural receipts that govern planning and coding:
+      </p>
 
-      <div class="diagram-container">
-        <div class="mermaid">
-          stateDiagram-v2
-              [*] --> PLAN: Initial State
-              PLAN --> EXPLORE: PlanReceipt submitted
-              EXPLORE --> ACT: ContextReceipt submitted
-              EXPLORE --> PLAN: Scope Rewind (cap=2)
-              ACT --> VERIFY: EditReceipt submitted
-              VERIFY --> REPAIR: VerificationReceipt (FAILED)
-              REPAIR --> VERIFY: RepairReceipt submitted (cap=3)
-              VERIFY --> SELF_REVIEW: VerificationReceipt (PASSED)
-              SELF_REVIEW --> FINALIZE: SelfReviewReceipt submitted
-              SELF_REVIEW --> REPAIR: Changes requested by human
-              FINALIZE --> [*]: Terminal State
-
-              classDef default fill:#111625,stroke:#4facfe,stroke-width:1px;
-              class PLAN,EXPLORE,ACT,VERIFY,REPAIR,SELF_REVIEW,FINALIZE default;
-        </div>
-      </div>
-    </section>
-
-    <!-- Section 4: M74 Quality Bar Restorations -->
-    <section id="m74-restorations">
-      <h2 class="section-title">
-        <span class="section-icon">🛠</span> 4. Interactive Deep Dive: M74 Core Restorations
-      </h2>
-      <p class="subtitle" style="margin-bottom: 2rem;">Milestone 74 restored and enhanced key validation gates that were dropped during the M71 transition. Click through the tabs below to explore the mechanics and Python implementations of these gates.</p>
-
-      <!-- Tabs Component -->
-      <div class="tabs-wrapper">
+      <!-- Receipts tabs -->
+      <div class="tabs-container" id="receipts-explorer-div">
         <div class="tabs-header">
-          <button class="tab-btn active" onclick="openTab(event, 'tab-compression')">1. Monotonic History Compression</button>
-          <button class="tab-btn" onclick="openTab(event, 'tab-provenance')">2. Edit Provenance Binding</button>
-          <button class="tab-btn" onclick="openTab(event, 'tab-synthesis')">3. Auto-Verify Synthesis</button>
-          <button class="tab-btn" onclick="openTab(event, 'tab-validation')">4. Validation Retries</button>
-          <button class="tab-btn" onclick="openTab(event, 'tab-loopholes')">5. Normalization & Loophole Fixes</button>
+          <button class="tab-btn active" onclick="openReceiptTab(event, 'rec-plan')">PlanReceipt</button>
+          <button class="tab-btn" onclick="openReceiptTab(event, 'rec-review-plan')">ReviewPlanReceipt</button>
+          <button class="tab-btn" onclick="openReceiptTab(event, 'rec-story')">StoryIntakeReceipt</button>
+          <button class="tab-btn" onclick="openReceiptTab(event, 'rec-edit')">EditReceipt</button>
+          <button class="tab-btn" onclick="openReceiptTab(event, 'rec-verify')">VerificationReceipt</button>
+          <button class="tab-btn" onclick="openReceiptTab(event, 'rec-review')">SelfReviewReceipt</button>
         </div>
+        
         <div class="tabs-content">
           
-          <!-- Tab 1: History Compression -->
-          <div id="tab-compression" class="tab-pane active">
-            <h3 class="card-title">Chronological Monotonic Numbering</h3>
-            <p class="card-desc" style="margin-bottom: 1.5rem;">To prevent LLM context-window exhaustion, history is compressed. Verbatim turns are capped at 8, while older turns collapse to `[TURN-N-RECAP]` breadcrumbs. 
-            Because breadcrumbs utilize a user role, they get classified under the `prelude` slice during subsequent calls. M74 introduced a lookup to scan existing breadcrumbs and offset indices, avoiding turn-indexing resets.</p>
-            
-            <pre><code><span class="comment"># history_compression.py</span>
-<span class="keyword">def</span> <span class="function">_count_breadcrumbs</span>(prelude: list[dict[str, Any]]) -> int:
-    count = 0
-    <span class="keyword">for</span> msg <span class="keyword">in</span> prelude:
-        <span class="keyword">if</span> msg.get(<span class="string">"role"</span>) != <span class="string">"user"</span>:
-            <span class="keyword">continue</span>
-        content = msg.get(<span class="string">"content"</span>) or <span class="string">""</span>
-        <span class="keyword">if</span> content.startswith(<span class="string">"[TURN-"</span>) <span class="keyword">and</span> <span class="string">"-RECAP]"</span> <span class="keyword">in</span> content:
-            count += 1
-    <span class="keyword">return</span> count</code></pre>
+          <!-- Tab: PlanReceipt -->
+          <div id="rec-plan" class="tab-pane active">
+            <h3 style="margin-top:0;">PlanReceipt Schema &amp; Purpose</h3>
+            <p>Submitted during the <code>PLAN</code> phase to lock down the scope of files to edit and the command to run in verification.</p>
+            <pre><code>{
+  <span class="p">"kind"</span>: <span class="s">"plan_receipt"</span>,
+  <span class="p">"target_files"</span>: [<span class="s">"src/main/scala/RuleEngine.scala"</span>],
+  <span class="p">"symbols_to_inspect"</span>: [<span class="s">"containsACharacter"</span>],
+  <span class="p">"test_strategy"</span>: {
+    <span class="p">"commands"</span>: [<span class="s">"sbt test"</span>],
+    <span class="p">"reason"</span>: <span class="s">"Verify containsACharacter operator compiles and matches expectations case-insensitively"</span>
+  },
+  <span class="p">"risk_level"</span>: <span class="s">"low"</span>,
+  <span class="p">"actionable"</span>: <span class="s">"yes"</span>
+}</code></pre>
           </div>
 
-          <!-- Tab 2: Edit Provenance -->
-          <div id="tab-provenance" class="tab-pane">
-            <h3 class="card-title">EditReceipt Provenance Binding</h3>
-            <p class="card-desc" style="margin-bottom: 1.5rem;">To resolve the loophole where an agent could claims changes in `EditReceipt` without actually executing edits, `loop.py` scans successful mutating dispatches (`apply_patch`, `replace_text`, etc.), pulls their `code_change_id` envelopes, and validates that claimed edits are backed by real tool executions.</p>
-            
-            <pre><code><span class="comment"># loop.py</span>
-<span class="keyword">def</span> <span class="function">_check_edit_receipt_provenance</span>(*, receipt: dict, produced_changes: dict) -> list[str]:
-    edits = receipt.get(<span class="string">"edits"</span>) or []
-    unbacked = []
-    <span class="keyword">for</span> entry <span class="keyword">in</span> edits:
-        path = entry.get(<span class="string">"file"</span>)
-        canonical = _normalise_change_path(path)
-        <span class="keyword">if</span> canonical <span class="keyword">not</span> <span class="keyword">in</span> produced_changes <span class="keyword">or</span> <span class="keyword">not</span> produced_changes[canonical]:
-            unbacked.append(path)
-    <span class="keyword">return</span> unbacked</code></pre>
+          <!-- Tab: ReviewPlanReceipt -->
+          <div id="rec-review-plan" class="tab-pane">
+            <h3 style="margin-top:0;">ReviewPlanReceipt Schema (SECURITY/DEVOPS)</h3>
+            <p>Used by non-coding reviewer roles where running a local test suite isn't possible. The test strategy is optional.</p>
+            <pre><code>{
+  <span class="p">"kind"</span>: <span class="s">"plan_receipt"</span>,
+  <span class="p">"target_files"</span>: [<span class="s">"docker-compose.yml"</span>, <span class="s">"src/lib/auth.ts"</span>],
+  <span class="p">"review_strategy"</span>: {
+    <span class="p">"approach"</span>: <span class="s">"Static code audit and dependency check for open CVEs"</span>,
+    <span class="p">"scanners"</span>: [<span class="s">"trivy"</span>, <span class="s">"eslint"</span>]
+  },
+  <span class="p">"test_strategy"</span>: null,
+  <span class="p">"risk_level"</span>: <span class="s">"medium"</span>
+}</code></pre>
           </div>
 
-          <!-- Tab 3: Auto-Verify -->
-          <div id="tab-synthesis" class="tab-pane">
-            <h3 class="card-title">Synthesizing Verifiers & Preserving Failure Logs</h3>
-            <p class="card-desc" style="margin-bottom: 1.5rem;">After edits are completed, the orchestrator automatically runs test discovery (`recommended_verification`) and triggers unit test execution (`run_test`) on behalf of the agent. Test output summaries are fed into the prompt history. To prevent truncation from discarding actual failures, M74 preserves the log **tail** rather than the head.</p>
-            
-            <pre><code><span class="comment"># verify_synthesis.py</span>
-<span class="keyword">def</span> <span class="function">_summarise</span>(text: Any, *, max_len: int = 1500) -> str:
-    s = str(text)
-    <span class="keyword">if</span> len(s) <= max_len:
-        <span class="keyword">return</span> s
-    <span class="comment"># Truncate setup logs, keep the error traces and tracebacks</span>
-    <span class="keyword">return</span> <span class="string">"...[truncated earlier logs]\n"</span> + s[-max_len:]</code></pre>
+          <!-- Tab: StoryIntakeReceipt -->
+          <div id="rec-story" class="tab-pane">
+            <h3 style="margin-top:0;">StoryIntakeReceipt Schema (PRODUCT_OWNER)</h3>
+            <p>Used in story ingestion to establish user story narrative and clear criteria without source file references.</p>
+            <pre><code>{
+  <span class="p">"kind"</span>: <span class="s">"story_intake_receipt"</span>,
+  <span class="p">"story_brief"</span>: <span class="s">"As a user, I want a containsACharacter operator in the RuleEngine so that I can check strings."</span>,
+  <span class="p">"acceptance_criteria"</span>: [
+    <span class="s">"Checks if a string has a particular character"</span>,
+    <span class="s">"The operation must be case-insensitive"</span>
+  ],
+  <span class="p">"open_questions"</span>: []
+}</code></pre>
           </div>
 
-          <!-- Tab 4: Validation Retries -->
-          <div id="tab-validation" class="tab-pane">
-            <h3 class="card-title">Self-Correction Validation Retry Budget</h3>
-            <p class="card-desc" style="margin-bottom: 1.5rem;">Validation failures (such as missing a required field in `PlanReceipt`) were historically treated as fatal, aborting the run with `VALIDATION_BLOCKED` on turn 1. `stage_driver.py` now implements a validation retry budget, allowing the agent one opportunity to receive structured error details and self-correct.</p>
-            
-            <pre><code><span class="comment"># stage_driver.py</span>
-<span class="keyword">if</span> turn.step.validation_error <span class="keyword">and</span> <span class="keyword">not</span> turn.step.phase_advanced:
-    consecutive_validation_errors += 1
-    <span class="keyword">if</span> consecutive_validation_errors > _VALIDATION_RETRY_BUDGET:
-        result.stop_reason = <span class="string">"VALIDATION_BLOCKED"</span>
-        <span class="keyword">return</span> result
-    <span class="comment"># Feed error feedback directly into next turn prompt</span>
-    history.append(_render_validation_error_message(turn.step.validation_error))
-    <span class="keyword">continue</span></code></pre>
+          <!-- Tab: EditReceipt -->
+          <div id="rec-edit" class="tab-pane">
+            <h3 style="margin-top:0;">EditReceipt Schema &amp; Gates</h3>
+            <p>Submitted during the <code>ACT</code> phase. Validates file modifications. Triggers path-coverage &amp; edit-provenance check.</p>
+            <pre><code>{
+  <span class="p">"kind"</span>: <span class="s">"edit_receipt"</span>,
+  <span class="p">"edits"</span>: [
+    {
+      <span class="p">"file"</span>: <span class="s">"src/main/scala/RuleEngine.scala"</span>,
+      <span class="p">"edit_type"</span>: <span class="s">"apply_patch"</span>,
+      <span class="p">"reason"</span>: <span class="s">"Implemented the containsACharacter operator logic"</span>
+    }
+  ],
+  <span class="p">"skipped_targets"</span>: []
+}</code></pre>
           </div>
 
-          <!-- Tab 5: Normalization & Loopholes -->
-          <div id="tab-loopholes" class="tab-pane">
-            <h3 class="card-title">Windows Normalization & Verification Gate Enforcement</h3>
-            <p class="card-desc" style="margin-bottom: 1.5rem;">Key changes addressing platform loopholes and OS-specific behavior:</p>
-            
-            <table class="provenance-table">
-              <thead>
-                <tr>
-                  <th>Component</th>
-                  <th>Gaps Addressed</th>
-                  <th>Implementation Detail</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td><strong>Windows Paths</strong></td>
-                  <td>Backslashes (`\`) broke path comparisons on Windows, resulting in false-positive `PHASE_COVERAGE_GAP` blocks.</td>
-                  <td>`_normalise` and `_normalise_change_path` now proactively replace `\` with `/` prior to prefix removal.</td>
-                </tr>
-                <tr>
-                  <td><strong>Verification status loophole</strong></td>
-                  <td>Agents could bypass checks by submitting a `"passed"` status with failed test commands inside `commands_run`.</td>
-                  <td>`VerificationResultPayload` now executes a model validator asserting every command in `commands_run` has `exit_code == 0` when status is `"passed"`.</td>
-                </tr>
-                <tr>
-                  <td><strong>PLAN $\rightarrow$ SELF_REVIEW edge</strong></td>
-                  <td>Non-coding workflow nodes (e.g. Architect planning, Product Owner intake) were blocked from finishing.</td>
-                  <td>Modified transition map to support bypassing EXPLORE/ACT/VERIFY stages if the stage policy limits are set to planning-only.</td>
-                </tr>
-              </tbody>
-            </table>
+          <!-- Tab: VerificationReceipt -->
+          <div id="rec-verify" class="tab-pane">
+            <h3 style="margin-top:0;">VerificationReceipt Schema &amp; Guards</h3>
+            <p>Submitted during the <code>VERIFY</code> phase. Confirms test outputs. Prevents the "fake-pass" and "failing-test-bypass" loopholes.</p>
+            <pre><code>{
+  <span class="p">"kind"</span>: <span class="s">"verification_receipt"</span>,
+  <span class="p">"verification_result"</span>: {
+    <span class="p">"status"</span>: <span class="s">"passed"</span>,
+    <span class="p">"commands_run"</span>: [
+      {
+        <span class="p">"command"</span>: <span class="s">"sbt test"</span>,
+        <span class="p">"exit_code"</span>: 0,
+        <span class="p">"duration_ms"</span>: 4200,
+        <span class="p">"stdout_summary"</span>: <span class="s">"All 14 tests passed."</span>
+      }
+    ],
+    <span class="p">"coverage"</span>: {
+      <span class="p">"targeted_tests"</span>: true,
+      <span class="p">"full_tests"</span>: false
+    }
+  }
+}</code></pre>
+          </div>
+
+          <!-- Tab: SelfReviewReceipt -->
+          <div id="rec-review" class="tab-pane">
+            <h3 style="margin-top:0;">SelfReviewReceipt Schema &amp; Handoff</h3>
+            <p>Submitted in <code>SELF_REVIEW</code>. Summarizes the change before opening the operator approval gate.</p>
+            <pre><code>{
+  <span class="p">"kind"</span>: <span class="s">"self_review_receipt"</span>,
+  <span class="p">"summary"</span>: <span class="s">"Implemented and verified containsACharacter string operator."</span>,
+  <span class="p">"acceptance_criteria_check"</span>: [
+    {
+      <span class="p">"criterion"</span>: <span class="s">"The operation must be case-insensitive"</span>,
+      <span class="p">"status"</span>: <span class="s">"met"</span>,
+      <span class="p">"evidence"</span>: <span class="s">"Test containsACharacterCaseInsensitive passed."</span>
+    }
+  ],
+  <span class="p">"recommended_for_approval"</span>: true
+}</code></pre>
           </div>
 
         </div>
       </div>
     </section>
 
-    <!-- Section 5: PII Masking Engine -->
+    <!-- Section 6: M74 Quality Gates -->
+    <section id="m74-restorations">
+      <h2>M74 Quality Bar Restorations</h2>
+      <p>
+        Milestone 74 restored several vital verification gates that were disabled during structural refactoring. These prevent models from bypassing safety policies:
+      </p>
+
+      <div class="tabs-container" id="m74-restorations-div">
+        <div class="tabs-header">
+          <button class="tab-btn active" onclick="openM74Tab(event, 'm74-compression')">1. Monotonic Compaction</button>
+          <button class="tab-btn" onclick="openM74Tab(event, 'm74-provenance')">2. Edit Provenance</button>
+          <button class="tab-btn" onclick="openM74Tab(event, 'm74-synthesis')">3. Test Synthesis</button>
+          <button class="tab-btn" onclick="openM74Tab(event, 'm74-retries')">4. Validation Retries</button>
+        </div>
+        
+        <div class="tabs-content">
+          
+          <!-- M74: History Compression -->
+          <div id="m74-compression" class="tab-pane active">
+            <h3 style="margin-top:0;">History Compression (`history_compression.py`)</h3>
+            <p>
+              To keep LLM context consumption stable, older conversation turns are summarized as single user-role messages (<code>[TURN-N-RECAP]</code>) while preserving the last 8 turns verbatim. 
+            </p>
+            <pre><code><span class="k">def</span> <span class="f">_count_breadcrumbs</span><span class="p">(</span>prelude<span class="p">:</span> list<span class="p">[</span>dict<span class="p">[</span>str<span class="p">,</span> Any<span class="p">]])</span> -> int<span class="p">:</span>
+    count <span class="p">=</span> <span class="n">0</span>
+    <span class="k">for</span> msg <span class="k">in</span> prelude<span class="p">:</span>
+        <span class="k">if</span> msg<span class="p">.</span>get<span class="p">(</span><span class="s">"role"</span><span class="p">)</span> <span class="p">!=</span> <span class="s">"user"</span><span class="p">:</span>
+            <span class="k">continue</span>
+        content <span class="p">=</span> msg<span class="p">.</span>get<span class="p">(</span><span class="s">"content"</span><span class="p">)</span> <span class="k">or</span> <span class="s">""</span>
+        <span class="k">if</span> content<span class="p">.</span>startswith<span class="p">(</span><span class="s">"[TURN-"</span><span class="p">)</span> <span class="k">and</span> <span class="s">"-RECAP]"</span> <span class="k">in</span> content<span class="p">:</span>
+            count <span class="p">+=</span> <span class="n">1</span>
+    <span class="k">return</span> count</code></pre>
+          </div>
+
+          <!-- M74: Edit Provenance -->
+          <div id="m74-provenance" class="tab-pane">
+            <h3 style="margin-top:0;">Edit Provenance Binding (`loop.py`)</h3>
+            <p>
+              Ensures every path claimed in <code>EditReceipt</code> matches a registered, successful mutation call.
+            </p>
+            <pre><code><span class="k">def</span> <span class="f">_check_edit_receipt_provenance</span><span class="p">(</span><span class="o">*</span><span class="p">,</span> receipt<span class="p">:</span> dict<span class="p">,</span> produced_changes<span class="p">:</span> dict<span class="p">)</span> -> list<span class="p">[</span>str<span class="p">]:</span>
+    edits <span class="p">=</span> receipt<span class="p">.</span>get<span class="p">(</span><span class="s">"edits"</span><span class="p">)</span> <span class="k">or</span> <span class="p">[]</span>
+    unbacked <span class="p">=</span> <span class="p">[]</span>
+    <span class="k">for</span> entry <span class="k">in</span> edits<span class="p">:</span>
+        path <span class="p">=</span> entry<span class="p">.</span>get<span class="p">(</span><span class="s">"file"</span><span class="p">)</span>
+        canonical <span class="p">=</span> _normalise_change_path<span class="p">(</span>path<span class="p">)</span>
+        <span class="k">if</span> canonical <span class="k">not</span> <span class="k">in</span> produced_changes <span class="k">or</span> <span class="k">not</span> produced_changes<span class="p">[</span>canonical<span class="p">]:</span>
+            unbacked<span class="p">.</span>append<span class="p">(</span>path<span class="p">)</span>
+    <span class="k">return</span> unbacked</code></pre>
+          </div>
+
+          <!-- M74: Test Synthesis -->
+          <div id="m74-synthesis" class="tab-pane">
+            <h3 style="margin-top:0;">Auto-Verify &amp; Log Preservation (`verify_synthesis.py`)</h3>
+            <p>
+              Automatically fires test runs on behalf of the agent. To prevent truncation from discarding actual test failures, the framework preserves the **tail** (stderr and stack traces) rather than the head.
+            </p>
+            <pre><code><span class="k">def</span> <span class="f">_summarise</span><span class="p">(</span>text<span class="p">:</span> Any<span class="p">,</span> <span class="o">*</span><span class="p">,</span> max_len<span class="p">:</span> int <span class="p">=</span> <span class="n">1500</span><span class="p">)</span> -> str<span class="p">:</span>
+    s <span class="p">=</span> str<span class="p">(</span>text<span class="p">)</span>
+    <span class="k">if</span> len<span class="p">(</span>s<span class="p">)</span> <span class="p">&lt;=</span> max_len<span class="p">:</span>
+        <span class="k">return</span> s
+    <span class="c"># Drop standard setup logs, keep actual error traces at the end</span>
+    <span class="k">return</span> <span class="s">"...[truncated earlier logs]</span><span class="k">\n</span><span class="s">"</span> <span class="p">+</span> s<span class="p">[</span><span class="p">-</span>max_len<span class="p">:]</span></code></pre>
+          </div>
+
+          <!-- M74: Validation Retries -->
+          <div id="m74-retries" class="tab-pane">
+            <h3 style="margin-top:0;">Validation Retry Budget (`stage_driver.py`)</h3>
+            <p>
+              Validation errors (like a missing field or incorrect receipt format) no longer abort the stage run instantly. The agent receives a structured correction prompt and has a budget of 2 consecutive retries to self-correct.
+            </p>
+            <pre><code><span class="k">if</span> turn<span class="p">.</span>step<span class="p">.</span>validation_error <span class="k">and</span> <span class="k">not</span> turn<span class="p">.</span>step<span class="p">.</span>phase_advanced<span class="p">:</span>
+    consecutive_validation_errors <span class="p">+=</span> <span class="n">1</span>
+    <span class="k">if</span> consecutive_validation_errors <span class="p">&gt;</span> _VALIDATION_RETRY_BUDGET<span class="p">:</span>
+        result<span class="p">.</span>stop_reason <span class="p">=</span> <span class="s">"VALIDATION_BLOCKED"</span>
+        <span class="k">return</span> result
+    <span class="c"># Inject validation errors directly as a user message</span>
+    history<span class="p">.</span>append<span class="p">(</span>_render_validation_error_message<span class="p">(</span>turn<span class="p">.</span>step<span class="p">.</span>validation_error<span class="p">))</span>
+    <span class="k">continue</span></code></pre>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 7: PII Masking Engine -->
     <section id="pii-masking">
-      <h2 class="section-title">
-        <span class="section-icon">🔒</span> 5. Multi-Turn PII Masking Engine (`pii_mask.py`)
-      </h2>
-      <p class="subtitle" style="margin-bottom: 2rem;">When the platform migrated to stateless tool dispatches, the session-level PII mapping was lost. `context-fabric` now owns Option A (stateful orchestration-side masking), preserving security boundaries across turns and resume events.</p>
+      <h2>The PII Masking Engine (pii_mask.py)</h2>
+      <p>
+        Because LLM provider dispatches are external, <code>context-fabric</code> runs a stateful de-identification pass around all tool inputs and outputs.
+      </p>
 
-      <div class="card" style="margin-bottom: 2.5rem;">
-        <h3 class="card-title" style="display:flex; justify-content:space-between; align-items:center;">
-          <span>Mask/Unmask Flow</span>
-          <span style="font-family: var(--font-mono); font-size: 0.8rem; background: rgba(0, 242, 254, 0.1); color: var(--accent-cyan); padding: 0.2rem 0.6rem; border-radius: 4px;">Stateful Mapping</span>
-        </h3>
-        <p class="card-desc" style="margin-top: 1rem; margin-bottom: 1.5rem;">The mapping maintains strict correspondence between values and token indexes (e.g. `[EMAIL_1]` always corresponds to `a@b.com` throughout the stage run). This allows the agent to reason about identity across turns without ever exposing unregulated PII to external LLM providers.</p>
-
-        <div class="diagram-container" style="background: rgba(9, 13, 22, 0.3); padding: 1.5rem;">
-          <div class="mermaid" style="height: 120px;">
+      <div class="glass-card" style="padding: 1.5rem;">
+        <h4 style="margin-bottom: 1rem; color: #fff;">Privacy Preservation Lifecycle</h4>
+        <div class="diagram-container" style="background: rgba(3, 5, 10, 0.2); padding: 1rem;">
+          <div class="mermaid">
             graph LR
                 LLM[1. LLM sends tokenized call] -->|send_email(to='[EMAIL_1]')| CF[2. Context-Fabric unmasks]
                 CF -->|send_email(to='a@b.com')| Sandbox[3. Stateless Sandbox runs tool]
-                Sandbox -->|returns output: 'sent to a@b.com'| CF2[4. Context-Fabric masks]
+                Sandbox -->|returns: 'sent to a@b.com'| CF2[4. Context-Fabric masks]
                 CF2 -->|returns: 'sent to [EMAIL_1]'| LLM2[5. LLM sees masked history]
-                style CF fill:#131a30,stroke:#4facfe,stroke-width:1px;
-                style CF2 fill:#131a30,stroke:#4facfe,stroke-width:1px;
+                style CF fill:#131a30,stroke:#00f2fe,stroke-width:1px;
+                style CF2 fill:#131a30,stroke:#00f2fe,stroke-width:1px;
           </div>
         </div>
-      </div>
 
-      <div class="card-grid">
-        <div class="card">
-          <h4 class="card-title">Args Unmasking</h4>
-          <p class="card-desc" style="margin-bottom: 1.5rem;">Walks arbitrary JSON arguments recursively, executing regex replacements on string leaves longest-token-first, so `[EMAIL_10]` does not get corrupted by substring matches against `[EMAIL_1]`.</p>
-          <pre><code><span class="keyword">def</span> <span class="function">unmask_string</span>(text: str, token_map: dict) -> str:
-    tokens = sorted(token_map.keys(), key=len, reverse=True)
-    pattern = re.compile(<span class="string">"|"</span>.join(re.escape(t) <span class="keyword">for</span> t <span class="keyword">in</span> tokens))
-    <span class="keyword">return</span> pattern.sub(<span class="keyword">lambda</span> m: token_map.get(m.group(0)), text)</code></pre>
-        </div>
-        <div class="card">
-          <h4 class="card-title">Result Masking</h4>
-          <p class="card-desc" style="margin-bottom: 1.5rem;">Performs regex detection over dotted IPv4 quads, ZIP+9, NANP phone numbers, credit card digits (Luhn-validated), emails, and SSNs, generating sequential token identifiers and updating the mapping.</p>
-          <pre><code><span class="keyword">def</span> <span class="function">_luhn_valid</span>(s: str) -> bool:
-    digits = re.sub(r<span class="string">"\D"</span>, <span class="string">""</span>, s)
-    total = 0
-    alternate = False
-    <span class="keyword">for</span> ch <span class="keyword">in</span> reversed(digits):
-        n = int(ch)
-        <span class="keyword">if</span> alternate:
-            n *= 2
-            <span class="keyword">if</span> n > 9: n -= 9
-        total += n
-        alternate = <span class="keyword">not</span> alternate
-    <span class="keyword">return</span> total % 10 == 0</code></pre>
+        <div class="card-grid" style="margin-top: 1.5rem;">
+          <div class="stat-card">
+            <div class="stat-card-title">Args Unmasking</div>
+            <p style="font-size: 0.9rem; margin-bottom: 0;">Recursively inspects the tool call arguments and replaces tokens (e.g. <code>[EMAIL_1]</code>) with their raw values. Sorting by length in reverse prevents substring mismatch corruption (e.g. replacing <code>[EMAIL_1]</code> inside <code>[EMAIL_10]</code>).</p>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-title">Result Masking</div>
+            <p style="font-size: 0.9rem; margin-bottom: 0;">Scans incoming stdout/results using regular expressions for IPv4, emails, phone numbers, credit card digits (validated by Luhn check), and SSNs, converting them to stable sequential tokens.</p>
+          </div>
         </div>
       </div>
     </section>
 
-  </div>
+    <!-- Footer -->
+    <footer>
+      <div class="footer-text">Singularity Platform Architecture Documents · 2026</div>
+      <div class="footer-links">
+        <a href="platform-handbook.html" class="footer-link">Platform Handbook</a>
+        <a href="trace-contract.md" class="footer-link">Trace Contracts</a>
+        <a href="https://github.com/ashokraj2011/singularity-platform" class="footer-link" target="_blank">Repository</a>
+      </div>
+    </footer>
 
-  <!-- Footer -->
-  <footer>
-    <div class="footer-text">Singularity Platform Architecture Documents · 2026</div>
-    <div class="footer-links">
-      <a href="./platform-handbook.html" class="footer-link">Platform Handbook</a>
-      <a href="./trace-contract.md" class="footer-link">Trace Contracts</a>
-      <a href="https://github.com/ashokraj2011/singularity-platform" class="footer-link">Repository Main</a>
-    </div>
-  </footer>
+  </main>
 
-  <!-- Interactivity Scripts -->
+  <!-- Interactive Scripts -->
   <script>
-    function openTab(evt, tabId) {
-      // Declare all variables
+    // Tab switching for receipts explorer
+    function openReceiptTab(evt, tabId) {
       var i, tabcontent, tablinks;
-
-      // Get all elements with class="tab-pane" and hide them
-      tabcontent = document.getElementsByClassName("tab-pane");
+      tabcontent = document.querySelectorAll("#receipts-explorer-div .tab-pane");
       for (i = 0; i < tabcontent.length; i++) {
         tabcontent[i].style.display = "none";
         tabcontent[i].classList.remove("active");
       }
-
-      // Get all elements with class="tab-btn" and remove the class "active"
-      tablinks = document.getElementsByClassName("tab-btn");
+      tablinks = document.querySelectorAll("#receipts-explorer-div .tab-btn");
       for (i = 0; i < tablinks.length; i++) {
         tablinks[i].classList.remove("active");
       }
-
-      // Show the current tab, and add an "active" class to the button that opened the tab
       var activeTab = document.getElementById(tabId);
       activeTab.style.display = "block";
       activeTab.classList.add("active");
       evt.currentTarget.classList.add("active");
     }
+
+    // Tab switching for M74 restorations
+    function openM74Tab(evt, tabId) {
+      var i, tabcontent, tablinks;
+      tabcontent = document.querySelectorAll("#m74-restorations-div .tab-pane");
+      for (i = 0; i < tabcontent.length; i++) {
+        tabcontent[i].style.display = "none";
+        tabcontent[i].classList.remove("active");
+      }
+      tablinks = document.querySelectorAll("#m74-restorations-div .tab-btn");
+      for (i = 0; i < tablinks.length; i++) {
+        tablinks[i].classList.remove("active");
+      }
+      var activeTab = document.getElementById(tabId);
+      activeTab.style.display = "block";
+      activeTab.classList.add("active");
+      evt.currentTarget.classList.add("active");
+    }
+
+    // Simple ScrollSpy to highlight sidebar nav items as you scroll
+    window.addEventListener('DOMContentLoaded', () => {
+      const observer = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          const id = entry.target.getAttribute('id');
+          if (entry.intersectionRatio > 0.3) {
+            document.querySelectorAll('aside nav ul li').forEach(li => {
+              li.classList.remove('active');
+            });
+            const activeLink = document.querySelector(`aside nav ul li a[href="#${id}"]`);
+            if (activeLink) {
+              activeLink.parentElement.classList.add('active');
+            }
+          }
+        });
+      }, { threshold: [0.1, 0.3, 0.5], rootMargin: "0px 0px -20% 0px" });
+
+      // Track all sections
+      document.querySelectorAll('section').forEach(section => {
+        observer.observe(section);
+      });
+    });
   </script>
 </body>
 </html>

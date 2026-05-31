@@ -293,7 +293,16 @@ export async function activateAgentTask(
   // Phase: AgentTaskExecutor first. ContractReplay, EventHorizonChat, and
   // PromptComposerRespond migrate in follow-ups (each independently
   // flag-able once their callers grow the equivalent toggle).
-  const useGoverned = cfg.useGovernedExecutor === true
+  // M99 S3.1 — Phase-3 default flip. WORKGRAPH_FORCE_GOVERNED_CODING makes
+  // governed the DEFAULT for non-blueprint coding nodes: governed runs unless
+  // the node explicitly opts OUT (useGovernedExecutor === false). This is the
+  // inverse polarity of the two task-#119 opt-IN paths below, so it's
+  // evaluated first and an explicit per-node false still wins (operator escape
+  // hatch). Off by default → no behaviour change until the env flag is set.
+  const forceGoverned = config.WORKGRAPH_FORCE_GOVERNED_CODING === true
+    && cfg.useGovernedExecutor !== false
+  const useGoverned = forceGoverned
+    || cfg.useGovernedExecutor === true
     || config.CONTEXT_FABRIC_USE_GOVERNED_FOR_NON_BLUEPRINT === true
 
   // 4. Call context-fabric — governed or legacy depending on the flag.

@@ -415,6 +415,29 @@ function pushFixCommands(code: string, remote: string): string[] {
   if (code === 'APPROVAL_REQUIRED') {
     return ['Complete the Human approval node before retrying Git Push.']
   }
+  // M99 S1.4 — discrete codes mirrored from mcp-server's git-workspace.ts so
+  // the workgraph-api fallback (used when mcp-server doesn't supply
+  // push_fix_commands) gives the same precise guidance.
+  if (code === 'GIT_BRANCH_PROTECTED') {
+    return [
+      'The target branch is protected — a direct push is refused by branch protection.',
+      'Push to a feature branch (e.g. wi/<code>) and open a Pull Request to merge it.',
+      'If a direct push is required, an admin must relax the branch-protection rule.',
+    ]
+  }
+  if (code === 'GIT_NO_UPSTREAM') {
+    return [
+      'The local branch has no upstream tracking ref on ' + remote + '.',
+      'git push -u ' + remote + ' <branch>   # sets the upstream on first push',
+    ]
+  }
+  if (code === 'GIT_REMOTE_MISMATCH') {
+    return [
+      'Local and remote histories are unrelated — the remote likely points at a different repo.',
+      'git remote -v   # confirm ' + remote + ' matches the work item source repo',
+      'git remote set-url ' + remote + ' <correct-repo-url>   # if the remote is wrong',
+    ]
+  }
   return ['Review the Git push error, then retry the Git Push node.']
 }
 

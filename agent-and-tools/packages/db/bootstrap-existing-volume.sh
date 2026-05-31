@@ -43,4 +43,19 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 GRANT ALL ON SCHEMA public TO singularity;
 SQL
 
+echo "[bootstrap] ensuring 'singularity_context_fabric' database exists…"
+DB_EXISTS=$(psql -v ON_ERROR_STOP=1 -d singularity -tAc \
+  "SELECT 1 FROM pg_database WHERE datname='singularity_context_fabric'")
+if [ -z "$DB_EXISTS" ]; then
+  psql -v ON_ERROR_STOP=1 -d singularity -c \
+    "CREATE DATABASE singularity_context_fabric"
+  echo "[bootstrap] created database singularity_context_fabric"
+fi
+
+echo "[bootstrap] ensuring pgcrypto + grants in singularity_context_fabric…"
+psql -v ON_ERROR_STOP=1 -d singularity_context_fabric <<'SQL'
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+GRANT ALL ON SCHEMA public TO singularity;
+SQL
+
 echo "[bootstrap] done."

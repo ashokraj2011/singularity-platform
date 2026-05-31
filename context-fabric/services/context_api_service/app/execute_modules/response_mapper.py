@@ -138,7 +138,7 @@ def persist_failure(
 ) -> None:
     """Write a FAILED row to call_log so the operator UI can render the
     failure with the same correlation surface (cf_call_id, trace_id) the
-    success path uses. Best-effort: a sqlite write failure doesn't shadow
+    success path uses. Best-effort: a store write failure doesn't shadow
     the original error."""
     try:
         call_log.persist({
@@ -154,6 +154,6 @@ def persist_failure(
         })
     except Exception:
         # Failure-on-failure shouldn't escalate to the caller — they
-        # already know the run failed. The sqlite write loss is
+        # already know the run failed. The store write loss is
         # recoverable via the audit-gov trail anyway.
         pass

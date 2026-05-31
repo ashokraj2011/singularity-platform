@@ -106,16 +106,18 @@ sleep 1
    npm run dev > "$LOG_DIR/mcp-server.log" 2>&1 &)
 ok "mcp-server relaunched"
 
-# ── 6. Re-launch context-api with IAM bootstrap + writable SQLite paths ────
-info "swapping context-api to use IAM bootstrap creds + writable DBs…"
+# ── 6. Re-launch context-api with IAM bootstrap + Postgres store ───────────
+info "swapping context-api to use IAM bootstrap creds + Postgres store…"
 lsof -nP -iTCP:8000 -sTCP:LISTEN -t 2>/dev/null | xargs -I{} kill -9 {} 2>/dev/null || true
 sleep 1
-mkdir -p /tmp/cf-data
+PGPASSWORD=postgres psql -h localhost -p 5432 -U ashokraj -d postgres -tAc \
+  "SELECT 1 FROM pg_database WHERE datname='singularity_context_fabric'" | grep -q 1 || \
+  PGPASSWORD=postgres createdb -h localhost -p 5432 -U ashokraj singularity_context_fabric
+CONTEXT_FABRIC_DATABASE_URL="${CONTEXT_FABRIC_DATABASE_URL:-postgresql://ashokraj:postgres@localhost:5432/singularity_context_fabric}"
 SHARED="$ROOT/context-fabric/shared"
 (cd "$ROOT/context-fabric/services/context_api_service" && nohup env \
    PYTHONPATH="$SHARED:${PYTHONPATH:-}" \
-   CALL_LOG_DB=/tmp/cf-data/call_log.db \
-   EVENTS_STORE_DB=/tmp/cf-data/call_log_events.db \
+   CONTEXT_FABRIC_DATABASE_URL="$CONTEXT_FABRIC_DATABASE_URL" \
    IAM_BOOTSTRAP_USERNAME=admin@singularity.local \
    IAM_BOOTSTRAP_PASSWORD=Admin1234! \
    IAM_BASE_URL="${IAM_BASE_URL:-http://localhost:8100/api/v1}" \

@@ -488,6 +488,158 @@
         ],
         "type": "object"
       }
+    },
+    "localize_code_change": {
+      "category": "read",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "Natural-language description of the change to localize (what to find the edit sites for)."
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional known symbol/identifier names to anchor the search."
+          },
+          "hint_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional file paths the caller already suspects are relevant."
+          }
+        },
+        "required": [
+          "task"
+        ]
+      }
+    },
+    "localize_test_failure": {
+      "category": "read",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "failure_output": {
+            "type": "string",
+            "description": "Raw test/stack-trace output to localize the offending source + test files from."
+          },
+          "failing_tests": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional explicit failing test names."
+          }
+        },
+        "required": [
+          "failure_output"
+        ]
+      }
+    },
+    "replace_method_or_function": {
+      "category": "mutate",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "File containing the method/function."
+          },
+          "symbol": {
+            "type": "string",
+            "description": "Name of the method or function to replace (optionally Class.method)."
+          },
+          "new_body": {
+            "type": "string",
+            "description": "Full replacement source for the entire method/function definition."
+          }
+        },
+        "required": [
+          "path",
+          "symbol",
+          "new_body"
+        ]
+      }
+    },
+    "insert_switch_case_or_enum_handler": {
+      "category": "mutate",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "File containing the switch/enum/dispatch construct."
+          },
+          "anchor": {
+            "type": "string",
+            "description": "Symbol or text identifying the switch statement, enum, or handler map to extend."
+          },
+          "case_key": {
+            "type": "string",
+            "description": "The new case label / enum member / dispatch key to add."
+          },
+          "case_body": {
+            "type": "string",
+            "description": "Source for the new case/branch body."
+          }
+        },
+        "required": [
+          "path",
+          "anchor",
+          "case_key",
+          "case_body"
+        ]
+      }
+    },
+    "add_test_case": {
+      "category": "mutate",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Test file to add the case to (created if absent)."
+          },
+          "test_name": {
+            "type": "string",
+            "description": "Name/description of the new test case."
+          },
+          "test_body": {
+            "type": "string",
+            "description": "Full source of the new test case."
+          },
+          "suite": {
+            "type": "string",
+            "description": "Optional describe/suite block to nest the case under."
+          }
+        },
+        "required": [
+          "path",
+          "test_name",
+          "test_body"
+        ]
+      }
+    },
+    "git_push_preflight": {
+      "category": "analyzer",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": "string",
+            "description": "Local branch intended for push."
+          },
+          "remote": {
+            "type": "string",
+            "description": "Target remote (default 'origin')."
+          }
+        },
+        "required": []
+      }
     }
   },
   "version": 1

@@ -1,8 +1,9 @@
 """M11 follow-up — OpenTelemetry bootstrap for cf context-api.
 
 Sends spans to OTEL_EXPORTER_OTLP_ENDPOINT via OTLP HTTP. Auto-instruments
-FastAPI (incoming requests), httpx (outbound calls to IAM/MCP/composer),
-and sqlite3 (call_log + events_store reads/writes).
+FastAPI (incoming requests) and httpx (outbound calls to IAM/MCP/composer).
+SQLite instrumentation remains loaded only for standalone legacy fallback
+runs; the default compose stack stores Context Fabric data in Postgres.
 
 Trace propagation is automatic — incoming `traceparent` header from
 workgraph's outbound httpx call to /execute joins the trace, so a single

@@ -47,6 +47,15 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 GRANT ALL ON SCHEMA public TO singularity;
 \connect singularity
 
+-- Context Fabric durable stores. Replaces legacy SQLite files for call logs,
+-- MCP event mirrors, context memory, and the deprecated metrics ledger.
+SELECT 'CREATE DATABASE singularity_context_fabric'
+ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_context_fabric')\gexec
+\connect singularity_context_fabric
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+GRANT ALL ON SCHEMA public TO singularity;
+\connect singularity
+
 -- ==================== AGENT SCHEMA ====================
 CREATE SCHEMA IF NOT EXISTS agent;
 

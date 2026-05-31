@@ -70,6 +70,45 @@ export type ArchitectureSlice = {
   extras?: Record<string, unknown>;
 };
 
+// ---------- M99 S4.2 — enrichment shapes ------------------------------------
+
+/** A detected repo convention / structural pattern. */
+export type RepoPattern = {
+  kind: string;        // e.g. "test_layout" | "module_boundary" | "naming"
+  pattern: string;     // human-readable description
+  example?: string;
+  confidence?: number; // 0..1
+};
+
+/** How the app is started/exercised — a code location + its invocation. */
+export type Entrypoint = {
+  kind: string;        // main | server | cli | worker
+  target: string;      // file path or symbol
+  command?: string;
+};
+
+/** A pre-existing/flaky failure the agent must NOT treat as a regression. */
+export type KnownFailure = {
+  test: string;
+  reason?: string;
+  firstSeenAt?: string;
+  flaky?: boolean;
+};
+
+/** A distilled summary of a skill/instruction file. */
+export type SkillFileSummary = {
+  source: string;
+  summary: string;
+  sha256?: string;
+};
+
+/** A parsed/structured code convention (vs raw agentRules text). */
+export type CodeConvention = {
+  topic: string;       // e.g. "imports" | "error_handling" | "tests"
+  rule: string;
+  source?: string;
+};
+
 export type CapabilityWorldModelView = {
   id: string;
   capabilityId: string;
@@ -84,6 +123,13 @@ export type CapabilityWorldModelView = {
   architectureSlice: ArchitectureSlice;
   astIndexedAt: Date | null;
   astIndexFiles: number;
+  // M99 S4.2 enrichment
+  repoPatterns: RepoPattern[];
+  entrypoints: Entrypoint[];
+  knownFailures: KnownFailure[];
+  skillFileSummaries: SkillFileSummary[];
+  codeConventions: CodeConvention[];
+  lastAutoRefreshAt: Date | null;
   generatedAt: Date;
   refreshedAt: Date;
 };
@@ -138,6 +184,25 @@ function asArchitectureSlice(value: Prisma.JsonValue | undefined): ArchitectureS
   return value as ArchitectureSlice;
 }
 
+// M99 S4.2 — generic JSON-array coercion for the enrichment fields. Keeps
+// only object entries that have the required string keys; everything else
+// is dropped so a malformed JSONB blob can't crash a consumer.
+function asObjectArray<T>(
+  value: Prisma.JsonValue | undefined,
+  required: string[],
+): T[] {
+  if (!Array.isArray(value)) return [];
+  const out: T[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const obj = item as Record<string, unknown>;
+    if (required.every((k) => typeof obj[k] === "string" && (obj[k] as string).length > 0)) {
+      out.push(obj as unknown as T);
+    }
+  }
+  return out;
+}
+
 /**
  * Project a Prisma row to the public view. The Prisma client returns
  * `JsonValue` for JSONB columns; this is the only place that handles
@@ -157,6 +222,14 @@ export function projectWorldModel(row: {
   architectureSlice: Prisma.JsonValue;
   astIndexedAt: Date | null;
   astIndexFiles: number;
+  // M99 S4.2 — optional so callers projecting a pre-migration row shape
+  // (or a partial select) still type-check; coercion defaults to [].
+  repoPatterns?: Prisma.JsonValue;
+  entrypoints?: Prisma.JsonValue;
+  knownFailures?: Prisma.JsonValue;
+  skillFileSummaries?: Prisma.JsonValue;
+  codeConventions?: Prisma.JsonValue;
+  lastAutoRefreshAt?: Date | null;
   generatedAt: Date;
   refreshedAt: Date;
 }): CapabilityWorldModelView {
@@ -174,6 +247,12 @@ export function projectWorldModel(row: {
     architectureSlice: asArchitectureSlice(row.architectureSlice),
     astIndexedAt: row.astIndexedAt,
     astIndexFiles: row.astIndexFiles,
+    repoPatterns: asObjectArray<RepoPattern>(row.repoPatterns, ["kind", "pattern"]),
+    entrypoints: asObjectArray<Entrypoint>(row.entrypoints, ["kind", "target"]),
+    knownFailures: asObjectArray<KnownFailure>(row.knownFailures, ["test"]),
+    skillFileSummaries: asObjectArray<SkillFileSummary>(row.skillFileSummaries, ["source", "summary"]),
+    codeConventions: asObjectArray<CodeConvention>(row.codeConventions, ["topic", "rule"]),
+    lastAutoRefreshAt: row.lastAutoRefreshAt ?? null,
     generatedAt: row.generatedAt,
     refreshedAt: row.refreshedAt,
   };
@@ -205,6 +284,13 @@ export type WorldModelUpsertInput = {
   architectureSlice?: ArchitectureSlice;
   astIndexedAt?: Date | null;
   astIndexFiles?: number;
+  // M99 S4.2 enrichment — each owned by the bootstrap/refresh worker.
+  repoPatterns?: RepoPattern[];
+  entrypoints?: Entrypoint[];
+  knownFailures?: KnownFailure[];
+  skillFileSummaries?: SkillFileSummary[];
+  codeConventions?: CodeConvention[];
+  lastAutoRefreshAt?: Date | null;
 };
 
 /**
@@ -229,6 +315,13 @@ export async function upsertWorldModel(
   if (input.architectureSlice !== undefined) data.architectureSlice = input.architectureSlice as unknown as Prisma.InputJsonValue;
   if (input.astIndexedAt !== undefined) data.astIndexedAt = input.astIndexedAt;
   if (input.astIndexFiles !== undefined) data.astIndexFiles = input.astIndexFiles;
+  // M99 S4.2 enrichment fields.
+  if (input.repoPatterns !== undefined) data.repoPatterns = input.repoPatterns as unknown as Prisma.InputJsonValue;
+  if (input.entrypoints !== undefined) data.entrypoints = input.entrypoints as unknown as Prisma.InputJsonValue;
+  if (input.knownFailures !== undefined) data.knownFailures = input.knownFailures as unknown as Prisma.InputJsonValue;
+  if (input.skillFileSummaries !== undefined) data.skillFileSummaries = input.skillFileSummaries as unknown as Prisma.InputJsonValue;
+  if (input.codeConventions !== undefined) data.codeConventions = input.codeConventions as unknown as Prisma.InputJsonValue;
+  if (input.lastAutoRefreshAt !== undefined) data.lastAutoRefreshAt = input.lastAutoRefreshAt;
 
   const row = await prisma.capabilityWorldModel.upsert({
     where: { capabilityId: input.capabilityId },
@@ -245,8 +338,34 @@ export async function upsertWorldModel(
       architectureSlice: (input.architectureSlice ?? {}) as unknown as Prisma.InputJsonValue,
       astIndexedAt: input.astIndexedAt ?? null,
       astIndexFiles: input.astIndexFiles ?? 0,
+      repoPatterns: (input.repoPatterns ?? []) as unknown as Prisma.InputJsonValue,
+      entrypoints: (input.entrypoints ?? []) as unknown as Prisma.InputJsonValue,
+      knownFailures: (input.knownFailures ?? []) as unknown as Prisma.InputJsonValue,
+      skillFileSummaries: (input.skillFileSummaries ?? []) as unknown as Prisma.InputJsonValue,
+      codeConventions: (input.codeConventions ?? []) as unknown as Prisma.InputJsonValue,
+      lastAutoRefreshAt: input.lastAutoRefreshAt ?? null,
     },
     update: data,
   });
   return projectWorldModel(row);
+}
+
+// ---------- M99 S4.2 — auto-refresh bookkeeping ------------------------------
+
+/**
+ * Stamp lastAutoRefreshAt so operators can see the world model is
+ * self-healing on drift (vs the pre-M99 observational-only behavior).
+ * Separate from upsertWorldModel so the refresh worker can mark an
+ * attempt even when it has no new field values to write. No-op-safe:
+ * upserts the row if it somehow doesn't exist yet.
+ */
+export async function markWorldModelAutoRefreshed(
+  capabilityId: string,
+  at: Date,
+): Promise<void> {
+  await prisma.capabilityWorldModel.upsert({
+    where: { capabilityId },
+    create: { capabilityId, lastAutoRefreshAt: at },
+    update: { lastAutoRefreshAt: at },
+  });
 }

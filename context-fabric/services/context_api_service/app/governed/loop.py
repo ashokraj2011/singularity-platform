@@ -38,6 +38,9 @@ from typing import Any
 
 from .audit_emit import emit_governed_event
 from .dispatch import ToolDispatchError, ToolDispatchResult, dispatch_tool
+# M99 S3.3 — hard full-file-read gate (pure decision fn; no-op unless the
+# stage policy sets full_file_read_requires_justification).
+from .read_gate import evaluate_full_file_read_gate, refusal_result
 from .path_coverage import check_path_coverage
 from .phase_state import Phase, PhaseState, advance_phase
 from .pii_mask import mask_pii_in_result, unmask_pii_in_args
@@ -812,6 +815,55 @@ async def governed_step(
                                     "tool_invocation_id": outcome.tool_invocation_id,
                                 },
                                 severity="info",
+                            )
+                        # M99 S3.3 — HARD full-file-read gate. The soft audit
+                        # above always fires; THIS additionally refuses the
+                        # read (swaps the body for a refusal message) when the
+                        # stage's policy sets full_file_read_requires_justification
+                        # AND the file is over threshold AND the call carried no
+                        # `justification` arg. evaluate_full_file_read_gate is a
+                        # strict no-op unless that policy field is truthy, so
+                        # this changes nothing for today's seeds (field absent).
+                        _gate = evaluate_full_file_read_gate(
+                            tool_name=tool_name,
+                            tool_success=outcome.tool_success,
+                            args=args,
+                            line_count=_line_count,
+                            context_policy=ctx_policy,
+                        )
+                        if _gate.refuse:
+                            _refusal = refusal_result(_gate, _read_path or "<unknown>")
+                            outcome = ToolDispatchResult(
+                                result=_refusal,
+                                duration_ms=outcome.duration_ms,
+                                tool_invocation_id=outcome.tool_invocation_id,
+                                tool_success=outcome.tool_success,
+                                tool_error=outcome.tool_error,
+                                served_by=outcome.served_by,
+                                laptop_device_id=outcome.laptop_device_id,
+                                laptop_device_name=outcome.laptop_device_name,
+                            )
+                            # CRITICAL: masked_result was computed from the
+                            # original (full) content above (line ~704), and it
+                            # — not outcome.result — is what reaches the agent's
+                            # history (ToolCallOutcome.result below). Reassign it
+                            # to the refusal envelope so the agent actually sees
+                            # the refusal instead of the file body. The refusal
+                            # text is platform-authored (no PII / fixture data),
+                            # so no re-masking is needed.
+                            masked_result = _refusal
+                            await emit_governed_event(
+                                kind="governed.full_file_read_refused",
+                                state=state,
+                                policy=policy,
+                                run_context=run_context,
+                                payload={
+                                    "path": _read_path or "<unknown>",
+                                    "line_count": _line_count,
+                                    "threshold_lines": _raw_threshold,
+                                    "tool_invocation_id": outcome.tool_invocation_id,
+                                },
+                                severity="warn",
                             )
 
             # Code-review fix #2 (2026-05-23) — EditReceipt provenance

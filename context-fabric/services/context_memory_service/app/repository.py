@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timezone
-from context_fabric_shared.sqlite import sqlite_conn, rows_to_dicts, row_to_dict
+from context_fabric_shared.database import db_conn, resolve_database_target, rows_to_dicts, row_to_dict
 from .config import settings
 
 
+def _target() -> str:
+    return resolve_database_target("CONTEXT_MEMORY_DATABASE_URL", "CONTEXT_MEMORY_DB", settings.db_path)
+
+
 def init_db() -> None:
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -80,7 +84,7 @@ def init_db() -> None:
 
 def insert_message(session_id: str, agent_id: str | None, role: str, content: str, token_count: int | None = None) -> str:
     mid = str(uuid.uuid4())
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         conn.execute(
             """
             INSERT INTO conversation_messages (id, session_id, agent_id, role, content, token_count, created_at)
@@ -98,7 +102,7 @@ def get_messages(session_id: str, limit: int | None = None, ascending: bool = Tr
     if limit is not None:
         sql += " LIMIT ?"
         params = (session_id, limit)
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         rows = conn.execute(sql, params).fetchall()
     data = rows_to_dicts(rows)
     if not ascending:
@@ -109,10 +113,10 @@ def get_messages(session_id: str, limit: int | None = None, ascending: bool = Tr
 def count_messages_since_summary(session_id: str) -> int:
     latest = get_latest_summary(session_id)
     if not latest:
-        with sqlite_conn(settings.db_path) as conn:
+        with db_conn(_target()) as conn:
             row = conn.execute("SELECT COUNT(*) AS cnt FROM conversation_messages WHERE session_id = ?", (session_id,)).fetchone()
             return int(row["cnt"])
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         row = conn.execute(
             "SELECT COUNT(*) AS cnt FROM conversation_messages WHERE session_id = ? AND created_at > ?",
             (session_id, latest["created_at"]),
@@ -121,7 +125,7 @@ def count_messages_since_summary(session_id: str) -> int:
 
 
 def next_summary_version(session_id: str) -> int:
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         row = conn.execute("SELECT MAX(version) AS max_version FROM context_summaries WHERE session_id = ?", (session_id,)).fetchone()
     return int(row["max_version"] or 0) + 1
 
@@ -129,7 +133,7 @@ def next_summary_version(session_id: str) -> int:
 def insert_summary(session_id: str, agent_id: str | None, summary_type: str, content: dict, token_count: int | None) -> str:
     sid = str(uuid.uuid4())
     version = next_summary_version(session_id)
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         conn.execute(
             """
             INSERT INTO context_summaries (id, session_id, agent_id, summary_type, version, content_json, token_count, created_at)
@@ -141,7 +145,7 @@ def insert_summary(session_id: str, agent_id: str | None, summary_type: str, con
 
 
 def get_latest_summary(session_id: str) -> dict | None:
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         row = conn.execute(
             "SELECT * FROM context_summaries WHERE session_id = ? ORDER BY version DESC LIMIT 1",
             (session_id,),
@@ -154,7 +158,7 @@ def get_latest_summary(session_id: str) -> dict | None:
 
 def insert_memory_item(data: dict) -> str:
     mem_id = str(uuid.uuid4())
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         conn.execute(
             """
             INSERT INTO memory_items
@@ -182,14 +186,14 @@ def list_memory_items(agent_id: str | None = None, session_id: str | None = None
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     sql = f"SELECT * FROM memory_items {where} ORDER BY importance_score DESC, created_at DESC LIMIT ?"
     params.append(limit)
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         rows = conn.execute(sql, tuple(params)).fetchall()
     return rows_to_dicts(rows)
 
 
 def insert_context_package(data: dict) -> str:
     ctx_id = str(uuid.uuid4())
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         conn.execute(
             """
             INSERT INTO context_packages
@@ -208,7 +212,7 @@ def insert_context_package(data: dict) -> str:
 
 
 def get_context_package(ctx_id: str) -> dict | None:
-    with sqlite_conn(settings.db_path) as conn:
+    with db_conn(_target()) as conn:
         row = conn.execute("SELECT * FROM context_packages WHERE id = ?", (ctx_id,)).fetchone()
     d = row_to_dict(row)
     if d:

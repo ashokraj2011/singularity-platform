@@ -1492,10 +1492,12 @@ async def execute_resume(req: ResumeRequest):
 def _on_startup() -> None:
     # Honour DB env vars set by docker-compose; fall back to settings defaults.
     cl_db = os.environ.get("CALL_LOG_DB", settings.call_log_db)
+    os.environ.setdefault("CALL_LOG_DB", cl_db)
     call_log.DB_PATH = cl_db
     call_log.init_db()
 
     es_db = os.environ.get("EVENTS_STORE_DB", "/data/call_log_events.db")
+    os.environ.setdefault("EVENTS_STORE_DB", es_db)
     events_store.DB_PATH = es_db
     events_store.init_db()
 

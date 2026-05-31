@@ -55,7 +55,7 @@ def health():
 @app.get("/healthz/strict")
 async def healthz_strict():
     """M28 boot-1 — strict invariants. 200 only when:
-       - SQLite paths writable
+       - Context Fabric durable stores reachable
        - IAM reachable + bootstrap creds set + login mints a JWT
        - audit-gov reachable
     503 + failing-check names otherwise.

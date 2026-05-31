@@ -55,7 +55,11 @@ class StageExecutionPolicy(BaseModel):
     None so a partial policy can be sent (only the fields the workflow
     pinned override the DB seed; the rest fall through).
     """
-    model_config = ConfigDict(extra="allow")
+    # populate_by_name lets the M99 automation flags accept BOTH the
+    # snake_case wire convention used by the sibling fields (auto_localize)
+    # and the spec's camelCase aliases (autoLocalize). The pre-M99 fields
+    # have no alias, so this is a no-op for them.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     stage_key: str = Field(..., min_length=1)
     agent_role: Optional[str] = None
@@ -78,6 +82,30 @@ class StageExecutionPolicy(BaseModel):
     # human sign-off. Currently advisory only — workgraph-api owns the
     # gate; this field is for audit trail symmetry.
     approval_required: Optional[bool] = None
+
+    # M99 (2026-05-30) — Phase 0 automation flags. These make the
+    # spec's "platform-controlled pre-edit guards" declarative instead
+    # of hardcoded/model-driven. All default None so a partial policy
+    # falls through to the env-flag defaults resolved in the governed
+    # loop (see governed_automation.py). None preserves legacy behavior.
+    #
+    # autoLocalize: run a deterministic localization step before ACT
+    #   (repo map + symbol search + AST slice + code-context package)
+    #   and inject a compact LocalizationReceipt into the edit prompt.
+    auto_localize: Optional[bool] = Field(default=None, alias="autoLocalize")
+    # autoBaseline: platform-dispatches capture_test_baseline before the
+    #   first mutating tool when runnable verification exists (vs the
+    #   current model-driven/reactive behavior).
+    auto_baseline: Optional[bool] = Field(default=None, alias="autoBaseline")
+    # autoVerify: platform runs verification after edits and only enters
+    #   REPAIR on failure. Already the runtime behavior; the flag makes
+    #   it switchable and persists an AutoVerificationReceipt.
+    auto_verify: Optional[bool] = Field(default=None, alias="autoVerify")
+    # gitPreflightRequired: run git_push_preflight (classify before push)
+    #   and emit a GitPreflightReceipt before the workflow's push stage.
+    git_preflight_required: Optional[bool] = Field(
+        default=None, alias="gitPreflightRequired"
+    )
 
 
 # M93.G (2026-05-27) — context_policy → allowed tool categories.

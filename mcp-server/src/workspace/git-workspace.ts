@@ -40,7 +40,11 @@ export interface FinishBranchResult {
   pushed?: boolean;
   /** M27.5 — non-empty when the push attempt failed but the local commit succeeded. */
   pushError?: string;
-  pushBlockedCode?: "GIT_AUTH_MISSING" | "GIT_AUTH_INSUFFICIENT_SCOPE" | "GIT_REMOTE_UNREACHABLE" | "GIT_PUSH_REJECTED" | "NO_COMMIT_TO_PUSH";
+  pushBlockedCode?: "GIT_AUTH_MISSING" | "GIT_AUTH_INSUFFICIENT_SCOPE" | "GIT_REMOTE_UNREACHABLE" | "GIT_PUSH_REJECTED" | "NO_COMMIT_TO_PUSH"
+    // M99 S1.4 — discrete codes that previously collapsed into the buckets
+    // above. Splitting them out lets git_push_preflight (S1.3) and
+    // GitPushExecutor surface precise, actionable fix guidance.
+    | "GIT_BRANCH_PROTECTED" | "GIT_NO_UPSTREAM" | "GIT_REMOTE_MISMATCH";
   pushFixCommands?: string[];
   pushRetryable?: boolean;
   pushRemote?: string;
@@ -201,6 +205,27 @@ export function fixCommandsForPushBlock(code: PushBlockedCode, remote: string): 
       "Approve the captured code diff, then retry Git Push.",
     ];
   }
+  // M99 S1.4 — discrete codes split out of the generic GIT_PUSH_REJECTED bucket.
+  if (code === "GIT_BRANCH_PROTECTED") {
+    return [
+      "The target branch is protected — a direct push is refused by branch protection.",
+      "Push your work to a feature branch (e.g. wi/<code>) and open a Pull Request to merge it.",
+      "If a direct push is required, an admin must relax the branch-protection rule for this branch.",
+    ];
+  }
+  if (code === "GIT_NO_UPSTREAM") {
+    return [
+      "The local branch has no upstream tracking ref on " + remote + ".",
+      "git push -u " + remote + " <branch>   # sets the upstream on first push",
+    ];
+  }
+  if (code === "GIT_REMOTE_MISMATCH") {
+    return [
+      "Local and remote histories are unrelated — the configured remote likely points at a different repo than this work is based on.",
+      "git remote -v   # confirm " + remote + " matches the work item's source repo URL",
+      "git remote set-url " + remote + " <correct-repo-url>   # if the remote is wrong",
+    ];
+  }
   return [
     "Inspect the remote rejection, update/rebase the work branch if needed, then retry Git Push.",
     "./singularity.sh doctor git",
@@ -221,6 +246,21 @@ export function classifyPushError(error: string): PushBlockedCode {
   // remote rejection" — unhelpful. Detect the GitHub shape explicitly
   // and route to the new GIT_AUTH_INSUFFICIENT_SCOPE code which has
   // token-scope-specific fix steps.
+  // M99 S1.4 — protected branch. Checked FIRST: branch-protection
+  // rejections often also contain "denied"/"403", which would otherwise
+  // be misclassified as an auth-scope problem. The remedy is different
+  // (open a PR / push a feature branch, not widen the token). GH006 is
+  // GitHub's explicit protected-branch code. Deliberately NARROW — we do
+  // NOT match a bare "pre-receive hook declined" because that also covers
+  // GH013 repository-rule violations, which stay GIT_PUSH_REJECTED.
+  if (
+    lower.includes("protected branch")
+    || lower.includes("cannot force-push to a protected")
+    || lower.includes("gh006")
+    || lower.includes("branch is read-only")
+  ) {
+    return "GIT_BRANCH_PROTECTED";
+  }
   if (
     /permission to .+ denied to /i.test(error)
     || (lower.includes("requested url returned error: 403") && lower.includes("github.com"))
@@ -237,6 +277,14 @@ export function classifyPushError(error: string): PushBlockedCode {
   ) {
     return "GIT_AUTH_MISSING";
   }
+  // M99 S1.4 — no upstream tracking ref configured for the local branch.
+  if (
+    lower.includes("has no upstream branch")
+    || lower.includes("--set-upstream")
+    || lower.includes("no upstream configured")
+  ) {
+    return "GIT_NO_UPSTREAM";
+  }
   if (
     lower.includes("remote") && (
       lower.includes("not configured")
@@ -246,6 +294,16 @@ export function classifyPushError(error: string): PushBlockedCode {
     )
   ) {
     return "GIT_REMOTE_UNREACHABLE";
+  }
+  // M99 S1.4 — remote mismatch: local + remote histories are unrelated
+  // (the configured remote points at a different repo than the work was
+  // based on). Kept NARROW — only "unrelated histories" — so the common
+  // non-fast-forward "remote contains work" case stays GIT_PUSH_REJECTED.
+  if (
+    lower.includes("refusing to merge unrelated histories")
+    || lower.includes("unrelated histories")
+  ) {
+    return "GIT_REMOTE_MISMATCH";
   }
   return "GIT_PUSH_REJECTED";
 }

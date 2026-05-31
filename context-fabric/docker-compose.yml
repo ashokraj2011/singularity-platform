@@ -1,4 +1,20 @@
 services:
+  context-fabric-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: singularity
+      POSTGRES_DB: singularity_context_fabric
+    ports:
+      - "5542:5432"
+    volumes:
+      - context_fabric_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d singularity_context_fabric"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   llm-gateway-service:
     build:
       context: .
@@ -20,7 +36,7 @@ services:
       context: .
       dockerfile: services/context_memory_service/Dockerfile
     environment:
-      - CONTEXT_MEMORY_DB=/data/context_memory.db
+      - CONTEXT_FABRIC_DATABASE_URL=${CONTEXT_FABRIC_DATABASE_URL:-postgresql://postgres:singularity@context-fabric-postgres:5432/singularity_context_fabric}
       - MCP_SERVER_URL=${MCP_SERVER_URL:-http://host.docker.internal:7100}
       - MCP_BEARER_TOKEN=${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       - SUMMARIZER_MODEL_ALIAS=${SUMMARIZER_MODEL_ALIAS:-}
@@ -29,10 +45,11 @@ services:
       - PUBLIC_BASE_URL=${CONTEXT_MEMORY_PUBLIC_URL:-http://host.docker.internal:8002}
     ports:
       - "8002:8002"
-    volumes:
-      - ./data/context_memory:/data
     depends_on:
-      - llm-gateway-service
+      context-fabric-postgres:
+        condition: service_healthy
+      llm-gateway-service:
+        condition: service_started
 
 
   metrics-ledger-service:
@@ -40,14 +57,15 @@ services:
       context: .
       dockerfile: services/metrics_ledger_service/Dockerfile
     environment:
-      - METRICS_LEDGER_DB=/data/metrics_ledger.db
+      - CONTEXT_FABRIC_DATABASE_URL=${CONTEXT_FABRIC_DATABASE_URL:-postgresql://postgres:singularity@context-fabric-postgres:5432/singularity_context_fabric}
       # M11.a
       - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       - PUBLIC_BASE_URL=${METRICS_LEDGER_PUBLIC_URL:-http://host.docker.internal:8003}
     ports:
       - "8003:8003"
-    volumes:
-      - ./data/metrics_ledger:/data
+    depends_on:
+      context-fabric-postgres:
+        condition: service_healthy
 
   context-api-service:
     build:
@@ -61,9 +79,8 @@ services:
       - COMPOSER_URL=http://host.docker.internal:3004
       - TOOL_SERVICE_URL=http://host.docker.internal:3002
       - IAM_BASE_URL=${IAM_BASE_URL:-http://host.docker.internal:8100/api/v1}
-      - CALL_LOG_DB=/data/call_log.db
       # M9.x — persisted MCP events (drained at end of /execute)
-      - EVENTS_STORE_DB=/data/call_log_events.db
+      - CONTEXT_FABRIC_DATABASE_URL=${CONTEXT_FABRIC_DATABASE_URL:-postgresql://postgres:singularity@context-fabric-postgres:5432/singularity_context_fabric}
       # M11.a — self-register
       - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       - PUBLIC_BASE_URL=${CONTEXT_API_PUBLIC_URL:-http://host.docker.internal:8000}
@@ -82,9 +99,15 @@ services:
       - AUDIT_GOV_SERVICE_TOKEN=${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     ports:
       - "8000:8000"
-    volumes:
-      - ./data/context_api:/data
     depends_on:
-      - llm-gateway-service
-      - context-memory-service
-      - metrics-ledger-service
+      context-fabric-postgres:
+        condition: service_healthy
+      llm-gateway-service:
+        condition: service_started
+      context-memory-service:
+        condition: service_started
+      metrics-ledger-service:
+        condition: service_started
+
+volumes:
+  context_fabric_postgres_data:
