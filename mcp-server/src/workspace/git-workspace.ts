@@ -166,16 +166,21 @@ export function fixCommandsForPushBlock(code: PushBlockedCode, remote: string): 
   if (code === "GIT_AUTH_MISSING") {
     if (config.MCP_GIT_AUTH_MODE === "ssh") {
       return [
-        "./singularity.sh config git --mode ssh --ssh-key ~/.ssh/id_ed25519 --remote " + remote,
+        "Edit mcp-server/.env on this host (M101 — mcp-server reads its OWN env file):",
+        "  MCP_GIT_AUTH_MODE=ssh",
+        "  MCP_GIT_PUSH_ENABLED=true",
+        "  MCP_GIT_SSH_KEY_PATH=/run/secrets/singularity_git_ssh_key   # mounted key path",
+        "./singularity.sh recreate mcp-server-demo   # reloads env_file ('restart' does NOT)",
         "./singularity.sh doctor git",
-        "./singularity.sh restart mcp-server-demo",
       ];
     }
     return [
-      "export GITHUB_TOKEN=<github-token-with-repo-write>",
-      "./singularity.sh config git --mode token --token-env GITHUB_TOKEN --remote " + remote,
-      "./singularity.sh doctor git",
-      "./singularity.sh restart mcp-server-demo",
+      "Edit mcp-server/.env on this host (M101 — mcp-server reads its OWN env file):",
+      "  MCP_GIT_AUTH_MODE=token",
+      "  MCP_GIT_PUSH_ENABLED=true",
+      "  GITHUB_TOKEN=<github token with Contents: Write>   # this var wins over MCP_GIT_TOKEN; keep just ONE GITHUB_TOKEN line",
+      "./singularity.sh recreate mcp-server-demo   # reloads env_file ('restart' does NOT)",
+      "./singularity.sh doctor git   # boot log should show authMode=token pushEnabled=true",
     ];
   }
   // M70.8 — Distinct guidance for "token works but doesn't have the right
