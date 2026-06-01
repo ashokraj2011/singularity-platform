@@ -307,19 +307,19 @@ async def call_gateway_chat(
     if response.status_code == 429:
         raise LLMGatewayError(
             "LLM_PROVIDER_OVERLOADED",
-            f"Gateway returned 429: {response.text[:200]}",
+            f"Gateway returned 429: {response.text[:500]}",
             upstream_status=429,
         )
     if response.status_code >= 500:
         raise LLMGatewayError(
             "LLM_GATEWAY_UPSTREAM_ERROR",
-            f"Gateway returned {response.status_code}: {response.text[:200]}",
+            f"Gateway returned {response.status_code}: {response.text[:500]}",
             upstream_status=response.status_code,
         )
     if response.status_code >= 400:
         raise LLMGatewayError(
             "LLM_GATEWAY_BAD_REQUEST",
-            f"Gateway returned {response.status_code}: {response.text[:200]}",
+            f"Gateway returned {response.status_code}: {response.text[:500]}",
             upstream_status=response.status_code,
         )
 
@@ -328,7 +328,7 @@ async def call_gateway_chat(
     except ValueError as exc:
         raise LLMGatewayError(
             "LLM_GATEWAY_BAD_RESPONSE",
-            f"Gateway returned non-JSON: {response.text[:200]}",
+            f"Gateway returned non-JSON: {response.text[:500]}",
         ) from exc
 
     return ChatResponse.from_dict(payload)

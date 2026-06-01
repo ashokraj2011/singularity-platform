@@ -167,7 +167,12 @@ function intentBannerCopy(intent: FocusIntent, stage: LoopStage, latest: StageAt
     case 'run':
       return <><strong>Ready to run.</strong> Kick the {stage.agentRole.toLowerCase()} agent off when you're ready.</>
     case 'rework':
-      return <><strong>Last attempt didn't pass.</strong> Re-run with new context, or send back to an earlier stage. ({latest?.error ?? 'no error message'})</>
+      return (
+        <>
+          <strong>Last attempt didn't pass.</strong> Re-run with new context, or send back to an earlier stage.
+          {latest?.error ? <><br /><span style={{ opacity: 0.85 }}>Reason: {latest.error}</span></> : null}
+        </>
+      )
     case 'completed':
       return <><strong>Stage closed.</strong> This view is read-only — pick another stage on the left to act on.</>
     default:
