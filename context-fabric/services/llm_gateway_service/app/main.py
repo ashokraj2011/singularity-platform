@@ -8,12 +8,15 @@ swaps providers on failure.
 """
 from __future__ import annotations
 
-import os
-
 from fastapi import FastAPI
 
 from .router import router as llm_router
 from .providers import mock as mock_provider
+from .platform_registry import (
+    build_registration_payload,
+    start_self_registration,
+    stop_self_registration,
+)
 
 
 app = FastAPI(title="Singularity LLM Gateway", version="0.1.0")
@@ -43,29 +46,23 @@ def mock_counts() -> dict:
 
 @app.on_event("startup")
 async def _register_with_platform() -> None:
-    """Best-effort registration with platform-registry. The gateway does not
-    depend on registration succeeding — if the registry is down it logs and
-    moves on. (Mirrors the pattern used by context_memory_service.)"""
-    base_url = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8001")
+    """Best-effort self-registration with platform-registry, mirroring
+    mcp-server. The gateway does not depend on registration succeeding — if
+    the registry is unset/down it logs and moves on. Uses the gateway's own
+    platform_registry module (present in the image), not a cross-service
+    import."""
     try:
-        # Defer import so the registry helper is optional in slimmer envs.
-        from services.context_memory_service.app.platform_registry import start_self_registration  # type: ignore
-    except Exception:
-        return
+        await start_self_registration(build_registration_payload())
+    except Exception:  # noqa: BLE001
+        # Registration must never block the gateway from serving.
+        pass
+
+
+@app.on_event("shutdown")
+async def _deregister_from_platform() -> None:
+    """Cancel the heartbeat task on shutdown so the registry's last_seen_at
+    goes stale cleanly (mirrors the sibling services)."""
     try:
-        await start_self_registration({
-            "service_name":  "llm-gateway",
-            "display_name":  "Singularity LLM Gateway",
-            "version":       "0.1.0",
-            "base_url":      base_url,
-            "health_path":   "/health",
-            "auth_mode":     "bearer" if os.environ.get("LLM_GATEWAY_BEARER") else "none",
-            "owner_team":    "context-fabric",
-            "metadata":      {"layer": "optimization", "role": "llm-gateway"},
-            "capabilities": [
-                {"capability_key": "llm.chat",       "description": "Chat completions across all providers"},
-                {"capability_key": "llm.embeddings", "description": "Embeddings across all providers"},
-            ],
-        })
-    except Exception:
+        await stop_self_registration()
+    except Exception:  # noqa: BLE001
         pass
