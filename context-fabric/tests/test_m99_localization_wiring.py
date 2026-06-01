@@ -57,7 +57,7 @@ async def test_runs_and_stashes_receipt_when_enabled(monkeypatch):
     monkeypatch.setenv(_ENV, "1")
     res = LocalizationResult(
         target_files=["src/ops.py"], target_symbols=["startsWith"],
-        target_tests=["tests/test_ops.py"], sources=["symbol_search"],
+        target_tests=["tests/test_ops.py"], sources=["find_symbol"],
         summary="localized 1 file",
     )
     _patch(monkeypatch, sweep_result=res)

@@ -129,7 +129,7 @@ def test_advance_phase_caps_repair_attempts():
 
 def test_advance_phase_repair_to_explore_succeeds_and_counts_as_repair():
     """ADR 0004 follow-up — a stuck REPAIR may hop back to EXPLORE to read
-    more (repo_map / symbol_search / read_file) before re-attempting the
+    more (repo_map / find_symbol / read_file) before re-attempting the
     fix, the "organic fail → go read more → re-plan" debugging path the
     SWE-agent comparison flagged as the one fair residual.
 

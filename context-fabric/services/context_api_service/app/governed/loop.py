@@ -68,7 +68,7 @@ _SOURCE_CODE_EXTS = frozenset(
 #      else changed.
 _PARALLEL_SAFE_TOOLS = frozenset({
     "repo_map",
-    "symbol_search",
+    "find_symbol",
     "list_files",
     "list_directory",
     "read_file",
@@ -76,7 +76,6 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "read_repo_instructions",
     "read_workitem",
     "code_context_package",
-    "ast_search",
     "grep",
     "search_code",
 })

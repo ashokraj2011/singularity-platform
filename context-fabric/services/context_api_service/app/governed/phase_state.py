@@ -96,7 +96,7 @@ _ALLOWED_TRANSITIONS: set[tuple[Phase, Phase]] = {
     (Phase.REPAIR, Phase.VERIFY),
     (Phase.REPAIR, Phase.REPAIR),
     # ADR 0004 follow-up — let a stuck REPAIR go back to EXPLORE to read more
-    # (repo_map / symbol_search / read_file) before re-attempting the fix,
+    # (repo_map / find_symbol / read_file) before re-attempting the fix,
     # instead of only being able to re-edit blind. This is the "organic
     # debugging" path the SWE-agent comparison flagged as missing. The
     # REPAIR→EXPLORE hop is counted against max_repair_attempts (see
