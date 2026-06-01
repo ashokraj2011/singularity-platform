@@ -95,6 +95,13 @@ _ALLOWED_TRANSITIONS: set[tuple[Phase, Phase]] = {
     (Phase.VERIFY, Phase.VERIFY),
     (Phase.REPAIR, Phase.VERIFY),
     (Phase.REPAIR, Phase.REPAIR),
+    # ADR 0004 follow-up — let a stuck REPAIR go back to EXPLORE to read more
+    # (repo_map / symbol_search / read_file) before re-attempting the fix,
+    # instead of only being able to re-edit blind. This is the "organic
+    # debugging" path the SWE-agent comparison flagged as missing. The
+    # REPAIR→EXPLORE hop is counted against max_repair_attempts (see
+    # advance_phase) so it can't create an unbounded REPAIR↔EXPLORE loop.
+    (Phase.REPAIR, Phase.EXPLORE),
     (Phase.SELF_REVIEW, Phase.FINALIZE),
     (Phase.SELF_REVIEW, Phase.REPAIR),  # human/agent: changes requested
     (Phase.SELF_REVIEW, Phase.SELF_REVIEW),
@@ -238,7 +245,15 @@ def advance_phase(
             f"Illegal phase transition {state.current_phase.value} -> {next_phase.value}"
         )
 
-    new_repair = state.repair_attempts + (1 if next_phase is Phase.REPAIR else 0)
+    # Count both entering REPAIR and the REPAIR→EXPLORE "go read more" hop
+    # (ADR 0004 follow-up) against the repair budget, so a
+    # REPAIR→EXPLORE→ACT→VERIFY→REPAIR… cycle is bounded by max_repair_attempts
+    # rather than able to spin forever.
+    is_repair_step = (
+        next_phase is Phase.REPAIR
+        or (state.current_phase is Phase.REPAIR and next_phase is Phase.EXPLORE)
+    )
+    new_repair = state.repair_attempts + (1 if is_repair_step else 0)
     if new_repair > max_repair_attempts:
         raise ValueError(
             f"repair_attempts would exceed max_repair_attempts ({max_repair_attempts})"
