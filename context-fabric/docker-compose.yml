@@ -25,6 +25,8 @@ services:
       - LLM_MODEL_CATALOG_PATH=/etc/singularity/mcp-models.json
       - ALLOW_CALLER_PROVIDER_OVERRIDE=${LLM_GATEWAY_ALLOW_OVERRIDE:-false}
       - PUBLIC_BASE_URL=${LLM_GATEWAY_PUBLIC_URL:-http://host.docker.internal:8001}
+      # M11.a — self-register with platform-registry (no-op if unreachable).
+      - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
     ports:
       - "8001:8001"
     volumes:
