@@ -52,6 +52,7 @@ def test_can_transition_happy_path(from_phase: Phase, to_phase: Phase):
     [
         (Phase.VERIFY, Phase.REPAIR),
         (Phase.REPAIR, Phase.VERIFY),
+        (Phase.REPAIR, Phase.EXPLORE),       # ADR 0004 follow-up — "go read more"
         (Phase.SELF_REVIEW, Phase.REPAIR),  # human asks for changes
         (Phase.EXPLORE, Phase.PLAN),         # scope error
     ],
@@ -121,6 +122,75 @@ def test_advance_phase_caps_repair_attempts():
     # 4th repair must be refused.
     with pytest.raises(ValueError, match="repair_attempts would exceed"):
         advance_phase(state, Phase.REPAIR, max_repair_attempts=3)
+
+
+# ── REPAIR → EXPLORE "go read more" edge (ADR 0004 follow-up) ────────────────
+
+
+def test_advance_phase_repair_to_explore_succeeds_and_counts_as_repair():
+    """ADR 0004 follow-up — a stuck REPAIR may hop back to EXPLORE to read
+    more (repo_map / symbol_search / read_file) before re-attempting the
+    fix, the "organic fail → go read more → re-plan" debugging path the
+    SWE-agent comparison flagged as the one fair residual.
+
+    The hop is CHARGED against the repair budget (same as entering REPAIR),
+    so a REPAIR→EXPLORE→ACT→VERIFY→REPAIR… cycle is bounded by
+    max_repair_attempts rather than able to spin forever. The
+    re-investigation legs themselves (EXPLORE→ACT→VERIFY) don't consume
+    further budget.
+    """
+    state = PhaseState.fresh("loop.stage", "DEVELOPER")
+    state = advance_phase(state, Phase.EXPLORE)
+    state = advance_phase(state, Phase.ACT)
+    state = advance_phase(state, Phase.VERIFY)
+    # Enter REPAIR — repair attempt #1.
+    state = advance_phase(state, Phase.REPAIR, max_repair_attempts=4)
+    assert state.repair_attempts == 1
+    assert state.current_phase is Phase.REPAIR
+    # Hop back to EXPLORE to read more — repair attempt #2.
+    state = advance_phase(state, Phase.EXPLORE, max_repair_attempts=4)
+    assert state.repair_attempts == 2
+    assert state.current_phase is Phase.EXPLORE
+    # Re-attempt the fix: the EXPLORE→ACT→VERIFY legs don't burn the budget.
+    state = advance_phase(state, Phase.ACT, max_repair_attempts=4)
+    assert state.repair_attempts == 2
+    state = advance_phase(state, Phase.VERIFY, max_repair_attempts=4)
+    assert state.repair_attempts == 2
+
+
+def test_advance_phase_repair_to_explore_refused_at_cap():
+    """The "go read more" hop hits the same hard stop entering REPAIR does:
+    once it would push repair_attempts past max_repair_attempts it's
+    refused, so REPAIR↔EXPLORE can't become an unbounded loop."""
+    state = PhaseState.fresh("loop.stage", "DEVELOPER")
+    state = advance_phase(state, Phase.EXPLORE)
+    state = advance_phase(state, Phase.ACT)
+    state = advance_phase(state, Phase.VERIFY)
+    # Cap of 1: entering REPAIR consumes the entire repair budget.
+    state = advance_phase(state, Phase.REPAIR, max_repair_attempts=1)
+    assert state.repair_attempts == 1
+    # The "go read more" hop would be repair #2 > cap → refused.
+    with pytest.raises(ValueError, match="repair_attempts would exceed"):
+        advance_phase(state, Phase.EXPLORE, max_repair_attempts=1)
+
+
+def test_advance_phase_repair_explore_cycle_is_bounded():
+    """End-to-end: a REPAIR↔EXPLORE oscillation terminates at the cap. With
+    max_repair_attempts=3 the agent gets REPAIR(1) → EXPLORE(2) → re-fix →
+    REPAIR(3), and the next "go read more" hop is refused."""
+    state = PhaseState.fresh("loop.stage", "DEVELOPER")
+    state = advance_phase(state, Phase.EXPLORE)
+    state = advance_phase(state, Phase.ACT)
+    state = advance_phase(state, Phase.VERIFY)
+    state = advance_phase(state, Phase.REPAIR, max_repair_attempts=3)   # #1
+    state = advance_phase(state, Phase.EXPLORE, max_repair_attempts=3)  # #2
+    state = advance_phase(state, Phase.ACT, max_repair_attempts=3)
+    state = advance_phase(state, Phase.VERIFY, max_repair_attempts=3)
+    state = advance_phase(state, Phase.REPAIR, max_repair_attempts=3)   # #3
+    assert state.repair_attempts == 3
+    # Budget exhausted — no more "go read more" hops.
+    with pytest.raises(ValueError, match="repair_attempts would exceed"):
+        advance_phase(state, Phase.EXPLORE, max_repair_attempts=3)
 
 
 # ── plan-rewind cap (M73-followup #5) ───────────────────────────────────────
