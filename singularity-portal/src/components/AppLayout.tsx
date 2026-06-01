@@ -8,7 +8,6 @@ import { useAuthStore } from '@/store/auth.store'
 import { env } from '@/lib/env'
 import { cn } from '@/lib/cn'
 import { BrandLockup } from './BrandLockup'
-import { AppSwitcher } from './AppSwitcher'
 import { ReadinessStrip } from './ReadinessStrip'
 
 // M100 P3.2 — first-class deep-links into existing Operations surfaces.
@@ -66,7 +65,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
           <BrandLockup variant="compact" />
         </div>
 
-        <AppSwitcher currentApp="operations" />
+        {/* App switching lives in the "Apps" nav section below — the top
+            AppSwitcher dropdown listed the same apps and was redundant. */}
 
         {/* Nav */}
         <nav className="flex-1 overflow-y-auto py-4 px-3">
