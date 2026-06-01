@@ -277,7 +277,7 @@ def test_advance_phase_self_review_no_recommend_keeps_flag_false():
 
 
 def test_phase_state_to_from_dict_roundtrip():
-    """Phase state must survive a JSON round-trip without losing fidelity —
+    """Phase state must survive a JSON round-trip without losing detail —
     BlueprintSession.metadata stores it that way."""
     original = PhaseState.fresh("loop.stage", "DEVELOPER")
     original = advance_phase(original, Phase.EXPLORE, receipt={"kind": "plan_receipt"})

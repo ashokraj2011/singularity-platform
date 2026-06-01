@@ -48,13 +48,12 @@ DEFAULT_MCP_RUNNER_IMAGE_MAP = {
     "dotnet": "mcr.microsoft.com/dotnet/sdk:8.0",
 }
 
-COPILOT_ONLY_PROFILES = {"office-copilot-only", "fidelity-copilot-only"}
+COPILOT_ONLY_PROFILES = {"office-copilot-only"}
 
 PROFILE_IAM_MODES = {
     "local-docker": "real-iam-dev",
     "office-laptop": "real-iam-dev",
     "office-copilot-only": "real-iam-dev",
-    "fidelity-copilot-only": "real-iam-dev",
     "pseudo-iam-dev": "pseudo-iam-dev",
     "real-iam-dev": "real-iam-dev",
 }
@@ -196,7 +195,6 @@ def config_template(profile: str, args: argparse.Namespace | None = None) -> dic
     copilot_only = (
         profile in COPILOT_ONLY_PROFILES
         or bool(getattr(args, "office_copilot_only", False))
-        or bool(getattr(args, "fidelity_copilot_only", False))
         if args
         else profile in COPILOT_ONLY_PROFILES
     )
@@ -987,22 +985,13 @@ def command_office_copilot_only(args: argparse.Namespace) -> None:
     args.default_alias = "copilot"
     args.copilot_only = True
     command_mcp_catalog(args)
-    mode_label = "Fidelity Copilot headless-only" if profile == "fidelity-copilot-only" else "Office Copilot-only"
-    print(f"\n{mode_label} mode is active.")
+    print("\nOffice Copilot-only mode is active.")
     print("Non-Copilot provider keys are blanked in generated env files and MCP enforces:")
     print("  .singularity/llm-providers.json")
     print("  .singularity/mcp-models.json")
     print("  MCP_ALLOWED_LLM_PROVIDERS=copilot")
     print("\nIf you only use the GitHub Copilot CLI tools, make sure this passes:")
     print("  cd mcp-server && npm run build && npx singularity-mcp doctor")
-
-
-def command_fidelity_copilot_only(args: argparse.Namespace) -> None:
-    """Fence Fidelity laptop setups to GitHub Copilot headless access only."""
-    args.profile_name = "fidelity-copilot-only"
-    command_office_copilot_only(args)
-
-
 def command_interactive(args: argparse.Namespace) -> None:
     print("Singularity configuration wizard\n")
     provider = prompt_choice("LLM provider", ["copilot", "openai", "openrouter", "ollama", "mock"], "copilot")
@@ -1339,9 +1328,8 @@ def command_doctor(args: argparse.Namespace) -> None:
     print("Singularity configuration doctor\n")
 
     config = load_local_config()
-    strict_fidelity = bool(getattr(args, "fidelity_copilot_only", False))
-    strict_office = bool(getattr(args, "office_copilot_only", False)) or strict_fidelity
-    copilot_fix_command = "./singularity.sh fidelity-copilot-only" if strict_fidelity else "./singularity.sh office-copilot-only"
+    strict_office = bool(getattr(args, "office_copilot_only", False))
+    copilot_fix_command = "./singularity.sh office-copilot-only"
     scope = getattr(args, "scope", "all")
     if scope == "secrets":
         run_secret_doctor(record)
@@ -1361,12 +1349,10 @@ def command_doctor(args: argparse.Namespace) -> None:
     else:
         record("WARN", f"canonical config missing: {CONFIG_PATH.relative_to(ROOT)}", "./singularity.sh config init --profile office-laptop")
     if strict_office:
-        if strict_fidelity and config.get("profile") == "fidelity-copilot-only":
-            record("OK", "canonical profile is fidelity-copilot-only")
-        elif not strict_fidelity and config.get("profile") in COPILOT_ONLY_PROFILES:
+        if config.get("profile") in COPILOT_ONLY_PROFILES:
             record("OK", f"canonical profile is {config.get('profile')}")
         else:
-            expected = "fidelity-copilot-only" if strict_fidelity else "office-copilot-only or fidelity-copilot-only"
+            expected = "office-copilot-only"
             record("FAIL", f"strict Copilot-only validation requires profile={expected}", copilot_fix_command)
 
     for path in [
@@ -1835,7 +1821,6 @@ def command_providers(_: argparse.Namespace) -> None:
         print("  ./singularity.sh config mcp-catalog --default-alias mock")
         print("or:")
         print("  ./singularity.sh config office-copilot-only")
-        print("  ./singularity.sh config fidelity-copilot-only")
         return
     payload = json.loads(p.read_text())
     allowed = [str(item).lower() for item in payload.get("allowedProviders", [])]
@@ -1920,7 +1905,6 @@ def main() -> None:
     p_doctor = sub.add_parser("doctor", help="Validate env files, ports, service URLs, and key presence")
     p_doctor.add_argument("scope", nargs="?", choices=["all", "git", "secrets"], default="all")
     p_doctor.add_argument("--office-copilot-only", action="store_true", help="Fail unless this laptop is fenced to Copilot-only provider/model access")
-    p_doctor.add_argument("--fidelity-copilot-only", action="store_true", help="Fail unless this laptop is fenced to Fidelity Copilot headless-only access")
     p_doctor.set_defaults(func=command_doctor)
 
     p_set = sub.add_parser("set", help="Set one canonical config key and rewrite env files")
@@ -1967,11 +1951,6 @@ def main() -> None:
     p_office.add_argument("--copilot-token", default=None, help="Optional Copilot API token; leave blank when using only gh copilot CLI tools")
     p_office.add_argument("--copilot-model", default="gpt-4o")
     p_office.set_defaults(func=command_office_copilot_only)
-
-    p_fidelity = sub.add_parser("fidelity-copilot-only", help="Fence a Fidelity laptop setup to GitHub Copilot headless only and blank every other provider")
-    p_fidelity.add_argument("--copilot-token", default=None, help="Optional Copilot API token; leave blank when using only gh copilot CLI tools")
-    p_fidelity.add_argument("--copilot-model", default="gpt-4o")
-    p_fidelity.set_defaults(func=command_fidelity_copilot_only)
 
     p_mcp = sub.add_parser("mcp-register", help="Register a local MCP server in IAM for a capability")
     p_mcp.add_argument("--capability-id", required=True)

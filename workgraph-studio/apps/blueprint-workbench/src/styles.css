@@ -3255,7 +3255,7 @@ pre {
  *   --neo-accent      sent back, governance event
  *   --neo-tool        tool invocation in cockpit-row
  *
- * .neo-cockpit-root carries one of four theme classes. Apply at the
+ * .neo-cockpit-root carries one of the alternate theme classes. Apply at the
  * shell level so the StageChat docked below the cockpit picks up the
  * same theme as the cockpit itself.
  * ============================================================ */
@@ -3303,19 +3303,6 @@ pre {
   --neo-info: #0d9488;       --neo-info-rgb: 13, 148, 136;
   --neo-accent: #a16207;     --neo-accent-rgb: 161, 98, 7;
   --neo-tool: #9333ea;       --neo-tool-rgb: 147, 51, 234;
-}
-
-.neo-cockpit-root.neo-theme-fidelity {
-  /* Fidelity-inspired institutional green. High-trust, low-saturation
-     for the primary; warm gold for attention so verdict gates pop
-     against the green sea. */
-  --neo-primary: #00843D;    --neo-primary-rgb: 0, 132, 61;
-  --neo-ok: #00A651;         --neo-ok-rgb: 0, 166, 81;
-  --neo-attention: #C68A00;  --neo-attention-rgb: 198, 138, 0;
-  --neo-danger: #C62828;     --neo-danger-rgb: 198, 40, 40;
-  --neo-info: #006B5C;       --neo-info-rgb: 0, 107, 92;
-  --neo-accent: #4E7C2A;     --neo-accent-rgb: 78, 124, 42;
-  --neo-tool: #2E7D32;       --neo-tool-rgb: 46, 125, 50;
 }
 
 /* ============================================================

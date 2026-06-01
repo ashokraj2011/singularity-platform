@@ -501,7 +501,6 @@ Wraps the master compose with friendlier subcommands. Useful for starting/stoppi
 ./singularity.sh doctor                    # validate DBs, endpoints, LLM keys, Agent Execution Runtime
 ./singularity.sh config init --profile office-laptop
 ./singularity.sh config office-copilot-only
-./singularity.sh fidelity-copilot-only     # Fidelity laptop: Copilot headless only
 ./singularity.sh config interactive        # guided local configuration wizard
 ./singularity.sh ls                        # list known service names
 ./singularity.sh build [service]           # rebuild image(s)
@@ -518,7 +517,7 @@ It configures:
 - IAM vs pseudo-IAM endpoints.
 - Service endpoints for Workgraph, prompt-composer, context-fabric, agent-runtime, tool-service, agent-service, and Agent Execution Runtime.
 - LLM provider policy and model aliases for the central gateway. Provider policy lives in `.singularity/llm-providers.json`; secrets are passed only to the `llm-gateway` service.
-- Office/Fidelity-safe Copilot-only mode. `./singularity.sh config office-copilot-only` and `./singularity.sh fidelity-copilot-only` blank OpenAI/OpenRouter/Anthropic/Ollama access in canonical config and generated env files, write Copilot-only provider and model catalog files, and fence the gateway to the Copilot provider.
+- Office-safe Copilot-only mode. `./singularity.sh config office-copilot-only` blanks OpenAI/OpenRouter/Anthropic/Ollama access in canonical config and generated env files, writes Copilot-only provider and model catalog files, and fences the gateway to the Copilot provider.
 - Default/local Agent Execution Runtime URL, bearer token, public URL, sandbox root, AST index path, and local work-branch defaults. The Agent Execution Runtime does **not** need to belong to a capability; capability-specific Agent Execution Runtime registration is advanced-only.
 - Git push credentials for approved WorkItem branches. The canonical config stores only mode, remote name, token env name, or SSH key path; it never stores a token or key body. The Agent Execution Runtime is the only service that receives Git push credentials.
 - Gateway-owned model aliases. Workflows choose aliases; Agent Execution Runtime forwards aliases and receives resolved provider/model in receipts.
@@ -533,7 +532,6 @@ Common commands:
 ./singularity.sh config init --profile office-laptop
 ./singularity.sh config interactive
 ./singularity.sh config office-copilot-only
-./singularity.sh config fidelity-copilot-only
 ./singularity.sh config mcp --base-url http://localhost:7100 --sandbox-root /path/to/repo
 ./singularity.sh config git --mode ssh --ssh-key ~/.ssh/id_ed25519 --remote origin
 ./singularity.sh config git --mode token --token-env GITHUB_TOKEN --remote origin
@@ -569,18 +567,6 @@ cd mcp-server && npm run build && npx singularity-mcp doctor
 ```
 
 This mode is intentionally strict: generated env files leave `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`, and `OLLAMA_BASE_URL` blank. Workflows still choose model aliases, but the gateway exposes only the `copilot` alias.
-
-Fidelity laptop setup is stricter and should be used in that environment:
-
-```bash
-./singularity.sh config init --profile fidelity-copilot-only --force
-# optional only when using the central Copilot headless gateway path
-./singularity.sh config set llm.copilot.token "$COPILOT_TOKEN"
-./singularity.sh fidelity-copilot-only
-./singularity.sh doctor --fidelity-copilot-only
-```
-
-Fidelity mode means no OpenAI, OpenRouter, Anthropic, Ollama, or OpenAI-compatible endpoint is allowed in `.singularity/config.local.json`, generated env files, provider catalogs, or runtime model catalogs. The only workflow-facing model alias is `copilot`; if the Copilot token is absent, `doctor --fidelity-copilot-only` still validates the fence and warns that only local `gh copilot` CLI/headless tools are usable until a Copilot token is provided.
 
 ### Single LLM gateway configuration
 
@@ -638,9 +624,8 @@ Useful commands:
 # Generate local mock-only provider/model config.
 ./singularity.sh config mcp-catalog --default-alias mock
 
-# Generate strict office/Fidelity mode: only Copilot is exposed.
+# Generate strict office mode: only Copilot is exposed.
 ./singularity.sh config office-copilot-only
-./singularity.sh config fidelity-copilot-only
 
 # Inspect provider policy readiness.
 ./singularity.sh config providers
@@ -941,8 +926,6 @@ urls                printable URL cheatsheet
 ls                  list known service names
 login               smoke-test IAM /auth/local/login
 doctor              validate config, health, DBs, LLM keys, Agent Execution Runtime
-fidelity-copilot-only
-                    configure Fidelity laptop mode: Copilot headless only
 config <command>    configure DBs, keys, endpoints, LLMs, Agent Execution Runtime
 help                usage
 ```

@@ -3,7 +3,7 @@
  *
  * Three independent axes — all persisted to localStorage:
  *
- *   COLOR    Indigo · Nightshade · Ocean · Forest · Fidelity
+ *   COLOR    Indigo · Nightshade · Ocean · Forest
  *   SURFACE  Dark · Light
  *   FONT     Default · Serif · Mono
  *
@@ -22,7 +22,7 @@
  */
 import { useEffect, useState } from 'react'
 
-export type NeoColor = 'indigo' | 'nightshade' | 'ocean' | 'forest' | 'fidelity'
+export type NeoColor = 'indigo' | 'nightshade' | 'ocean' | 'forest'
 export type NeoMode  = 'dark' | 'light'
 export type NeoFont  = 'default' | 'serif' | 'mono'
 
@@ -42,7 +42,6 @@ const COLORS: { id: NeoColor; label: string; swatch: string; tagline: string }[]
   { id: 'nightshade', label: 'Nightshade', swatch: '#a855f7', tagline: 'High-energy purple + magenta.' },
   { id: 'ocean',      label: 'Ocean',      swatch: '#0ea5e9', tagline: 'Calm blue + teal.' },
   { id: 'forest',     label: 'Forest',     swatch: '#16a34a', tagline: 'Warm natural greens.' },
-  { id: 'fidelity',   label: 'Fidelity',   swatch: '#00843D', tagline: 'Institutional green.' },
 ]
 
 const MODES: { id: NeoMode; label: string }[] = [
@@ -57,7 +56,7 @@ const FONTS: { id: NeoFont; label: string; sample: string }[] = [
 ]
 
 function isColor(v: unknown): v is NeoColor {
-  return v === 'indigo' || v === 'nightshade' || v === 'ocean' || v === 'forest' || v === 'fidelity'
+  return v === 'indigo' || v === 'nightshade' || v === 'ocean' || v === 'forest'
 }
 function isMode(v: unknown): v is NeoMode {
   return v === 'dark' || v === 'light'

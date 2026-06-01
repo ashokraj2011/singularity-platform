@@ -79,7 +79,7 @@ prefix. The wiring to fix it is half-present but inert.
   prefix stability. A self-hosted/vLLM-style engine caches by KV/prefix and
   additionally needs **request affinity** (the follow-up turn must land on
   the same replica that holds the KV blocks).
-- **Copilot path.** The office/fidelity Copilot-only mode routes through the
+- **Copilot path.** The office Copilot-only mode routes through the
   gateway-as-Copilot strategy; cache semantics there are the gateway's, not
   Anthropic's. The `"copilot_gateway"` strategy enum already anticipates
   this.
