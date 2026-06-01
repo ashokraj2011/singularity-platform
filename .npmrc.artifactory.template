@@ -1,0 +1,37 @@
+# Artifactory npm registry — TEMPLATE (no secrets committed).
+#
+# Why: in an office with an Artifactory mirror, installs must resolve packages
+# from Artifactory, not the public npm registry. Use a VIRTUAL repo (a local
+# repo + a remote-proxy of registry.npmjs.org) as the registry: a version that
+# isn't mirrored yet is proxied from upstream on first request, so you almost
+# never hit "version not available" — no need to downgrade pins.
+#
+# Usage (one of):
+#   1. Local/host:  bin/use-artifactory.sh        # writes ./.npmrc from env
+#   2. Docker:      see docs/artifactory-npm.md    # COPY .npmrc + --build-arg
+#
+# npm AND pnpm both read .npmrc and interpolate ${ENV_VARS} at runtime, so the
+# token never lands in git. Set these before installing:
+#   ARTIFACTORY_NPM_REGISTRY=https://artifactory.your-co.com/artifactory/api/npm/npm-virtual/
+#   ARTIFACTORY_NPM_TOKEN=<identity-token or base64 user:pass>
+
+# Default registry → Artifactory virtual npm repo.
+registry=${ARTIFACTORY_NPM_REGISTRY}
+
+# Auth for that registry. Artifactory accepts either an identity token
+# (_authToken) or basic auth (_auth). Keep whichever your instance uses;
+# delete the other line. The host path must match the registry host above.
+//${ARTIFACTORY_NPM_HOST}/:_authToken=${ARTIFACTORY_NPM_TOKEN}
+
+# Scoped packages (if your org publishes under a scope) also go to Artifactory.
+# @your-scope:registry=${ARTIFACTORY_NPM_REGISTRY}
+
+# Resilience knobs — retry transient Artifactory hiccups instead of failing.
+fetch-retries=3
+fetch-retry-factor=2
+fetch-retry-mintimeout=10000
+fetch-retry-maxtimeout=60000
+
+# Keep installs quiet/deterministic in CI.
+audit=false
+fund=false

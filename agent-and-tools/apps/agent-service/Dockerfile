@@ -4,13 +4,24 @@ FROM node:20-alpine AS base
 WORKDIR /app
 
 FROM base AS deps
+# Artifactory support (docs/artifactory-npm.md). Set → resolve from Artifactory
+# via a throwaway .npmrc (removed after install); empty → no-op (default registry).
+ARG ARTIFACTORY_NPM_REGISTRY=
+ARG ARTIFACTORY_NPM_TOKEN=
 COPY package.json package-lock.json* ./
 COPY packages ./packages
 COPY apps/agent-runtime/package.json   ./apps/agent-runtime/package.json
 COPY apps/agent-service/package.json   ./apps/agent-service/package.json
 COPY apps/tool-service/package.json    ./apps/tool-service/package.json
 COPY apps/prompt-composer/package.json ./apps/prompt-composer/package.json
-RUN npm install --workspaces --include-workspace-root --no-audit --no-fund
+RUN if [ -n "$ARTIFACTORY_NPM_REGISTRY" ]; then \
+      printf 'registry=%s\n//%s:_authToken=%s\naudit=false\nfund=false\n' \
+        "$ARTIFACTORY_NPM_REGISTRY" \
+        "$(printf '%s' "$ARTIFACTORY_NPM_REGISTRY" | sed -E 's#^https?://##')" \
+        "$ARTIFACTORY_NPM_TOKEN" > .npmrc ; \
+    fi \
+ && npm install --workspaces --include-workspace-root --no-audit --no-fund \
+ && rm -f .npmrc
 RUN npm run build --workspace=packages/shared
 
 FROM base AS dev
