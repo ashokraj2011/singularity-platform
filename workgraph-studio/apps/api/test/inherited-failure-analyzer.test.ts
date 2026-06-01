@@ -158,7 +158,23 @@ describe('M78 — classifyFailures', () => {
 
   it('dedupes test FQNs across multiple failing receipts', () => {
     const out = classifyFailures([ruleEngineReceipt, ruleEngineReceipt], [])
-    // Two identical receipts → still 2 distinct failures, not 4.
-    expect(out.inheritedFailures.length + out.regressionFailures.length).toBe(2)
+    // Two identical receipts → still 2 distinct failures, not 4. With empty
+    // agentChangedPaths there's no provenance, so post-M90.B the two land in
+    // unknownFailures (not inherited). Count across all classified buckets so
+    // this stays a dedup assertion, independent of which bucket they fall in.
+    const total =
+      out.inheritedFailures.length +
+      out.regressionFailures.length +
+      out.unknownFailures.length
+    expect(total).toBe(2)
+  })
+
+  it('routes failures to unknownFailures when agent provenance is empty (M90.B)', () => {
+    // Regression seal for M90.B: with no agentChangedPaths, a failure can't be
+    // confidently called inherited, so the gate must see it as actionable.
+    const out = classifyFailures([ruleEngineReceipt], [])
+    expect(out.unknownFailures).toHaveLength(2)
+    expect(out.inheritedFailures).toHaveLength(0)
+    expect(out.regressionFailures).toHaveLength(0)
   })
 })
