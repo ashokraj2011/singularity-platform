@@ -157,18 +157,44 @@ async def respond(
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not configured on the gateway")
     system, messages = _to_anthropic(req.messages)
+
+    # ADR 0003 — server-level prompt caching. Honor the caller's prompt_cache
+    # directive unless globally disabled. An unset strategy / provider_auto /
+    # anthropic_cache_control all trigger cache_control breakpoints here;
+    # copilot_gateway is handled by the copilot path, not this adapter.
+    pc = req.prompt_cache
+    cache_enabled = bool(
+        settings.prompt_cache_enabled
+        and pc is not None
+        and pc.enabled
+        and (pc.strategy in (None, "provider_auto", "anthropic_cache_control"))
+    )
+
     body: Dict[str, Any] = {
         "model": resolved_model,
         "messages": messages,
         "max_tokens": req.max_output_tokens or 4096,
     }
     if system:
-        body["system"] = system
+        if cache_enabled:
+            # Block form lets us attach a cache breakpoint to the system
+            # prefix. Anthropic caches in order tools → system → messages, so
+            # this breakpoint covers tools+system.
+            body["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]
+        else:
+            body["system"] = system
     if req.temperature is not None:
         body["temperature"] = req.temperature
     tools = _to_anthropic_tools(req.tools)
     if tools:
         body["tools"] = tools
+        if cache_enabled:
+            # Breakpoint on the LAST tool caches the entire tools prefix
+            # (tools are the first cache segment in Anthropic's order). Stays
+            # within the 4-breakpoint limit (tools + system = 2).
+            body["tools"][-1] = {**body["tools"][-1], "cache_control": {"type": "ephemeral"}}
         # M83.x parallel exploration — make the parallel-tool-use
         # opt-in explicit. Anthropic's Messages API enables parallel
         # tool use by default unless tool_choice carries
@@ -210,6 +236,8 @@ async def respond(
         "x-api-key": api_key,
         "anthropic-version": settings.anthropic_version,
     }
+    if cache_enabled:
+        headers["anthropic-beta"] = settings.anthropic_prompt_cache_beta
     start = time.time()
     # M62 — Retryable upstream status codes. Originally only 429 (rate
     # limit) was retried. Added 529 (Anthropic's overloaded_error —
@@ -298,6 +326,25 @@ async def respond(
     # documented field is `thinking_tokens` (Anthropic, late-2025 docs).
     # Falling back to 0 keeps cost math safe when the field is absent.
     thinking_tokens_raw = usage.get("thinking_tokens") or 0
+
+    # ADR 0003 — echo prompt-cache usage so hit rate is measurable. Anthropic
+    # reports cache_creation_input_tokens (cache write) and
+    # cache_read_input_tokens (cache hit) in usage. Surface them whenever
+    # caching was requested OR the provider reported any cache activity.
+    cache_read = usage.get("cache_read_input_tokens")
+    cache_creation = usage.get("cache_creation_input_tokens")
+    prompt_cache_usage = None
+    if cache_enabled or cache_read is not None or cache_creation is not None:
+        prompt_cache_usage = {
+            "enabled": cache_enabled,
+            "strategy": (pc.strategy if pc else None) or "provider_auto",
+            "cache_read_input_tokens": int(cache_read) if isinstance(cache_read, (int, float)) else 0,
+            "cache_creation_input_tokens": int(cache_creation) if isinstance(cache_creation, (int, float)) else 0,
+            "reported": cache_read is not None or cache_creation is not None,
+        }
+        if pc and pc.key:
+            prompt_cache_usage["key"] = pc.key
+
     return ChatCompletionResponse(
         content=text_content,
         tool_calls=tool_calls or None,
@@ -310,4 +357,5 @@ async def respond(
         model_alias=model_alias,
         thinking_blocks=thinking_blocks or None,
         thinking_tokens=int(thinking_tokens_raw) if isinstance(thinking_tokens_raw, (int, float)) else 0,
+        prompt_cache=prompt_cache_usage,
     )
