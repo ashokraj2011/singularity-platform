@@ -1,7 +1,12 @@
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm install --no-audit --no-fund
+# Artifactory support (docs/artifactory-npm.md): no-op unless build args set.
+ARG ARTIFACTORY_NPM_REGISTRY=
+ARG ARTIFACTORY_NPM_TOKEN=
+RUN if [ -n "$ARTIFACTORY_NPM_REGISTRY" ]; then printf 'registry=%s\n//%s:_authToken=%s\naudit=false\nfund=false\n' "$ARTIFACTORY_NPM_REGISTRY" "$(printf '%s' "$ARTIFACTORY_NPM_REGISTRY" | sed -E 's#^https?://##')" "$ARTIFACTORY_NPM_TOKEN" > .npmrc; fi \
+ && npm install --no-audit --no-fund \
+ && rm -f .npmrc
 
 FROM node:20-alpine AS build
 WORKDIR /app

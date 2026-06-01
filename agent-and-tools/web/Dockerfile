@@ -3,7 +3,12 @@ WORKDIR /app
 
 FROM base AS deps
 COPY package.json ./
-RUN npm install
+# Artifactory support (docs/artifactory-npm.md): no-op unless build args set.
+ARG ARTIFACTORY_NPM_REGISTRY=
+ARG ARTIFACTORY_NPM_TOKEN=
+RUN if [ -n "$ARTIFACTORY_NPM_REGISTRY" ]; then printf 'registry=%s\n//%s:_authToken=%s\naudit=false\nfund=false\n' "$ARTIFACTORY_NPM_REGISTRY" "$(printf '%s' "$ARTIFACTORY_NPM_REGISTRY" | sed -E 's#^https?://##')" "$ARTIFACTORY_NPM_TOKEN" > .npmrc; fi \
+ && npm install \
+ && rm -f .npmrc
 
 FROM base AS builder
 ARG AGENT_SERVICE_URL=http://agent-service:3001

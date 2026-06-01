@@ -18,7 +18,12 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
 COPY apps/api/package.json apps/api/package.json
 COPY packages/shared-types/package.json packages/shared-types/package.json
 COPY packages/engine/package.json packages/engine/package.json
-RUN pnpm install --frozen-lockfile || pnpm install
+# Artifactory support (docs/artifactory-npm.md): no-op unless build args set.
+ARG ARTIFACTORY_NPM_REGISTRY=
+ARG ARTIFACTORY_NPM_TOKEN=
+RUN if [ -n "$ARTIFACTORY_NPM_REGISTRY" ]; then printf 'registry=%s\n//%s:_authToken=%s\naudit=false\nfund=false\n' "$ARTIFACTORY_NPM_REGISTRY" "$(printf '%s' "$ARTIFACTORY_NPM_REGISTRY" | sed -E 's#^https?://##')" "$ARTIFACTORY_NPM_TOKEN" > .npmrc; fi \
+ && { pnpm install --frozen-lockfile || pnpm install; } \
+ && rm -f .npmrc
 
 # ── dev target ────────────────────────────────────────────────────────────
 # Hot-reload runtime. apps/api/src + prisma + workspace packages are expected

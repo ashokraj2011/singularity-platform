@@ -10,7 +10,12 @@ COPY tsconfig.json ./
 COPY packages ./packages
 COPY apps/code-foundry-api/package.json ./apps/code-foundry-api/package.json
 COPY apps/code-foundry-api/prisma ./apps/code-foundry-api/prisma
-RUN npm install --workspaces --include-workspace-root --no-audit --no-fund
+# Artifactory support (docs/artifactory-npm.md): no-op unless build args set.
+ARG ARTIFACTORY_NPM_REGISTRY=
+ARG ARTIFACTORY_NPM_TOKEN=
+RUN if [ -n "$ARTIFACTORY_NPM_REGISTRY" ]; then printf 'registry=%s\n//%s:_authToken=%s\naudit=false\nfund=false\n' "$ARTIFACTORY_NPM_REGISTRY" "$(printf '%s' "$ARTIFACTORY_NPM_REGISTRY" | sed -E 's#^https?://##')" "$ARTIFACTORY_NPM_TOKEN" > .npmrc; fi \
+ && npm install --workspaces --include-workspace-root --no-audit --no-fund \
+ && rm -f .npmrc
 RUN cd apps/code-foundry-api && npx prisma generate
 
 FROM base AS dev
