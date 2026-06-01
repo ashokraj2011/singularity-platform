@@ -1,8 +1,27 @@
+import os
 import uuid
+
+import pytest
 import requests
 
 
 BASE_URL = "http://localhost:8000"
+
+# This is a LIVE END-TO-END integration test: it drives the real context-api at
+# BASE_URL over HTTP (14 /chat/respond calls) and needs the WHOLE stack healthy
+# (context-api + llm-gateway + memory). It is NOT a unit test — a /health-OK
+# server can still 500 on /chat/respond if a downstream dep is down, so a
+# liveness probe isn't a reliable gate. Require explicit opt-in via
+# RUN_INTEGRATION_TESTS=1 so default unit runs (and the CI unit job, which
+# never names this file) stay deterministic and green. Run it against a real
+# stack with:  RUN_INTEGRATION_TESTS=1 pytest tests/test_token_savings.py
+pytestmark = pytest.mark.integration
+
+if os.environ.get("RUN_INTEGRATION_TESTS", "").lower() not in ("1", "true", "yes"):
+    pytest.skip(
+        "live integration test; set RUN_INTEGRATION_TESTS=1 with the stack running",
+        allow_module_level=True,
+    )
 
 
 def test_context_fabric_saves_tokens_with_medium_mode():
