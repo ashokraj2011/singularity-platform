@@ -7,6 +7,7 @@ import { RuntimeWidgetForm, type RuntimeFormSubmitTarget } from '../forms/widget
 import type { FormWidget } from '../forms/widgets/types'
 import type { UploadedDocument } from '../../lib/uploadAttachment'
 import { useCapabilityLabels } from './useCapabilityLabels'
+import { WorkItemArtifactsPanel } from './WorkItemArtifactsPanel'
 
 const BLUEPRINT_WORKBENCH_URL = import.meta.env.VITE_BLUEPRINT_WORKBENCH_URL
   // M100 P3 — same-origin under the edge gateway (was :5176).
@@ -229,6 +230,9 @@ function WorkItemDetail({ id }: { id: string }) {
           <pre style={{ ...preStyle, marginTop: 10 }}>{JSON.stringify(workItem.typeSnapshot, null, 2)}</pre>
         )}
       </section>
+
+      {/* Artifacts the workbench produced for this work item (self-hides when none). */}
+      <WorkItemArtifactsPanel workItemId={workItem.id} cardStyle={cardStyle} />
 
       <section style={cardStyle}>
         <h3 style={{ margin: '0 0 10px', fontSize: 15, color: 'var(--color-on-surface)' }}>Request packet</h3>
