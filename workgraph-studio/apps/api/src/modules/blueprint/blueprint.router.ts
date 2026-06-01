@@ -654,6 +654,35 @@ blueprintRouter.get('/sessions', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// Global artifacts browser — every artifact across the caller's runs, newest
+// first, for the top-level "Artifacts" nav. Scoped to createdById (ownership);
+// optional ?kind / ?limit filters. Each item carries its session + run linkage
+// so the UI can deep-link back to the owning run.
+blueprintRouter.get('/artifacts', async (req, res, next) => {
+  try {
+    const createdById = req.user!.userId
+    const kind = typeof req.query.kind === 'string' && req.query.kind.trim()
+      ? req.query.kind.trim()
+      : undefined
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500)
+    const rows = await prisma.blueprintArtifact.findMany({
+      where: {
+        ...(kind ? { kind } : {}),
+        session: { createdById },
+      },
+      include: { session: { select: { id: true, goal: true, workflowInstanceId: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    })
+    const items = rows.map(row => ({
+      ...shapeArtifact(row),
+      sessionGoal: row.session?.goal ?? null,
+      workflowInstanceId: row.session?.workflowInstanceId ?? null,
+    }))
+    res.json({ count: items.length, items })
+  } catch (err) { next(err) }
+})
+
 blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res, next) => {
   try {
     const body = req.body as CreateSessionInput
