@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
@@ -45,6 +45,27 @@ class CreateTeamRequest(BaseModel):
     parent_team_id: Optional[str] = None
     metadata: Optional[dict] = None
     tags: Optional[list[str]] = None
+
+
+class UpdateTeamRequest(BaseModel):
+    # All optional → PATCH semantics. parent_team_id is tri-state: omitted =
+    # "leave as is"; explicit null = "detach (make it a root team)"; a value =
+    # "set/move parent" (cycle-guarded server-side).
+    name: Optional[str] = None
+    description: Optional[str] = None
+    parent_team_id: Optional[str] = Field(default=None)
+    # Distinguish "parent_team_id was provided (even as null)" from "omitted",
+    # since None is a meaningful value here.
+    model_config = {"extra": "forbid"}
+
+    # Track which fields were explicitly set by the client.
+    def provided_fields(self) -> set[str]:
+        return set(self.model_fields_set)
+
+
+class SetChildTeamRequest(BaseModel):
+    # Re-parent an existing team under {team_id}.
+    child_team_id: str
 
 
 class TeamMembershipOut(BaseModel):

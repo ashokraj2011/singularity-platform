@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { teamsApi } from '@/api/teams.api'
-import type { CreateTeamRequest, AddTeamMemberRequest } from '@/types'
+import type { CreateTeamRequest, UpdateTeamRequest, AddTeamMemberRequest } from '@/types'
 
 export function useTeams(params?: { page?: number; size?: number }) {
   return useQuery({
@@ -26,11 +26,41 @@ export function useTeamMembers(teamId: string) {
   })
 }
 
+export function useTeamChildren(teamId: string) {
+  return useQuery({
+    queryKey: ['teams', teamId, 'children'],
+    queryFn: () => teamsApi.listChildren(teamId),
+    enabled: !!teamId,
+  })
+}
+
 export function useCreateTeam() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (body: CreateTeamRequest) => teamsApi.create(body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['teams'] }),
+  })
+}
+
+export function useUpdateTeam(teamId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: UpdateTeamRequest) => teamsApi.update(teamId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['teams'] })
+      qc.invalidateQueries({ queryKey: ['teams', teamId] })
+    },
+  })
+}
+
+export function useAddChildTeam(teamId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (childTeamId: string) => teamsApi.addChild(teamId, childTeamId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['teams'] })
+      qc.invalidateQueries({ queryKey: ['teams', teamId, 'children'] })
+    },
   })
 }
 

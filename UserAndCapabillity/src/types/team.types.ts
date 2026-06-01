@@ -29,6 +29,13 @@ export interface CreateTeamRequest {
   tags?: string[]
 }
 
+export interface UpdateTeamRequest {
+  name?: string
+  description?: string | null
+  // null → detach (make root); string → set/move parent; omit → unchanged.
+  parent_team_id?: string | null
+}
+
 export interface AddTeamMemberRequest {
   user_id: string
   membership_type?: string
