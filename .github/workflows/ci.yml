@@ -201,8 +201,17 @@ jobs:
         run: node scripts/contract-tests/context-governance-contract.mjs
       - name: context-fabric governance unit tests
         env:
-          PYTHONPATH: context-fabric/services:context-fabric/shared
-        run: python3 -m pytest context-fabric/tests/test_context_plan_governance.py context-fabric/tests/test_chat_respond_gateway.py
+          # context-fabric on the path too: main.py does `from services.<svc>...`
+          # which needs the context-fabric root, not just context-fabric/services.
+          PYTHONPATH: context-fabric:context-fabric/services:context-fabric/shared
+        run: >-
+          python3 -m pytest
+          context-fabric/tests/test_context_plan_governance.py
+          context-fabric/tests/test_chat_respond_gateway.py
+          context-fabric/tests/test_token_counter.py
+          context-fabric/tests/test_context_compiler_budget.py
+          context-fabric/tests/test_token_savings_accounting.py
+          context-fabric/tests/test_context_compiler_mode.py
       - name: llm-gateway hardening tests
         env:
           PYTHONPATH: context-fabric

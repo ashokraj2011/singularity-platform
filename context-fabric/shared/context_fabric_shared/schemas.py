@@ -26,6 +26,15 @@ class OptimizationStats(BaseModel):
     estimated_raw_cost: float = 0.0
     estimated_optimized_cost: float = 0.0
     estimated_cost_saved: float = 0.0
+    # Honest-accounting fields (additive; optional for back-compat). gross
+    # tokens_saved/percent_saved above ignore the summarizer LLM call that
+    # produced the embedded summary; these charge it and expose the breakdown.
+    requested_mode: str | None = None
+    summary_generation_tokens: int = 0
+    net_tokens_saved: int = 0
+    net_percent_saved: float = 0.0
+    optimized_scaffolding_tokens: int = 0
+    mode_warning: str | None = None
 
 
 class LLMRespondRequest(BaseModel):
