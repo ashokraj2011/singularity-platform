@@ -436,6 +436,15 @@ type LoopStageDefinition = {
   // approval contract — e.g. story intake, design — and the
   // questions are documentation rather than gates.
   allowMarkDone?: boolean
+  // M99 — Phase 0 automation flags. Declarative opt-in to the platform-
+  // controlled pre-edit guards. Optional; when a workflow's WORKBENCH_TASK
+  // node sets them they ship in the StageExecutionPolicy to CF, which gates
+  // each automation on BOTH its env flag AND the matching policy flag (see
+  // context-fabric governed_automation.py). Undefined → CF's env-flag default.
+  autoLocalize?: boolean
+  autoBaseline?: boolean
+  autoVerify?: boolean
+  gitPreflightRequired?: boolean
 }
 
 type LoopDefinition = {
@@ -2670,7 +2679,20 @@ function normalizeLoopStage(raw: Record<string, unknown>, index: number, session
     // missingRequiredQuestions gate. Defaults to false so the safer
     // PASS-with-answers flow stays the norm.
     allowMarkDone: raw.allowMarkDone === true,
+    // M99 — Phase 0 automation flags. Read camelCase or snake_case from the
+    // node config; leave undefined when not declared so CF falls back to its
+    // env-flag default rather than forcing the automation off.
+    autoLocalize: optionalBool(raw.autoLocalize ?? raw.auto_localize),
+    autoBaseline: optionalBool(raw.autoBaseline ?? raw.auto_baseline),
+    autoVerify: optionalBool(raw.autoVerify ?? raw.auto_verify),
+    gitPreflightRequired: optionalBool(raw.gitPreflightRequired ?? raw.git_preflight_required),
   }
+}
+
+// Coerce a raw config value to a boolean only when it's actually a boolean;
+// otherwise undefined (so "not declared" stays distinct from "declared false").
+function optionalBool(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined
 }
 
 function normalizeStageLimits(value: unknown): { maxSteps?: number; timeoutSec?: number } | undefined {
@@ -4819,7 +4841,16 @@ async function runLoopStageExecute(
     const repoAccess: boolean | undefined =
       typeof stage.repoAccess === 'boolean' ? stage.repoAccess : usesRepoContext
     const promptProfileKey = stage.promptProfileKey?.trim() || undefined
-    if (!contextPolicy && !toolPolicy && repoAccess === undefined && !promptProfileKey) {
+    // M99 — forward the Phase 0 automation flags when the stage declares them
+    // (undefined when not set, so CF keeps its env-flag default).
+    const m99 = {
+      auto_localize: stage.autoLocalize,
+      auto_baseline: stage.autoBaseline,
+      auto_verify: stage.autoVerify,
+      git_preflight_required: stage.gitPreflightRequired,
+    }
+    const hasM99 = Object.values(m99).some(v => v !== undefined)
+    if (!contextPolicy && !toolPolicy && repoAccess === undefined && !promptProfileKey && !hasM99) {
       return undefined
     }
     return {
@@ -4829,6 +4860,7 @@ async function runLoopStageExecute(
       tool_policy: toolPolicy,
       repo_access: repoAccess,
       prompt_profile_key: promptProfileKey,
+      ...m99,
     }
   })()
 
