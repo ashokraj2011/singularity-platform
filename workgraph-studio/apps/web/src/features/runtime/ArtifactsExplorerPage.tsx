@@ -9,6 +9,7 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { FileText, Download, Package, ExternalLink } from 'lucide-react'
 import { api } from '../../lib/api'
+import { MarkdownView } from './MarkdownView'
 
 type GlobalArtifact = {
   id: string
@@ -149,13 +150,18 @@ export function ArtifactsExplorerPage() {
                 </button>
               </div>
               {open && (
-                <pre style={{
-                  margin: 0, padding: '12px 14px', borderTop: '1px solid var(--color-outline-variant)',
-                  background: '#fafafa', fontSize: 11.5, lineHeight: 1.5, color: 'var(--color-on-surface)',
-                  whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 420, overflow: 'auto',
+                <div style={{
+                  padding: '12px 14px', borderTop: '1px solid var(--color-outline-variant)',
+                  background: '#fafafa', maxHeight: 480, overflow: 'auto',
                 }}>
-                  {body || '(no content)'}
-                </pre>
+                  {typeof a.content === 'string' && a.content.length > 0
+                    ? <MarkdownView source={a.content} />
+                    : (
+                      <pre style={{ margin: 0, fontSize: 11.5, lineHeight: 1.5, color: 'var(--color-on-surface)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {body || '(no content)'}
+                      </pre>
+                    )}
+                </div>
               )}
             </div>
           )
