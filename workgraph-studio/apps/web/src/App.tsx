@@ -26,6 +26,8 @@ import { WorkItemsPage } from './features/runtime/WorkItemsPage'
 import { HistoryPage } from './features/runtime/HistoryPage'
 import { RunViewerPage } from './features/runtime/RunViewerPage'
 import { RunInsightsPage } from './features/runtime/RunInsightsPage'
+import { RunArtifactsPage } from './features/runtime/RunArtifactsPage'
+import { ArtifactsExplorerPage } from './features/runtime/ArtifactsExplorerPage'
 import { RunsDashboardPage } from './features/runtime/RunsDashboardPage'
 import { RunPlayerPage, RunPlayerEntry } from './features/runtime/RunPlayerPage'
 import { RunWorkflowPage } from './features/runtime/RunWorkflowPage'
@@ -84,6 +86,8 @@ export default function App() {
           <Route path="workflow/:instanceId" element={<NavigateLegacyWorkflowInstance />} />
           <Route path="runs"                 element={<RunsDashboardPage />} />
           <Route path="runs/:id"             element={<RunViewerPage />} />
+          <Route path="artifacts-explorer"   element={<ArtifactsExplorerPage />} />
+          <Route path="runs/:id/artifacts"   element={<RunArtifactsPage />} />
           <Route path="runs/:id/insights"    element={<RunInsightsPage />} />
           <Route path="mission-control/:id"  element={<RunInsightsPage />} />
           <Route path="play/new"             element={<RunPlayerEntry />} />

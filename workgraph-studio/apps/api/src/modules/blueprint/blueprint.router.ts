@@ -654,6 +654,35 @@ blueprintRouter.get('/sessions', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// Global artifacts browser — every artifact across the caller's runs, newest
+// first, for the top-level "Artifacts" nav. Scoped to createdById (ownership);
+// optional ?kind / ?limit filters. Each item carries its session + run linkage
+// so the UI can deep-link back to the owning run.
+blueprintRouter.get('/artifacts', async (req, res, next) => {
+  try {
+    const createdById = req.user!.userId
+    const kind = typeof req.query.kind === 'string' && req.query.kind.trim()
+      ? req.query.kind.trim()
+      : undefined
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500)
+    const rows = await prisma.blueprintArtifact.findMany({
+      where: {
+        ...(kind ? { kind } : {}),
+        session: { createdById },
+      },
+      include: { session: { select: { id: true, goal: true, workflowInstanceId: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    })
+    const items = rows.map(row => ({
+      ...shapeArtifact(row),
+      sessionGoal: row.session?.goal ?? null,
+      workflowInstanceId: row.session?.workflowInstanceId ?? null,
+    }))
+    res.json({ count: items.length, items })
+  } catch (err) { next(err) }
+})
+
 blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res, next) => {
   try {
     const body = req.body as CreateSessionInput
@@ -1680,6 +1709,70 @@ blueprintRouter.post('/sessions/:id/worktree/verification', async (req, res, nex
       attemptId: latestAttempt.id,
       stageKey: currentStageKey,
       totalReceipts: existingReceipts.length + 1,
+    })
+  } catch (err) { next(err) }
+})
+
+// Artifacts produced by an executed run, for the dedicated Run Artifacts view.
+// Two entry points because artifacts hang off the BLUEPRINT SESSION, but a run
+// is identified by its WORKFLOW INSTANCE id (the Run Viewer's :id):
+//   GET /sessions/:id/artifacts            — session-keyed (the natural owner)
+//   GET /instances/:instanceId/artifacts   — resolves instance → session(s)
+// Both inherit authMiddleware + assertBlueprintAccess. content/payload are
+// returned inline (already the case via shapeArtifact). Optional ?stageKey
+// filter mirrors /code-changes.
+function shapeArtifactsResponse(
+  session: { id: string; workflowInstanceId?: string | null; artifacts?: Array<{ payload?: Prisma.JsonValue | null; createdAt: Date }> },
+  stageKey?: string,
+) {
+  let items = (session.artifacts ?? []).map(shapeArtifact)
+  if (stageKey) items = items.filter(a => a.stageKey === stageKey)
+  return {
+    sessionId: session.id,
+    workflowInstanceId: session.workflowInstanceId ?? null,
+    count: items.length,
+    items,
+  }
+}
+
+blueprintRouter.get('/sessions/:id/artifacts', async (req, res, next) => {
+  try {
+    const session = await prisma.blueprintSession.findUnique({
+      where: { id: req.params.id },
+      include: { artifacts: { orderBy: { createdAt: 'asc' } } },
+    })
+    if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
+    assertBlueprintAccess(session, req.user!.userId)
+    const stageKey = typeof req.query.stageKey === 'string' && req.query.stageKey.trim()
+      ? req.query.stageKey.trim()
+      : undefined
+    res.json(shapeArtifactsResponse(session, stageKey))
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.get('/instances/:instanceId/artifacts', async (req, res, next) => {
+  try {
+    // A workflow instance may have spawned more than one blueprint session
+    // (re-runs / multiple workbench nodes). Return every accessible session's
+    // artifacts, grouped, plus a flattened list for simple consumers.
+    const sessions = await prisma.blueprintSession.findMany({
+      where: { workflowInstanceId: req.params.instanceId },
+      include: { artifacts: { orderBy: { createdAt: 'asc' } } },
+      orderBy: { createdAt: 'asc' },
+    })
+    const stageKey = typeof req.query.stageKey === 'string' && req.query.stageKey.trim()
+      ? req.query.stageKey.trim()
+      : undefined
+    // Filter to sessions the caller may access (createdById === actor). Unowned
+    // / other-user sessions are silently excluded rather than 404'ing the run.
+    const accessible = sessions.filter(s => s.createdById && s.createdById === req.user!.userId)
+    const groups = accessible.map(s => shapeArtifactsResponse(s, stageKey))
+    res.json({
+      workflowInstanceId: req.params.instanceId,
+      sessionCount: groups.length,
+      count: groups.reduce((n, g) => n + g.count, 0),
+      sessions: groups,
+      items: groups.flatMap(g => g.items),
     })
   } catch (err) { next(err) }
 })

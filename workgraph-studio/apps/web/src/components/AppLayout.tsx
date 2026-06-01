@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react'
 import {
   LayoutDashboard, FileText, GitBranch, ScrollText, Globe, Inbox,
   LogOut, Bell, Settings, ChevronLeft, ChevronRight, Puzzle, Link2, Activity, Play, Network,
-  Building2, Database, ClipboardCheck,
+  Building2, Database, ClipboardCheck, Package,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth.store'
 import { useActiveContextStore } from '../store/activeContext.store'
@@ -16,6 +16,7 @@ const navItems = [
   { to: '/work-items',      label: 'Work Hub',           icon: Network },
   { to: '/run',             label: 'Start Workflow',     icon: Play },
   { to: '/runs',            label: 'Runs',               icon: Activity },
+  { to: '/artifacts-explorer', label: 'Artifacts',       icon: Package },
   { to: '/dashboard',       label: 'Dashboard',          icon: LayoutDashboard },
 ]
 

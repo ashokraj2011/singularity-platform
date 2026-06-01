@@ -150,6 +150,19 @@ export function RunViewerPage() {
             >
               Mission Control →
             </button>
+            {/* Dedicated artifacts list for this run (view + download). */}
+            <button
+              onClick={() => navigate(`/runs/${instance.id}/artifacts`)}
+              style={{
+                fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4,
+                background: 'rgba(245,158,11,0.12)', color: '#b45309',
+                border: '1px solid rgba(245,158,11,0.28)', cursor: 'pointer',
+                letterSpacing: '0.06em', textTransform: 'uppercase',
+              }}
+              title="Open the run's artifacts — every produced artifact with view + download"
+            >
+              Artifacts →
+            </button>
             {typeof instance.templateVersion === 'number' && (
               <span title={`Cloned from design v${instance.templateVersion}`} style={{
                 fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
