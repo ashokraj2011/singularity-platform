@@ -201,6 +201,35 @@ async def respond(
     else:                           finish_reason = "stop"
 
     usage = data.get("usage") or {}
+
+    # ADR 0003 — surface prompt-cache usage for OpenAI-compatible providers
+    # (OpenAI, Azure OpenAI, GitHub Copilot). Caching on these backends is
+    # AUTOMATIC (no request flag, ≥1024-token prefix) — there is nothing to
+    # send, only to READ. The hit count lives at
+    # usage.prompt_tokens_details.cached_tokens; there is no cache-write/
+    # creation count on these providers (unlike Anthropic). Read it
+    # defensively: prompt_tokens_details may be null/absent (known across
+    # providers and Copilot models), so default to 0 and only emit a
+    # prompt_cache block when the field was actually present, so we don't
+    # fabricate "0 hits" for providers that simply don't report it. Shape
+    # mirrors the Anthropic provider's prompt_cache dict for a uniform
+    # response contract.
+    prompt_cache_usage = None
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict) and details.get("cached_tokens") is not None:
+        cached = details.get("cached_tokens")
+        cached_int = int(cached) if isinstance(cached, (int, float)) else 0
+        prompt_cache_usage = {
+            "enabled": True,
+            "strategy": (req.prompt_cache.strategy if req.prompt_cache else None) or "provider_auto",
+            "cache_read_input_tokens": cached_int,
+            # OpenAI/Azure/Copilot do not report a separate cache-write count.
+            "cache_creation_input_tokens": 0,
+            "reported": True,
+        }
+        if req.prompt_cache and req.prompt_cache.key:
+            prompt_cache_usage["key"] = req.prompt_cache.key
+
     return ChatCompletionResponse(
         content=(message.get("content") or ""),
         tool_calls=tool_calls or None,
@@ -211,6 +240,7 @@ async def respond(
         provider=provider,
         model=resolved_model,
         model_alias=model_alias,
+        prompt_cache=prompt_cache_usage,
     )
 
 
