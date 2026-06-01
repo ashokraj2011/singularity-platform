@@ -7,7 +7,7 @@ import { BlueprintStage, BlueprintSessionStatus, BlueprintStageStatus, Blueprint
 import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
-import { NotFoundError, ValidationError } from '../../lib/errors'
+import { NotFoundError, ValidationError, ForbiddenError } from '../../lib/errors'
 import { classifyFailures, type FailureClassification } from './inherited-failure-analyzer'
 import { synthesizeLoopTrace } from './loop-trace-synthesizer'
 import { createWorkItem } from '../work-items/work-items.service'
@@ -1286,6 +1286,7 @@ blueprintRouter.get('/sessions/:id/worktree/tree', async (req, res, next) => {
     const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
     if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
     assertBlueprintAccess(session, req.user!.userId)
+    assertStageRepoRead(session, req.query.stageKey)
     const workItemCode = await getWorktreeWorkItemCode(req.params.id)
     const params = new URLSearchParams()
     if (typeof req.query.path === 'string') params.set('path', req.query.path)
@@ -1307,6 +1308,7 @@ blueprintRouter.get('/sessions/:id/worktree/file', async (req, res, next) => {
     const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
     if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
     assertBlueprintAccess(session, req.user!.userId)
+    assertStageRepoRead(session, req.query.stageKey)
     if (typeof req.query.path !== 'string' || !req.query.path.trim()) {
       throw new ValidationError("'path' query parameter is required")
     }
@@ -1334,6 +1336,7 @@ blueprintRouter.put('/sessions/:id/worktree/file', async (req, res, next) => {
     const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
     if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
     assertBlueprintAccess(session, req.user!.userId)
+    assertStageMutation(session, req.query.stageKey)
     if (typeof req.query.path !== 'string' || !req.query.path.trim()) {
       throw new ValidationError("'path' query parameter is required")
     }
@@ -1430,7 +1433,9 @@ blueprintRouter.post('/sessions/:id/api-call', async (req, res, next) => {
       headers?: Record<string, string>
       body?: string
       timeoutMs?: number
+      stageKey?: string
     }
+    assertStageToolRun(session, body.stageKey)
     const method = (body.method ?? 'GET').toUpperCase()
     if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].includes(method)) {
       throw new ValidationError(`Method '${method}' is not allowed`)
@@ -1505,6 +1510,7 @@ blueprintRouter.post('/sessions/:id/worktree/run-test', async (req, res, next) =
     const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
     if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
     assertBlueprintAccess(session, req.user!.userId)
+    assertStageToolRun(session, (req.body ?? {})?.stageKey)
     const workItemCode = await getWorktreeWorkItemCode(req.params.id)
     const mcpUrl = config.MCP_SERVER_URL.replace(/\/+$/, '')
     const upstream = await fetch(`${mcpUrl}/mcp/worktree/${encodeURIComponent(workItemCode)}/run-test`, {
@@ -1555,6 +1561,11 @@ blueprintRouter.post('/sessions/:id/worktree/verification', async (req, res, nex
     const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
     if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
     assertBlueprintAccess(session, req.user!.userId)
+    // A human verification receipt feeds the approval gate; only allow it on
+    // stages that actually permit tool execution (MUTATION/VERIFICATION),
+    // matching the UI's canRunTools gate. Prevents fabricating a passing
+    // receipt on a story-only / read-only / review stage.
+    assertStageToolRun(session)
 
     const body = req.body as {
       command?: string
@@ -2217,8 +2228,87 @@ async function loadSession(id: string, actorId?: string) {
 }
 
 function assertBlueprintAccess(session: { id: string; createdById?: string | null }, actorId: string) {
-  if (!session.createdById || session.createdById === actorId) return
+  // Deny-by-default for unowned sessions. Previously `!session.createdById`
+  // returned (granted) — meaning a session with a null/empty createdById was
+  // reachable by ANY authenticated user, widening every session-scoped route
+  // (incl. the worktree/api-call surfaces) to cross-user access. A session
+  // with no owner is treated as not-yours.
+  if (session.createdById && session.createdById === actorId) return
   throw new NotFoundError('BlueprintSession', session.id)
+}
+
+// ── Server-side stage-policy enforcement for the workbench worktree /
+// api-call / run-test / verification routes ─────────────────────────────────
+// The workbench UI hides edit/test/api affordances by the active stage's
+// toolPolicy (canEdit = MUTATION; canRunTools = MUTATION||VERIFICATION) and
+// hides repo browsing when repoAccess is off. Those are CLIENT-SIDE only —
+// without these server guards a user with session access could call the
+// endpoints directly during STORY_ONLY / READ_ONLY / review stages. We resolve
+// the active stage server-side (currentStageKey, or an explicit ?stageKey /
+// body.stageKey override that must match a real stage) and enforce the same
+// policy the UI derives. Deny-by-default: if the stage can't be resolved, the
+// action is refused.
+function resolveActiveStage(
+  session: LoopSessionSeed,
+  requestedStageKey?: unknown,
+): LoopStageDefinition {
+  const state = readLoopState(session)
+  const wanted = typeof requestedStageKey === 'string' && requestedStageKey.trim()
+    ? requestedStageKey.trim()
+    : state.currentStageKey
+  if (!wanted) {
+    throw new ForbiddenError('No active stage on this session; action refused by stage policy')
+  }
+  const stage = state.loopDefinition.stages.find(s => s.key === wanted || s.key === slug(wanted))
+  if (!stage) {
+    throw new ForbiddenError(`Unknown Workbench stage '${String(wanted)}'; action refused by stage policy`)
+  }
+  return stage
+}
+
+// Pure stage-policy decision, exported for unit tests. Returns null when the
+// action is allowed, or a human-readable refusal reason. Mirrors the UI's
+// canEdit / canRunTools / repo-browse derivation so server enforcement and the
+// client affordances can't drift. Kept pure (no session/IO) so it's testable
+// in isolation, per the router-test convention (see curation.router tests).
+export type WorkbenchStageAction = 'repoRead' | 'mutation' | 'toolRun'
+
+export function stageActionRefusalReason(
+  stage: Pick<LoopStageDefinition, 'key' | 'contextPolicy' | 'toolPolicy' | 'repoAccess'>,
+  action: WorkbenchStageAction,
+): string | null {
+  if (action === 'repoRead') {
+    return stageUsesRepoContext(stage as LoopStageDefinition)
+      ? null
+      : `Stage '${stage.key}' does not have repo access (contextPolicy=${stage.contextPolicy}, toolPolicy=${stage.toolPolicy}); code browsing is not permitted on this stage`
+  }
+  if (action === 'mutation') {
+    return stage.toolPolicy === 'MUTATION'
+      ? null
+      : `Stage '${stage.key}' is not a mutation stage (toolPolicy=${stage.toolPolicy}); editing files is not permitted on this stage`
+  }
+  // toolRun
+  return stage.toolPolicy === 'MUTATION' || stage.toolPolicy === 'VERIFICATION'
+    ? null
+    : `Stage '${stage.key}' does not permit tool execution (toolPolicy=${stage.toolPolicy}); running tests / API calls is not permitted on this stage`
+}
+
+function assertStageAction(session: LoopSessionSeed, action: WorkbenchStageAction, requestedStageKey?: unknown): void {
+  const stage = resolveActiveStage(session, requestedStageKey)
+  const refusal = stageActionRefusalReason(stage, action)
+  if (refusal) throw new ForbiddenError(refusal)
+}
+
+function assertStageRepoRead(session: LoopSessionSeed, requestedStageKey?: unknown): void {
+  assertStageAction(session, 'repoRead', requestedStageKey)
+}
+
+function assertStageMutation(session: LoopSessionSeed, requestedStageKey?: unknown): void {
+  assertStageAction(session, 'mutation', requestedStageKey)
+}
+
+function assertStageToolRun(session: LoopSessionSeed, requestedStageKey?: unknown): void {
+  assertStageAction(session, 'toolRun', requestedStageKey)
 }
 
 async function recordBlueprintAudit(
