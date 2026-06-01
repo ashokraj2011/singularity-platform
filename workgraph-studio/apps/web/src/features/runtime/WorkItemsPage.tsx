@@ -11,10 +11,12 @@ import {
   GitBranch,
   ListChecks,
   Network,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
   Route,
+  Save,
   Search,
   Unlink,
   Workflow,
@@ -160,6 +162,48 @@ export function WorkItemsPage() {
     },
   })
 
+  // Inline edit for non-terminal work items (review-requested feature).
+  // Editable statuses mirror the server guard (SCHEDULED/QUEUED/IN_PROGRESS).
+  const isEditable = Boolean(selected && ['SCHEDULED', 'QUEUED', 'IN_PROGRESS'].includes(selected.status))
+  const [editing, setEditing] = useState(false)
+  const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; dueAt: string }>({ title: '', description: '', priority: '', dueAt: '' })
+  const openEdit = () => {
+    if (!selected) return
+    setEditForm({
+      title: selected.title ?? '',
+      description: selected.description ?? '',
+      priority: selected.priority != null ? String(selected.priority) : '',
+      dueAt: selected.dueAt ? selected.dueAt.slice(0, 16) : '', // datetime-local
+    })
+    setEditing(true)
+  }
+  const editMut = useMutation({
+    mutationFn: (vars: { id: string; body: Record<string, unknown> }) =>
+      api.patch(`/work-items/${vars.id}`, vars.body).then(r => r.data as WorkItemRow),
+    onSuccess: (item) => {
+      setEditing(false)
+      setSelectedId(item.id)
+      workItemsQuery.refetch()
+    },
+  })
+  const submitEdit = () => {
+    if (!selected) return
+    const body: Record<string, unknown> = {}
+    const t = editForm.title.trim()
+    if (t && t !== selected.title) body.title = t
+    if (editForm.description !== (selected.description ?? '')) body.description = editForm.description || null
+    const pr = editForm.priority.trim()
+    if (pr !== (selected.priority != null ? String(selected.priority) : '')) {
+      const n = Number(pr)
+      if (pr === '' ) { /* leave unchanged */ } else if (Number.isInteger(n)) body.priority = n
+    }
+    const nextDue = editForm.dueAt ? new Date(editForm.dueAt).toISOString() : null
+    const curDue = selected.dueAt ? new Date(selected.dueAt).toISOString() : null
+    if (nextDue !== curDue) body.dueAt = nextDue
+    if (Object.keys(body).length === 0) { setEditing(false); return }
+    editMut.mutate({ id: selected.id, body })
+  }
+
   const canClaim = selectedTarget && ['QUEUED', 'REWORK_REQUESTED'].includes(selectedTarget.status) && !selectedTarget.claimedById
   const canStart = selected && selectedTarget && selectedTarget.status === 'CLAIMED' && !!effectiveWorkflow && !selectedTarget.childWorkflowInstanceId
   const canClaimAndStart = selected && selectedTarget && canClaim && !!effectiveWorkflow
@@ -302,6 +346,11 @@ export function WorkItemsPage() {
                   <h2 style={{ margin: '8px 0 4px', fontSize: 22, color: '#0f172a' }}>{selected.title}</h2>
                   {selected.description && <p style={{ margin: 0, color: '#475569', fontSize: 13, lineHeight: 1.55 }}>{selected.description}</p>}
                 </div>
+                {isEditable && !editing && (
+                  <button style={secondaryButtonStyle} onClick={openEdit}>
+                    <Pencil size={13} /> Edit
+                  </button>
+                )}
                 <button style={secondaryButtonStyle} onClick={() => navigate(`/runtime/work/workitem/${selected.id}${selectedTarget ? `?targetId=${selectedTarget.id}` : ''}`)}>
                   <ExternalLink size={13} /> Open detail
                 </button>
@@ -332,6 +381,46 @@ export function WorkItemsPage() {
                   </button>
                 )}
               </div>
+
+              {editing && (
+                <div style={{ marginBottom: 16, padding: 14, borderRadius: 12, border: '1px solid var(--color-outline-variant)', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: '#0f172a', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Edit work item</div>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: '#475569' }}>
+                    Title
+                    <input value={editForm.title} onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))} style={inputStyle} />
+                  </label>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: '#475569' }}>
+                    Description
+                    <textarea value={editForm.description} onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))} rows={3} style={{ ...inputStyle, resize: 'vertical' }} />
+                  </label>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: '#475569' }}>
+                      Priority
+                      <input type="number" value={editForm.priority} onChange={e => setEditForm(f => ({ ...f, priority: e.target.value }))} style={{ ...inputStyle, width: 110 }} />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: '#475569' }}>
+                      Due date
+                      <input type="datetime-local" value={editForm.dueAt} onChange={e => setEditForm(f => ({ ...f, dueAt: e.target.value }))} style={{ ...inputStyle, width: 210 }} />
+                    </label>
+                  </div>
+                  {selected.detailsLocked && (
+                    <p style={{ margin: 0, fontSize: 10.5, color: '#92400e' }}>Details are locked by the workflow engine and can’t be edited here.</p>
+                  )}
+                  {editMut.isError && (
+                    <p style={{ margin: 0, fontSize: 11, color: '#ef4444' }}>
+                      {((editMut.error as { response?: { data?: { message?: string } } })?.response?.data?.message) ?? 'Update failed.'}
+                    </p>
+                  )}
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button style={primaryButtonStyle} disabled={editMut.isPending} onClick={submitEdit}>
+                      <Save size={13} /> {editMut.isPending ? 'Saving…' : 'Save changes'}
+                    </button>
+                    <button style={secondaryButtonStyle} disabled={editMut.isPending} onClick={() => setEditing(false)}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <WorkItemFlow stages={selectedFlow} />
 
@@ -785,6 +874,7 @@ type WorkItemRow = {
   urgency?: string | null
   requiredBy?: string | null
   dueAt?: string | null
+  priority?: number | null
   detailsLocked: boolean
   targets: WorkItemTarget[]
 }

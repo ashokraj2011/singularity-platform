@@ -360,6 +360,120 @@ export async function assertCanViewWorkItem(userId: string, workItem: WorkItemVi
   }
 }
 
+// Statuses whose work item may still be edited. Terminal states are frozen.
+const EDITABLE_WORK_ITEM_STATUSES = new Set(['SCHEDULED', 'QUEUED', 'IN_PROGRESS'])
+const TERMINAL_WORK_ITEM_STATUSES = new Set(['AWAITING_PARENT_APPROVAL', 'COMPLETED', 'CANCELLED', 'ARCHIVED'])
+// Allowed status transitions from an editable state (manual edits only — the
+// lifecycle engine owns IN_PROGRESS→COMPLETED etc.). Re-queue and cancel are
+// the operator-meaningful ones; SCHEDULED↔QUEUED toggles scheduling.
+const ALLOWED_STATUS_EDITS: Record<string, Set<string>> = {
+  SCHEDULED:   new Set(['QUEUED', 'CANCELLED']),
+  QUEUED:      new Set(['SCHEDULED', 'CANCELLED']),
+  IN_PROGRESS: new Set(['CANCELLED']),
+}
+
+export interface UpdateWorkItemInput {
+  title?: string
+  description?: string | null
+  priority?: number
+  dueAt?: string | null
+  details?: Record<string, unknown>
+  status?: string
+}
+
+/**
+ * Edit a non-terminal work item (review-requested feature). Guardrails:
+ *   - only SCHEDULED / QUEUED / IN_PROGRESS may be edited; terminal states 409.
+ *   - caller must be eligible to view (ownership/role) the item.
+ *   - details may change ONLY when detailsLocked is false (the engine locks
+ *     details once it has bound them to a run/prompt).
+ *   - status may change only along ALLOWED_STATUS_EDITS (no skipping the
+ *     lifecycle engine into COMPLETED, etc.).
+ * Emits a WorkItemEdited event + outbox for the audit trail.
+ */
+export async function updateWorkItem(workItemId: string, userId: string, input: UpdateWorkItemInput) {
+  const workItem = await prisma.workItem.findUnique({
+    where: { id: workItemId },
+    include: { targets: true },
+  })
+  if (!workItem) throw new NotFoundError('WorkItem', workItemId)
+  await assertCanViewWorkItem(userId, workItem)
+
+  if (!EDITABLE_WORK_ITEM_STATUSES.has(workItem.status)) {
+    throw new ValidationError(
+      `WorkItem in status ${workItem.status} is not editable`
+      + (TERMINAL_WORK_ITEM_STATUSES.has(workItem.status) ? ' (terminal)' : ''),
+    )
+  }
+
+  const data: Prisma.WorkItemUpdateInput = {}
+  const changed: string[] = []
+
+  if (input.title !== undefined) {
+    const t = input.title.trim()
+    if (!t) throw new ValidationError('title cannot be empty')
+    if (t !== workItem.title) { data.title = t; changed.push('title') }
+  }
+  if (input.description !== undefined && (input.description ?? null) !== (workItem.description ?? null)) {
+    data.description = input.description ?? null
+    changed.push('description')
+  }
+  if (input.priority !== undefined && input.priority !== workItem.priority) {
+    if (!Number.isInteger(input.priority)) throw new ValidationError('priority must be an integer')
+    data.priority = input.priority
+    changed.push('priority')
+  }
+  if (input.dueAt !== undefined) {
+    const next = input.dueAt ? new Date(input.dueAt) : null
+    if (next && Number.isNaN(next.getTime())) throw new ValidationError('dueAt must be a valid date')
+    data.dueAt = next
+    changed.push('dueAt')
+  }
+  if (input.details !== undefined) {
+    if (workItem.detailsLocked) {
+      throw new ValidationError('WorkItem details are locked and cannot be edited')
+    }
+    data.details = input.details as Prisma.InputJsonValue
+    changed.push('details')
+  }
+  if (input.status !== undefined && input.status !== workItem.status) {
+    const allowed = ALLOWED_STATUS_EDITS[workItem.status]
+    if (!allowed || !allowed.has(input.status)) {
+      throw new ValidationError(`Cannot change status ${workItem.status} → ${input.status}`)
+    }
+    data.status = input.status as never
+    changed.push('status')
+  }
+
+  if (changed.length === 0) {
+    // Nothing to do — return the current shape so the caller stays simple.
+    return prisma.workItem.findUniqueOrThrow({
+      where: { id: workItemId },
+      include: {
+        targets: { orderBy: { createdAt: 'asc' } },
+        events: { orderBy: { createdAt: 'asc' } },
+        clarifications: { orderBy: { createdAt: 'asc' } },
+      },
+    })
+  }
+
+  const updated = await prisma.workItem.update({
+    where: { id: workItemId },
+    data,
+    include: {
+      targets: { orderBy: { createdAt: 'asc' } },
+      events: { orderBy: { createdAt: 'asc' } },
+      clarifications: { orderBy: { createdAt: 'asc' } },
+    },
+  })
+  // NB: WorkItemEvent.eventType is a DB enum with no EDITED member, so we
+  // record the edit via the free-string audit log + outbox rather than adding
+  // an enum value (which would need a migration). Audit trail is preserved.
+  await logEvent('WorkItemEdited', 'WorkItem', workItemId, userId, { fields: changed })
+  await publishOutbox('WorkItem', workItemId, 'WorkItemEdited', { workItemId, fields: changed })
+  return updated
+}
+
 export async function claimWorkItemTarget(workItemId: string, targetId: string, userId: string) {
   const target = await prisma.workItemTarget.findFirst({
     where: { id: targetId, workItemId },

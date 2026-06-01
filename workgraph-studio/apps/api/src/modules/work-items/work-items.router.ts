@@ -16,6 +16,7 @@ import {
   requestWorkItemClarification,
   requestWorkItemRework,
   startWorkItemTarget,
+  updateWorkItem,
 } from './work-items.service'
 import { routeWorkItem } from './work-item-routing.service'
 
@@ -210,6 +211,25 @@ workItemsRouter.get('/:id', async (req, res, next) => {
     if (!workItem) throw new NotFoundError('WorkItem', id)
     await assertCanViewWorkItem(req.user!.userId, workItem)
     res.json(workItem)
+  } catch (err) {
+    next(err)
+  }
+})
+
+const updateWorkItemSchema = z.object({
+  title: z.string().min(1).optional(),
+  description: z.string().nullable().optional(),
+  priority: z.number().int().optional(),
+  dueAt: z.string().datetime().nullable().optional(),
+  details: z.record(z.unknown()).optional(),
+  status: z.enum(['SCHEDULED', 'QUEUED', 'IN_PROGRESS', 'CANCELLED']).optional(),
+}).refine(b => Object.keys(b).length > 0, { message: 'No fields to update' })
+
+workItemsRouter.patch('/:id', validate(updateWorkItemSchema), async (req, res, next) => {
+  try {
+    const body = req.body as z.infer<typeof updateWorkItemSchema>
+    const updated = await updateWorkItem(String(req.params.id), req.user!.userId, body)
+    res.json(updated)
   } catch (err) {
     next(err)
   }
