@@ -9,11 +9,22 @@ RUN npm install -g pnpm@10
 
 FROM base AS deps
 WORKDIR /app
+# Artifactory support (docs/artifactory-npm.md). Set → resolve from Artifactory
+# via a throwaway .npmrc; empty → no-op (default registry). pnpm reads .npmrc.
+ARG ARTIFACTORY_NPM_REGISTRY=
+ARG ARTIFACTORY_NPM_TOKEN=
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
 COPY apps/web/package.json apps/web/package.json
 COPY packages/shared-types/package.json packages/shared-types/package.json
 COPY packages/engine/package.json packages/engine/package.json
-RUN pnpm install --frozen-lockfile || pnpm install
+RUN if [ -n "$ARTIFACTORY_NPM_REGISTRY" ]; then \
+      printf 'registry=%s\n//%s:_authToken=%s\n' \
+        "$ARTIFACTORY_NPM_REGISTRY" \
+        "$(printf '%s' "$ARTIFACTORY_NPM_REGISTRY" | sed -E 's#^https?://##')" \
+        "$ARTIFACTORY_NPM_TOKEN" > .npmrc ; \
+    fi \
+ && (pnpm install --frozen-lockfile || pnpm install) \
+ && rm -f .npmrc
 
 FROM base AS build
 WORKDIR /app
