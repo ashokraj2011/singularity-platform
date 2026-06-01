@@ -1081,7 +1081,9 @@ services:
           cpus: '0.5'
 
   # ─────────────────────────────────────────────────────────────────────
-  # MCP Server (reference / demo)
+  # Tool Runtime (reference / demo) — MCP-compatible; the service key is
+  # `mcp-server-demo` and its client env vars are MCP_* because it speaks the
+  # Model Context Protocol. The app itself is the per-tenant tool runtime.
   #
   # In production each customer runs their own copy of this in their VPC.
   # Here we ship one as a demo/test target so the platform stack can be

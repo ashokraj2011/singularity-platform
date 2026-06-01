@@ -1,10 +1,12 @@
 # mcp-server — Release Notes
 
-Agent loop owner. Runs the LLM↔tool loop end-to-end (`/mcp/invoke`),
-holds AST + workspace state, dispatches tools, emits structured audit
-events. M44 introduced the phased agent reasoning model (v4); M52
-added the Code Context Budgeter; M60 wired the formal verifier; M64
-hardened the gateway timeout/error path.
+**Singularity Tool Runtime** (the directory and npm package are still named
+`mcp-server`; it exposes an MCP-compatible interface, which is why the routes
+are under `/mcp/*` and the client env vars are `MCP_*`). Agent loop owner.
+Runs the LLM↔tool loop end-to-end (`/mcp/invoke`), holds AST + workspace
+state, dispatches tools, emits structured audit events. M44 introduced the
+phased agent reasoning model (v4); M52 added the Code Context Budgeter; M60
+wired the formal verifier; M64 hardened the gateway timeout/error path.
 
 ## API surface
 
