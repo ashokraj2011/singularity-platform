@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -7,7 +8,8 @@ from app.auth.deps import get_current_user
 from app.schemas import PageResponse
 from app.org.schemas import (
     BusinessUnitOut, CreateBusinessUnitRequest,
-    TeamOut, CreateTeamRequest, TeamMembershipOut, AddTeamMemberRequest,
+    TeamOut, CreateTeamRequest, UpdateTeamRequest, SetChildTeamRequest,
+    TeamMembershipOut, AddTeamMemberRequest,
 )
 from app.audit.service import record_event
 from datetime import datetime, timezone
@@ -163,6 +165,102 @@ async def get_team(team_id: str, db: AsyncSession = Depends(get_db), _: User = D
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     return _team_out(team)
+
+
+async def _assert_no_team_cycle(db: AsyncSession, team_id: str, new_parent_id: str) -> None:
+    """Reject a parent assignment that would create a cycle.
+
+    Walk UP from new_parent_id following parent_team_id; if we reach team_id,
+    setting it as the parent would form a loop. Also rejects self-parenting.
+    Bounded by a depth cap as a backstop against pre-existing bad data.
+    """
+    if new_parent_id == team_id:
+        raise HTTPException(status_code=400, detail="A team cannot be its own parent")
+    seen: set[str] = set()
+    cursor: Optional[str] = new_parent_id
+    depth = 0
+    while cursor is not None and depth < 100:
+        if cursor == team_id:
+            raise HTTPException(status_code=400, detail="parent_team_id would create a cycle")
+        if cursor in seen:  # pre-existing loop in data — stop, don't hang
+            break
+        seen.add(cursor)
+        parent = (await db.execute(select(Team.parent_team_id).where(Team.id == cursor))).scalar_one_or_none()
+        cursor = parent
+        depth += 1
+
+
+@router.patch("/teams/{team_id}", response_model=TeamOut)
+async def update_team(
+    team_id: str,
+    body: UpdateTeamRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    team = (await db.execute(select(Team).where(Team.id == team_id))).scalar_one_or_none()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    provided = body.provided_fields()
+    if "name" in provided and body.name is not None:
+        if not body.name.strip():
+            raise HTTPException(status_code=400, detail="name cannot be empty")
+        team.name = body.name.strip()
+    if "description" in provided:
+        team.description = body.description
+    if "parent_team_id" in provided:
+        if body.parent_team_id:
+            parent = (await db.execute(select(Team.id).where(Team.id == body.parent_team_id))).scalar_one_or_none()
+            if not parent:
+                raise HTTPException(status_code=400, detail="parent_team_id does not exist")
+            await _assert_no_team_cycle(db, team_id, body.parent_team_id)
+            team.parent_team_id = body.parent_team_id
+        else:
+            team.parent_team_id = None  # explicit null → detach to root
+    await db.flush()
+    await record_event(db, actor_user_id=current_user.id, event_type="team_updated",
+                       target_type="team", target_id=team.id, payload={"fields": sorted(provided)})
+    await db.commit()
+    await db.refresh(team)
+    return _team_out(team)
+
+
+@router.get("/teams/{team_id}/children", response_model=list[TeamOut])
+async def list_child_teams(team_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    team = (await db.execute(select(Team.id).where(Team.id == team_id))).scalar_one_or_none()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    rows = (await db.execute(
+        select(Team).where(Team.parent_team_id == team_id).order_by(Team.name)
+    )).scalars().all()
+    return [_team_out(t) for t in rows]
+
+
+@router.post("/teams/{team_id}/children", response_model=TeamOut, status_code=201)
+async def add_child_team(
+    team_id: str,
+    body: SetChildTeamRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Re-parent an existing team under {team_id} (sets the child's parent)."""
+    parent = (await db.execute(select(Team.id).where(Team.id == team_id))).scalar_one_or_none()
+    if not parent:
+        raise HTTPException(status_code=404, detail="Team not found")
+    child = (await db.execute(select(Team).where(Team.id == body.child_team_id))).scalar_one_or_none()
+    if not child:
+        raise HTTPException(status_code=400, detail="child_team_id does not exist")
+    if child.id == team_id:
+        raise HTTPException(status_code=400, detail="A team cannot be its own child")
+    # Guard the cycle FROM THE CHILD's perspective: making team_id the child's
+    # parent must not create a loop.
+    await _assert_no_team_cycle(db, child.id, team_id)
+    child.parent_team_id = team_id
+    await db.flush()
+    await record_event(db, actor_user_id=current_user.id, event_type="team_updated",
+                       target_type="team", target_id=child.id, payload={"parent_team_id": team_id})
+    await db.commit()
+    await db.refresh(child)
+    return _team_out(child)
 
 
 @router.get("/teams/{team_id}/members", response_model=list[TeamMembershipOut])
