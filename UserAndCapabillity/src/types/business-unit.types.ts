@@ -18,3 +18,10 @@ export interface CreateBusinessUnitRequest {
   metadata?: Record<string, unknown>
   tags?: string[]
 }
+
+export interface UpdateBusinessUnitRequest {
+  name?: string
+  description?: string | null
+  // null → detach (make root); string → set/move parent; omit → unchanged.
+  parent_bu_id?: string | null
+}

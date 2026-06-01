@@ -24,6 +24,23 @@ class CreateBusinessUnitRequest(BaseModel):
     tags: Optional[list[str]] = None
 
 
+class UpdateBusinessUnitRequest(BaseModel):
+    # PATCH semantics; parent_bu_id is tri-state (omitted = unchanged, null =
+    # detach to root, value = set/move parent — cycle-guarded server-side).
+    name: Optional[str] = None
+    description: Optional[str] = None
+    parent_bu_id: Optional[str] = Field(default=None)
+    model_config = {"extra": "forbid"}
+
+    def provided_fields(self) -> set[str]:
+        return set(self.model_fields_set)
+
+
+class SetChildBuRequest(BaseModel):
+    # Re-parent an existing business unit under {bu_id}.
+    child_bu_id: str
+
+
 class TeamOut(BaseModel):
     id: str
     team_key: str
