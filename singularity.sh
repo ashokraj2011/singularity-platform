@@ -34,7 +34,7 @@
 #   context-memory         :8002
 #   metrics-ledger         :8003
 #   formal-verifier        optional SMT analyzer on :8010
-#   mcp-server-demo        reference MCP server on :7100 (per-tenant in prod)
+#   mcp-server-demo        Tool Runtime (MCP-compatible) on :7100 (per-tenant in prod)
 #   iam-service            IAM API on :8100
 #   iam-postgres           IAM Postgres on :5433
 #   at-postgres            agent-and-tools Postgres on :5432
@@ -187,7 +187,7 @@ ${C_BLUE}Singularity Platform URLs${C_END}
     context-memory      http://localhost:8002
     metrics-ledger      http://localhost:8003
     formal-verifier     http://localhost:8010      (optional SMT governance analyzer)
-    mcp-server-demo     http://localhost:7100      (reference MCP server; bearer-token gated)
+    mcp-server-demo     http://localhost:7100      (Tool Runtime, MCP-compatible; bearer-token gated)
     audit-governance    http://localhost:8500      (events, logs, governance, run insights)
 
   ${C_GREEN}Storage${C_END}

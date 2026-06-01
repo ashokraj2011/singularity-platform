@@ -102,7 +102,7 @@ function bootServerMode(): void {
   // M11.a — self-register with platform-registry (no-op if env unset)
   startSelfRegistration({
     service_name: "mcp-server",
-    display_name: "Singularity MCP Server",
+    display_name: "Singularity Tool Runtime",
     version:      "0.1.0",
     base_url:     process.env.PUBLIC_BASE_URL ?? `http://localhost:${config.PORT}`,
     health_path:  "/healthz",
