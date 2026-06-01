@@ -5,7 +5,7 @@ The "Centralize Agentic Coding Around Context Fabric" spec asks the
 platform to localize the target files/symbols/tests BEFORE the model
 edits, so the editor works against a compact target set instead of
 re-deriving it from broad repo context every attempt. Pre-M99 the
-localizers (repo_map / find_symbol / ast_search / code_context_package)
+localizers (repo_map / find_symbol / search_code / code_context_package)
 were agent-callable EXPLORE tools — useful, but the model had to choose
 to call them and the result was never captured as a structured artifact.
 
@@ -40,7 +40,7 @@ log = logging.getLogger(__name__)
 # Read-only localizer tools, in dispatch order. repo_map orients; the
 # symbol/AST search pins concrete targets; code_context_package gives the
 # compact orientation markdown (and its package id for cross-referencing).
-_LOCALIZER_TOOLS = ("repo_map", "find_symbol", "ast_search", "code_context_package")
+_LOCALIZER_TOOLS = ("repo_map", "find_symbol", "search_code", "code_context_package")
 
 _MAX_TARGETS = 50  # cap so a noisy repo_map can't bloat the receipt/prompt
 
@@ -222,7 +222,7 @@ def _args_for(
         return {}
     if tool == "find_symbol":
         return {"query": query}
-    if tool == "ast_search":
+    if tool == "search_code":
         return {"query": query}
     if tool == "code_context_package":
         args: dict[str, Any] = {"task_text": task_text or query}

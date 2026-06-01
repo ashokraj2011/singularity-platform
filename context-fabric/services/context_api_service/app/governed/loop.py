@@ -76,7 +76,6 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "read_repo_instructions",
     "read_workitem",
     "code_context_package",
-    "ast_search",
     "grep",
     "search_code",
 })

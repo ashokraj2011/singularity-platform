@@ -32,7 +32,7 @@ async def test_localization_collects_and_splits_tests(monkeypatch):
     _patch_dispatch(monkeypatch, {
         "repo_map": _FakeOutcome({"files": ["src/a.py", "src/b.py"]}),
         "find_symbol": _FakeOutcome({"symbols": ["startsWith"], "files": ["src/ops.py"]}),
-        "ast_search": _FakeOutcome({"matches": ["tests/test_ops.py"]}),
+        "search_code": _FakeOutcome({"matches": ["tests/test_ops.py"]}),
         "code_context_package": _FakeOutcome({"packageId": "pkg-123"}),
     })
     res = await loc.synthesize_localization(
@@ -44,7 +44,7 @@ async def test_localization_collects_and_splits_tests(monkeypatch):
     assert "tests/test_ops.py" not in res.target_files  # split out
     assert res.target_symbols == ["startsWith"]
     assert res.code_context_package_id == "pkg-123"
-    assert set(res.sources) == {"repo_map", "find_symbol", "ast_search", "code_context_package"}
+    assert set(res.sources) == {"repo_map", "find_symbol", "search_code", "code_context_package"}
     assert res.found_anything
 
 
@@ -53,7 +53,7 @@ async def test_localization_never_raises_on_dispatch_error(monkeypatch):
     _patch_dispatch(monkeypatch, {
         "repo_map": ToolDispatchError("boom"),
         "find_symbol": _FakeOutcome({"files": ["src/only.py"]}),
-        "ast_search": ToolDispatchError("boom"),
+        "search_code": ToolDispatchError("boom"),
         "code_context_package": ToolDispatchError("boom"),
     })
     res = await loc.synthesize_localization(
@@ -68,7 +68,7 @@ async def test_localization_empty_when_nothing_found(monkeypatch):
     _patch_dispatch(monkeypatch, {
         "repo_map": _FakeOutcome({}, tool_success=False),
         "find_symbol": _FakeOutcome({}, tool_success=False),
-        "ast_search": _FakeOutcome({}, tool_success=False),
+        "search_code": _FakeOutcome({}, tool_success=False),
         "code_context_package": _FakeOutcome({}, tool_success=False),
     })
     res = await loc.synthesize_localization(
@@ -84,7 +84,7 @@ async def test_result_maps_to_receipt(monkeypatch):
     _patch_dispatch(monkeypatch, {
         "repo_map": _FakeOutcome({"files": ["a.py"]}),
         "find_symbol": _FakeOutcome({}, tool_success=False),
-        "ast_search": _FakeOutcome({}, tool_success=False),
+        "search_code": _FakeOutcome({}, tool_success=False),
         "code_context_package": _FakeOutcome({}, tool_success=False),
     })
     res = await loc.synthesize_localization(
@@ -102,7 +102,7 @@ async def test_dedup_and_cap(monkeypatch):
     _patch_dispatch(monkeypatch, {
         "repo_map": _FakeOutcome({"files": big}),
         "find_symbol": _FakeOutcome({}, tool_success=False),
-        "ast_search": _FakeOutcome({}, tool_success=False),
+        "search_code": _FakeOutcome({}, tool_success=False),
         "code_context_package": _FakeOutcome({}, tool_success=False),
     })
     res = await loc.synthesize_localization(
