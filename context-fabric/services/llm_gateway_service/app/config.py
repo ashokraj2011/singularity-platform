@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     # Anthropic protocol version (no provider SDK).
     anthropic_version: str = "2023-06-01"
 
+    # ADR 0003 — Anthropic prompt-caching beta header value. Sent only when a
+    # request carries prompt_cache.enabled. Pinned here (like anthropic_version)
+    # so the beta token can be bumped via env without a code change.
+    anthropic_prompt_cache_beta: str = "prompt-caching-2024-07-31"
+    # Global kill switch for server-level prompt caching. When false, the
+    # gateway ignores prompt_cache directives entirely (no cache_control, no
+    # beta header) — a fast rollback path if a provider misbehaves.
+    prompt_cache_enabled: bool = True
+
     # Request timeout for upstream provider calls (seconds).
     upstream_timeout_sec: int = 240
 
@@ -72,6 +81,12 @@ class Settings(BaseSettings):
         self.anthropic_api_key  = env.get("ANTHROPIC_API_KEY")  or None
         self.copilot_token      = env.get("COPILOT_TOKEN")      or None
         self.anthropic_version  = env.get("ANTHROPIC_VERSION", self.anthropic_version)
+        self.anthropic_prompt_cache_beta = env.get(
+            "ANTHROPIC_PROMPT_CACHE_BETA", self.anthropic_prompt_cache_beta,
+        )
+        self.prompt_cache_enabled = (
+            env.get("LLM_PROMPT_CACHE_ENABLED", "true").lower() == "true"
+        )
         self.upstream_timeout_sec = int(env.get("UPSTREAM_TIMEOUT_SEC", str(self.upstream_timeout_sec)))
         self.upstream_rate_limit_retries = int(env.get(
             "LLM_GATEWAY_RATE_LIMIT_RETRIES",

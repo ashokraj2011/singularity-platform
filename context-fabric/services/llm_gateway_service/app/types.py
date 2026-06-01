@@ -46,6 +46,20 @@ class ToolDescriptor(BaseModel):
     input_schema: Dict[str, Any] = Field(default_factory=dict)
 
 
+class PromptCacheRequest(BaseModel):
+    # Server-level prompt caching (ADR 0003). When enabled, the provider
+    # adapter pre-fills the stable prefix once per cache TTL instead of
+    # re-paying prefill every turn. Mirrors mcp-server's PromptCacheRequest
+    # so the shared TS client ships unchanged.
+    enabled: bool = False
+    # provider_auto | anthropic_cache_control | copilot_gateway. None/omitted
+    # is treated as provider_auto.
+    strategy: Optional[str] = None
+    # Optional caller-supplied cache scope key (session+stage) for
+    # observability; providers may ignore it.
+    key: Optional[str] = None
+
+
 class ChatCompletionRequest(BaseModel):
     # Normal callers must pass `model_alias`. Raw provider/model is accepted
     # only when ALLOW_CALLER_PROVIDER_OVERRIDE=true, which defaults false.
@@ -65,6 +79,12 @@ class ChatCompletionRequest(BaseModel):
     # None / 0 → off (default). Non-Anthropic providers ignore this
     # silently — extended thinking is currently Anthropic-only.
     thinking_budget: Optional[int] = None
+
+    # ADR 0003 — server-level prompt caching. Previously this field did not
+    # exist on the gateway request model, so any prompt_cache the caller sent
+    # was silently dropped by Pydantic at the hop. Declaring it explicitly is
+    # what lets the directive reach the provider adapter.
+    prompt_cache: Optional[PromptCacheRequest] = None
 
     # Stream is not yet implemented on this gateway; surfaced for parity
     # with the OpenAI shape but rejected at request time.
@@ -112,6 +132,12 @@ class ChatCompletionResponse(BaseModel):
     # care about it for cost attribution; otherwise the catalog price
     # math would undercount the call.
     thinking_tokens: int = 0
+    # ADR 0003 — prompt-cache usage echoed back to the caller so hit rate is
+    # measurable. Anthropic reports cache_creation_input_tokens (cache write,
+    # ~25% surcharge) and cache_read_input_tokens (cache hit, the cheap path);
+    # we surface both plus the effective strategy. None when caching was not
+    # requested / not supported by the provider.
+    prompt_cache: Optional[Dict[str, Any]] = None
 
 
 class EmbeddingsRequest(BaseModel):
