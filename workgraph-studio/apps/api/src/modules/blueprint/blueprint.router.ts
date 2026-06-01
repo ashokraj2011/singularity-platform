@@ -2692,10 +2692,15 @@ function normalizeStageContextPolicy(
     return normalized
   }
   const signature = `${stage.key} ${stage.label ?? ''} ${stage.agentRole ?? ''}`.toLowerCase()
+  // Order matters: non-mutating intents (story / review / evidence / verify)
+  // are checked BEFORE the generic "code" → CODE_EDIT fallback, otherwise a
+  // read-only stage like "Code Review" matches "code" first and silently
+  // becomes mutation-capable. The "code" match is also word-bounded so it
+  // doesn't trip on encode/decode/codebase.
   if (signature.includes('intake') || signature.includes('story') || signature.includes('product_owner')) return 'STORY_ONLY'
-  if (signature.includes('develop') || signature.includes('developer') || signature.includes('engineer') || signature.includes('code')) return 'CODE_EDIT'
   if (signature.includes('verify') || signature.includes('qa') || signature.includes('quality') || signature.includes('test')) return 'VERIFY_ONLY'
-  if (stage.terminal || signature.includes('review') || signature.includes('evidence')) return 'EVIDENCE_REVIEW'
+  if (stage.terminal || signature.includes('review') || signature.includes('evidence') || signature.includes('approval')) return 'EVIDENCE_REVIEW'
+  if (signature.includes('develop') || signature.includes('developer') || signature.includes('engineer') || /\bcode\b/.test(signature)) return 'CODE_EDIT'
   return 'REPO_READ_ONLY'
 }
 

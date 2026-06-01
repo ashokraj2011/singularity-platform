@@ -194,7 +194,7 @@ export function fixCommandsForPushBlock(code: PushBlockedCode, remote: string): 
       "Your git token is authenticated but lacks Contents: Write on this repo.",
       "Fine-grained PAT (token starts with github_pat_...): https://github.com/settings/tokens?type=beta — edit the token, ensure the repo is in 'Selected repositories', and set Repository permissions > Contents = Read and write.",
       "Classic PAT: https://github.com/settings/tokens — regenerate with the `repo` scope (full).",
-      "./singularity.sh restart mcp-server-demo  # picks up the new token from .env",
+      "./singularity.sh recreate mcp-server-demo   # reloads env_file ('restart' does NOT)",
     ];
   }
   if (code === "GIT_REMOTE_UNREACHABLE") {
