@@ -4,7 +4,7 @@
  * owning run (when the artifact's session is attached to a workflow instance).
  * Per-run artifacts also live at /runs/:id/artifacts; this is the cross-run view.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { FileText, Download, Package, ExternalLink } from 'lucide-react'
@@ -55,31 +55,37 @@ function download(a: GlobalArtifact) {
 
 const WORKFLOW_STATUSES = ['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELLED', 'FAILED']
 
+type Facets = {
+  workItems: { id: string; workCode: string; title: string; status: string }[]
+  instances: { id: string; name: string; status: string }[]
+  statuses: string[]
+}
+
 export function ArtifactsExplorerPage() {
   const navigate = useNavigate()
   const [openId, setOpenId] = useState<string | null>(null)
   const [kind, setKind] = useState<string>('')
-  // Server-side filters. workItem accepts a work-item id or workCode (WRK-…);
-  // workflowInstanceId is an exact instance id; workflowStatus is an enum.
+  // Server-side filters, now dropdown-selected (work-item id, instance id,
+  // status enum) rather than free text.
   const [workItem, setWorkItem] = useState<string>('')
   const [workflowInstanceId, setWorkflowInstanceId] = useState<string>('')
   const [workflowStatus, setWorkflowStatus] = useState<string>('')
 
-  // Debounce the free-text inputs so we don't fire a request per keystroke.
-  const [debounced, setDebounced] = useState({ workItem: '', workflowInstanceId: '' })
-  useEffect(() => {
-    const t = setTimeout(() => setDebounced({ workItem: workItem.trim(), workflowInstanceId: workflowInstanceId.trim() }), 350)
-    return () => clearTimeout(t)
-  }, [workItem, workflowInstanceId])
+  // Auto-populate the work-item / instance dropdowns from the work that
+  // actually has artifacts (scoped to this user, server-side).
+  const { data: facets } = useQuery<Facets>({
+    queryKey: ['artifacts-facets'],
+    queryFn: () => api.get('/blueprint/artifacts/facets').then(r => r.data),
+  })
 
   const params = useMemo(() => {
     const p: Record<string, string> = {}
     if (kind) p.kind = kind
-    if (debounced.workItem) p.workItemId = debounced.workItem
-    if (debounced.workflowInstanceId) p.workflowInstanceId = debounced.workflowInstanceId
+    if (workItem) p.workItemId = workItem
+    if (workflowInstanceId) p.workflowInstanceId = workflowInstanceId
     if (workflowStatus) p.workflowStatus = workflowStatus
     return p
-  }, [kind, debounced, workflowStatus])
+  }, [kind, workItem, workflowInstanceId, workflowStatus])
 
   const { data, isLoading, isError, error } = useQuery<Response>({
     queryKey: ['artifacts-global', params],
@@ -88,7 +94,8 @@ export function ArtifactsExplorerPage() {
 
   const items = useMemo(() => data?.items ?? [], [data])
   const kinds = useMemo(() => Array.from(new Set(items.map(i => i.kind))).sort(), [items])
-  const inputStyle: React.CSSProperties = { fontSize: 12, padding: '5px 8px', borderRadius: 7, border: '1px solid var(--color-outline-variant)', background: '#fff', color: 'var(--color-on-surface)' }
+  const statusOptions = facets?.statuses ?? WORKFLOW_STATUSES
+  const inputStyle: React.CSSProperties = { fontSize: 12, padding: '5px 8px', borderRadius: 7, border: '1px solid var(--color-outline-variant)', background: '#fff', color: 'var(--color-on-surface)', maxWidth: 260 }
 
   return (
     <div style={{ padding: 24, maxWidth: 920, margin: '0 auto' }}>
@@ -110,24 +117,24 @@ export function ArtifactsExplorerPage() {
         </div>
       </div>
 
-      {/* Filters: work item (id or WRK code), workflow instance id, workflow
-          status, and artifact kind. Free-text inputs are debounced. */}
+      {/* Filters auto-populated from the work that actually has artifacts
+          (GET /artifacts/facets): work item, workflow instance, status, kind. */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14, alignItems: 'center' }}>
-        <input
-          value={workItem}
-          onChange={e => setWorkItem(e.target.value)}
-          placeholder="Work item (id or WRK-…)"
-          style={{ ...inputStyle, minWidth: 190 }}
-        />
-        <input
-          value={workflowInstanceId}
-          onChange={e => setWorkflowInstanceId(e.target.value)}
-          placeholder="Workflow instance id"
-          style={{ ...inputStyle, minWidth: 190 }}
-        />
+        <select value={workItem} onChange={e => setWorkItem(e.target.value)} style={inputStyle} title="Filter by work item">
+          <option value="">All work items</option>
+          {(facets?.workItems ?? []).map(w => (
+            <option key={w.id} value={w.id}>{w.workCode} · {w.title}</option>
+          ))}
+        </select>
+        <select value={workflowInstanceId} onChange={e => setWorkflowInstanceId(e.target.value)} style={inputStyle} title="Filter by workflow run">
+          <option value="">All workflow runs</option>
+          {(facets?.instances ?? []).map(i => (
+            <option key={i.id} value={i.id}>{i.name} · {i.status}</option>
+          ))}
+        </select>
         <select value={workflowStatus} onChange={e => setWorkflowStatus(e.target.value)} style={inputStyle}>
           <option value="">Any status</option>
-          {WORKFLOW_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          {statusOptions.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         {kinds.length > 0 && (
           <select value={kind} onChange={e => setKind(e.target.value)} style={inputStyle}>

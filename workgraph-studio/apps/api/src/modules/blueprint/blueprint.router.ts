@@ -754,6 +754,53 @@ blueprintRouter.get('/artifacts', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// Filter options for the Artifacts explorer — the distinct work items and
+// workflow instances that ACTUALLY have artifacts for this caller, so the UI
+// can auto-populate its filter dropdowns instead of free-text. Scoped to
+// createdById to match /artifacts.
+blueprintRouter.get('/artifacts/facets', async (req, res, next) => {
+  try {
+    const createdById = req.user!.userId
+    // Distinct instance ids across the caller's artifact-bearing sessions.
+    const sessions = await prisma.blueprintSession.findMany({
+      where: { createdById, artifacts: { some: {} }, workflowInstanceId: { not: null } },
+      select: { workflowInstanceId: true },
+      take: 2000,
+    })
+    const instanceIds = uniqueStrings(sessions.map(s => s.workflowInstanceId))
+
+    const instances = instanceIds.length
+      ? await prisma.workflowInstance.findMany({
+          where: { id: { in: instanceIds } },
+          select: { id: true, name: true, status: true },
+          orderBy: { startedAt: 'desc' },
+        })
+      : []
+
+    // Work items linked to those instances, via the source instance OR a
+    // target's child instance. De-duplicated by id.
+    const workItems = instanceIds.length
+      ? await prisma.workItem.findMany({
+          where: {
+            OR: [
+              { sourceWorkflowInstanceId: { in: instanceIds } },
+              { targets: { some: { childWorkflowInstanceId: { in: instanceIds } } } },
+            ],
+          },
+          select: { id: true, workCode: true, title: true, status: true },
+          orderBy: { createdAt: 'desc' },
+          take: 500,
+        })
+      : []
+
+    res.json({
+      workItems: workItems.map(w => ({ id: w.id, workCode: w.workCode, title: w.title, status: w.status })),
+      instances: instances.map(i => ({ id: i.id, name: i.name, status: i.status })),
+      statuses: ['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELLED', 'FAILED'],
+    })
+  } catch (err) { next(err) }
+})
+
 blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res, next) => {
   try {
     const body = req.body as CreateSessionInput
