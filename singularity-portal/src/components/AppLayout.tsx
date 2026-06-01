@@ -1,8 +1,8 @@
-import { ReactNode } from 'react'
-import { Link, NavLink, useNavigate } from 'react-router-dom'
+import { ReactNode, useState } from 'react'
+import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import {
   Home, Workflow, Bot, Users, BarChart3, ExternalLink, ServerCog,
-  LogOut, ChevronRight, Zap, Wrench, Hammer, Gauge, ShieldCheck, FileText, Power,
+  LogOut, ChevronRight, ChevronDown, Zap, Wrench, Hammer, Gauge, ShieldCheck, FileText, Power,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/auth.store'
 import { env } from '@/lib/env'
@@ -22,7 +22,9 @@ const operationsNav = [
 const internalNav = [
   { to: '/', label: 'Dashboard', icon: Home, end: true },
   { to: '/engine', label: 'Engine', icon: Zap, end: false },
-  { to: '/operations', label: 'Operations', icon: ServerCog, end: false },
+  // Operations now lives in its own collapsible group below (header links to
+  // /operations; the tab deep-links nest under it) — removed from here so it
+  // isn't listed twice. (M100 P3.2 de-dupe.)
 ]
 
 const externalNav: { label: string; href: string; icon: typeof Workflow; subtitle: string }[] = [
@@ -37,6 +39,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
   const navigate = useNavigate()
+  const location = useLocation()
+  // Operations group expands by default when you're on an Operations route.
+  const onOperations = location.pathname.startsWith('/operations')
+  const [opsOpen, setOpsOpen] = useState(onOperations)
 
   function onLogout() {
     logout()
@@ -145,27 +151,44 @@ export function AppLayout({ children }: { children: ReactNode }) {
             ))}
           </div>
 
-          {/* Operations: deep-links into existing Operations surfaces (M100 P3.2) */}
+          {/* Operations: a single collapsible group. The header navigates to
+              /operations; the caret toggles the per-tab deep-links. (M100 P3.2
+              de-dupe — was also a standalone item in the Portal section.) */}
           <div className="mb-5">
-            <p
-              className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest"
-              style={{ color: 'rgba(245,242,234,0.35)' }}
+            <div
+              className="group flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-all duration-150 mb-0.5 cursor-pointer"
+              style={{
+                color: onOperations ? 'var(--brand-warm-white)' : 'rgba(245,242,234,0.65)',
+                background: onOperations ? 'rgba(245,242,234,0.08)' : 'transparent',
+                borderLeft: onOperations ? '3px solid var(--brand-green-accent)' : '3px solid transparent',
+              }}
+              onClick={() => navigate('/operations')}
             >
-              Operations
-            </p>
-            {operationsNav.map((item) => (
+              <ServerCog className="w-4 h-4 shrink-0" style={{ color: onOperations ? 'var(--brand-green-accent)' : 'rgba(245,242,234,0.5)' }} />
+              <span className="flex-1 font-medium">Operations</span>
+              <button
+                aria-label={opsOpen ? 'Collapse Operations' : 'Expand Operations'}
+                onClick={(e) => { e.stopPropagation(); setOpsOpen((v) => !v) }}
+                className="p-0.5 rounded hover:bg-white/10"
+              >
+                {opsOpen
+                  ? <ChevronDown className="w-3.5 h-3.5" style={{ color: 'rgba(245,242,234,0.5)' }} />
+                  : <ChevronRight className="w-3.5 h-3.5" style={{ color: 'rgba(245,242,234,0.5)' }} />}
+              </button>
+            </div>
+            {opsOpen && operationsNav.map((item) => (
               <Link
                 key={item.to}
                 to={item.to}
-                className="flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors mb-0.5"
-                style={{ color: 'rgba(245,242,234,0.65)' }}
+                className="flex items-center gap-3 pl-9 pr-3 py-1.5 rounded-md text-sm transition-colors mb-0.5"
+                style={{ color: 'rgba(245,242,234,0.6)' }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.background = 'rgba(245,242,234,0.06)'
                   e.currentTarget.style.color = 'var(--brand-warm-white)'
                 }}
                 onMouseLeave={(e) => {
                   e.currentTarget.style.background = 'transparent'
-                  e.currentTarget.style.color = 'rgba(245,242,234,0.65)'
+                  e.currentTarget.style.color = 'rgba(245,242,234,0.6)'
                 }}
               >
                 <item.icon className="w-4 h-4 shrink-0" style={{ color: 'rgba(245,242,234,0.5)' }} />
