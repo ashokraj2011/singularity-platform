@@ -13,7 +13,12 @@ COPY apps/agent-service/package.json   ./apps/agent-service/package.json
 COPY apps/tool-service/package.json    ./apps/tool-service/package.json
 COPY apps/prompt-composer/package.json ./apps/prompt-composer/package.json
 COPY apps/prompt-composer/prisma       ./apps/prompt-composer/prisma
-RUN npm install --workspaces --include-workspace-root --no-audit --no-fund
+# Artifactory support (docs/artifactory-npm.md): no-op unless build args set.
+ARG ARTIFACTORY_NPM_REGISTRY=
+ARG ARTIFACTORY_NPM_TOKEN=
+RUN if [ -n "$ARTIFACTORY_NPM_REGISTRY" ]; then printf 'registry=%s\n//%s:_authToken=%s\naudit=false\nfund=false\n' "$ARTIFACTORY_NPM_REGISTRY" "$(printf '%s' "$ARTIFACTORY_NPM_REGISTRY" | sed -E 's#^https?://##')" "$ARTIFACTORY_NPM_TOKEN" > .npmrc; fi \
+ && npm install --workspaces --include-workspace-root --no-audit --no-fund \
+ && rm -f .npmrc
 RUN npm run build --workspace=packages/shared
 # M30 — generate BOTH Prisma clients (owned + runtime-reader)
 RUN cd apps/prompt-composer && npx prisma generate --schema=prisma/schema.prisma --generator client
