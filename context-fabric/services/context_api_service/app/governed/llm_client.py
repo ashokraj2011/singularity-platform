@@ -31,6 +31,12 @@ log = logging.getLogger(__name__)
 _GATEWAY_URL = os.environ.get("LLM_GATEWAY_URL", "http://llm-gateway:8001").rstrip("/")
 _GATEWAY_BEARER = os.environ.get("LLM_GATEWAY_BEARER", "")
 _TIMEOUT = float(os.environ.get("LLM_GATEWAY_TIMEOUT_SEC", "300"))
+# ADR 0003 — server-level prompt caching for the governed/workbench loop.
+# Default ON: governed turns repeat a large stable prefix (system + tools +
+# context) every turn, so caching is a clear win. The gateway has its own
+# global kill switch (LLM_PROMPT_CACHE_ENABLED there) and per-provider
+# handling; this knob lets the caller opt out without redeploying the gateway.
+_PROMPT_CACHE_ENABLED = os.environ.get("LLM_PROMPT_CACHE_ENABLED", "true").lower() == "true"
 
 
 class LLMGatewayError(RuntimeError):
@@ -111,6 +117,10 @@ class ChatResponse:
     # continuation).
     thinking_blocks: list[dict[str, Any]] = field(default_factory=list)
     thinking_tokens: int = 0
+    # ADR 0003 — prompt-cache usage echoed by the gateway:
+    # {enabled, strategy, cache_read_input_tokens, cache_creation_input_tokens,
+    #  reported, [key]}. None when caching was not requested / unsupported.
+    prompt_cache: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ChatResponse":
@@ -137,6 +147,7 @@ class ChatResponse:
             estimated_cost=raw.get("estimated_cost"),
             thinking_blocks=thinking_blocks,
             thinking_tokens=int(raw.get("thinking_tokens") or 0),
+            prompt_cache=raw.get("prompt_cache") if isinstance(raw.get("prompt_cache"), dict) else None,
         )
 
 
@@ -153,6 +164,12 @@ async def call_gateway_chat(
     # response carries thinking_blocks. Ignored by non-Anthropic
     # providers. None / 0 → off.
     thinking_budget: int | None = None,
+    # ADR 0003 — opt into server-level prompt caching. None → use the
+    # _PROMPT_CACHE_ENABLED default (on). False → force off for this call
+    # (e.g. a genuinely one-shot turn with no repeated prefix, where the
+    # cache-write surcharge would not be recovered).
+    prompt_cache: bool | None = None,
+    prompt_cache_key: str | None = None,
 ) -> ChatResponse:
     """POST one chat completion to llm-gateway.
 
@@ -191,6 +208,12 @@ async def call_gateway_chat(
         body["max_output_tokens"] = max_output_tokens
     if thinking_budget is not None and thinking_budget > 0:
         body["thinking_budget"] = int(thinking_budget)
+    cache_on = _PROMPT_CACHE_ENABLED if prompt_cache is None else prompt_cache
+    if cache_on:
+        pc: dict[str, Any] = {"enabled": True, "strategy": "provider_auto"}
+        if prompt_cache_key:
+            pc["key"] = prompt_cache_key
+        body["prompt_cache"] = pc
 
     headers = {"content-type": "application/json"}
     token = bearer or _GATEWAY_BEARER

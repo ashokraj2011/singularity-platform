@@ -662,6 +662,9 @@ async def run_turn(
             "model_alias": response.model_alias,
             "latency_ms": response.latency_ms,
             "estimated_cost": response.estimated_cost,
+            # ADR 0003 — prompt-cache usage so hit rate is observable in
+            # run insights (cache_read = cheap hit, cache_creation = write).
+            "prompt_cache": response.prompt_cache,
             # M83.r + loop-trace-rewire — surface the response content
             # AND the structured tool calls so the workbench LoopTrace
             # UI can reconstruct the per-step view from audit-gov
