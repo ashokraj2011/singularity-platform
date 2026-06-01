@@ -1777,6 +1777,53 @@ blueprintRouter.get('/instances/:instanceId/artifacts', async (req, res, next) =
   } catch (err) { next(err) }
 })
 
+// Artifacts for a WORK ITEM — the work-item detail page's "Artifacts" panel.
+// A work item relates to runs two ways: the run that created it
+// (sourceWorkflowInstanceId) and the run(s) it spawned
+// (target.childWorkflowInstanceId — the workbench coding runs that produce
+// artifacts). We gather every linked instance id, then every accessible
+// blueprint session under those instances, and return their artifacts.
+blueprintRouter.get('/work-items/:id/artifacts', async (req, res, next) => {
+  try {
+    const workItem = await prisma.workItem.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true,
+        sourceWorkflowInstanceId: true,
+        targets: { select: { childWorkflowInstanceId: true } },
+      },
+    })
+    if (!workItem) throw new NotFoundError('WorkItem', req.params.id)
+    const instanceIds = uniqueStrings([
+      workItem.sourceWorkflowInstanceId,
+      ...workItem.targets.map(t => t.childWorkflowInstanceId),
+    ])
+    const stageKey = typeof req.query.stageKey === 'string' && req.query.stageKey.trim()
+      ? req.query.stageKey.trim()
+      : undefined
+    if (instanceIds.length === 0) {
+      res.json({ workItemId: workItem.id, instanceIds: [], sessionCount: 0, count: 0, sessions: [], items: [] })
+      return
+    }
+    const sessions = await prisma.blueprintSession.findMany({
+      where: { workflowInstanceId: { in: instanceIds } },
+      include: { artifacts: { orderBy: { createdAt: 'asc' } } },
+      orderBy: { createdAt: 'asc' },
+    })
+    // Same ownership rule as the instance route: only the caller's sessions.
+    const accessible = sessions.filter(s => s.createdById && s.createdById === req.user!.userId)
+    const groups = accessible.map(s => shapeArtifactsResponse(s, stageKey))
+    res.json({
+      workItemId: workItem.id,
+      instanceIds,
+      sessionCount: groups.length,
+      count: groups.reduce((n, g) => n + g.count, 0),
+      sessions: groups,
+      items: groups.flatMap(g => g.items),
+    })
+  } catch (err) { next(err) }
+})
+
 blueprintRouter.get('/sessions/:id/code-changes', async (req, res, next) => {
   try {
     const session = await prisma.blueprintSession.findUnique({
