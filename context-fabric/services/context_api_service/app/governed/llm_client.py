@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,6 +32,69 @@ log = logging.getLogger(__name__)
 _GATEWAY_URL = os.environ.get("LLM_GATEWAY_URL", "http://llm-gateway:8001").rstrip("/")
 _GATEWAY_BEARER = os.environ.get("LLM_GATEWAY_BEARER", "")
 _TIMEOUT = float(os.environ.get("LLM_GATEWAY_TIMEOUT_SEC", "300"))
+
+# ── Dynamic gateway discovery (consumer side of M11.a) ───────────────────────
+# The gateway self-registers with platform-registry (see the gateway's
+# app/platform_registry.py). When PLATFORM_REGISTRY_URL is set, we resolve the
+# gateway's live address from the registry instead of trusting the static
+# LLM_GATEWAY_URL — this is what lets a developer's LOCAL gateway (registered
+# under LLM_GATEWAY_SERVICE_NAME, e.g. "llm-gateway-local") be discovered.
+# Resolution is cached in-process with a short TTL to keep the per-call hot
+# path cheap, and ALWAYS falls back to the static LLM_GATEWAY_URL on miss /
+# error / unset registry, so behavior is unchanged when discovery is off.
+#   PLATFORM_REGISTRY_URL        — registry base; unset → discovery disabled
+#   LLM_GATEWAY_SERVICE_NAME     — service_name to resolve (default "llm-gateway")
+#   LLM_GATEWAY_DISCOVERY_TTL_SEC — resolver cache TTL (default 30s)
+_REGISTRY_URL = os.environ.get("PLATFORM_REGISTRY_URL", "").rstrip("/")
+_GATEWAY_SERVICE_NAME = os.environ.get("LLM_GATEWAY_SERVICE_NAME", "llm-gateway")
+_DISCOVERY_TTL_SEC = float(os.environ.get("LLM_GATEWAY_DISCOVERY_TTL_SEC", "30"))
+# {"url": str | None, "expires_at": float}. Module-global; reset in tests.
+_GATEWAY_CACHE: dict[str, Any] = {"url": None, "expires_at": 0.0}
+
+
+async def _resolve_gateway_url() -> str:
+    """Return the base URL to use for the gateway.
+
+    Order of precedence:
+      1. If LLM_GATEWAY_URL == "mock", callers short-circuit before this runs;
+         this function is never reached in mock mode (kept as a guard anyway).
+      2. If PLATFORM_REGISTRY_URL is unset → static LLM_GATEWAY_URL (no change).
+      3. Otherwise GET {registry}/api/v1/services/{name} and use internal_url
+         or base_url, cached for _DISCOVERY_TTL_SEC. On 404 / timeout / any
+         error → fall back to the static LLM_GATEWAY_URL.
+    """
+    if not _REGISTRY_URL:
+        return _GATEWAY_URL
+
+    now = time.monotonic()
+    cached = _GATEWAY_CACHE.get("url")
+    if cached and now < _GATEWAY_CACHE.get("expires_at", 0.0):
+        return cached
+
+    resolved = _GATEWAY_URL  # fail-safe default
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            res = await client.get(
+                f"{_REGISTRY_URL}/api/v1/services/{_GATEWAY_SERVICE_NAME}"
+            )
+        if res.status_code == 200:
+            data = res.json()
+            # GET /services/:name returns the row flat at top level, so
+            # internal_url / base_url sit at the top. internal_url is nullable;
+            # prefer it (container-network address) then fall back to base_url.
+            url = (data.get("internal_url") or data.get("base_url") or "").rstrip("/")
+            if url:
+                resolved = url
+        # Non-200 (e.g. 404 NOT_FOUND) → keep the static fallback.
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "gateway discovery failed (%s); falling back to %s",
+            exc, _GATEWAY_URL,
+        )
+
+    _GATEWAY_CACHE["url"] = resolved
+    _GATEWAY_CACHE["expires_at"] = now + _DISCOVERY_TTL_SEC
+    return resolved
 # ADR 0003 — server-level prompt caching for the governed/workbench loop.
 # Default ON: governed turns repeat a large stable prefix (system + tools +
 # context) every turn, so caching is a clear win. The gateway has its own
@@ -220,7 +284,8 @@ async def call_gateway_chat(
     if token:
         headers["authorization"] = f"Bearer {token}"
 
-    url = f"{_GATEWAY_URL}/v1/chat/completions"
+    base_url = await _resolve_gateway_url()
+    url = f"{base_url}/v1/chat/completions"
 
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:

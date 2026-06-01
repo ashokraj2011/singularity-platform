@@ -86,6 +86,12 @@ services:
       # M11.a — self-register
       - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       - PUBLIC_BASE_URL=${CONTEXT_API_PUBLIC_URL:-http://host.docker.internal:8000}
+      # M11.a consumer — resolve the llm-gateway address from the registry
+      # (falls back to the static default below if unresolved). The service
+      # name MUST match what the gateway registers under (LLM_GATEWAY_SERVICE_NAME
+      # on the gateway); point both at a per-dev name to use a LOCAL gateway.
+      - LLM_GATEWAY_SERVICE_NAME=${LLM_GATEWAY_SERVICE_NAME:-llm-gateway}
+      - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway-service:8001}
       # M11 follow-up — bootstrap auto-mint of IAM service token
       - IAM_SERVICE_TOKEN=${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
       - IAM_BOOTSTRAP_USERNAME=${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
