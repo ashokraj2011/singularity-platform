@@ -131,6 +131,13 @@ class ToolCallOutcome:
     tool_success: bool | None = None
     tool_error: str | None = None
     dispatch_error: str | None = None
+    # M83.x follow-up — original index of this call in the submitted
+    # tool_calls list. Pass A appends refused/malformed outcomes immediately
+    # while allowed calls are deferred to Pass B, so without this the
+    # outcomes list comes back out of submission order when a turn mixes
+    # allowed + refused tools. Outcomes are stable-sorted by this before
+    # return so consumers (and history threading) see submission order.
+    submission_index: int = 0
 
 
 @dataclass
@@ -463,8 +470,10 @@ async def governed_step(
     # repo_map) don't produce code changes and source-code reads bypass
     # PII masking entirely (see _skip_mask), so dispatching them with a
     # snapshot of the token map is harmless.
-    allowed_queue: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
-    for raw in tool_calls:
+    # allowed_queue carries the original submission index so Pass B can stamp
+    # outcomes for the final submission-order sort.
+    allowed_queue: list[tuple[int, dict[str, Any], str, dict[str, Any]]] = []
+    for sub_idx, raw in enumerate(tool_calls):
         try:
             tool_name, args = _normalize_tool_call(raw)
         except ValueError as exc:
@@ -482,6 +491,7 @@ async def governed_step(
                     allowed=False,
                     args=raw_args,
                     refusal_reason=f"malformed tool call: {exc}",
+                    submission_index=sub_idx,
                 )
             )
             continue
@@ -503,6 +513,7 @@ async def governed_step(
                     args=args,
                     refusal_reason=refusal.reason,
                     allowed_tools=list(refusal.allowed_tools),
+                    submission_index=sub_idx,
                 )
             )
             await emit_governed_event(
@@ -523,7 +534,7 @@ async def governed_step(
         # preserves submission order so post-dispatch processing stays
         # deterministic. Pass B then concurrently dispatches the
         # parallel-safe subset.
-        allowed_queue.append((raw, tool_name, args))
+        allowed_queue.append((sub_idx, raw, tool_name, args))
 
     # ── Pass B: dispatch (concurrent for parallel-safe, sequential rest)
     # and post-process. State mutations thread through this loop in
@@ -539,7 +550,7 @@ async def governed_step(
     pre_dispatched: dict[int, ToolDispatchResult | Exception] = {}
     if allowed_queue:
         parallel_indices = [
-            i for i, (_, name, _) in enumerate(allowed_queue)
+            i for i, (_, _, name, _) in enumerate(allowed_queue)
             if name in _PARALLEL_SAFE_TOOLS
         ]
         if len(parallel_indices) >= 2:
@@ -561,7 +572,7 @@ async def governed_step(
             semaphore = asyncio.Semaphore(_PARALLEL_DISPATCH_CONCURRENCY)
 
             async def _bounded(i: int) -> ToolDispatchResult:
-                _, tname, targs = allowed_queue[i]
+                _, _, tname, targs = allowed_queue[i]
                 async with semaphore:
                     return await dispatch_tool(
                         tool_name=tname,
@@ -588,7 +599,7 @@ async def governed_step(
                 _PARALLEL_DISPATCH_CONCURRENCY,
             )
 
-    for queue_idx, (raw, tool_name, args) in enumerate(allowed_queue):
+    for queue_idx, (sub_idx, raw, tool_name, args) in enumerate(allowed_queue):
         # Allowed → dispatch to mcp-server's /mcp/tool-run.
         #
         # M73-followup #93 — multi-turn PII protection around the dispatch:
@@ -903,6 +914,7 @@ async def governed_step(
                     tool_invocation_id=outcome.tool_invocation_id,
                     tool_success=outcome.tool_success,
                     tool_error=outcome.tool_error,
+                    submission_index=sub_idx,
                 )
             )
             # M75 Slice 5 — provenance on every tool_dispatched event so
@@ -986,6 +998,7 @@ async def governed_step(
                     allowed=True,
                     args=args,
                     dispatch_error=str(exc),
+                    submission_index=sub_idx,
                 )
             )
             await emit_governed_event(
@@ -996,6 +1009,14 @@ async def governed_step(
                 payload={"tool_name": tool_name, "error": str(exc)},
                 severity="warn",
             )
+
+    # M83.x follow-up — restore submission order. Pass A appends refused/
+    # malformed outcomes inline while allowed calls are dispatched and
+    # appended in Pass B, so a turn mixing allowed + refused tools yields
+    # outcomes out of submission order. Stable-sort by the recorded index so
+    # callers (and stage_driver's history threading, which zips outcomes with
+    # tool_call ids) always see them in the order the LLM emitted them.
+    result.tool_outcomes.sort(key=lambda o: o.submission_index)
 
     # ── 2. Phase output validation + advance ──────────────────────────────
 

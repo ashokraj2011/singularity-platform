@@ -306,9 +306,19 @@ async def test_phase_output_invalid_does_not_advance():
 @pytest.mark.asyncio
 async def test_illegal_phase_transition_refused():
     """Skipping VERIFY (ACT → SELF_REVIEW) is forbidden by the table.
-    advance_phase raises ValueError; we surface it as PHASE_TRANSITION_REFUSED."""
+    advance_phase raises ValueError; we surface it as PHASE_TRANSITION_REFUSED.
+
+    The EditReceipt must be BACKED to reach the transition check — since the
+    M90+ provenance gate (PHASE_EDIT_UNBACKED) runs first, an unbacked edit
+    would trip that earlier gate instead of the transition refusal this test
+    targets. We seed produced_code_changes so the edit on a.py is backed."""
+    from dataclasses import replace
+
     policy = _policy({Phase.ACT: []})
     state = _fresh_state(Phase.ACT)
+    # Back the claimed edit with a code_change_id so the provenance gate
+    # passes and the illegal-transition check is the one that fires.
+    state = replace(state, produced_code_changes={"a.py": ["chg-1"]})
 
     result = await governed_step(
         state=state,
