@@ -33,7 +33,7 @@ from .llm_client import LLMGatewayError
 from .loop import GovernedStepResult, ToolCallOutcome
 from .phase_state import Phase, PhaseState, advance_phase
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
-from .stage_execution_policy import StageExecutionPolicy, apply_execution_policy
+from .stage_execution_policy import StageExecutionPolicy, StageExecutionPolicyError, apply_execution_policy
 from .prompt_resolver import PromptNotFoundError
 from .turn import SUBMIT_PHASE_OUTPUT, TurnResult, run_turn
 from .verify_synthesis import SyntheticVerifierResult, synthesize_verifier_run
@@ -1663,6 +1663,13 @@ async def run_stage(
         stage_policy = apply_execution_policy(stage_policy, exec_policy)
     except PolicyNotFoundError:
         stage_policy = None
+    except StageExecutionPolicyError:
+        # Fail-closed (review #5): a malformed override is a caller error,
+        # not a defensive runtime hiccup. Don't swallow it to None (which
+        # would skip filtering and run on the permissive base) — propagate
+        # so the request fails loudly, same as the authoritative filter in
+        # turn.py.
+        raise
     except Exception as exc:  # pragma: no cover — defensive
         log.warning("stage_policy preload failed stage=%s role=%s err=%s", stage_key, agent_role, exc)
         stage_policy = None

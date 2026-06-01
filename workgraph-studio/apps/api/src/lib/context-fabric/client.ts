@@ -231,6 +231,13 @@ export interface StageExecutionPolicy {
   repo_access?: boolean
   prompt_profile_key?: string
   approval_required?: boolean
+  // M99 — Phase 0 automation flags. CF reads these (snake_case; it also
+  // accepts the camelCase aliases) and gates each automation on BOTH its env
+  // flag AND the matching policy flag. Omitted → CF's env-flag default.
+  auto_localize?: boolean
+  auto_baseline?: boolean
+  auto_verify?: boolean
+  git_preflight_required?: boolean
 }
 
 // M71 Slice F — Governed-stage response shape. Mirrors StageRunResult.to_dict()

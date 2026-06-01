@@ -221,6 +221,39 @@ def _filter_phase_tools(
     return replace(phase, allowed_tools=allowed)
 
 
+class StageExecutionPolicyError(ValueError):
+    """Raised when a StageExecutionPolicy carries an unknown enum value.
+
+    Security-control fail-closed (M101 review #5): previously an invalid
+    tool_policy / context_policy resolved to None inside the filter, which
+    means NO filter was applied and the more-permissive DB-seeded base policy
+    was used verbatim — a malformed policy silently fails OPEN. We now reject
+    unknown values loudly so a typo'd 'MUTATON' or 'toolPolicy' (wrong key)
+    can't quietly grant the full tool kit.
+    """
+
+
+def _validate_override_enums(override: StageExecutionPolicy) -> None:
+    """Reject unknown tool_policy / context_policy values (fail-closed).
+
+    None / empty is fine (means "no override on this dimension"). A non-empty
+    value that doesn't resolve to a known category set is a caller error.
+    """
+    if override.tool_policy is not None and str(override.tool_policy).strip():
+        if categories_for_tool_policy(override.tool_policy) is None:
+            raise StageExecutionPolicyError(
+                f"unknown tool_policy '{override.tool_policy}' "
+                f"(expected one of NONE / READ_ONLY / VERIFICATION / MUTATION)"
+            )
+    if override.context_policy is not None and str(override.context_policy).strip():
+        if _categories_for_context_policy(override.context_policy) is None:
+            raise StageExecutionPolicyError(
+                f"unknown context_policy '{override.context_policy}' "
+                f"(expected one of STORY_ONLY / REPO_READ_ONLY / CODE_EDIT / "
+                f"VERIFY_ONLY / EVIDENCE_REVIEW / NONE)"
+            )
+
+
 def apply_execution_policy(
     base: StagePolicy,
     override: Optional[StageExecutionPolicy],
@@ -240,6 +273,10 @@ def apply_execution_policy(
     """
     if override is None:
         return base
+    # Fail-closed (review #5): reject unknown enum values BEFORE the
+    # short-circuit below, so a malformed policy can't slip through the
+    # "nothing to filter on" path and run with the permissive base.
+    _validate_override_enums(override)
     # M93.G — context_policy joins tool_policy + repo_access as a
     # filter dimension. Skip the rebuild only when ALL three are None.
     if (override.tool_policy is None
