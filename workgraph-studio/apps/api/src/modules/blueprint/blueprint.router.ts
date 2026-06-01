@@ -3,6 +3,9 @@ import { z } from 'zod'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import net from 'node:net'
+import { lookup as dnsLookup } from 'node:dns/promises'
+import { precheckTargetUrl, isBlockedAddress } from '../../lib/ssrf-guard'
 import { BlueprintStage, BlueprintSessionStatus, BlueprintStageStatus, BlueprintSourceType, Prisma, type ConsumableStatus } from '@prisma/client'
 import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
@@ -1383,40 +1386,44 @@ blueprintRouter.put('/sessions/:id/worktree/file', async (req, res, next) => {
 // long-lived `serve` lifecycle that spins up a runner container
 // running `mvn spring-boot:run` / `npm start` and registers a
 // proxyId. v1 just trusts the operator to bring up the service.
-function isPrivateApiCallerTarget(rawUrl: string): { ok: true; url: URL } | { ok: false; reason: string } {
-  let url: URL
-  try { url = new URL(rawUrl) } catch { return { ok: false, reason: 'invalid URL' } }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    return { ok: false, reason: `protocol ${url.protocol} not allowed (http/https only)` }
+// SSRF-safe target resolution for the api-call proxy. Validates protocol +
+// host, DNS-resolves the hostname, and requires EVERY resolved address to be
+// private/loopback. Returns the address to actually connect to so the caller
+// can PIN the connection to the validated IP — this defeats DNS rebinding
+// (the host could re-resolve to a public/metadata IP between check and fetch).
+// IP classification (incl. cloud metadata 169.254.169.254, IPv6, IPv4-mapped)
+// lives in lib/ssrf-guard.ts and is unit-tested.
+async function resolveApiCallerTarget(
+  rawUrl: string,
+): Promise<{ ok: true; url: URL; connectIp: string; host: string } | { ok: false; reason: string }> {
+  const pre = precheckTargetUrl(rawUrl)
+  if (!pre.ok) return pre
+
+  // IP literal already classified as private by precheck → connect to it directly.
+  if (pre.ipLiteral) {
+    return { ok: true, url: pre.url, connectIp: pre.ipLiteral, host: pre.host }
   }
-  const host = url.hostname.toLowerCase()
-  // Docker-resolvable internal hostnames + ipv4 private ranges +
-  // loopback. We don't do DNS lookups here — a malicious operator
-  // could point evil.com at a private IP. The mcp-sandbox-runner's
-  // network sandbox is the second layer of defense.
-  const allowedHosts = new Set([
-    'localhost',
-    'host.docker.internal',
-    'mcp-server-demo',
-    'mcp-sandbox-runner',
-    'workgraph-api',
-    'context-api',
-    'audit-governance-service',
-    'singularity-mcp-server-demo',
-    'singularity-mcp-sandbox-runner',
-  ])
-  if (allowedHosts.has(host)) return { ok: true, url }
-  // IPv4 private + loopback. We deliberately don't allow IPv6 in v1.
-  const ipv4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host)
-  if (ipv4) {
-    const a = parseInt(ipv4[1], 10)
-    const b = parseInt(ipv4[2], 10)
-    if (a === 127) return { ok: true, url }
-    if (a === 10) return { ok: true, url }
-    if (a === 192 && b === 168) return { ok: true, url }
-    if (a === 172 && b >= 16 && b <= 31) return { ok: true, url }
+
+  // Hostname: resolve ALL addresses and require every one to be internal.
+  // (Resolving all, not just the first, blocks a host that returns one private
+  // + one public address.)
+  let addrs: { address: string }[]
+  try {
+    addrs = await dnsLookup(pre.host, { all: true })
+  } catch (err) {
+    return { ok: false, reason: `could not resolve host '${pre.host}': ${(err as Error).message}` }
   }
-  return { ok: false, reason: `target host '${host}' is not on the private/loopback allowlist` }
+  if (addrs.length === 0) {
+    return { ok: false, reason: `host '${pre.host}' resolved to no addresses` }
+  }
+  for (const a of addrs) {
+    if (isBlockedAddress(a.address)) {
+      return { ok: false, reason: `host '${pre.host}' resolves to non-private address ${a.address}` }
+    }
+  }
+  // Pin to the first validated address. We preserve the original Host header
+  // (set in the route) so vhost-routed internal services still match.
+  return { ok: true, url: pre.url, connectIp: addrs[0].address, host: pre.host }
 }
 
 blueprintRouter.post('/sessions/:id/api-call', async (req, res, next) => {
@@ -1438,7 +1445,7 @@ blueprintRouter.post('/sessions/:id/api-call', async (req, res, next) => {
     if (typeof body.url !== 'string' || !body.url.trim()) {
       throw new ValidationError("'url' is required")
     }
-    const guard = isPrivateApiCallerTarget(body.url)
+    const guard = await resolveApiCallerTarget(body.url)
     if (!guard.ok) {
       throw new ValidationError(`API caller refused: ${guard.reason}`)
     }
@@ -1451,9 +1458,22 @@ blueprintRouter.post('/sessions/:id/api-call', async (req, res, next) => {
     // header like X-Target-Authorization that the target accepts.
     headers.delete('authorization')
     headers.delete('cookie')
+    // SSRF rebinding defense: connect to the IP we just validated, not the
+    // hostname (which could re-resolve to a public/metadata IP between the
+    // check above and this fetch). We rewrite the URL's host to the pinned
+    // IP and preserve the original Host header so vhost routing still works.
+    // HTTPS to a pinned IP would break SNI/cert validation, so HTTPS targets
+    // keep their hostname (rebinding is far less practical over TLS, and these
+    // targets are operator-run internal dev services that are typically http).
+    const connectUrl = new URL(guard.url.toString())
+    if (connectUrl.protocol === 'http:' && net.isIP(guard.connectIp)) {
+      if (!headers.has('host')) headers.set('host', guard.url.host)
+      connectUrl.hostname = net.isIP(guard.connectIp) === 6 ? `[${guard.connectIp}]` : guard.connectIp
+    }
     const fetchInit: RequestInit = {
       method,
       headers,
+      redirect: 'manual',
       signal: AbortSignal.timeout(timeoutMs),
       // Only pass a body when the method supports it. fetch will throw
       // on GET/HEAD with body.
@@ -1463,7 +1483,7 @@ blueprintRouter.post('/sessions/:id/api-call', async (req, res, next) => {
     }
     let upstream: Response
     try {
-      upstream = await fetch(guard.url.toString(), fetchInit)
+      upstream = await fetch(connectUrl.toString(), fetchInit)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       res.json({
