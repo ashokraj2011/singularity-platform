@@ -43,7 +43,7 @@ def test_localization_receipt_roundtrip():
         target_symbols=["startsWith"],
         target_tests=["test_a.py"],
         queries=["symbol:startsWith"],
-        sources=["symbol_search", "ast_search"],
+        sources=["find_symbol", "ast_search"],
         summary="found 2 files",
     )
     d = r.model_dump()

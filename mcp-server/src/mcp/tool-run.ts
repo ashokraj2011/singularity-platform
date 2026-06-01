@@ -364,7 +364,7 @@ export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promis
         }
         // (2026-05-24) AST index bootstrap. Mirrors the legacy
         // /mcp/invoke path (invoke.ts:3021 "invoke_start" call) so
-        // repo_map / symbol_search / list_indexed_files actually see
+        // repo_map / find_symbol / list_indexed_files actually see
         // the files we just materialized. Without this, the agent gets
         // `totals.indexedFiles: 0` even when the workspace has real
         // source files on disk and concludes the workspace is empty.

@@ -148,7 +148,7 @@ def test_extract_phase_output_mixed_with_real_tools():
     """Tool calls + a submit at the end: only submit gets extracted."""
     calls = [
         ChatToolCall(id="c1", name="repo_map", arguments={"path": "."}),
-        ChatToolCall(id="c2", name="symbol_search", arguments={"q": "evaluate"}),
+        ChatToolCall(id="c2", name="find_symbol", arguments={"q": "evaluate"}),
         ChatToolCall(
             id="c3",
             name=SUBMIT_PHASE_OUTPUT,
@@ -158,7 +158,7 @@ def test_extract_phase_output_mixed_with_real_tools():
     payload, next_phase, others, malformed = _extract_phase_output(calls)
     assert payload == {"x": 1}
     assert next_phase is Phase.EXPLORE
-    assert [c.name for c in others] == ["repo_map", "symbol_search"]
+    assert [c.name for c in others] == ["repo_map", "find_symbol"]
     assert malformed is None
 
 
@@ -351,8 +351,8 @@ def test_tool_descriptors_cache_stable_across_phases():
     on every phase transition. The union-of-all-phases design keeps the
     tools block stable for the duration of a stage."""
     policy = _multi_phase_policy({
-        Phase.PLAN:    ["repo_map", "symbol_search"],
-        Phase.EXPLORE: ["read_file", "get_ast_slice", "symbol_search"],
+        Phase.PLAN:    ["repo_map", "find_symbol"],
+        Phase.EXPLORE: ["read_file", "get_ast_slice", "find_symbol"],
         Phase.ACT:     ["apply_patch", "replace_text"],
         Phase.VERIFY:  ["run_test", "run_command"],
     })
@@ -373,7 +373,7 @@ def test_tool_descriptors_cache_stable_across_phases():
     # And the canonical list contains every tool from every phase, plus the
     # meta-tool, deduped + sorted.
     expected = sorted({
-        "repo_map", "symbol_search", "read_file", "get_ast_slice",
+        "repo_map", "find_symbol", "read_file", "get_ast_slice",
         "apply_patch", "replace_text", "run_test", "run_command",
     }) + [SUBMIT_PHASE_OUTPUT]
     assert canonical == expected

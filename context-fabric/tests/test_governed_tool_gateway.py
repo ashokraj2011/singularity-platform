@@ -118,12 +118,12 @@ def test_phase_tool_forbidden_to_dict_shape():
     exc = PhaseToolForbidden(
         tool_name="apply_patch",
         phase=Phase.PLAN,
-        allowed_tools=("repo_map", "symbol_search"),
+        allowed_tools=("repo_map", "find_symbol"),
         reason="tool 'apply_patch' is not in the allowlist for phase PLAN",
     )
     body = exc.to_dict()
     assert body["error_code"] == "PHASE_TOOL_FORBIDDEN"
     assert body["tool_name"] == "apply_patch"
     assert body["phase"] == "PLAN"
-    assert body["allowed_tools"] == ["repo_map", "symbol_search"]
+    assert body["allowed_tools"] == ["repo_map", "find_symbol"]
     assert "allowlist" in body["reason"]

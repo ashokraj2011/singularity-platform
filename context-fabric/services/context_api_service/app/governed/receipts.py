@@ -1027,7 +1027,7 @@ class LocalizationReceipt(_ReceiptBase):
     """M99 S1.1 — compact localization map built before ACT.
 
     Records the files/symbols/tests the platform localized (via repo_map +
-    symbol_search + ast_search + code_context_package) so the editor works
+    find_symbol + ast_search + code_context_package) so the editor works
     against a focused target set instead of broad repo context.
     """
 

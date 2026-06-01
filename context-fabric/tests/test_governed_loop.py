@@ -112,7 +112,7 @@ async def test_allowed_tool_dispatches_and_records_result(monkeypatch):
     monkeypatch.setattr(
         "context_api_service.app.governed.loop.dispatch_tool", fake_dispatch
     )
-    policy = _policy({Phase.PLAN: ["repo_map", "symbol_search"]})
+    policy = _policy({Phase.PLAN: ["repo_map", "find_symbol"]})
     state = _fresh_state(Phase.PLAN)
 
     result = await governed_step(

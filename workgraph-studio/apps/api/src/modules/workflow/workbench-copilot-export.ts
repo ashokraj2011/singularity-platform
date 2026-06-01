@@ -66,13 +66,13 @@ export function toolPolicyGuidance(toolPolicy: string): PolicyGuidance {
     case 'READ_ONLY':
       return {
         summary: 'Read-only repository inspection. Do NOT edit files or run commands.',
-        tools: ['repo_map', 'symbol_search', 'list_files', 'read_file', 'read_repo_instructions'],
+        tools: ['repo_map', 'find_symbol', 'list_files', 'read_file', 'read_repo_instructions'],
       }
     case 'MUTATION':
       return {
         summary:
           'Edit code. Apply minimal, targeted patches and record every file you change before advancing.',
-        tools: ['repo_map', 'symbol_search', 'list_files', 'read_file', 'apply_patch', 'write_file'],
+        tools: ['repo_map', 'find_symbol', 'list_files', 'read_file', 'apply_patch', 'write_file'],
       }
     case 'VERIFICATION':
       return {

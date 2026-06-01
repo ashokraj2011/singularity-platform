@@ -101,13 +101,13 @@
             "description": "Optional filter: 'class' | 'method' | 'field' | 'function'.",
             "type": "string"
           },
-          "name": {
-            "description": "Symbol name to locate (class, method, field).",
+          "query": {
+            "description": "Symbol name or substring to locate (class, method, field, enum, interface, type, const).",
             "type": "string"
           }
         },
         "required": [
-          "name"
+          "query"
         ],
         "type": "object"
       }
@@ -435,21 +435,6 @@
         },
         "required": [
           "pattern"
-        ],
-        "type": "object"
-      }
-    },
-    "symbol_search": {
-      "category": "read",
-      "input_schema": {
-        "properties": {
-          "query": {
-            "description": "Symbol substring or qualified name to search for.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "query"
         ],
         "type": "object"
       }
