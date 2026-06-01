@@ -204,7 +204,12 @@ async def chat_respond(req: ChatRespondRequest, response: Response):
 
     # Deprecated one-shot synthesis still routes through MCP so MCP remains
     # the only service that talks to the LLM gateway.
-    gw_messages = gateway_messages_from_compiled(compiled.get("compiled_messages", []), req.message)
+    # `/context/compile` returns the optimized messages under "messages"
+    # (see context_compiler.compile_context). Reading the wrong key here
+    # ("compiled_messages", which never exists) silently dropped ALL optimized
+    # context — summary + memory + recent — so /chat/respond was sending only
+    # the bare user message. Use the correct key.
+    gw_messages = gateway_messages_from_compiled(compiled.get("messages", []), req.message)
     system_prompt = "\n\n".join(m["content"] for m in gw_messages if m.get("role") == "system") or None
     history = [m for m in gw_messages[:-1] if m.get("role") != "system"]
     mcp_payload = {
