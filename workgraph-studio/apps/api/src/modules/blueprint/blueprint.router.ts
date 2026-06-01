@@ -6,7 +6,7 @@ import crypto from 'node:crypto'
 import net from 'node:net'
 import { lookup as dnsLookup } from 'node:dns/promises'
 import { precheckTargetUrl, isBlockedAddress } from '../../lib/ssrf-guard'
-import { BlueprintStage, BlueprintSessionStatus, BlueprintStageStatus, BlueprintSourceType, Prisma, type ConsumableStatus } from '@prisma/client'
+import { BlueprintStage, BlueprintSessionStatus, BlueprintStageStatus, BlueprintSourceType, Prisma, type ConsumableStatus, type InstanceStatus } from '@prisma/client'
 import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
@@ -661,25 +661,143 @@ blueprintRouter.get('/sessions', async (req, res, next) => {
 blueprintRouter.get('/artifacts', async (req, res, next) => {
   try {
     const createdById = req.user!.userId
-    const kind = typeof req.query.kind === 'string' && req.query.kind.trim()
-      ? req.query.kind.trim()
-      : undefined
-    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500)
+    const q = req.query as Record<string, string | undefined>
+    const kind = q.kind?.trim() || undefined
+    const workflowInstanceId = q.workflowInstanceId?.trim() || undefined
+    const workItem = (q.workItemId ?? q.workCode)?.trim() || undefined
+    const workflowStatus = q.workflowStatus?.trim().toUpperCase() || undefined
+    const limit = Math.min(Math.max(Number(q.limit) || 100, 1), 500)
+
+    // Build the set of workflowInstanceIds to restrict to, from the work-item
+    // and/or workflow-status filters. Each is resolved separately (the
+    // session→instance link is a plain column, not a Prisma relation) and the
+    // results are INTERSECTED. instanceFilter === null means "no instance-
+    // based filter active"; an empty array means "filter active but matched
+    // nothing" → return zero results (don't silently widen).
+    let instanceFilter: Set<string> | null = workflowInstanceId ? new Set([workflowInstanceId]) : null
+    const intersect = (next: string[]) => {
+      const ns = new Set(next)
+      instanceFilter = instanceFilter === null ? ns : new Set([...instanceFilter].filter(x => ns.has(x)))
+    }
+
+    if (workItem) {
+      // Accept either a work-item UUID or a workCode (e.g. WRK-513D4).
+      const wi = await prisma.workItem.findFirst({
+        where: { OR: [{ id: workItem }, { workCode: workItem }] },
+        select: { sourceWorkflowInstanceId: true, targets: { select: { childWorkflowInstanceId: true } } },
+      })
+      intersect(uniqueStrings([
+        wi?.sourceWorkflowInstanceId,
+        ...(wi?.targets.map(t => t.childWorkflowInstanceId) ?? []),
+      ]))
+    }
+
+    if (workflowStatus) {
+      // Guard the enum so an unknown status returns empty instead of a Prisma
+      // 500 on an invalid enum value.
+      const VALID = ['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELLED', 'FAILED']
+      if (!VALID.includes(workflowStatus)) {
+        res.json({ count: 0, items: [] })
+        return
+      }
+      const instances = await prisma.workflowInstance.findMany({
+        where: { status: workflowStatus as InstanceStatus },
+        select: { id: true },
+        take: 2000,
+      })
+      intersect(instances.map(i => i.id))
+    }
+
+    // instanceFilter active but empty → nothing matches.
+    if (instanceFilter !== null && instanceFilter.size === 0) {
+      res.json({ count: 0, items: [] })
+      return
+    }
+
     const rows = await prisma.blueprintArtifact.findMany({
       where: {
         ...(kind ? { kind } : {}),
-        session: { createdById },
+        session: {
+          createdById,
+          ...(instanceFilter ? { workflowInstanceId: { in: [...instanceFilter] } } : {}),
+        },
       },
       include: { session: { select: { id: true, goal: true, workflowInstanceId: true } } },
       orderBy: { createdAt: 'desc' },
       take: limit,
     })
-    const items = rows.map(row => ({
-      ...shapeArtifact(row),
-      sessionGoal: row.session?.goal ?? null,
-      workflowInstanceId: row.session?.workflowInstanceId ?? null,
-    }))
+
+    // Enrich with the owning workflow instance's status/name (separate lookup
+    // since there's no Prisma relation on the session column).
+    const instanceIds = uniqueStrings(rows.map(r => r.session?.workflowInstanceId))
+    const instanceById = new Map<string, { status: string; name: string }>()
+    if (instanceIds.length > 0) {
+      const instances = await prisma.workflowInstance.findMany({
+        where: { id: { in: instanceIds } },
+        select: { id: true, status: true, name: true },
+      })
+      for (const i of instances) instanceById.set(i.id, { status: i.status, name: i.name })
+    }
+
+    const items = rows.map(row => {
+      const iid = row.session?.workflowInstanceId ?? null
+      const inst = iid ? instanceById.get(iid) : undefined
+      return {
+        ...shapeArtifact(row),
+        sessionGoal: row.session?.goal ?? null,
+        workflowInstanceId: iid,
+        workflowName: inst?.name ?? null,
+        workflowStatus: inst?.status ?? null,
+      }
+    })
     res.json({ count: items.length, items })
+  } catch (err) { next(err) }
+})
+
+// Filter options for the Artifacts explorer — the distinct work items and
+// workflow instances that ACTUALLY have artifacts for this caller, so the UI
+// can auto-populate its filter dropdowns instead of free-text. Scoped to
+// createdById to match /artifacts.
+blueprintRouter.get('/artifacts/facets', async (req, res, next) => {
+  try {
+    const createdById = req.user!.userId
+    // Distinct instance ids across the caller's artifact-bearing sessions.
+    const sessions = await prisma.blueprintSession.findMany({
+      where: { createdById, artifacts: { some: {} }, workflowInstanceId: { not: null } },
+      select: { workflowInstanceId: true },
+      take: 2000,
+    })
+    const instanceIds = uniqueStrings(sessions.map(s => s.workflowInstanceId))
+
+    const instances = instanceIds.length
+      ? await prisma.workflowInstance.findMany({
+          where: { id: { in: instanceIds } },
+          select: { id: true, name: true, status: true },
+          orderBy: { startedAt: 'desc' },
+        })
+      : []
+
+    // Work items linked to those instances, via the source instance OR a
+    // target's child instance. De-duplicated by id.
+    const workItems = instanceIds.length
+      ? await prisma.workItem.findMany({
+          where: {
+            OR: [
+              { sourceWorkflowInstanceId: { in: instanceIds } },
+              { targets: { some: { childWorkflowInstanceId: { in: instanceIds } } } },
+            ],
+          },
+          select: { id: true, workCode: true, title: true, status: true },
+          orderBy: { createdAt: 'desc' },
+          take: 500,
+        })
+      : []
+
+    res.json({
+      workItems: workItems.map(w => ({ id: w.id, workCode: w.workCode, title: w.title, status: w.status })),
+      instances: instances.map(i => ({ id: i.id, name: i.name, status: i.status })),
+      statuses: ['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELLED', 'FAILED'],
+    })
   } catch (err) { next(err) }
 })
 

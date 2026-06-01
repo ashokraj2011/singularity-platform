@@ -16,6 +16,8 @@ type GlobalArtifact = {
   sessionId: string
   sessionGoal?: string | null
   workflowInstanceId?: string | null
+  workflowName?: string | null
+  workflowStatus?: string | null
   stage?: string | null
   stageKey?: string
   kind: string
@@ -51,18 +53,49 @@ function download(a: GlobalArtifact) {
   URL.revokeObjectURL(url)
 }
 
+const WORKFLOW_STATUSES = ['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'CANCELLED', 'FAILED']
+
+type Facets = {
+  workItems: { id: string; workCode: string; title: string; status: string }[]
+  instances: { id: string; name: string; status: string }[]
+  statuses: string[]
+}
+
 export function ArtifactsExplorerPage() {
   const navigate = useNavigate()
   const [openId, setOpenId] = useState<string | null>(null)
   const [kind, setKind] = useState<string>('')
+  // Server-side filters, now dropdown-selected (work-item id, instance id,
+  // status enum) rather than free text.
+  const [workItem, setWorkItem] = useState<string>('')
+  const [workflowInstanceId, setWorkflowInstanceId] = useState<string>('')
+  const [workflowStatus, setWorkflowStatus] = useState<string>('')
+
+  // Auto-populate the work-item / instance dropdowns from the work that
+  // actually has artifacts (scoped to this user, server-side).
+  const { data: facets } = useQuery<Facets>({
+    queryKey: ['artifacts-facets'],
+    queryFn: () => api.get('/blueprint/artifacts/facets').then(r => r.data),
+  })
+
+  const params = useMemo(() => {
+    const p: Record<string, string> = {}
+    if (kind) p.kind = kind
+    if (workItem) p.workItemId = workItem
+    if (workflowInstanceId) p.workflowInstanceId = workflowInstanceId
+    if (workflowStatus) p.workflowStatus = workflowStatus
+    return p
+  }, [kind, workItem, workflowInstanceId, workflowStatus])
 
   const { data, isLoading, isError, error } = useQuery<Response>({
-    queryKey: ['artifacts-global', kind],
-    queryFn: () => api.get('/blueprint/artifacts', { params: kind ? { kind } : {} }).then(r => r.data),
+    queryKey: ['artifacts-global', params],
+    queryFn: () => api.get('/blueprint/artifacts', { params }).then(r => r.data),
   })
 
   const items = useMemo(() => data?.items ?? [], [data])
   const kinds = useMemo(() => Array.from(new Set(items.map(i => i.kind))).sort(), [items])
+  const statusOptions = facets?.statuses ?? WORKFLOW_STATUSES
+  const inputStyle: React.CSSProperties = { fontSize: 12, padding: '5px 8px', borderRadius: 7, border: '1px solid var(--color-outline-variant)', background: '#fff', color: 'var(--color-on-surface)', maxWidth: 260 }
 
   return (
     <div style={{ padding: 24, maxWidth: 920, margin: '0 auto' }}>
@@ -82,15 +115,40 @@ export function ArtifactsExplorerPage() {
             {isLoading ? 'Loading…' : `${data?.count ?? 0} artifact${(data?.count ?? 0) === 1 ? '' : 's'} across your runs`}
           </p>
         </div>
+      </div>
+
+      {/* Filters auto-populated from the work that actually has artifacts
+          (GET /artifacts/facets): work item, workflow instance, status, kind. */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14, alignItems: 'center' }}>
+        <select value={workItem} onChange={e => setWorkItem(e.target.value)} style={inputStyle} title="Filter by work item">
+          <option value="">All work items</option>
+          {(facets?.workItems ?? []).map(w => (
+            <option key={w.id} value={w.id}>{w.workCode} · {w.title}</option>
+          ))}
+        </select>
+        <select value={workflowInstanceId} onChange={e => setWorkflowInstanceId(e.target.value)} style={inputStyle} title="Filter by workflow run">
+          <option value="">All workflow runs</option>
+          {(facets?.instances ?? []).map(i => (
+            <option key={i.id} value={i.id}>{i.name} · {i.status}</option>
+          ))}
+        </select>
+        <select value={workflowStatus} onChange={e => setWorkflowStatus(e.target.value)} style={inputStyle}>
+          <option value="">Any status</option>
+          {statusOptions.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
         {kinds.length > 0 && (
-          <select
-            value={kind}
-            onChange={e => setKind(e.target.value)}
-            style={{ fontSize: 12, padding: '5px 8px', borderRadius: 7, border: '1px solid var(--color-outline-variant)', background: '#fff', color: 'var(--color-on-surface)' }}
-          >
+          <select value={kind} onChange={e => setKind(e.target.value)} style={inputStyle}>
             <option value="">All kinds</option>
             {kinds.map(k => <option key={k} value={k}>{k}</option>)}
           </select>
+        )}
+        {(workItem || workflowInstanceId || workflowStatus || kind) && (
+          <button
+            onClick={() => { setWorkItem(''); setWorkflowInstanceId(''); setWorkflowStatus(''); setKind('') }}
+            style={{ fontSize: 11, fontWeight: 600, padding: '5px 9px', borderRadius: 7, border: '1px solid var(--color-outline-variant)', background: 'transparent', cursor: 'pointer', color: 'var(--color-outline)' }}
+          >
+            Clear
+          </button>
         )}
       </div>
 
@@ -121,6 +179,7 @@ export function ArtifactsExplorerPage() {
                   <div style={{ fontSize: 10, color: 'var(--color-outline)', marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{a.kind}</span>
                     {a.stageKey && <span>· {a.stageKey}</span>}
+                    {a.workflowStatus && <span title={a.workflowName ?? undefined} style={{ fontWeight: 700 }}>· {a.workflowStatus}</span>}
                     {a.sessionGoal && <span title={a.sessionGoal} style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>· {a.sessionGoal}</span>}
                     <span>· {new Date(a.createdAt).toLocaleString()}</span>
                   </div>
