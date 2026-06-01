@@ -7,7 +7,7 @@ from app.models import BusinessUnit, Team, TeamMembership, User, Capability, Cap
 from app.auth.deps import get_current_user
 from app.schemas import PageResponse
 from app.org.schemas import (
-    BusinessUnitOut, CreateBusinessUnitRequest,
+    BusinessUnitOut, CreateBusinessUnitRequest, UpdateBusinessUnitRequest, SetChildBuRequest,
     TeamOut, CreateTeamRequest, UpdateTeamRequest, SetChildTeamRequest,
     TeamMembershipOut, AddTeamMemberRequest,
 )
@@ -114,6 +114,99 @@ async def get_bu(bu_id: str, db: AsyncSession = Depends(get_db), _: User = Depen
     if not bu:
         raise HTTPException(status_code=404, detail="Business unit not found")
     return _bu_out(bu)
+
+
+async def _assert_no_bu_cycle(db: AsyncSession, bu_id: str, new_parent_id: str) -> None:
+    """Reject a parent assignment that would create a cycle in the BU tree.
+
+    Walk UP from new_parent_id via parent_bu_id; if we reach bu_id it would
+    form a loop. Rejects self-parenting; depth-capped against bad data.
+    """
+    if new_parent_id == bu_id:
+        raise HTTPException(status_code=400, detail="A business unit cannot be its own parent")
+    seen: set[str] = set()
+    cursor: Optional[str] = new_parent_id
+    depth = 0
+    while cursor is not None and depth < 100:
+        if cursor == bu_id:
+            raise HTTPException(status_code=400, detail="parent_bu_id would create a cycle")
+        if cursor in seen:
+            break
+        seen.add(cursor)
+        parent = (await db.execute(select(BusinessUnit.parent_bu_id).where(BusinessUnit.id == cursor))).scalar_one_or_none()
+        cursor = parent
+        depth += 1
+
+
+@router.patch("/business-units/{bu_id}", response_model=BusinessUnitOut)
+async def update_bu(
+    bu_id: str,
+    body: UpdateBusinessUnitRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    bu = (await db.execute(select(BusinessUnit).where(BusinessUnit.id == bu_id))).scalar_one_or_none()
+    if not bu:
+        raise HTTPException(status_code=404, detail="Business unit not found")
+    provided = body.provided_fields()
+    if "name" in provided and body.name is not None:
+        if not body.name.strip():
+            raise HTTPException(status_code=400, detail="name cannot be empty")
+        bu.name = body.name.strip()
+    if "description" in provided:
+        bu.description = body.description
+    if "parent_bu_id" in provided:
+        if body.parent_bu_id:
+            parent = (await db.execute(select(BusinessUnit.id).where(BusinessUnit.id == body.parent_bu_id))).scalar_one_or_none()
+            if not parent:
+                raise HTTPException(status_code=400, detail="parent_bu_id does not exist")
+            await _assert_no_bu_cycle(db, bu_id, body.parent_bu_id)
+            bu.parent_bu_id = body.parent_bu_id
+        else:
+            bu.parent_bu_id = None
+    await db.flush()
+    await record_event(db, actor_user_id=current_user.id, event_type="business_unit_updated",
+                       target_type="business_unit", target_id=bu.id, payload={"fields": sorted(provided)})
+    await db.commit()
+    await db.refresh(bu)
+    return _bu_out(bu)
+
+
+@router.get("/business-units/{bu_id}/children", response_model=list[BusinessUnitOut])
+async def list_child_bus(bu_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    bu = (await db.execute(select(BusinessUnit.id).where(BusinessUnit.id == bu_id))).scalar_one_or_none()
+    if not bu:
+        raise HTTPException(status_code=404, detail="Business unit not found")
+    rows = (await db.execute(
+        select(BusinessUnit).where(BusinessUnit.parent_bu_id == bu_id).order_by(BusinessUnit.name)
+    )).scalars().all()
+    return [_bu_out(b) for b in rows]
+
+
+@router.post("/business-units/{bu_id}/children", response_model=BusinessUnitOut, status_code=201)
+async def add_child_bu(
+    bu_id: str,
+    body: SetChildBuRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Re-parent an existing business unit under {bu_id}."""
+    parent = (await db.execute(select(BusinessUnit.id).where(BusinessUnit.id == bu_id))).scalar_one_or_none()
+    if not parent:
+        raise HTTPException(status_code=404, detail="Business unit not found")
+    child = (await db.execute(select(BusinessUnit).where(BusinessUnit.id == body.child_bu_id))).scalar_one_or_none()
+    if not child:
+        raise HTTPException(status_code=400, detail="child_bu_id does not exist")
+    if child.id == bu_id:
+        raise HTTPException(status_code=400, detail="A business unit cannot be its own child")
+    await _assert_no_bu_cycle(db, child.id, bu_id)
+    child.parent_bu_id = bu_id
+    await db.flush()
+    await record_event(db, actor_user_id=current_user.id, event_type="business_unit_updated",
+                       target_type="business_unit", target_id=child.id, payload={"parent_bu_id": bu_id})
+    await db.commit()
+    await db.refresh(child)
+    return _bu_out(child)
 
 
 # ---- Teams ----
