@@ -1259,8 +1259,12 @@ function WorkbenchNeo({
               modal. Additive: the full-screen `code`/`review` overlays remain.
               Inlined here (not a separate StageWorkspace component) because
               WorktreeBrowser is defined in this module — avoids a circular
-              import. Gating is purely policy-driven via stageMode (cockpitMode). */}
-          {activeStage && (cockpitMode === 'CODE' || cockpitMode === 'VERIFY') && (
+              import. Gating is policy-driven (stageMode/cockpitMode) AND requires
+              an attempt: until the stage has actually run there is no
+              materialized worktree (the workflow may not have reached it yet),
+              so promoting the cockpit would only surface a "no worktree" error.
+              Before that, the operator can still peek via the `code →` overlay. */}
+          {activeStage && activeAttempt && (cockpitMode === 'CODE' || cockpitMode === 'VERIFY') && (
             <details className={`neo-stage-workspace ${stageModeMeta(cockpitMode).chipClass}`} open>
               <summary className="neo-stage-workspace-head">
                 <strong>{stageModeMeta(cockpitMode).label} workspace</strong>
