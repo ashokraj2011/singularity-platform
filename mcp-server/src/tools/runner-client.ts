@@ -7,6 +7,11 @@ export interface RunnerExecuteRequest {
   timeoutMs: number;
   maxOutputChars: number;
   profile?: string;
+  // Per-request overrides honored by the runner (docker-exec.ts). Used by the
+  // run_python tool. `network` opts into outbound network ('bridge') for a
+  // single run; omitted → runner's global MCP_RUNNER_NETWORK_MODE default.
+  network?: "none" | "bridge";
+  env?: Record<string, string>;
 }
 
 export async function callSandboxRunner(req: RunnerExecuteRequest): Promise<Record<string, unknown>> {

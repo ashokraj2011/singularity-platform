@@ -35,6 +35,14 @@ export const executeRequestSchema = z.object({
   timeoutMs: z.number().int().positive().max(MAX_TIMEOUT_MS).optional(),
   maxOutputChars: z.number().int().positive().max(MAX_OUTPUT_CHARS).optional(),
   profile: z.string().optional(),
+  // Per-request overrides (used by the run_python tool — see tools/python.ts).
+  // network: opt-in outbound network for a single run; defaults to the global
+  // MCP_RUNNER_NETWORK_MODE when omitted, so existing callers are unchanged.
+  // Restricted to the enum so a bad value can't widen isolation.
+  network: z.enum(["none", "bridge"]).optional(),
+  // env: extra environment variables injected via `-e KEY=VALUE`. Keys/values
+  // are validated in dockerRunArgs (defense-in-depth against arg injection).
+  env: z.record(z.string()).optional(),
 });
 
 export type ExecuteRequest = z.infer<typeof executeRequestSchema>;
@@ -85,6 +93,25 @@ function truncateOutput(value: string, maxChars: number): string {
   return `${head}\n... output truncated ...\n${tail}`;
 }
 
+// Env var keys must be a conventional identifier. Values must not contain a
+// newline/carriage-return/NUL (which could otherwise break the `-e KEY=VALUE`
+// argv or smuggle additional content). Throws "invalid env ..." so server.ts
+// classifies it as a 400 (caller error), not a 500.
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function envFlags(env?: Record<string, string>): string[] {
+  if (!env) return [];
+  const flags: string[] = [];
+  for (const [key, value] of Object.entries(env)) {
+    if (!ENV_KEY_RE.test(key)) throw new Error(`invalid env key: ${key}`);
+    if (typeof value !== "string" || /[\r\n\0]/.test(value)) {
+      throw new Error(`invalid env value for ${key}`);
+    }
+    flags.push("-e", `${key}=${value}`);
+  }
+  return flags;
+}
+
 function dockerRunArgs(req: ExecuteRequest, receiptId: string, containerName: string): string[] {
   validateRunnerCommand(req.command);
   const relCwd = safeRelativeCwd(req.cwd);
@@ -94,7 +121,9 @@ function dockerRunArgs(req: ExecuteRequest, receiptId: string, containerName: st
     "run",
     "--rm",
     "--name", containerName,
-    "--network", runnerConfig.MCP_RUNNER_NETWORK_MODE,
+    // Per-request network override (run_python opt-in); falls back to the
+    // global default so all other callers keep the locked-down posture.
+    "--network", req.network ?? runnerConfig.MCP_RUNNER_NETWORK_MODE,
     "--read-only",
     "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges",
@@ -131,6 +160,7 @@ function dockerRunArgs(req: ExecuteRequest, receiptId: string, containerName: st
     // root filesystem.
     "--tmpfs", `/home:rw,size=${runnerConfig.MCP_RUNNER_TMPFS_SIZE}`,
     "--label", `singularity.mcp.runner_receipt_id=${receiptId}`,
+    ...envFlags(req.env),
     "-v", `${runnerConfig.MCP_RUNNER_HOST_WORKSPACE_PATH}:${workspacePath}:rw`,
     "-w", workdir,
     imageFor(req.command, req.profile),
@@ -195,6 +225,7 @@ export async function executeInDocker(req: ExecuteRequest, opts: DockerExecution
   });
 
   const durationMs = Date.now() - started;
+  const effectiveNetwork = req.network ?? runnerConfig.MCP_RUNNER_NETWORK_MODE;
   return {
     kind: "verification_result",
     verification_kind: "command",
@@ -211,10 +242,10 @@ export async function executeInDocker(req: ExecuteRequest, opts: DockerExecution
     runner_receipt_id: receiptId,
     container_id: containerName,
     container_image: image,
-    network_mode: runnerConfig.MCP_RUNNER_NETWORK_MODE,
+    network_mode: effectiveNetwork,
     isolation: {
       runner: "mcp-sandbox-runner",
-      network: runnerConfig.MCP_RUNNER_NETWORK_MODE,
+      network: effectiveNetwork,
       readonlyRoot: true,
       noNewPrivileges: true,
       capDrop: "ALL",

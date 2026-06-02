@@ -45,6 +45,7 @@ enum NodeType {
   DATA_SINK
   SET_CONTEXT
   ERROR_CATCH
+  RUN_PYTHON
 }
 
 enum ExecutionLocation {

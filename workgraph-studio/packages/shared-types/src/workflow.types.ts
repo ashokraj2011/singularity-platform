@@ -23,6 +23,7 @@ export type NodeType =
   | 'SET_CONTEXT'
   | 'ERROR_CATCH'
   | 'CUSTOM'
+  | 'RUN_PYTHON'
 
 export type EdgeType =
   | 'SEQUENTIAL'

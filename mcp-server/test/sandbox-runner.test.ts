@@ -192,4 +192,43 @@ describe("mcp-sandbox-runner docker execution", () => {
       }
     });
   });
+
+  it("applies a per-request network override and env flags (run_python path)", async () => {
+    await withRunnerEnv(async () => {
+      const calls: Array<{ command: string; args: string[] }> = [];
+      const { executeInDocker } = await import("../src/runner/docker-exec");
+
+      const receipt = await executeInDocker({
+        command: "python3",
+        args: ["__wf_python_abc.py"],
+        cwd: ".",
+        timeoutMs: 1000,
+        network: "bridge",
+        env: { NAME: "world", LOG_LEVEL: "INFO" },
+      }, { spawnImpl: fakeDockerSpawn(calls) });
+
+      expect(receipt).toMatchObject({ network_mode: "bridge", isolation: { network: "bridge" } });
+      const args = calls[0].args;
+      // network override beats the global MCP_RUNNER_NETWORK_MODE=none
+      const netIdx = args.indexOf("--network");
+      expect(args[netIdx + 1]).toBe("bridge");
+      // env injected as -e KEY=VALUE pairs
+      expect(args).toEqual(expect.arrayContaining(["-e", "NAME=world", "-e", "LOG_LEVEL=INFO"]));
+    });
+  });
+
+  it("rejects invalid env keys before invoking Docker", async () => {
+    await withRunnerEnv(async () => {
+      const calls: Array<{ command: string; args: string[] }> = [];
+      const { executeInDocker } = await import("../src/runner/docker-exec");
+
+      await expect(executeInDocker({
+        command: "python3",
+        args: ["__wf_python_abc.py"],
+        cwd: ".",
+        env: { "BAD KEY": "x" },
+      }, { spawnImpl: fakeDockerSpawn(calls) })).rejects.toThrow(/invalid env/i);
+      expect(calls).toHaveLength(0);
+    });
+  });
 });

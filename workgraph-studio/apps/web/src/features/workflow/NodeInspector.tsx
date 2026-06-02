@@ -10,7 +10,7 @@ import {
   Box, Star, Briefcase, Database, Globe, Mail, Phone,
   Calendar, AlertTriangle, Search, Filter, Activity,
   GitFork, ShieldAlert, SlidersHorizontal, Play, Square, Braces,
-  Download,
+  Download, Terminal,
 } from 'lucide-react'
 import type { Node } from 'reactflow'
 import { fetchAgents, fetchStudioAgents, deriveStudioAgent, fetchTools, fetchCapabilities, registrySource, type RegistryAgent } from '../../lib/registry'
@@ -470,6 +470,18 @@ const NODE_META: Record<string, {
       { key: 'capabilityId', label: 'Capability', placeholder: 'optional capability filter' },
       { key: 'minPassRate', label: 'Min pass rate', placeholder: '1.0' },
       { key: 'blockOnMissingEvidence', label: 'Block on missing evidence', placeholder: 'true' },
+    ],
+  },
+  RUN_PYTHON: {
+    label: 'Run Python', color: '#3776ab', Icon: Terminal,
+    description: 'Runs an inline Python program in an isolated, hardened sandbox container (read-only root, dropped capabilities). Captures stdout/stderr/exit code into the workflow context. Network is OFF unless explicitly opted in. Booleans are entered as the text "true"/"false".',
+    standardFields: [
+      { key: 'code', label: 'Python code', placeholder: 'print("hello")', multiline: true },
+      { key: 'args', label: 'Script args', placeholder: 'comma- or newline-separated, optional' },
+      { key: 'env', label: 'Env vars (JSON)', placeholder: '{"NAME":"world"}', multiline: true },
+      { key: 'timeoutMs', label: 'Timeout (ms)', placeholder: '120000' },
+      { key: 'allowNetwork', label: 'Allow outbound network', placeholder: 'false' },
+      { key: 'failOnNonZero', label: 'Fail node on non-zero exit', placeholder: 'true' },
     ],
   },
   TIMER: {

@@ -215,6 +215,7 @@ import {
   getDependenciesTool, prepareWorkBranchTool, finishWorkBranchTool,
 } from "./ast-tools";
 import { runCommandTool, runTestTool, verificationUnavailableTool, captureTestBaselineTool } from "./command";
+import { runPythonTool } from "./python";
 import { formalVerifyTool } from "./formal-verify";
 import { repoMapTool, recommendedVerificationTool, reviewDiffTool } from "./workflow-tools";
 // M99 S1.2 — localize / structured-edit / git-preflight tools (ship dark).
@@ -256,6 +257,9 @@ const REGISTRY = new Map<string, ToolHandler>([
   [getDependenciesTool.descriptor.name, getDependenciesTool],
   [runCommandTool.descriptor.name, runCommandTool],
   [runTestTool.descriptor.name, runTestTool],
+  // run_python: executor-only (workflow RUN_PYTHON node). Dispatched by name via
+  // /mcp/tool-run; intentionally NOT in the agent-facing tools.json manifests.
+  [runPythonTool.descriptor.name, runPythonTool],
   [verificationUnavailableTool.descriptor.name, verificationUnavailableTool],
   [captureTestBaselineTool.descriptor.name, captureTestBaselineTool],
   [formalVerifyTool.descriptor.name, formalVerifyTool],

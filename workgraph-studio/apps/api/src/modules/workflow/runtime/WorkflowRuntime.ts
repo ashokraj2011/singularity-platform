@@ -14,6 +14,7 @@ import { activateToolRequest } from './executors/ToolRequestExecutor'
 import { activateGitPush } from './executors/GitPushExecutor'
 import { activatePolicyCheck } from './executors/PolicyCheckExecutor'
 import { activateEvalGate } from './executors/EvalGateExecutor'
+import { activateRunPython } from './executors/RunPythonExecutor'
 import { activateTimer } from './executors/TimerExecutor'
 import { activateSignalWait } from './executors/SignalWaitExecutor'
 import { activateCallWorkflow } from './executors/CallWorkflowExecutor'
@@ -509,6 +510,16 @@ async function executeServerNode(
     case 'EVAL_GATE': {
       const result = await activateEvalGate(node, instance, actorId)
       if (result.passed) await advance(instance.id, node.id, result.output, actorId)
+      break
+    }
+    case 'RUN_PYTHON': {
+      const result = await activateRunPython(node, instance, actorId)
+      if (result.passed) await advance(instance.id, node.id, result.output, actorId)
+      else await failNode(instance.id, node.id, {
+        message: 'RUN_PYTHON node failed',
+        code: 'RUN_PYTHON_FAILED',
+        details: result.output.runPython,
+      }, actorId)
       break
     }
     case 'TIMER':
