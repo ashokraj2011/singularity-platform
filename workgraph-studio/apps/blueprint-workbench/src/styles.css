@@ -3504,14 +3504,32 @@ pre {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 9px 14px;
+  padding: 9px 32px 9px 14px;
   border-bottom: 1px solid var(--outline-variant);
 }
 .neo-stage-workspace-head strong { font-size: 13px; }
 .neo-stage-workspace-head small { opacity: 0.6; font-size: 11px; }
+/* Collapsible <details>/<summary> — open by default, click the header to fold
+   the heavy worktree panel away. Caret rotates with the open state. */
+summary.neo-stage-workspace-head {
+  cursor: pointer;
+  list-style: none;
+  position: relative;
+}
+summary.neo-stage-workspace-head::-webkit-details-marker { display: none; }
+summary.neo-stage-workspace-head::after {
+  content: '▾';
+  position: absolute;
+  right: 14px;
+  top: 10px;
+  opacity: 0.5;
+  transition: transform 0.15s ease;
+}
+.neo-stage-workspace:not([open]) > summary.neo-stage-workspace-head::after { transform: rotate(-90deg); }
+.neo-stage-workspace:not([open]) > summary.neo-stage-workspace-head { border-bottom: none; }
 .neo-stage-workspace-body {
-  min-height: 0;
-  max-height: 70vh;
+  min-height: 280px;
+  max-height: min(70vh, 720px);
   overflow: auto;
 }
 /* A left accent rail tints the workspace by mode, reusing the mode color. */

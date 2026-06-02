@@ -1261,15 +1261,15 @@ function WorkbenchNeo({
               WorktreeBrowser is defined in this module — avoids a circular
               import. Gating is purely policy-driven via stageMode (cockpitMode). */}
           {activeStage && (cockpitMode === 'CODE' || cockpitMode === 'VERIFY') && (
-            <section className={`neo-stage-workspace ${stageModeMeta(cockpitMode).chipClass}`} aria-label={`${stageModeMeta(cockpitMode).label} workspace`}>
-              <header className="neo-stage-workspace-head">
+            <details className={`neo-stage-workspace ${stageModeMeta(cockpitMode).chipClass}`} open>
+              <summary className="neo-stage-workspace-head">
                 <strong>{stageModeMeta(cockpitMode).label} workspace</strong>
-                <small>file tree · inline diff · test runner — same view as full-screen Code</small>
-              </header>
+                <small>file tree · inline diff · test runner — click to collapse · full-screen via “code →”</small>
+              </summary>
               <div className="neo-stage-workspace-body">
                 <WorktreeBrowser sessionId={session.id} stage={activeStage} />
               </div>
-            </section>
+            </details>
           )}
           <FinalizeStrip session={session} onSession={onSession} />
         </div>
