@@ -5308,10 +5308,16 @@ async function runLoopStageExecute(
       // auto-pushes when the active branch starts with wi/. Without a
       // workItemCode we fall back to the legacy per-attempt name so old
       // sessions still work.
-      branch_name: linkedWorkItem.workItemCode
-        ? `wi/${linkedWorkItem.workItemCode}`
-        : (isDeveloperStage ? workbenchBranchName(session, stage, attempt, linkedWorkItem) : undefined),
-      workitem_branch: linkedWorkItem.workItemCode ? `wi/${linkedWorkItem.workItemCode}` : undefined,
+      // (2026-06-02) Stage-INDEPENDENT shared worktree branch for ALL
+      // repo-using stages (not just developer). Pre-fix, an unbound workbench
+      // session (no _workItem) left workitem_branch undefined and gave only
+      // the developer stage a per-stage branch_name — so review stages
+      // resolved to the shared base /workspace, re-cloned, and couldn't see
+      // the developer's committed diff. workbenchWorkitemBranch() falls back
+      // to the workflow instance id; a bound WorkItem code still wins.
+      // Story-only stages (usesRepoContext=false) keep no branch.
+      branch_name: usesRepoContext ? workbenchWorkitemBranch(session, linkedWorkItem) : undefined,
+      workitem_branch: usesRepoContext ? workbenchWorkitemBranch(session, linkedWorkItem) : undefined,
       source_type: usesRepoContext ? session.sourceType.toLowerCase() : undefined,
       source_uri: usesRepoContext ? session.sourceUri : undefined,
       source_ref: usesRepoContext ? session.sourceRef ?? undefined : undefined,
@@ -5365,27 +5371,33 @@ async function workflowWorkItemContext(workflowInstanceId?: string | null): Prom
   }
 }
 
-function workbenchBranchName(
+/**
+ * Stage-INDEPENDENT shared worktree branch for a workbench governed run.
+ *
+ * Every repo-using stage of a single run MUST land on the same wi/<id> branch
+ * — and therefore the same per-workitem worktree — so DEVELOP commits and
+ * SECURITY/QA review stages see that committed diff. The identity is the bound
+ * WorkItem's code when present, otherwise the workflow instance id (a workbench
+ * run launched directly by URL has no _workItem bound in the workflow context),
+ * finally the session id.
+ *
+ * This deliberately does NOT embed the stage key or attempt id: doing so
+ * (the prior per-stage `sg/<id>/<stage>/<attempt>` scheme) gave every stage a
+ * *different* branch/worktree and left non-developer stages with none, so
+ * review stages fell back to the shared base /workspace, re-cloned a fresh
+ * tree, and reported "cannot verify implementation without diff". `wi/`-
+ * prefixed branches also auto-push on finish_work_branch (mcp-server P3), so
+ * the dev's commits become fetchable by later stages.
+ */
+export function workbenchWorkitemBranch(
   session: { id: string; workflowInstanceId?: string | null },
-  stage: { key: string },
-  attempt: { id: string; attemptNumber: number },
-  // (2026-05-25) Prefer the WorkItem identifier in the branch name when
-  // present. Operator-readable branches (`sg/WRK-984AD/develop/1-98a533ef`)
-  // beat opaque UUIDs (`sg/2c2033e1-…/develop/1-98a533ef`) in github's
-  // branch dropdown, PR list, and `gh pr list` output. Falls back to the
-  // workflowInstanceId UUID when no WorkItem is linked (e.g. exploratory
-  // sessions without a WorkItem), and finally to `blueprint-<sessionId>`.
-  // workItemCode wins over workItemId because the code (WRK-984AD) is
-  // the visible label operators use; the uuid is plumbing.
-  linkedWorkItem?: { workItemCode?: string | null; workItemId?: string | null } | null,
-) {
-  const base =
+  linkedWorkItem?: { workItemCode?: string | null } | null,
+): string {
+  const identity =
     linkedWorkItem?.workItemCode?.trim()
-    ?? linkedWorkItem?.workItemId?.trim()
-    ?? session.workflowInstanceId
-    ?? `blueprint-${session.id}`
-  const raw = `sg/${base}/${stage.key}/${attempt.attemptNumber}-${attempt.id.slice(0, 8)}`
-  return raw
+    || session.workflowInstanceId?.trim()
+    || `blueprint-${session.id}`
+  return `wi/${identity}`
     .replace(/[^a-zA-Z0-9._/-]+/g, '-')
     .replace(/\/+/g, '/')
     .replace(/^-+|-+$/g, '')
@@ -5420,9 +5432,11 @@ async function createLoopStageArtifacts(
   if (isCodeChangeStage) {
     const linkedWorkItem = await workflowWorkItemContext(session.workflowInstanceId)
     codeChangeEvidenceFallback = {
-      workspaceBranch: linkedWorkItem.workItemCode
-        ? `wi/${linkedWorkItem.workItemCode}`
-        : workbenchBranchName(session, stage, attempt, linkedWorkItem),
+      // Must mirror the run_context branch_name logic at the build site above
+      // (now workbenchWorkitemBranch) so the git-push evidence points at the
+      // branch the stage actually committed on — else GitPushExecutor
+      // dead-ends at NO_COMMIT_TO_PUSH.
+      workspaceBranch: workbenchWorkitemBranch(session, linkedWorkItem),
     }
   }
   const commonPayload = {
@@ -7321,8 +7335,18 @@ async function runStage(
     run_context: {
       workflow_instance_id: session.workflowInstanceId ?? `blueprint-${session.id}`,
       workflow_node_id: session.phaseId ?? `blueprint-${stage.toLowerCase()}`,
-      work_item_id: isDeveloperStage ? linkedWorkItem.workItemId : undefined,
-      work_item_code: isDeveloperStage ? linkedWorkItem.workItemCode : undefined,
+      // (2026-06-02 M81 cross-stage fix) The WorkItem identity is no longer
+      // gated to the developer stage. This legacy ARCHITECT → DEVELOPER → QA
+      // flow shares one workspace, but gating work_item_id/work_item_code to
+      // the developer meant the QA stage reached mcp-server with NO workitem
+      // identity — so workspaceRootForRunContext dropped it onto the base
+      // sandbox root instead of the per-workitem worktree the developer
+      // committed to, and QA reviewed an empty/re-cloned tree rather than the
+      // diff. Every stage now keys off the same workitem (the governed coding
+      // path at the runCodingStageGoverned call site already does this), so
+      // downstream review stages read the developer's work directly.
+      work_item_id: linkedWorkItem.workItemId,
+      work_item_code: linkedWorkItem.workItemCode,
       capability_id: session.capabilityId,
       agent_template_id: agentTemplateId,
       user_id: session.createdById ?? undefined,
