@@ -147,7 +147,7 @@ const WORKBENCH_TASK_NODE_CONFIG = {
           allowedSendBackTo: ['INTAKE', 'PLAN'],
           expectedArtifacts: [
             { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
-            { kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence', required: true, format: 'MARKDOWN' },
+            { kind: 'actual_code_change', title: 'Actual code-change evidence', required: true, format: 'MARKDOWN' },
           ],
         },
         {
@@ -245,12 +245,13 @@ const SERVER_TIME_INIT_NODE_CONFIG = {
 }
 
 const NODE_GROUPS: Array<{ label: string; types: string[] }> = [
-  { label: 'Common', types: ['START', 'END', 'HUMAN_TASK', 'APPROVAL'] },
-  { label: 'Agentic', types: ['AGENT_TASK', 'WORKBENCH_TASK', 'TOOL_REQUEST', 'RUN_PYTHON', 'GIT_PUSH'] },
-  { label: 'Human', types: ['WORK_ITEM', 'CONSUMABLE_CREATION'] },
-  { label: 'Logic', types: ['DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'FOREACH'] },
-  { label: 'Data', types: ['SET_CONTEXT', 'DATA_SINK'] },
-  { label: 'Advanced', types: ['TIMER', 'SIGNAL_WAIT', 'SIGNAL_EMIT', 'CALL_WORKFLOW', 'POLICY_CHECK', 'EVAL_GATE', 'ERROR_CATCH'] },
+  { label: 'Start & Triggers', types: ['START', 'END'] },
+  { label: 'Work & Agents', types: ['AGENT_TASK', 'WORKBENCH_TASK'] },
+  { label: 'Human Review', types: ['HUMAN_TASK', 'APPROVAL'] },
+  { label: 'Decisions', types: ['DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'FOREACH'] },
+  { label: 'Data & Integration', types: ['WORK_ITEM', 'CONSUMABLE_CREATION', 'SET_CONTEXT', 'DATA_SINK'] },
+  { label: 'Reliability', types: ['TIMER', 'POLICY_CHECK', 'EVAL_GATE', 'ERROR_CATCH'] },
+  { label: 'Advanced', types: ['TOOL_REQUEST', 'RUN_PYTHON', 'GIT_PUSH', 'CALL_WORKFLOW', 'SIGNAL_WAIT', 'SIGNAL_EMIT'] },
 ]
 
 const TRIGGER_PRESETS = [
@@ -336,7 +337,7 @@ function validateWorkflow(
 
   // ── Error rules ──
   if (sourceNodes.length === 0) {
-    issues.push({ severity: 'error', code: 'NO_START', message: 'No Start node found. Drag a Start node from the Boundary palette group.' })
+    issues.push({ severity: 'error', code: 'NO_START', message: 'No Start node found. Open Add node and choose Start from Start & Triggers.' })
   }
   if (terminalNodes.length === 0) {
     issues.push({ severity: 'error', code: 'NO_TERMINAL', message: 'No terminal node found. Add an End, Data Sink, Create Artifact, or Signal Emit node.' })
@@ -467,21 +468,21 @@ function validateWorkbenchConfig(cfg: Record<string, unknown>): string[] {
   if (typeof workbench.goal !== 'string' || !workbench.goal.trim()) messages.push('needs a goal.')
   if (workbench.sourceType !== 'github' && workbench.sourceType !== 'localdir') messages.push('needs a source type.')
   if (typeof workbench.capabilityId !== 'string' || !workbench.capabilityId.trim()) messages.push('needs a capability.')
-  if (stages.length === 0) messages.push('needs at least one loop phase.')
-  if (keys.length !== keySet.size) messages.push('has duplicate phase keys.')
-  if (stages.filter(stage => stage.terminal === true).length !== 1) messages.push('must have exactly one terminal phase.')
+  if (stages.length === 0) messages.push('needs at least one Workbench stage.')
+  if (keys.length !== keySet.size) messages.push('has duplicate stage keys.')
+  if (stages.filter(stage => stage.terminal === true).length !== 1) messages.push('must have exactly one terminal stage.')
   for (const stage of stages) {
     const key = String(stage.key ?? '').trim()
-    if (!key) messages.push('has a phase without a key.')
-    if (typeof stage.label !== 'string' || !stage.label.trim()) messages.push(`${key || 'a phase'} needs a label.`)
-    if (typeof stage.agentRole !== 'string' || !stage.agentRole.trim()) messages.push(`${key || 'a phase'} needs an agent role.`)
+    if (!key) messages.push('has a stage without a key.')
+    if (typeof stage.label !== 'string' || !stage.label.trim()) messages.push(`${key || 'a stage'} needs a label.`)
+    if (typeof stage.agentRole !== 'string' || !stage.agentRole.trim()) messages.push(`${key || 'a stage'} needs an agent role.`)
     if ((typeof stage.agentTemplateId !== 'string' || !stage.agentTemplateId.trim()) && !workflowFallbackAgentForStage(bindings, stage)) {
-      messages.push(`${key || 'a phase'} needs a phase agent or default fallback agent.`)
+      messages.push(`${key || 'a stage'} needs a stage agent or default fallback agent.`)
     }
     if (stage.contextPolicy === 'STORY_ONLY' && (stage.repoAccess !== false || stage.toolPolicy !== 'NONE')) {
-      messages.push(`${key} story-only phase must disable repo access and use tool policy NONE.`)
+      messages.push(`${key} story-only stage must disable repo access and use tool policy NONE.`)
     }
-    if (stage.next && typeof stage.next === 'string' && !keySet.has(stage.next)) messages.push(`${key} points to missing next phase ${stage.next}.`)
+    if (stage.next && typeof stage.next === 'string' && !keySet.has(stage.next)) messages.push(`${key} points to missing next stage ${stage.next}.`)
     const sendBacks = Array.isArray(stage.allowedSendBackTo) ? stage.allowedSendBackTo : []
     for (const target of sendBacks) {
       if (typeof target !== 'string' || !keySet.has(target)) messages.push(`${key} has an invalid send-back target.`)
@@ -510,34 +511,34 @@ function workflowFallbackAgentForStage(bindings: Record<string, unknown>, stage:
 // ─────────────────────────────────────────────────────────────────────────────
 
 const NODE_DESCRIPTIONS: Record<string, string> = {
-  START: 'Entry point of the workflow. Execution begins here when the workflow is started. One Start node is required.',
-  END: 'Terminal node. When all paths reach an End node, the workflow instance is marked completed.',
-  HUMAN_TASK: 'A task that must be completed by a human. Supports assignment, due dates, and approval gates.',
-  AGENT_TASK: 'Delegates work to an AI agent. Output always requires human review before promotion.',
-  WORKBENCH_TASK: 'Opens an interactive workbench loop and waits for the approved final implementation pack.',
-  APPROVAL: 'Requires an explicit approval decision before the workflow can proceed.',
-  DECISION_GATE: 'XOR gateway — evaluates conditions to branch the workflow along one path.',
-  CONSUMABLE_CREATION: 'Produces a typed versioned artifact. Must be reviewed before downstream use.',
-  TOOL_REQUEST: 'Routes a tool execution request through the Tool Gateway with policy enforcement.',
-  GIT_PUSH: 'Pushes the approved WorkItem branch to git after a human approval gate.',
-  POLICY_CHECK: 'Evaluates a named policy before continuing. Blocks the workflow if denied.',
-  EVAL_GATE: 'Runs deterministic evaluators against run traces or datasets and blocks when trust criteria fail.',
-  TIMER: 'Pauses the flow for a fixed duration or until a specific instant.',
-  SIGNAL_WAIT: 'Pauses execution until an external signal with a matching name arrives.',
-  SIGNAL_EMIT: 'Broadcasts a named signal, waking any SIGNAL_WAIT node listening for it.',
-  CALL_WORKFLOW: 'Spawns a child run of another workflow. Parent advances when child completes.',
-  WORK_ITEM: 'Delegates work to one or more child capabilities, waits for child runs, then asks parent approval.',
-  FOREACH: 'Iterates over a collection. Each item produces one branch of execution.',
-  PARALLEL_FORK: 'AND-split gateway. All outgoing branches fire simultaneously.',
-  PARALLEL_JOIN: 'AND-join gateway. Waits until ALL incoming parallel branches have arrived.',
-  INCLUSIVE_GATEWAY: 'OR-gateway: all outgoing branches whose conditions are true fire simultaneously.',
-  EVENT_GATEWAY: 'First-to-fire gateway: whichever SIGNAL_WAIT or TIMER fires first wins.',
-  DATA_SINK: 'Writes workflow data to an external system: Connector, DB event, or artifact.',
-  SET_CONTEXT: 'Sets or overwrites variables in the workflow context for downstream nodes.',
-  ERROR_CATCH: 'Catches failures from an upstream node via an ERROR_BOUNDARY edge.',
-  SCHEDULED_START: 'Workflow-level schedule trigger. Creates a Start configured for cron and pairs with the Triggers panel.',
-  EVENT_TRIGGER_START: 'Workflow-level event trigger. Starts the workflow when a matching event type is observed.',
-  SERVER_TIME_INIT: 'Set Context preset that writes the server clock into workflow context.',
+  START: 'Begin the workflow. Use one Start node for the main entry point.',
+  END: 'Finish the workflow and mark the run complete.',
+  HUMAN_TASK: 'Ask a person to complete work, review information, or make a decision.',
+  AGENT_TASK: 'Assign a focused task to an AI agent with a clear output contract.',
+  WORKBENCH_TASK: 'Run a dynamic agent-stage workbench and return the approved final pack.',
+  APPROVAL: 'Pause for explicit human approval before continuing.',
+  DECISION_GATE: 'Choose one path based on workflow data or prior outputs.',
+  CONSUMABLE_CREATION: 'Create a reviewed artifact that downstream steps can use.',
+  TOOL_REQUEST: 'Request a governed tool execution.',
+  GIT_PUSH: 'Push an approved WorkItem branch and record commit evidence.',
+  POLICY_CHECK: 'Check a governance policy before the workflow continues.',
+  EVAL_GATE: 'Run deterministic evaluators and continue only when criteria pass.',
+  TIMER: 'Wait until a duration or scheduled instant has passed.',
+  SIGNAL_WAIT: 'Wait for an external event or signal.',
+  SIGNAL_EMIT: 'Publish a signal for other waits or workflows.',
+  CALL_WORKFLOW: 'Call another workflow and wait for its result.',
+  WORK_ITEM: 'Create or attach a WorkItem for another capability.',
+  FOREACH: 'Repeat downstream work for every item in a list.',
+  PARALLEL_FORK: 'Start multiple paths at the same time.',
+  PARALLEL_JOIN: 'Wait until parallel paths are complete.',
+  INCLUSIVE_GATEWAY: 'Start every matching path whose condition is true.',
+  EVENT_GATEWAY: 'Continue with whichever event or timer fires first.',
+  DATA_SINK: 'Write selected workflow output to an external destination.',
+  SET_CONTEXT: 'Set workflow variables for later steps.',
+  ERROR_CATCH: 'Route failures into a fallback path.',
+  SCHEDULED_START: 'Start from a server-time schedule.',
+  EVENT_TRIGGER_START: 'Start when a matching event is received.',
+  SERVER_TIME_INIT: 'Capture server time for scheduling, SLA, and audit fields.',
 }
 
 const NODE_STATUS_COLOR: Record<string, string> = {
@@ -584,10 +585,96 @@ const WFNodeContext = createContext<WFNodeCtx>({
 
 // ─── Rich canvas node card ────────────────────────────────────────────────────
 
+function getWorkbenchStages(data: NodeData): Record<string, unknown>[] {
+  const config = data.config as Record<string, unknown> | undefined
+  const workbench = config?.workbench && typeof config.workbench === 'object' && !Array.isArray(config.workbench)
+    ? config.workbench as Record<string, unknown>
+    : {}
+  const loop = workbench.loopDefinition && typeof workbench.loopDefinition === 'object' && !Array.isArray(workbench.loopDefinition)
+    ? workbench.loopDefinition as Record<string, unknown>
+    : {}
+  return Array.isArray(loop.stages)
+    ? loop.stages.filter((stage): stage is Record<string, unknown> => Boolean(stage) && typeof stage === 'object' && !Array.isArray(stage))
+    : []
+}
+
+function getNodePurpose(data: NodeData) {
+  const description = typeof data.config?.description === 'string' ? data.config.description.trim() : ''
+  return description || NODE_DESCRIPTIONS[data.nodeType] || 'Add this workflow step.'
+}
+
+function getWorkbenchStageSummary(stages: Record<string, unknown>[]) {
+  const keys = stages.map(stage => typeof stage.key === 'string' ? stage.key.trim() : '').filter(Boolean)
+  const uniqueKeys = new Set(keys)
+  const terminalCount = stages.filter(stage => stage.terminal === true).length
+  const hasStoryOnlyLeak = stages.some(stage =>
+    stage.contextPolicy === 'STORY_ONLY' &&
+    (stage.repoAccess === true || (typeof stage.toolPolicy === 'string' && stage.toolPolicy !== 'NONE'))
+  )
+  const hasCodeEditMismatch = stages.some(stage =>
+    stage.contextPolicy === 'CODE_EDIT' && stage.toolPolicy !== 'MUTATION'
+  )
+  const isValid = stages.length > 0 &&
+    keys.length === stages.length &&
+    uniqueKeys.size === keys.length &&
+    terminalCount === 1 &&
+    !hasStoryOnlyLeak &&
+    !hasCodeEditMismatch
+  const hasCodeEdit = stages.some(stage => stage.contextPolicy === 'CODE_EDIT' || stage.toolPolicy === 'MUTATION')
+  const hasVerification = stages.some(stage => stage.contextPolicy === 'VERIFY_ONLY' || stage.toolPolicy === 'VERIFICATION')
+  const storyOnlyCount = stages.filter(stage => stage.contextPolicy === 'STORY_ONLY' || stage.toolPolicy === 'NONE').length
+  const policy = hasCodeEdit
+    ? { label: 'code edit', color: '#2563eb' }
+    : hasVerification
+      ? { label: 'verify', color: '#16a34a' }
+      : storyOnlyCount === stages.length && stages.length > 0
+        ? { label: 'story only', color: '#64748b' }
+        : { label: 'read only', color: '#0ea5e9' }
+  return {
+    isValid,
+    policy,
+    validation: isValid
+      ? { label: 'valid', color: '#16a34a' }
+      : { label: 'needs fix', color: '#ef4444' },
+  }
+}
+
+function getNodeCardBadges(data: NodeData, showStatus: boolean) {
+  const badges: Array<{ label: string; color: string }> = []
+  if (showStatus && data.status) {
+    badges.push({ label: data.status.replaceAll('_', ' '), color: NODE_STATUS_COLOR[data.status] ?? '#64748b' })
+  }
+
+  if (data.nodeType === 'WORKBENCH_TASK') {
+    const stages = getWorkbenchStages(data)
+    const approvals = stages.filter(stage => stage.approvalRequired !== false).length
+    const summary = getWorkbenchStageSummary(stages)
+    badges.push({ label: `${stages.length || 0} stages`, color: '#ff8a3d' })
+    badges.push({ label: approvals > 0 ? `${approvals} approvals` : 'no approvals', color: approvals > 0 ? '#22c55e' : '#64748b' })
+    badges.push(summary.policy)
+    badges.push(summary.validation)
+    return badges.slice(0, 4)
+  }
+
+  const config = data.config as Record<string, unknown> | undefined
+  const standard = config?.standard && typeof config.standard === 'object' && !Array.isArray(config.standard)
+    ? config.standard as Record<string, unknown>
+    : {}
+  if (data.nodeType === 'START' && typeof standard.triggerType === 'string') {
+    badges.push({ label: standard.triggerType.toLowerCase().replaceAll('_', ' '), color: '#2563eb' })
+  }
+
+  const role = standard.role || standard.assignee || standard.agentId
+  if (typeof role === 'string' && role.trim()) {
+    badges.push({ label: role.trim(), color: '#64748b' })
+  }
+
+  return badges.slice(0, 2)
+}
+
 function WGNode({ data, selected, id }: NodeProps<NodeData>) {
   const { onDelete, onAddDecorator, onRemoveDecorator, theme } = useContext(WFNodeContext)
   const [decPickerOpen, setDecPickerOpen] = useState(false)
-  const [showNodeTypeTip, setShowNodeTypeTip] = useState(false)
   const pickerRef = useRef<HTMLDivElement>(null)
 
   // Close picker when clicking outside
@@ -619,10 +706,9 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
   const inputs      = data.config?.inputArtifacts  ?? []
   const outputs     = data.config?.outputArtifacts ?? []
   const attachments = data.config?.attachments ?? []
-  const description = data.config?.description ?? ''
-  const std         = data.config?.standard ?? {}
-  const role        = std.role || std.assignee || std.agentId || ''
+  const description = getNodePurpose(data)
   const decorators: DecoratorEntry[] = ((data.config as Record<string, unknown>)?._decorators as DecoratorEntry[]) ?? []
+  const badges = getNodeCardBadges(data, Boolean(showStatus))
 
   const hasTimer  = data.nodeType === 'TIMER' || attachments.some(a => a.enabled !== false && (a.type === 'timer' || a.trigger === 'deadline'))
   const hasTools  = data.nodeType === 'TOOL_REQUEST' || attachments.some(a => a.enabled !== false && a.type === 'tool')
@@ -643,14 +729,13 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
       ? '0 10px 30px rgba(15,23,42,0.10), 0 1px 0 rgba(255,255,255,0.9) inset'
       : '0 8px 32px rgba(0,0,0,0.55)'
   const nameClr = isLight ? '#0f172a' : '#f1f5f9'
-  const subClr  = isLight ? '#94a3b8' : '#475569'
   const descClr = isLight ? '#64748b' : '#475569'
 
   return (
     <div
       style={{
         background: cardBg, border: cardBdr,
-        borderRadius: 16, minWidth: 248, maxWidth: 288,
+        borderRadius: 8, minWidth: 260, maxWidth: 300,
         boxShadow: shadow,
         backdropFilter: isLight ? 'none' : 'blur(20px)',
         overflow: 'visible', transition: 'border-color 0.15s, box-shadow 0.15s',
@@ -658,15 +743,15 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
       }}
     >
       {/* Accent strip */}
-      <div style={{ height: 3, background: `linear-gradient(90deg, ${color}, ${color}55, transparent)`, borderTopLeftRadius: 16, borderTopRightRadius: 16 }} />
+      <div style={{ height: 3, background: `linear-gradient(90deg, ${color}, ${color}55, transparent)`, borderTopLeftRadius: 8, borderTopRightRadius: 8 }} />
 
       <Handle type="target" position={Position.Left}
         style={{ background: color, width: 12, height: 12, border: `3px solid ${cardBg}`, left: -6, top: '50%' }} />
 
       {/* ── Header ── */}
-      <div style={{ padding: '13px 14px 9px', display: 'flex', alignItems: 'flex-start', gap: 11 }}>
+      <div style={{ padding: '14px 14px 10px', display: 'flex', alignItems: 'flex-start', gap: 11 }}>
         <div style={{
-          width: 40, height: 40, borderRadius: 12, flexShrink: 0,
+          width: 40, height: 40, borderRadius: 8, flexShrink: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           background: `${color}16`, border: `1.5px solid ${color}30`,
         }}>
@@ -679,50 +764,33 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
           }}>
             {data.label}
           </p>
-          <div style={{ position: 'relative', display: 'inline-block' }}>
-            <p
-              style={{ fontSize: 10, color: subClr, fontWeight: 700, cursor: 'help', display: 'flex', alignItems: 'center', gap: 3 }}
-              onMouseEnter={() => setShowNodeTypeTip(true)}
-              onMouseLeave={() => setShowNodeTypeTip(false)}
-            >
-              {NODE_LABELS[data.nodeType] ?? data.nodeType}
-              <HelpCircle size={9} style={{ opacity: 0.5, flexShrink: 0 }} />
-            </p>
-            {showNodeTypeTip && NODE_DESCRIPTIONS[data.nodeType] && (
-              <div style={{
-                position: 'absolute', bottom: '100%', left: 0, marginBottom: 6,
-                zIndex: 999, width: 220, pointerEvents: 'none',
-                background: '#1e293b', border: '1px solid #334155',
-                borderRadius: 10, padding: '8px 10px',
-                boxShadow: '0 8px 24px rgba(0,0,0,0.45)',
-              }}>
-                <p style={{ fontSize: 9, fontWeight: 700, color: color, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
-                  {NODE_LABELS[data.nodeType] ?? data.nodeType}
-                </p>
-                <p style={{ fontSize: 10, color: '#cbd5e1', lineHeight: 1.5, margin: 0 }}>
-                  {NODE_DESCRIPTIONS[data.nodeType]}
-                </p>
-              </div>
-            )}
-          </div>
+          <p style={{
+            fontSize: 10, color: descClr, lineHeight: 1.45, margin: 0,
+            overflow: 'hidden', display: '-webkit-box',
+            WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+          }}>
+            {description}
+          </p>
         </div>
-        <button
-          onClick={e => { e.stopPropagation(); onDelete(id) }}
-          title="Remove node"
-          style={{
-            background: 'none', border: 'none', cursor: 'pointer', padding: '3px',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: isLight ? '#cbd5e1' : '#334155', borderRadius: 6, flexShrink: 0, marginTop: -1,
-            transition: 'color 0.12s',
-          }}
-          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#ef4444' }}
-          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = isLight ? '#cbd5e1' : '#334155' }}
-        >
-          <X size={13} />
-        </button>
+        {selected && (
+          <button
+            onClick={e => { e.stopPropagation(); onDelete(id) }}
+            title="Remove node"
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer', padding: '3px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: isLight ? '#cbd5e1' : '#334155', borderRadius: 6, flexShrink: 0, marginTop: -1,
+              transition: 'color 0.12s',
+            }}
+            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = '#ef4444' }}
+            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = isLight ? '#cbd5e1' : '#334155' }}
+          >
+            <X size={13} />
+          </button>
+        )}
       </div>
 
-      {/* ── Status + role ── */}
+      {/* ── Validation + summary badges ── */}
       <div style={{ padding: '0 12px 8px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5 }}>
         {validationColor && (
           <span title={data.validationMessage} style={{
@@ -734,30 +802,30 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
             <AlertTriangle size={9} /> {validationSeverity}
           </span>
         )}
-        <span style={{
-          fontSize: 8, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.14em',
-          padding: '3px 8px', borderRadius: 999,
-          background: showStatus ? `${statusColor}14` : `${color}12`,
-          color: showStatus ? statusColor : color,
-          border: `1px solid ${showStatus ? `${statusColor}28` : `${color}28`}`,
-        }}>
-          {showStatus ? data.status : (NODE_LABELS[data.nodeType]?.split(' ')[0] ?? 'NODE')}
-        </span>
-        {role && (
-          <span style={{
-            fontSize: 8, padding: '3px 7px', borderRadius: 6, maxWidth: 110,
+        {badges.length > 0 ? badges.map(badge => (
+          <span key={badge.label} style={{
+            fontSize: 8, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.12em',
+            padding: '3px 8px', borderRadius: 999, maxWidth: 132,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-            background: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)',
-            color: isLight ? '#64748b' : '#94a3b8',
-            border: `1px solid ${isLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.08)'}`,
+            background: `${badge.color}12`,
+            color: badge.color,
+            border: `1px solid ${badge.color}28`,
           }}>
-            {role}
+            {badge.label}
+          </span>
+        )) : (
+          <span style={{
+            fontSize: 8, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.12em',
+            padding: '3px 8px', borderRadius: 999,
+            background: `${color}12`, color, border: `1px solid ${color}28`,
+          }}>
+            {NODE_LABELS[data.nodeType]?.split(' ')[0] ?? 'Step'}
           </span>
         )}
       </div>
 
       {/* ── Inline artifacts ── */}
-      {(inputs.length > 0 || outputs.length > 0) && (
+      {selected && (inputs.length > 0 || outputs.length > 0) && (
         <div style={{ padding: '0 12px 8px', display: 'flex', flexDirection: 'column', gap: 3 }}>
           {inputs.length > 0 && (
             <p style={{ fontSize: 9, color: '#38bdf8', lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -776,21 +844,8 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
         </div>
       )}
 
-      {/* ── Description ── */}
-      {description && (
-        <div style={{ padding: '0 12px 10px' }}>
-          <p style={{
-            fontSize: 10, color: descClr, lineHeight: 1.55,
-            overflow: 'hidden', display: '-webkit-box',
-            WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
-          }}>
-            {description}
-          </p>
-        </div>
-      )}
-
       {/* ── Decorator badges ── */}
-      {decorators.length > 0 && (
+      {selected && decorators.length > 0 && (
         <div style={{ padding: '0 12px 6px', display: 'flex', flexWrap: 'wrap', gap: 4 }}>
           {decorators.map(dec => {
             const dv = NODE_VISUAL[dec.type] ?? { color: '#64748b', Icon: GitBranch }
@@ -820,6 +875,7 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
       )}
 
       {/* ── Footer ── */}
+      {selected && (
       <div style={{
         padding: '6px 12px 8px',
         borderTop: `1px solid ${isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.05)'}`,
@@ -947,6 +1003,7 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
           </div>
         </div>
       </div>
+      )}
 
       <Handle type="source" position={Position.Right}
         style={{ background: color, width: 12, height: 12, border: `3px solid ${cardBg}`, right: -6, top: '50%' }} />
@@ -974,8 +1031,8 @@ function NodePickerRow({
       draggable
       onDragStart={onDragStart}
       style={{
-        display: 'grid', gridTemplateColumns: '34px 1fr', gap: 10, alignItems: 'center',
-        padding: '9px 10px', borderRadius: 12, cursor: 'grab',
+        display: 'grid', gridTemplateColumns: '34px 1fr auto', gap: 10, alignItems: 'center',
+        padding: '10px', borderRadius: 8, cursor: 'grab',
         border: '1px solid rgba(148,163,184,0.20)',
         background: '#ffffff',
         boxShadow: '0 1px 0 rgba(15,23,42,0.02)',
@@ -990,7 +1047,7 @@ function NodePickerRow({
       }}
     >
       <div style={{
-        width: 34, height: 34, borderRadius: 10,
+        width: 34, height: 34, borderRadius: 8,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         background: `${color}14`, border: `1px solid ${color}28`,
       }}>
@@ -1005,6 +1062,12 @@ function NodePickerRow({
           {description}
         </p>
       </div>
+      <span style={{
+        fontSize: 9, color: '#94a3b8', fontWeight: 800,
+        textTransform: 'uppercase', letterSpacing: '0.08em',
+      }}>
+        Drag
+      </span>
     </div>
   )
 }
@@ -1054,7 +1117,7 @@ const NODE_USAGE_TIPS: Record<string, string> = {
   WORK_ITEM:         'Creates a child capability queue item. Parent waits for child outputs and approval.',
   CALL_WORKFLOW:     'Parent workflow pauses until child completes. Child result is in context.',
   TOOL_REQUEST:      'High-risk tools may auto-pause for approval before execution.',
-  GIT_PUSH:          'Place after an Approval node. It pushes the WorkItem branch through MCP and records branch/commit evidence.',
+  GIT_PUSH:          'Place after an Approval node. It pushes the WorkItem branch through the agent runtime and records branch/commit evidence.',
   POLICY_CHECK:      'Use WARN mode during testing — it logs failures without blocking the workflow.',
   EVAL_GATE:         'Default is strict: current run traces must pass all selected evaluators.',
   CREATE_ARTIFACT:   'If Requires Approval is true, workflow pauses until a human reviews and approves.',
@@ -2047,7 +2110,7 @@ function WorkflowBudgetPanel({
             onChange={e => setForm(f => ({ ...f, defaultModelAlias: e.target.value }))}
             style={inputSt}
           >
-            <option value="">MCP default</option>
+            <option value="">Runtime default</option>
             {(modelCatalog?.models ?? []).map(model => (
               <option key={model.id} value={model.id} disabled={model.ready === false}>
                 {(model.label ?? model.id)}{model.ready === false ? ' - Missing key' : ''}{model.default ? ' - Default' : ''}
@@ -2055,7 +2118,7 @@ function WorkflowBudgetPanel({
             ))}
           </select>
           <span style={{ fontSize: 9, color: panelMuted, lineHeight: 1.4 }}>
-            MCP owns the approved model catalog. Nodes can override this default.
+            The agent runtime owns the approved model catalog. Nodes can override this default.
           </span>
         </label>
         {row('maxInputTokens', 'Max input tokens', 'Total prompt/context tokens allowed across this workflow run.')}
@@ -2484,18 +2547,20 @@ export function WorkflowStudioPage() {
           ...(isDefault ? { strokeDasharray: '6 4' } : {}),
         },
         labelStyle: {
-          fill: isDefault ? '#fbbf24' : textMuted,
-          fontSize: 10, fontWeight: 700,
-          textTransform: 'uppercase' as const, letterSpacing: '0.10em',
+          fill: isDefault ? '#92400e' : '#334155',
+          fontSize: 10, fontWeight: 800,
+          textTransform: 'uppercase' as const, letterSpacing: '0.08em',
         },
         labelBgStyle: {
           fill: isDefault
-            ? (isLight ? '#fef3c7' : '#1f1505')
-            : (isLight ? '#f0f7ff' : '#050e1c'),
-          fillOpacity: 0.92,
+            ? (isLight ? '#fffbeb' : '#1f1505')
+            : (isLight ? '#ffffff' : '#050e1c'),
+          fillOpacity: 0.96,
+          stroke: isDefault ? '#f59e0b' : '#cbd5e1',
+          strokeWidth: 1,
         },
-        labelBgPadding: [4, 6] as [number, number],
-        labelBgBorderRadius: 4,
+        labelBgPadding: [7, 4] as [number, number],
+        labelBgBorderRadius: 999,
       }
     }))
   }, [edgesData, setRfEdges, edgeStroke, textMuted, isLight])
@@ -2934,9 +2999,9 @@ export function WorkflowStudioPage() {
             defaultEdgeOptions={{
               style: { stroke: edgeStroke, strokeWidth: 2 },
               labelStyle: { fill: textMuted, fontSize: 10, fontWeight: 700 },
-              labelBgStyle: { fill: isLight ? '#f0f7ff' : '#050e1c', fillOpacity: 0.9 },
-              labelBgPadding: [5, 3],
-              labelBgBorderRadius: 5,
+              labelBgStyle: { fill: isLight ? '#ffffff' : '#050e1c', fillOpacity: 0.96, stroke: isLight ? '#cbd5e1' : '#1e293b', strokeWidth: 1 },
+              labelBgPadding: [7, 4],
+              labelBgBorderRadius: 999,
             }}
           >
             <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color={gridLine} />
@@ -3429,7 +3494,7 @@ export function WorkflowStudioPage() {
                         margin: '0 0 7px', color: '#64748b', fontSize: 10, fontWeight: 900,
                         textTransform: 'uppercase', letterSpacing: '0.12em',
                       }}>
-                        Triggers
+                        Trigger presets
                       </p>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                         {filteredTriggerPresets.map(preset => {

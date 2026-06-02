@@ -10,7 +10,7 @@ import {
   Box, Star, Briefcase, Database, Globe, Mail, Phone,
   Calendar, AlertTriangle, Search, Filter, Activity,
   GitFork, ShieldAlert, SlidersHorizontal, Play, Square, Braces,
-  Download, Terminal,
+  Download, Terminal, GripVertical,
 } from 'lucide-react'
 import type { Node } from 'reactflow'
 import { fetchAgents, fetchStudioAgents, deriveStudioAgent, fetchTools, fetchCapabilities, registrySource, type RegistryAgent } from '../../lib/registry'
@@ -440,7 +440,7 @@ const NODE_META: Record<string, {
   },
   GIT_PUSH: {
     label: 'Git Push', color: '#22c55e', Icon: GitBranch,
-    description: 'Pushes the approved MCP WorkItem branch to the configured git remote. Place this after a human approval gate.',
+    description: 'Pushes the approved WorkItem branch through the agent runtime to the configured git remote. Place this after a human approval gate.',
     standardFields: [
       { key: 'remote', label: 'Remote', placeholder: 'origin' },
       { key: 'branchName', label: 'Branch name', placeholder: 'optional; defaults to work/{{workItemCode}}' },
@@ -580,7 +580,7 @@ const STATUS_COLOR: Record<string, string> = {
 }
 
 const ARTIFACT_FORMATS = ['TEXT', 'JSON', 'MARKDOWN', 'BINARY'] as const
-const TABS = ['Overview', 'Workbench', 'Config', 'Branches', 'Actions', 'Artifacts', 'Runtime'] as const
+const TABS = ['Overview', 'Workbench', 'Artifacts', 'Branches', 'Actions', 'Config', 'Runtime'] as const
 type Tab = typeof TABS[number]
 const TAB_LABELS: Record<Tab, string> = {
   Overview: 'Basics',
@@ -696,7 +696,7 @@ function defaultWorkbenchConfig(): WorkbenchConfig {
           allowedSendBackTo: ['INTAKE', 'PLAN'],
           expectedArtifacts: [
             { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
-            { kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence', required: true, format: 'MARKDOWN' },
+            { kind: 'actual_code_change', title: 'Actual code-change evidence', required: true, format: 'MARKDOWN' },
           ],
           questions: [],
         },
@@ -1354,6 +1354,66 @@ function ArtifactsTab({
   )
 }
 
+function relinkWorkbenchStages(stages: WorkbenchStage[]) {
+  return stages.map((stage, index, arr) => ({
+    ...stage,
+    terminal: index === arr.length - 1,
+    next: index === arr.length - 1 ? null : arr[index + 1].key,
+  }))
+}
+
+function stagePolicyColor(stage: WorkbenchStage) {
+  if (stage.contextPolicy === 'CODE_EDIT' || stage.toolPolicy === 'MUTATION') return '#2563eb'
+  if (stage.contextPolicy === 'STORY_ONLY' || stage.toolPolicy === 'NONE') return '#64748b'
+  if (stage.contextPolicy === 'VERIFY_ONLY' || stage.toolPolicy === 'VERIFICATION') return '#16a34a'
+  if (stage.contextPolicy === 'EVIDENCE_REVIEW') return '#7c3aed'
+  return '#0ea5e9'
+}
+
+function WorkbenchSummaryStrip({ wb, errors }: { wb: WorkbenchConfig; errors: string[] }) {
+  const stages = wb.loopDefinition.stages
+  const approvals = stages.filter(stage => stage.approvalRequired !== false).length
+  const hasMutation = stages.some(stage => stage.contextPolicy === 'CODE_EDIT' || stage.toolPolicy === 'MUTATION')
+  const hasVerify = stages.some(stage => stage.contextPolicy === 'VERIFY_ONLY' || stage.toolPolicy === 'VERIFICATION')
+  const risk = errors.length > 0
+    ? { value: 'Needs fix', color: '#ef4444' }
+    : hasMutation
+      ? { value: 'Code edit', color: '#2563eb' }
+      : hasVerify
+        ? { value: 'Verify', color: '#16a34a' }
+        : { value: 'Read only', color: '#0ea5e9' }
+  const items = [
+    { label: 'Stages', value: stages.length, color: '#ff8a3d' },
+    { label: 'Approvals', value: approvals, color: '#16a34a' },
+    { label: 'Policy risk', value: risk.value, color: risk.color },
+    { label: 'Graph', value: errors.length > 0 ? 'Fix' : 'Valid', color: errors.length > 0 ? '#ef4444' : '#16a34a' },
+  ]
+
+  return (
+    <div style={{
+      border: errors.length > 0 ? '1px solid rgba(248,113,113,0.28)' : '1px solid rgba(148,163,184,0.24)',
+      background: errors.length > 0 ? 'rgba(248,113,113,0.06)' : '#ffffff',
+      borderRadius: 8,
+      padding: 10,
+      display: 'grid',
+      gridTemplateColumns: 'repeat(4, 1fr)',
+      gap: 8,
+    }}>
+      {items.map(item => (
+        <div key={item.label} style={{
+          border: `1px solid ${item.color}20`,
+          background: `${item.color}08`,
+          borderRadius: 8,
+          padding: '8px 9px',
+        }}>
+          <p style={{ margin: 0, color: item.color, fontSize: 16, fontWeight: 900, lineHeight: 1 }}>{item.value}</p>
+          <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{item.label}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function WorkbenchTab({
   config,
   onChange,
@@ -1370,6 +1430,7 @@ function WorkbenchTab({
   const stages = wb.loopDefinition.stages
   const stageKeys = stages.map(stage => stage.key).filter(Boolean)
   const errors = validateWorkbenchBuilder(wb)
+  const [dragStageIndex, setDragStageIndex] = useState<number | null>(null)
   const update = (patch: Partial<WorkbenchConfig>) => onChange({ ...wb, ...patch })
   const updateLoop = (patch: Partial<WorkbenchConfig['loopDefinition']>) =>
     update({ loopDefinition: { ...wb.loopDefinition, ...patch } })
@@ -1377,6 +1438,13 @@ function WorkbenchTab({
     update({ agentBindings: { ...wb.agentBindings, ...patch } })
   const updateStage = (index: number, patch: Partial<WorkbenchStage>) => {
     updateLoop({ stages: stages.map((stage, i) => i === index ? { ...stage, ...patch } : stage) })
+  }
+  const reorderStage = (fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= stages.length || toIndex >= stages.length) return
+    const nextStages = [...stages]
+    const [moved] = nextStages.splice(fromIndex, 1)
+    nextStages.splice(toIndex, 0, moved)
+    updateLoop({ stages: relinkWorkbenchStages(nextStages) })
   }
   const addStage = () => {
     const key = `STAGE_${stages.length + 1}`
@@ -1522,23 +1590,23 @@ function WorkbenchTab({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{
-        padding: '10px', borderRadius: 10,
-        border: '1px solid rgba(255,183,134,0.18)',
-        background: 'rgba(255,183,134,0.07)',
+        padding: '12px', borderRadius: 8,
+        border: '1px solid rgba(255,138,61,0.20)',
+        background: 'linear-gradient(180deg, rgba(255,138,61,0.08), rgba(255,255,255,0.86))',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6 }}>
-          <Braces size={13} style={{ color: '#ffb786' }} />
-          <span style={{ fontSize: 11, fontWeight: 800, color: '#ffb786', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
-            Blueprint Workbench
+          <Braces size={13} style={{ color: '#ff8a3d' }} />
+          <span style={{ fontSize: 11, fontWeight: 900, color: '#b45309', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+            Agent stage workbench
           </span>
         </div>
-        <p style={{ fontSize: 10, color: '#94a3b8', lineHeight: 1.55 }}>
-          This node pauses the workflow, opens the Workbench modal, and returns the approved implementation pack as node output.
+        <p style={{ fontSize: 10, color: '#64748b', lineHeight: 1.55 }}>
+          This node owns the dynamic Workbench stages. Each stage defines the agent role, context access, allowed tools, artifacts, and approval handoff.
         </p>
 
         {/* M97 — Export this loop as a portable GitHub Copilot playbook. */}
         {nodeId && (
-          <div style={{ marginTop: 10, borderTop: '1px solid rgba(255,183,134,0.16)', paddingTop: 9 }}>
+          <div style={{ marginTop: 10, borderTop: '1px solid rgba(255,138,61,0.16)', paddingTop: 9 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <button
                 type="button"
@@ -1547,9 +1615,9 @@ function WorkbenchTab({
                 title="Download a .agent.md file the GitHub Copilot CLI runs directly"
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: 6,
-                  fontSize: 10, fontWeight: 700, color: '#ffb786',
+                  fontSize: 10, fontWeight: 700, color: '#b45309',
                   padding: '5px 9px', borderRadius: 7, cursor: copilotBusy ? 'default' : 'pointer',
-                  border: '1px solid rgba(255,183,134,0.35)', background: 'rgba(255,183,134,0.10)',
+                  border: '1px solid rgba(255,138,61,0.35)', background: 'rgba(255,138,61,0.10)',
                   opacity: copilotBusy ? 0.6 : 1,
                 }}
               >
@@ -1575,7 +1643,7 @@ function WorkbenchTab({
             </div>
             <p style={{ fontSize: 9, color: '#64748b', lineHeight: 1.5, marginTop: 6 }}>
               One file: agent learnings, per-stage prompts, the stage workflow, and the documents to create.
-              MCP tools are supplied by your Copilot CLI. Save edits first — the export reads the saved definition.
+              Agent runtime tools are supplied by your Copilot CLI. Save edits first — the export reads the saved definition.
             </p>
             {copilotError && (
               <p style={{ fontSize: 9, color: '#fca5a5', marginTop: 4 }}>{copilotError}</p>
@@ -1586,10 +1654,9 @@ function WorkbenchTab({
 
       {/* M84.s5 — "block inside a block" mini-canvas of the workbench
           graph. Reads from /api/workflow-nodes/:nodeId/workbench
-          (M84.s2). Read-only for now — the legacy form below remains
-          the edit surface. Click a stage box to scroll the form to
-          that stage's section. Hidden when nodeId isn't available
-          (e.g. preview/template-editor contexts). */}
+          (M84.s2). Click a stage box to scroll the editable builder
+          below to that stage's section. Hidden when nodeId isn't
+          available (e.g. preview/template-editor contexts). */}
       {nodeId && (
         <WorkbenchMiniCanvas
           nodeId={nodeId}
@@ -1616,6 +1683,8 @@ function WorkbenchTab({
           ))}
         </div>
       )}
+
+      <WorkbenchSummaryStrip wb={wb} errors={errors} />
 
       <div>
         <FieldLabel>Goal</FieldLabel>
@@ -1654,42 +1723,120 @@ function WorkbenchTab({
         <AgentBindingRow label="Developer" capabilityId={wb.capabilityId} value={wb.agentBindings.developerAgentTemplateId} onChange={developerAgentTemplateId => updateBindings({ developerAgentTemplateId })} />
         <AgentBindingRow label="QA" capabilityId={wb.capabilityId} value={wb.agentBindings.qaAgentTemplateId} onChange={qaAgentTemplateId => updateBindings({ qaAgentTemplateId })} />
         <p style={{ fontSize: 10, color: '#94a3b8', lineHeight: 1.45, margin: 0 }}>
-          Each phase can override the agent. These are used only when a phase does not bind its own agent.
+          Each stage can override the agent. These are used only when a stage does not bind its own agent.
         </p>
       </div>
 
       <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px', gap: 8 }}>
-        <div>
-          <FieldLabel>Loop name</FieldLabel>
-          <NeoInput value={wb.loopDefinition.name} onChange={name => updateLoop({ name })} />
+      <details style={{
+        border: '1px solid rgba(148,163,184,0.22)',
+        borderRadius: 8,
+        background: '#ffffff',
+        padding: 10,
+      }}>
+        <summary style={{
+          cursor: 'pointer',
+          color: '#64748b',
+          fontSize: 10,
+          fontWeight: 900,
+          textTransform: 'uppercase',
+          letterSpacing: '0.1em',
+        }}>
+          Advanced loop settings
+        </summary>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 90px', gap: 8, marginTop: 10 }}>
+          <div>
+            <FieldLabel>Loop name</FieldLabel>
+            <NeoInput value={wb.loopDefinition.name} onChange={name => updateLoop({ name })} />
+          </div>
+          <div>
+            <FieldLabel>Loops/stage</FieldLabel>
+            <NeoInput value={String(wb.loopDefinition.maxLoopsPerStage)} onChange={v => updateLoop({ maxLoopsPerStage: Number(v) || 1 })} />
+          </div>
+          <div>
+            <FieldLabel>Send-backs</FieldLabel>
+            <NeoInput value={String(wb.loopDefinition.maxTotalSendBacks)} onChange={v => updateLoop({ maxTotalSendBacks: Number(v) || 1 })} />
+          </div>
         </div>
-        <div>
-          <FieldLabel>Loops/stage</FieldLabel>
-          <NeoInput value={String(wb.loopDefinition.maxLoopsPerStage)} onChange={v => updateLoop({ maxLoopsPerStage: Number(v) || 1 })} />
-        </div>
-        <div>
-          <FieldLabel>Send-backs</FieldLabel>
-          <NeoInput value={String(wb.loopDefinition.maxTotalSendBacks)} onChange={v => updateLoop({ maxTotalSendBacks: Number(v) || 1 })} />
-        </div>
-      </div>
+      </details>
 
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <FieldLabel>Loop phases</FieldLabel>
+          <FieldLabel>Stage builder</FieldLabel>
           <button onClick={addStage} style={miniButton('#ffb786')}>
-            <Plus size={10} /> Add phase
+            <Plus size={10} /> Add stage
           </button>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {stages.map((stage, stageIndex) => (
-            <div key={`${stage.key}-${stageIndex}`} style={{
-              border: '1px solid rgba(148, 163, 184, 0.2)',
-              borderRadius: 10,
-              background: '#ffffff',
-              padding: 10,
-            }}>
+            <div
+              key={`${stage.key}-${stageIndex}`}
+              data-stage-key={stage.key}
+              onDragOver={event => event.preventDefault()}
+              onDrop={event => {
+                event.preventDefault()
+                if (dragStageIndex !== null) reorderStage(dragStageIndex, stageIndex)
+                setDragStageIndex(null)
+              }}
+              onDragEnd={() => setDragStageIndex(null)}
+              style={{
+                border: `1px solid ${dragStageIndex === stageIndex ? stagePolicyColor(stage) : 'rgba(148, 163, 184, 0.22)'}`,
+                borderRadius: 8,
+                background: '#ffffff',
+                padding: 10,
+                boxShadow: dragStageIndex === stageIndex ? `0 0 0 3px ${stagePolicyColor(stage)}18` : '0 1px 2px rgba(15,23,42,0.04)',
+              }}
+            >
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                marginBottom: 10,
+                paddingBottom: 8,
+                borderBottom: '1px solid rgba(148,163,184,0.16)',
+                cursor: 'grab',
+              }}
+                draggable
+                onDragStart={() => setDragStageIndex(stageIndex)}
+                onDragEnd={() => setDragStageIndex(null)}
+              >
+                <GripVertical size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ margin: 0, color: '#0f172a', fontSize: 12, fontWeight: 900, lineHeight: 1.25 }}>
+                    {stage.label || `Stage ${stageIndex + 1}`}
+                  </p>
+                  <p style={{ margin: '2px 0 0', color: '#64748b', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                    {stage.key || `STAGE_${stageIndex + 1}`} · {stage.agentRole || 'AGENT'}
+                  </p>
+                </div>
+                <span style={{
+                  fontSize: 8,
+                  fontWeight: 900,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.08em',
+                  padding: '3px 7px',
+                  borderRadius: 999,
+                  background: `${stagePolicyColor(stage)}12`,
+                  border: `1px solid ${stagePolicyColor(stage)}28`,
+                  color: stagePolicyColor(stage),
+                }}>
+                  {stage.contextPolicy.replaceAll('_', ' ')}
+                </span>
+                <span style={{
+                  fontSize: 8,
+                  fontWeight: 900,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.08em',
+                  padding: '3px 7px',
+                  borderRadius: 999,
+                  background: stage.approvalRequired !== false ? 'rgba(22,163,74,0.10)' : 'rgba(100,116,139,0.10)',
+                  border: stage.approvalRequired !== false ? '1px solid rgba(22,163,74,0.22)' : '1px solid rgba(100,116,139,0.18)',
+                  color: stage.approvalRequired !== false ? '#16a34a' : '#64748b',
+                }}>
+                  {stage.approvalRequired !== false ? 'Approval' : 'No approval'}
+                </span>
+              </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 128px auto', gap: 7, alignItems: 'end' }}>
                 <div>
                   <FieldLabel>Key</FieldLabel>
@@ -1709,7 +1856,7 @@ function WorkbenchTab({
               </div>
 
               <div style={{ marginTop: 8 }}>
-                <FieldLabel>Phase agent</FieldLabel>
+                  <FieldLabel>Stage agent</FieldLabel>
                 <AgentPicker capabilityId={wb.capabilityId || null} value={stage.agentTemplateId ?? ''} onChange={agentTemplateId => updateStage(stageIndex, { agentTemplateId })} />
               </div>
 
@@ -1774,14 +1921,14 @@ function WorkbenchTab({
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 7, marginTop: 8 }}>
                 <div>
-                  <FieldLabel>Next phase</FieldLabel>
+                  <FieldLabel>Next stage</FieldLabel>
                   <select
                     value={stage.terminal ? '' : stage.next ?? ''}
                     disabled={stage.terminal === true}
                     onChange={event => updateStage(stageIndex, { next: event.target.value || null })}
                     style={selectStyle(stage.terminal === true)}
                   >
-                    <option value="">{stage.terminal ? 'Terminal' : 'Select next phase'}</option>
+                    <option value="">{stage.terminal ? 'Terminal' : 'Select next stage'}</option>
                     {stageKeys.filter(key => key !== stage.key).map(key => <option key={key} value={key}>{key}</option>)}
                   </select>
                 </div>
@@ -1830,7 +1977,7 @@ function WorkbenchTab({
               <div style={{ marginTop: 10 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                   <span style={{ fontSize: 9, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
-                    Artifacts produced by this phase
+                    Artifacts produced by this stage
                   </span>
                   <button onClick={() => addExpectedArtifact(stageIndex)} style={miniButton('#ffb786')}>
                     <Plus size={10} /> Artifact
@@ -1967,27 +2114,27 @@ function validateWorkbenchBuilder(config: WorkbenchConfig | undefined): string[]
   const keySet = new Set(keys)
   if (!config.goal.trim()) errors.push('Goal is required.')
   if (!config.capabilityId.trim()) errors.push('Capability is required.')
-  if (stages.length === 0) errors.push('At least one loop phase is required.')
-  if (keys.length !== stages.length) errors.push('Every phase needs a key.')
-  if (keys.length !== keySet.size) errors.push('Phase keys must be unique.')
-  if (stages.filter(stage => stage.terminal).length !== 1) errors.push('Exactly one phase must be terminal.')
+  if (stages.length === 0) errors.push('At least one Workbench stage is required.')
+  if (keys.length !== stages.length) errors.push('Every stage needs a key.')
+  if (keys.length !== keySet.size) errors.push('Stage keys must be unique.')
+  if (stages.filter(stage => stage.terminal).length !== 1) errors.push('Exactly one stage must be terminal.')
   for (const stage of stages) {
-    if (!stage.label.trim()) errors.push(`${stage.key || 'Phase'} needs a label.`)
-    if (!stage.agentRole.trim()) errors.push(`${stage.key || 'Phase'} needs an agent role.`)
+    if (!stage.label.trim()) errors.push(`${stage.key || 'Stage'} needs a label.`)
+    if (!stage.agentRole.trim()) errors.push(`${stage.key || 'Stage'} needs an agent role.`)
     if (!stage.agentTemplateId?.trim() && !fallbackAgentForStage(config, stage).trim()) {
-      errors.push(`${stage.key || 'Phase'} needs a phase agent or matching default fallback.`)
+      errors.push(`${stage.key || 'Stage'} needs a stage agent or matching default fallback.`)
     }
     if (stage.contextPolicy === 'STORY_ONLY' && (stage.repoAccess || stage.toolPolicy !== 'NONE')) {
-      errors.push(`${stage.key} story-only phases must disable repo access and use tool policy NONE.`)
+      errors.push(`${stage.key} story-only stages must disable repo access and use tool policy NONE.`)
     }
     if (stage.contextPolicy === 'CODE_EDIT' && stage.toolPolicy !== 'MUTATION') {
-      errors.push(`${stage.key} code-edit phases should use tool policy MUTATION.`)
+      errors.push(`${stage.key} code-edit stages should use tool policy MUTATION.`)
     }
     if (stage.contextPolicy === 'VERIFY_ONLY' && stage.toolPolicy !== 'VERIFICATION') {
-      errors.push(`${stage.key} verify phases should use tool policy VERIFICATION.`)
+      errors.push(`${stage.key} verify stages should use tool policy VERIFICATION.`)
     }
-    if (!stage.terminal && stage.next && !keySet.has(stage.next)) errors.push(`${stage.key} has an invalid next phase.`)
-    if (!stage.terminal && !stage.next) errors.push(`${stage.key} needs a next phase or must be terminal.`)
+    if (!stage.terminal && stage.next && !keySet.has(stage.next)) errors.push(`${stage.key} has an invalid next stage.`)
+    if (!stage.terminal && !stage.next) errors.push(`${stage.key} needs a next stage or must be terminal.`)
     for (const target of stage.allowedSendBackTo) {
       if (!keySet.has(target)) errors.push(`${stage.key} has an invalid send-back target.`)
     }
