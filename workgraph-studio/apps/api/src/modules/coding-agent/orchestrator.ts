@@ -594,11 +594,17 @@ export function adaptGovernedStageToCodingRun(
   // adapter outputs above; this is just the envelope.
   const cfCallId = `governed:${resp.final_state.stage_key}:${resp.turns.length}`
   const finalResponse = governedFinalResponse(resp)
+  // Surface the CONCRETE failure cause (LLM gateway upstream error, validation
+  // halt, policy block, …) so the workbench shows it instead of the generic
+  // "stage failed". The router persists this into the attempt's `error` field
+  // (read as result.finishReason), which the FocusPane banner renders.
+  const finishReason = governedFailureReason(resp)
   const syntheticResponse = {
     status: executeStatus,
     cfCallId,
     finalResponse,
     text: finalResponse,
+    finishReason,
     correlation: {
       cfCallId,
       codeChangeIds,
@@ -680,6 +686,43 @@ export function adaptGovernedStageToCodingRun(
     modelUsage: syntheticResponse.modelUsage,
     tokensUsed: syntheticResponse.tokensUsed,
     warnings,
+  }
+}
+
+/**
+ * Build a concise, human-readable failure reason from a governed stage result.
+ *
+ * Context-Fabric's StageRunResult already carries `error_code` + `error_message`
+ * (for LLM_ERROR the message includes the gateway's upstream body, e.g.
+ * "Gateway returned 502: …Your credit balance is too low…"). Pre-this-change
+ * that detail was buried in correlation.governed and never reached the attempt's
+ * `error` field, so the workbench banner fell back to the literal "stage failed"
+ * and showed "no error message". This surfaces the real cause.
+ *
+ * Returns undefined for a clean finish (FINALIZED / APPROVAL_PENDING / empty) so
+ * success paths don't render a spurious reason.
+ */
+export function governedFailureReason(resp: GovernedStageResponse): string | undefined {
+  const stop = resp.stop_reason
+  if (!stop || stop === 'FINALIZED' || stop === 'APPROVAL_PENDING') return undefined
+  // Prefer the concrete message (carries the upstream gateway body), prefixed
+  // with the machine code for triage. Cap length so a verbose provider error
+  // can't bloat the attempt record / banner.
+  if (resp.error_message) {
+    const prefix = resp.error_code ? `${resp.error_code}: ` : ''
+    return `${prefix}${resp.error_message}`.slice(0, 600)
+  }
+  switch (stop) {
+    case 'LLM_ERROR':
+      return resp.error_code ? `LLM gateway error (${resp.error_code})` : 'LLM gateway error'
+    case 'VALIDATION_BLOCKED':
+      return 'Phase output failed validation'
+    case 'POLICY_BLOCKED':
+      return 'Agent stalled calling disallowed tools (policy blocked)'
+    case 'MAX_TURNS':
+      return 'Stage hit its maximum turn budget without finishing'
+    default:
+      return `Stage halted: ${stop}`
   }
 }
 
