@@ -36,7 +36,18 @@ def setup_otel(app: FastAPI, service_name: str = "context-api") -> None:
         log.warning("[otel] dependencies not installed: %s", exc)
         return
 
-    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://host.docker.internal:4318")
+    # Opt-in: only export when a collector endpoint is EXPLICITLY configured.
+    # Previously this defaulted to host.docker.internal:4318 even when no
+    # collector was running (the common dev case), so every BatchSpanProcessor
+    # flush failed and flooded context-api's logs with connection-refused
+    # tracebacks (drowning real errors). With no endpoint set we skip tracing
+    # setup entirely — no exporter, no instrumentation, no spam. Set
+    # OTEL_EXPORTER_OTLP_ENDPOINT (e.g. http://otel-collector:4318) to enable.
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    if not endpoint:
+        log.info("[otel] OTEL_EXPORTER_OTLP_ENDPOINT not set; tracing export disabled")
+        return
+
     resource = Resource.create({
         "service.name":           os.environ.get("OTEL_SERVICE_NAME", service_name),
         "service.version":        "0.1.0",
