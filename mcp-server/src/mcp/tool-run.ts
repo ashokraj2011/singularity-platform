@@ -112,6 +112,21 @@ export const ToolRunSchema = z.object({
       workspaceRoot: z.string().optional(),
       capabilityId: z.string().optional(),
       agentId: z.string().optional(),
+      // (2026-06-02 M81 cross-stage fix) snake_case aliases for the workspace-
+      // identity fields. context-fabric ships the GOVERNED run_context to
+      // /mcp/tool-run VERBATIM in snake_case (workgraph-api builds it that way;
+      // CF only camelCases on the legacy /mcp/invoke path). The aliases below
+      // for attempt_id / source_* / workitem_branch were added when each was
+      // noticed, but `work_item_code` / `branch_name` / `workflow_instance_id`
+      // were missed — so the camelCase slots above arrived EMPTY on every
+      // governed dispatch and workspaceRootForRunContext lost the workitem
+      // identity, dropping review/security stages onto the base sandbox root.
+      // Honour both casings here so the resolver sees the identity regardless
+      // of which convention the caller used.
+      work_item_code: z.string().optional(),
+      branch_base: z.string().optional(),
+      branch_name: z.string().optional(),
+      workflow_instance_id: z.string().optional(),
       // M72 Slice C — caller-supplied attempt id; per-attempt sandbox isolation.
       // Accepts both snake_case (context-fabric's `attempt_id`) and camelCase
       // (workgraph-api's `attemptId`) via the alias below.
@@ -261,10 +276,21 @@ export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promis
   };
 
   const attemptId = body.run_context.attemptId ?? body.run_context.attempt_id;
+  // (2026-06-02 M81 cross-stage fix) Accept both camelCase (legacy /mcp/invoke
+  // shape) and snake_case (governed run_context from context-fabric/workgraph)
+  // for every workspace-identity field, and feed workitemBranch +
+  // workflowInstanceId into the resolver so all stages of a run key off the
+  // same `wi/<code>` worktree the developer committed to. workitemBranch
+  // already had a snake alias on the schema; the rest were just added above.
+  const workitemBranch =
+    body.run_context.workitemBranch ?? body.run_context.workitem_branch;
   const workspaceRoot = workspaceRootForRunContext({
     workItemId,
-    workItemCode: body.run_context.workItemCode,
-    branchName: body.run_context.branchName,
+    workItemCode: body.run_context.workItemCode ?? body.run_context.work_item_code,
+    branchName: body.run_context.branchName ?? body.run_context.branch_name,
+    workitemBranch,
+    workflowInstanceId:
+      body.run_context.workflowInstanceId ?? body.run_context.workflow_instance_id,
     workspaceRoot: body.run_context.workspaceRoot,
     attemptId,
   });
@@ -285,13 +311,12 @@ export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promis
     body.run_context.sourceUri ?? body.run_context.source_uri;
   const sourceRef =
     body.run_context.sourceRef ?? body.run_context.source_ref;
-  // M81 P4 (2026-05-26) — Long-lived workitem branch. workgraph-api now
-  // sends `workitem_branch: wi/<workItemCode>` for every stage attempt
-  // so the source-materializer (P1) aligns the worktree HEAD with this
-  // branch — preserving cross-stage continuity. Accept the camelCase
-  // alias too in case future callers normalize differently.
-  const workitemBranch =
-    body.run_context.workitemBranch ?? body.run_context.workitem_branch;
+  // M81 P4 (2026-05-26) — Long-lived workitem branch. workgraph-api sends
+  // `workitem_branch: wi/<workItemCode>` for every stage attempt so the
+  // source-materializer (P1) aligns the worktree HEAD with this branch —
+  // preserving cross-stage continuity. `workitemBranch` is resolved once near
+  // the top of this function (it also feeds workspaceRootForRunContext as of
+  // the 2026-06-02 cross-stage fix) and reused here for materialization.
 
   // M92.B (2026-05-27) — Story Intake / no-repo short-circuit. When CF
   // signals `repo_access=false` (workflow's StageExecutionPolicy says

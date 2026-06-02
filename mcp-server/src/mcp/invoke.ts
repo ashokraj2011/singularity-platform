@@ -3029,6 +3029,10 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     workItemId: body.runContext.workItemId,
     workItemCode: body.runContext.workItemCode,
     branchName: body.runContext.branchName,
+    // (2026-06-02 M81 cross-stage fix) stage-stable last-resort key so a run
+    // without a linked WorkItem keeps every stage in one sandbox instead of
+    // some stages diverging onto the base sandbox root.
+    workflowInstanceId: body.runContext.workflowInstanceId,
     workspaceRoot: body.runContext.workspaceRoot,
   });
 

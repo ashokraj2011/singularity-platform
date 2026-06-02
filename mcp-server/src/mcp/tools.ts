@@ -98,6 +98,9 @@ toolsRouter.post("/tools/call", async (req, res) => {
     workItemId: body.runContext.workItemId,
     workItemCode: body.runContext.workItemCode,
     branchName: body.runContext.branchName,
+    // (2026-06-02 M81 cross-stage fix) stage-stable last-resort key — see
+    // workspaceRootForRunContext for the full resolution order.
+    workflowInstanceId: body.runContext.workflowInstanceId,
     workspaceRoot: body.runContext.workspaceRoot,
   });
   const start = Date.now();
