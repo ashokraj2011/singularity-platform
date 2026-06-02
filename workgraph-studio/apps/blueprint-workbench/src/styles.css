@@ -3595,7 +3595,10 @@ summary.neo-stage-workspace-head::after {
 
 .rail-row > button {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 10px;
+  /* col 3 sizes to content so the stage-mode chip (Story/Plan/Code/Verify/
+     Evidence) shows in full instead of being clipped to ~2 chars; an optional
+     attention dot flows into an implicit auto track after it. */
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   width: 100%;
