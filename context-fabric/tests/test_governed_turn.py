@@ -573,6 +573,79 @@ async def test_run_turn_happy_path_phase_advance(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_turn_per_phase_model_override(monkeypatch):
+    """M100 — phase_model_aliases routes the CURRENT phase to its pinned
+    model alias; an unset phase falls back to the stage-level model_alias."""
+    captured: dict = {}
+
+    async def fake_load_stage_policy(stage_key, agent_role, *, bearer=None):
+        return _policy([], phase=Phase.PLAN)
+
+    async def fake_resolve_prompt(*, stage_key, agent_role, phase, vars=None, bearer=None, **_kwargs):
+        return _prompt()
+
+    async def fake_call_gateway(*, messages, tools, model_alias=None, **_kwargs):
+        captured["model_alias"] = model_alias
+        return ChatResponse(
+            content="ok.",
+            tool_calls=[],
+            finish_reason="stop",
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=10,
+            provider="mock",
+            model="mock-fast",
+            model_alias=model_alias,
+            estimated_cost=0.0,
+        )
+
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.load_stage_policy", fake_load_stage_policy
+    )
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.resolve_phase_prompt", fake_resolve_prompt
+    )
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.call_gateway_chat", fake_call_gateway
+    )
+
+    # Fresh state starts in PLAN. A PLAN-specific alias wins over the stage default.
+    state = PhaseState.fresh("loop.stage", "DEVELOPER")
+    assert state.current_phase is Phase.PLAN
+    await run_turn(
+        state=state,
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        model_alias="stage-default",
+        phase_model_aliases={"PLAN": "plan-model", "ACT": "act-model"},
+    )
+    assert captured["model_alias"] == "plan-model"
+
+    # No PLAN entry → falls back to the stage-level model_alias.
+    captured.clear()
+    state2 = PhaseState.fresh("loop.stage", "DEVELOPER")
+    await run_turn(
+        state=state2,
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        model_alias="stage-default",
+        phase_model_aliases={"ACT": "act-model"},
+    )
+    assert captured["model_alias"] == "stage-default"
+
+    # No per-phase map at all → stage default (legacy behavior).
+    captured.clear()
+    state3 = PhaseState.fresh("loop.stage", "DEVELOPER")
+    await run_turn(
+        state=state3,
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        model_alias="stage-default",
+    )
+    assert captured["model_alias"] == "stage-default"
+
+
+@pytest.mark.asyncio
 async def test_run_turn_llm_error_propagates(monkeypatch):
     """LLMGatewayError surfaces to the caller — state is NOT mutated."""
     async def fake_load_stage_policy(stage_key, agent_role, *, bearer=None):

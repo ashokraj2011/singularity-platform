@@ -338,6 +338,11 @@ export type WorkbenchExecutionConfig = {
   reuseUnchangedAttempt?: boolean
   modelAlias?: string
   stageModelAliases?: Record<string, string>
+  // M100 — per-stage, per-phase model alias overrides:
+  //   { [stageKeyOrLabel]: { [PHASE]: modelAlias } }
+  // The current governed phase's entry wins over the stage alias; unset
+  // phases inherit the stage model. Mirrors the workgraph-api persistence.
+  stagePhaseModelAliases?: Record<string, Record<string, string>>
   governanceMode?: GovernanceMode
   maxContextTokens?: number
   maxOutputTokens?: number
@@ -860,7 +865,45 @@ export const api = {
   // M42.7 — list registered model aliases the LLM gateway will accept.
   // Used by the per-stage model picker in the Neo cockpit so operators can
   // pin a stronger model (e.g. Sonnet for DEVELOP) without leaving the UI.
-  listModelAliases: () => request<LlmModelCatalog>('/llm/models'),
+  //
+  // M100 — normalize the response. mcp-server wraps payloads in a
+  // { success, data, requestId } envelope and names the default alias
+  // `defaultModelAlias` (camelCase); the workbench wants a flat
+  // { default_model_alias, models }. We unwrap the envelope (tolerant of
+  // either shape) and accept either casing so the catalog actually
+  // populates the picker.
+  listModelAliases: async (): Promise<LlmModelCatalog> => {
+    const data = unwrapLlmEnvelope<{
+      default_model_alias?: string
+      defaultModelAlias?: string
+      models?: LlmModelCatalogEntry[]
+    }>(await request<unknown>('/llm/models'))
+    return {
+      default_model_alias: data.default_model_alias ?? data.defaultModelAlias,
+      models: Array.isArray(data.models) ? data.models : [],
+    }
+  },
+  // M100 — provider readiness for the live, provider-aware picker. Polled on
+  // a short interval at the call site so a provider flip (e.g. via
+  // bin/llm-use-copilot.sh) is reflected without a hard reload.
+  listProviders: async (): Promise<LlmProviderList> => {
+    const data = unwrapLlmEnvelope<LlmProviderList>(await request<unknown>('/llm/providers'))
+    return {
+      default_provider: data.default_provider,
+      default_model: data.default_model,
+      providers: Array.isArray(data.providers) ? data.providers : [],
+    }
+  },
+}
+
+// M100 — tolerate mcp-server's { success, data, requestId } envelope. Returns
+// `.data` when the value looks like that envelope, else the value itself (so
+// it keeps working if an upstream layer ever unwraps for us).
+function unwrapLlmEnvelope<T>(raw: unknown): T {
+  if (raw && typeof raw === 'object' && 'data' in (raw as Record<string, unknown>) && 'success' in (raw as Record<string, unknown>)) {
+    return (raw as { data: T }).data
+  }
+  return raw as T
 }
 
 export type LlmModelCatalogEntry = {
@@ -878,4 +921,20 @@ export type LlmModelCatalogEntry = {
 export type LlmModelCatalog = {
   default_model_alias?: string
   models: LlmModelCatalogEntry[]
+}
+
+// M100 — live provider readiness (GET /llm/providers).
+export type LlmProvider = {
+  name: string
+  ready?: boolean
+  default_model?: string
+  allowed?: boolean
+  enabled?: boolean
+  warnings?: string[]
+}
+
+export type LlmProviderList = {
+  default_provider?: string
+  default_model?: string
+  providers: LlmProvider[]
 }

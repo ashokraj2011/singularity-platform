@@ -398,6 +398,13 @@ async def run_turn(
     vars: dict[str, Any] | None = None,
     history: list[dict[str, Any]] | None = None,
     model_alias: str | None = None,
+    # M100 — per-phase model override. Maps a governed Phase value
+    # (PLAN/EXPLORE/ACT/VERIFY/REPAIR/SELF_REVIEW/FINALIZE) → model alias.
+    # When the CURRENT phase has an entry it wins over the stage-level
+    # `model_alias`; phases with no entry (and unknown keys) fall back to
+    # `model_alias`, then the gateway default. None preserves the legacy
+    # single-model-per-stage behavior verbatim.
+    phase_model_aliases: dict[str, str] | None = None,
     run_context: dict[str, Any] | None = None,
     bearer: str | None = None,
     # M83.r — Anthropic extended thinking budget. None / 0 → off.
@@ -639,10 +646,17 @@ async def run_turn(
     )
 
     # 4. LLM call.
+    # M100 — resolve the effective model alias for THIS phase. A per-phase
+    # override (e.g. a cheaper model for EXPLORE, a stronger one for ACT)
+    # wins over the stage-level alias; an unset/unknown phase falls back to
+    # `model_alias`, then to the gateway default.
+    effective_model_alias = (
+        (phase_model_aliases or {}).get(state.current_phase.value) or model_alias
+    )
     response: ChatResponse = await call_gateway_chat(
         messages=messages,
         tools=tools,
-        model_alias=model_alias,
+        model_alias=effective_model_alias,
         bearer=bearer,
         thinking_budget=thinking_budget,
     )
@@ -660,6 +674,11 @@ async def run_turn(
             "provider": response.provider,
             "model": response.model,
             "model_alias": response.model_alias,
+            # M100 — the alias we REQUESTED for this phase (post per-phase
+            # override resolution). `model_alias` above is what the gateway
+            # actually resolved/served; surfacing both lets LoopTrace show
+            # per-phase routing even when they differ from the stage default.
+            "requested_model_alias": effective_model_alias,
             "latency_ms": response.latency_ms,
             "estimated_cost": response.estimated_cost,
             # ADR 0003 — prompt-cache usage so hit rate is observable in

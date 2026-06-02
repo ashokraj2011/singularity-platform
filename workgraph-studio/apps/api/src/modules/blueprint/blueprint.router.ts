@@ -161,6 +161,35 @@ const stageModelAliasesSchema = z.preprocess(value => {
   return out
 }, z.record(z.string().trim().min(1).max(80)).optional())
 
+// M100 — canonical governed phases. Mirrors the Phase enum in
+// context-fabric (governed/phase_state.py) and the prompt-composer client
+// union. Per-phase model overrides are whitelisted to these keys so a
+// typo'd phase can't silently persist.
+const GOVERNED_PHASES = ['PLAN', 'EXPLORE', 'ACT', 'VERIFY', 'REPAIR', 'SELF_REVIEW', 'FINALIZE'] as const
+
+// M100 — per-stage, per-phase model alias overrides:
+//   { [stageKeyOrLabel]: { [PHASE]: modelAlias } }
+// Mirrors stageModelAliasesSchema's trim/drop-empty behavior, but nested
+// and with the inner key whitelisted to GOVERNED_PHASES (upper-cased).
+// Unknown phases and blank aliases are dropped; empty inner maps are pruned.
+const stagePhaseModelAliasesSchema = z.preprocess(value => {
+  if (value === null || value === undefined) return undefined
+  if (!isRecord(value)) return value
+  const out: Record<string, Record<string, string>> = {}
+  for (const [stageKey, phaseMap] of Object.entries(value)) {
+    if (!stageKey.trim() || !isRecord(phaseMap)) continue
+    const inner: Record<string, string> = {}
+    for (const [phase, raw] of Object.entries(phaseMap)) {
+      if (typeof raw !== 'string') continue
+      const trimmed = raw.trim()
+      const phaseKey = phase.trim().toUpperCase()
+      if (trimmed && (GOVERNED_PHASES as readonly string[]).includes(phaseKey)) inner[phaseKey] = trimmed
+    }
+    if (Object.keys(inner).length > 0) out[stageKey.trim()] = inner
+  }
+  return out
+}, z.record(z.record(z.string().trim().min(1).max(80))).optional())
+
 const executionSettingsSchema = z.object({
   maxLoopsPerStage: z.number().int().min(1).max(50).optional(),
   maxTotalSendBacks: z.number().int().min(0).max(200).optional(),
@@ -173,6 +202,7 @@ const executionSettingsSchema = z.object({
     z.string().trim().min(1).max(80).nullable().optional(),
   ),
   stageModelAliases: stageModelAliasesSchema,
+  stagePhaseModelAliases: stagePhaseModelAliasesSchema,
   maxContextTokens: z.number().int().min(1_000).max(200_000).optional(),
   maxOutputTokens: z.number().int().min(128).max(32_000).optional(),
   maxPromptChars: z.number().int().min(2_000).max(500_000).optional(),
@@ -594,6 +624,9 @@ type LoopState = {
     reuseUnchangedAttempt?: boolean
     modelAlias?: string
     stageModelAliases?: Record<string, string>
+    // M100 — per-stage, per-phase model alias overrides:
+    //   { [stageKeyOrLabel]: { [PHASE]: modelAlias } }
+    stagePhaseModelAliases?: Record<string, Record<string, string>>
     governanceMode?: 'fail_open' | 'fail_closed' | 'degraded' | 'human_approval_required'
     maxContextTokens?: number
     maxOutputTokens?: number
@@ -946,6 +979,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         governanceMode,
         modelAlias: body.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS,
         stageModelAliases: sanitizeStageModelAliases(body.stageModelAliases),
+        stagePhaseModelAliases: sanitizeStagePhaseModelAliases(body.stagePhaseModelAliases),
         maxContextTokens: body.maxContextTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxContextTokens,
         maxOutputTokens: body.maxOutputTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxOutputTokens,
         maxPromptChars: body.maxPromptChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxPromptChars,
@@ -1079,6 +1113,9 @@ blueprintRouter.patch('/sessions/:id/settings', validate(updateSessionSettingsSc
     }
     if (body.stageModelAliases !== undefined) {
       nextExecutionConfig.stageModelAliases = sanitizeStageModelAliases(body.stageModelAliases)
+    }
+    if (body.stagePhaseModelAliases !== undefined) {
+      nextExecutionConfig.stagePhaseModelAliases = sanitizeStagePhaseModelAliases(body.stagePhaseModelAliases)
     }
     const nextState: LoopState = {
       ...state,
@@ -2912,6 +2949,28 @@ function sanitizeStageModelAliases(value: unknown): Record<string, string> | und
   return Object.keys(out).length > 0 ? out : undefined
 }
 
+// M100 — sanitize the persisted per-stage, per-phase model alias map. Same
+// trim/drop-empty discipline as sanitizeStageModelAliases, but nested and
+// with the inner key whitelisted (upper-cased) to GOVERNED_PHASES. Used on
+// both write (create/PATCH body) and read (metadata round-trip), so an
+// invalid value persisted out-of-band can never reach the spawn path.
+function sanitizeStagePhaseModelAliases(value: unknown): Record<string, Record<string, string>> | undefined {
+  if (!isRecord(value)) return undefined
+  const out: Record<string, Record<string, string>> = {}
+  for (const [stageKey, phaseMap] of Object.entries(value)) {
+    if (!stageKey.trim() || !isRecord(phaseMap)) continue
+    const inner: Record<string, string> = {}
+    for (const [phase, raw] of Object.entries(phaseMap)) {
+      if (typeof raw !== 'string') continue
+      const trimmed = raw.trim()
+      const phaseKey = phase.trim().toUpperCase()
+      if (trimmed && (GOVERNED_PHASES as readonly string[]).includes(phaseKey)) inner[phaseKey] = trimmed
+    }
+    if (Object.keys(inner).length > 0) out[stageKey.trim()] = inner
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 function readExecutionConfig(value: unknown): LoopState['executionConfig'] {
   if (!isRecord(value)) return undefined
   return {
@@ -2920,6 +2979,7 @@ function readExecutionConfig(value: unknown): LoopState['executionConfig'] {
     reuseUnchangedAttempt: value.reuseUnchangedAttempt !== false,
     modelAlias: typeof value.modelAlias === 'string' && value.modelAlias.trim() ? value.modelAlias.trim() : undefined,
     stageModelAliases: sanitizeStageModelAliases(value.stageModelAliases),
+    stagePhaseModelAliases: sanitizeStagePhaseModelAliases(value.stagePhaseModelAliases),
     governanceMode: ['fail_open', 'fail_closed', 'degraded', 'human_approval_required'].includes(String(value.governanceMode))
       ? value.governanceMode as NonNullable<LoopState['executionConfig']>['governanceMode']
       : 'fail_open',
@@ -2981,6 +3041,34 @@ function stageModelAlias(
     if (alias?.trim()) return alias.trim()
   }
   return executionConfig?.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS
+}
+
+// M100 — resolve the per-phase model override map for a stage. Uses the
+// same stageKey/label candidate lookup as stageModelAlias() so the operator
+// can key the map by either the stage key or its human label. Returns the
+// stage's `{ PHASE: alias }` map (only phases the operator pinned), or
+// undefined when nothing is set. CF treats absent phases as "use the
+// stage-level model_alias", so we intentionally do NOT fill every phase.
+function phaseModelAliases(
+  executionConfig: LoopState['executionConfig'],
+  stageKey: string,
+  stageLabel?: string,
+): Record<string, string> | undefined {
+  const byStage = executionConfig?.stagePhaseModelAliases
+  if (!byStage) return undefined
+  const candidates = [
+    stageKey,
+    stageKey.toLowerCase(),
+    stageKey.toUpperCase(),
+    stageLabel,
+    stageLabel?.toLowerCase(),
+    stageLabel?.toUpperCase(),
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  for (const candidate of candidates) {
+    const map = byStage[candidate]
+    if (map && Object.keys(map).length > 0) return map
+  }
+  return undefined
 }
 
 function applyLoopLimitSettings(
@@ -5079,6 +5167,10 @@ async function runLoopStageExecute(
   const state = readLoopState(session)
   const executionConfig = state.executionConfig
   const modelAlias = stageModelAlias(executionConfig, stage.key, stage.label)
+  // M100 — per-phase model overrides for this stage (if the operator pinned
+  // any). CF routes each governed phase to its alias, falling back to
+  // `modelAlias` for unset phases. Undefined → single stage model (legacy).
+  const phaseModelAliasMap = phaseModelAliases(executionConfig, stage.key, stage.label)
   const limits = workbenchExecutionLimits(executionConfig)
   const isDeveloperStage = stageAllowsMutation(stage)
   const usesRepoContext = stageUsesRepoContext(stage)
@@ -5242,6 +5334,7 @@ async function runLoopStageExecute(
     agentRole: stage.agentRole,
     policy,
     modelAlias,
+    phaseModelAliases: phaseModelAliasMap,
     stageExecutionPolicy,
     vars: {
       // (2026-05-25) Spread the full stageVars bundle FIRST so all the

@@ -1580,6 +1580,10 @@ async def run_stage(
     vars: dict[str, Any] | None = None,
     initial_history: list[dict[str, Any]] | None = None,
     model_alias: str | None = None,
+    # M100 — per-phase model override map (Phase value → model alias),
+    # threaded verbatim to every run_turn() so each phase of the stage
+    # can route to a different model. None → single stage model (legacy).
+    phase_model_aliases: dict[str, str] | None = None,
     run_context: dict[str, Any] | None = None,
     bearer: str | None = None,
     max_turns: int = DEFAULT_MAX_TURNS,
@@ -1822,6 +1826,7 @@ async def run_stage(
                     vars=vars,
                     history=history,
                     model_alias=model_alias,
+                    phase_model_aliases=phase_model_aliases,
                     run_context=run_context,
                     bearer=bearer,
                     thinking_budget=thinking_budget,

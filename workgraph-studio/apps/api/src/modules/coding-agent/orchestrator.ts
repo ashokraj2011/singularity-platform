@@ -273,6 +273,11 @@ export interface CodingStageGovernedRequest {
   policy: CodingStagePolicy
   vars?: Record<string, unknown>
   modelAlias?: string
+  // M100 — per-phase model override map (Phase value → model alias) for
+  // this stage. Forwarded verbatim to CF, which routes each governed phase
+  // to its pinned model (falling back to modelAlias for unset phases).
+  // Omitted = single stage model (legacy).
+  phaseModelAliases?: Record<string, string>
   bearer?: string
   runContext?: Record<string, unknown>
   // Persistable phase state from a prior run of the same stage attempt.
@@ -309,6 +314,11 @@ export async function runCodingStageGoverned(
     vars: input.vars ?? {},
     initial_history: input.initialHistory ?? [],
     model_alias: input.modelAlias,
+    // M100 — only sent when the operator pinned at least one per-phase
+    // override, so CF sees a clean "no per-phase map" signal otherwise.
+    ...(input.phaseModelAliases && Object.keys(input.phaseModelAliases).length > 0
+      ? { phase_model_aliases: input.phaseModelAliases }
+      : {}),
     bearer: input.bearer,
     run_context: input.runContext ?? {},
     max_turns: input.maxTurns,

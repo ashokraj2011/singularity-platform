@@ -1117,20 +1117,41 @@ function WorkbenchNeo({
   const [activeStageKey, setActiveStageKey] = useState<string | null>(null)
   const [overlay, setOverlay] = useState<NeoOverlayKind>('none')
   const [look, setLook] = useNeoLook()
-  // M42.7 — fetch the LLM model alias catalog so each stage row can render a
-  // model picker. Cached for 5 min — the gateway reloads on restart and the
-  // list is short, so we trade freshness for quietness.
+  const queryClient = useQueryClient()
+  // M100 — live provider readiness. Polled on a short interval (and on window
+  // focus) so an out-of-band provider flip (e.g. bin/llm-use-copilot.sh) is
+  // reflected without a hard reload. `default_provider` is folded into the
+  // model-catalog query key below so the catalog auto-refetches when the
+  // active provider changes.
+  const providersQuery = useQuery({
+    queryKey: ['llm-providers'],
+    queryFn: () => api.listProviders(),
+    staleTime: 15 * 1000,
+    refetchInterval: 30 * 1000,
+    refetchOnWindowFocus: true,
+  })
+  const activeProvider = providersQuery.data?.default_provider
+  // M42.7 / M100 — fetch the LLM model alias catalog so each stage row can
+  // render a (provider-aware) model picker. Keyed by the active provider so a
+  // provider flip invalidates it; short staleTime keeps `ready` per-row fresh.
   const modelCatalogQuery = useQuery({
-    queryKey: ['llm-models'],
+    queryKey: ['llm-models', activeProvider],
     queryFn: () => api.listModelAliases(),
-    staleTime: 5 * 60 * 1000,
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: true,
   })
   const modelCatalog: LlmModelCatalogEntry[] = modelCatalogQuery.data?.models ?? []
   const defaultModelAlias =
     session?.executionConfig?.modelAlias ||
     modelCatalogQuery.data?.default_model_alias ||
     undefined
+  const refreshModels = () => {
+    void queryClient.invalidateQueries({ queryKey: ['llm-providers'] })
+    void queryClient.invalidateQueries({ queryKey: ['llm-models'] })
+  }
   const stageModelAliases: Record<string, string> = session?.executionConfig?.stageModelAliases ?? {}
+  const stagePhaseModelAliases: Record<string, Record<string, string>> =
+    session?.executionConfig?.stagePhaseModelAliases ?? {}
   const updateStageModelMutation = useMutation({
     mutationFn: ({ id, body }: { id: string; body: Parameters<typeof api.updateSettings>[1] }) =>
       api.updateSettings(id, body),
@@ -1217,7 +1238,10 @@ function WorkbenchNeo({
           }}
           modelCatalog={modelCatalog}
           stageModelAliases={stageModelAliases}
+          stagePhaseModelAliases={stagePhaseModelAliases}
           defaultModelAlias={defaultModelAlias}
+          activeProvider={activeProvider}
+          onRefreshModels={refreshModels}
           onStageModelChange={(stageKey, alias) => {
             // M42.7 — patch stageModelAliases via /settings. We merge the
             // current map with the new pick (or delete the key when alias is
@@ -1226,6 +1250,18 @@ function WorkbenchNeo({
             if (alias) next[stageKey] = alias
             else delete next[stageKey]
             updateStageModelMutation.mutate({ id: session.id, body: { stageModelAliases: next } })
+          }}
+          onStagePhaseModelChange={(stageKey, phase, alias) => {
+            // M100 — patch stagePhaseModelAliases via /settings. Merge into the
+            // stage's phase map (or delete the phase when alias is null);
+            // prune empty inner maps so the persisted shape stays clean.
+            const next: Record<string, Record<string, string>> = { ...stagePhaseModelAliases }
+            const inner = { ...(next[stageKey] ?? {}) }
+            if (alias) inner[phase] = alias
+            else delete inner[phase]
+            if (Object.keys(inner).length > 0) next[stageKey] = inner
+            else delete next[stageKey]
+            updateStageModelMutation.mutate({ id: session.id, body: { stagePhaseModelAliases: next } })
           }}
           footer={
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

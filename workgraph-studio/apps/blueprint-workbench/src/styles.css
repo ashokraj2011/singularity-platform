@@ -3643,6 +3643,96 @@ summary.neo-stage-workspace-head::after {
   outline-offset: 1px;
 }
 
+/* M100 — active provider chip + manual refresh in the rail header. */
+.rail-provider {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.rail-provider-chip {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--surface-high, rgba(148, 163, 184, 0.18));
+  color: var(--text-subtle, var(--text));
+  border: 1px solid var(--surface-high, rgba(148, 163, 184, 0.3));
+}
+.rail-refresh {
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--surface-high, rgba(148, 163, 184, 0.3));
+  background: var(--surface, transparent);
+  color: var(--text-subtle, var(--text));
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.rail-refresh:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* M100 — per-phase model override disclosure under each stage row. */
+.rail-phase-models {
+  margin: -2px 8px 8px 46px;
+}
+.rail-phase-models > summary {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-subtle, var(--text));
+  cursor: pointer;
+  list-style: none;
+  padding: 2px 0;
+  opacity: 0.75;
+}
+.rail-phase-models > summary:hover {
+  opacity: 1;
+}
+.rail-phase-models[open] > summary {
+  opacity: 1;
+}
+.rail-phase-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0 2px;
+}
+.rail-phase-row {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  align-items: center;
+  gap: 6px;
+}
+.rail-phase-name {
+  font-size: 10.5px;
+  color: var(--text-subtle, var(--text));
+  opacity: 0.85;
+}
+.rail-phase-row > select {
+  width: 100%;
+  font-size: 10.5px;
+  padding: 2px 5px;
+  border-radius: 6px;
+  border: 1px solid var(--surface-high, rgba(148, 163, 184, 0.3));
+  background: var(--surface, transparent);
+  color: var(--text-subtle, var(--text));
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.rail-phase-row > select:hover {
+  border-color: var(--primary);
+}
+.rail-phase-row > select:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
 .rail-pip {
   width: 26px;
   height: 26px;

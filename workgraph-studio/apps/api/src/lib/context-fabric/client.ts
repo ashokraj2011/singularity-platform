@@ -200,6 +200,13 @@ export interface GovernedStageRequest {
   vars?: Record<string, unknown>
   initial_history?: unknown[]
   model_alias?: string
+  // M100 — per-phase model override. Maps a governed Phase value
+  // (PLAN/EXPLORE/ACT/VERIFY/REPAIR/SELF_REVIEW/FINALIZE) → model alias.
+  // The current phase's entry wins over `model_alias`; unset/unknown phases
+  // fall back to `model_alias`, then the gateway default. Omitted = the
+  // single-model-per-stage behavior (back-compat). Mirrors the
+  // GovernedStageRequest.phase_model_aliases field in context-fabric.
+  phase_model_aliases?: Record<string, string>
   bearer?: string
   run_context?: Record<string, unknown>
   // Safety cap on LLM turns; defaults to context-fabric's DEFAULT_MAX_TURNS (25).

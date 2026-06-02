@@ -105,3 +105,40 @@ const MODE_META: Record<StageMode, StageModeMeta> = {
 export function stageModeMeta(mode: StageMode): StageModeMeta {
   return MODE_META[mode]
 }
+
+// ── M100 — governed phases (for per-phase model overrides) ──────────────────
+// Mirrors the Phase enum in context-fabric (governed/phase_state.py).
+export const GOVERNED_PHASES = ['PLAN', 'EXPLORE', 'ACT', 'VERIFY', 'REPAIR', 'SELF_REVIEW', 'FINALIZE'] as const
+export type GovernedPhase = (typeof GOVERNED_PHASES)[number]
+
+// Which governed phases are worth exposing per stage mode. Unset phases simply
+// inherit the stage-level model, and CF only consults phases it actually runs,
+// so these lists are about UI relevance, not correctness. CODE exposes the full
+// loop (it's the only mode that mutates + repairs + verifies).
+const PHASES_BY_MODE: Record<StageMode, readonly GovernedPhase[]> = {
+  STORY:    ['PLAN', 'EXPLORE'],
+  PLAN:     ['PLAN', 'EXPLORE', 'SELF_REVIEW'],
+  CODE:     GOVERNED_PHASES,
+  VERIFY:   ['EXPLORE', 'VERIFY', 'REPAIR', 'SELF_REVIEW'],
+  EVIDENCE: ['SELF_REVIEW', 'FINALIZE'],
+}
+
+/** Governed phases relevant to a stage, for the per-phase model picker. */
+export function phasesForMode(mode: StageMode): readonly GovernedPhase[] {
+  return PHASES_BY_MODE[mode] ?? GOVERNED_PHASES
+}
+
+const PHASE_LABELS: Record<GovernedPhase, string> = {
+  PLAN:        'Plan',
+  EXPLORE:     'Explore',
+  ACT:         'Act',
+  VERIFY:      'Verify',
+  REPAIR:      'Repair',
+  SELF_REVIEW: 'Self-review',
+  FINALIZE:    'Finalize',
+}
+
+/** Human label for a governed phase (falls back to the raw key). */
+export function phaseLabel(phase: string): string {
+  return (PHASE_LABELS as Record<string, string>)[phase] ?? phase
+}

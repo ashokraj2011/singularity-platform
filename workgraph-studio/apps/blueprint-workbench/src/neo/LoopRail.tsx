@@ -22,7 +22,16 @@
  */
 import { useMemo, type ReactNode } from 'react'
 import type { BlueprintSession, LlmModelCatalogEntry, StageAttempt } from '../api'
-import { stageMode, stageModeMeta } from './stageMode'
+import { phaseLabel, phasesForMode, stageMode, stageModeMeta } from './stageMode'
+
+/** Compact option label: model name · provider, with an availability hint. */
+function modelOptionLabel(m: LlmModelCatalogEntry): string {
+  const parts = [m.label ?? m.id]
+  if (m.provider) parts.push(m.provider)
+  if (m.ready === false) parts.push('unavailable')
+  else if (m.costTier) parts.push(String(m.costTier))
+  return parts.join(' · ')
+}
 
 type StageStatus = 'pending' | 'running' | 'paused' | 'awaiting' | 'pass' | 'risk_accepted' | 'failed' | 'sent_back'
 
@@ -58,8 +67,12 @@ export function LoopRail({
   onStage,
   modelCatalog,
   stageModelAliases,
+  stagePhaseModelAliases,
   defaultModelAlias,
+  activeProvider,
   onStageModelChange,
+  onStagePhaseModelChange,
+  onRefreshModels,
   footer,
 }: {
   session: BlueprintSession
@@ -70,8 +83,18 @@ export function LoopRail({
    *  alias for that stage. Omit them to fall back to the legacy rail. */
   modelCatalog?: LlmModelCatalogEntry[]
   stageModelAliases?: Record<string, string>
+  /** M100 — per-stage, per-phase overrides: { [stageKey]: { [PHASE]: alias } }.
+   *  When onStagePhaseModelChange is provided, each row gains an "Advanced:
+   *  per-phase model" disclosure scoped to the phases relevant to the stage. */
+  stagePhaseModelAliases?: Record<string, Record<string, string>>
   defaultModelAlias?: string
+  /** M100 — active LLM provider (from /llm/providers); shown in the header so
+   *  operators can see at a glance which provider the aliases route through. */
+  activeProvider?: string
   onStageModelChange?: (stageKey: string, alias: string | null) => void
+  onStagePhaseModelChange?: (stageKey: string, phase: string, alias: string | null) => void
+  /** M100 — manual catalog refresh (invalidate providers + models). */
+  onRefreshModels?: () => void
   /** Optional footer slot — used by WorkbenchNeo to dock the
    *  NeoThemePicker so it's always reachable from the rail. */
   footer?: ReactNode
@@ -89,12 +112,33 @@ export function LoopRail({
   }), [session.stageAttempts, stages])
 
   const modelPickerEnabled = Boolean(modelCatalog && modelCatalog.length > 0 && onStageModelChange)
+  const phasePickerEnabled = modelPickerEnabled && Boolean(onStagePhaseModelChange)
 
   return (
     <aside className="neo-loop-rail" aria-label="Loop stages">
       <header>
         <span className="rail-title">Loop</span>
         <span className="rail-subtitle">{session.loopDefinition?.name ?? 'Capability run'}</span>
+        {modelPickerEnabled && (activeProvider || onRefreshModels) && (
+          <span className="rail-provider">
+            {activeProvider && (
+              <span className="rail-provider-chip" title="Active LLM provider — model aliases route through this">
+                {activeProvider}
+              </span>
+            )}
+            {onRefreshModels && (
+              <button
+                type="button"
+                className="rail-refresh"
+                title="Refresh provider + model list"
+                aria-label="Refresh models"
+                onClick={onRefreshModels}
+              >
+                ↻
+              </button>
+            )}
+          </span>
+        )}
       </header>
       <ol>
         {items.map(({ stage, status, attemptCount }, index) => {
@@ -115,7 +159,7 @@ export function LoopRail({
                 {needsAttention && <span className="rail-attention-dot" aria-label="needs attention" />}
               </button>
               {modelPickerEnabled && (
-                <label className="rail-model-picker" title="Model used by this stage">
+                <label className="rail-model-picker" title="Default model for every phase of this stage">
                   <select
                     value={pinned}
                     onChange={e => onStageModelChange?.(stage.key, e.target.value || null)}
@@ -125,13 +169,41 @@ export function LoopRail({
                     <option value="">{`(default${defaultModelAlias ? `: ${defaultModelAlias}` : ''})`}</option>
                     {modelCatalog!.map(m => (
                       <option key={m.id} value={m.id} disabled={m.ready === false}>
-                        {m.label ?? m.id}
-                        {m.costTier ? ` · ${m.costTier}` : ''}
+                        {modelOptionLabel(m)}
                         {m.id === effective && !pinned ? ' (in use)' : ''}
                       </option>
                     ))}
                   </select>
                 </label>
+              )}
+              {phasePickerEnabled && (
+                <details className="rail-phase-models" onClick={e => e.stopPropagation()}>
+                  <summary>Per-phase model</summary>
+                  <div className="rail-phase-grid">
+                    {phasesForMode(stageMode(stage)).map(phase => {
+                      const phasePinned = stagePhaseModelAliases?.[stage.key]?.[phase] ?? ''
+                      const inheritLabel = pinned || defaultModelAlias
+                      return (
+                        <label key={phase} className="rail-phase-row" title={`Model for ${stage.label} · ${phaseLabel(phase)} phase`}>
+                          <span className="rail-phase-name">{phaseLabel(phase)}</span>
+                          <select
+                            value={phasePinned}
+                            onChange={e => onStagePhaseModelChange?.(stage.key, phase, e.target.value || null)}
+                            onClick={e => e.stopPropagation()}
+                            aria-label={`Model for ${stage.label} ${phaseLabel(phase)} phase`}
+                          >
+                            <option value="">{`(inherit${inheritLabel ? `: ${inheritLabel}` : ' stage'})`}</option>
+                            {modelCatalog!.map(m => (
+                              <option key={m.id} value={m.id} disabled={m.ready === false}>
+                                {modelOptionLabel(m)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </details>
               )}
               {index < items.length - 1 && <span className="rail-connector" aria-hidden />}
             </li>

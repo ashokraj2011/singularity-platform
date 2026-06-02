@@ -1766,6 +1766,12 @@ class GovernedStageRequest(BaseModel):
     vars: dict[str, Any] = Field(default_factory=dict)
     initial_history: list[dict[str, Any]] = Field(default_factory=list)
     model_alias: Optional[str] = None
+    # M100 — per-phase model override. Maps a governed Phase value
+    # (PLAN/EXPLORE/ACT/VERIFY/REPAIR/SELF_REVIEW/FINALIZE) → model alias.
+    # The current phase's entry wins over `model_alias`; unset/unknown
+    # phases fall back to `model_alias`, then the gateway default. Omitted
+    # (None) preserves the single-model-per-stage behavior (back-compat).
+    phase_model_aliases: Optional[dict[str, str]] = None
     bearer: Optional[str] = None
     run_context: dict[str, Any] = Field(default_factory=dict)
     # Safety cap on the number of LLM turns this call may consume. Defaults
@@ -1858,6 +1864,7 @@ async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
             vars=req.vars,
             initial_history=req.initial_history,
             model_alias=req.model_alias,
+            phase_model_aliases=req.phase_model_aliases,
             run_context=req.run_context,
             bearer=req.bearer,
             max_turns=req.max_turns,
