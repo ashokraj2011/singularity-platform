@@ -35,7 +35,7 @@ export function createRunnerApp() {
       res.json({ success: true, data: receipt });
     } catch (err) {
       const message = (err as Error).message;
-      const status = /not allowed|escapes the sandbox|shell operators|traversal|single allowlisted executable/i.test(message)
+      const status = /not allowed|escapes the sandbox|shell operators|traversal|single allowlisted executable|invalid env/i.test(message)
         ? 400
         : 500;
       res.status(status).json({ success: false, error: message });

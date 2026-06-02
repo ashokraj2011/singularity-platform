@@ -16,7 +16,7 @@ import {
   Star, Briefcase as BriefcaseIcon, Database, Globe, Mail, Phone,
   Calendar, AlertTriangle, Search, Filter, Activity, Coins,
   SlidersHorizontal, Plus, Trash2, GitFork, ShieldAlert,
-  Minimize2, GripVertical, HelpCircle, BookOpen, ChevronDown, Lock, Download, Braces, PenLine, Network,
+  Minimize2, GripVertical, HelpCircle, BookOpen, ChevronDown, Lock, Download, Braces, PenLine, Network, Terminal,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import {
@@ -56,6 +56,7 @@ const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType }> = 
   DATA_SINK:           { color: '#0ea5e9', Icon: Database },
   SET_CONTEXT:         { color: '#84cc16', Icon: SlidersHorizontal },
   ERROR_CATCH:         { color: '#ef4444', Icon: ShieldAlert },
+  RUN_PYTHON:          { color: '#3776ab', Icon: Terminal },
   SCHEDULED_START:     { color: '#2563eb', Icon: Calendar },
   EVENT_TRIGGER_START: { color: '#f59e0b', Icon: Zap },
   SERVER_TIME_INIT:    { color: '#0ea5e9', Icon: Clock },
@@ -71,6 +72,7 @@ const NODE_LABELS: Record<string, string> = {
   FOREACH: 'For Each', PARALLEL_FORK: 'Parallel Fork', PARALLEL_JOIN: 'Parallel Join',
   INCLUSIVE_GATEWAY: 'Inclusive GW', EVENT_GATEWAY: 'Event GW',
   DATA_SINK: 'Data Sink', SET_CONTEXT: 'Set Context', ERROR_CATCH: 'Error Catch',
+  RUN_PYTHON: 'Run Python',
   SCHEDULED_START: 'Scheduled Start',
   EVENT_TRIGGER_START: 'Event Trigger',
   SERVER_TIME_INIT: 'Server Time Init',
@@ -244,7 +246,7 @@ const SERVER_TIME_INIT_NODE_CONFIG = {
 
 const NODE_GROUPS: Array<{ label: string; types: string[] }> = [
   { label: 'Common', types: ['START', 'END', 'HUMAN_TASK', 'APPROVAL'] },
-  { label: 'Agentic', types: ['AGENT_TASK', 'WORKBENCH_TASK', 'TOOL_REQUEST', 'GIT_PUSH'] },
+  { label: 'Agentic', types: ['AGENT_TASK', 'WORKBENCH_TASK', 'TOOL_REQUEST', 'RUN_PYTHON', 'GIT_PUSH'] },
   { label: 'Human', types: ['WORK_ITEM', 'CONSUMABLE_CREATION'] },
   { label: 'Logic', types: ['DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'FOREACH'] },
   { label: 'Data', types: ['SET_CONTEXT', 'DATA_SINK'] },
@@ -1028,7 +1030,7 @@ const NODE_HELP_SECTIONS = [
   },
   {
     title: 'Task & Execution',
-    types: ['FOREACH', 'WORK_ITEM', 'CALL_WORKFLOW', 'TOOL_REQUEST', 'GIT_PUSH', 'POLICY_CHECK', 'EVAL_GATE', 'CREATE_ARTIFACT'],
+    types: ['FOREACH', 'WORK_ITEM', 'CALL_WORKFLOW', 'TOOL_REQUEST', 'RUN_PYTHON', 'GIT_PUSH', 'POLICY_CHECK', 'EVAL_GATE', 'CREATE_ARTIFACT'],
   },
 ]
 
