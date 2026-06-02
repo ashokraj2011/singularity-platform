@@ -25,13 +25,31 @@ export interface WorkspaceRootRequest {
   workItemCode?: string;
   branchName?: string;
   workspaceRoot?: string;
+  // (2026-06-02 M81 cross-stage fix) The long-lived workitem branch
+  // `wi/<workItemCode>` that workgraph-api stamps onto EVERY stage of a run.
+  // Used here as a second source for the workitem code so that review / QA /
+  // security stages resolve to the SAME per-workitem worktree the developer
+  // stage committed to — even when the explicit `workItemCode` field never
+  // reached the resolver (the canonical failure: context-fabric ships the
+  // governed run_context in snake_case and the camelCase `workItemCode` slot
+  // arrives empty, so resolution silently fell through to the base sandbox
+  // root and the review agent re-cloned `/workspace` instead of reading the
+  // dev's diff). See workspaceRootForRunContext for the resolution order.
+  workitemBranch?: string;
+  // (2026-06-02 M81 cross-stage fix) Stage-stable workflow identity. Constant
+  // across every stage of a single run, so it serves as a last-resort key
+  // BEFORE the base sandbox root: a run with no linked WorkItem still keeps
+  // all its stages in one shared sandbox instead of having some stages
+  // diverge onto `/workspace`.
+  workflowInstanceId?: string;
   // M72 Slice C — Per-attempt isolation. When `attemptId` is supplied, the
   // workspace root is scoped to `.singularity/workitems/<workItem>/<attemptId>/`
   // so two concurrent attempts on the same WorkItem don't stomp on each
   // other's checkouts, file edits, or commits. The source-materializer
   // still creates a git worktree branching from the shared source-cache
   // mirror, so disk + clone cost stays bounded.
-  // Backward compat: when attemptId is absent, the layout is unchanged.
+  // Superseded by M81 P2 (one-worktree-per-workitem); kept on the interface
+  // for backward compat but intentionally ignored by the resolver below.
   attemptId?: string;
 }
 
@@ -147,40 +165,64 @@ function isOnBranch(dir: string, expectedBranch: string): boolean {
   }
 }
 
+/**
+ * Extract the workitem code from a long-lived workitem branch
+ * (`wi/<workItemCode>`). Returns "" when `branch` is empty or doesn't carry a
+ * usable segment. The `wi/` prefix is stripped explicitly so a branch like
+ * `wi/WRK-984AD` yields `WRK-984AD`; safeWorkspaceSegment then sanitises it the
+ * same way an explicit workItemCode would be sanitised, so both sources land on
+ * the identical canonical worktree directory.
+ */
+function workItemCodeFromBranch(branch: string | undefined): string {
+  const trimmed = branch?.trim();
+  if (!trimmed) return "";
+  const withoutPrefix = trimmed.replace(/^wi\//i, "");
+  return safeWorkspaceSegment(withoutPrefix, "");
+}
+
 export function workspaceRootForRunContext(req: WorkspaceRootRequest): string {
   const explicit = safeExplicitWorkspaceRoot(req.workspaceRoot);
   if (explicit) return explicit;
-  const identity = req.workItemCode?.trim()
-    || (req.branchName?.trim() ? safeWorkspaceSegment(req.branchName, "") : "")
-    || req.workItemId?.trim();
-  if (!identity) return baseSandboxRoot();
-  const base = path.join(workItemWorkspacesRoot(), safeWorkspaceSegment(identity, "workitem"));
-  // M83 task #176 — when a workItemCode is supplied, prefer whichever
-  // sibling dir is on `wi/<code>` over the canonical path. This is a
-  // no-op for fresh workitems (canonical IS the right one) and only
-  // matters for legacy debris where the canonical dir holds the
-  // pre-M81 per-attempt branch.
-  if (req.workItemCode?.trim()) {
-    return resolveWiBranchWorktree(req.workItemCode.trim(), base);
+
+  // (2026-06-02 M81 cross-stage fix) Resolve the workitem code from EITHER the
+  // explicit `workItemCode` OR the `wi/<code>` workitem branch. workgraph-api
+  // stamps both onto every stage of a run, but the camelCase `workItemCode`
+  // slot can arrive empty when context-fabric ships the governed run_context in
+  // snake_case (the `workitem_branch` alias is honoured wire-side; the
+  // un-aliased `work_item_code` is dropped). Deriving the code from the branch
+  // as well guarantees that develop, qa-review, and security-review all key off
+  // the same `wi/<code>` worktree instead of some stages slipping through to a
+  // divergent root.
+  const workItemCode = req.workItemCode?.trim() || workItemCodeFromBranch(req.workitemBranch);
+  if (workItemCode) {
+    const base = path.join(workItemWorkspacesRoot(), safeWorkspaceSegment(workItemCode, "workitem"));
+    // M83 task #176 — prefer whichever sibling dir is already checked out on
+    // `wi/<code>` over the canonical path. No-op for fresh workitems (canonical
+    // IS the right one); only matters for legacy debris where the canonical dir
+    // holds a stale pre-M81 per-attempt branch.
+    return resolveWiBranchWorktree(workItemCode, base);
   }
-  // M81 P2 (2026-05-26) — Per-workitem layout. Previously M72 Slice C
-  // appended `attempts/<attemptId>/` so concurrent attempts on the
-  // same WorkItem couldn't stomp each other's worktrees. That isolation
-  // turned out to ALSO split a single logical run's tools across
-  // multiple worktrees when fast retries triggered a second mcp-server
-  // attempt mid-flight (repro: dev attempts c9309738 + 6cc728c0,
-  // 2026-05-26 — edits landed on worktree 3ca9692f while
-  // finish_work_branch ran against 5536e63e). The new no-parallel-
-  // attempts guard in workgraph-api (e8cb38a) eliminates the original
-  // concurrency need, so collapsing the layout to a single per-
-  // workitem worktree is now safe and aligns with the long-lived
-  // `wi/<workitemCode>` branch model from M81 P1.
+
+  // No workitem code. Fall back to the remaining identities in
+  // MOST-STABLE-FIRST order. The crucial change vs. the original ordering is
+  // that `branchName` is now LAST, below `workItemId` and `workflowInstanceId`:
+  // workgraph-api's per-attempt workbench branch (`sg/<base>/<stage>/<attempt>`)
+  // VARIES per stage, so keying off it split a single run's stages across
+  // sibling worktrees — the developer landed in one dir, security-review in
+  // another (or, with nothing else to key on, in the base sandbox root). The
+  // workItemId and workflowInstanceId are constant across a run's stages, so
+  // they keep every stage in one shared sandbox.
   //
-  // attemptId is kept on the interface for backward compat but
-  // intentionally ignored. Callers that still pass it just see the
-  // workitem root, which is the desired behavior.
+  // M81 P2 (2026-05-26) — `attemptId` is intentionally ignored. Per-attempt
+  // isolation was replaced by the no-parallel-attempts guard + the long-lived
+  // `wi/<code>` branch model, and re-introducing it here would re-open the
+  // worktree-split failure mode. It stays on the interface for backward compat.
   void req.attemptId;
-  return base;
+  const identity = req.workItemId?.trim()
+    || req.workflowInstanceId?.trim()
+    || (req.branchName?.trim() ? safeWorkspaceSegment(req.branchName, "") : "");
+  if (!identity) return baseSandboxRoot();
+  return path.join(workItemWorkspacesRoot(), safeWorkspaceSegment(identity, "workitem"));
 }
 
 export async function withSandboxRoot<T>(root: string, fn: () => Promise<T>): Promise<T> {
