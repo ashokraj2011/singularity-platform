@@ -290,6 +290,9 @@ export type LoopExpectedArtifact = {
   editable?: boolean
 }
 
+export type StageContextPolicy = 'NONE' | 'STORY_ONLY' | 'REPO_READ_ONLY' | 'CODE_EDIT' | 'VERIFY_ONLY' | 'EVIDENCE_REVIEW'
+export type StageToolPolicy = 'NONE' | 'READ_ONLY' | 'MUTATION' | 'VERIFICATION'
+
 export type LoopStage = {
   key: string
   label: string
@@ -314,8 +317,11 @@ export type LoopStage = {
   //   caller panels visible (dev + qa + test-cert).
   // Tree + read-only file viewer always visible (read affordance
   // helps every reviewer).
-  contextPolicy?: 'NONE' | 'STORY_ONLY' | 'REPO_READ_ONLY' | 'CODE_EDIT' | 'VERIFY_ONLY' | 'EVIDENCE_REVIEW'
-  toolPolicy?: 'NONE' | 'READ_ONLY' | 'MUTATION' | 'VERIFICATION'
+  contextPolicy?: StageContextPolicy
+  toolPolicy?: StageToolPolicy
+  // Mirror of backend normalizeLoopStage: false on story-only stages
+  // (toolPolicy=NONE + repoAccess=false ⇒ story / no-repo workspace).
+  repoAccess?: boolean
 }
 
 export type LoopDefinition = {

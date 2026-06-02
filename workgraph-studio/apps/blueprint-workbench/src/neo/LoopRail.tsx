@@ -22,6 +22,7 @@
  */
 import { useMemo, type ReactNode } from 'react'
 import type { BlueprintSession, LlmModelCatalogEntry, StageAttempt } from '../api'
+import { stageMode, stageModeMeta } from './stageMode'
 
 type StageStatus = 'pending' | 'running' | 'paused' | 'awaiting' | 'pass' | 'risk_accepted' | 'failed' | 'sent_back'
 
@@ -108,8 +109,9 @@ export function LoopRail({
                 <span className="rail-pip" aria-hidden>{statusGlyph(status)}</span>
                 <span className="rail-label">
                   <strong>{stage.label}</strong>
-                  <small>{stage.agentRole}{attemptCount > 0 ? ` · attempt ${attemptCount}` : ''}</small>
+                  <small>{stage.agentRole}{attemptCount > 0 ? ` · attempt ${attemptCount}` : ''}{stage.approvalRequired ? ' · approval' : ''}</small>
                 </span>
+                <span className={`rail-mode-chip ${stageModeMeta(stageMode(stage)).chipClass}`}>{stageModeMeta(stageMode(stage)).label}</span>
                 {needsAttention && <span className="rail-attention-dot" aria-label="needs attention" />}
               </button>
               {modelPickerEnabled && (
