@@ -1253,6 +1253,24 @@ function WorkbenchNeo({
             // away from the stage card to find it.
             onOpenLoop={() => { setOverlay('loop'); onSection('loop') }}
           />
+          {/* Phase 2 — mode-adaptive inline workspace. For CODE/VERIFY stages
+              the worktree (file tree + inline diff + test runner) is promoted
+              INLINE so coding/verification feels like an IDE rather than a
+              modal. Additive: the full-screen `code`/`review` overlays remain.
+              Inlined here (not a separate StageWorkspace component) because
+              WorktreeBrowser is defined in this module — avoids a circular
+              import. Gating is purely policy-driven via stageMode (cockpitMode). */}
+          {activeStage && (cockpitMode === 'CODE' || cockpitMode === 'VERIFY') && (
+            <section className={`neo-stage-workspace ${stageModeMeta(cockpitMode).chipClass}`} aria-label={`${stageModeMeta(cockpitMode).label} workspace`}>
+              <header className="neo-stage-workspace-head">
+                <strong>{stageModeMeta(cockpitMode).label} workspace</strong>
+                <small>file tree · inline diff · test runner — same view as full-screen Code</small>
+              </header>
+              <div className="neo-stage-workspace-body">
+                <WorktreeBrowser sessionId={session.id} stage={activeStage} />
+              </div>
+            </section>
+          )}
           <FinalizeStrip session={session} onSession={onSession} />
         </div>
 

@@ -3488,6 +3488,36 @@ pre {
   }
 }
 
+/* Phase 2 — inline mode workspace (promoted code/diff/test panel for
+   CODE/VERIFY stages). Contained so the heavy worktree panel sits inside the
+   center column instead of a modal; the full-screen overlay remains available. */
+.neo-stage-workspace {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--outline-variant);
+  border-radius: 12px;
+  background: var(--surface-low);
+  overflow: hidden;
+  min-height: 0;
+}
+.neo-stage-workspace-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--outline-variant);
+}
+.neo-stage-workspace-head strong { font-size: 13px; }
+.neo-stage-workspace-head small { opacity: 0.6; font-size: 11px; }
+.neo-stage-workspace-body {
+  min-height: 0;
+  max-height: 70vh;
+  overflow: auto;
+}
+/* A left accent rail tints the workspace by mode, reusing the mode color. */
+.neo-stage-workspace.mode-CODE   { border-left: 3px solid var(--neo-primary); }
+.neo-stage-workspace.mode-VERIFY { border-left: 3px solid var(--neo-attention); }
+
 /* ---------- Vertical Loop Rail ---------- */
 
 .neo-loop-rail {
