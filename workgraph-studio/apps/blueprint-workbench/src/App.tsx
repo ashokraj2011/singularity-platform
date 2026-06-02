@@ -3039,6 +3039,16 @@ function WorktreeTestRunner({ sessionId }: { sessionId: string }) {
   const [persistMessage, setPersistMessage] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const tailRef = useRef<HTMLDivElement | null>(null)
+  // Expand the runner to a full-screen overlay on demand so long test
+  // output (stack traces, mvn reactor logs) is readable without scrolling
+  // a 240px box. Esc / the ✕ button collapses back to the inline panel.
+  const [expanded, setExpanded] = useState(false)
+  useEffect(() => {
+    if (!expanded) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpanded(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [expanded])
 
   // Auto-scroll the terminal pane while a run is active. Snaps off
   // when the operator scrolls up to read earlier output.
@@ -3114,7 +3124,11 @@ function WorktreeTestRunner({ sessionId }: { sessionId: string }) {
         headers: {
           'content-type': 'application/json',
           accept: 'text/event-stream',
-          authorization: `Bearer ${getAuthToken()}`,
+          // Use the canonical token getter (portal session → workgraph-auth),
+          // same as the shared request() helper. The old getAuthToken() read
+          // 'workbench.token'/'token' — keys nothing writes — so it sent an
+          // empty Bearer and workgraph-api rejected with 401 UNAUTHORIZED.
+          authorization: `Bearer ${getToken() ?? ''}`,
         },
         body: JSON.stringify({ command, args }),
         signal: controller.signal,
@@ -3178,7 +3192,9 @@ function WorktreeTestRunner({ sessionId }: { sessionId: string }) {
   }
 
   return (
-    <div style={{ borderTop: '1px solid var(--border, #2a2a2a)', padding: 8, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 360 }}>
+    <div style={expanded
+      ? { position: 'fixed', inset: 16, zIndex: 1000, background: 'var(--surface, #0b0b0b)', border: '1px solid var(--border, #2a2a2a)', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8, boxShadow: '0 24px 80px rgba(0,0,0,0.6)' }
+      : { borderTop: '1px solid var(--border, #2a2a2a)', padding: 8, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 360 }}>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
         <strong style={{ fontSize: 12 }}>Run tests</strong>
         <select
@@ -3225,6 +3241,16 @@ function WorktreeTestRunner({ sessionId }: { sessionId: string }) {
             {status === 'interrupted' || status === 'error' ? 'Re-run' : 'Run'}
           </button>
         )}
+        <button
+          type="button"
+          className="ghost-button"
+          onClick={() => setExpanded(e => !e)}
+          title={expanded ? 'Collapse (Esc)' : 'Expand output to full screen'}
+          aria-label={expanded ? 'Collapse test output' : 'Expand test output'}
+          style={{ marginLeft: 'auto', fontSize: 12 }}
+        >
+          {expanded ? '✕ Close' : '⤢ Expand'}
+        </button>
       </div>
       {summary && (
         <div style={{
@@ -3263,7 +3289,7 @@ function WorktreeTestRunner({ sessionId }: { sessionId: string }) {
         style={{
           flex: 1,
           minHeight: 120,
-          maxHeight: 240,
+          maxHeight: expanded ? 'none' : 240,
           overflow: 'auto',
           background: 'var(--code-bg, #0a0a0a)',
           border: '1px solid var(--border, #2a2a2a)',
@@ -3350,10 +3376,6 @@ function handleSseFrame(
 // workbench API client does. Inlined here so the run-test fetch can
 // pass it via Authorization header (the api.ts request() helper does
 // this automatically but we need raw fetch for SSE).
-function getAuthToken(): string {
-  return localStorage.getItem('workbench.token') ?? localStorage.getItem('token') ?? ''
-}
-
 // ─── M83 S4 v1 — Postman-style API caller ────────────────────────────────
 // Hits any private/loopback URL through workgraph-api's proxy. The
 // operator brings the app up themselves (host JVM, sibling container,
