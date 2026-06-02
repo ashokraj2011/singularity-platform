@@ -77,6 +77,14 @@ function canvasHeight(stages: Stage[]): number {
   return Math.max(360, 100 + stages.length * (STAGE_H + STAGE_GAP))
 }
 
+function stageAccent(stage: Stage) {
+  if (stage.contextPolicy === 'CODE_EDIT' || stage.toolPolicy === 'MUTATION') return '#2563eb'
+  if (stage.contextPolicy === 'STORY_ONLY' || stage.toolPolicy === 'NONE') return '#64748b'
+  if (stage.contextPolicy === 'VERIFY_ONLY' || stage.toolPolicy === 'VERIFICATION') return '#16a34a'
+  if (stage.contextPolicy === 'EVIDENCE_REVIEW') return '#7c3aed'
+  return '#0ea5e9'
+}
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export function WorkbenchMiniCanvas({
@@ -111,19 +119,23 @@ export function WorkbenchMiniCanvas({
   // form validation messages.
   const Frame = ({ children, status }: { children: React.ReactNode; status?: string }) => (
     <div style={{
-      border: '2px dashed #6b7280',
-      borderRadius: 10,
+      border: '1px solid #dbe4f0',
+      borderRadius: 8,
       padding: 16,
-      background: '#fafbfc',
+      background: 'linear-gradient(180deg, #ffffff, #f8fafc)',
       marginBottom: 14,
+      boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
     }}>
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #e5e7eb',
       }}>
         <div>
-          <strong style={{ fontSize: 13, color: '#111' }}>📐 Workbench mini-canvas</strong>
-          {status && <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 8 }}>· {status}</span>}
+          <strong style={{ fontSize: 13, color: '#0f172a' }}>Stage map</strong>
+          {status && <span style={{ fontSize: 11, color: '#64748b', marginLeft: 8 }}>· {status}</span>}
+          <div style={{ fontSize: 10, color: '#64748b', marginTop: 3 }}>
+            Click a stage card to edit its policy, artifacts, and routing below.
+          </div>
         </div>
         <button
           type="button"
@@ -131,9 +143,11 @@ export function WorkbenchMiniCanvas({
           disabled={isFetching}
           style={{
             fontSize: 11, padding: '4px 10px',
-            border: '1px solid #ccc', borderRadius: 4,
-            background: isFetching ? '#eee' : '#fff',
+            border: '1px solid #cbd5e1', borderRadius: 8,
+            background: isFetching ? '#f1f5f9' : '#fff',
             cursor: isFetching ? 'wait' : 'pointer',
+            color: '#334155',
+            fontWeight: 700,
           }}
         >
           {isFetching ? 'Refreshing…' : 'Refresh'}
@@ -176,16 +190,11 @@ export function WorkbenchMiniCanvas({
             here as agent blocks with arrows between them.
           </div>
           <div style={{
-            marginTop: 14, padding: 10, background: '#fff8e6',
-            border: '1px solid #f5d97a', borderRadius: 6,
-            fontSize: 11, color: '#7a5e00', textAlign: 'left',
+            marginTop: 14, padding: 10, background: '#fffbeb',
+            border: '1px solid #fde68a', borderRadius: 8,
+            fontSize: 11, color: '#92400e', textAlign: 'left', lineHeight: 1.55,
           }}>
-            <strong>Possible reasons:</strong>
-            <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
-              <li>This node was just dragged onto the canvas and hasn't been saved yet.</li>
-              <li>Save the node, then click <em>Refresh</em> above.</li>
-              <li>If you've already added stages in the form and still see this, click <em>Refresh</em> — the canvas reads from the new first-class tables which sync on save.</li>
-            </ul>
+            Add stages in the builder below, save the node, then refresh this map.
           </div>
         </div>
       </Frame>
@@ -214,14 +223,14 @@ export function WorkbenchMiniCanvas({
         style={{ display: 'block' }}
       >
         <defs>
-          {/* Arrowhead for forward edges */}
-          <marker id="arrow-forward" viewBox="0 -5 10 10" refX={9} markerWidth={8} markerHeight={8} orient="auto">
-            <path d="M0,-5L10,0L0,5" fill="#444" />
-          </marker>
-          {/* Arrowhead for send-back edges */}
-          <marker id="arrow-sendback" viewBox="0 -5 10 10" refX={9} markerWidth={8} markerHeight={8} orient="auto">
-            <path d="M0,-5L10,0L0,5" fill="#c66" />
-          </marker>
+	          {/* Arrowhead for forward edges */}
+	          <marker id="arrow-forward" viewBox="0 -5 10 10" refX={9} markerWidth={8} markerHeight={8} orient="auto">
+	            <path d="M0,-5L10,0L0,5" fill="#64748b" />
+	          </marker>
+	          {/* Arrowhead for send-back edges */}
+	          <marker id="arrow-sendback" viewBox="0 -5 10 10" refX={9} markerWidth={8} markerHeight={8} orient="auto">
+	            <path d="M0,-5L10,0L0,5" fill="#f59e0b" />
+	          </marker>
         </defs>
 
         {/* Edges first so stage boxes draw over them */}
@@ -247,7 +256,7 @@ export function WorkbenchMiniCanvas({
               <g key={edge.id}>
                 <line
                   x1={x1} y1={y1} x2={x2} y2={y2}
-                  stroke="#444"
+	                  stroke="#94a3b8"
                   strokeWidth={2}
                   markerEnd="url(#arrow-forward)"
                 />
@@ -256,7 +265,7 @@ export function WorkbenchMiniCanvas({
                     x={(x1 + x2) / 2 + 6}
                     y={(y1 + y2) / 2}
                     fontSize={10}
-                    fill="#444"
+	                    fill="#475569"
                     fontFamily="ui-monospace, monospace"
                   >
                     {label}
@@ -277,7 +286,7 @@ export function WorkbenchMiniCanvas({
             <g key={edge.id}>
               <path
                 d={path}
-                stroke="#c66"
+	                stroke="#f59e0b"
                 strokeWidth={1.5}
                 strokeDasharray="4 4"
                 fill="none"
@@ -287,7 +296,7 @@ export function WorkbenchMiniCanvas({
                 x={cpx + 4}
                 y={cpy}
                 fontSize={9}
-                fill="#c66"
+	                fill="#92400e"
                 fontStyle="italic"
               >
                 send-back
@@ -308,23 +317,24 @@ export function WorkbenchMiniCanvas({
               onClick={() => onSelectStage?.(stage.stageKey)}
               style={{ cursor: isClickable ? 'pointer' : 'default' }}
             >
-              <rect
-                width={STAGE_W}
-                height={STAGE_H}
-                rx={6}
-                ry={6}
-                fill="#fff"
-                stroke={stage.terminal ? '#0a7' : '#666'}
-                strokeWidth={stage.terminal ? 2 : 1.5}
-              />
-              <text x={12} y={20} fontSize={12} fontWeight="700">
-                {stage.label}
-                {stage.terminal && <tspan fill="#0a7" fontSize={10}> ★</tspan>}
-              </text>
-              <text x={12} y={36} fontSize={10} fill="#666" fontFamily="ui-monospace, monospace">
-                {stage.agentRole}
-              </text>
-              <text x={12} y={52} fontSize={10} fill="#888">
+	              <rect
+	                width={STAGE_W}
+	                height={STAGE_H}
+	                rx={8}
+	                ry={8}
+	                fill="#fff"
+	                stroke={stage.terminal ? '#16a34a' : stageAccent(stage)}
+	                strokeWidth={stage.terminal ? 2 : 1.5}
+	              />
+	              <rect x={0} y={0} width={4} height={STAGE_H} rx={4} fill={stageAccent(stage)} />
+	              <text x={14} y={20} fontSize={12} fontWeight="800" fill="#0f172a">
+	                {stage.label}
+	                {stage.terminal && <tspan fill="#16a34a" fontSize={10}> terminal</tspan>}
+	              </text>
+	              <text x={14} y={36} fontSize={10} fill="#64748b" fontFamily="ui-monospace, monospace">
+	                {stage.agentRole}
+	              </text>
+	              <text x={14} y={52} fontSize={10} fill="#64748b">
                 {stage.toolPolicy === 'NONE' ? 'no tools'
                   : stage.toolPolicy === 'READ_ONLY' ? 'read-only'
                     : stage.toolPolicy === 'MUTATION' ? 'mutation'
@@ -332,7 +342,7 @@ export function WorkbenchMiniCanvas({
                 {' · '}
                 {stage.contextPolicy.replaceAll('_', ' ').toLowerCase()}
               </text>
-              <text x={12} y={70} fontSize={10} fill="#888">
+	              <text x={14} y={70} fontSize={10} fill="#64748b">
                 {stage.expectedArtifacts.length} artifact{stage.expectedArtifacts.length === 1 ? '' : 's'}
                 {stage.approvalRequired && ' · approval ●'}
               </text>
@@ -341,9 +351,9 @@ export function WorkbenchMiniCanvas({
         })}
       </svg>
 
-      <div style={{ fontSize: 10, color: '#999', marginTop: 8 }}>
-        Solid = forward · Dashed red = send-back · ★ = terminal · ● = approval gate
-      </div>
+	      <div style={{ fontSize: 10, color: '#64748b', marginTop: 8 }}>
+	        Solid = forward · Dashed amber = send-back · terminal = final stage · approval = human gate
+	      </div>
     </Frame>
   )
 }
