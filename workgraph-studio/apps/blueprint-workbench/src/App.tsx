@@ -114,6 +114,7 @@ import { NeoNotifier } from './neo/NeoNotifier'
 import { StageChat } from './neo/StageChat'
 import { InheritedFailureCard, getVerificationFailureAnalysis } from './neo/InheritedFailureCard'
 import { LoopTrace } from './neo/LoopTrace'
+import { stageMode, stageModeMeta, stageAllowsMutation, stageUsesRepoContext } from './neo/stageMode'
 import { LoopTheater } from './loop-theater/LoopTheater'
 import { NeoThemePicker, lookClass, useNeoLook } from './neo/NeoThemePicker'
 import { MarkdownView } from './neo/MarkdownView'
@@ -1174,7 +1175,7 @@ function WorkbenchNeo({
     onSession(updated)
   }
   const activeAttempt = session && activeStage ? attemptsFor(session, activeStage.key).at(-1) : undefined
-  const canReview = Boolean(session && activeStage && activeAttempt && isDeveloperStage(activeStage))
+  const canReview = Boolean(session && activeStage && activeAttempt && stageAllowsMutation(activeStage))
 
   const closeOverlay = (reset = true) => {
     setOverlay('none')
@@ -1191,6 +1192,12 @@ function WorkbenchNeo({
     )
   }
 
+  // The active stage's workspace mode (derived purely from its policy via
+  // stageMode) drives a `mode-*` modifier on the cockpit shell, so the layout
+  // adapts per stage (e.g. the live agent-activity rail widens on CODE/VERIFY
+  // stages) without hardcoding stage names.
+  const cockpitMode = stageMode(activeStage)
+
   // M41.5 — lookClass(look) yields the .neo-cockpit-root wrapper class
   // with three orthogonal modifiers (color theme, surface mode,
   // font family) that scope every --neo-* CSS variable. The LoopRail,
@@ -1199,7 +1206,7 @@ function WorkbenchNeo({
   return (
     <div className={lookClass(look)}>
       <NeoNotifier session={session} />
-      <section className="neo-shell neo-cockpit-shell">
+      <section className={`neo-shell neo-cockpit-shell mode-${cockpitMode}`}>
         <LoopRail
           session={session}
           activeStageKey={activeStage?.key ?? null}
@@ -1246,6 +1253,24 @@ function WorkbenchNeo({
             // away from the stage card to find it.
             onOpenLoop={() => { setOverlay('loop'); onSection('loop') }}
           />
+          {/* Phase 2 — mode-adaptive inline workspace. For CODE/VERIFY stages
+              the worktree (file tree + inline diff + test runner) is promoted
+              INLINE so coding/verification feels like an IDE rather than a
+              modal. Additive: the full-screen `code`/`review` overlays remain.
+              Inlined here (not a separate StageWorkspace component) because
+              WorktreeBrowser is defined in this module — avoids a circular
+              import. Gating is purely policy-driven via stageMode (cockpitMode). */}
+          {activeStage && (cockpitMode === 'CODE' || cockpitMode === 'VERIFY') && (
+            <section className={`neo-stage-workspace ${stageModeMeta(cockpitMode).chipClass}`} aria-label={`${stageModeMeta(cockpitMode).label} workspace`}>
+              <header className="neo-stage-workspace-head">
+                <strong>{stageModeMeta(cockpitMode).label} workspace</strong>
+                <small>file tree · inline diff · test runner — same view as full-screen Code</small>
+              </header>
+              <div className="neo-stage-workspace-body">
+                <WorktreeBrowser sessionId={session.id} stage={activeStage} />
+              </div>
+            </section>
+          )}
           <FinalizeStrip session={session} onSession={onSession} />
         </div>
 
@@ -1450,7 +1475,7 @@ function WorkflowReplay({ session, stages }: { session: BlueprintSession; stages
                             <strong>Artifacts:</strong> {attempt.artifactIds!.length} produced
                           </p>
                         )}
-                        {(attempt.correlation as { traceId?: string } | undefined)?.traceId && isDeveloperStage(stage) && (
+                        {(attempt.correlation as { traceId?: string } | undefined)?.traceId && stageAllowsMutation(stage) && (
                           <details className="replay-loop-trace">
                             <summary>Show ReAct loop (phases, LLM calls, tool invocations)</summary>
                             <LoopTrace
@@ -1907,10 +1932,16 @@ function NeoStageController({
     </>
   )
 
-  // Badges — small chips under the title.
+  // Badges — small chips under the title. Mode + policy chips are derived from
+  // the workflow's stage policy (stageMode classifier), not stage names.
+  const stageWsMode = stageMode(stage)
   const badges: ReactNode = (
     <>
+      <span className={`focus-badge mode ${stageModeMeta(stageWsMode).chipClass}`}>{stageModeMeta(stageWsMode).label}</span>
       <span className="focus-badge role">{roleMeta(stage.agentRole).label}</span>
+      {stage.approvalRequired && <span className="focus-badge approval">approval gate</span>}
+      {stage.toolPolicy && <span className="focus-badge policy">{stage.toolPolicy.toLowerCase()}</span>}
+      {stage.repoAccess === false && <span className="focus-badge policy">no-repo</span>}
       <span className="focus-badge attempts">attempt #{Math.max(1, stageAttemptCount)}</span>
       {typeof confidence === 'number' && (
         <span className={`focus-badge confidence ${confidence > 0.7 ? 'ok' : 'mid'}`}>
@@ -1933,7 +1964,9 @@ function NeoStageController({
       {/* M83 S1 — file browser of the wi/<code> worktree. Backend
           refuses the open if the workitem isn't materialized yet,
           which surfaces as a friendly error in the overlay. */}
-      <button type="button" className="focus-badge link" onClick={onOpenCode}>code →</button>
+      {stageUsesRepoContext(stage) && (
+        <button type="button" className="focus-badge link" onClick={onOpenCode}>code →</button>
+      )}
     </>
   )
 
@@ -4087,11 +4120,6 @@ function parseSendBackAnnotations(text: string): SendBackAnnotation[] {
 
 function attemptsFor(session: BlueprintSession, stageKey: string) {
   return (session.stageAttempts ?? []).filter(attempt => attempt.stageKey === stageKey)
-}
-
-function isDeveloperStage(stage: LoopStage) {
-  const signature = `${stage.key} ${stage.label} ${stage.agentRole}`.toLowerCase()
-  return signature.includes('develop') || signature.includes('developer') || signature.includes('engineer') || signature.includes('code')
 }
 
 function latestStatus(attempt?: StageAttempt) {

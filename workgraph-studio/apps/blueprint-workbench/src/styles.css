@@ -3474,6 +3474,50 @@ pre {
   }
 }
 
+/* Workspace-mode adaptive layout. The active stage's mode (derived purely from
+   its policy via stageMode) widens the live agent-activity rail on CODE/VERIFY
+   stages — the "agentic coding/test feed" — and keeps STORY compact. Scoped to
+   desktop (min-width: 1025px) so the <=1024px single-column stack is untouched. */
+@media (min-width: 1025px) {
+  .neo-cockpit-shell.mode-CODE,
+  .neo-cockpit-shell.mode-VERIFY {
+    grid-template-columns: 240px minmax(0, 1fr) minmax(380px, 30%);
+  }
+  .neo-cockpit-shell.mode-STORY {
+    grid-template-columns: 240px minmax(0, 1fr) minmax(280px, 320px);
+  }
+}
+
+/* Phase 2 — inline mode workspace (promoted code/diff/test panel for
+   CODE/VERIFY stages). Contained so the heavy worktree panel sits inside the
+   center column instead of a modal; the full-screen overlay remains available. */
+.neo-stage-workspace {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--outline-variant);
+  border-radius: 12px;
+  background: var(--surface-low);
+  overflow: hidden;
+  min-height: 0;
+}
+.neo-stage-workspace-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--outline-variant);
+}
+.neo-stage-workspace-head strong { font-size: 13px; }
+.neo-stage-workspace-head small { opacity: 0.6; font-size: 11px; }
+.neo-stage-workspace-body {
+  min-height: 0;
+  max-height: 70vh;
+  overflow: auto;
+}
+/* A left accent rail tints the workspace by mode, reusing the mode color. */
+.neo-stage-workspace.mode-CODE   { border-left: 3px solid var(--neo-primary); }
+.neo-stage-workspace.mode-VERIFY { border-left: 3px solid var(--neo-attention); }
+
 /* ---------- Vertical Loop Rail ---------- */
 
 .neo-loop-rail {
@@ -3748,6 +3792,26 @@ pre {
 
 .focus-badge.confidence.ok { color: var(--neo-ok); border-color: rgba(var(--neo-ok-rgb), 0.4); }
 .focus-badge.confidence.mid { color: var(--neo-attention); border-color: rgba(var(--neo-attention-rgb), 0.4); }
+
+/* Stage-mode + policy chips — derived from stage policy (stageMode), colored
+   per workspace mode. Shared color classes (.mode-*) are reused by the rail. */
+.focus-badge.mode { font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.focus-badge.approval { color: var(--neo-attention); border-color: rgba(var(--neo-attention-rgb), 0.45); }
+.focus-badge.policy { opacity: 0.85; text-transform: uppercase; letter-spacing: 0.03em; }
+
+.rail-mode-chip {
+  display: inline-flex; align-items: center;
+  padding: 1px 7px; border-radius: 99px;
+  font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  border: 1px solid var(--outline-variant); color: var(--text);
+  align-self: center; white-space: nowrap; flex: 0 0 auto;
+}
+
+.mode-STORY    { color: var(--neo-accent);    border-color: rgba(var(--neo-accent-rgb), 0.45);    background: rgba(var(--neo-accent-rgb), 0.10); }
+.mode-PLAN     { color: var(--neo-info);      border-color: rgba(var(--neo-info-rgb), 0.45);      background: rgba(var(--neo-info-rgb), 0.10); }
+.mode-CODE     { color: var(--neo-primary);   border-color: rgba(var(--neo-primary-rgb), 0.45);   background: rgba(var(--neo-primary-rgb), 0.10); }
+.mode-VERIFY   { color: var(--neo-attention); border-color: rgba(var(--neo-attention-rgb), 0.45); background: rgba(var(--neo-attention-rgb), 0.10); }
+.mode-EVIDENCE { color: var(--neo-ok);        border-color: rgba(var(--neo-ok-rgb), 0.45);        background: rgba(var(--neo-ok-rgb), 0.10); }
 
 button.focus-badge.link {
   cursor: pointer;
