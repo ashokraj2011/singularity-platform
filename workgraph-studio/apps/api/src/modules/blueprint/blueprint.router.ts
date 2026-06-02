@@ -1353,12 +1353,18 @@ async function getWorktreeWorkItemCode(sessionId: string): Promise<string> {
   const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
   if (!session) throw new NotFoundError('BlueprintSession', sessionId)
   const ctx = await workflowWorkItemContext(session.workflowInstanceId)
-  if (!ctx.workItemCode) {
-    throw new ValidationError(
-      `Session ${sessionId} has no resolved workItemCode. The worktree browser only works after the workflow's WORKBENCH_TASK node has activated and bound this session to a WorkItem.`,
-    )
-  }
-  return ctx.workItemCode
+  if (ctx.workItemCode) return ctx.workItemCode
+  // No WorkItem bound — the common case for a workbench run launched directly
+  // by URL (it never goes through the workflow engine's WORKBENCH_TASK
+  // routeWorkItem step). The governed stages DON'T require a WorkItem: they
+  // materialize the worktree under workbenchWorkitemBranch()'s fallback
+  // identity (workflowInstanceId -> blueprint-<sessionId>). Resolve the worktree
+  // browser to that SAME identity (the branch minus its `wi/` prefix, which is
+  // exactly what mcp-server keys the per-workitem worktree on) so the Code
+  // workspace reads the dev's real diff instead of erroring. Reusing
+  // workbenchWorkitemBranch guarantees the browser identity can never drift
+  // from the materialization identity.
+  return workbenchWorkitemBranch(session, null).replace(/^wi\//, '')
 }
 
 // M83.z2 (2026-05-27) — Manual session ↔ WorkItem binding.
@@ -3279,7 +3285,16 @@ function normalizeExpectedArtifacts(input: unknown): LoopExpectedArtifact[] {
     .filter(isRecord)
     .map((raw, index): LoopExpectedArtifact | null => {
       const title = typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : undefined
-      const kind = typeof raw.kind === 'string' && raw.kind.trim() ? artifactKind(raw.kind) : title ? artifactKind(title) : `artifact_${index + 1}`
+      const rawKind = typeof raw.kind === 'string' && raw.kind.trim() ? artifactKind(raw.kind) : title ? artifactKind(title) : `artifact_${index + 1}`
+      // Upgrade the legacy "simulated" developer artifact to the real-edit
+      // contract. The current loop template + the DEVELOPER/ACT prompt both
+      // mandate real MCP/git edits (actual_code_change); only stale URLs (whose
+      // base64 loopDefinition predates that change) still carry the simulated
+      // kind. Remapping here means those runs also contract the developer for
+      // real edits rather than a write-up.
+      const kind = (rawKind === 'simulated_code_change' || rawKind === 'simulated_code-change')
+        ? 'actual_code_change'
+        : rawKind
       if (!kind || !title) return null
       const format = raw.format === 'TEXT' || raw.format === 'JSON' || raw.format === 'CODE' ? raw.format : 'MARKDOWN'
       return {
