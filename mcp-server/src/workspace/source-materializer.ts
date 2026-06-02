@@ -68,6 +68,25 @@ async function git(args: string[], opts?: { cwd?: string; allowFail?: boolean; m
   }
 }
 
+// M-fix (cwd race) — initialize a git repo at an EXPLICIT target directory,
+// run from the stable parent dir, never from `root` itself.
+//
+// PR #58 added `--template=` to skip git's hook-copy step (fixes the
+// `.git/hooks/*.sample` "File exists" crash on the macOS bind-mount). This
+// is a DIFFERENT failure of the same command: when two flows materialize into
+// the same shared sandbox root, one's removeWorkspaceContents() can clear the
+// directory out from under git mid-`init`, so git's getcwd() aborts with
+//   fatal: unable to get current working directory: No such file or directory
+// Passing the dir as a positional arg and running from its parent makes `init`
+// independent of the volatile cwd. (The per-root mutex around
+// ensureWorkspaceSource closes the underlying race; this is belt-and-braces
+// and also covers stale-inode hiccups on the bind-mount.)
+async function initRepoAtRoot(root: string, opts?: { allowFail?: boolean }): Promise<void> {
+  await fs.promises.mkdir(root, { recursive: true });
+  const parent = path.dirname(path.resolve(root));
+  await git(["init", "-q", "--template=", root], { cwd: parent, allowFail: opts?.allowFail });
+}
+
 function githubCloneUrl(raw: string): string | null {
   try {
     const url = new URL(raw);
@@ -148,7 +167,7 @@ async function cloneIntoWorkspace(cloneUrl: string, sourceRef?: string): Promise
   // exists`, failing materialization for the entire stage (observed on a
   // SECURITY_REVIEW run: find_symbol → WORKSPACE_MATERIALIZATION_FAILED).
   // The sample hooks are inert, so skipping the copy is free.
-  await git(["init", "-q", "--template="], { cwd: root });
+  await initRepoAtRoot(root);
   await git(["remote", "remove", "origin"], { cwd: root, allowFail: true });
   await git(["remote", "add", "origin", cloneUrl], { cwd: root });
   const ref = sourceRef?.trim();
@@ -158,7 +177,7 @@ async function cloneIntoWorkspace(cloneUrl: string, sourceRef?: string): Promise
       await checkoutRef(ref);
     } catch {
       await removeWorkspaceContents(root);
-      await git(["init", "-q", "--template="], { cwd: root });  // see --template= note above
+      await initRepoAtRoot(root);
       await git(["remote", "add", "origin", cloneUrl], { cwd: root });
       await git(["fetch", "--depth=1", "origin"], { cwd: root, maxBuffer: 20 * 1024 * 1024 });
       await git(["checkout", "-B", "main", "FETCH_HEAD"], { cwd: root });
@@ -449,7 +468,7 @@ async function copyLocalDirectoryIntoWorkspace(sourcePath: string): Promise<void
       return !rel.split(path.sep).some((part) => SKIP_DIRS.has(part));
     },
   });
-  await git(["init", "-q", "--template="], { cwd: root, allowFail: true });  // see --template= note above
+  await initRepoAtRoot(root, { allowFail: true });
 }
 
 async function configureGitIdentity(): Promise<void> {
@@ -457,11 +476,36 @@ async function configureGitIdentity(): Promise<void> {
   await git(["config", "user.name", "MCP Server"], { allowFail: true });
 }
 
+// M-fix (cwd race) — serialize materialization per sandbox root. Two concurrent
+// flows targeting the SAME root race: one's removeWorkspaceContents()/init can
+// clear the directory while the other is mid-clone, yanking git's cwd. Keyed by
+// the resolved sandbox root, so different work-item roots still materialize in
+// parallel. mcp-server is a single Node process, so an in-process mutex is
+// sufficient. The chain swallows prior errors (.catch) so one failed
+// materialization doesn't poison the next caller for the same root.
+const materializeLocks = new Map<string, Promise<unknown>>();
+
 export async function ensureWorkspaceSource(
   req: WorkspaceSourceRequest,
   correlation?: CorrelationIds,
 ): Promise<WorkspaceSourceStatus | null> {
   if (!config.MCP_AUTO_CHECKOUT_SOURCE) return null;
+  const key = path.resolve(sandboxRoot());
+  const prior = materializeLocks.get(key) ?? Promise.resolve();
+  const run = prior.catch(() => {}).then(() => ensureWorkspaceSourceImpl(req, correlation));
+  materializeLocks.set(key, run);
+  try {
+    return await run;
+  } finally {
+    // Only clear if no newer caller has chained on (avoid dropping a queued run).
+    if (materializeLocks.get(key) === run) materializeLocks.delete(key);
+  }
+}
+
+async function ensureWorkspaceSourceImpl(
+  req: WorkspaceSourceRequest,
+  correlation?: CorrelationIds,
+): Promise<WorkspaceSourceStatus | null> {
   const sourceType = req.sourceType?.trim().toLowerCase();
   const sourceUri = req.sourceUri?.trim();
   if (!sourceUri) return null;
