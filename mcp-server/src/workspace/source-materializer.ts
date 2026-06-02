@@ -140,7 +140,15 @@ async function checkoutRef(sourceRef?: string): Promise<void> {
 async function cloneIntoWorkspace(cloneUrl: string, sourceRef?: string): Promise<void> {
   const root = sandboxRoot();
   await removeWorkspaceContents(root);
-  await git(["init", "-q"], { cwd: root });
+  // `--template=` (empty) disables git's template-copy step. Without it,
+  // re-running `git init` over a sandbox root whose .git/hooks/*.sample
+  // entries are still visible — a stale-readdir race on the macOS Docker
+  // bind-mount that lingers even right after removeWorkspaceContents() —
+  // aborts with `fatal: cannot copy '.../hooks/pre-push.sample' ... File
+  // exists`, failing materialization for the entire stage (observed on a
+  // SECURITY_REVIEW run: find_symbol → WORKSPACE_MATERIALIZATION_FAILED).
+  // The sample hooks are inert, so skipping the copy is free.
+  await git(["init", "-q", "--template="], { cwd: root });
   await git(["remote", "remove", "origin"], { cwd: root, allowFail: true });
   await git(["remote", "add", "origin", cloneUrl], { cwd: root });
   const ref = sourceRef?.trim();
@@ -150,7 +158,7 @@ async function cloneIntoWorkspace(cloneUrl: string, sourceRef?: string): Promise
       await checkoutRef(ref);
     } catch {
       await removeWorkspaceContents(root);
-      await git(["init", "-q"], { cwd: root });
+      await git(["init", "-q", "--template="], { cwd: root });  // see --template= note above
       await git(["remote", "add", "origin", cloneUrl], { cwd: root });
       await git(["fetch", "--depth=1", "origin"], { cwd: root, maxBuffer: 20 * 1024 * 1024 });
       await git(["checkout", "-B", "main", "FETCH_HEAD"], { cwd: root });
@@ -441,7 +449,7 @@ async function copyLocalDirectoryIntoWorkspace(sourcePath: string): Promise<void
       return !rel.split(path.sep).some((part) => SKIP_DIRS.has(part));
     },
   });
-  await git(["init", "-q"], { cwd: root, allowFail: true });
+  await git(["init", "-q", "--template="], { cwd: root, allowFail: true });  // see --template= note above
 }
 
 async function configureGitIdentity(): Promise<void> {
