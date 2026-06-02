@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
+import { seedArtifactTemplates } from './seed-artifact-templates'
 
 const prisma = new PrismaClient()
 
@@ -312,6 +313,9 @@ async function main() {
     update: {},
     create: { userId: demoUser.id, roleId: '00000000-0000-0000-0000-000000000003' },
   })
+
+  // Standard artifact-template catalog (Test Report, Design Document, …).
+  await seedArtifactTemplates(prisma, admin.id)
 
   // M42.0 — Feature-flag defaults for the Singularity Code Foundry.
   // Master kill switch ships OFF so a fresh install can't write code or
