@@ -10,9 +10,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { StatusBadge } from '@/components/StatusBadge'
 import { useCapability, useCapabilityRelationships, useCapabilityMembers, useAddCapabilityRelationship, useAddCapabilityMember } from '@/hooks/useCapabilities'
 import { capabilityTypeColor, capabilityTypeLabel, formatDate } from '@/lib/format'
+import { GovernanceTab } from './GovernanceTab'
 import type { RelationshipType, InheritancePolicy } from '@/types'
 
-const REL_TYPES: RelationshipType[] = ['contains','parent_child','uses','depends_on','shared_with','delivers_to','collects_from','governed_by']
+// `governed_by` is authored in the Governance tab (the source of truth for
+// governance attachments + their contributions), so it's intentionally omitted
+// from the generic Relationships Add dialog.
+const REL_TYPES: RelationshipType[] = ['contains','parent_child','uses','depends_on','shared_with','delivers_to','collects_from']
 const INH_POLICIES: InheritancePolicy[] = ['none','inherit_view','inherit_execute','inherit_admin','explicit_grant_only']
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -106,6 +110,7 @@ export function CapabilityDetailPage() {
           <TabsTrigger value="relationships">
             Relationships {rels ? `(${rels.length})` : ''}
           </TabsTrigger>
+          <TabsTrigger value="governance">Governance</TabsTrigger>
         </TabsList>
 
         <TabsContent value="details" className="mt-4">
@@ -164,6 +169,10 @@ export function CapabilityDetailPage() {
               </div>
             ))}
           </div>
+        </TabsContent>
+
+        <TabsContent value="governance">
+          <GovernanceTab capabilityId={capabilityId!} />
         </TabsContent>
       </Tabs>
 
