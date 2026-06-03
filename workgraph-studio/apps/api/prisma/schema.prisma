@@ -2243,6 +2243,14 @@ model WorkbenchStage {
   // truth. Adding a new policy value doesn't require a migration here.
   toolPolicy       String   @default("NONE")    // NONE | READ_ONLY | MUTATION | VERIFICATION
   contextPolicy    String   @default("NONE")    // STORY_ONLY | REPO_READ_ONLY | CODE_EDIT | VERIFY_ONLY | EVIDENCE_REVIEW
+  // G8 — per-stage governance INTENT. Reconciled into scope=STAGE IAM
+  // governance_attachments (target_kind=STAGE_KEY, target_key=stageKey) on
+  // explicit definition save. Named governanceEnforcement (NOT governanceMode)
+  // to avoid colliding with the node-level fail-open `governanceMode` field.
+  governancePolicyId      String?              // governing capability (IAM business capability_id)
+  governanceEnforcement   String?              // ADVISORY | REQUIRED | BLOCKING
+  governancePriority      Int?
+  governanceContributions Json?                // optional per-stage contributions override
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 

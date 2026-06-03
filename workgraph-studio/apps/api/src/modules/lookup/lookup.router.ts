@@ -208,6 +208,8 @@ lookupRouter.get('/capabilities', async (req, res) => {
       q:      req.query.q as string | undefined,
       type:   req.query.type as string | undefined,
       status: req.query.status as string | undefined,
+      // G8 — let the governing-policy picker request only governing capabilities.
+      is_governing: req.query.is_governing as string | undefined,
     }, authToken(req))
     const iamPage = unwrapIamPage(body, page, size)
     const itemsById = new Map<string, Record<string, unknown>>()
