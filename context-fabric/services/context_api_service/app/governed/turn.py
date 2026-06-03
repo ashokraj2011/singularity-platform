@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -60,6 +61,59 @@ _AUDIT_CAPTURE_THINKING = os.environ.get("AUDIT_CAPTURE_THINKING", "").lower() i
 _CAPTURE_FULL_PROMPT = os.environ.get("CF_CAPTURE_FULL_PROMPT", "true").lower() in (
     "1", "true", "yes", "on",
 )
+
+# (code-context E2) — prompt-capture hardening. Capture stays ON by default
+# (operators rely on the Workbench "Full prompt sent" panel), but the captured
+# copy is now CAPPED + secret-MASKED before it lands in the audit store: per-
+# message content is clipped so a giant repo-context prompt can't bloat the
+# ledger, and obvious secrets (bearer tokens, API keys) are redacted. The actual
+# prompt sent to the gateway is untouched. Tune the cap with
+# CF_PROMPT_CAPTURE_MAX_CHARS.
+_PROMPT_CAPTURE_MAX_CHARS = int(os.environ.get("CF_PROMPT_CAPTURE_MAX_CHARS", "200000"))
+
+# (pattern, replacement) secret masks. Conservative — target high-signal token
+# shapes, NOT broad base64 (which would clobber legitimate code in slices).
+_SECRET_MASKS = [
+    (re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._\-]{12,}"), r"\1 «redacted»"),
+    (re.compile(r"(?i)(authorization\"?\s*[:=]\s*\"?)(?:bearer\s+)?[A-Za-z0-9._\-]{12,}"), r"\1«redacted»"),
+    (re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"), "«redacted-key»"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), "«redacted-token»"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "«redacted-aws-key»"),
+    (re.compile(r"(?i)(\"?(?:api[_-]?key|secret|password|token)\"?\s*[:=]\s*\"?)[^\s\"',]{8,}"), r"\1«redacted»"),
+]
+
+
+def _mask_secrets(text: str) -> str:
+    if not text:
+        return text
+    for pattern, repl in _SECRET_MASKS:
+        text = pattern.sub(repl, text)
+    return text
+
+
+def _sanitize_captured_messages(messages: list[dict]) -> list[dict]:
+    """Return a capture-safe copy of the composed messages for the audit event.
+
+    Never mutates the originals (those still go to the gateway verbatim). Masks
+    secret-like tokens and clips each message's content so the total stays
+    roughly within CF_PROMPT_CAPTURE_MAX_CHARS.
+    """
+    n = max(1, len(messages))
+    per_msg = max(2000, _PROMPT_CAPTURE_MAX_CHARS // n)
+    out: list[dict] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        safe = dict(m)
+        content = safe.get("content")
+        if isinstance(content, str):
+            content = _mask_secrets(content)
+            if len(content) > per_msg:
+                content = content[:per_msg] + f"\n…[truncated {len(content) - per_msg} chars]"
+            safe["content"] = content
+        out.append(safe)
+    return out
 
 from .audit_emit import emit_governed_event
 from .llm_client import ChatResponse, ChatToolCall, LLMGatewayError, call_gateway_chat
@@ -742,11 +796,12 @@ async def run_turn(
         "history_messages": len(history),
     }
     if _CAPTURE_FULL_PROMPT:
-        # Full composed prompt for the Workbench "Full prompt sent" panel.
-        # Uncapped (operator choice). Tool names included so the operator sees
-        # what was offered; full tool JSON schemas are omitted (large +
-        # cache-stable, recoverable from the tool-registry).
-        request_payload["messages"] = messages
+        # Composed prompt for the Workbench "Full prompt sent" panel — CAPPED +
+        # secret-masked (code-context E2) so a large repo-context prompt can't
+        # bloat the audit store and tokens aren't leaked into the ledger. Tool
+        # names included so the operator sees what was offered; full tool JSON
+        # schemas are omitted (large + cache-stable, recoverable from the registry).
+        request_payload["messages"] = _sanitize_captured_messages(messages)
         request_payload["tool_names"] = [
             ((t.get("function") or {}).get("name") if isinstance(t, dict) else None)
             or (t.get("name") if isinstance(t, dict) else None)

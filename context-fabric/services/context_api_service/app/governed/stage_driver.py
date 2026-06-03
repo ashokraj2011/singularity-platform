@@ -1800,31 +1800,34 @@ async def run_stage(
         stage_policy=stage_policy,
     )
 
-    # M99 S1.3 — git push preflight (Phase 1: SHADOW). Same one-per-attempt,
-    # gated-OFF-by-default pattern as localization. Classifies push viability
-    # before the workflow's push stage so auth/branch problems surface early.
-    await _maybe_run_git_preflight(
-        state=state,
-        vars=vars,
-        run_context=run_context,
-        bearer=bearer,
-        exec_policy=exec_policy,
-        stage_policy=stage_policy,
-    )
-
-    # M99 S2.1 — platform-driven auto-baseline. Runs BEFORE the turn loop so
-    # the baseline is captured ahead of any ACT mutation (makes the spec's
-    # "auto baseline before first mutating tool" claim true). Gated OFF by
-    # default; idempotent with any agent-dispatched baseline.
-    await _maybe_run_auto_baseline(
-        state=state,
-        run_context=run_context,
-        bearer=bearer,
-        exec_policy=exec_policy,
-        stage_policy=stage_policy,
-    )
+    # M99 S1.3 / S2.1 (code-context E1) — git-preflight + auto-baseline now fire
+    # at the REAL first-mutation boundary (first ACT entry) INSIDE the loop, not
+    # here before PLAN. The old pre-loop placement ran them for stages that never
+    # mutate and BEFORE the agent had planned; firing on ACT entry makes the
+    # spec's "auto baseline before the first mutating tool" literally true while
+    # keeping localization (above) at planning time where it belongs.
+    _act_automation_done = False
 
     for turn_idx in range(max_turns):
+        # E1 — fire once, the first time we enter ACT, before this iteration's
+        # run_turn dispatches any mutating tool.
+        if not _act_automation_done and state.current_phase is Phase.ACT:
+            _act_automation_done = True
+            await _maybe_run_git_preflight(
+                state=state,
+                vars=vars,
+                run_context=run_context,
+                bearer=bearer,
+                exec_policy=exec_policy,
+                stage_policy=stage_policy,
+            )
+            await _maybe_run_auto_baseline(
+                state=state,
+                run_context=run_context,
+                bearer=bearer,
+                exec_policy=exec_policy,
+                stage_policy=stage_policy,
+            )
         last_llm_error: LLMGatewayError | None = None
         needs_context_exc: MinContextUnavailable | None = None
         for llm_attempt in range(LLM_RETRY_ATTEMPTS + 1):
