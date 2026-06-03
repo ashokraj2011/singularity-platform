@@ -67,6 +67,7 @@ from .code_context import (
     build_code_context_for_governed_turn,
     package_markdown,
 )
+from .model_catalog import context_window_for
 from .loop import GovernedStepResult, governed_step
 from .phase_state import Phase, PhaseState
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
@@ -390,6 +391,80 @@ def _extract_phase_output(
     return phase_output, next_phase, other_calls, last_malformed
 
 
+# ── Code-context budget + minimum-context gate (code-context hardening D1/D3) ──
+
+# Static fallback when no model window / policy cap is known. Matches the legacy
+# mcp-server default so un-tuned stages behave exactly as before.
+_CODE_CONTEXT_DEFAULT_BUDGET = int(os.environ.get("CF_CODE_CONTEXT_DEFAULT_BUDGET", "7000"))
+# Fraction of the model's context window we'll spend on the code-context package
+# (the rest is prompt + history + output headroom).
+_CODE_CONTEXT_WINDOW_FRACTION = float(os.environ.get("CF_CODE_CONTEXT_WINDOW_FRACTION", "0.25"))
+# Fraction of the phase's max_input_tokens cap allotted to code context.
+_CODE_CONTEXT_INPUT_FRACTION = float(os.environ.get("CF_CODE_CONTEXT_INPUT_FRACTION", "0.6"))
+# Hard ceiling — mcp-server's /mcp/code-context/build rejects budgets above 50k.
+_CODE_CONTEXT_MAX_BUDGET = 50_000
+_CODE_CONTEXT_MIN_BUDGET = 1_000
+
+
+class MinContextUnavailable(Exception):
+    """Raised by run_turn when a code-edit stage that REQUIRES code context gets
+    an empty package (no target/editable slices). stage_driver catches this and
+    halts the stage with stop_reason=NEEDS_CONTEXT — a human-resumable pause —
+    rather than letting the agent edit blind."""
+
+    def __init__(self, *, reason: str, phase: str, context_policy: str | None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.phase = phase
+        self.context_policy = context_policy
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"reason": self.reason, "phase": self.phase, "context_policy": self.context_policy}
+
+
+async def _resolve_code_context_budget(
+    policy: Any,
+    phase: Any,
+    phase_model_aliases: dict[str, str] | None,
+    model_alias: str | None,
+) -> int:
+    """Size the code-context token budget to the model + stage policy.
+
+    Budget = the TIGHTEST of {model_window×frac, phase max_input_tokens×frac,
+    explicit policy.limits['max_code_context_tokens']}, clamped to [MIN, MAX].
+    Falls back to the static default when no signal is available.
+    """
+    caps: list[int] = []
+    phases = getattr(policy, "phases", None)
+    phase_pol = phases.get(phase) if isinstance(phases, dict) else None
+    if phase_pol is not None and getattr(phase_pol, "max_input_tokens", None):
+        caps.append(int(phase_pol.max_input_tokens * _CODE_CONTEXT_INPUT_FRACTION))
+    limits = getattr(policy, "limits", None)
+    if isinstance(limits, dict):
+        explicit = limits.get("max_code_context_tokens")
+        if isinstance(explicit, int) and explicit > 0:
+            caps.append(explicit)
+    alias = (phase_model_aliases or {}).get(getattr(phase, "value", "")) or model_alias
+    try:
+        window = await context_window_for(alias)
+    except Exception:  # noqa: BLE001 — best-effort; never block a turn on this
+        window = None
+    if isinstance(window, int) and window > 0:
+        caps.append(int(window * _CODE_CONTEXT_WINDOW_FRACTION))
+    if not caps:
+        return _CODE_CONTEXT_DEFAULT_BUDGET
+    return max(_CODE_CONTEXT_MIN_BUDGET, min(min(caps), _CODE_CONTEXT_MAX_BUDGET))
+
+
+def _requires_min_context(ctx_policy: Any, mode: str | None, phase: Any) -> bool:
+    """Whether to gate the stage on having minimum code context. An explicit
+    `require_min_context` flag wins; otherwise default to gating only CODE_EDIT
+    stages (read/verify/story stages never block)."""
+    if isinstance(ctx_policy, dict) and "require_min_context" in ctx_policy:
+        return bool(ctx_policy.get("require_min_context"))
+    return isinstance(mode, str) and mode.strip().upper() == "CODE_EDIT"
+
+
 async def run_turn(
     *,
     state: PhaseState,
@@ -557,10 +632,22 @@ async def run_turn(
                 },
             )
         else:
+            # D1 — size the budget to the model window + stage/phase caps
+            # instead of a static 7000. D2 (threading) — pass the stage's
+            # context_policy MODE so the builder can scope non-tool context
+            # (mcp-side slice scoping is a documented follow-up).
+            budget = await _resolve_code_context_budget(
+                policy, state.current_phase, phase_model_aliases, model_alias
+            )
+            context_policy_mode = (
+                exec_policy.context_policy if exec_policy is not None else None
+            )
             pkg, reason = await build_code_context_for_governed_turn(
                 task_text=goal_text,
                 capability_id=capability_id,
                 run_context=run_context,
+                max_token_budget=budget,
+                context_policy=context_policy_mode,
             )
             if pkg is not None:
                 md = package_markdown(pkg)
@@ -595,6 +682,34 @@ async def run_turn(
                     payload={"reason": reason or "unknown"},
                     severity="warn",
                 )
+
+            # D3 — minimum-context gate. A code-edit stage that REQUIRES context
+            # must not proceed with an empty package (no target/editable slices):
+            # raising MinContextUnavailable pauses the stage for a human
+            # (stage_driver → stop_reason=NEEDS_CONTEXT) instead of editing blind.
+            if _requires_min_context(ctx_policy, context_policy_mode, state.current_phase):
+                target_ct = len(pkg.get("target_symbols") or []) if isinstance(pkg, dict) else 0
+                editable_ct = len(pkg.get("editable_slices") or []) if isinstance(pkg, dict) else 0
+                if target_ct == 0 and editable_ct == 0:
+                    await emit_governed_event(
+                        kind="governed.min_context_gate",
+                        state=state,
+                        policy=policy,
+                        run_context=run_context,
+                        payload={
+                            "reason": reason or "no target/editable slices",
+                            "context_policy": context_policy_mode,
+                            "phase": state.current_phase.value,
+                            "target_symbols": target_ct,
+                            "editable_slices": editable_ct,
+                        },
+                        severity="warn",
+                    )
+                    raise MinContextUnavailable(
+                        reason=reason or "code-context package has no target/editable slices",
+                        phase=state.current_phase.value,
+                        context_policy=context_policy_mode,
+                    )
 
     # 2. Prompt — phase-specific if a binding exists, falls back via the
     # composer's ladder otherwise.
