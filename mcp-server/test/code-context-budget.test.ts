@@ -18,10 +18,19 @@ import { describe, expect, it } from "vitest";
 import { withSandboxRoot } from "../src/workspace/sandbox";
 import {
   buildCodeContextPackage,
+  getStoredPackageSlices,
   deriveTargetQueries,
   expectedTestPathFor,
   estimateTokens,
 } from "../src/mcp/code-context";
+
+function writeValidator(root: string): void {
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(
+    join(root, "src", "validator.ts"),
+    "export function validateEmail(input: string): boolean {\n  return /@/.test(input);\n}\n",
+  );
+}
 
 async function withTempSandbox<T>(fn: (root: string) => Promise<T>): Promise<T> {
   const root = mkdtempSync(join(tmpdir(), "mcp-code-ctx-"));
@@ -164,6 +173,82 @@ describe("M52 buildCodeContextPackage (end-to-end with real AST index)", () => {
       // The over-budget one should be in excluded_context with an explanatory reason
       const overBudget = pkg.excluded_context.find((e) => /over token budget/.test(e.reason));
       expect(overBudget).toBeDefined();
+    });
+  });
+});
+
+describe("#5 context_policy slice-scoping", () => {
+  it("suppresses ALL repo slices for STORY_ONLY (no repo read access)", async () => {
+    await withTempSandbox(async (root) => {
+      writeValidator(root); // real symbol present — must still be suppressed
+      const pkg = await buildCodeContextPackage({
+        task_text: "Add a more thorough validateEmail check",
+        target_hints: ["validateEmail"],
+        context_policy: "STORY_ONLY",
+      });
+      expect(pkg.context_package_id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(pkg.target_symbols).toEqual([]);
+      expect(pkg.editable_slices).toEqual([]);
+      expect(pkg.dependency_slices).toEqual([]);
+      expect(pkg.test_slices).toEqual([]);
+      expect(pkg.excluded_context[0].reason).toMatch(/no repo read access/);
+    });
+  });
+
+  it("suppresses repo slices for NONE too (case/dash-insensitive)", async () => {
+    await withTempSandbox(async (root) => {
+      writeValidator(root);
+      const pkg = await buildCodeContextPackage({
+        task_text: "anything", target_hints: ["validateEmail"], context_policy: "none",
+      });
+      expect(pkg.editable_slices).toEqual([]);
+    });
+  });
+
+  it("builds normally for CODE_EDIT (repo read allowed)", async () => {
+    await withTempSandbox(async (root) => {
+      writeValidator(root);
+      const pkg = await buildCodeContextPackage({
+        task_text: "Add a more thorough validateEmail check",
+        target_hints: ["validateEmail"],
+        context_policy: "CODE_EDIT",
+      });
+      expect(pkg.editable_slices.length).toBeGreaterThanOrEqual(1);
+      expect(pkg.editable_slices[0].content).toContain("validateEmail");
+    });
+  });
+});
+
+describe("#10 selective slice fetch (include_slice_content)", () => {
+  it("default keeps slice content inline", async () => {
+    await withTempSandbox(async (root) => {
+      writeValidator(root);
+      const pkg = await buildCodeContextPackage({
+        task_text: "Add a more thorough validateEmail check",
+        target_hints: ["validateEmail"],
+      });
+      expect(pkg.editable_slices[0].content).toContain("validateEmail");
+    });
+  });
+
+  it("include_slice_content=false strips content + stashes full slices for fetch", async () => {
+    await withTempSandbox(async (root) => {
+      writeValidator(root);
+      const pkg = await buildCodeContextPackage({
+        task_text: "Add a more thorough validateEmail check",
+        target_hints: ["validateEmail"],
+        include_slice_content: false,
+      });
+      expect(pkg.editable_slices.length).toBeGreaterThanOrEqual(1);
+      const meta = pkg.editable_slices[0];
+      // Metadata preserved, content stripped in the response.
+      expect(meta.content).toBe("");
+      expect(meta.content_hash).toMatch(/^[0-9a-f]{64}$/);
+      expect(meta.token_count).toBeGreaterThan(0);
+      // Full content retrievable from the store by package id.
+      const stored = getStoredPackageSlices(pkg.context_package_id);
+      expect(stored).toBeDefined();
+      expect(stored!.editable[0].content).toContain("validateEmail");
     });
   });
 });
