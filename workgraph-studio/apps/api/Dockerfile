@@ -40,8 +40,14 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
 COPY apps/api ./apps/api
 COPY packages/shared-types ./packages/shared-types
 COPY packages/engine ./packages/engine
-RUN mkdir -p /docs/data-model
-RUN pnpm --filter @workgraph/api exec prisma generate
+# Generate ONLY the Prisma client. The schema also declares an `erd_md`
+# generator (prisma-erd-generator) for the docs-only ERD at
+# docs/data-model/04-workgraph.md — but it pulls in puppeteer/mermaid-cli,
+# whose install scripts pnpm@10 blocks by default, so the module is absent in
+# clean image builds and an unfiltered `prisma generate` fails. The ERD is not
+# needed in the image; regenerate it locally with
+# `pnpm --filter @workgraph/api prisma:erd`.
+RUN pnpm --filter @workgraph/api exec prisma generate --generator client
 WORKDIR /app/apps/api
 EXPOSE 8080
 CMD ["sh", "-c", "npx prisma migrate deploy && pnpm dev"]
@@ -54,8 +60,8 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
 COPY apps/api ./apps/api
 COPY packages/shared-types ./packages/shared-types
 COPY packages/engine ./packages/engine
-RUN mkdir -p /docs/data-model
-RUN pnpm --filter @workgraph/api exec prisma generate
+# ERD generator is dev-only (see dev stage); image build runs only `client`.
+RUN pnpm --filter @workgraph/api exec prisma generate --generator client
 RUN pnpm --filter @workgraph/api build
 
 FROM node:22-alpine AS runner
