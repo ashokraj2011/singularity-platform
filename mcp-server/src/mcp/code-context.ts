@@ -30,7 +30,7 @@ import {
   findSymbols,
   getAstSlice,
   getDependencies,
-  indexWorkspace,
+  ensureIndexFresh,
   listIndexedFiles,
   listSymbolsInFile,
   type SymbolHit,
@@ -206,8 +206,10 @@ export async function buildCodeContextPackage(
   const includeTests = req.include_tests ?? DEFAULT_INCLUDE_TESTS;
   const packageId = uuidv4();
 
-  // 1. Ensure index is fresh. Re-indexing is idempotent + cached.
-  await indexWorkspace("code_context_build");
+  // 1. Ensure the index is fresh WITHOUT a full walk every build: ensureIndexFresh
+  //    skips when HEAD is unchanged + tree clean, else reindexes only the changed
+  //    (dirty ∪ committed-diff) files. Full walk only on a cold/non-git index.
+  await ensureIndexFresh("code_context_build");
 
   // 2. Resolve target symbols. Prefer caller-supplied hints; fall back to
   //    derived queries from task text.
