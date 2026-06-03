@@ -32,6 +32,7 @@ import {
   getDependencies,
   indexWorkspace,
   listIndexedFiles,
+  listSymbolsInFile,
   type SymbolHit,
 } from "../workspace/ast-index";
 import { emitAuditEvent } from "../lib/audit-gov-emit";
@@ -282,7 +283,7 @@ export async function buildCodeContextPackage(
           visitedFiles.add(cand.path);
           // For dependency files, take the FIRST symbol in the file as the slice
           // (cheap approximation). The agent can ask for more via get_symbol if needed.
-          const symHits = await findSymbols({ query: " ", filePath: cand.path, limit: 1 });
+          const symHits = await listSymbolsInFile(cand.path, 1);
           const symHit = symHits[0];
           if (!symHit) continue;
           const slice = await getAstSlice({ symbolId: symHit.id });
@@ -315,7 +316,7 @@ export async function buildCodeContextPackage(
         const exists = await listIndexedFiles({ pattern: candPath, limit: 1 });
         if (exists.length === 0) continue;
         visitedFiles.add(candPath);
-        const symHits = await findSymbols({ query: " ", filePath: candPath, limit: 1 });
+        const symHits = await listSymbolsInFile(candPath, 1);
         const symHit = symHits[0];
         if (!symHit) continue;
         const testSlice = await getAstSlice({ symbolId: symHit.id });

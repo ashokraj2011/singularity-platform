@@ -692,6 +692,40 @@ export async function findSymbols(opts: {
     .slice(0, limit);
 }
 
+/**
+ * List the symbols defined in a single file, ordered by source position
+ * (start_line ASC). Use this — NOT `findSymbols({ query: " " })` — whenever
+ * you want "the symbols in THIS file": findSymbols scores every row against
+ * the query and filters out score-0 rows, so a blank/whitespace query
+ * returns nothing. This is a direct indexed `file_path = ?` lookup.
+ */
+export async function listSymbolsInFile(filePath: string, limit = 10): Promise<SymbolHit[]> {
+  const database = await getDb();
+  const capped = Math.min(Math.max(limit, 1), 200);
+  const stmt = database.prepare(
+    `SELECT id, name, kind, file_path, start_line, end_line, signature, summary, parent_name
+     FROM symbols WHERE file_path = ? ORDER BY start_line ASC LIMIT ?`,
+  );
+  stmt.bind([filePath, capped]);
+  const out: SymbolHit[] = [];
+  while (stmt.step()) {
+    const r = stmt.get();
+    out.push({
+      id: String(r[0]),
+      name: String(r[1]),
+      kind: String(r[2]),
+      filePath: String(r[3]),
+      startLine: Number(r[4]),
+      endLine: Number(r[5]),
+      signature: r[6] == null ? undefined : String(r[6]),
+      summary: r[7] == null ? undefined : String(r[7]),
+      parentName: r[8] == null ? undefined : String(r[8]),
+    });
+  }
+  stmt.free();
+  return out;
+}
+
 export async function getSymbol(opts: { id?: string; name?: string }): Promise<SymbolHit | null> {
   const database = await getDb();
   const stmt = opts.id

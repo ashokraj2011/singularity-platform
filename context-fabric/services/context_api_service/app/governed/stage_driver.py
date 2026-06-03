@@ -1300,7 +1300,10 @@ async def _salvage_mutating_phase(
     # 2. Record the synthetic verifier turn so workgraph-api harvests the
     #    verification receipt from the tool_outcome stream.
     result.turns.append(
-        _synthetic_verifier_turn(synth, from_phase=Phase.VERIFY.value, turn_idx=turn_idx + 1)
+        # from_phase is the REAL originating mutating phase (ACT/REPAIR), not VERIFY —
+        # the synthetic turn records the salvage transition <mutating>→VERIFY. Passing
+        # Phase.VERIFY.value here made the trace falsely report VERIFY→VERIFY.
+        _synthetic_verifier_turn(synth, from_phase=from_phase, turn_idx=turn_idx + 1)
     )
     result.total_tool_calls += 1
 
