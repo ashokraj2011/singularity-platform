@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 #   MCP_SERVER_URL          — compose-internal URL (defaults to demo)
 #   MCP_BEARER_TOKEN        — bearer the gateway authenticates against
 #   MCP_TOOL_RUN_TIMEOUT_SEC — per-call timeout, default 120s
-_MCP_URL = os.environ.get("MCP_SERVER_URL", "http://mcp-server-demo:7100").rstrip("/")
+_MCP_URL = os.environ.get("MCP_SERVER_URL", "http://mcp-server:7100").rstrip("/")
 _MCP_BEARER = os.environ.get("MCP_BEARER_TOKEN", "")
 _TIMEOUT = float(os.environ.get("MCP_TOOL_RUN_TIMEOUT_SEC", "120"))
 

@@ -55,7 +55,7 @@ server {
   }
 
   location /api/mcp/ {
-    set $upstream http://mcp-server-demo:7100;
+    set $upstream http://mcp-server:7100;
     rewrite ^/api/mcp/(.*)$ /$1 break;
     proxy_pass $upstream;
   }
@@ -137,7 +137,7 @@ server {
   }
 
   location /ops-health/mcp-server {
-    set $upstream http://mcp-server-demo:7100;
+    set $upstream http://mcp-server:7100;
     rewrite ^/ops-health/mcp-server$ /health break;
     proxy_pass $upstream;
   }

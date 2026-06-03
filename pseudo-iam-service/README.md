@@ -25,7 +25,7 @@ This service collapses all of that to "any string is fine":
 - `POST /api/v1/authz/check` always returns `{allowed: true}`
 - `GET /api/v1/capabilities/:id` returns a synthetic capability for any id
 - `GET /api/v1/capabilities/:id/mcp-servers` returns the running
-  `mcp-server-demo` (configurable via `PSEUDO_MCP_BASE_URL`)
+  `mcp-server` (configurable via `PSEUDO_MCP_BASE_URL`)
 
 ## How to use
 
@@ -79,7 +79,7 @@ To switch back: revert `IAM_BASE_URL` to `:8100` and recreate.
 | `GET /api/v1/me` | Decode bearer; return synthetic user |
 | `POST /api/v1/authz/check` | Always `{allowed: true, source: "pseudo-iam"}` |
 | `GET /api/v1/capabilities[/:id][/members][/mcp-servers]` | Synthetic capability data |
-| `GET /api/v1/mcp-servers/:id` | Returns running mcp-server-demo (full record incl. bearer) |
+| `GET /api/v1/mcp-servers/:id` | Returns running mcp-server (full record incl. bearer) |
 | `GET /api/v1/users[/:id][/teams][/skills]` | 3 synthetic users + empty membership lists |
 | `GET /api/v1/teams[/:id][/members]` | 2 synthetic teams |
 | `GET /api/v1/business-units[/:id]` | 1 synthetic BU |

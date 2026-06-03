@@ -8,7 +8,7 @@ import type { ConnectorAdapter, OperationDef } from '../connector-adapter'
  * calls point at MCP; MCP is the only service allowed to talk to the gateway.
  *
  * baseUrl examples:
- *   docker-compose:  http://mcp-server-demo:7100
+ *   docker-compose:  http://mcp-server:7100
  *   bare-metal dev:  http://localhost:7100
  */
 interface LlmGatewayConfig {

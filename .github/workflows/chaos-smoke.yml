@@ -83,8 +83,8 @@ jobs:
           echo "=== audit-governance ==="
           docker logs audit-governance-service --tail 200 || true
           echo
-          echo "=== mcp-server-demo ==="
-          docker logs singularity-mcp-server-demo --tail 200 || true
+          echo "=== mcp-server ==="
+          docker logs singularity-mcp-server --tail 200 || true
 
       - name: Tear down
         if: always()

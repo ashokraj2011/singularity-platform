@@ -238,7 +238,7 @@ SELECT
   -- the existing CCRE block above uses localhost. Use the docker hostname
   -- here because every other auto-registered capability is created via
   -- the SPA which runs inside the compose network.
-  'http://mcp-server-demo:7100/',
+  'http://mcp-server:7100/',
   'BEARER_TOKEN',
   'demo-bearer-token-must-be-min-16-chars',
   'MCP_HTTP',

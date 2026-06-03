@@ -94,7 +94,7 @@ Pass the args via compose:
 
 ```yaml
 services:
-  mcp-server-demo:
+  mcp-server:
     build:
       context: ./mcp-server
       args:

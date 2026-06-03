@@ -23,7 +23,7 @@ layers; M62 added per-layer prompt compression.
 |----------------------------------|------------------------------------------------------|--------------------------------------------------------------------|
 | `DATABASE_URL`                   | (required)                                           | `singularity_composer` Postgres. Owns PromptProfile / Layer / Assembly / Capsule. |
 | `DATABASE_URL_RUNTIME_READ`      | (required)                                           | Reader connection to `singularity` (agent-runtime's DB) for AgentTemplate / Capability lookups. |
-| `MCP_SERVER_URL`                 | `http://mcp-server-demo:7100`                        | Where to send composed prompts.                                    |
+| `MCP_SERVER_URL`                 | `http://mcp-server:7100`                        | Where to send composed prompts.                                    |
 | `MCP_BEARER_TOKEN`               | (required when MCP requires auth)                    | Same `dev-…-16-chars` default as the rest of the stack.            |
 | `COMPRESSOR_URL` (M62)           | empty                                                | Prompt-compressor sidecar. When set + `compression.enabled` in the request, over-budget allowlisted layers get compressed in place. |
 | `JWT_SECRET`                     | (required)                                           | Shared secret for IAM-authed routes.                               |

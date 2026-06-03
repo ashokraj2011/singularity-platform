@@ -625,7 +625,7 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
             # The root compose runs Context Fabric inside Docker, so the
             # default MCP route must use Docker DNS. Host-facing URLs remain
             # available as MCP_SERVER_URL and MCP_PUBLIC_BASE_URL.
-            "MCP_DEFAULT_BASE_URL": "http://mcp-server-demo:7100",
+            "MCP_DEFAULT_BASE_URL": "http://mcp-server:7100",
         }),
         ROOT / "singularity-iam-service/.env": {
             "DATABASE_URL": values["IAM_DATABASE_URL"],
@@ -780,7 +780,7 @@ def command_write(args: argparse.Namespace) -> None:
     print("\nDone. Reload affected containers after env changes:")
     print("  ./singularity.sh restart context-api")
     print("  ./singularity.sh restart llm-gateway")
-    print("  ./singularity.sh recreate mcp-server-demo   # M101: reads its env_file — needs recreate, not restart")
+    print("  ./singularity.sh recreate mcp-server   # M101: reads its env_file — needs recreate, not restart")
     print("  ./singularity.sh restart formal-verifier")
     print("  ./singularity.sh restart workgraph-api")
     print("  ./singularity.sh restart workgraph-web")
@@ -1538,7 +1538,7 @@ def command_doctor(args: argparse.Namespace) -> None:
     if copilot_only:
         providers_status, providers_payload, providers_msg = http_json("http://localhost:7100/llm/providers", bearer_token=mcp_token)
         if providers_status != "OK":
-            record("FAIL" if strict_office else "WARN", f"live MCP provider endpoint unavailable: {providers_msg}", "./singularity.sh restart mcp-server-demo")
+            record("FAIL" if strict_office else "WARN", f"live MCP provider endpoint unavailable: {providers_msg}", "./singularity.sh restart mcp-server")
         else:
             data = providers_payload.get("data", providers_payload) if isinstance(providers_payload, dict) else {}
             default_provider = str(data.get("default_provider") or "").lower()
@@ -1554,9 +1554,9 @@ def command_doctor(args: argparse.Namespace) -> None:
             if default_provider == "copilot":
                 record("OK", "live MCP default provider is copilot")
             else:
-                record("FAIL", f"live MCP default provider is {default_provider or '(unset)'}, not copilot", f"{copilot_fix_command} && ./singularity.sh recreate mcp-server-demo")
+                record("FAIL", f"live MCP default provider is {default_provider or '(unset)'}, not copilot", f"{copilot_fix_command} && ./singularity.sh recreate mcp-server")
             if non_copilot_enabled:
-                record("FAIL", f"live MCP still enables/allows non-Copilot providers: {', '.join(non_copilot_enabled)}", f"{copilot_fix_command} && ./singularity.sh recreate mcp-server-demo")
+                record("FAIL", f"live MCP still enables/allows non-Copilot providers: {', '.join(non_copilot_enabled)}", f"{copilot_fix_command} && ./singularity.sh recreate mcp-server")
             else:
                 record("OK", "live MCP provider fence exposes only Copilot")
             if copilot_row.get("ready") is True:
@@ -1566,15 +1566,15 @@ def command_doctor(args: argparse.Namespace) -> None:
                     record(
                         "WARN",
                         "live MCP Copilot gateway token is not configured; local gh copilot CLI/headless tools are available",
-                        "./singularity.sh config set llm.copilot.token <token> && ./singularity.sh restart llm-gateway && ./singularity.sh recreate mcp-server-demo",
+                        "./singularity.sh config set llm.copilot.token <token> && ./singularity.sh restart llm-gateway && ./singularity.sh recreate mcp-server",
                     )
                 else:
                     status = "FAIL" if strict_office else "WARN"
-                    record(status, "live MCP Copilot provider is not ready", "./singularity.sh config set llm.copilot.token <token> && ./singularity.sh restart llm-gateway && ./singularity.sh recreate mcp-server-demo")
+                    record(status, "live MCP Copilot provider is not ready", "./singularity.sh config set llm.copilot.token <token> && ./singularity.sh restart llm-gateway && ./singularity.sh recreate mcp-server")
 
         models_status, models_payload, models_msg = http_json("http://localhost:7100/llm/models", bearer_token=mcp_token)
         if models_status != "OK":
-            record("FAIL" if strict_office else "WARN", f"live MCP model endpoint unavailable: {models_msg}", "./singularity.sh restart mcp-server-demo")
+            record("FAIL" if strict_office else "WARN", f"live MCP model endpoint unavailable: {models_msg}", "./singularity.sh restart mcp-server")
         else:
             data = models_payload.get("data", models_payload) if isinstance(models_payload, dict) else {}
             default_alias = str(data.get("defaultModelAlias") or "").lower()
@@ -1583,11 +1583,11 @@ def command_doctor(args: argparse.Namespace) -> None:
             if default_alias == "copilot":
                 record("OK", "live MCP default model alias is copilot")
             else:
-                record("FAIL", f"live MCP default model alias is {default_alias or '(unset)'}, not copilot", "./singularity.sh config mcp-catalog --copilot-only && ./singularity.sh recreate mcp-server-demo")
+                record("FAIL", f"live MCP default model alias is {default_alias or '(unset)'}, not copilot", "./singularity.sh config mcp-catalog --copilot-only && ./singularity.sh recreate mcp-server")
             if model_providers == ["copilot"]:
                 record("OK", "live MCP model catalog exposes only Copilot")
             else:
-                record("FAIL", f"live MCP model catalog exposes non-Copilot providers: {', '.join(model_providers)}", "./singularity.sh config mcp-catalog --copilot-only && ./singularity.sh recreate mcp-server-demo")
+                record("FAIL", f"live MCP model catalog exposes non-Copilot providers: {', '.join(model_providers)}", "./singularity.sh config mcp-catalog --copilot-only && ./singularity.sh recreate mcp-server")
 
     write_doctor_summary(records, failures=failures, warnings=warnings)
     print(f"\nWrote portal doctor summary: {PORTAL_DOCTOR_PATH.relative_to(ROOT)}")
@@ -1609,7 +1609,7 @@ def service_name_for_url(name: str) -> str:
         "llm gateway": "llm-gateway",
         "context memory": "context-memory",
         "metrics ledger": "metrics-ledger",
-        "mcp server": "mcp-server-demo",
+        "mcp server": "mcp-server",
         "agent runtime": "agent-runtime",
         "prompt composer": "prompt-composer",
     }.get(name, name)
@@ -1763,7 +1763,7 @@ def command_mcp_catalog(args: argparse.Namespace) -> None:
     write_env(ROOT / ".env", updates, dry_run=False)
     write_env(ROOT / "mcp-server/.env", updates, dry_run=False)
     print("\nReload MCP after catalog changes:")
-    print("  ./singularity.sh recreate mcp-server-demo   # M101: reads its env_file — needs recreate, not restart")
+    print("  ./singularity.sh recreate mcp-server   # M101: reads its env_file — needs recreate, not restart")
     print("Then verify:")
     print("  curl -H \"Authorization: Bearer $MCP_BEARER_TOKEN\" http://localhost:7100/llm/models")
 
