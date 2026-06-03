@@ -75,7 +75,8 @@ class StageRunResult:
     # Why we stopped looping. One of: "FINALIZED", "APPROVAL_PENDING",
     # "NOT_ACTIONABLE", "VALIDATION_BLOCKED", "POLICY_BLOCKED",
     # "PHASE_BUDGET_EXCEEDED", "MAX_TURNS", "LLM_ERROR", "NEEDS_CONTEXT" (the
-    # min-context gate paused a code-edit stage), and the M96 salvage
+    # min-context gate paused a code-edit stage), "GOVERNANCE_BLOCKED" (a
+    # BLOCKING/REQUIRED governance control was unmet at promotion), and the M96 salvage
     # outcomes "SALVAGED_VERIFY_FAILED" / "SALVAGED_VERIFY_UNAVAILABLE" (the
     # orchestrator recovered real edits a stuck mutating phase produced and
     # ran the verifier; a passing verifier instead yields "APPROVAL_PENDING").
@@ -95,6 +96,11 @@ class StageRunResult:
     # from the min-context gate so the approval/inbox UI can render
     # "Paused — insufficient code context" with the specifics.
     needs_context: dict[str, Any] | None = None
+    # Capability Governance Model — when stop_reason == "GOVERNANCE_BLOCKED",
+    # carries {controls, allowedActions, overlayHash}: the unsatisfied
+    # REQUIRED/BLOCKING governance controls that blocked promotion, plus the
+    # actions that can unblock (submit evidence / run verifier / request waiver).
+    governance_block: dict[str, Any] | None = None
     # Aggregated counters — workgraph-api stamps these on the audit row.
     total_input_tokens: int = 0
     total_output_tokens: int = 0
@@ -110,6 +116,7 @@ class StageRunResult:
             "error_message": self.error_message,
             "not_actionable": self.not_actionable,
             "needs_context": self.needs_context,
+            "governance_block": self.governance_block,
             "totals": {
                 "input_tokens": self.total_input_tokens,
                 "output_tokens": self.total_output_tokens,
@@ -1581,6 +1588,64 @@ async def _maybe_run_auto_baseline(
 _BASELINE_RECEIPT_KEY = "__baseline_receipt__"
 
 
+# ── Capability Governance Model — enforcement gate (G4) ──────────────────────
+
+def _satisfied_evidence_keys(state: PhaseState) -> set[str]:
+    """Evidence keys that have a satisfying receipt in state.receipts. Best-effort
+    + fail-closed: a receipt counts only when it records an evidence_key AND a
+    passing status. (Richer receiptType→evidenceKey mapping lands with evidence
+    submission; until then, unsatisfied evidence simply blocks — and is waivable.)"""
+    out: set[str] = set()
+    receipts = getattr(state, "receipts", {}) or {}
+    for bucket in receipts.values():
+        if not isinstance(bucket, list):
+            continue
+        for r in bucket:
+            if not isinstance(r, dict):
+                continue
+            key = r.get("evidence_key") or r.get("evidenceKey")
+            status = str(r.get("status") or "").lower()
+            ok = r.get("tool_success") is True or status in ("passed", "pass", "ok", "satisfied")
+            if isinstance(key, str) and key and ok:
+                out.add(key)
+    return out
+
+
+def _evaluate_governance_block(
+    overlay: dict[str, Any],
+    satisfied_evidence: set[str],
+    waived_controls: set[str],
+) -> list[dict[str, Any]]:
+    """Return the unsatisfied REQUIRED/BLOCKING governance controls (empty ⇒ the
+    stage may promote). Fail-closed: a REQUIRED/BLOCKING evidence or a
+    blockingControl blocks unless its key is satisfied or waived. ADVISORY
+    contributes nothing — the gate is a no-op for advisory overlays."""
+    if not isinstance(overlay, dict):
+        return []
+    blocked: list[dict[str, Any]] = []
+    default_mode = str(overlay.get("effectiveMode") or "ADVISORY").upper()
+    for ev in overlay.get("requiredEvidence") or []:
+        if not isinstance(ev, dict):
+            continue
+        mode = str(ev.get("mode") or default_mode).upper()
+        if mode not in ("REQUIRED", "BLOCKING"):
+            continue
+        key = ev.get("evidenceKey")
+        if isinstance(key, str) and key and key not in satisfied_evidence and key not in waived_controls:
+            blocked.append({"controlKey": key, "kind": "evidence", "mode": mode,
+                            "reason": f"required evidence '{key}' not satisfied",
+                            "stageKey": ev.get("stageKey"), "waivable": True})
+    for c in overlay.get("blockingControls") or []:
+        if not isinstance(c, dict):
+            continue
+        key = c.get("controlKey")
+        if isinstance(key, str) and key and key not in satisfied_evidence and key not in waived_controls:
+            blocked.append({"controlKey": key, "kind": "control", "mode": "BLOCKING",
+                            "reason": c.get("reason") or f"blocking control '{key}' not satisfied",
+                            "sourceCapabilityId": c.get("sourceCapabilityId"), "waivable": True})
+    return blocked
+
+
 async def run_stage(
     *,
     state: PhaseState,
@@ -1608,6 +1673,14 @@ async def run_stage(
     # filtered consistently across the stage. See
     # stage_execution_policy.py for the override semantics.
     exec_policy: StageExecutionPolicy | None = None,
+    # Capability Governance Model (G4) — resolved governance overlay (from IAM via
+    # workgraph) + the active waiver control keys for this run. When the overlay
+    # is BLOCKING/REQUIRED, the enforcement gate halts promotion with
+    # GOVERNANCE_BLOCKED unless the controls are satisfied or waived. None/ADVISORY
+    # ⇒ no enforcement (legacy behavior). The overlay is also threaded to run_turn
+    # so its advisory guidance lands in every turn's prompt.
+    governance_overlay: dict[str, Any] | None = None,
+    governance_waivers: list[str] | None = None,
 ) -> StageRunResult:
     """Drive an entire stage by repeatedly calling `run_turn`.
 
@@ -1845,6 +1918,7 @@ async def run_stage(
                     thinking_budget=thinking_budget,
                     exec_policy=exec_policy,
                     code_context_cache=code_context_cache,
+                    governance_overlay=governance_overlay,
                 )
                 last_llm_error = None
                 break
@@ -1976,6 +2050,26 @@ async def run_stage(
             result.not_actionable = turn.step.not_actionable
             result.stop_reason = "NOT_ACTIONABLE"
             return result
+
+        # Capability Governance Model (G4) — enforcement gate. At the moment the
+        # stage would seek approval / finalize, a BLOCKING/REQUIRED governance
+        # overlay must be satisfied (required evidence present / blocking controls
+        # met) or waived; otherwise halt with GOVERNANCE_BLOCKED — a human-resumable
+        # pause — instead of promoting. Fail-closed; ADVISORY overlays never block.
+        if governance_overlay and (state.approval_pending or _is_terminal_state(state)):
+            _blocked = _evaluate_governance_block(
+                governance_overlay, _satisfied_evidence_keys(state), set(governance_waivers or []))
+            if _blocked:
+                result.governance_block = {
+                    "controls": _blocked,
+                    "allowedActions": ["SUBMIT_EVIDENCE", "RUN_VERIFIER", "REQUEST_WAIVER"],
+                    "overlayHash": governance_overlay.get("overlayHash"),
+                }
+                result.stop_reason = "GOVERNANCE_BLOCKED"
+                await emit_governed_event(
+                    kind="governed.stage_blocked", state=state, policy=None,
+                    run_context=run_context, payload=result.governance_block, severity="warn")
+                return result
 
         if state.approval_pending and state.current_phase is Phase.SELF_REVIEW:
             result.stop_reason = "APPROVAL_PENDING"

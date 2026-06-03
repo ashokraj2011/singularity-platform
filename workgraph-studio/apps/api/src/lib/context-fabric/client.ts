@@ -225,6 +225,13 @@ export interface GovernedStageRequest {
   // / repo_access. Optional — omitting it falls back to the seeded
   // base policy verbatim.
   stage_execution_policy?: StageExecutionPolicy
+  // Capability Governance Model (G4) — resolved governance overlay + active
+  // waiver controlKeys for this run. When the overlay is BLOCKING/REQUIRED, the
+  // CF enforcement gate halts promotion with stop_reason=GOVERNANCE_BLOCKED
+  // unless controls are satisfied or waived. Populated by the executor from
+  // resolveGovernance() + activeWaiverControlKeys(); omitted ⇒ no enforcement.
+  governance_overlay?: Record<string, unknown>
+  governance_waivers?: string[]
 }
 
 // M91.A — workflow's resolved stage intent. Built by blueprint.router
