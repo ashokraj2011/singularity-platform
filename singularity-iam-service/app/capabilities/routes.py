@@ -43,7 +43,8 @@ def _audit_actor_metadata(current_user: User) -> dict:
 def _cap_out(c: Capability) -> CapabilityOut:
     return CapabilityOut(
         id=c.id, capability_id=c.capability_id, name=c.name, description=c.description,
-        capability_type=c.capability_type, status=c.status, visibility=c.visibility,
+        capability_type=c.capability_type, status=c.status,
+        is_governing=getattr(c, "is_governing", False), visibility=c.visibility,
         owner_bu_id=c.owner_bu_id, owner_team_id=c.owner_team_id,
         metadata=c.metadata_ or {}, tags=c.tags or [], created_by=c.created_by,
         created_at=c.created_at, updated_at=c.updated_at,

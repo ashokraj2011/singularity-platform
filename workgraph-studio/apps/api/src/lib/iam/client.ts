@@ -373,28 +373,77 @@ export type CapabilityCacheRow = {
   name:   string
   type:   string | null
   status: string | null
+  isGoverning?: boolean
 }
 
 export async function getCapability(capabilityId: string, callerToken?: string): Promise<CapabilityCacheRow | null> {
   // Try local cache first
   const cached = await prisma.capability.findUnique({ where: { id: capabilityId } }).catch(() => null)
   if (cached) {
-    return { id: cached.id, name: cached.name, type: cached.type, status: cached.status }
+    return { id: cached.id, name: cached.name, type: cached.type, status: cached.status, isGoverning: cached.isGoverning }
   }
   // Pull from IAM
   const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}`, { token: callerToken }).catch(() => null)
   if (!res || !res.ok) return null
-  const cap = await res.json() as { id: string; name: string; capability_type?: string; status?: string }
+  const cap = await res.json() as { id: string; name: string; capability_type?: string; status?: string; is_governing?: boolean }
+  const isGov = Boolean(cap.is_governing)
   // Upsert into cache
   try {
     const upserted = await prisma.capability.upsert({
       where:  { id: cap.id },
-      create: { id: cap.id, name: cap.name, type: cap.capability_type ?? null, status: cap.status ?? null },
-      update: { name: cap.name, type: cap.capability_type ?? null, status: cap.status ?? null, syncedAt: new Date() },
+      create: { id: cap.id, name: cap.name, type: cap.capability_type ?? null, status: cap.status ?? null, isGoverning: isGov },
+      update: { name: cap.name, type: cap.capability_type ?? null, status: cap.status ?? null, isGoverning: isGov, syncedAt: new Date() },
     })
-    return { id: upserted.id, name: upserted.name, type: upserted.type, status: upserted.status }
+    return { id: upserted.id, name: upserted.name, type: upserted.type, status: upserted.status, isGoverning: upserted.isGoverning }
   } catch {
     // Cache table may not exist yet (added in Phase B migration). Return live.
-    return { id: cap.id, name: cap.name, type: cap.capability_type ?? null, status: cap.status ?? null }
+    return { id: cap.id, name: cap.name, type: cap.capability_type ?? null, status: cap.status ?? null, isGoverning: isGov }
+  }
+}
+
+// ── Capability Governance Model (G2) ─────────────────────────────────────────
+
+export interface GovernanceResolveContext {
+  capability_id: string            // governed operational capability
+  work_item_type?: string
+  workflow_type?: string
+  workflow_id?: string
+  stage_key?: string
+  agent_role?: string
+  node_id?: string
+  risk_level?: string
+}
+
+/**
+ * Resolve the governance overlay for a (capability, run, stage) context by
+ * calling IAM `POST /governance/resolve`. Returns the resolved overlay (the
+ * `data` block) or null when IAM is unreachable / has no governance. Uses the
+ * auto-minted service token on the runtime path (no user token).
+ */
+export async function resolveGovernance(
+  ctx: GovernanceResolveContext,
+  callerToken?: string,
+): Promise<Record<string, unknown> | null> {
+  const res = await iamFetch('/governance/resolve', {
+    method: 'POST', body: JSON.stringify(ctx), token: callerToken,
+  }).catch(() => null)
+  if (!res || !res.ok) return null
+  const body = await res.json().catch(() => null) as { success?: boolean; data?: Record<string, unknown> } | null
+  return body?.data ?? null
+}
+
+/**
+ * Whether a capability plays a GOVERNING role (architecture board, compliance,
+ * standards group). Governing capabilities govern work; they never receive
+ * delivery work — the routing guard uses this to exclude them from targets.
+ * Cache-first; falls back to IAM. FAIL-OPEN (returns false) on any error so a
+ * governance lookup can never block legitimate delivery routing.
+ */
+export async function isCapabilityGoverning(capabilityId: string, callerToken?: string): Promise<boolean> {
+  try {
+    const cap = await getCapability(capabilityId, callerToken)
+    return Boolean(cap?.isGoverning)
+  } catch {
+    return false
   }
 }
