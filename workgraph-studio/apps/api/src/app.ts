@@ -49,6 +49,7 @@ import { eventHorizonRouter } from './modules/event-horizon/event-horizon.router
 // M40 — ImmutableContract replay + lookup endpoints.
 import { contractsRouter } from './modules/contracts/contracts.router'
 import { workItemsRouter } from './modules/work-items/work-items.router'
+import { governanceRouter } from './modules/governance/governance.router'
 import { workItemRoutingPoliciesRouter, workItemTriggersRouter } from './modules/work-items/work-item-routing.router'
 import { metadataDefinitionsRouter } from './modules/metadata/metadata.router'
 import { laptopInvocationsRouter, laptopQuestionsRouter, workItemLaptopRouter } from './modules/laptop/laptop.router'
@@ -125,6 +126,7 @@ export function createApp(): Express {
   app.use('/api/work-item-triggers', authMiddleware, workItemTriggersRouter)
   app.use('/api/work-items', authMiddleware, workItemLaptopRouter)
   app.use('/api/work-items', authMiddleware, workItemsRouter)
+  app.use('/api/governance', authMiddleware, governanceRouter)
   app.use('/api/laptop-invocations', authMiddleware, laptopInvocationsRouter)
   app.use('/api/questions', authMiddleware, laptopQuestionsRouter)
   app.use('/api/approvals', authMiddleware, approvalsRouter)

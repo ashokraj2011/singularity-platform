@@ -434,13 +434,36 @@ model TeamVariable {
 // the IAM client looks one up.  Used so the workflow studio can render names
 // and types for `capabilityId` references without hitting IAM on every page.
 model Capability {
-  id       String   @id // == IAM capability_id
-  name     String
-  type     String?
-  status   String?
-  syncedAt DateTime @default(now())
+  id          String   @id // == IAM capability_id
+  name        String
+  type        String?
+  status      String?
+  // Capability Governance Model — synced from IAM. Governing capabilities are
+  // excluded from work-item targeting by the routing guard (activateWorkItem).
+  isGoverning Boolean  @default(false)
+  syncedAt    DateTime @default(now())
 
   @@map("capabilities_cache")
+}
+
+/// Capability Governance Model — point-in-time snapshot of the resolved
+/// governance overlay for a work item / run / stage. Runtime reads the snapshot,
+/// never live governance state, so policy changes don't rewrite history.
+model GovernanceOverlaySnapshot {
+  id                   String   @id @default(uuid())
+  workItemId           String?
+  workflowInstanceId   String?
+  workflowNodeId       String?
+  governedCapabilityId String
+  overlayHash          String
+  resolvedOverlayJson  Json
+  resolvedAt           DateTime @default(now())
+  createdAt            DateTime @default(now())
+
+  @@unique([workItemId, workflowNodeId, overlayHash])
+  @@index([workItemId])
+  @@index([workflowInstanceId])
+  @@map("governance_overlay_snapshots")
 }
 
 model Department {

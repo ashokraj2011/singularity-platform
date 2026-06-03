@@ -10,6 +10,7 @@ class CapabilityOut(BaseModel):
     description: Optional[str]
     capability_type: str
     status: str
+    is_governing: bool = False
     visibility: str
     owner_bu_id: Optional[str]
     owner_team_id: Optional[str]

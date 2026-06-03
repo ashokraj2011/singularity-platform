@@ -5,7 +5,7 @@ import { prisma } from '../../lib/prisma'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { ForbiddenError, NotFoundError, ValidationError } from '../../lib/errors'
 import { config } from '../../config'
-import { authzCheck, listCapabilityRelationships } from '../../lib/iam/client'
+import { authzCheck, listCapabilityRelationships, isCapabilityGoverning } from '../../lib/iam/client'
 import { assertTemplatePermission } from '../../lib/permissions/workflowTemplate'
 import { cloneDesignToRun } from '../workflow/lib/cloneDesignToRun'
 import { getWorkflowBudgetOverview } from '../workflow/runtime/budget'
@@ -291,6 +291,26 @@ export async function activateWorkItem(node: WorkflowNode, instance: WorkflowIns
       .map(r => r.target_capability_id)
       .filter(id => typeof id === 'string' && id.trim() && !seen.has(id) && (seen.add(id), true))
       .map(id => ({ targetCapabilityId: id }))
+  }
+  // Capability Governance Model — routing guard. Governing capabilities (boards,
+  // compliance bodies, standards groups) GOVERN work; they never RECEIVE delivery
+  // work. Exclude any governing capability from the dispatch targets, across all
+  // three resolution paths (static / reactive / discovered). Fail-open: a
+  // governance lookup must never block legitimate delivery routing.
+  if (targets.length > 0) {
+    const kept: typeof targets = []
+    for (const t of targets) {
+      if (await isCapabilityGoverning(t.targetCapabilityId)) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[governance] excluded governing capability ${t.targetCapabilityId} from ` +
+          `work-item targets (instance=${instance.id}, node=${node.id})`,
+        )
+        continue
+      }
+      kept.push(t)
+    }
+    targets = kept
   }
   const title = String(std.title ?? cfg.title ?? node.label ?? 'Delegated work item').trim()
   const description = String(std.description ?? cfg.description ?? '').trim() || undefined
