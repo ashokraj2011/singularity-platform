@@ -1013,3 +1013,47 @@ def test_mask_secrets_redacts_token_shapes_but_keeps_code():
     assert "supersecretvalue123" not in _mask_secrets('"api_key": "supersecretvalue123"')
     code = "def foo(x):\n    return x + 1"
     assert _mask_secrets(code) == code  # ordinary code untouched
+
+
+# ── Governance overlay compilation (G3) ──────────────────────────────────────
+
+
+def test_render_governance_facts():
+    from context_api_service.app.governed.turn import _render_governance_facts
+    assert _render_governance_facts({}) == ""
+    overlay = {
+        "governingEntities": [{"capabilityId": "sec", "name": "Security Compliance"}],
+        "promptLayers": [{"layerKey": "SEC_CONTROLS", "guidance": "Validate all inputs."},
+                         {"layerKey": "ARCH"}],
+        "requiredEvidence": [{"evidenceKey": "UNIT_TEST_RESULTS"}],
+        "toolPolicy": {"blocked": ["prod_deploy"], "approvalRequired": ["git_push"]},
+    }
+    md = _render_governance_facts(overlay)
+    assert md.startswith("## Governance for this stage")
+    assert "Governed by: Security Compliance" in md
+    assert "SEC_CONTROLS: Validate all inputs." in md
+    assert "Apply governance guideline: ARCH." in md
+    assert "UNIT_TEST_RESULTS" in md
+    assert "prod_deploy" in md and "git_push" in md
+
+
+@pytest.mark.asyncio
+async def test_governance_overlay_renders_into_prompt_vars(monkeypatch):
+    seen_vars: list[dict] = []
+
+    async def fake_build(*, task_text, capability_id, run_context, **_kwargs):
+        return ({"context_package_id": "c", "packageMarkdown": "x",
+                 "target_symbols": [{"x": 1}], "editable_slices": [{"f": "a"}]}, None)
+
+    _patch_context_turn(monkeypatch, build_fn=fake_build, seen_vars=seen_vars)
+    await run_turn(
+        state=PhaseState.fresh("loop.stage", "DEVELOPER"),
+        stage_key="loop.stage", agent_role="DEVELOPER",
+        vars={"goal": "do x"},
+        run_context={"capability_id": "cap-1"},
+        governance_overlay={
+            "governingEntities": [{"capabilityId": "sec", "name": "Security"}],
+            "promptLayers": [{"layerKey": "SEC", "guidance": "Be secure."}],
+        },
+    )
+    assert seen_vars and "Governed by: Security" in (seen_vars[0].get("governance_facts") or "")
