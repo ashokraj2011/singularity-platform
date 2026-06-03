@@ -7,6 +7,7 @@ import {
   type GovernedStageResponse,
   type PendingApproval,
 } from '../../lib/context-fabric/client'
+import { enrichStageRequestWithGovernance } from '../governance/governance.service'
 
 export type CodingStagePolicy = 'planning' | 'design' | 'developer' | 'qa' | 'certify'
 export type CodingRunStatus = 'COMPLETED' | 'FAILED' | 'PAUSED' | 'DENIED'
@@ -328,6 +329,10 @@ export async function runCodingStageGoverned(
     // signal (back-compat with pre-M93.D wire).
     ...(input.stageExecutionPolicy ? { stage_execution_policy: input.stageExecutionPolicy } : {}),
   }
+  // Capability Governance Model (G5) — resolve + attach the governance overlay +
+  // active waivers so CF's enforcement gate can block on unmet BLOCKING/REQUIRED
+  // controls. Fail-open: no-op when there's no governance for the capability.
+  await enrichStageRequestWithGovernance(stageRequest)
   const response = await contextFabricClient.executeGovernedStage(stageRequest)
   return adaptGovernedStageToCodingRun(response, input.policy)
 }

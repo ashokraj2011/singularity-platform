@@ -6,6 +6,7 @@ import {
 } from '../../../../lib/context-fabric/client'
 import { config } from '../../../../config'
 import { snapshotAgentTemplate, snapshotCapability } from '../../../../lib/snapshot'
+import { enrichStageRequestWithGovernance } from '../../../governance/governance.service'
 import { prepareLlmBudget, recordWorkflowLlmUsage } from '../budget'
 import {
   executeReqToGovernedStageReq, governedStageRespToExecuteResp,
@@ -316,6 +317,10 @@ export async function activateAgentTask(
         agentRole: typeof cfg.governedAgentRole === 'string' ? cfg.governedAgentRole : undefined,
         maxTurns: typeof cfg.governedMaxTurns === 'number' ? cfg.governedMaxTurns : undefined,
       })
+      // Capability Governance Model (G5) — resolve + attach the governance overlay
+      // + active waivers so CF's enforcement gate can block on unmet BLOCKING/
+      // REQUIRED controls. Fail-open: no-op when there's no governance.
+      await enrichStageRequestWithGovernance(govReq)
       const govResp = await contextFabricClient.executeGovernedStage(govReq)
       result = governedStageRespToExecuteResp(govResp, {
         traceId: executeReq.trace_id ?? null,
