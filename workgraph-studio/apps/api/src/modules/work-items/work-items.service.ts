@@ -303,6 +303,11 @@ export async function activateWorkItem(node: WorkflowNode, instance: WorkflowIns
 
   const workItem = await createWorkItem({
     title,
+    // M101 (Epic→child) — carry the node-declared work-item type so the
+    // per-child routing policy (capability + workItemTypeKey) selects the
+    // right child workflow (e.g. IMPACT_ANALYSIS vs STORY_IMPL). Absent →
+    // createWorkItem falls back to its metadata default (GENERAL).
+    workItemTypeKey: String(std.workItemTypeKey ?? cfg.workItemTypeKey ?? '').trim() || undefined,
     description,
     parentCapabilityId,
     sourceWorkflowInstanceId: instance.id,
@@ -1228,6 +1233,11 @@ export async function approveWorkItem(workItemId: string, userId: string, approv
   const impactedChildren = targetOutputs
     .filter(t => asRecord(asRecord(t.output).impactVerdict).impacted === true)
     .map(t => ({ targetCapabilityId: t.targetCapabilityId, childWorkflowInstanceId: t.childWorkflowInstanceId }))
+  // M101 (Epic→child) — scalar flags for the parent DECISION_GATE. The edge
+  // evaluator has no array-length op, so the Epic template branches on
+  // `workItem.hasImpact` (== true/false) or `workItem.impactedCount` (> 0).
+  const impactedCount = impactedChildren.length
+  const hasImpact = impactedCount > 0
   const finalOutput = {
     workItemId,
     title: workItem.title,
@@ -1235,6 +1245,8 @@ export async function approveWorkItem(workItemId: string, userId: string, approv
     approvalDecision,
     targetOutputs,
     impactedChildren,
+    impactedCount,
+    hasImpact,
     consumableIds,
     childWorkflowInstanceIds: targetOutputs.map(t => t.childWorkflowInstanceId).filter(Boolean),
   }
