@@ -43,6 +43,13 @@ _ADD_COLUMNS = [
     # Capability Governance Model — governing-role marker (governance_attachments
     # table is created by Base.metadata.create_all).
     "ALTER TABLE iam.capabilities    ADD COLUMN IF NOT EXISTS is_governing BOOLEAN NOT NULL DEFAULT false",
+    # G7a — at most one ACTIVE attachment per (edge, scope, target). COALESCE so
+    # scope=ALL (NULL target_key) is also unique per edge (NULLs would otherwise
+    # be distinct). Lets the G8 reconciler treat a unique-violation as
+    # "converge → PATCH" instead of stacking duplicates. Partial on is_active so
+    # deactivated history rows don't collide.
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_gov_attach_active "
+    "ON iam.governance_attachments (relationship_id, scope, COALESCE(target_key, '')) WHERE is_active",
 ]
 
 

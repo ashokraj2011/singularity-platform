@@ -22,6 +22,23 @@ class CreateGovernedByRequest(BaseModel):
     contributions: Optional[dict] = None
 
 
+class UpdateGovernedByRequest(BaseModel):
+    """Patch an existing governance attachment (G7a). All fields optional —
+    only provided fields change. Any governance-relevant change bumps the
+    attachment's `version` (so resolved-overlay `versionPins` stay unique).
+    `mode`/`scope` are validated against MODE_RANK/SCOPE_RANK; raising mode to
+    REQUIRED/BLOCKING is gated by elevated authority at the route layer."""
+    mode: Optional[str] = None
+    scope: Optional[str] = None
+    target_kind: Optional[str] = None
+    target_key: Optional[str] = None
+    priority: Optional[int] = None
+    effective_from: Optional[datetime] = None
+    effective_to: Optional[datetime] = None
+    waiver_allowed: Optional[bool] = None
+    contributions: Optional[dict] = None
+
+
 class GovernanceAttachmentOut(BaseModel):
     id: str
     relationship_id: str
@@ -39,6 +56,7 @@ class GovernanceAttachmentOut(BaseModel):
     version: int
     contributions: dict
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 class GovernanceResolveRequest(BaseModel):

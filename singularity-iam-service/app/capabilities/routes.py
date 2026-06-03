@@ -84,11 +84,14 @@ def _grant_out(g: CapabilitySharingGrant) -> SharingGrantOut:
 async def list_capabilities(
     page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=500),
     capability_type: str | None = None,
+    is_governing: bool | None = Query(None, description="Filter to (non-)governing capabilities; the governance authoring UI uses ?is_governing=true to populate the policy picker."),
     db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user),
 ):
     q = select(Capability)
     if capability_type:
         q = q.where(Capability.capability_type == capability_type)
+    if is_governing is not None:
+        q = q.where(Capability.is_governing.is_(is_governing))
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
     items = (await db.execute(q.offset((page - 1) * size).limit(size))).scalars().all()
     return PageResponse(items=[_cap_out(c) for c in items], total=total, page=page, size=size)
