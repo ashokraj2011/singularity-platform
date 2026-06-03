@@ -26,6 +26,7 @@ from app.mcp_servers.routes import router as mcp_servers_router
 from app.eventbus.routes import router as eventbus_router  # M11.e
 from app.skills.routes import router as skills_router
 from app.devices.routes import router as devices_router  # M26
+from app.governance.routes import router as governance_router  # Capability Governance Model
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -39,6 +40,9 @@ _ADD_COLUMNS = [
     "ALTER TABLE iam.capabilities    ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb",
     "ALTER TABLE iam.roles           ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb",
     "ALTER TABLE iam.roles           ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb",
+    # Capability Governance Model — governing-role marker (governance_attachments
+    # table is created by Base.metadata.create_all).
+    "ALTER TABLE iam.capabilities    ADD COLUMN IF NOT EXISTS is_governing BOOLEAN NOT NULL DEFAULT false",
 ]
 
 
@@ -130,6 +134,8 @@ app.include_router(skills_router, prefix=PREFIX)
 app.include_router(devices_router, prefix=PREFIX)
 # M11.e — event-bus subscription registry. Router itself carries the /api/v1 prefix.
 app.include_router(eventbus_router)
+# Capability Governance Model — governed-by attachments + /governance/resolve.
+app.include_router(governance_router, prefix=PREFIX)
 
 
 @app.get("/api/v1/health")

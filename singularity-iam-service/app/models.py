@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import (
-    String, Boolean, ForeignKey, UniqueConstraint,
+    String, Boolean, Integer, ForeignKey, UniqueConstraint,
     CheckConstraint, Index, text,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -153,6 +153,11 @@ class Capability(Base):
     description: Mapped[Optional[str]] = mapped_column(String)
     capability_type: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, server_default="active")
+    # Capability Governance Model — a capability plays a GOVERNING role (architecture
+    # board, security/compliance, standards group) when this is true. Marker only:
+    # governing capabilities are excluded from execution routing/targeting by a single
+    # guard at the routing boundary (they govern; they don't receive delivery work).
+    is_governing: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     visibility: Mapped[str] = mapped_column(String, nullable=False, server_default="private")
     owner_bu_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.business_units.id"))
     owner_team_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.teams.id"))
@@ -209,6 +214,53 @@ class CapabilitySharingGrant(Base):
     approved_at: Mapped[Optional[datetime]] = mapped_column(_tstz())
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
+
+
+class GovernanceAttachment(Base):
+    """Capability Governance Model — a scoped governance attachment hanging off a
+    `governed_by` CapabilityRelationship edge (governed operational capability →
+    governing capability). One relationship may carry several attachments at
+    different scopes (e.g. STAGE=DEVELOP and STAGE=QA). The resolver merges all
+    applicable attachments for a run/stage into a deterministic governance overlay.
+    ADVISORY by default; REQUIRED/BLOCKING enforcement is a later phase.
+    """
+    __tablename__ = "governance_attachments"
+    __table_args__ = (
+        Index("idx_gov_attach_capability", "capability_id"),
+        Index("idx_gov_attach_governing", "governing_capability_id"),
+        Index("idx_gov_attach_relationship", "relationship_id"),
+        {"schema": "iam"},
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    # The governed_by relationship edge this attachment scopes (cascades on edge delete).
+    relationship_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("iam.capability_relationships.id", ondelete="CASCADE"), nullable=False
+    )
+    # Denormalized for fast resolution (== relationship.source / .target).
+    capability_id: Mapped[str] = mapped_column(
+        String, ForeignKey("iam.capabilities.capability_id"), nullable=False
+    )  # governed operational capability
+    governing_capability_id: Mapped[str] = mapped_column(
+        String, ForeignKey("iam.capabilities.capability_id"), nullable=False
+    )  # governing capability (authority)
+    mode: Mapped[str] = mapped_column(String, nullable=False, server_default="ADVISORY")  # ADVISORY|REQUIRED|BLOCKING
+    scope: Mapped[str] = mapped_column(String, nullable=False, server_default="ALL")       # ALL|WORK_ITEM_TYPE|WORKFLOW_TYPE|WORKFLOW|STAGE
+    target_kind: Mapped[Optional[str]] = mapped_column(String)  # WORK_ITEM_TYPE|WORKFLOW_TYPE|WORKFLOW_ID|STAGE_KEY|NODE_ID
+    target_key: Mapped[Optional[str]] = mapped_column(String)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="100")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    effective_from: Mapped[Optional[datetime]] = mapped_column(_tstz())
+    effective_to: Mapped[Optional[datetime]] = mapped_column(_tstz())
+    waiver_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    # Governance payload contributed when this attachment applies: promptLayers,
+    # requiredEvidence, verifierAgents, toolPolicy, approvalGates, waiverRules,
+    # blockingControls. Free-form JSON so new asset types need no schema change.
+    contributions: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_by: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.users.id"))
+    created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now, onupdate=_now)
 
 
 class CapabilityMembership(Base):
