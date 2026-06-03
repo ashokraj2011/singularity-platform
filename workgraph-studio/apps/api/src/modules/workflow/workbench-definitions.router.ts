@@ -141,6 +141,10 @@ const createStageSchema = z.object({
   repoAccess: z.boolean().optional(),
   positionX: z.number().nullable().optional(),
   positionY: z.number().nullable().optional(),
+  // G8 — per-stage governance intent (reconciled into IAM scope=STAGE attachments).
+  governancePolicyId: z.string().nullable().optional(),
+  governanceEnforcement: z.enum(['ADVISORY', 'REQUIRED', 'BLOCKING']).nullable().optional(),
+  governancePriority: z.number().int().nullable().optional(),
 }).superRefine((data, ctx) => {
   // M91.C — pair validation. Refuses STORY_ONLY+MUTATION, etc.
   const r = validatePolicyPair(data.contextPolicy, data.toolPolicy)
@@ -169,6 +173,9 @@ const patchStageSchema = z.object({
   repoAccess: z.boolean().optional(),
   positionX: z.number().nullable().optional(),
   positionY: z.number().nullable().optional(),
+  governancePolicyId: z.string().nullable().optional(),
+  governanceEnforcement: z.enum(['ADVISORY', 'REQUIRED', 'BLOCKING']).nullable().optional(),
+  governancePriority: z.number().int().nullable().optional(),
 }).superRefine((data, ctx) => {
   // Only validate when BOTH fields appear in the patch. A patch that
   // only updates one of them is allowed — the missing one is assumed

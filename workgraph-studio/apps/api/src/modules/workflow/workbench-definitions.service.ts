@@ -23,6 +23,7 @@ import { NotFoundError, ValidationError } from '../../lib/errors'
 import { assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { logEvent, createReceipt } from '../../lib/audit'
 import { promoteWorkbenchToTables } from './lib/promote-workbench'
+import { reconcileStageGovernance } from './lib/reconcile-stage-governance'
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -66,6 +67,11 @@ export type WorkbenchStageView = {
   repoAccess: boolean
   toolPolicy: string
   contextPolicy: string
+  // G8 — per-stage governance intent.
+  governancePolicyId: string | null
+  governanceEnforcement: string | null
+  governancePriority: number | null
+  governanceContributions: unknown
   expectedArtifacts: WorkbenchArtifactView[]
   questions: WorkbenchQuestionView[]
 }
@@ -219,6 +225,10 @@ export async function getDefinition(
       repoAccess: s.repoAccess,
       toolPolicy: s.toolPolicy,
       contextPolicy: s.contextPolicy,
+      governancePolicyId: s.governancePolicyId,
+      governanceEnforcement: s.governanceEnforcement,
+      governancePriority: s.governancePriority,
+      governanceContributions: s.governanceContributions ?? null,
       expectedArtifacts: s.expectedArtifacts.map(a => ({
         id: a.id,
         kind: a.kind,
@@ -316,6 +326,13 @@ async function writeThroughToLegacy(nodeId: string): Promise<void> {
       repoAccess: s.repoAccess,
       toolPolicy: s.toolPolicy,
       contextPolicy: s.contextPolicy,
+      // G8 — carry per-stage governance through the JSON loopDefinition so it
+      // survives the tables<->JSON round trip (else the reconciler would
+      // deactivate the rows it just created).
+      governancePolicyId: s.governancePolicyId ?? undefined,
+      governanceEnforcement: s.governanceEnforcement ?? undefined,
+      governancePriority: s.governancePriority ?? undefined,
+      governanceContributions: s.governanceContributions ?? undefined,
       expectedArtifacts: s.expectedArtifacts.map(a => ({
         kind: a.kind,
         title: a.title,
@@ -437,6 +454,8 @@ export async function patchDefinition(
     data: input,
   })
   await writeThroughToLegacy(nodeId)
+  // G8 — re-materialize per-stage governance (capabilityId may have changed).
+  await reconcileStageGovernance(prisma, nodeId)
   await recordAudit(nodeId, 'Patched', userId, { fields: Object.keys(input) })
   const view = await getDefinition(nodeId, userId)
   if (!view) throw new NotFoundError('WorkbenchDefinition', nodeId)
@@ -458,6 +477,9 @@ export async function createStage(
     terminal?: boolean
     approvalRequired?: boolean
     repoAccess?: boolean
+    governancePolicyId?: string | null
+    governanceEnforcement?: string | null
+    governancePriority?: number | null
     positionX?: number | null
     positionY?: number | null
   },
@@ -491,12 +513,16 @@ export async function createStage(
       terminal: input.terminal ?? false,
       approvalRequired: input.approvalRequired ?? true,
       repoAccess: input.repoAccess ?? false,
+      governancePolicyId: input.governancePolicyId ?? null,
+      governanceEnforcement: input.governanceEnforcement ?? null,
+      governancePriority: input.governancePriority ?? null,
       positionX: input.positionX ?? null,
       positionY: input.positionY ?? null,
       ordinal: nextOrdinal,
     },
   })
   await writeThroughToLegacy(nodeId)
+  await reconcileStageGovernance(prisma, nodeId)
   await recordAudit(nodeId, 'StageCreated', userId, { stageKey: input.stageKey })
   return (await getDefinition(nodeId, userId))!
 }
@@ -517,6 +543,9 @@ export async function patchStage(
     terminal: boolean
     approvalRequired: boolean
     repoAccess: boolean
+    governancePolicyId: string | null
+    governanceEnforcement: string | null
+    governancePriority: number | null
     positionX: number | null
     positionY: number | null
   }>,
@@ -526,6 +555,7 @@ export async function patchStage(
   await assertStageBelongsToNode(stageId, nodeId)
   await prisma.workbenchStage.update({ where: { id: stageId }, data: input })
   await writeThroughToLegacy(nodeId)
+  await reconcileStageGovernance(prisma, nodeId)
   await recordAudit(nodeId, 'StagePatched', userId, { stageId, fields: Object.keys(input) })
   return (await getDefinition(nodeId, userId))!
 }

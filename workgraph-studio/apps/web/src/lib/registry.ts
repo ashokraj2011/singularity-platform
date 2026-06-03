@@ -153,6 +153,7 @@ export type LookupCapability = {
   name: string
   capability_type?: string
   status?: string
+  is_governing?: boolean
   source?: 'iam' | 'agent-runtime' | string
 }
 export type LookupUser = { id: string; email: string; display_name?: string; displayName?: string }
@@ -171,6 +172,8 @@ async function lookupList<T>(path: string, params: Record<string, string | undef
 
 export const fetchTeams        = (q?: string)                 => lookupList<LookupTeam>('teams', { q })
 export const fetchCapabilities = (q?: string)                 => lookupList<LookupCapability>('capabilities', { q })
+// G8 — governing capabilities only (policies), for the per-stage governance picker.
+export const fetchGoverningCapabilities = ()                  => lookupList<LookupCapability>('capabilities', { is_governing: 'true' })
 export const fetchUsers        = (filter: { team_id?: string; capability_id?: string; q?: string } = {}) =>
                                                                   lookupList<LookupUser>('users', filter)
 export const fetchRoles        = ()                           => lookupList<LookupRole>('roles')

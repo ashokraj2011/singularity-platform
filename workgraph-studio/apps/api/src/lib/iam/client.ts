@@ -447,3 +447,72 @@ export async function isCapabilityGoverning(capabilityId: string, callerToken?: 
     return false
   }
 }
+
+// ── Capability Governance Model (G7a/G8) — governed-by attachment mutations ──
+// Used by the G8 stage-governance reconciler. The service token must carry the
+// `governance:author` scope for ADVISORY (and `governance:enforce` for
+// REQUIRED/BLOCKING) — see IAM app/governance/authz.py.
+
+export interface IamGovernanceAttachment {
+  id: string
+  capability_id: string
+  governing_capability_id: string
+  mode: string
+  scope: string
+  target_kind?: string | null
+  target_key?: string | null
+  priority: number
+  is_active: boolean
+  version: number
+  contributions?: Record<string, unknown>
+}
+
+export interface AttachGovernedByBody {
+  governing_capability_id: string
+  mode?: string
+  scope?: string
+  target_kind?: string | null
+  target_key?: string | null
+  priority?: number
+  waiver_allowed?: boolean
+  contributions?: Record<string, unknown>
+}
+
+export async function listGovernedByAttachments(
+  capabilityId: string, includeInactive = false, callerToken?: string,
+): Promise<IamGovernanceAttachment[]> {
+  const qs = includeInactive ? '?include_inactive=true' : ''
+  const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}/governed-by${qs}`, { token: callerToken }).catch(() => null)
+  if (!res || res.status === 404) return []
+  if (!res.ok) throw new IamUnavailableError(`IAM governed-by list → ${res.status}`)
+  return res.json() as Promise<IamGovernanceAttachment[]>
+}
+
+export async function attachGovernedBy(
+  capabilityId: string, body: AttachGovernedByBody, callerToken?: string,
+): Promise<IamGovernanceAttachment> {
+  const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}/governed-by`, {
+    method: 'POST', body: JSON.stringify(body), token: callerToken,
+  })
+  if (!res.ok) throw new IamUnavailableError(`IAM attach governed-by → ${res.status}: ${(await res.text()).slice(0, 200)}`)
+  return res.json() as Promise<IamGovernanceAttachment>
+}
+
+export async function patchGovernanceAttachment(
+  capabilityId: string, attachmentId: string, body: Partial<AttachGovernedByBody>, callerToken?: string,
+): Promise<IamGovernanceAttachment> {
+  const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}/governed-by/${encodeURIComponent(attachmentId)}`, {
+    method: 'PATCH', body: JSON.stringify(body), token: callerToken,
+  })
+  if (!res.ok) throw new IamUnavailableError(`IAM patch governed-by → ${res.status}: ${(await res.text()).slice(0, 200)}`)
+  return res.json() as Promise<IamGovernanceAttachment>
+}
+
+export async function deactivateGovernanceAttachment(
+  capabilityId: string, attachmentId: string, callerToken?: string,
+): Promise<void> {
+  const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}/governed-by/${encodeURIComponent(attachmentId)}/deactivate`, {
+    method: 'POST', token: callerToken,
+  })
+  if (!res.ok) throw new IamUnavailableError(`IAM deactivate governed-by → ${res.status}`)
+}

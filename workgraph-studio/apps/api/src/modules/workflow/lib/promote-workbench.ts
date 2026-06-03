@@ -54,6 +54,12 @@ interface LegacyStage {
   repoAccess?: boolean
   toolPolicy?: string
   contextPolicy?: string
+  // G8 — per-stage governance intent (threaded through the loop JSON so it
+  // survives the tables<->JSON round trip; reconciled into IAM on save).
+  governancePolicyId?: string | null
+  governanceEnforcement?: string | null
+  governancePriority?: number | null
+  governanceContributions?: unknown
   expectedArtifacts?: LegacyExpectedArtifact[]
   questions?: LegacyQuestion[]
   allowedSendBackTo?: string[]
@@ -161,6 +167,13 @@ export async function promoteWorkbenchToTables(
         repoAccess: legacyStage.repoAccess ?? false,
         toolPolicy: legacyStage.toolPolicy ?? 'NONE',
         contextPolicy: legacyStage.contextPolicy ?? 'NONE',
+        governancePolicyId: legacyStage.governancePolicyId ?? null,
+        governanceEnforcement: legacyStage.governanceEnforcement ?? null,
+        governancePriority: legacyStage.governancePriority ?? null,
+        governanceContributions:
+          legacyStage.governanceContributions == null
+            ? undefined
+            : (legacyStage.governanceContributions as Prisma.InputJsonValue),
       },
     })
     stageRowByKey[legacyStage.key] = { id: stage.id, ordinal: idx }
