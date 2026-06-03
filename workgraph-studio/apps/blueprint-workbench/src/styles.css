@@ -4543,6 +4543,475 @@ button.focus-badge.link:hover {
   border-bottom: 1px solid var(--outline-variant);
 }
 
+/* ============================================================
+ * M101 — Workbench visual refresh
+ *
+ * Keeps the existing Neo layout and runtime behavior, but gives the surface
+ * a cleaner agentic-programming cockpit feel: stronger depth, calmer contrast,
+ * clearer active states, and a more intentional standalone auth screen.
+ * ============================================================ */
+
+:root {
+  --background: #070b16;
+  --surface: #0b1020;
+  --surface-lowest: #060a13;
+  --surface-low: #101827;
+  --surface-container: rgba(17, 24, 39, 0.92);
+  --surface-high: #172033;
+  --surface-highest: #263249;
+  --outline: #9aa8bd;
+  --outline-variant: rgba(148, 163, 184, 0.22);
+  --text: #edf3ff;
+  --muted: #c6d1e4;
+  --muted-low: rgba(198, 209, 228, 0.68);
+  --primary: #91b7ff;
+  --primary-container: #3f7cff;
+  --on-primary: #06152d;
+  --secondary: #b9b8ff;
+  --tertiary: #f8c36a;
+  --danger: #ff9f9a;
+  --ok: #66e3a2;
+  --shadow: rgba(0, 0, 0, 0.34);
+}
+
+body {
+  background: #070b16;
+}
+
+.app-shell,
+.auth-empty {
+  background:
+    linear-gradient(180deg, rgba(145, 183, 255, 0.07), rgba(7, 11, 22, 0) 260px),
+    radial-gradient(circle at 8% 8%, rgba(80, 124, 255, 0.16), transparent 34%),
+    radial-gradient(circle at 96% 4%, rgba(102, 227, 162, 0.10), transparent 30%),
+    linear-gradient(135deg, #070b16 0%, #0b1020 58%, #07121d 100%);
+}
+
+.auth-empty {
+  min-height: 100vh;
+  padding: 32px;
+}
+
+.auth-empty > div {
+  width: min(560px, 100%);
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(145, 183, 255, 0.24);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.025)),
+    rgba(13, 19, 34, 0.92);
+  box-shadow: 0 34px 120px rgba(0, 0, 0, 0.38);
+  padding: 34px;
+}
+
+.auth-empty > div::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(145, 183, 255, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(145, 183, 255, 0.055) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.68), transparent 72%);
+}
+
+.auth-empty > div > * {
+  position: relative;
+}
+
+.auth-mark {
+  width: 56px;
+  height: 56px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(145, 183, 255, 0.36);
+  border-radius: 16px;
+  color: #eaf2ff;
+  background: linear-gradient(135deg, rgba(63, 124, 255, 0.42), rgba(102, 227, 162, 0.18));
+  box-shadow: 0 18px 52px rgba(63, 124, 255, 0.22);
+}
+
+.auth-kicker {
+  display: block;
+  margin-top: 22px;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.auth-empty h1 {
+  margin: 9px 0 8px;
+  color: #f8fbff;
+  font-size: clamp(34px, 5vw, 48px);
+  line-height: 0.98;
+  letter-spacing: 0;
+}
+
+.auth-empty p {
+  width: min(440px, 100%);
+  margin: 0 auto 20px;
+  color: rgba(226, 232, 240, 0.74);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.auth-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 22px 0 20px;
+}
+
+.auth-feature-grid span {
+  border: 1px solid rgba(145, 183, 255, 0.18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(237, 243, 255, 0.84);
+  padding: 10px 8px;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.auth-empty .primary-action {
+  max-width: 320px;
+  min-height: 48px;
+  margin: 0 auto;
+  border: 0;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #a9c6ff, #63e0a0);
+  color: #071426;
+  box-shadow: 0 20px 54px rgba(99, 224, 160, 0.22);
+}
+
+.command-header {
+  min-height: 72px;
+  grid-template-columns: minmax(300px, auto) auto minmax(240px, 1fr) auto;
+  border-bottom: 1px solid rgba(145, 183, 255, 0.14);
+  background: rgba(7, 11, 22, 0.78);
+  backdrop-filter: blur(22px) saturate(1.25);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.22);
+}
+
+.brand-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  color: #eaf2ff;
+  background:
+    linear-gradient(135deg, rgba(145, 183, 255, 0.95), rgba(102, 227, 162, 0.84));
+  box-shadow: 0 16px 48px rgba(99, 135, 255, 0.30);
+}
+
+.eyebrow {
+  color: rgba(198, 209, 228, 0.58);
+  font-size: 10px;
+}
+
+.command-header h1 {
+  color: #f8fbff;
+  font-size: 21px;
+  letter-spacing: 0;
+}
+
+.command-tabs {
+  justify-content: center;
+  border: 1px solid rgba(145, 183, 255, 0.13);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  padding: 4px;
+}
+
+.command-tabs button {
+  min-height: 32px;
+  border-radius: 999px;
+  color: rgba(198, 209, 228, 0.70);
+  padding: 0 12px;
+}
+
+.command-tabs button.active {
+  border: 0;
+  background: rgba(145, 183, 255, 0.18);
+  color: #f8fbff;
+  box-shadow: inset 0 0 0 1px rgba(145, 183, 255, 0.18);
+}
+
+.metric-pill {
+  min-width: 88px;
+  border-color: rgba(145, 183, 255, 0.15);
+  background: rgba(255, 255, 255, 0.045);
+  padding: 8px 11px;
+}
+
+.topbar-actions .secondary-action,
+.topbar-actions .icon-button {
+  border-color: rgba(145, 183, 255, 0.17);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.loop-shell {
+  padding: 22px;
+}
+
+.neo-cockpit-shell {
+  grid-template-columns: minmax(250px, 280px) minmax(0, 1fr) minmax(340px, 390px);
+  gap: 18px;
+}
+
+.neo-loop-rail,
+.neo-focus,
+.neo-cockpit,
+.neo-workspace-card,
+.control-card,
+.panel,
+.delivery-cockpit,
+.neo-project-card {
+  border-color: rgba(145, 183, 255, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)),
+    rgba(13, 19, 34, 0.88);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.30);
+}
+
+.neo-loop-rail,
+.neo-cockpit {
+  backdrop-filter: blur(16px);
+}
+
+.neo-loop-rail {
+  border-radius: 18px;
+  padding: 16px 12px;
+}
+
+.neo-loop-rail > header {
+  padding: 2px 8px 12px;
+  border-bottom-color: rgba(145, 183, 255, 0.12);
+}
+
+.neo-loop-rail .rail-title,
+.cockpit-title,
+.focus-stage-key {
+  color: rgba(198, 209, 228, 0.58);
+  font-weight: 900;
+}
+
+.neo-loop-rail .rail-subtitle {
+  color: #f8fbff;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.rail-provider-chip,
+.rail-refresh,
+.rail-model-picker > select,
+.rail-phase-row > select {
+  border-color: rgba(145, 183, 255, 0.16);
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.rail-row > button {
+  min-height: 54px;
+  border-radius: 13px;
+  padding: 9px 10px;
+}
+
+.rail-row > button:hover {
+  background: rgba(145, 183, 255, 0.08);
+}
+
+.rail-row.active > button {
+  border-color: rgba(var(--neo-primary-rgb), 0.58);
+  background:
+    linear-gradient(135deg, rgba(var(--neo-primary-rgb), 0.20), rgba(var(--neo-info-rgb), 0.08));
+  box-shadow: 0 14px 36px rgba(var(--neo-primary-rgb), 0.12);
+}
+
+.rail-pip {
+  border-color: rgba(145, 183, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.rail-label strong {
+  color: #f8fbff;
+  font-size: 13.5px;
+}
+
+.rail-label small {
+  color: rgba(198, 209, 228, 0.58);
+  letter-spacing: 0.06em;
+}
+
+.rail-mode-chip,
+.focus-badge {
+  border-color: rgba(145, 183, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.neo-focus {
+  min-height: min(680px, calc(100vh - 120px));
+  border-radius: 22px;
+  padding: 28px;
+}
+
+.neo-focus::before {
+  height: 4px;
+}
+
+.focus-head h2 {
+  color: #f8fbff;
+  font-size: clamp(27px, 3vw, 38px);
+  font-weight: 850;
+  line-height: 1.04;
+  letter-spacing: 0;
+}
+
+.focus-stage-desc {
+  max-width: 760px;
+  color: rgba(198, 209, 228, 0.72);
+  font-size: 14px;
+}
+
+.focus-banner {
+  border-color: rgba(145, 183, 255, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.045);
+  padding: 14px 16px;
+}
+
+.focus-body,
+.focus-response,
+.focus-sendback,
+.focus-approval-card {
+  border-radius: 14px;
+}
+
+.focus-primary {
+  min-height: 52px;
+  border-radius: 16px;
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: 0;
+  box-shadow: 0 20px 54px rgba(var(--neo-primary-rgb), 0.26);
+}
+
+.focus-secondary {
+  border-color: rgba(145, 183, 255, 0.16);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.045);
+  padding: 9px 14px;
+  font-weight: 800;
+}
+
+.neo-cockpit {
+  border-radius: 18px;
+  padding: 16px;
+}
+
+.cockpit-head {
+  padding-bottom: 4px;
+}
+
+.cockpit-status {
+  border-color: rgba(145, 183, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 4px 9px;
+}
+
+.cockpit-now {
+  border-color: rgba(var(--neo-info-rgb), 0.30);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(var(--neo-info-rgb), 0.13), rgba(var(--neo-primary-rgb), 0.06));
+  padding: 12px;
+}
+
+.cockpit-totals {
+  gap: 8px;
+}
+
+.cockpit-metric {
+  border-color: rgba(145, 183, 255, 0.13);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.045);
+  padding: 10px 4px;
+}
+
+.cockpit-row {
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 8px 9px;
+  background: rgba(255, 255, 255, 0.026);
+}
+
+.cockpit-row.tool       { border-color: rgba(var(--neo-tool-rgb), 0.12); }
+.cockpit-row.llm        { border-color: rgba(var(--neo-primary-rgb), 0.12); }
+.cockpit-row.code       { border-color: rgba(var(--neo-ok-rgb), 0.12); }
+.cockpit-row.approval   { border-color: rgba(var(--neo-attention-rgb), 0.12); }
+.cockpit-row.governance { border-color: rgba(var(--neo-accent-rgb), 0.12); }
+
+.cockpit-stream {
+  gap: 6px;
+  scrollbar-gutter: stable;
+}
+
+.setup-drawer {
+  border-right-color: rgba(145, 183, 255, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)),
+    rgba(13, 19, 34, 0.96);
+  backdrop-filter: blur(18px);
+}
+
+.drawer-scrim {
+  background: rgba(2, 6, 23, 0.62);
+  backdrop-filter: blur(4px);
+}
+
+.settings-section {
+  border-color: rgba(145, 183, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+@media (max-width: 1280px) {
+  .command-header {
+    grid-template-columns: 1fr auto;
+  }
+
+  .neo-cockpit-shell {
+    grid-template-columns: 220px minmax(0, 1fr) minmax(300px, 340px);
+  }
+}
+
+@media (max-width: 1024px) {
+  .neo-cockpit-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .neo-focus {
+    min-height: auto;
+  }
+}
+
+@media (max-width: 760px) {
+  .auth-empty {
+    padding: 18px;
+  }
+
+  .auth-empty > div {
+    padding: 24px;
+  }
+
+  .auth-feature-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .neo-overlay-head strong {
   font-size: 14px;
   color: var(--text);
