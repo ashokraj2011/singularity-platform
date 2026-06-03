@@ -5,7 +5,7 @@ import { prisma } from '../../lib/prisma'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { ForbiddenError, NotFoundError, ValidationError } from '../../lib/errors'
 import { config } from '../../config'
-import { authzCheck } from '../../lib/iam/client'
+import { authzCheck, listCapabilityRelationships } from '../../lib/iam/client'
 import { assertTemplatePermission } from '../../lib/permissions/workflowTemplate'
 import { cloneDesignToRun } from '../workflow/lib/cloneDesignToRun'
 import { getWorkflowBudgetOverview } from '../workflow/runtime/budget'
@@ -261,8 +261,37 @@ export async function activateWorkItem(node: WorkflowNode, instance: WorkflowIns
   if (typeof cfg._workItemId === 'string' && cfg._workItemId) return
 
   const std = asRecord(cfg.standard)
-  const targets = normalizeTargets(cfg)
+  let targets = normalizeTargets(cfg)
+  // M101 (Epic→child) — B5: reactive targets. When the template declares
+  // `standard.targetsPath` (e.g. 'workItem.impactedChildren') and no static
+  // targets are configured, resolve the target list from the instance CONTEXT
+  // at activation time. This lets the impl WORK_ITEM node dispatch to exactly
+  // the children a prior impact-analysis WORK_ITEM found impacted (B4). The
+  // template's DECISION_GATE ("any impacted?") guards against reaching this
+  // node with zero targets (createWorkItem still rejects an empty list).
+  const targetsPath = String(std.targetsPath ?? cfg.targetsPath ?? '').trim()
+  if (targets.length === 0 && targetsPath) {
+    const resolved = walk(asRecord(instance.context), targetsPath)
+    targets = normalizeTargets({ targets: Array.isArray(resolved) ? resolved : [] })
+  }
   const parentCapabilityId = await sourceCapabilityId(instance)
+  // M101 (Epic→child) — B3: dynamic child discovery. When the template
+  // declares `standard.discoverChildren: { relationshipType }` and no targets
+  // were statically or reactively resolved, query IAM's capability-relationship
+  // graph for the source (Epic) capability and dispatch to each related child.
+  // relationshipType filters the graph (convention, e.g. 'decomposes_to'); the
+  // per-child IMPACT_ANALYSIS routing policy then selects each child's workflow.
+  const discover = asRecord(std.discoverChildren ?? cfg.discoverChildren)
+  if (targets.length === 0 && Object.keys(discover).length > 0 && parentCapabilityId) {
+    const relType = String(discover.relationshipType ?? discover.type ?? '').trim()
+    const rels = await listCapabilityRelationships(parentCapabilityId).catch(() => [])
+    const seen = new Set<string>()
+    targets = rels
+      .filter(r => !relType || r.relationship_type === relType)
+      .map(r => r.target_capability_id)
+      .filter(id => typeof id === 'string' && id.trim() && !seen.has(id) && (seen.add(id), true))
+      .map(id => ({ targetCapabilityId: id }))
+  }
   const title = String(std.title ?? cfg.title ?? node.label ?? 'Delegated work item').trim()
   const description = String(std.description ?? cfg.description ?? '').trim() || undefined
   const priority = Number(std.priority ?? cfg.priority ?? 50)
@@ -1063,9 +1092,23 @@ async function buildChildOutput(instance: WorkflowInstance): Promise<Record<stri
   ])
   const ctx = asRecord(instance.context)
   const finalSummary = ctx.finalSummary ?? walk(ctx, 'workbench.finalPack') ?? ctx.summary ?? ctx.result ?? null
+  // M101 (Epic→child) — surface the child's impact-analysis verdict so the
+  // parent (Epic) workflow can aggregate it from targetOutputs[*].output
+  // without re-reading child context. The child impact-analysis workflow's
+  // SET_CONTEXT node sets context.impactVerdict = {impacted, reason,
+  // affectedAreas}. null when the child isn't an impact-analysis run.
+  const verdictRaw = asRecord(ctx.impactVerdict ?? walk(ctx, 'impactVerdict') ?? {})
+  const impactVerdict = Object.keys(verdictRaw).length > 0
+    ? {
+        impacted: verdictRaw.impacted === true,
+        reason: typeof verdictRaw.reason === 'string' ? verdictRaw.reason : null,
+        affectedAreas: Array.isArray(verdictRaw.affectedAreas) ? verdictRaw.affectedAreas : [],
+      }
+    : null
   return {
     childWorkflowInstanceId: instance.id,
     finalSummary,
+    impactVerdict,
     consumables,
     consumableIds: consumables.map(c => c.id),
     budget,
@@ -1175,12 +1218,23 @@ export async function approveWorkItem(workItemId: string, userId: string, approv
     const output = asRecord(t.output)
     return Array.isArray(output.consumableIds) ? output.consumableIds.filter(id => typeof id === 'string') : []
   })
+  // M101 (Epic→child) — B4: aggregate the per-child impact verdicts into a
+  // ready-to-dispatch target list. A downstream WORK_ITEM node (the impl
+  // stage) can set `standard.targetsPath: 'workItem.impactedChildren'` to
+  // dispatch ONLY to the children that reported impact (the per-child
+  // STORY_IMPL routing policy then selects each child's impl workflow). Empty
+  // when this WorkItem isn't an impact-analysis run, so it's harmless on
+  // ordinary delegated WorkItems.
+  const impactedChildren = targetOutputs
+    .filter(t => asRecord(asRecord(t.output).impactVerdict).impacted === true)
+    .map(t => ({ targetCapabilityId: t.targetCapabilityId, childWorkflowInstanceId: t.childWorkflowInstanceId }))
   const finalOutput = {
     workItemId,
     title: workItem.title,
     status: 'COMPLETED',
     approvalDecision,
     targetOutputs,
+    impactedChildren,
     consumableIds,
     childWorkflowInstanceIds: targetOutputs.map(t => t.childWorkflowInstanceId).filter(Boolean),
   }
