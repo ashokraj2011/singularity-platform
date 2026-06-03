@@ -5,7 +5,7 @@ import initSqlJs, { Database, SqlJsStatic } from "sql.js";
 import { Parser, Language } from "web-tree-sitter";
 import { config } from "../config";
 import { events } from "../events/bus";
-import { currentBranch, currentHeadSha } from "./git-workspace";
+import { currentBranch, currentHeadSha, dirtyPaths, changedPathsBetween } from "./git-workspace";
 import { baseSandboxRoot, sandboxRoot, SOURCE_EXT, SKIP_DIRS, toRelativeSandboxPath } from "./sandbox";
 import { globToRegex, toPosixPath } from "./glob";
 
@@ -632,6 +632,60 @@ export async function indexChangedFiles(paths: string[], reason = "changed"): Pr
   }
 }
 
+/**
+ * Freshness-aware reindex for the code-context build hot path. Replaces an
+ * unconditional `indexWorkspace()` (full walk+parse of every file on EVERY
+ * build) with a cheap git-signal check:
+ *   - cold index (no files) or non-git sandbox / no recorded HEAD → full walk
+ *   - HEAD unchanged AND working tree clean → no-op (index already current)
+ *   - otherwise → reindex only (uncommitted dirty files ∪ files changed between
+ *     the indexed HEAD and current HEAD); fall back to a full walk for a
+ *     pathologically large change set (e.g. a branch switch).
+ * Correctness: only skips when provably fresh, so it never serves stale slices.
+ */
+export async function ensureIndexFresh(reason = "code_context_build"): Promise<AstIndexStats> {
+  let database: Database;
+  try {
+    ensureDbMatchesSandbox();
+    database = await getDb();
+  } catch {
+    return indexWorkspace(reason);
+  }
+  const fileCount = Number(
+    database.exec("SELECT count(*) AS c FROM files")[0]?.values[0]?.[0] ?? 0,
+  );
+  if (fileCount === 0) return indexWorkspace(reason);
+
+  const curHead = await currentHeadSha();
+  const idxRow = database.exec(
+    "SELECT head_sha, branch FROM files WHERE head_sha IS NOT NULL ORDER BY indexed_at DESC LIMIT 1",
+  )[0]?.values[0];
+  const idxHead = idxRow && idxRow[0] != null ? String(idxRow[0]) : undefined;
+  const idxBranch = idxRow && idxRow[1] != null ? String(idxRow[1]) : undefined;
+  // No git HEAD on either side → no cheap change signal; do the safe full pass.
+  if (!curHead || !idxHead) return indexWorkspace(reason);
+
+  const curBranch = await currentBranch();
+  const dirty = await dirtyPaths().catch(() => [] as string[]);
+  const headMoved = curHead !== idxHead || curBranch !== idxBranch;
+
+  if (!headMoved && dirty.length === 0) {
+    // Index already reflects this committed state and nothing is uncommitted.
+    return lastAstStats() ?? (await statsForIndex());
+  }
+
+  const changed = new Set<string>(dirty);
+  if (headMoved) {
+    for (const p of await changedPathsBetween(idxHead, curHead).catch(() => [] as string[])) {
+      changed.add(p);
+    }
+  }
+  if (changed.size === 0) return lastAstStats() ?? (await statsForIndex());
+  // Very large change set (branch switch / rebase) → full walk is simpler + safe.
+  if (changed.size > 500) return indexWorkspace(reason);
+  return indexChangedFiles([...changed], reason);
+}
+
 export async function statsForIndex(): Promise<AstIndexStats> {
   const database = await getDb();
   const files = database.exec("SELECT count(*) AS c FROM files")[0]?.values[0]?.[0] as number | undefined;
@@ -669,23 +723,35 @@ export async function findSymbols(opts: {
 }): Promise<SymbolHit[]> {
   const database = await getDb();
   const limit = Math.min(Math.max(opts.limit ?? 10, 1), 50);
-  const rows = database.exec(
+  // Push kind/filePath into SQL so we score/sort only the matching subset
+  // rather than materializing the whole symbol table (up to ~250k rows).
+  // The kind/file_path indexes make this cheap; relevance scoring stays in JS.
+  const where: string[] = [];
+  const params: string[] = [];
+  if (opts.kind) { where.push("kind = ?"); params.push(opts.kind); }
+  if (opts.filePath) { where.push("file_path LIKE ?"); params.push(`%${opts.filePath}%`); }
+  const stmt = database.prepare(
     `SELECT id, name, kind, file_path, start_line, end_line, signature, summary, parent_name
-     FROM symbols`,
-  )[0]?.values ?? [];
-  return rows.map((r) => ({
-    id: String(r[0]),
-    name: String(r[1]),
-    kind: String(r[2]),
-    filePath: String(r[3]),
-    startLine: Number(r[4]),
-    endLine: Number(r[5]),
-    signature: r[6] == null ? undefined : String(r[6]),
-    summary: r[7] == null ? undefined : String(r[7]),
-    parentName: r[8] == null ? undefined : String(r[8]),
-  }))
-    .filter((r) => !opts.kind || r.kind === opts.kind)
-    .filter((r) => !opts.filePath || r.filePath.includes(opts.filePath))
+     FROM symbols${where.length ? ` WHERE ${where.join(" AND ")}` : ""}`,
+  );
+  if (params.length) stmt.bind(params);
+  const hits: SymbolHit[] = [];
+  while (stmt.step()) {
+    const r = stmt.get();
+    hits.push({
+      id: String(r[0]),
+      name: String(r[1]),
+      kind: String(r[2]),
+      filePath: String(r[3]),
+      startLine: Number(r[4]),
+      endLine: Number(r[5]),
+      signature: r[6] == null ? undefined : String(r[6]),
+      summary: r[7] == null ? undefined : String(r[7]),
+      parentName: r[8] == null ? undefined : String(r[8]),
+    });
+  }
+  stmt.free();
+  return hits
     .map((r) => ({ ...r, score: scoreSymbol(r, opts.query) }))
     .filter((r) => (r.score ?? 0) > 0)
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))

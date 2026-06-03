@@ -559,6 +559,25 @@ export async function dirtyPaths(): Promise<string[]> {
 }
 
 /**
+ * Sandbox-relative paths that differ between two commit-ish refs
+ * (`git diff --name-only <from>..<to>`). Used by the AST index to reindex only
+ * what changed when HEAD moves, instead of walking the whole tree. Returns []
+ * on any git error so the caller can fall back to a full reindex.
+ */
+export async function changedPathsBetween(from: string, to: string): Promise<string[]> {
+  await ensureGitRepo();
+  const { stdout } = await execFileP("git", ["diff", "--name-only", `${from}..${to}`], {
+    cwd: sandboxRoot(),
+    maxBuffer: 10 * 1024 * 1024,
+    env: process.env,
+  }).catch(() => ({ stdout: "" }));
+  return String(stdout)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/**
  * M27.5 — re-establish the active work-branch after an mcp-server restart
  * without minting a fresh branch name. Called by /mcp/resume when the
  * consumed PendingApproval envelope carries a `workspace.branch` block.
