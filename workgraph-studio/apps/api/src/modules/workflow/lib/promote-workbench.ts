@@ -28,6 +28,7 @@ interface LegacyExpectedArtifact {
   format?: string
   required?: boolean
   editable?: boolean
+  templateId?: string  // M102 — catalog ArtifactTemplate link
 }
 
 interface LegacyQuestion {
@@ -175,6 +176,7 @@ export async function promoteWorkbenchToTables(
           format: art.format ?? 'MARKDOWN',
           required: art.required ?? true,
           editable: art.editable ?? false,
+          templateId: art.templateId ?? null,
           ordinal: artIdx,
         },
       })

@@ -79,6 +79,7 @@ export type WorkbenchArtifactView = {
   required: boolean
   ordinal: number
   editable: boolean
+  templateId: string | null
 }
 
 export type WorkbenchEdgeView = {
@@ -227,6 +228,7 @@ export async function getDefinition(
         required: a.required,
         ordinal: a.ordinal,
         editable: a.editable,
+        templateId: a.templateId,
       })),
       questions: s.questions.map(q => ({
         id: q.id,
@@ -321,6 +323,9 @@ async function writeThroughToLegacy(nodeId: string): Promise<void> {
         format: a.format,
         required: a.required,
         editable: a.editable,
+        // M102 — carry the catalog link into the JSON loopDefinition so the
+        // runtime (renderExpectedArtifacts) injects the template's sections.
+        templateId: a.templateId ?? undefined,
       })),
       questions: s.questions.map(q => ({
         questionId: q.questionId,
@@ -583,6 +588,7 @@ export async function createArtifact(
     format?: string
     required?: boolean
     editable?: boolean
+    templateId?: string | null
   },
   userId: string,
 ): Promise<WorkbenchDefinitionView> {
@@ -601,6 +607,7 @@ export async function createArtifact(
       format: input.format ?? 'MARKDOWN',
       required: input.required ?? true,
       editable: input.editable ?? false,
+      templateId: input.templateId ?? null,
       ordinal: (maxOrd._max.ordinal ?? -1) + 1,
     },
   })
@@ -620,6 +627,7 @@ export async function patchArtifact(
     format: string
     required: boolean
     editable: boolean
+    templateId: string | null
   }>,
   userId: string,
 ): Promise<WorkbenchDefinitionView> {
