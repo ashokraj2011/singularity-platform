@@ -303,6 +303,11 @@ export async function activateWorkItem(node: WorkflowNode, instance: WorkflowIns
 
   const workItem = await createWorkItem({
     title,
+    // M101 (Epic→child) — carry the node-declared work-item type so the
+    // per-child routing policy (capability + workItemTypeKey) selects the
+    // right child workflow (e.g. IMPACT_ANALYSIS vs STORY_IMPL). Absent →
+    // createWorkItem falls back to its metadata default (GENERAL).
+    workItemTypeKey: String(std.workItemTypeKey ?? cfg.workItemTypeKey ?? '').trim() || undefined,
     description,
     parentCapabilityId,
     sourceWorkflowInstanceId: instance.id,
@@ -329,6 +334,21 @@ export async function activateWorkItem(node: WorkflowNode, instance: WorkflowIns
     where: { id: node.id },
     data: { config: { ...cfg, _workItemId: workItem.id } as Prisma.InputJsonValue },
   })
+
+  // M101 (Epic→child) — route the freshly-created WorkItem so AUTO_START /
+  // AUTO_ATTACH children actually spawn. The HTTP create path (work-items
+  // router) routes explicitly after createWorkItem; the WORK_ITEM-node path
+  // (this function) must do it too, otherwise the discovered child capability
+  // targets stay QUEUED and never start their workflows. routeWorkItem is
+  // SINGLE-target (defaults to targets[0]), so for a fan-out WorkItem we must
+  // route EACH target by id. Lazy import keeps the module graph acyclic.
+  // MANUAL WorkItems are left QUEUED for an operator.
+  if (workItem.routingMode === 'AUTO_START' || workItem.routingMode === 'AUTO_ATTACH') {
+    const { routeWorkItem } = await import('./work-item-routing.service')
+    for (const t of workItem.targets) {
+      await routeWorkItem(workItem.id, actorId ?? instance.createdById ?? null, { targetId: t.id, routingMode: workItem.routingMode })
+    }
+  }
 }
 
 async function loadActor(userId: string) {
@@ -1149,6 +1169,24 @@ export async function handleWorkItemChildCompletion(instance: WorkflowInstance, 
     workItemId: target.workItemId,
     childWorkflowInstanceId: instance.id,
   })
+  // M101 (Epic→child) — B6: per-child progress outbox event carrying the
+  // impact verdict + a waiting-on-N/M signal, so a join-all fan-in is
+  // observable and a stuck child is visible (v1 has no timer; this is the
+  // surfacing). `target.workItem.targets` holds pre-update statuses, so the
+  // just-submitted target is counted explicitly.
+  const siblings = target.workItem.targets
+  const total = siblings.length
+  const submitted = siblings.filter(t => t.id !== target.id && DONE_TARGET_STATUSES.has(t.status)).length + 1
+  const verdict = asRecord(asRecord(output).impactVerdict)
+  await publishOutbox('WorkItem', target.workItemId, 'WorkItemTargetSubmitted', {
+    workItemId: target.workItemId,
+    targetCapabilityId: target.targetCapabilityId,
+    childWorkflowInstanceId: instance.id,
+    impactVerdict: Object.keys(verdict).length > 0 ? verdict : null,
+    submitted,
+    total,
+    waitingOn: Math.max(0, total - submitted),
+  })
   await maybeRequestParentApproval(target.workItemId, actorId)
 }
 
@@ -1228,6 +1266,11 @@ export async function approveWorkItem(workItemId: string, userId: string, approv
   const impactedChildren = targetOutputs
     .filter(t => asRecord(asRecord(t.output).impactVerdict).impacted === true)
     .map(t => ({ targetCapabilityId: t.targetCapabilityId, childWorkflowInstanceId: t.childWorkflowInstanceId }))
+  // M101 (Epic→child) — scalar flags for the parent DECISION_GATE. The edge
+  // evaluator has no array-length op, so the Epic template branches on
+  // `workItem.hasImpact` (== true/false) or `workItem.impactedCount` (> 0).
+  const impactedCount = impactedChildren.length
+  const hasImpact = impactedCount > 0
   const finalOutput = {
     workItemId,
     title: workItem.title,
@@ -1235,6 +1278,8 @@ export async function approveWorkItem(workItemId: string, userId: string, approv
     approvalDecision,
     targetOutputs,
     impactedChildren,
+    impactedCount,
+    hasImpact,
     consumableIds,
     childWorkflowInstanceIds: targetOutputs.map(t => t.childWorkflowInstanceId).filter(Boolean),
   }

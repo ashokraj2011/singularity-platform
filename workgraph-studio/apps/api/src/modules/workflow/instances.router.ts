@@ -174,6 +174,58 @@ workflowInstancesRouter.get('/:id/budget', async (req, res, next) => {
   }
 })
 
+// M101 (Epic→child) — B7: artifact roll-up. Returns the consumables this
+// instance produced and, with ?include=children, the consumables produced by
+// the child capability runs it delegated to (WorkItems spawned by its
+// WORK_ITEM nodes → their targets' childWorkflowInstanceId). Lets an Epic
+// surface every impacted child's work + impact verdict in one place, with
+// provenance (workItemCode / sourceWorkflowNodeId / targetCapabilityId).
+workflowInstancesRouter.get('/:id/artifacts', async (req, res, next) => {
+  try {
+    const instanceId = req.params.id
+    await assertInstancePermission(req.user!.userId, instanceId, 'view')
+    const instance = await prisma.workflowInstance.findUnique({ where: { id: instanceId }, select: { id: true } })
+    if (!instance) throw new NotFoundError('WorkflowInstance', instanceId)
+
+    const consumableSelect = { id: true, name: true, status: true, currentVersion: true, nodeId: true, instanceId: true } as const
+    const own = await prisma.consumable.findMany({ where: { instanceId }, select: consumableSelect, orderBy: { updatedAt: 'desc' } })
+
+    const includeChildren = req.query.include === 'children' || req.query.children === 'true' || req.query.children === '1'
+    const children: Array<Record<string, unknown>> = []
+    if (includeChildren) {
+      const workItems = await prisma.workItem.findMany({
+        where: { sourceWorkflowInstanceId: instanceId },
+        select: {
+          workCode: true, workItemTypeKey: true, sourceWorkflowNodeId: true,
+          targets: { select: { targetCapabilityId: true, status: true, childWorkflowInstanceId: true, output: true } },
+        },
+      })
+      const childInstanceIds = workItems.flatMap(w => w.targets.map(t => t.childWorkflowInstanceId).filter((x): x is string => Boolean(x)))
+      const childConsumables = childInstanceIds.length
+        ? await prisma.consumable.findMany({ where: { instanceId: { in: childInstanceIds } }, select: consumableSelect, orderBy: { updatedAt: 'desc' } })
+        : []
+      for (const w of workItems) {
+        for (const t of w.targets) {
+          const output = (t.output && typeof t.output === 'object' && !Array.isArray(t.output)) ? t.output as Record<string, unknown> : {}
+          children.push({
+            workItemCode: w.workCode,
+            workItemTypeKey: w.workItemTypeKey,
+            sourceWorkflowNodeId: w.sourceWorkflowNodeId,
+            targetCapabilityId: t.targetCapabilityId,
+            childWorkflowInstanceId: t.childWorkflowInstanceId,
+            targetStatus: t.status,
+            impactVerdict: output.impactVerdict ?? null,
+            consumables: t.childWorkflowInstanceId ? childConsumables.filter(c => c.instanceId === t.childWorkflowInstanceId) : [],
+          })
+        }
+      }
+    }
+    res.json({ instanceId, own, includeChildren, childCount: children.length, children })
+  } catch (err) {
+    next(err)
+  }
+})
+
 workflowInstancesRouter.post('/:id/phases', validate(createPhaseSchema), async (req, res, next) => {
   try {
     const id = req.params.id as string
