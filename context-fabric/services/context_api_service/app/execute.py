@@ -1661,6 +1661,10 @@ class GovernedTurnRequest(BaseModel):
     # / mcp-server) calls. Lets workgraph-api forward a user JWT.
     bearer: Optional[str] = None
     run_context: dict[str, Any] = Field(default_factory=dict)
+    # Capability Governance Model (G3) — resolved governance overlay (from IAM via
+    # workgraph), threaded inline so CF compiles its advisory guidance into the
+    # prompt. Absent ⇒ no governance context (legacy behavior).
+    governance_overlay: Optional[dict[str, Any]] = None
 
 
 @router.post("/api/v1/execute-governed-turn")
@@ -1687,6 +1691,7 @@ async def execute_governed_turn(req: GovernedTurnRequest) -> dict[str, Any]:
             model_alias=req.model_alias,
             run_context=req.run_context,
             bearer=req.bearer,
+            governance_overlay=req.governance_overlay,
         )
     except PolicyNotFoundError as exc:
         raise HTTPException(

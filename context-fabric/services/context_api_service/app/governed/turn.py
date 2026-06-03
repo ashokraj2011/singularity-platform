@@ -519,6 +519,43 @@ def _requires_min_context(ctx_policy: Any, mode: str | None, phase: Any) -> bool
     return isinstance(mode, str) and mode.strip().upper() == "CODE_EDIT"
 
 
+def _render_governance_facts(overlay: dict[str, Any]) -> str:
+    """Capability Governance Model (G3) — render a resolved governance overlay
+    into ONE compact markdown block for `{{governance_facts}}`. ADVISORY: additive
+    prompt context only — never blocks, never changes tools/phases (BLOCKING/
+    REQUIRED enforcement is a later phase). Returns "" when nothing applies."""
+    if not isinstance(overlay, dict):
+        return ""
+    lines: list[str] = []
+    govs = [g for g in (overlay.get("governingEntities") or []) if isinstance(g, dict)]
+    if govs:
+        names = ", ".join(str(g.get("name") or g.get("capabilityId")) for g in govs)
+        if names:
+            lines.append(f"- Governed by: {names}.")
+    for layer in overlay.get("promptLayers") or []:
+        if not isinstance(layer, dict):
+            continue
+        guidance = layer.get("guidance") or layer.get("text")
+        key = layer.get("layerKey")
+        if isinstance(guidance, str) and guidance.strip():
+            lines.append(f"- {key}: {guidance.strip()}" if key else f"- {guidance.strip()}")
+        elif key:
+            lines.append(f"- Apply governance guideline: {key}.")
+    ev_keys = [str(e.get("evidenceKey")) for e in (overlay.get("requiredEvidence") or [])
+               if isinstance(e, dict) and e.get("evidenceKey")]
+    if ev_keys:
+        lines.append(f"- Evidence expected for this work: {', '.join(ev_keys)}.")
+    tp = overlay.get("toolPolicy") or {}
+    if isinstance(tp, dict):
+        if tp.get("blocked"):
+            lines.append(f"- Tools disallowed by governance: {', '.join(map(str, tp['blocked']))}.")
+        if tp.get("approvalRequired"):
+            lines.append(f"- Tools requiring approval: {', '.join(map(str, tp['approvalRequired']))}.")
+    if not lines:
+        return ""
+    return "## Governance for this stage\n" + "\n".join(lines)
+
+
 async def run_turn(
     *,
     state: PhaseState,
@@ -555,6 +592,10 @@ async def run_turn(
     # on purpose: dispatch.py ships run_context to mcp-server on every
     # tool call, so stashing multi-KB markdown there would bloat the wire.
     code_context_cache: dict[str, Any] | None = None,
+    # Capability Governance Model (G3) — resolved governance overlay (from IAM,
+    # threaded by the caller). When present, its advisory guidance is rendered
+    # into `{{governance_facts}}`. None preserves legacy behavior exactly.
+    governance_overlay: dict[str, Any] | None = None,
 ) -> TurnResult:
     """Run one LLM turn end-to-end:
 
@@ -632,6 +673,29 @@ async def run_turn(
         # block is empty-string when there are no facts (template renders
         # nothing). Advisory: changes nothing until a template references it.
         vars.setdefault("policy_facts", _render_policy_facts(ctx_policy, vars))
+
+    # Capability Governance Model (G3) — compile the resolved governance overlay
+    # into the prompt as advisory context (`{{governance_facts}}`) + emit an audit
+    # event for observability. Additive only; never blocks or alters tools/phases.
+    if isinstance(governance_overlay, dict) and governance_overlay and isinstance(vars, dict):
+        gov_facts = _render_governance_facts(governance_overlay)
+        if gov_facts:
+            vars.setdefault("governance_facts", gov_facts)
+        await emit_governed_event(
+            kind="governed.governance_applied",
+            state=state,
+            policy=policy,
+            run_context=run_context,
+            payload={
+                "overlayHash": governance_overlay.get("overlayHash"),
+                "effectiveMode": governance_overlay.get("effectiveMode"),
+                "governingEntities": [
+                    g.get("capabilityId")
+                    for g in (governance_overlay.get("governingEntities") or [])
+                    if isinstance(g, dict)
+                ],
+            },
+        )
 
     if isinstance(ctx_policy, dict) and ctx_policy.get("include_code_context_package"):
         goal_text = ""
