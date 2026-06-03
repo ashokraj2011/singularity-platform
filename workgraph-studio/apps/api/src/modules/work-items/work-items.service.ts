@@ -1169,6 +1169,24 @@ export async function handleWorkItemChildCompletion(instance: WorkflowInstance, 
     workItemId: target.workItemId,
     childWorkflowInstanceId: instance.id,
   })
+  // M101 (Epic→child) — B6: per-child progress outbox event carrying the
+  // impact verdict + a waiting-on-N/M signal, so a join-all fan-in is
+  // observable and a stuck child is visible (v1 has no timer; this is the
+  // surfacing). `target.workItem.targets` holds pre-update statuses, so the
+  // just-submitted target is counted explicitly.
+  const siblings = target.workItem.targets
+  const total = siblings.length
+  const submitted = siblings.filter(t => t.id !== target.id && DONE_TARGET_STATUSES.has(t.status)).length + 1
+  const verdict = asRecord(asRecord(output).impactVerdict)
+  await publishOutbox('WorkItem', target.workItemId, 'WorkItemTargetSubmitted', {
+    workItemId: target.workItemId,
+    targetCapabilityId: target.targetCapabilityId,
+    childWorkflowInstanceId: instance.id,
+    impactVerdict: Object.keys(verdict).length > 0 ? verdict : null,
+    submitted,
+    total,
+    waitingOn: Math.max(0, total - submitted),
+  })
   await maybeRequestParentApproval(target.workItemId, actorId)
 }
 
