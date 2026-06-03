@@ -123,7 +123,15 @@ type WorkbenchExpectedArtifact = {
   description?: string
   required: boolean
   format: 'MARKDOWN' | 'TEXT' | 'JSON' | 'CODE'
+  // M102 — optional link to a published ArtifactTemplate in the catalog.
+  // When set, the runtime injects that template's section skeleton into the
+  // stage's {{artifacts}} prompt var (see renderExpectedArtifacts).
+  templateId?: string
 }
+
+// M102 — minimal shape of a catalog ArtifactTemplate as returned by
+// GET /artifact-templates, used only to populate the per-artifact picker.
+type ArtifactTemplateLite = { id: string; name: string; type: string; status: string }
 
 type WorkbenchStage = {
   key: string
@@ -1431,6 +1439,13 @@ function WorkbenchTab({
   const stageKeys = stages.map(stage => stage.key).filter(Boolean)
   const errors = validateWorkbenchBuilder(wb)
   const [dragStageIndex, setDragStageIndex] = useState<number | null>(null)
+  // M102 — catalog of publishable artifact templates for the per-artifact picker.
+  const { data: templateCatalog } = useQuery<ArtifactTemplateLite[]>({
+    queryKey: ['artifact-templates'],
+    queryFn: () => api.get('/artifact-templates').then(r => r.data),
+    staleTime: 60_000,
+  })
+  const templates = (templateCatalog ?? []).filter(t => t.status === 'PUBLISHED')
   const update = (patch: Partial<WorkbenchConfig>) => onChange({ ...wb, ...patch })
   const updateLoop = (patch: Partial<WorkbenchConfig['loopDefinition']>) =>
     update({ loopDefinition: { ...wb.loopDefinition, ...patch } })
@@ -1546,6 +1561,26 @@ function WorkbenchTab({
   const removeExpectedArtifact = (stageIndex: number, artifactIndex: number) => {
     const stage = stages[stageIndex]
     updateStage(stageIndex, { expectedArtifacts: (stage.expectedArtifacts ?? []).filter((_, i) => i !== artifactIndex) })
+  }
+  // M102 — link/unlink a catalog ArtifactTemplate. An empty templateId clears
+  // the link. On link, prefill only blank/auto-default title & kind from the
+  // template so a deliberate author value is never clobbered.
+  const selectTemplate = (stageIndex: number, artifactIndex: number, templateId: string) => {
+    const artifact = stages[stageIndex]?.expectedArtifacts?.[artifactIndex]
+    if (!artifact) return
+    if (!templateId) {
+      updateExpectedArtifact(stageIndex, artifactIndex, { templateId: undefined })
+      return
+    }
+    const template = templates.find(t => t.id === templateId)
+    const patch: Partial<WorkbenchExpectedArtifact> = { templateId }
+    if (template) {
+      const titleIsDefault = !artifact.title.trim() || /^Artifact \d+$/.test(artifact.title) || /^Stage \d+ artifact$/.test(artifact.title)
+      if (titleIsDefault) patch.title = template.name
+      const kindIsDefault = !artifact.kind.trim() || /_artifact(_\d+)?$/.test(artifact.kind)
+      if (kindIsDefault) patch.kind = template.name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+    }
+    updateExpectedArtifact(stageIndex, artifactIndex, patch)
   }
 
   // M97 — Download this workbench definition as a single GitHub Copilot
@@ -2012,6 +2047,33 @@ function WorkbenchTab({
                       <button onClick={() => removeExpectedArtifact(stageIndex, artifactIndex)} style={iconButton(false)}>
                         <Trash2 size={11} />
                       </button>
+                    </div>
+                    <div style={{ marginTop: 6 }}>
+                      <FieldLabel>Catalog template</FieldLabel>
+                      <select
+                        value={artifact.templateId ?? ''}
+                        onChange={event => selectTemplate(stageIndex, artifactIndex, event.target.value)}
+                        style={{
+                          width: '100%', boxSizing: 'border-box',
+                          background: '#ffffff', border: '1px solid rgba(148,163,184,0.28)',
+                          borderRadius: 9, padding: '9px 12px', fontSize: 13, lineHeight: 1.45,
+                          color: artifact.templateId ? '#0f172a' : '#94a3b8',
+                          outline: 'none', appearance: 'none', cursor: 'pointer',
+                        }}
+                      >
+                        <option value="">— none (generic artifact) —</option>
+                        {templates.map(t => (
+                          <option key={t.id} value={t.id}>{t.name} · {t.type}</option>
+                        ))}
+                        {artifact.templateId && !templates.some(t => t.id === artifact.templateId) && (
+                          <option value={artifact.templateId}>{artifact.templateId} (unpublished / not found)</option>
+                        )}
+                      </select>
+                      <p style={{ fontSize: 9, color: '#94a3b8', margin: '4px 0 0' }}>
+                        {artifact.templateId
+                          ? 'Linked — the template’s sections seed this stage’s prompt.'
+                          : 'Link a published catalog template to seed this stage’s prompt with its sections.'}
+                      </p>
                     </div>
                     <div style={{ marginTop: 6 }}>
                       <FieldLabel>Description</FieldLabel>
