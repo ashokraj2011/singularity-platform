@@ -93,12 +93,12 @@ export function isBlockedAddress(addr: string): boolean {
 export const ALLOWED_INFRA_HOSTS = new Set([
   'localhost',
   'host.docker.internal',
-  'mcp-server-demo',
+  'mcp-server',
   'mcp-sandbox-runner',
   'workgraph-api',
   'context-api',
   'audit-governance-service',
-  'singularity-mcp-server-demo',
+  'singularity-mcp-server',
   'singularity-mcp-sandbox-runner',
 ])
 

@@ -36,7 +36,7 @@ cd singularity-platform
 ```
 
 This brings up:
-- **Master stack**: IAM + agent-and-tools + context-fabric + workgraph + Agent Execution Runtime (`mcp-server-demo`) + portal + user-and-capability
+- **Master stack**: IAM + agent-and-tools + context-fabric + workgraph + Agent Execution Runtime (`mcp-server`) + portal + user-and-capability
 - **Audit & governance ledger** (port 8500): the cross-service event ledger every producer fires into
 
 First boot pulls images + builds web bundles. Wait ~3–5 minutes. Tail with `./singularity.sh logs workgraph-api -f` if you want to watch.
@@ -550,7 +550,7 @@ Common commands:
 Git push credential boundary:
 
 - Default is disabled: `GIT_PUSH` nodes preserve branch/commit evidence and block with `GIT_AUTH_MISSING`.
-- SSH mode mounts only the selected key path or SSH agent socket into `mcp-server-demo`, read-only.
+- SSH mode mounts only the selected key path or SSH agent socket into `mcp-server`, read-only.
 - Token mode passes only the selected env var value, such as `GITHUB_TOKEN`, into Agent Execution Runtime. Tokens are not written to `.singularity/config.local.json`.
 - Agent Execution Runtime redacts credentialed remotes, GitHub PATs, provider keys, bearer tokens, private keys, and token-shaped values before returning output, writing audit events, or creating receipts.
 - Workgraph shows `COMMITTED_NOT_PUSHED` when the local commit exists but publishing failed; use `Retry push` after fixing credentials so Workbench does not rerun.
@@ -637,7 +637,7 @@ Useful commands:
 ./singularity.sh config write
 
 # Restart Agent Execution Runtime so it reloads provider/model config.
-./singularity.sh restart mcp-server-demo
+./singularity.sh restart mcp-server
 ```
 
 Runtime verification:
@@ -1145,7 +1145,7 @@ Then recreate the affected containers so they pick up the env vars:
 
 ```bash
 SSH_AUTH_SOCK="" docker compose up -d --no-deps --force-recreate \
-  mcp-server-demo workgraph-api context-api
+  mcp-server workgraph-api context-api
 ```
 
 And (one-time) apply the phased-agent prompt to prompt-composer:
@@ -1192,7 +1192,7 @@ cd mcp-server && pnpm test
 | `workgraph-studio/apps/api/src/modules/blueprint/blueprint.router.ts` | `WORKBENCH_AGENT_PHASES_ENABLED` opt-in, `WORKBENCH_DEVELOPER_PHASE_BUDGETS` constant, per-stage `agentReasoningMode` + `phaseBudgets` plumbed into the execute payload, `attemptCodeChangeCoverage` helper + path-coverage gate branch in the verdict check |
 | `context-fabric/services/context_api_service/app/execute.py` | Plumbs `agentReasoningMode` + `phaseBudgets` from the incoming `/execute` request into the `invoke_payload.limits` block sent to mcp-server |
 | `bin/apply-phased-agent-prompt.sh` | Idempotent one-shot script that PATCHes prompt-composer's Developer Role Contract layer with the static "Phased Agent Contract" section |
-| `docker-compose.yml` | Env-var pass-through for `MCP_AGENT_PHASES_ENABLED` (mcp-server-demo) and `WORKBENCH_AGENT_PHASES_ENABLED` (workgraph-api) |
+| `docker-compose.yml` | Env-var pass-through for `MCP_AGENT_PHASES_ENABLED` (mcp-server) and `WORKBENCH_AGENT_PHASES_ENABLED` (workgraph-api) |
 
 The design is preserved at `~/.claude/plans/immutable-sniffing-quiche.md` for reviewers.
 

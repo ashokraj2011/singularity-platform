@@ -170,7 +170,7 @@ export function fixCommandsForPushBlock(code: PushBlockedCode, remote: string): 
         "  MCP_GIT_AUTH_MODE=ssh",
         "  MCP_GIT_PUSH_ENABLED=true",
         "  MCP_GIT_SSH_KEY_PATH=/run/secrets/singularity_git_ssh_key   # mounted key path",
-        "./singularity.sh recreate mcp-server-demo   # reloads env_file ('restart' does NOT)",
+        "./singularity.sh recreate mcp-server   # reloads env_file ('restart' does NOT)",
         "./singularity.sh doctor git",
       ];
     }
@@ -179,7 +179,7 @@ export function fixCommandsForPushBlock(code: PushBlockedCode, remote: string): 
       "  MCP_GIT_AUTH_MODE=token",
       "  MCP_GIT_PUSH_ENABLED=true",
       "  GITHUB_TOKEN=<github token with Contents: Write>   # this var wins over MCP_GIT_TOKEN; keep just ONE GITHUB_TOKEN line",
-      "./singularity.sh recreate mcp-server-demo   # reloads env_file ('restart' does NOT)",
+      "./singularity.sh recreate mcp-server   # reloads env_file ('restart' does NOT)",
       "./singularity.sh doctor git   # boot log should show authMode=token pushEnabled=true",
     ];
   }
@@ -194,7 +194,7 @@ export function fixCommandsForPushBlock(code: PushBlockedCode, remote: string): 
       "Your git token is authenticated but lacks Contents: Write on this repo.",
       "Fine-grained PAT (token starts with github_pat_...): https://github.com/settings/tokens?type=beta — edit the token, ensure the repo is in 'Selected repositories', and set Repository permissions > Contents = Read and write.",
       "Classic PAT: https://github.com/settings/tokens — regenerate with the `repo` scope (full).",
-      "./singularity.sh recreate mcp-server-demo   # reloads env_file ('restart' does NOT)",
+      "./singularity.sh recreate mcp-server   # reloads env_file ('restart' does NOT)",
     ];
   }
   if (code === "GIT_REMOTE_UNREACHABLE") {

@@ -5,7 +5,7 @@
 # agent loop run: the LLM prompt previews, the model's text/tool-call
 # responses, and every tool invocation with its output summary. Sourced
 # from `/workspace/.singularity/mcp-audit.jsonl` inside the
-# singularity-mcp-server-demo container.
+# singularity-mcp-server container.
 #
 # Usage:
 #   ./bin/trace.sh <workflow-instance-id>            # full trace for a run
@@ -29,7 +29,7 @@
 
 set -euo pipefail
 
-CONTAINER="${MCP_SERVER_CONTAINER:-singularity-mcp-server-demo}"
+CONTAINER="${MCP_SERVER_CONTAINER:-singularity-mcp-server}"
 AUDIT_PATH="${MCP_AUDIT_PATH:-/workspace/.singularity/mcp-audit.jsonl}"
 
 WORKFLOW_ID=""

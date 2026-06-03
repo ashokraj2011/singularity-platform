@@ -36,7 +36,7 @@ PORTS=(
   5176   # blueprint-workbench
   5180   # portal
   7000   # mcp-server (local dev default)
-  7100   # mcp-server-demo
+  7100   # mcp-server
   8000   # context-api
   8001   # llm-gateway
   8002   # context-memory
@@ -127,7 +127,7 @@ docker_up() {
   fi
   # On macOS, $SSH_AUTH_SOCK points at a launchd-managed socket
   # (/private/var/run/com.apple.launchd.XXX/Listeners) that Docker Desktop
-  # cannot bind-mount. mcp-server-demo's compose entry falls back to /dev/null
+  # cannot bind-mount. mcp-server's compose entry falls back to /dev/null
   # when SSH_AUTH_SOCK is empty, so clear it for the docker invocation. Dev
   # mode defaults to MCP_GIT_PUSH_ENABLED=false, so no SSH agent is needed.
   info "starting master docker-compose stack …"

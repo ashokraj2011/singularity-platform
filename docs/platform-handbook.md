@@ -154,7 +154,7 @@ Run `./singularity.sh urls` to print the current local endpoint map.
 | `context-memory` | `http://localhost:8002` | Conversation memory, summaries, semantic search, compiled context packages. |
 | `metrics-ledger` | `http://localhost:8003` | Metrics, token/cost rollups, optimization savings, operational dashboards. |
 | `formal-verifier` | `http://localhost:8010` | Formal verification service for constraints, policies, and verification receipts. |
-| `mcp-server-demo` | `http://localhost:7100` | Agent Execution Runtime, tools, resources, discovery, code context, invoke/resume, and token endpoints. |
+| `mcp-server` | `http://localhost:7100` | Agent Execution Runtime, tools, resources, discovery, code context, invoke/resume, and token endpoints. |
 | `mcp-sandbox-runner` | internal compose network | Docker-based command execution runner for `run_command` and `run_test`. |
 | `code-foundry-api` | configured by compose | Code Foundry API for foundry-specific runs and artifacts. |
 | `audit-governance-service` | commonly `http://localhost:8500` | Audit events, governance budgets, receipts, cost evidence, hook ingestion. |
@@ -840,7 +840,7 @@ This preserves data volumes.
 
 ```bash
 ./singularity.sh logs workgraph-api -f
-./singularity.sh logs mcp-server-demo -f
+./singularity.sh logs mcp-server -f
 ./singularity.sh logs context-api -f
 ```
 

@@ -10,7 +10,7 @@ services:
       # → /dashboard → 401 → /login → /context-picker loop).
       JWT_SECRET:            ${JWT_SECRET:-dev-secret-change-in-prod-min-32-chars!!}
       # The MCP server pseudo-IAM points capability-mcp-servers lookups at.
-      # Defaults to the running mcp-server-demo on the host.
+      # Defaults to the running mcp-server on the host.
       PSEUDO_MCP_BASE_URL:   ${PSEUDO_MCP_BASE_URL:-http://host.docker.internal:7100}
       PSEUDO_MCP_BEARER:     ${PSEUDO_MCP_BEARER:-demo-bearer-token-must-be-min-16-chars}
       # Optional self-register with the platform registry.

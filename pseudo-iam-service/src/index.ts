@@ -326,7 +326,7 @@ v1.get("/capabilities/:id/relationships", (_req, res) => res.json([]));
 // ── MCP servers (so cf /execute works against the real local mcp-server) ──
 //
 // Returns ONE registered MCP entry per capability — pointing at the running
-// mcp-server-demo (defaults: http://host.docker.internal:7100, the
+// mcp-server (defaults: http://host.docker.internal:7100, the
 // MCP_BEARER_TOKEN). Configurable via PSEUDO_MCP_BASE_URL/PSEUDO_MCP_BEARER.
 
 const PSEUDO_MCP_ID = "00000000-0000-0000-0000-mcpsrv00pseudo";
@@ -336,7 +336,7 @@ function mcpServerRecord(capabilityId: string) {
     id: PSEUDO_MCP_ID,
     capability_id: capabilityId,
     name: "pseudo-mcp",
-    description: "MCP server registered by pseudo-iam (points at local mcp-server-demo)",
+    description: "MCP server registered by pseudo-iam (points at local mcp-server)",
     base_url: PSEUDO_MCP_BASE_URL,
     auth_method: "BEARER_TOKEN",
     bearer_token: PSEUDO_MCP_BEARER,
@@ -521,7 +521,7 @@ async function selfRegister(): Promise<void> {
       { capability_key: "auth.service-token",    description: "Mints service tokens with no validation" },
       { capability_key: "authz.allow-all",       description: "All authz checks return allowed=true" },
       { capability_key: "identity.synthetic",    description: "Synthetic users / teams / capabilities for testing" },
-      { capability_key: "mcp-servers.local",     description: "Returns local mcp-server-demo as the registered MCP" },
+      { capability_key: "mcp-servers.local",     description: "Returns local mcp-server as the registered MCP" },
     ],
     contracts: [
       { kind: "openapi", contract_key: "openapi", version: "0.1.0", source_url: `${PUBLIC_BASE_URL}/openapi.json` },

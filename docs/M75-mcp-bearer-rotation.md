@@ -17,7 +17,7 @@ authenticate to mcp-server's `/mcp/tool-run` (and the dead
 
 The bridge dispatch path doesn't use this bearer (the laptop
 handshake owns its own auth), so this debt only affects the
-shared mcp-server-demo path. But that's still the majority of
+shared mcp-server path. But that's still the majority of
 calls today.
 
 ## What good looks like
