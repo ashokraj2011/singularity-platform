@@ -5331,9 +5331,20 @@ async function runLoopStageExecute(
     const promptProfileKey = stage.promptProfileKey?.trim() || undefined
     // M99 — forward the Phase 0 automation flags when the stage declares them
     // (undefined when not set, so CF keeps its env-flag default).
+    //
+    // Code-edit stages (contextPolicy CODE_EDIT / toolPolicy MUTATION) default
+    // auto_baseline=true: WorkbenchStage has no autoBaseline column, so a loop
+    // definition can never turn it on, yet a pre-edit test baseline is exactly
+    // what the verification gate needs to tell pre-existing failures apart from
+    // new regressions on these stages. An explicit stage.autoBaseline still
+    // wins, and CF's CF_AUTO_BASELINE_ENABLED env flag remains the master gate
+    // (both must be on — see governed_automation.automation_enabled).
+    const isCodeEditStage =
+      stage.contextPolicy?.trim().toUpperCase() === 'CODE_EDIT' ||
+      stage.toolPolicy?.trim().toUpperCase() === 'MUTATION'
     const m99 = {
       auto_localize: stage.autoLocalize,
-      auto_baseline: stage.autoBaseline,
+      auto_baseline: stage.autoBaseline ?? (isCodeEditStage ? true : undefined),
       auto_verify: stage.autoVerify,
       git_preflight_required: stage.gitPreflightRequired,
     }

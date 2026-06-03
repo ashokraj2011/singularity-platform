@@ -655,6 +655,16 @@ services:
       # here when set; legacy metrics-ledger remains as fallback during
       # the M65 transition.
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      # M99 platform-driven pre-edit guards — dark-launch rollout flags.
+      # Each pairs with the stage's auto*/gitPreflightRequired policy flag
+      # (BOTH the env flag here AND the per-stage policy flag must be on —
+      # see governed_automation.automation_enabled). Enabled so
+      # capture_test_baseline auto-dispatches in EXPLORE before the first
+      # edit, letting the verification gate tell pre-existing test failures
+      # apart from new regressions. Override per-env via .env.
+      CF_AUTO_BASELINE_ENABLED: ${CF_AUTO_BASELINE_ENABLED:-true}
+      CF_GIT_PREFLIGHT_ENABLED: ${CF_GIT_PREFLIGHT_ENABLED:-true}
+      CF_AUTO_VERIFY_ENABLED: ${CF_AUTO_VERIFY_ENABLED:-true}
     ports:
       - "8000:8000"
     depends_on:
