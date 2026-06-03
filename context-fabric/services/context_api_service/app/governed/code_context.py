@@ -45,6 +45,7 @@ async def build_code_context_for_governed_turn(
     mcp_bearer: Optional[str] = None,
     timeout_sec: float = _DEFAULT_TIMEOUT_SEC,
     max_token_budget: int = _DEFAULT_TOKEN_BUDGET,
+    context_policy: Optional[str] = None,  # stage MODE (CODE_EDIT/VERIFY_ONLY/…)
     _http_post: Any = None,  # injection seam for tests
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """POST to mcp-server's /mcp/code-context/build and return the
@@ -79,6 +80,11 @@ async def build_code_context_for_governed_turn(
         payload["capability_id"] = capability_id
     if trace_id:
         payload["trace_id"] = trace_id
+    if context_policy:
+        # Stage context_policy MODE — lets mcp-server scope non-tool context
+        # to match the tool allowlist philosophy (slice-scoping is a follow-up;
+        # threaded now for observability + forward-compat).
+        payload["context_policy"] = context_policy
     # Thread the governed run_context so mcp-server resolves the SAME
     # per-workitem worktree a normal tool dispatch uses (workItemCode /
     # branch / source_*), instead of indexing the base sandbox. The build

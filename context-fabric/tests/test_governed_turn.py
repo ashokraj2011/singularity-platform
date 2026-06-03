@@ -778,7 +778,7 @@ async def test_code_context_built_once_and_reused_across_turns(monkeypatch):
     build_calls: list[str] = []
     seen_vars: list[dict] = []
 
-    async def fake_build(*, task_text, capability_id, run_context):
+    async def fake_build(*, task_text, capability_id, run_context, **_kwargs):
         build_calls.append(task_text)
         return {"context_package_id": "ctx-1", "packageMarkdown": "# relevant code"}, None
 
@@ -811,7 +811,7 @@ async def test_code_context_rebuilds_every_turn_without_cache(monkeypatch):
     build_calls: list[str] = []
     seen_vars: list[dict] = []
 
-    async def fake_build(*, task_text, capability_id, run_context):
+    async def fake_build(*, task_text, capability_id, run_context, **_kwargs):
         build_calls.append(task_text)
         return {"context_package_id": "ctx-1", "packageMarkdown": "# relevant code"}, None
 
@@ -838,7 +838,7 @@ async def test_code_context_cache_disabled_by_env(monkeypatch):
     build_calls: list[str] = []
     seen_vars: list[dict] = []
 
-    async def fake_build(*, task_text, capability_id, run_context):
+    async def fake_build(*, task_text, capability_id, run_context, **_kwargs):
         build_calls.append(task_text)
         return {"context_package_id": "ctx-1", "packageMarkdown": "# relevant code"}, None
 
@@ -857,3 +857,125 @@ async def test_code_context_cache_disabled_by_env(monkeypatch):
 
     assert build_calls == ["Fix the NPE", "Fix the NPE"]  # env opt-out wins
     assert cache == {}  # nothing cached when disabled
+
+
+# ── Min-context gate + budget (code-context hardening D1/D3) ──────────────────
+
+
+def _code_edit_exec_policy():
+    from context_api_service.app.governed.stage_execution_policy import StageExecutionPolicy
+    return StageExecutionPolicy(stage_key="loop.stage", context_policy="CODE_EDIT")
+
+
+@pytest.mark.asyncio
+async def test_min_context_gate_pauses_code_edit_stage(monkeypatch):
+    """A CODE_EDIT stage whose code-context package has no target/editable
+    slices raises MinContextUnavailable (→ stage_driver NEEDS_CONTEXT pause)."""
+    from context_api_service.app.governed.turn import MinContextUnavailable
+    seen_vars: list[dict] = []
+
+    async def empty_build(*, task_text, capability_id, run_context, **_kwargs):
+        return ({"context_package_id": "ctx-empty", "packageMarkdown": "",
+                 "target_symbols": [], "editable_slices": []}, "no slices")
+
+    _patch_context_turn(monkeypatch, build_fn=empty_build, seen_vars=seen_vars)
+
+    with pytest.raises(MinContextUnavailable):
+        await run_turn(
+            state=PhaseState.fresh("loop.stage", "DEVELOPER"),
+            stage_key="loop.stage",
+            agent_role="DEVELOPER",
+            vars={"goal": "Fix the NPE"},
+            run_context={"capability_id": "cap-1"},
+            exec_policy=_code_edit_exec_policy(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_min_context_gate_allows_when_slices_present(monkeypatch):
+    """CODE_EDIT stage WITH editable slices proceeds — no pause."""
+    seen_vars: list[dict] = []
+
+    async def good_build(*, task_text, capability_id, run_context, **_kwargs):
+        return ({"context_package_id": "ctx-ok", "packageMarkdown": "# code",
+                 "target_symbols": [{"symbol": "foo"}],
+                 "editable_slices": [{"file": "a.py"}]}, None)
+
+    _patch_context_turn(monkeypatch, build_fn=good_build, seen_vars=seen_vars)
+
+    await run_turn(
+        state=PhaseState.fresh("loop.stage", "DEVELOPER"),
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        vars={"goal": "Fix the NPE"},
+        run_context={"capability_id": "cap-1"},
+        exec_policy=_code_edit_exec_policy(),
+    )
+    assert seen_vars and seen_vars[0].get("code_context_package") == "# code"
+
+
+@pytest.mark.asyncio
+async def test_min_context_gate_skips_non_code_edit_stage(monkeypatch):
+    """A non-CODE_EDIT stage with empty slices does NOT pause — the gate only
+    fires for code-edit stages, so read/verify stages degrade as before."""
+    seen_vars: list[dict] = []
+
+    async def empty_build(*, task_text, capability_id, run_context, **_kwargs):
+        return ({"context_package_id": "ctx-empty", "packageMarkdown": "",
+                 "target_symbols": [], "editable_slices": []}, "no slices")
+
+    _patch_context_turn(monkeypatch, build_fn=empty_build, seen_vars=seen_vars)
+
+    # No exec_policy → mode None → not code-edit → no gate.
+    await run_turn(
+        state=PhaseState.fresh("loop.stage", "DEVELOPER"),
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        vars={"goal": "Read the code"},
+        run_context={"capability_id": "cap-1"},
+    )
+    assert len(seen_vars) == 1  # turn proceeded past the build
+
+
+def test_requires_min_context_rules():
+    from context_api_service.app.governed.turn import _requires_min_context
+    # Default: gate CODE_EDIT only.
+    assert _requires_min_context({}, "CODE_EDIT", Phase.ACT) is True
+    assert _requires_min_context({}, "REPO_READ_ONLY", Phase.ACT) is False
+    assert _requires_min_context({}, None, Phase.ACT) is False
+    # Explicit flag wins both ways.
+    assert _requires_min_context({"require_min_context": False}, "CODE_EDIT", Phase.ACT) is False
+    assert _requires_min_context({"require_min_context": True}, "REPO_READ_ONLY", Phase.ACT) is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_code_context_budget_picks_tightest_cap(monkeypatch):
+    from context_api_service.app.governed import turn as turn_mod
+
+    async def fake_window(_alias):
+        return 200_000  # → 50k at 0.25
+
+    monkeypatch.setattr(turn_mod, "context_window_for", fake_window)
+
+    pp = PhasePolicy(phase=Phase.ACT, allowed_tools=frozenset(), forbidden_tools=frozenset(),
+                     required_output_schema={}, max_input_tokens=10_000,  # → 6000 at 0.6
+                     max_output_tokens=None, max_tool_calls=None)
+    policy = StagePolicy(policy_id="t", stage_key="s", agent_role="DEVELOPER", version=1,
+                         status="ACTIVE", approval_model={},
+                         limits={"max_code_context_tokens": 8000},
+                         context_policy={}, edit_policy={}, verification_policy={},
+                         risk_policy={}, phases={Phase.ACT: pp})
+    budget = await turn_mod._resolve_code_context_budget(policy, Phase.ACT, None, "claude-sonnet-4-5")
+    assert budget == 6000  # min(6000, 8000, 50000)
+
+
+@pytest.mark.asyncio
+async def test_resolve_code_context_budget_defaults_without_signals(monkeypatch):
+    from context_api_service.app.governed import turn as turn_mod
+
+    async def no_window(_alias):
+        return None
+
+    monkeypatch.setattr(turn_mod, "context_window_for", no_window)
+    budget = await turn_mod._resolve_code_context_budget(None, Phase.PLAN, None, None)
+    assert budget == turn_mod._CODE_CONTEXT_DEFAULT_BUDGET

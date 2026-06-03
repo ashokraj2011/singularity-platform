@@ -35,7 +35,7 @@ from .phase_state import Phase, PhaseState, advance_phase
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
 from .stage_execution_policy import StageExecutionPolicy, StageExecutionPolicyError, apply_execution_policy
 from .prompt_resolver import PromptNotFoundError
-from .turn import SUBMIT_PHASE_OUTPUT, TurnResult, run_turn
+from .turn import MinContextUnavailable, SUBMIT_PHASE_OUTPUT, TurnResult, run_turn
 from .verify_synthesis import SyntheticVerifierResult, synthesize_verifier_run
 # M99 S1.1 — deterministic pre-ACT localization (platform-driven, gated OFF
 # by default via governed_automation; see localization.py).
@@ -74,7 +74,8 @@ class StageRunResult:
     turns: list[dict[str, Any]] = field(default_factory=list)
     # Why we stopped looping. One of: "FINALIZED", "APPROVAL_PENDING",
     # "NOT_ACTIONABLE", "VALIDATION_BLOCKED", "POLICY_BLOCKED",
-    # "PHASE_BUDGET_EXCEEDED", "MAX_TURNS", "LLM_ERROR", and the M96 salvage
+    # "PHASE_BUDGET_EXCEEDED", "MAX_TURNS", "LLM_ERROR", "NEEDS_CONTEXT" (the
+    # min-context gate paused a code-edit stage), and the M96 salvage
     # outcomes "SALVAGED_VERIFY_FAILED" / "SALVAGED_VERIFY_UNAVAILABLE" (the
     # orchestrator recovered real edits a stuck mutating phase produced and
     # ran the verifier; a passing verifier instead yields "APPROVAL_PENDING").
@@ -90,6 +91,10 @@ class StageRunResult:
     # approval gate can render "Story not actionable — pending human
     # confirmation" with the agent's justification.
     not_actionable: dict[str, Any] | None = None
+    # When stop_reason == "NEEDS_CONTEXT", carries {reason, phase, context_policy}
+    # from the min-context gate so the approval/inbox UI can render
+    # "Paused — insufficient code context" with the specifics.
+    needs_context: dict[str, Any] | None = None
     # Aggregated counters — workgraph-api stamps these on the audit row.
     total_input_tokens: int = 0
     total_output_tokens: int = 0
@@ -104,6 +109,7 @@ class StageRunResult:
             "error_code": self.error_code,
             "error_message": self.error_message,
             "not_actionable": self.not_actionable,
+            "needs_context": self.needs_context,
             "totals": {
                 "input_tokens": self.total_input_tokens,
                 "output_tokens": self.total_output_tokens,
@@ -1820,6 +1826,7 @@ async def run_stage(
 
     for turn_idx in range(max_turns):
         last_llm_error: LLMGatewayError | None = None
+        needs_context_exc: MinContextUnavailable | None = None
         for llm_attempt in range(LLM_RETRY_ATTEMPTS + 1):
             try:
                 turn = await run_turn(
@@ -1837,6 +1844,11 @@ async def run_stage(
                     code_context_cache=code_context_cache,
                 )
                 last_llm_error = None
+                break
+            except MinContextUnavailable as exc:
+                # Code-edit stage with no usable context → pause for a human.
+                # Not retryable: re-asking won't materialize repo context.
+                needs_context_exc = exc
                 break
             except LLMGatewayError as exc:
                 last_llm_error = exc
@@ -1875,6 +1887,22 @@ async def run_stage(
                     "turn_idx": turn_idx,
                     "retry_attempts": LLM_RETRY_ATTEMPTS,
                 },
+                severity="warn",
+            )
+            return result
+
+        # Minimum-context gate (code-context hardening D3) — a code-edit stage
+        # built an empty context package. Halt as a human-resumable pause so the
+        # agent never edits blind; the approval/inbox UI renders the reason.
+        if needs_context_exc is not None:
+            result.stop_reason = "NEEDS_CONTEXT"
+            result.needs_context = needs_context_exc.to_dict()
+            await emit_governed_event(
+                kind="governed.stage_paused_needs_context",
+                state=state,
+                policy=None,
+                run_context=run_context,
+                payload=needs_context_exc.to_dict(),
                 severity="warn",
             )
             return result
