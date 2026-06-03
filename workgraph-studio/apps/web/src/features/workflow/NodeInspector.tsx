@@ -13,7 +13,7 @@ import {
   Download, Terminal, GripVertical,
 } from 'lucide-react'
 import type { Node } from 'reactflow'
-import { fetchAgents, fetchStudioAgents, deriveStudioAgent, fetchTools, fetchCapabilities, registrySource, type RegistryAgent } from '../../lib/registry'
+import { fetchAgents, fetchStudioAgents, deriveStudioAgent, fetchTools, fetchCapabilities, fetchGoverningCapabilities, registrySource, type RegistryAgent } from '../../lib/registry'
 import { useActiveContextStore } from '../../store/activeContext.store'
 import { api } from '../../lib/api'
 import { UserPicker, TeamPicker, RolePicker, SkillPicker, ConnectorPicker, PickerOrText } from '../../components/lookup/EntityPickers'
@@ -148,6 +148,11 @@ type WorkbenchStage = {
   contextPolicy: 'STORY_ONLY' | 'REPO_READ_ONLY' | 'CODE_EDIT' | 'VERIFY_ONLY' | 'EVIDENCE_REVIEW'
   repoAccess: boolean
   toolPolicy: 'NONE' | 'READ_ONLY' | 'MUTATION' | 'VERIFICATION'
+  // G8 — per-stage governance intent. Persisted into loopDefinition.stages and
+  // reconciled into scope=STAGE IAM attachments (target_key=stageKey) on save.
+  governancePolicyId?: string | null
+  governanceEnforcement?: 'ADVISORY' | 'REQUIRED' | 'BLOCKING' | null
+  governancePriority?: number | null
   promptProfileKey?: string
 }
 
@@ -787,6 +792,12 @@ function normalizeWorkbenchConfig(raw: unknown): WorkbenchConfig {
         contextPolicy,
         repoAccess: typeof stage.repoAccess === 'boolean' ? stage.repoAccess : contextPolicy !== 'STORY_ONLY' && toolPolicy !== 'NONE',
         toolPolicy,
+        governancePolicyId: typeof stage.governancePolicyId === 'string' ? stage.governancePolicyId : null,
+        governanceEnforcement:
+          stage.governanceEnforcement === 'ADVISORY' || stage.governanceEnforcement === 'REQUIRED' || stage.governanceEnforcement === 'BLOCKING'
+            ? stage.governanceEnforcement
+            : null,
+        governancePriority: typeof stage.governancePriority === 'number' ? stage.governancePriority : null,
         promptProfileKey: typeof stage.promptProfileKey === 'string' ? stage.promptProfileKey : '',
         expectedArtifacts: Array.isArray(stage.expectedArtifacts)
           ? stage.expectedArtifacts
@@ -1108,6 +1119,105 @@ function ModelAliasPicker({ value, onChange }: { value: string; onChange: (v: st
           })()}
         </div>
       )}
+    </div>
+  )
+}
+
+// G8 — per-stage governance editor (designer). Sets the per-stage INTENT that
+// the server-side reconciler materializes into scope=STAGE IAM attachments
+// (target_key=stageKey). updateStage persists it into loopDefinition.stages.
+function StageGovernanceSection({ capabilityId, stageKey, policyId, enforcement, priority, onChange }: {
+  capabilityId: string | null
+  stageKey: string
+  policyId: string | null
+  enforcement: 'ADVISORY' | 'REQUIRED' | 'BLOCKING' | null
+  priority: number | null
+  onChange: (patch: Partial<WorkbenchStage>) => void
+}) {
+  const { data: policies, isLoading } = useQuery({
+    queryKey: ['lookup', 'governing-capabilities'],
+    queryFn: () => fetchGoverningCapabilities(),
+    staleTime: 30_000,
+  })
+  const mode = enforcement ?? 'ADVISORY'
+  return (
+    <details style={{ border: '1px solid rgba(148,163,184,0.22)', borderRadius: 8, background: '#ffffff', padding: 10, marginTop: 8 }}>
+      <summary style={{ cursor: 'pointer', color: '#64748b', fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+        Policy enforcement{policyId ? ' · governed' : ''}
+      </summary>
+      {!capabilityId ? (
+        <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 10 }}>Set the workbench capability (above) to govern stages.</p>
+      ) : (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 130px 90px', gap: 7, alignItems: 'end' }}>
+            <div>
+              <FieldLabel>Governing policy</FieldLabel>
+              <select
+                value={policyId ?? ''}
+                onChange={e => onChange({ governancePolicyId: e.target.value || null })}
+                style={selectStyle(false)}
+              >
+                <option value="">{isLoading ? 'Loading…' : 'None (ungoverned)'}</option>
+                {(policies ?? []).map(p => (
+                  <option key={p.id} value={p.capability_id ?? p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <FieldLabel>Enforcement</FieldLabel>
+              <select
+                value={mode}
+                disabled={!policyId}
+                onChange={e => onChange({ governanceEnforcement: e.target.value as 'ADVISORY' | 'REQUIRED' | 'BLOCKING' })}
+                style={selectStyle(!policyId)}
+              >
+                {['ADVISORY', 'REQUIRED', 'BLOCKING'].map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+            <div>
+              <FieldLabel>Priority</FieldLabel>
+              <NeoInput value={String(priority ?? 100)} onChange={v => onChange({ governancePriority: Number(v) || 100 })} />
+            </div>
+          </div>
+          {policyId && mode !== 'ADVISORY' && (
+            <p style={{ fontSize: 10, color: '#b45309', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.4)', borderRadius: 6, padding: '5px 8px', marginTop: 8 }}>
+              {mode} is enforcing — it can halt this stage at the verification gate and requires elevated authority to materialize.
+            </p>
+          )}
+          <StageGovernancePreview capabilityId={capabilityId} stageKey={stageKey} />
+        </div>
+      )}
+    </details>
+  )
+}
+
+type ResolvedGovernanceOverlay = {
+  effectiveMode?: string
+  governingEntities?: { capabilityId: string; name?: string; mode?: string }[]
+  requiredEvidence?: unknown[]
+}
+
+// Shows the LIVE resolved overlay for this (capability, stage) — what IAM
+// currently binds (after save + reconcile), not the unsaved picker intent.
+function StageGovernancePreview({ capabilityId, stageKey }: { capabilityId: string; stageKey: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['governance', 'resolve', capabilityId, stageKey],
+    queryFn: () => api.post('/governance/resolve', { capability_id: capabilityId, stage_key: stageKey })
+      .then(r => (r.data?.data ?? null) as ResolvedGovernanceOverlay | null)
+      .catch(() => null),
+    enabled: Boolean(capabilityId),
+    staleTime: 15_000,
+    retry: false,
+  })
+  const govs = data?.governingEntities ?? []
+  return (
+    <div style={{ marginTop: 8, fontSize: 10, color: '#64748b' }}>
+      <span style={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Currently resolved (live)</span>
+      {isLoading
+        ? <span> · loading…</span>
+        : govs.length === 0
+          ? <span> · not yet governed (save + reconcile to apply)</span>
+          : <span> · {data?.effectiveMode ?? 'ADVISORY'} · {govs.map(g => g.name ?? g.capabilityId).join(', ')} · {(data?.requiredEvidence ?? []).length} evidence</span>}
     </div>
   )
 }
@@ -1947,6 +2057,15 @@ function WorkbenchTab({
                 toolPolicy={stage.toolPolicy}
                 contextPolicy={stage.contextPolicy}
                 repoAccess={stage.repoAccess}
+              />
+
+              <StageGovernanceSection
+                capabilityId={wb.capabilityId || null}
+                stageKey={stage.key}
+                policyId={stage.governancePolicyId ?? null}
+                enforcement={stage.governanceEnforcement ?? null}
+                priority={stage.governancePriority ?? null}
+                onChange={patch => updateStage(stageIndex, patch)}
               />
 
               <div style={{ marginTop: 8 }}>
