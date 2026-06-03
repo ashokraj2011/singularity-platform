@@ -979,3 +979,37 @@ async def test_resolve_code_context_budget_defaults_without_signals(monkeypatch)
     monkeypatch.setattr(turn_mod, "context_window_for", no_window)
     budget = await turn_mod._resolve_code_context_budget(None, Phase.PLAN, None, None)
     assert budget == turn_mod._CODE_CONTEXT_DEFAULT_BUDGET
+
+
+# ── Prompt-capture cap + mask (code-context hardening E2) ─────────────────────
+
+
+def test_sanitize_captured_messages_masks_and_caps(monkeypatch):
+    from context_api_service.app.governed import turn as turn_mod
+    monkeypatch.setattr(turn_mod, "_PROMPT_CAPTURE_MAX_CHARS", 40)  # force clipping
+    msgs = [
+        {"role": "system", "content": "call with Authorization: Bearer abcdef0123456789ABCDEF now"},
+        {"role": "user", "content": "x" * 5000},
+        {"role": "assistant"},   # no content key
+        "not-a-dict",            # non-dict passthrough
+    ]
+    out = turn_mod._sanitize_captured_messages(msgs)
+    # Originals are NOT mutated (these still go to the gateway verbatim).
+    assert msgs[1]["content"] == "x" * 5000
+    # Secret masked in the captured copy.
+    assert "abcdef0123456789ABCDEF" not in out[0]["content"]
+    assert "redacted" in out[0]["content"]
+    # Oversized content clipped.
+    assert "truncated" in out[1]["content"] and len(out[1]["content"]) < 5000
+    # Missing-content dict + non-dict pass through unharmed.
+    assert out[2] == {"role": "assistant"}
+    assert out[3] == "not-a-dict"
+
+
+def test_mask_secrets_redacts_token_shapes_but_keeps_code():
+    from context_api_service.app.governed.turn import _mask_secrets
+    assert "sk-" not in _mask_secrets("key=sk-ABCDEFGHIJKLMNOP12345")
+    assert "ghp_" not in _mask_secrets("token ghp_0123456789abcdefghijABCDEF")
+    assert "supersecretvalue123" not in _mask_secrets('"api_key": "supersecretvalue123"')
+    code = "def foo(x):\n    return x + 1"
+    assert _mask_secrets(code) == code  # ordinary code untouched
