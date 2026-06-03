@@ -110,6 +110,7 @@ import { LoopRail } from './neo/LoopRail'
 import { CopilotExportButton } from './neo/CopilotExportButton'
 import { LiveCockpit } from './neo/LiveCockpit'
 import { FocusPane, computeFocusIntent, type FocusAction } from './neo/FocusPane'
+import { GovernancePanel } from './neo/GovernancePanel'
 import { NeoNotifier } from './neo/NeoNotifier'
 import { StageChat } from './neo/StageChat'
 import { InheritedFailureCard, getVerificationFailureAnalysis } from './neo/InheritedFailureCard'
@@ -1936,6 +1937,16 @@ function NeoStageController({
           </button>
         </div>
       )}
+
+      {/* Capability Governance Model — "Governed by" + controls for this stage
+            (read-only; renders only when the capability is governed). */}
+      <GovernancePanel
+        capabilityId={session.capabilityId}
+        stageKey={stage?.key}
+        agentRole={stage?.agentRole}
+        nodeId={session.workflowNodeId}
+        attempt={latest}
+      />
 
       {/* M58 — Loop-limit banner.
             Previously suppressed for intent==='completed' (the last attempt
