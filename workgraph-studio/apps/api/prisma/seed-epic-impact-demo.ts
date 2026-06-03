@@ -102,6 +102,13 @@ async function upsertWorkflow(id: string, data: { name: string; description: str
 async function seedWorkItemTypes() {
   const types = [
     {
+      id: 'meta-workitem-epic-v1', key: 'EPIC', label: 'Epic',
+      description: 'Top-level epic that fans impact analysis + implementation out to child capabilities.',
+      icon: 'Layers', color: '#8b5cf6', category: 'Delivery',
+      defaults: { urgency: 'NORMAL', priority: 70, routingMode: 'AUTO_START' },
+      policy: { allowedRoutingModes: ['MANUAL', 'AUTO_START'] },
+    },
+    {
       id: 'meta-workitem-impact-analysis-v1', key: 'IMPACT_ANALYSIS', label: 'Impact Analysis',
       description: 'Analyze whether an Epic-level change impacts a child capability.',
       icon: 'Zap', color: '#f59e0b', category: 'Analysis',
@@ -129,6 +136,15 @@ async function seedWorkItemTypes() {
 }
 
 async function seedRoutingPolicies() {
+  // Entry point: a top-level EPIC WorkItem targeting the Epic capability is
+  // routed (AUTO_START) to the Epic template, which then does the fan-out.
+  if (EPIC_CAPABILITY_ID) {
+    const existing = await prisma.workItemRoutingPolicy.findFirst({ where: { capabilityId: EPIC_CAPABILITY_ID, workItemTypeKey: 'EPIC' } })
+    const data = { capabilityId: EPIC_CAPABILITY_ID, workItemTypeKey: 'EPIC', workflowTypeKey: 'EPIC', workflowId: EPIC_WORKFLOW_ID, routingMode: 'AUTO_START' as any, priority: 100, isActive: true }
+    if (existing) await prisma.workItemRoutingPolicy.update({ where: { id: existing.id }, data })
+    else await prisma.workItemRoutingPolicy.create({ data })
+    console.log(`  ✓ routing policy ${EPIC_CAPABILITY_ID} · EPIC → Epic template`)
+  }
   if (CHILD_CAPABILITY_IDS.length === 0) {
     console.log('  ! EPIC_CHILD_CAPABILITY_IDS not set — skipping routing policies. Set it + re-run to make AUTO_START children resolve their workflows.')
     return

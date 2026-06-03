@@ -92,10 +92,14 @@ async function iamFetch(
   const url = `${config.IAM_BASE_URL.replace(/\/+$/, '')}${path}`
   // M11 follow-up — fall back to auto-minted service token instead of the
   // expiring user JWT in IAM_SERVICE_TOKEN env. Lazy import to avoid a cycle.
+  // NOTE: extensionless specifier — tsconfig is CommonJS/node resolution, so
+  // a literal `.js` specifier fails to resolve to the `.ts` source in the dev
+  // runtime, silently breaking ALL service-token auto-mint (every runtime IAM
+  // call then 401s). Keep it extensionless so it resolves in dev + build.
   let token = init.token
   if (!token) {
     try {
-      const { getIamServiceToken } = await import('./service-token.js')
+      const { getIamServiceToken } = await import('./service-token')
       token = await getIamServiceToken()
     } catch { /* fall through to undefined */ }
   }

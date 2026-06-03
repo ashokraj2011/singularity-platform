@@ -334,6 +334,21 @@ export async function activateWorkItem(node: WorkflowNode, instance: WorkflowIns
     where: { id: node.id },
     data: { config: { ...cfg, _workItemId: workItem.id } as Prisma.InputJsonValue },
   })
+
+  // M101 (Epic→child) — route the freshly-created WorkItem so AUTO_START /
+  // AUTO_ATTACH children actually spawn. The HTTP create path (work-items
+  // router) routes explicitly after createWorkItem; the WORK_ITEM-node path
+  // (this function) must do it too, otherwise the discovered child capability
+  // targets stay QUEUED and never start their workflows. routeWorkItem is
+  // SINGLE-target (defaults to targets[0]), so for a fan-out WorkItem we must
+  // route EACH target by id. Lazy import keeps the module graph acyclic.
+  // MANUAL WorkItems are left QUEUED for an operator.
+  if (workItem.routingMode === 'AUTO_START' || workItem.routingMode === 'AUTO_ATTACH') {
+    const { routeWorkItem } = await import('./work-item-routing.service')
+    for (const t of workItem.targets) {
+      await routeWorkItem(workItem.id, actorId ?? instance.createdById ?? null, { targetId: t.id, routingMode: workItem.routingMode })
+    }
+  }
 }
 
 async function loadActor(userId: string) {
