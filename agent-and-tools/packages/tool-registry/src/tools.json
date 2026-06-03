@@ -428,13 +428,13 @@
             "description": "Optional subtree to scope the search.",
             "type": "string"
           },
-          "pattern": {
+          "query": {
             "description": "Regex or literal text to find across the workspace.",
             "type": "string"
           }
         },
         "required": [
-          "pattern"
+          "query"
         ],
         "type": "object"
       }

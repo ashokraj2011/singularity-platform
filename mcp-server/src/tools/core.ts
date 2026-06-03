@@ -154,7 +154,10 @@ export const searchCodeTool: ToolHandler = {
   },
   async execute(args) {
     try {
-      const q = String(args.query ?? "");
+      // Accept `pattern` as an alias for `query` — the canonical tool-registry
+      // historically advertised `pattern` while this executor + the LLM-facing
+      // seed use `query`; tolerate both so a stale registry can't break calls.
+      const q = String(args.query ?? args.pattern ?? "");
       if (!q) throw new Error("query is required");
       const max = typeof args.max_results === "number" && args.max_results > 0 ? Math.min(args.max_results, 200) : 50;
       const root = sandboxRoot();
