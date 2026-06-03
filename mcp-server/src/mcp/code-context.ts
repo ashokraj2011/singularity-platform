@@ -91,6 +91,20 @@ export interface BuildCodeContextRequest {
   trace_id?: string;
   /** Capability id for audit linkage. Optional. */
   capability_id?: string;
+  /**
+   * (#5) Stage context_policy MODE (STORY_ONLY / REPO_READ_ONLY / CODE_EDIT /
+   * VERIFY_ONLY / EVIDENCE_REVIEW / NONE). STORY_ONLY/NONE grant no repo read
+   * access → the build returns an empty package (no repo slices), mirroring the
+   * tool-allowlist category mapping. Absent ⇒ full build (back-compat).
+   */
+  context_policy?: string;
+  /**
+   * (#10) When false, the response omits inline slice `content` and the full
+   * slices are stashed server-side under `context_package_id`; fetch them on
+   * demand via GET /mcp/code-context/:id/slices. Default true (inline) — the
+   * shape context-fabric consumes today.
+   */
+  include_slice_content?: boolean;
 }
 
 export interface CodeContextSlice {
@@ -135,6 +149,68 @@ export interface CodeContextPackage {
     tokens_saved: number;
     percent_saved: number;
   };
+}
+
+// ── (#5) context_policy slice-scoping ────────────────────────────────────────
+// MODES granting NO repo read access → no code-context slices, mirroring the
+// tool-allowlist mapping (STORY_ONLY/NONE get only verify_meta/analyzer, never
+// repo read). Every other mode reads the repo, so it gets slices.
+const NO_REPO_CONTEXT_MODES = new Set(["STORY_ONLY", "NONE"]);
+
+function repoContextAllowed(contextPolicy?: string): boolean {
+  if (!contextPolicy) return true;
+  return !NO_REPO_CONTEXT_MODES.has(contextPolicy.trim().toUpperCase().replace(/-/g, "_"));
+}
+
+function emptyPackage(req: BuildCodeContextRequest, packageId: string, reason: string): CodeContextPackage {
+  return {
+    context_package_id: packageId,
+    task_intent: {
+      kind: "unknown",
+      summary: req.task_text.length > 200 ? req.task_text.slice(0, 200) + "..." : req.task_text,
+    },
+    target_symbols: [],
+    editable_slices: [],
+    dependency_slices: [],
+    test_slices: [],
+    excluded_context: [{ file: "(all)", reason }],
+    optimization: { raw_estimate: 0, optimized_estimate: 0, tokens_saved: 0, percent_saved: 0 },
+  };
+}
+
+// ── (#10) Selective slice fetch — package store ──────────────────────────────
+// When a caller sets include_slice_content=false we stash the full slices here
+// keyed by context_package_id and return metadata-only slices; the caller fetches
+// content on demand via GET /mcp/code-context/:id/slices. In-memory + LRU-capped
+// (fetch happens shortly after the build in the same process; lost on restart →
+// callers just re-build). The default inline path never touches this store.
+export interface StoredPackageSlices {
+  editable: CodeContextSlice[];
+  dependency: CodeContextSlice[];
+  test: CodeContextSlice[];
+  storedAt: number;
+}
+
+const PACKAGE_STORE_MAX = 50;
+const packageStore = new Map<string, StoredPackageSlices>();
+
+function storePackageSlices(id: string, slices: StoredPackageSlices): void {
+  packageStore.delete(id); // re-insert at the end (Map preserves insertion order)
+  packageStore.set(id, slices);
+  while (packageStore.size > PACKAGE_STORE_MAX) {
+    const oldest = packageStore.keys().next().value;
+    if (oldest === undefined) break;
+    packageStore.delete(oldest);
+  }
+}
+
+/** Look up stashed slices for a package id (see include_slice_content). */
+export function getStoredPackageSlices(id: string): StoredPackageSlices | undefined {
+  return packageStore.get(id);
+}
+
+function stripSliceContent(slices: CodeContextSlice[]): CodeContextSlice[] {
+  return slices.map((s) => ({ ...s, content: "" }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -286,6 +362,13 @@ async function buildPackageInSandbox(
   const depDepth = req.max_dependency_depth ?? DEFAULT_DEPENDENCY_DEPTH;
   const includeTests = req.include_tests ?? DEFAULT_INCLUDE_TESTS;
   const packageId = uuidv4();
+
+  // 0. (#5) context_policy gate — STORY_ONLY / NONE stages get no repo read
+  //    access, so they get NO code-context slices: skip the whole AST build.
+  //    Mirrors the tool-allowlist category mapping for non-tool context.
+  if (!repoContextAllowed(req.context_policy)) {
+    return emptyPackage(req, packageId, `context_policy=${req.context_policy} grants no repo read access`);
+  }
 
   // 1. Ensure the index is fresh WITHOUT a full walk every build: ensureIndexFresh
   //    skips when HEAD is unchanged + tree clean, else reindexes only the changed
@@ -523,6 +606,26 @@ async function buildPackageInSandbox(
       ],
     },
   });
+
+  // 10. (#10) Selective slice fetch — opt-in. Default keeps content inline
+  //     (back-compat: context-fabric reads it directly). When the caller sets
+  //     include_slice_content=false, stash the full slices for on-demand fetch
+  //     and return a metadata-only package (content stripped) to keep the
+  //     response small.
+  if (req.include_slice_content === false) {
+    storePackageSlices(packageId, {
+      editable: selectedEditable,
+      dependency: selectedDep,
+      test: selectedTest,
+      storedAt: Date.now(),
+    });
+    return {
+      ...pkg,
+      editable_slices: stripSliceContent(selectedEditable),
+      dependency_slices: stripSliceContent(selectedDep),
+      test_slices: stripSliceContent(selectedTest),
+    };
+  }
 
   return pkg;
 }

@@ -17,7 +17,7 @@ import { discoveryRouter } from "./mcp/discovery";
 import { worktreeRouter } from "./mcp/worktree";
 import { worktreeTestRouter } from "./mcp/worktree-test";
 import { sourceDiscoverRouter } from "./mcp/source-discover";
-import { buildCodeContextPackage } from "./mcp/code-context";
+import { buildCodeContextPackage, getStoredPackageSlices } from "./mcp/code-context";
 // M61 Wire E + Wire B P2 — best-effort callbacks to agent-runtime's
 // CapabilityWorldModel: repo fingerprint (drift detector) + AST index
 // built (stamps astIndexedAt). Fired on every /mcp/code-context/build
@@ -205,6 +205,10 @@ app.post("/mcp/code-context/build", async (req, res) => {
     work_item_id: z.string().optional(),
     workspace_id: z.string().optional(),
     run_context: ToolRunSchema.shape.run_context.optional(),
+    // (#5) stage context_policy MODE → STORY_ONLY/NONE suppress repo slices.
+    context_policy: z.string().max(64).optional(),
+    // (#10) when false, omit inline slice content + stash for selective fetch.
+    include_slice_content: z.boolean().optional(),
   }).safeParse(req.body);
   if (!parsed.success) {
     throw new AppError("invalid /mcp/code-context/build payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
@@ -249,6 +253,33 @@ app.post("/mcp/code-context/build", async (req, res) => {
   }
   res.json({ success: true, data: pkg, requestId: res.locals.requestId });
 });
+
+// (#10) Selective slice fetch — return stashed slice content for a package built
+// with include_slice_content=false. Optional `?kind=editable|dependency|test`
+// and `?indices=0,2,5` (indices into that kind's array). 404 if the package
+// isn't stored (expired from the LRU / never stashed / server restarted).
+app.get("/mcp/code-context/:packageId/slices", (req, res) => {
+  const stored = getStoredPackageSlices(req.params.packageId);
+  if (!stored) {
+    throw new AppError(
+      "code-context package slices not found (expired, never stashed, or server restarted — rebuild)",
+      404,
+      "PACKAGE_SLICES_NOT_FOUND",
+      { packageId: req.params.packageId },
+    );
+  }
+  const kind = typeof req.query.kind === "string" ? req.query.kind.toLowerCase() : undefined;
+  const indices = typeof req.query.indices === "string"
+    ? req.query.indices.split(",").map(s => parseInt(s.trim(), 10)).filter(n => Number.isInteger(n) && n >= 0)
+    : undefined;
+  const pick = (arr: typeof stored.editable) => indices ? indices.map(i => arr[i]).filter(Boolean) : arr;
+  const data: Record<string, unknown> = {};
+  if (!kind || kind === "editable") data.editable_slices = pick(stored.editable);
+  if (!kind || kind === "dependency") data.dependency_slices = pick(stored.dependency);
+  if (!kind || kind === "test") data.test_slices = pick(stored.test);
+  res.json({ success: true, data, requestId: res.locals.requestId });
+});
+
 app.use("/mcp", invokeRouter);
 app.use("/mcp", toolsRouter);
 // M71 Slice D — purpose-built /mcp/tool-run for context-fabric-driven loops.
