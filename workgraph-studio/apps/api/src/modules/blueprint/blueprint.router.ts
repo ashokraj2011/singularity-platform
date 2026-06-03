@@ -415,6 +415,11 @@ type LoopExpectedArtifact = {
   description?: string
   required?: boolean
   format?: 'MARKDOWN' | 'TEXT' | 'JSON' | 'CODE'
+  // M102 — optional link to a catalog ArtifactTemplate (id). When set, the
+  // template's section skeleton is injected into the stage prompt so the
+  // agent fills the catalog's structure (e.g. a Design Document's
+  // Context/Architecture/Trade-offs), not just free-form text of the right kind.
+  templateId?: string
   // M82 S1 (2026-05-26) — when true, the operator may overwrite the
   // artifact body from the workbench before approval. The PATCH
   // endpoint (/sessions/:id/artifacts/:id) refuses if no stage in the
@@ -3303,6 +3308,9 @@ function normalizeExpectedArtifacts(input: unknown): LoopExpectedArtifact[] {
         description: typeof raw.description === 'string' && raw.description.trim() ? raw.description.trim() : undefined,
         required: raw.required !== false,
         format,
+        // M102 — carry the catalog template link through so buildLoopStageVars
+        // can inject the template's section skeleton into the agent prompt.
+        templateId: typeof raw.templateId === 'string' && raw.templateId.trim() ? raw.templateId.trim() : undefined,
         // (2026-05-31) Universal editability: every artifact is editable by
         // default while work is in flight. Authors can still opt OUT per kind
         // with { editable: false }. The binding read-only guard is now the
@@ -3563,7 +3571,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   // AND per-execution extraContext from prompt-composer. Replaces inline
   // loopStageTask + loopStageSystemPrompt + the developer/non-developer
   // extraContext block. All three live in StagePromptBinding now.
-  const stageVars = buildLoopStageVars(session, stage, state)
+  const stageVars = await buildLoopStageVars(session, stage, state)
   const resolvedStage = await promptComposerClient.resolveStage({
     stageKey: stagePromptKey(stage),
     agentRole: stage.agentRole ? normalizeAgentRole(stage.agentRole) : undefined,
@@ -5199,7 +5207,7 @@ async function runLoopStageExecute(
   // legacy /execute path called buildLoopStageVars implicitly via the
   // pre-rendered `task` body; the governed path needs the vars spread
   // explicitly because each per-phase prompt picks the ones it needs.
-  const stageVars = buildLoopStageVars(session, stage, state)
+  const stageVars = await buildLoopStageVars(session, stage, state)
   const linkedWorkItem = await workflowWorkItemContext(session.workflowInstanceId)
   const agentTemplateId = attempt.agentTemplateId
   const executeArtifacts = usesRepoContext && snapshot
@@ -5777,11 +5785,47 @@ type LoopArtifactContextRecord = {
   content?: string | null
 }
 
-function buildLoopStageVars(
+// M102 — render the stage's expected-artifact contract for the agent prompt
+// ({{artifacts}}). Each artifact is a line; when it links a catalog
+// ArtifactTemplate (templateId), the template's section skeleton is appended
+// so the agent fills the catalog's structure (e.g. Design Doc → Context /
+// Components / Trade-offs) instead of free-form text of the right kind.
+async function renderExpectedArtifacts(expected: LoopExpectedArtifact[]): Promise<string> {
+  if (expected.length === 0) return '- No explicit artifact contract; produce the stage default artifact pack.'
+  const templateIds = expected.map(a => a.templateId).filter((x): x is string => Boolean(x))
+  const templates = templateIds.length
+    ? await prisma.artifactTemplate.findMany({ where: { id: { in: templateIds } }, select: { id: true, name: true, sections: true } }).catch(() => [])
+    : []
+  const byId = new Map(templates.map(t => [t.id, t]))
+  return expected.map(artifact => {
+    const head = `- ${artifact.title} (${artifact.kind})${artifact.required !== false ? ' [required]' : ''}${artifact.description ? `: ${artifact.description}` : ''}`
+    const tmpl = artifact.templateId ? byId.get(artifact.templateId) : undefined
+    const sections = tmpl && Array.isArray(tmpl.sections) ? tmpl.sections : []
+    if (!tmpl || sections.length === 0) return head
+    const outline = sections.map(raw => {
+      const s = isRecord(raw) ? raw : {}
+      const title = typeof s.title === 'string' ? s.title : 'Section'
+      const req = s.required === true ? ' [required]' : ''
+      let line = `    • ${title}${req}`
+      if (Array.isArray(s.fields) && s.fields.length > 0) {
+        const labels = s.fields.map(f => (isRecord(f) ? (typeof f.label === 'string' ? f.label : typeof f.key === 'string' ? f.key : '') : '')).filter(Boolean)
+        if (labels.length) line += ` — fields: ${labels.join(', ')}`
+      }
+      if (Array.isArray(s.items) && s.items.length > 0) {
+        const labels = s.items.map(i => (isRecord(i) && typeof i.label === 'string' ? i.label : '')).filter(Boolean)
+        if (labels.length) line += ` — checklist: ${labels.join('; ')}`
+      }
+      return line
+    }).join('\n')
+    return `${head}\n  Fill the "${tmpl.name}" template — sections:\n${outline}`
+  }).join('\n')
+}
+
+async function buildLoopStageVars(
   session: ArtifactSession & { artifacts?: LoopArtifactContextRecord[] },
   stage: LoopStageDefinition,
   state: LoopState,
-): Record<string, string> {
+): Promise<Record<string, string>> {
   // M41.2 — operator chat thread for this stage, rendered as chronological
   // lines so prompt-composer's loopDefaultTask can splice it under
   // "Operator guidance:".
@@ -5820,9 +5864,7 @@ function buildLoopStageVars(
   const questions = (stage.questions ?? []).map(question =>
     `- ${question.id}: ${question.question}${question.required ? ' (required)' : ''}`,
   ).join('\n') || '- No configured questions.'
-  const artifacts = (stage.expectedArtifacts ?? []).map(artifact =>
-    `- ${artifact.title} (${artifact.kind})${artifact.required !== false ? ' [required]' : ''}${artifact.description ? `: ${artifact.description}` : ''}`,
-  ).join('\n') || '- No explicit artifact contract; produce the stage default artifact pack.'
+  const artifacts = await renderExpectedArtifacts(stage.expectedArtifacts ?? [])
   const sendBacks = state.reviewEvents
     .filter(event => event.type === 'SEND_BACK' || event.type === 'AUTO_SEND_BACK')
     .slice(-5)
