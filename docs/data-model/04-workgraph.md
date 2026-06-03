@@ -1548,6 +1548,7 @@ EVENT EVENT
     Boolean required 
     Int ordinal 
     Boolean editable 
+    String templateId "❓"
     DateTime createdAt 
     DateTime updatedAt 
     }

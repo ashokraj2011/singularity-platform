@@ -197,6 +197,8 @@ const createArtifactSchema = z.object({
   format: formatEnum.optional(),
   required: z.boolean().optional(),
   editable: z.boolean().optional(),
+  // M102 — optional catalog ArtifactTemplate link (set by the designer picker).
+  templateId: z.string().max(120).nullable().optional(),
 })
 
 const patchArtifactSchema = createArtifactSchema.partial()

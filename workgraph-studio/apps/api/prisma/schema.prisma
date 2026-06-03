@@ -2231,6 +2231,11 @@ model WorkbenchExpectedArtifact {
   // M82 — editable artifacts (operator can override after the agent
   // emits one). Mirrors the legacy LoopExpectedArtifact.editable flag.
   editable    Boolean  @default(false)
+  // M102 — optional link to a catalog ArtifactTemplate (id, e.g.
+  // "tmpl-design-document"). Flows into the JSON loopDefinition so the
+  // runtime injects the template's section skeleton into the agent prompt;
+  // the designer's catalog picker sets it.
+  templateId  String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
