@@ -5908,3 +5908,73 @@ body {
   font: 11px/1.2 ui-monospace, monospace;
   margin-left: 6px;
 }
+
+/* Capability Governance Model — "Governed by" stage panel (G6). */
+.focus-governance-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(125, 211, 252, 0.30);
+  background: rgba(125, 211, 252, 0.06);
+  border-radius: 10px;
+  font-size: 12px;
+}
+.focus-governance-panel.blocked {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.08);
+}
+.focus-governance-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.focus-governance-head strong {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  opacity: 0.85;
+}
+.focus-governance-mode {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.focus-governance-entities {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.focus-governance-entities li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.focus-governance-entities .g-name { font-weight: 600; }
+.focus-governance-entities .g-emode { font-size: 9px; font-weight: 700; opacity: 0.9; }
+.focus-governance-blocked-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #fca5a5;
+}
+.focus-governance-section { display: grid; gap: 3px; }
+.focus-governance-section .g-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.7;
+}
+.focus-governance-section ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.focus-governance-section li,
+.focus-governance-section .g-tools { opacity: 0.92; }

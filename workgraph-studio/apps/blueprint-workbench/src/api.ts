@@ -666,6 +666,18 @@ function unwrap<T>(data: unknown): T[] {
   return []
 }
 
+// Capability Governance Model — the resolved governance overlay shape (subset
+// the workbench renders). Produced by IAM's resolver, proxied by workgraph.
+export type GovernanceOverlay = {
+  overlayHash?: string
+  effectiveMode?: 'ADVISORY' | 'REQUIRED' | 'BLOCKING' | string
+  governingEntities?: { capabilityId: string; name?: string; mode?: string; priority?: number }[]
+  promptLayers?: { layerKey?: string; guidance?: string }[]
+  requiredEvidence?: { evidenceKey?: string; mode?: string; stageKey?: string }[]
+  blockingControls?: { controlKey?: string; reason?: string; sourceCapabilityId?: string }[]
+  toolPolicy?: { blocked?: string[]; approvalRequired?: string[]; allowed?: string[] }
+}
+
 export const api = {
   listSessions: () => request<{ items: BlueprintSession[] }>('/blueprint/sessions'),
   getSession: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}`),
@@ -808,6 +820,20 @@ export const api = {
       replacedPrevious: string | null
     }>(
       `/blueprint/sessions/${encodeURIComponent(sessionId)}/bind-workitem`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  // Capability Governance Model — resolve the governance overlay for a stage
+  // (governed-by entities + active controls). Read-only; returns an empty
+  // overlay when the capability isn't governed.
+  resolveGovernance: (body: {
+    capability_id: string
+    stage_key?: string
+    agent_role?: string
+    node_id?: string
+    workflow_id?: string
+  }) =>
+    request<{ success: boolean; data: GovernanceOverlay }>(
+      `/governance/resolve`,
       { method: 'POST', body: JSON.stringify(body) },
     ),
   // M83 S3.2 — Attach a human-origin verification receipt to the
