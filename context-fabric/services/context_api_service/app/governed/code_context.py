@@ -79,6 +79,16 @@ async def build_code_context_for_governed_turn(
         payload["capability_id"] = capability_id
     if trace_id:
         payload["trace_id"] = trace_id
+    # Thread the governed run_context so mcp-server resolves the SAME
+    # per-workitem worktree a normal tool dispatch uses (workItemCode /
+    # branch / source_*), instead of indexing the base sandbox. The build
+    # route reuses ToolRunSchema's run_context shape and ignores unknown
+    # keys, so forwarding the dict verbatim is safe.
+    if isinstance(run_context, dict):
+        payload["run_context"] = run_context
+        work_item_id = run_context.get("work_item_id") or run_context.get("workItemId")
+        if work_item_id:
+            payload["work_item_id"] = work_item_id
 
     url = f"{base}/mcp/code-context/build"
     headers = {"content-type": "application/json"}

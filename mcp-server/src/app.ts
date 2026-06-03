@@ -9,7 +9,7 @@ import { errorMiddleware } from "./middleware/error";
 import { invokeRouter } from "./mcp/invoke";
 import { tokensRouter } from "./mcp/tokens";
 import { toolsRouter } from "./mcp/tools";
-import { toolRunRouter } from "./mcp/tool-run";
+import { toolRunRouter, ToolRunSchema } from "./mcp/tool-run";
 import { workRouter } from "./mcp/work";
 import { resourcesRouter } from "./mcp/resources";
 import { eventsRouter } from "./mcp/events";
@@ -199,6 +199,12 @@ app.post("/mcp/code-context/build", async (req, res) => {
     include_tests: z.boolean().optional(),
     trace_id: z.string().optional(),
     capability_id: z.string().optional(),
+    // Workspace identity — threaded so the build indexes the SAME per-workitem
+    // worktree a normal tool dispatch uses. Reuses ToolRunSchema's run_context
+    // shape verbatim (single source of truth, both camel/snake casings).
+    work_item_id: z.string().optional(),
+    workspace_id: z.string().optional(),
+    run_context: ToolRunSchema.shape.run_context.optional(),
   }).safeParse(req.body);
   if (!parsed.success) {
     throw new AppError("invalid /mcp/code-context/build payload", 400, "VALIDATION_ERROR", parsed.error.flatten());

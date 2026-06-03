@@ -35,15 +35,47 @@ import {
   listSymbolsInFile,
   type SymbolHit,
 } from "../workspace/ast-index";
+import { withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbox";
+import { ensureWorkspaceSource } from "../workspace/source-materializer";
 import { emitAuditEvent } from "../lib/audit-gov-emit";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Public shapes
 // ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * Workspace-identity + source fields threaded from the governed run_context so
+ * the build indexes the SAME per-workitem worktree a normal tool dispatch uses
+ * (see tool-run.ts). All optional; both camelCase (workgraph-api) and snake_case
+ * (context-fabric) casings are accepted, mirroring ToolRunSchema.run_context.
+ */
+export interface BuildCodeContextRunContext {
+  workItemCode?: string;        work_item_code?: string;
+  branchName?: string;          branch_name?: string;
+  workitemBranch?: string;      workitem_branch?: string;
+  workflowInstanceId?: string;  workflow_instance_id?: string;
+  workspaceRoot?: string;
+  attemptId?: string;           attempt_id?: string;
+  sourceType?: string;          source_type?: string;
+  sourceUri?: string;           source_uri?: string;
+  sourceRef?: string;           source_ref?: string;
+  repoAccess?: boolean;         repo_access?: boolean;
+  traceId?: string;
+  capabilityId?: string;
+}
+
 export interface BuildCodeContextRequest {
   /** User's goal text — what the developer agent is being asked to do. */
   task_text: string;
+  /**
+   * Workspace identity. When present, the build resolves the per-workitem
+   * worktree (workspaceRootForRunContext) + materializes the source, then runs
+   * inside that sandbox — so dependency/test slices come from the right branch.
+   * Absent (legacy callers) ⇒ operate on the default sandbox, unchanged.
+   */
+  work_item_id?: string;
+  workspace_id?: string;
+  run_context?: BuildCodeContextRunContext;
   /**
    * Optional caller-supplied symbol names. When omitted, derived from
    * `task_text` via the cheap keyword-to-symbol heuristic.
@@ -192,13 +224,62 @@ export function expectedTestPathFor(codePath: string): string[] {
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * Build a code-context package for the given task.
+ * Build a code-context package for the given task, optionally inside the
+ * per-workitem worktree named by `req.run_context`. When identity is present we
+ * resolve the workspace root + materialize the source (mirroring tool-run.ts)
+ * and run the build inside that sandbox; otherwise we build against the default
+ * sandbox exactly as before. Thin wrapper around buildPackageInSandbox.
+ */
+export async function buildCodeContextPackage(
+  req: BuildCodeContextRequest,
+): Promise<CodeContextPackage> {
+  const rc = req.run_context;
+  const workItemId = req.work_item_id ?? req.workspace_id;
+  // Legacy path: no workspace identity → operate on the default sandbox.
+  if (!rc && !workItemId) {
+    return buildPackageInSandbox(req);
+  }
+  const workitemBranch = rc?.workitemBranch ?? rc?.workitem_branch;
+  const workspaceRoot = workspaceRootForRunContext({
+    workItemId,
+    workItemCode: rc?.workItemCode ?? rc?.work_item_code,
+    branchName: rc?.branchName ?? rc?.branch_name,
+    workitemBranch,
+    workflowInstanceId: rc?.workflowInstanceId ?? rc?.workflow_instance_id,
+    workspaceRoot: rc?.workspaceRoot,
+    attemptId: rc?.attemptId ?? rc?.attempt_id,
+  });
+  const sourceType = rc?.sourceType ?? rc?.source_type;
+  const sourceUri = rc?.sourceUri ?? rc?.source_uri;
+  const sourceRef = rc?.sourceRef ?? rc?.source_ref;
+  const repoAccessDisabled = rc?.repo_access === false || rc?.repoAccess === false;
+  return withSandboxRoot(workspaceRoot, async () => {
+    // Materialize the repo into this worktree (idempotent; no-op on the warm
+    // path). Best-effort: on failure we still build against whatever is on disk
+    // — ensureIndexFresh inside the inner build re-indexes the present files.
+    if (sourceUri && !repoAccessDisabled) {
+      try {
+        await ensureWorkspaceSource(
+          { sourceType, sourceUri, sourceRef, workitemBranch },
+          { ...rc, workItemId, mcpInvocationId: uuidv4() },
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(`[code-context] ensureWorkspaceSource failed: ${(err as Error).message}`);
+      }
+    }
+    return buildPackageInSandbox(req);
+  });
+}
+
+/**
+ * Build a code-context package against the CURRENT sandbox root.
  *
  * Returns the structured package with slice content + token accounting.
  * Emits an audit event whose payload contains ONLY metadata (hashes, line
  * ranges, token counts) — slice content is NOT in the audit event.
  */
-export async function buildCodeContextPackage(
+async function buildPackageInSandbox(
   req: BuildCodeContextRequest,
 ): Promise<CodeContextPackage> {
   const budget = req.max_token_budget ?? DEFAULT_TOKEN_BUDGET;
