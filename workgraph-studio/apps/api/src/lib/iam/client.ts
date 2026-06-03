@@ -206,6 +206,34 @@ export async function getCapabilityMembers(capabilityId: string, callerToken?: s
   return res.json() as any
 }
 
+export interface IamCapabilityRelationship {
+  source_capability_id: string
+  target_capability_id: string
+  relationship_type: string
+  inheritance_policy?: string
+  metadata?: Record<string, unknown>
+}
+
+/**
+ * M101 (Epic→child) — capability-relationship graph for dynamic child
+ * discovery. Returns rows where `capabilityId` is the SOURCE (IAM
+ * GET /capabilities/:id/relationships). The Epic workflow filters by
+ * `relationship_type` (a convention, e.g. 'decomposes_to') to resolve its
+ * child capabilities. A missing endpoint / no relationships yields an empty
+ * list so callers can fall back to statically-declared targets. Uses the
+ * auto-minted IAM service token when no caller token is supplied (the
+ * workflow-runtime path has no user token).
+ */
+export async function listCapabilityRelationships(
+  capabilityId: string,
+  callerToken?: string,
+): Promise<IamCapabilityRelationship[]> {
+  const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}/relationships`, { token: callerToken }).catch(() => null)
+  if (!res || res.status === 404) return []
+  if (!res.ok) throw new IamUnavailableError(`IAM /capabilities/${capabilityId}/relationships → ${res.status}`)
+  return res.json() as any
+}
+
 /**
  * Resolve users with a given skill key.  IAM doesn't yet model skills natively
  * — when the endpoint is missing, this falls back to an empty list and the
