@@ -466,6 +466,28 @@ model GovernanceOverlaySnapshot {
   @@map("governance_overlay_snapshots")
 }
 
+/// Capability Governance Model — a waiver for a BLOCKING/REQUIRED governance
+/// control. An APPROVED, unexpired waiver's controlKey unblocks that control in
+/// the CF enforcement gate (passed as governance_waivers into the stage).
+model GovernanceWaiver {
+  id                 String    @id @default(uuid())
+  workItemId         String?
+  workflowInstanceId String?
+  workflowNodeId     String?
+  controlKey         String
+  reason             String
+  status             String    @default("REQUESTED") // REQUESTED | APPROVED | REJECTED
+  requestedBy        String?
+  approvedBy         String?
+  expiresAt          DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @default(now()) @updatedAt
+
+  @@index([workItemId])
+  @@index([controlKey])
+  @@map("governance_waivers")
+}
+
 model Department {
   id        String       @id @default(uuid())
   name      String

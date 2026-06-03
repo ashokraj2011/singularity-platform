@@ -116,3 +116,84 @@ governanceRouter.get('/snapshots', async (req, res, next) => {
     res.json(rows)
   } catch (err) { next(err) }
 })
+
+
+// ── Waivers (G4) ─────────────────────────────────────────────────────────────
+
+const waiverRequestSchema = z.object({
+  workItemId: z.string().optional(),
+  workflowInstanceId: z.string().optional(),
+  workflowNodeId: z.string().optional(),
+  controlKey: z.string().min(1),
+  reason: z.string().min(1),
+  expiresAt: z.string().datetime().optional(),
+})
+
+/**
+ * Approved, unexpired waiver controlKeys for a work item — the set the CF
+ * enforcement gate treats as "waived" (passed as `governance_waivers` when a
+ * stage is driven via execute-governed-stage).
+ */
+export async function activeWaiverControlKeys(workItemId: string, now: Date = new Date()): Promise<string[]> {
+  const rows = await prisma.governanceWaiver.findMany({
+    where: { workItemId, status: 'APPROVED', OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+    select: { controlKey: true },
+  })
+  return [...new Set(rows.map(r => r.controlKey))]
+}
+
+governanceRouter.post('/waivers', async (req, res, next) => {
+  try {
+    const parsed = waiverRequestSchema.safeParse(req.body)
+    if (!parsed.success) return res.status(422).json({ error: 'invalid waiver payload', details: parsed.error.flatten() })
+    const b = parsed.data
+    const waiver = await prisma.governanceWaiver.create({
+      data: {
+        workItemId: b.workItemId ?? null,
+        workflowInstanceId: b.workflowInstanceId ?? null,
+        workflowNodeId: b.workflowNodeId ?? null,
+        controlKey: b.controlKey, reason: b.reason, status: 'REQUESTED',
+        requestedBy: (req as { user?: { id?: string } }).user?.id ?? null,
+        expiresAt: b.expiresAt ? new Date(b.expiresAt) : null,
+      },
+    })
+    res.status(201).json(waiver)
+  } catch (err) { next(err) }
+})
+
+// NOTE: waiver approval should be gated to a governing-capability member with the
+// allowed role (per the overlay's waiverRules) via the existing ApprovalRequest —
+// that role check is a follow-up; this records the approver id.
+governanceRouter.post('/waivers/:id/approve', async (req, res, next) => {
+  try {
+    const waiver = await prisma.governanceWaiver.update({
+      where: { id: req.params.id },
+      data: { status: 'APPROVED', approvedBy: (req as { user?: { id?: string } }).user?.id ?? null },
+    })
+    res.json(waiver)
+  } catch (err) { next(err) }
+})
+
+governanceRouter.post('/waivers/:id/reject', async (req, res, next) => {
+  try {
+    const waiver = await prisma.governanceWaiver.update({
+      where: { id: req.params.id },
+      data: { status: 'REJECTED', approvedBy: (req as { user?: { id?: string } }).user?.id ?? null },
+    })
+    res.json(waiver)
+  } catch (err) { next(err) }
+})
+
+governanceRouter.get('/waivers', async (req, res, next) => {
+  try {
+    const where: Prisma.GovernanceWaiverWhereInput = {}
+    if (typeof req.query.workItemId === 'string') where.workItemId = req.query.workItemId
+    if (typeof req.query.controlKey === 'string') where.controlKey = req.query.controlKey
+    if (req.query.active === 'true') {
+      where.status = 'APPROVED'
+      where.OR = [{ expiresAt: null }, { expiresAt: { gt: new Date() } }]
+    }
+    const rows = await prisma.governanceWaiver.findMany({ where, orderBy: { createdAt: 'desc' }, take: 100 })
+    res.json(rows)
+  } catch (err) { next(err) }
+})
