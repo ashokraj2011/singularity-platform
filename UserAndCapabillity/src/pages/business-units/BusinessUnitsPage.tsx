@@ -215,7 +215,7 @@ export function BusinessUnitsPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>Parent Business Unit</Label>
-                <Select value={editParent || 'none'} onValueChange={(v: string) => setEditParent(v === 'none' ? '' : v)}>
+                <Select value={editParent || 'none'} onValueChange={v => setEditParent(v && v !== 'none' ? v : '')}>
                   <SelectTrigger><SelectValue placeholder="None (root)" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">None (root)</SelectItem>
