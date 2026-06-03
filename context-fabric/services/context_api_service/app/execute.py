@@ -1790,6 +1790,12 @@ class GovernedStageRequest(BaseModel):
     # legacy callers omitting this get the unfiltered base policy
     # (back-compat).
     stage_execution_policy: Optional[dict[str, Any]] = None
+    # Capability Governance Model (G4) — resolved governance overlay (from IAM via
+    # workgraph) + the active waiver control keys for this run. When the overlay is
+    # BLOCKING/REQUIRED, the enforcement gate halts promotion with GOVERNANCE_BLOCKED
+    # unless controls are satisfied or waived. Absent/ADVISORY ⇒ no enforcement.
+    governance_overlay: Optional[dict[str, Any]] = None
+    governance_waivers: Optional[list[str]] = None
 
 
 @router.post("/api/v1/execute-governed-stage")
@@ -1875,6 +1881,8 @@ async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
             max_turns=req.max_turns,
             thinking_budget=_thinking_budget or None,
             exec_policy=_exec_policy,
+            governance_overlay=req.governance_overlay,
+            governance_waivers=req.governance_waivers,
         )
     except PolicyNotFoundError as exc:
         raise HTTPException(
