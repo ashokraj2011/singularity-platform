@@ -432,9 +432,15 @@ function AuthGate({ onAuthed }: { onAuthed: () => void }) {
   return (
     <main className="auth-empty">
       <div>
-        <Sparkles size={28} />
+        <span className="auth-mark"><Sparkles size={26} /></span>
+        <span className="auth-kicker">Agentic delivery cockpit</span>
         <h1>Blueprint Workbench</h1>
         <p>This standalone Workbench uses the Workgraph API and needs a browser token from the workflow portal.</p>
+        <div className="auth-feature-grid" aria-hidden>
+          <span>Stages</span>
+          <span>Evidence</span>
+          <span>Approvals</span>
+        </div>
         <button className="primary-action" onClick={() => loginMutation.mutate()} disabled={loginMutation.isPending}>
           {loginMutation.isPending ? <Loader2 className="spin" size={16} /> : <ShieldCheck size={16} />}
           Continue as super admin
