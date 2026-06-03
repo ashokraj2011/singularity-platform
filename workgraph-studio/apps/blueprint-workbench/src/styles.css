@@ -2179,17 +2179,31 @@ code, pre, .console-top code, .terminal-log {
   display: flex;
   justify-content: space-between;
   gap: 10px;
+  /* Allow the id chip to drop onto its own row instead of wrapping
+     mid-string ("DESIGN-LLM-2-4 · required ·" then "from LLM" on the
+     next line) when the question text is long. */
+  flex-wrap: wrap;
   align-items: flex-start;
   margin-bottom: 8px;
 }
 
 .question-card strong {
+  /* Take the full first row when the id chip would otherwise force an
+     ugly mid-string wrap; flex-basis instead of width keeps it shrinkable
+     when the chip does fit. */
+  flex: 1 1 220px;
+  min-width: 0;
   font-size: 13px;
   line-height: 1.35;
 }
 
 .question-card code, .attempt-card code {
-  overflow-wrap: anywhere;
+  /* Keep the metadata chip cohesive — was `overflow-wrap: anywhere`
+     which broke "DESIGN-LLM-2-4 · required · from LLM" across two lines
+     and looked mis-aligned. nowrap + flex-shrink:0 pins it as one chunk
+     that drops to its own row when there's no room. */
+  white-space: nowrap;
+  flex-shrink: 0;
   color: var(--primary);
   font-size: 11px;
 }
