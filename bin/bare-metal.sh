@@ -187,14 +187,15 @@ EOF
     python3 -m venv "$VENV" || { err "venv create failed at $VENV (need python3 -m venv)"; exit 1; }
   fi
   export VIRTUAL_ENV="$VENV"; export PATH="$VENV/bin:$PATH"; hash -r 2>/dev/null || true
-  if ! "$VENV/bin/python" -c "import fastapi, uvicorn, psycopg, asyncpg, greenlet, bcrypt" 2>/dev/null; then
+  if ! "$VENV/bin/python" -c "import fastapi, uvicorn, psycopg, asyncpg, greenlet, bcrypt, z3" 2>/dev/null; then
     info "installing python deps into .venv (iam + context-fabric)…"
     "$VENV/bin/python" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
     "$VENV/bin/python" -m pip install --quiet -e singularity-iam-service \
       || warn "iam-service editable install had warnings — iam-service may not start"
+    # z3-solver: formal-verifier imports `z3`. Without it that service crashes.
     "$VENV/bin/python" -m pip install --quiet \
         fastapi "uvicorn[standard]" httpx pydantic pydantic-settings "python-jose[cryptography]" \
-        "sqlalchemy[asyncio]" greenlet aiosqlite "psycopg[binary]" pyjwt "bcrypt==4.0.1" passlib email-validator \
+        "sqlalchemy[asyncio]" greenlet aiosqlite "psycopg[binary]" pyjwt "bcrypt==4.0.1" passlib email-validator z3-solver \
       || warn "context-fabric pip install had warnings — context services may not start"
   fi
 
@@ -391,9 +392,14 @@ JSON
   boot prompt-composer  "cd agent-and-tools/apps/prompt-composer && PORT=3004 DATABASE_URL=\"$DATABASE_URL_COMPOSER\" DATABASE_URL_RUNTIME_READ=\"$DATABASE_URL_RUNTIME_READ\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" CAPSULE_COMPILE_MODEL_ALIAS=mock JWT_SECRET=\"$JWT_SECRET\" npm run dev"
 
   boot mcp-server       "cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
-  boot context-api      "cd context-fabric/services/context_api_service && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
-  boot context-memory   "cd context-fabric/services/context_memory_service && CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8002 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8002"
-  boot formal-verifier  "cd context-fabric/services/formal_verifier_service && PORT=8010 AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8010"
+  # context-api / context-memory import `context_fabric_shared` (in
+  # context-fabric/shared/) and the `services.` namespace — so run them from the
+  # context-fabric root with shared on PYTHONPATH and a fully-qualified module
+  # path, exactly like llm-gateway. (Booting from the service subdir is why they
+  # were crashing with ModuleNotFoundError.)
+  boot context-api      "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" python3 -m uvicorn services.context_api_service.app.main:app --host 0.0.0.0 --port 8000"
+  boot context-memory   "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8002 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn services.context_memory_service.app.main:app --host 0.0.0.0 --port 8002"
+  boot formal-verifier  "cd context-fabric/services/formal_verifier_service && PORT=8010 CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8010"
   sleep 3
 
   boot workgraph-api    "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" FORMAL_VERIFIER_URL=\"$FORMAL_VERIFIER_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" WORKBENCH_DEFAULT_MODEL_ALIAS=mock AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
