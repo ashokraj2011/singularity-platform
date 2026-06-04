@@ -503,6 +503,10 @@ type GateRecommendation = {
 type StageAttempt = {
   id: string
   stageKey: string
+  // Milestones (big-change mode): the milestone this attempt belongs to.
+  // undefined for non-milestone sessions and for session-level stages
+  // (intake/plan/aggregation). Drives milestone-scoped latestStageAttempt.
+  milestoneId?: string
   stageLabel: string
   agentRole: LoopAgentRole
   agentTemplateId: string
@@ -602,6 +606,37 @@ type WorkbenchDocumentRef = {
   source: 'blueprint-workbench'
 }
 
+// Milestones (big-change mode) — a single Workbench session decomposes one big
+// goal into an ordered series of milestones, each implemented by re-running the
+// per-milestone stages (develop→security→qa) on the SAME branch. State lives in
+// LoopState (session.metadata); legacy/non-milestone sessions have milestone
+// undefined or { enabled:false } and behave exactly as before.
+type Milestone = {
+  id: string                 // 'M1','M2',… — also the StageAttempt.milestoneId tag
+  title: string
+  subGoal: string            // becomes the per-milestone "goal" fed to the stages
+  acceptanceCriteria: string[]
+  dependsOn: string[]        // milestone ids that must complete first (topo order)
+  status: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED'
+  estimate?: string
+}
+
+type MilestoneHistoryEntry = {
+  milestoneId: string
+  status: 'COMPLETED' | 'SKIPPED'
+  completedAt: string
+  finalAttemptIdsByStage: Record<string, string>  // accepted attempt per stage
+  commitShas: string[]                             // commits this milestone landed
+}
+
+type MilestoneState = {
+  enabled: boolean
+  plan: Milestone[]                  // ordered, post-topo-sort
+  currentMilestoneId: string | null  // the active milestone (null before/after)
+  history: MilestoneHistoryEntry[]
+  planArtifactId?: string            // the milestone_plan artifact id
+}
+
 type LoopState = {
   workflowNodeId?: string
   browserRunId?: string
@@ -621,6 +656,9 @@ type LoopState = {
   // by runLoopStageExecute and passed to context-fabric as
   // prior_verification_receipts.
   verificationReceiptHistory?: Array<Record<string, unknown>>
+  // Milestones (big-change mode). Undefined / { enabled:false } => legacy
+  // single-goal loop (unchanged behavior).
+  milestone?: MilestoneState
   intakeDefaults?: z.infer<typeof intakeDefaultsSchema>
   intakeOverrides?: z.infer<typeof intakeOverridesSchema>
   executionConfig?: {
@@ -2696,6 +2734,9 @@ function shapeSession<T extends LoopSessionSeed & { artifacts?: Array<{ payload?
     stageChats: readStageChats(session.metadata),
     finalPack: loop.finalPack,
     executionConfig: loop.executionConfig,
+    // Milestones — surface the milestone cursor/plan so the SPA can render the
+    // MilestoneRail. Omitted entirely for legacy/non-milestone sessions.
+    milestone: loop.milestone,
     artifacts: session.artifacts?.map(shapeArtifact) ?? [],
   }
 }
@@ -2894,6 +2935,51 @@ async function appendVerificationReceiptsToSession(
   })
 }
 
+// Milestones — defensive parse of the persisted milestone state. Returns
+// undefined for legacy sessions (no `milestone` key) so they behave unchanged.
+function readMilestoneState(value: unknown): MilestoneState | undefined {
+  if (!isRecord(value)) return undefined
+  const plan: Milestone[] = (Array.isArray(value.plan) ? value.plan : [])
+    .filter(isRecord)
+    .map((m): Milestone | null => {
+      const id = typeof m.id === 'string' ? m.id.trim() : ''
+      if (!id) return null
+      return {
+        id,
+        title: typeof m.title === 'string' ? m.title : id,
+        subGoal: typeof m.subGoal === 'string' ? m.subGoal : '',
+        acceptanceCriteria: Array.isArray(m.acceptanceCriteria)
+          ? m.acceptanceCriteria.filter((s): s is string => typeof s === 'string')
+          : [],
+        dependsOn: Array.isArray(m.dependsOn)
+          ? m.dependsOn.filter((s): s is string => typeof s === 'string')
+          : [],
+        status: m.status === 'ACTIVE' || m.status === 'COMPLETED' || m.status === 'SKIPPED' ? m.status : 'PENDING',
+        estimate: typeof m.estimate === 'string' ? m.estimate : undefined,
+      }
+    })
+    .filter((m): m is Milestone => m !== null)
+  const history: MilestoneHistoryEntry[] = (Array.isArray(value.history) ? value.history : [])
+    .filter(isRecord)
+    .map((h): MilestoneHistoryEntry => ({
+      milestoneId: typeof h.milestoneId === 'string' ? h.milestoneId : '',
+      status: h.status === 'SKIPPED' ? 'SKIPPED' : 'COMPLETED',
+      completedAt: typeof h.completedAt === 'string' ? h.completedAt : '',
+      finalAttemptIdsByStage: isRecord(h.finalAttemptIdsByStage)
+        ? Object.fromEntries(Object.entries(h.finalAttemptIdsByStage).filter(([, v]) => typeof v === 'string')) as Record<string, string>
+        : {},
+      commitShas: Array.isArray(h.commitShas) ? h.commitShas.filter((s): s is string => typeof s === 'string') : [],
+    }))
+    .filter(h => h.milestoneId)
+  return {
+    enabled: value.enabled === true,
+    plan,
+    currentMilestoneId: typeof value.currentMilestoneId === 'string' ? value.currentMilestoneId : null,
+    history,
+    planArtifactId: typeof value.planArtifactId === 'string' ? value.planArtifactId : undefined,
+  }
+}
+
 function readLoopState(session: LoopSessionSeed): LoopState {
   const metadata = isRecord(session.metadata) ? session.metadata : {}
   const loopDefinition = normalizeLoopDefinition(metadata.loopDefinition, session)
@@ -2923,6 +3009,7 @@ function readLoopState(session: LoopSessionSeed): LoopState {
           .filter((r): r is Record<string, unknown> => isRecord(r))
           .slice(-100)
       : undefined,
+    milestone: readMilestoneState(metadata.milestone),
     executionConfig: readExecutionConfig(metadata.executionConfig),
   }
 }
@@ -2944,6 +3031,7 @@ function stateToMetadata(session: LoopSessionSeed, state: LoopState): Prisma.Inp
     // every subsequent stage's runLoopStageExecute can read it and pass
     // through to mcp-server's priorVerificationReceipts.
     verificationReceiptHistory: state.verificationReceiptHistory,
+    milestone: state.milestone,
     executionConfig: state.executionConfig,
     decisionAnswersUpdatedAt: current.decisionAnswersUpdatedAt,
   } as Prisma.InputJsonValue
@@ -6824,8 +6912,25 @@ function findLoopStage(state: LoopState, stageKey: string): LoopStageDefinition 
   return stage
 }
 
-function latestStageAttempt(state: LoopState, stageKey: string): StageAttempt | undefined {
-  return state.stageAttempts.filter(attempt => attempt.stageKey === stageKey).at(-1)
+function latestStageAttempt(
+  state: LoopState,
+  stageKey: string,
+  // Milestones: default-scope to the ACTIVE milestone so the verification /
+  // code-change / coverage gates never treat a PRIOR milestone's attempt as
+  // "latest". For legacy sessions and session-level stages (intake/plan/
+  // aggregation, which carry no milestoneId) this resolves to undefined =>
+  // identical to the original behavior. When the active milestone has no
+  // attempt for this stage yet, fall back to untagged (session-level) attempts
+  // so session-level stages still resolve while a milestone is active.
+  milestoneId: string | undefined = state.milestone?.enabled
+    ? (state.milestone.currentMilestoneId ?? undefined)
+    : undefined,
+): StageAttempt | undefined {
+  const all = state.stageAttempts.filter(attempt => attempt.stageKey === stageKey)
+  if (milestoneId === undefined) return all.at(-1)
+  const tagged = all.filter(attempt => attempt.milestoneId === milestoneId)
+  if (tagged.length > 0) return tagged.at(-1)
+  return all.filter(attempt => attempt.milestoneId === undefined).at(-1)
 }
 
 function verdictToAttemptStatus(verdict: LoopVerdict): LoopAttemptStatus {
