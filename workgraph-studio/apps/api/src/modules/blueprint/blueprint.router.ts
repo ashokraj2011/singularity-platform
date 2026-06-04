@@ -2974,7 +2974,7 @@ const milestonePlanInputSchema = z.object({
 // Returns null on any failure (caller leaves the cursor unset). Tolerates a
 // ```json fenced body. All milestones come back PENDING; applyMilestonePlan
 // marks the first ACTIVE.
-function parseMilestonePlan(raw: unknown): Milestone[] | null {
+export function parseMilestonePlan(raw: unknown): Milestone[] | null {
   let obj: unknown = raw
   if (typeof raw === 'string') {
     const stripped = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim()
@@ -3013,7 +3013,7 @@ function parseMilestonePlan(raw: unknown): Milestone[] | null {
 
 // Populate the cursor from a parsed plan: marks the first milestone ACTIVE and
 // sets currentMilestoneId. No-op when milestones aren't enabled.
-function applyMilestonePlan(state: LoopState, milestones: Milestone[]): LoopState {
+export function applyMilestonePlan(state: LoopState, milestones: Milestone[]): LoopState {
   if (!state.milestone?.enabled || milestones.length === 0) return state
   const plan = milestones.map((m, i): Milestone => ({ ...m, status: i === 0 ? 'ACTIVE' : 'PENDING' }))
   return { ...state, milestone: { ...state.milestone, plan, currentMilestoneId: plan[0].id } }
@@ -3053,6 +3053,138 @@ async function loadLatestMilestonePlan(sessionId: string): Promise<Milestone[] |
   })
   if (!artifact?.content) return null
   return parseMilestonePlan(artifact.content)
+}
+
+// ── Milestones (P3) — outer-loop classification + advance ─────────────────────
+// Split the loop's stages into three bands:
+//   • session-level   — everything BEFORE the first DEVELOPER stage (intake,
+//                        plan, design+decomposition). Runs once, cursor null.
+//   • per-milestone    — the first DEVELOPER stage through the last stage
+//                        BEFORE the aggregation tail (develop → security → qa).
+//                        Re-runs once per milestone, attempts tagged milestoneId.
+//   • aggregation      — the release/certification tail (release-readiness →
+//                        certification). Runs ONCE at the end, cursor null.
+// The aggregation tail begins at the first DEVOPS-role stage after develop,
+// else the first terminal stage, else nothing (the whole tail is per-milestone).
+// Pure derivation from the loop definition — no persisted markers — so it stays
+// correct across restarts and never desyncs from the live stage graph.
+export function classifyMilestoneStages(loopDef: LoopDefinition): {
+  perMilestone: string[]
+  aggregation: string[]
+  firstPerMilestone: string | null
+  lastPerMilestone: string | null
+  firstAggregation: string | null
+} {
+  const stages = loopDef.stages
+  const role = (s: LoopStageDefinition) => (s.agentRole ?? '').toUpperCase()
+  // 'DEVELOP' is in DEVELOPER but NOT in DEVOPS, so this never matches the
+  // release stage by accident.
+  const firstDevIdx = stages.findIndex(s => role(s).includes('DEVELOP'))
+  if (firstDevIdx < 0) {
+    return { perMilestone: [], aggregation: [], firstPerMilestone: null, lastPerMilestone: null, firstAggregation: null }
+  }
+  let aggStartIdx = stages.findIndex((s, i) => i > firstDevIdx && role(s).includes('DEVOPS'))
+  if (aggStartIdx < 0) {
+    const termIdx = stages.findIndex((s, i) => i > firstDevIdx && s.terminal === true)
+    aggStartIdx = termIdx >= 0 ? termIdx : stages.length
+  }
+  const perMilestone = stages.slice(firstDevIdx, aggStartIdx).map(s => s.key)
+  const aggregation = stages.slice(aggStartIdx).map(s => s.key)
+  return {
+    perMilestone,
+    aggregation,
+    firstPerMilestone: perMilestone[0] ?? null,
+    lastPerMilestone: perMilestone.length ? perMilestone[perMilestone.length - 1] : null,
+    firstAggregation: aggregation[0] ?? null,
+  }
+}
+
+// A milestone is green when every required per-milestone stage has an accepted
+// attempt tagged with THAT milestone id (scoped via latestStageAttempt's
+// milestoneId arg so a prior milestone's green attempt never counts).
+export function isMilestoneGreen(state: LoopState, milestoneId: string): boolean {
+  if (!state.milestone?.enabled) return false
+  const { perMilestone } = classifyMilestoneStages(state.loopDefinition)
+  if (perMilestone.length === 0) return false
+  return perMilestone.every(stageKey => {
+    const stage = state.loopDefinition.stages.find(s => s.key === stageKey)
+    if (stage && stage.required === false) return true
+    const attempt = latestStageAttempt(state, stageKey, milestoneId)
+    return attempt?.verdict === 'PASS' || attempt?.verdict === 'ACCEPTED_WITH_RISK'
+  })
+}
+
+// Every milestone in the plan is terminal (COMPLETED/SKIPPED). Used by the
+// finalize gate so aggregation can only complete once the whole plan is done.
+export function allMilestonesGreen(state: LoopState): boolean {
+  if (!state.milestone?.enabled) return true
+  if (state.milestone.plan.length === 0) return false
+  return state.milestone.plan.every(m => m.status === 'COMPLETED' || m.status === 'SKIPPED')
+}
+
+// Next PENDING milestone whose dependsOn are all satisfied by the already-done
+// set. Plan is topo-sorted, so this is normally just "the next PENDING one".
+export function nextAdvanceableMilestone(ms: MilestoneState): Milestone | undefined {
+  const done = new Set(ms.plan.filter(m => m.status === 'COMPLETED' || m.status === 'SKIPPED').map(m => m.id))
+  return ms.plan.find(m => m.status === 'PENDING' && m.dependsOn.every(d => done.has(d)))
+}
+
+// Complete the active milestone and move the cursor to the next advanceable one
+// (or null when all are done → enter aggregation). Captures the accepted attempt
+// per per-milestone stage into history; commit SHAs are populated in P4. Pure —
+// returns the next MilestoneState and which milestone we advanced to.
+export function advanceMilestone(state: LoopState): { milestone: MilestoneState; advancedTo: string | null } {
+  const ms = state.milestone
+  if (!ms?.enabled || !ms.currentMilestoneId) {
+    return {
+      milestone: ms ?? { enabled: false, plan: [], currentMilestoneId: null, history: [] },
+      advancedTo: ms?.currentMilestoneId ?? null,
+    }
+  }
+  const currentId = ms.currentMilestoneId
+  const { perMilestone } = classifyMilestoneStages(state.loopDefinition)
+  const finalAttemptIdsByStage: Record<string, string> = {}
+  for (const stageKey of perMilestone) {
+    const attempt = latestStageAttempt(state, stageKey, currentId)
+    if (attempt && (attempt.verdict === 'PASS' || attempt.verdict === 'ACCEPTED_WITH_RISK')) {
+      finalAttemptIdsByStage[stageKey] = attempt.id
+    }
+  }
+  const planCompleted = ms.plan.map((m): Milestone => (m.id === currentId ? { ...m, status: 'COMPLETED' } : m))
+  const historyEntry: MilestoneHistoryEntry = {
+    milestoneId: currentId,
+    status: 'COMPLETED',
+    completedAt: new Date().toISOString(),
+    finalAttemptIdsByStage,
+    commitShas: [], // P4 captures real SHAs from this milestone's develop attempts
+  }
+  const nextMs = nextAdvanceableMilestone({ ...ms, plan: planCompleted })
+  const plan = nextMs
+    ? planCompleted.map((m): Milestone => (m.id === nextMs.id ? { ...m, status: 'ACTIVE' } : m))
+    : planCompleted
+  return {
+    milestone: {
+      ...ms,
+      plan,
+      currentMilestoneId: nextMs ? nextMs.id : null,
+      history: [...ms.history, historyEntry],
+    },
+    advancedTo: nextMs ? nextMs.id : null,
+  }
+}
+
+// Compact "what shipped before this milestone" summary for the per-milestone
+// prompt — titles + commit SHAs from history, so the agent builds on prior work.
+function buildPriorMilestonesSummary(state: LoopState): string {
+  const ms = state.milestone
+  if (!ms?.enabled || ms.history.length === 0) return '- No prior milestones completed yet.'
+  return ms.history
+    .map(h => {
+      const m = ms.plan.find(p => p.id === h.milestoneId)
+      const shas = h.commitShas.length ? ` (commits: ${h.commitShas.join(', ')})` : ''
+      return `- ${h.milestoneId} ${m?.title ?? ''}: ${h.status}${shas}`
+    })
+    .join('\n')
 }
 
 // Milestones — defensive parse of the persisted milestone state. Returns
@@ -3770,7 +3902,16 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   if (stageUsesRepoContext(stage) && !snapshot) {
     throw new ValidationError('Create a successful source snapshot before running a repo-aware loop stage')
   }
-  const priorAttempts = state.stageAttempts.filter(attempt => attempt.stageKey === stage.key)
+  // Milestones (P3) — scope per-stage attempt counting / reuse / loop-cap to the
+  // ACTIVE milestone so each milestone gets its OWN maxLoopsPerStage budget and
+  // never reuses (or is loop-capped by) a prior milestone's attempts. When no
+  // milestone is active (legacy, session-level, or aggregation: cursor null)
+  // this counts all attempts of the stage exactly as before.
+  const activeMilestoneId = state.milestone?.enabled ? (state.milestone.currentMilestoneId ?? undefined) : undefined
+  const priorAttempts = state.stageAttempts.filter(attempt =>
+    attempt.stageKey === stage.key &&
+    (activeMilestoneId === undefined ? true : attempt.milestoneId === activeMilestoneId),
+  )
   const agentTemplateId = stage.agentTemplateId ?? defaultAgentTemplateForRole(session, stage.agentRole)
   if (!agentTemplateId) {
     throw new ValidationError(`Stage ${stage.label} needs an agent template before it can run`)
@@ -4882,13 +5023,41 @@ async function saveStageVerdict(
     acceptedAt: accepted ? new Date().toISOString() : item.acceptedAt,
     acceptedById: accepted ? actorId : item.acceptedById,
   } : item)
-  const nextStageKey = accepted ? stage.next ?? null : stage.key
+  let nextStageKey = accepted ? stage.next ?? null : stage.key
   // Milestones (P2) — when the architect stage that owns milestone_plan is
   // accepted and the cursor isn't populated yet, ingest the decomposition.
   let milestoneState = state.milestone
   if (accepted && milestoneState?.enabled && milestoneState.plan.length === 0) {
     const parsed = await loadLatestMilestonePlan(sessionId)
     if (parsed) milestoneState = applyMilestonePlan(state, parsed).milestone
+  }
+  // ── Milestones (P3) — the outer loop ──────────────────────────────────────
+  // When the LAST per-milestone stage (e.g. qa-review) is accepted for the
+  // active milestone, either re-enter the per-milestone sub-loop at its first
+  // stage (more milestones remain — on the SAME branch, so this milestone's
+  // commits carry forward) OR fall through to the aggregation tail (all done →
+  // cursor null, release-readiness/certification run once). This is the only
+  // place the session "completes a milestone" instead of completing the run.
+  const milestoneReviewEvents: ReviewEvent[] = []
+  if (accepted && milestoneState?.enabled && milestoneState.plan.length > 0 && milestoneState.currentMilestoneId) {
+    const cls = classifyMilestoneStages(state.loopDefinition)
+    if (cls.lastPerMilestone && stage.key === cls.lastPerMilestone) {
+      const completedId = milestoneState.currentMilestoneId
+      const completedTitle = milestoneState.plan.find(m => m.id === completedId)?.title ?? completedId
+      const { milestone: advanced, advancedTo } = advanceMilestone({ ...state, milestone: milestoneState })
+      milestoneState = advanced
+      milestoneReviewEvents.push(reviewEvent('MILESTONE_COMPLETED', `Milestone ${completedId} (${completedTitle}) completed.`, actorId, { stageKey: stage.key, milestoneId: completedId }))
+      if (advancedTo) {
+        // Re-enter the per-milestone sub-loop for the next milestone.
+        nextStageKey = cls.firstPerMilestone
+        const nextTitle = milestoneState.plan.find(m => m.id === advancedTo)?.title ?? advancedTo
+        milestoneReviewEvents.push(reviewEvent('MILESTONE_STARTED', `Milestone ${advancedTo} (${nextTitle}) started.`, actorId, { stageKey: cls.firstPerMilestone ?? undefined, milestoneId: advancedTo }))
+      } else {
+        // All milestones complete — let the natural transition (stage.next)
+        // carry into the aggregation tail, now running session-level.
+        milestoneReviewEvents.push(reviewEvent('ALL_MILESTONES_COMPLETED', `All ${milestoneState.plan.length} milestones complete — proceeding to release readiness.`, actorId, { stageKey: stage.key }))
+      }
+    }
   }
   const nextState: LoopState = {
     ...state,
@@ -4906,7 +5075,7 @@ async function saveStageVerdict(
       verdictOrigin: wasMarkDone ? 'mark_done' : 'pass_with_answers',
       feedback: body.feedback,
       missingQuestionsAcceptedWithRisk: missing,
-    })],
+    }), ...milestoneReviewEvents],
   }
   await prisma.blueprintSession.update({
     where: { id: session.id },
@@ -6106,8 +6275,23 @@ async function buildLoopStageVars(
         `- ${answer.questionText ?? answer.questionId}: ${decisionAnswerText(answer) ?? answer.notes ?? 'answered'}${answer.notes ? ` | notes: ${answer.notes}` : ''}`,
       ).join('\n')
     : '- No stakeholder decisions captured yet.'
+  // Milestones (P3) — when a milestone is active, the per-milestone stages work
+  // toward the milestone's subGoal (the big goal is carried as umbrellaGoal so
+  // the agent keeps the end-state in view). Session-level + aggregation stages
+  // (cursor null) keep the original session.goal. priorMilestonesSummary lets
+  // the agent build on what earlier milestones already landed on the branch.
+  const activeMilestone = state.milestone?.enabled && state.milestone.currentMilestoneId
+    ? state.milestone.plan.find(m => m.id === state.milestone?.currentMilestoneId)
+    : undefined
   return {
-    goal: session.goal,
+    goal: activeMilestone ? activeMilestone.subGoal : session.goal,
+    umbrellaGoal: session.goal,
+    milestoneId: activeMilestone?.id ?? '',
+    milestoneTitle: activeMilestone?.title ?? '',
+    milestoneAcceptanceCriteria: activeMilestone
+      ? activeMilestone.acceptanceCriteria.map(c => `- ${c}`).join('\n')
+      : '',
+    priorMilestonesSummary: state.milestone?.enabled ? buildPriorMilestonesSummary(state) : '',
     stageKey: stage.key,
     stageLabel: stage.label,
     agentRole: stage.agentRole ?? '',
