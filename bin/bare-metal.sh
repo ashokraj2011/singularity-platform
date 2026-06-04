@@ -14,10 +14,15 @@
 #   db_host     : 'localhost'
 #   db_port     : '5432'
 #
-# Skips on purpose: llm-gateway, context-memory, metrics-ledger, MinIO,
-# portal, user-and-capability. The demo path (IAM login → Agent Studio →
-# workflow designer/runtime → insights → audit) only needs the services this
-# script boots.
+# Boots: iam, audit-gov, llm-gateway, agent/tool/runtime/composer, mcp-server,
+# context-api, context-memory, formal-verifier, workgraph-api, agent-web,
+# workgraph-web, blueprint-workbench, user-and-capability.
+# Skips on purpose: metrics-ledger (M65: sunset in the singularity stack —
+# savings analytics moved to audit-gov :8500), MinIO, portal.
+#
+# Context Fabric stores run on Postgres (DB: singularity_context_fabric) to
+# match the Docker stack — see CONTEXT_FABRIC_DATABASE_URL below. The legacy
+# SQLite fallback under context-fabric/data/ is no longer used by this script.
 
 set -e
 
@@ -84,6 +89,7 @@ SELECT 'CREATE DATABASE singularity_composer' WHERE NOT EXISTS (SELECT FROM pg_d
 SELECT 'CREATE DATABASE workgraph'            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='workgraph')\gexec
 SELECT 'CREATE DATABASE audit_governance'     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='audit_governance')\gexec
 SELECT 'CREATE DATABASE singularity_iam'      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_iam')\gexec
+SELECT 'CREATE DATABASE singularity_context_fabric' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_context_fabric')\gexec
 SQL
 
   info "enabling pgvector + pgcrypto in 'singularity' (agent-runtime + tool-service)…"
@@ -99,6 +105,15 @@ SQL
     -c "CREATE EXTENSION IF NOT EXISTS vector;" \
     -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>&1 | grep -vE "NOTICE" || \
     { err "Failed to install pgvector on singularity_composer."; exit 1; }
+
+  # Context Fabric shared DB — context-memory stores pgvector embeddings; the
+  # context-api call_log/events_store + memory + (legacy) metrics stores live
+  # here too. Matches the Docker stack's CONTEXT_FABRIC_DATABASE_URL target.
+  info "enabling pgvector + pgcrypto in 'singularity_context_fabric' (context-fabric stores)…"
+  PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d singularity_context_fabric \
+    -c "CREATE EXTENSION IF NOT EXISTS vector;" \
+    -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>&1 | grep -vE "NOTICE" || \
+    { err "Failed to install pgvector on singularity_context_fabric."; exit 1; }
 
   info "enabling pgcrypto in 'singularity_iam'…"
   PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d singularity_iam \
@@ -127,6 +142,10 @@ export DATABASE_URL_COMPOSER="postgresql://${db_user}:${db_pass}@${db_host}:${db
 export DATABASE_URL_RUNTIME_READ="$DATABASE_URL_AGENT_TOOLS"
 export DATABASE_URL_WORKGRAPH="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/workgraph"
 export DATABASE_URL_AUDIT_GOV="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/audit_governance"
+# Context Fabric stores (call_log, events_store, context_memory) — Postgres,
+# matching the Docker stack. The CF services read CONTEXT_FABRIC_DATABASE_URL.
+export DATABASE_URL_CONTEXT_FABRIC="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_context_fabric"
+export CONTEXT_FABRIC_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
 
 export JWT_SECRET="dev-secret-change-in-prod-min-32-chars!!"
 export AUTH_PROVIDER="iam"
@@ -139,6 +158,8 @@ export AGENT_RUNTIME_URL="http://localhost:3003"
 export TOOL_SERVICE_URL="http://localhost:3002"
 export AGENT_SERVICE_URL="http://localhost:3001"
 export CONTEXT_FABRIC_URL="http://localhost:8000"
+export CONTEXT_MEMORY_URL="http://localhost:8002"
+export FORMAL_VERIFIER_URL="http://localhost:8010"
 export MCP_SERVER_URL="http://localhost:7100"
 export MCP_BEARER_TOKEN="demo-bearer-token-must-be-min-16-chars"
 
@@ -260,6 +281,7 @@ JSON
   ensure_install workgraph-studio         pnpm
   ensure_install audit-governance-service npm
   ensure_install mcp-server               npm
+  ensure_install UserAndCapabillity       npm
 
   # ── 4. Push schemas + seed ────────────────────────────────────────────────
   info "applying agent-runtime schema…"
@@ -342,21 +364,26 @@ JSON
   boot prompt-composer  "cd agent-and-tools/apps/prompt-composer && PORT=3004 DATABASE_URL=\"$DATABASE_URL_COMPOSER\" DATABASE_URL_RUNTIME_READ=\"$DATABASE_URL_RUNTIME_READ\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" CAPSULE_COMPILE_MODEL_ALIAS=mock JWT_SECRET=\"$JWT_SECRET\" npm run dev"
 
   boot mcp-server       "cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
-  boot context-api      "cd context-fabric/services/context_api_service && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+  boot context-api      "cd context-fabric/services/context_api_service && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+  boot context-memory   "cd context-fabric/services/context_memory_service && CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8002 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8002"
+  boot formal-verifier  "cd context-fabric/services/formal_verifier_service && PORT=8010 AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8010"
   sleep 3
 
-  boot workgraph-api    "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" WORKBENCH_DEFAULT_MODEL_ALIAS=mock AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
+  boot workgraph-api    "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" FORMAL_VERIFIER_URL=\"$FORMAL_VERIFIER_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" WORKBENCH_DEFAULT_MODEL_ALIAS=mock AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
 
   # PORT=3000 forces Next.js to fail loudly on a port collision rather than
   # silently auto-bumping to 3001 (which would dodge the SPA proxy rewrites).
   boot agent-web        "cd agent-and-tools/web        && PORT=3000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" npm run dev"
   boot workgraph-web    "cd workgraph-studio/apps/web  && VITE_API_BASE=http://localhost:8080 VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" VITE_IAM_LOGIN_URL=http://localhost:5175/login VITE_AUTO_LOGIN=0 npm run dev -- --host 0.0.0.0 --port 5174"
   boot blueprint-workbench "cd workgraph-studio/apps/blueprint-workbench && npm run dev -- --host 0.0.0.0 --port 5176"
+  # IAM admin SPA — hosts the capability-governance authoring UI (G7–G9).
+  boot user-and-capability "cd UserAndCapabillity && VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" npm run dev -- --host 0.0.0.0 --port 5175"
 
   echo
   ok "all services booted — run '$0 smoke' in ~30s to verify, then open:"
   echo "    http://localhost:5174    (workgraph: runs, insights, designer)"
   echo "    http://localhost:5176    (blueprint workbench: staged agent loop)"
+  echo "    http://localhost:5175    (user-and-capability: IAM admin + governance authoring)"
   echo "    http://localhost:3000    (agent-web: Agent Studio, /audit, /cost)"
   echo "    http://localhost:8100    (real IAM API; admin@singularity.local / Admin1234!)"
   echo
@@ -377,7 +404,7 @@ cmd_down() {
     fi
   done < "$PID_FILE"
   # Hard sweep — anything still hogging our ports gets terminated.
-  for p in 3000 3001 3002 3003 3004 5174 5176 7100 8000 8080 8100 8101 8500; do
+  for p in 3000 3001 3002 3003 3004 5174 5175 5176 7100 8000 8002 8010 8080 8100 8101 8500; do
     pids=$(lsof -ti :"$p" 2>/dev/null || true)
     [ -n "$pids" ] && kill $pids 2>/dev/null && dim "  freed port $p"
   done
@@ -392,9 +419,12 @@ cmd_smoke() {
     "http://localhost:8500/health" \
     "http://localhost:7100/health" \
     "http://localhost:8000/health" \
+    "http://localhost:8002/health" \
+    "http://localhost:8010/health" \
     "http://localhost:8080/health" \
     "http://localhost:3000/api/runtime/agents/templates?scope=common&limit=3" \
     "http://localhost:5174/" \
+    "http://localhost:5175/" \
     "http://localhost:5176/" \
   ; do
     code=$(curl -s -o /dev/null -w "%{http_code}" "$url" --max-time 3)

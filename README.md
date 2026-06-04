@@ -188,7 +188,7 @@ Operators wanting reproducible deployments author a
 
 ## Bare-metal alternative — single Postgres, no Docker
 
-For dev machines that already have Postgres and don't want Docker. Focused on the demo path; runs real IAM, agent-and-tools services, Workgraph API/web, audit-governance, context-api, and the local Agent Execution Runtime. It skips the optional context-fabric sibling services, MinIO, portal, and UserAndCapabillity SPA.
+For dev machines that already have Postgres and don't want Docker. Runs real IAM, agent-and-tools services, Workgraph API/web, blueprint-workbench, audit-governance, context-api, context-memory, formal-verifier, the local Agent Execution Runtime, and the UserAndCapabillity SPA (IAM admin + capability-governance authoring). Context Fabric stores run on Postgres (DB `singularity_context_fabric`), matching the Docker stack. It skips metrics-ledger (sunset; savings moved to audit-gov), MinIO, and portal.
 
 ### Just run the script (recommended)
 
