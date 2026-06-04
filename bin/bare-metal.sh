@@ -172,6 +172,32 @@ EOF
   # shellcheck source=/dev/null
   . "$ENV_FILE"
 
+  # ── Python venv (PEP 668 / Homebrew-safe) ─────────────────────────────────
+  # Modern Python (Homebrew/3.12+) marks the system env "externally managed",
+  # so a system-wide `pip install` is refused. Create a repo-local .venv and
+  # put it first on PATH so every python3/uvicorn below resolves to it. Deps
+  # are PINNED where fresh resolution otherwise pulls versions the platform
+  # never tested against:
+  #   • greenlet            — async SQLAlchemy needs it; not auto-pulled on new Pythons
+  #   • bcrypt==4.0.1       — passlib 1.7.x breaks on bcrypt 4.1+/5.x ("72 bytes")
+  #   • sqlalchemy[asyncio] — pulls greenlet on supported Pythons
+  VENV="$ROOT/.venv"
+  if [ ! -x "$VENV/bin/python" ]; then
+    info "creating python venv at .venv…"
+    python3 -m venv "$VENV" || { err "venv create failed at $VENV (need python3 -m venv)"; exit 1; }
+  fi
+  export VIRTUAL_ENV="$VENV"; export PATH="$VENV/bin:$PATH"; hash -r 2>/dev/null || true
+  if ! "$VENV/bin/python" -c "import fastapi, uvicorn, psycopg, asyncpg, greenlet, bcrypt" 2>/dev/null; then
+    info "installing python deps into .venv (iam + context-fabric)…"
+    "$VENV/bin/python" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
+    "$VENV/bin/python" -m pip install --quiet -e singularity-iam-service \
+      || warn "iam-service editable install had warnings — iam-service may not start"
+    "$VENV/bin/python" -m pip install --quiet \
+        fastapi "uvicorn[standard]" httpx pydantic pydantic-settings "python-jose[cryptography]" \
+        "sqlalchemy[asyncio]" greenlet aiosqlite "psycopg[binary]" pyjwt "bcrypt==4.0.1" passlib email-validator \
+      || warn "context-fabric pip install had warnings — context services may not start"
+  fi
+
   mkdir -p "$ROOT/.singularity"
   if [ ! -f "$ROOT/.singularity/llm-providers.json" ]; then
     cat > "$ROOT/.singularity/llm-providers.json" <<'JSON'
@@ -282,6 +308,7 @@ JSON
   ensure_install audit-governance-service npm
   ensure_install mcp-server               npm
   ensure_install UserAndCapabillity       npm
+  ensure_install singularity-portal       npm
 
   # ── 4. Push schemas + seed ────────────────────────────────────────────────
   info "applying agent-runtime schema…"
@@ -315,20 +342,20 @@ JSON
     && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx prisma generate >/dev/null 2>&1 ) \
     || warn "workgraph schema push had warnings"
 
-  # ── 5. Python deps (best-effort) ──────────────────────────────────────────
-  if command -v pip >/dev/null 2>&1; then
-    info "checking python deps for IAM…"
-    python3 -c "import fastapi, uvicorn, sqlalchemy, asyncpg, jwt" 2>/dev/null || \
-      python3 -m pip install --quiet -e singularity-iam-service || \
-        warn "pip install failed — iam-service may not start"
+  # Seed workgraph demo data — agents, the SDLC + bug-fix workbench workflows,
+  # sample workflows, routing policies, and a completed blueprint session with
+  # artifacts (prisma/seed.ts → seed-demo-workflows.ts). Mirrors what Docker
+  # seeds; without this the designer/workbench come up empty.
+  info "seeding workgraph demo workflows + artifacts…"
+  ( cd workgraph-studio/apps/api \
+    && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npm run prisma:seed >/dev/null 2>&1 ) \
+    || warn "workgraph prisma:seed had warnings — run it manually: (cd workgraph-studio/apps/api && DATABASE_URL=\"$DATABASE_URL_WORKGRAPH\" npm run prisma:seed)"
 
-    info "checking python deps for context-api…"
-    python3 -c "import fastapi, uvicorn, httpx" 2>/dev/null || \
-      python3 -m pip install --quiet fastapi uvicorn httpx pydantic-settings \
-                          "python-jose[cryptography]" sqlalchemy aiosqlite \
-        || warn "pip install failed — context-api may not start"
-  else
-    warn "pip not found — Python services will only work if deps are already installed"
+  # ── 5. Python deps ─────────────────────────────────────────────────────────
+  # Installed into .venv above (PEP 668-safe). Verify the import surface is
+  # present so a failure here is loud rather than a mid-boot crash.
+  if ! "$VENV/bin/python" -c "import fastapi, uvicorn, sqlalchemy, asyncpg, greenlet, bcrypt, jwt, psycopg" 2>/dev/null; then
+    warn "some python deps are missing in .venv — iam/context services may not start (re-run 'up', or pip install into .venv)"
   fi
 
   # ── 6. Boot ───────────────────────────────────────────────────────────────
@@ -378,11 +405,14 @@ JSON
   boot blueprint-workbench "cd workgraph-studio/apps/blueprint-workbench && npm run dev -- --host 0.0.0.0 --port 5176"
   # IAM admin SPA — hosts the capability-governance authoring UI (G7–G9).
   boot user-and-capability "cd UserAndCapabillity && VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" npm run dev -- --host 0.0.0.0 --port 5175"
+  # Unified operations/launcher portal (Vite; dev script binds 5180 itself).
+  boot portal "cd singularity-portal && VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" npm run dev -- --host 0.0.0.0"
 
   echo
   ok "all services booted — run '$0 smoke' in ~30s to verify, then open:"
   echo "    http://localhost:5174    (workgraph: runs, insights, designer)"
   echo "    http://localhost:5176    (blueprint workbench: staged agent loop)"
+  echo "    http://localhost:5180    (portal: unified operations center + launcher)"
   echo "    http://localhost:5175    (user-and-capability: IAM admin + governance authoring)"
   echo "    http://localhost:3000    (agent-web: Agent Studio, /audit, /cost)"
   echo "    http://localhost:8100    (real IAM API; admin@singularity.local / Admin1234!)"
@@ -404,7 +434,7 @@ cmd_down() {
     fi
   done < "$PID_FILE"
   # Hard sweep — anything still hogging our ports gets terminated.
-  for p in 3000 3001 3002 3003 3004 5174 5175 5176 7100 8000 8002 8010 8080 8100 8101 8500; do
+  for p in 3000 3001 3002 3003 3004 5174 5175 5176 5180 7100 8000 8002 8010 8080 8100 8101 8500; do
     pids=$(lsof -ti :"$p" 2>/dev/null || true)
     [ -n "$pids" ] && kill $pids 2>/dev/null && dim "  freed port $p"
   done
@@ -426,6 +456,7 @@ cmd_smoke() {
     "http://localhost:5174/" \
     "http://localhost:5175/" \
     "http://localhost:5176/" \
+    "http://localhost:5180/" \
   ; do
     code=$(curl -s -o /dev/null -w "%{http_code}" "$url" --max-time 3)
     if [ "$code" = "200" ] || [ "$code" = "304" ]; then
