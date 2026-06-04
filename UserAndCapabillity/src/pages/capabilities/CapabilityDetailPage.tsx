@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, ExternalLink, GitBranch, ShieldCheck, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { StatusBadge } from '@/components/StatusBadge'
-import { useCapability, useCapabilityRelationships, useCapabilityMembers, useAddCapabilityRelationship, useAddCapabilityMember } from '@/hooks/useCapabilities'
+import { useCapability, useCapabilities, useCapabilityRelationships, useCapabilityMembers, useAddCapabilityRelationship, useAddCapabilityMember } from '@/hooks/useCapabilities'
 import { capabilityTypeColor, capabilityTypeLabel, formatDate } from '@/lib/format'
 import { GovernanceTab } from './GovernanceTab'
 import type { RelationshipType, InheritancePolicy } from '@/types'
@@ -28,6 +28,19 @@ export function CapabilityDetailPage() {
   const { data: members } = useCapabilityMembers(capabilityId!)
   const addRel = useAddCapabilityRelationship(capabilityId!)
   const addMember = useAddCapabilityMember(capabilityId!)
+  // Resolve capability ids → names for the Relationships list (keyed on both
+  // the UUID `id` and the business `capability_id`, since edges store either).
+  const { data: allCaps } = useCapabilities({ size: 500 })
+  const capName = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of allCaps?.items ?? []) {
+      if (c.id) m.set(c.id, c.name)
+      if (c.capability_id) m.set(c.capability_id, c.name)
+    }
+    if (cap) { m.set(cap.id, cap.name); m.set(cap.capability_id, cap.name) }
+    return m
+  }, [allCaps, cap])
+  const nameOf = (id: string) => capName.get(id) ?? id
 
   const [relOpen, setRelOpen] = useState(false)
   const [memberOpen, setMemberOpen] = useState(false)
@@ -162,9 +175,9 @@ export function CapabilityDetailPage() {
               <p className="text-sm text-gray-400 text-center py-8">No relationships</p>
             ) : rels.map(r => (
               <div key={r.id} className="px-4 py-3 flex items-center gap-3">
-                <span className="font-mono text-xs bg-gray-100 px-2 py-0.5 rounded text-gray-700">{r.source_capability_id}</span>
+                <span className="text-sm bg-gray-100 px-2 py-0.5 rounded text-gray-800" title={r.source_capability_id}>{nameOf(r.source_capability_id)}</span>
                 <span className="text-xs text-indigo-600 font-medium">{r.relationship_type}</span>
-                <span className="font-mono text-xs bg-gray-100 px-2 py-0.5 rounded text-gray-700">{r.target_capability_id}</span>
+                <span className="text-sm bg-gray-100 px-2 py-0.5 rounded text-gray-800" title={r.target_capability_id}>{nameOf(r.target_capability_id)}</span>
                 <span className="text-xs text-gray-400 ml-auto">{r.inheritance_policy}</span>
               </div>
             ))}
