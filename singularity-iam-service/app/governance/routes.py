@@ -17,6 +17,7 @@ from app.governance.schemas import (
     UpdateGovernedByRequest,
 )
 from app.governance.resolver import resolve_overlay, MODE_RANK, SCOPE_RANK
+from app.governance.policy_docs import enrich_overlay_prompt_layers
 from app.governance.authz import (
     assert_governance_authority as _assert_governance_authority,
     validate_contributions as _validate_contributions,
@@ -346,6 +347,8 @@ async def resolve_governance(
         "agentRole": body.agent_role, "nodeId": body.node_id, "riskLevel": body.risk_level,
     }
     overlay = resolve_overlay(ctx, attachments, datetime.now(timezone.utc))
+    # G9 — live-fetch any promptLayer that links to a markdown doc (sourceUrl).
+    await enrich_overlay_prompt_layers(overlay)
     overlay["overlayId"] = "gov_overlay_" + uuid.uuid4().hex[:16]
     overlay["resolvedAt"] = datetime.now(timezone.utc).isoformat()
     return {"success": True, "data": overlay}

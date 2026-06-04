@@ -35,13 +35,50 @@ type FormState = {
   target_key: string
   priority: string
   waiver_allowed: boolean
+  // G9 — primary policy content, edited as link-or-type (becomes the
+  // `policy` promptLayer). The rest of contributions stays as advanced JSON.
+  policyMode: 'type' | 'link'
+  policyText: string
+  policySourceUrl: string
   contributions: string
 }
 
 const EMPTY_FORM: FormState = {
   governing_capability_id: '', mode: 'ADVISORY', scope: 'ALL',
   target_kind: '', target_key: '', priority: '100', waiver_allowed: false,
-  contributions: '{\n  "promptLayers": [],\n  "requiredEvidence": []\n}',
+  policyMode: 'type', policyText: '', policySourceUrl: '',
+  contributions: '{\n  "requiredEvidence": []\n}',
+}
+
+type Contrib = Record<string, unknown>
+
+// Pull the primary `policy` promptLayer out of contributions for structured
+// editing; the remaining keys (+ any other promptLayers) go to advanced JSON.
+function splitContributions(contrib: Contrib): {
+  policyMode: 'type' | 'link'; policyText: string; policySourceUrl: string; rest: Contrib
+} {
+  const layers = Array.isArray(contrib.promptLayers) ? contrib.promptLayers as Contrib[] : []
+  const policy = layers.find(l => l?.layerKey === 'policy') ?? layers[0]
+  const others = layers.filter(l => l !== policy)
+  const rest: Contrib = { ...contrib }
+  if (others.length) rest.promptLayers = others
+  else delete rest.promptLayers
+  return {
+    policyMode: policy?.sourceUrl ? 'link' : 'type',
+    policyText: typeof policy?.text === 'string' ? policy.text : '',
+    policySourceUrl: typeof policy?.sourceUrl === 'string' ? policy.sourceUrl : '',
+    rest,
+  }
+}
+
+// Build the `policy` promptLayer from the link-or-type fields (null when empty).
+function buildPolicyLayer(f: FormState): Contrib | null {
+  if (f.policyMode === 'link') {
+    const url = f.policySourceUrl.trim()
+    return url ? { layerKey: 'policy', order: 10, title: 'Policy', sourceUrl: url } : null
+  }
+  const text = f.policyText.trim()
+  return text ? { layerKey: 'policy', order: 10, title: 'Policy', text } : null
 }
 
 export function GovernanceTab({ capabilityId }: { capabilityId: string }) {
@@ -73,11 +110,13 @@ export function GovernanceTab({ capabilityId }: { capabilityId: string }) {
   }
   function openEdit(a: GovernanceAttachment) {
     setEditing(a)
+    const split = splitContributions(a.contributions ?? {})
     setForm({
       governing_capability_id: a.governing_capability_id, mode: a.mode, scope: a.scope,
       target_kind: a.target_kind ?? '', target_key: a.target_key ?? '',
       priority: String(a.priority), waiver_allowed: a.waiver_allowed,
-      contributions: JSON.stringify(a.contributions ?? {}, null, 2),
+      policyMode: split.policyMode, policyText: split.policyText, policySourceUrl: split.policySourceUrl,
+      contributions: JSON.stringify(split.rest, null, 2),
     })
     setShowJson(false); setError(null); setOpen(true)
   }
@@ -85,7 +124,14 @@ export function GovernanceTab({ capabilityId }: { capabilityId: string }) {
   async function submit() {
     setError(null)
     if (jsonError) { setError(`contributions: ${jsonError}`); return }
-    const contributions = form.contributions.trim() ? JSON.parse(form.contributions) : {}
+    const rest: Contrib = form.contributions.trim() ? JSON.parse(form.contributions) : {}
+    // Merge the structured policy layer back in front of any advanced layers.
+    const policyLayer = buildPolicyLayer(form)
+    const existing = Array.isArray(rest.promptLayers) ? rest.promptLayers as Contrib[] : []
+    const promptLayers = [...(policyLayer ? [policyLayer] : []), ...existing]
+    const contributions: Contrib = { ...rest }
+    if (promptLayers.length) contributions.promptLayers = promptLayers
+    else delete contributions.promptLayers
     const scoped = form.scope !== 'ALL'
     const common = {
       mode: form.mode, scope: form.scope,
@@ -232,6 +278,38 @@ export function GovernanceTab({ capabilityId }: { capabilityId: string }) {
               </p>
             )}
 
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label>Policy content</Label>
+                <div className="flex gap-1 text-xs">
+                  <button type="button"
+                    className={`px-2 py-0.5 rounded ${form.policyMode === 'type' ? 'bg-[#00843D] text-white' : 'border border-gray-300 text-gray-600'}`}
+                    onClick={() => set('policyMode', 'type')}>Type inline</button>
+                  <button type="button"
+                    className={`px-2 py-0.5 rounded ${form.policyMode === 'link' ? 'bg-[#00843D] text-white' : 'border border-gray-300 text-gray-600'}`}
+                    onClick={() => set('policyMode', 'link')}>Link to doc</button>
+                </div>
+              </div>
+              {form.policyMode === 'link' ? (
+                <>
+                  <Input placeholder="https://…/policy.md"
+                    value={form.policySourceUrl} onChange={e => set('policySourceUrl', e.target.value)} />
+                  <p className="text-xs text-gray-400">
+                    Markdown doc, <strong>fetched live</strong> at resolve time (SSRF-guarded) — the agent
+                    sees the current doc each run.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <textarea
+                    className="w-full h-32 text-sm rounded-md border border-gray-300 p-2"
+                    placeholder="Write the policy guidance the agent should follow (markdown)…"
+                    value={form.policyText} onChange={e => set('policyText', e.target.value)} />
+                  <p className="text-xs text-gray-400">Injected verbatim as a prompt layer.</p>
+                </>
+              )}
+            </div>
+
             <div>
               <button type="button" className="text-xs text-gray-500 underline"
                 onClick={() => setShowJson(s => !s)}>
@@ -244,8 +322,8 @@ export function GovernanceTab({ capabilityId }: { capabilityId: string }) {
                     value={form.contributions} onChange={e => set('contributions', e.target.value)} />
                   {jsonError && <p className="text-xs text-red-600">JSON: {jsonError}</p>}
                   <p className="text-xs text-gray-400">
-                    keys: promptLayers · requiredEvidence · verifierAgents · approvalGates ·
-                    waiverRules · blockingControls · toolPolicy
+                    keys: requiredEvidence · verifierAgents · approvalGates · waiverRules ·
+                    blockingControls · toolPolicy (the primary policy text is set above)
                   </p>
                 </div>
               )}
