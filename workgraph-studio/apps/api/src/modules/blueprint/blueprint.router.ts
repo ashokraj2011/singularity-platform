@@ -248,6 +248,9 @@ const createSessionSchema = z.object({
   phaseId: z.string().optional(),
   loopDefinition: z.unknown().optional(),
   gateMode: z.enum(['manual', 'auto']).default('manual'),
+  // Milestones (big-change mode): decompose the goal into an ordered milestone
+  // series and run each as a chained sub-loop on the same branch.
+  milestonesMode: z.boolean().optional(),
   intakeDefaults: intakeDefaultsSchema,
   intakeOverrides: intakeOverridesSchema,
 }).merge(executionSettingsSchema).transform(input => ({
@@ -968,7 +971,12 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
     const governanceMode = body.governanceMode
       ?? await resolveWorkbenchGovernanceMode(resolvedWorkflowInstanceId)
     const agentTemplateIds = resolveSessionAgentTemplateIds(body, initialLoopDefinition)
-    const loopDefinition = hydrateLoopAgentTemplates(initialLoopDefinition, agentTemplateIds)
+    const hydratedLoopDefinition = hydrateLoopAgentTemplates(initialLoopDefinition, agentTemplateIds)
+    // Milestones — add the milestone_plan expected artifact to the design stage
+    // so the architect decomposes the goal before the per-milestone stages run.
+    const loopDefinition = body.milestonesMode
+      ? withMilestonePlanArtifact(hydratedLoopDefinition)
+      : hydratedLoopDefinition
     const now = new Date().toISOString()
     const reviewEvents: ReviewEvent[] = [{
       id: crypto.randomUUID(),
@@ -1028,6 +1036,11 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         maxPromptChars: body.maxPromptChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxPromptChars,
         maxLayerChars: body.maxLayerChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxLayerChars,
       },
+      // Milestones — seed the cursor when launched in milestones mode. The plan
+      // is populated once the Architect emits the milestone_plan artifact.
+      milestone: body.milestonesMode
+        ? { enabled: true, plan: [], currentMilestoneId: null, history: [] }
+        : undefined,
     }
     const session = await prisma.blueprintSession.create({
       data: {
@@ -2935,6 +2948,113 @@ async function appendVerificationReceiptsToSession(
   })
 }
 
+// ── Milestones: decomposition (P2) ──────────────────────────────────────────
+const MILESTONE_PLAN_INSTRUCTIONS = [
+  'MILESTONES MODE — decompose this big goal into an ordered series of milestones.',
+  'Produce a `milestone_plan` artifact (format JSON) with EXACTLY this shape:',
+  '{ "version": 1, "milestones": [ { "id": "M1", "title": "short title", "subGoal": "what this milestone implements", "acceptanceCriteria": ["criterion", ...], "dependsOn": [] }, ... ] }',
+  'Rules: ids are M1, M2, … in order; each milestone builds on the previous, so dependsOn lists only EARLIER ids (no cycles, no self-refs); 2–8 milestones; each subGoal must be independently implementable AND verifiable on the shared branch.',
+].join('\n')
+
+const milestoneInputSchema = z.object({
+  id: z.string().trim().min(1).max(40),
+  title: z.string().trim().min(3).max(200),
+  subGoal: z.string().trim().min(8).max(4000),
+  acceptanceCriteria: z.array(z.string().trim().min(1)).min(1).max(20),
+  dependsOn: z.array(z.string().trim()).max(20).default([]),
+  estimate: z.string().trim().max(80).optional(),
+})
+const milestonePlanInputSchema = z.object({
+  version: z.literal(1).optional(),
+  milestones: z.array(milestoneInputSchema).min(1).max(20),
+})
+
+// Parse + validate a milestone_plan artifact body into an ordered Milestone[].
+// Topo-sorts by dependsOn; rejects dup ids, unknown/self refs, and cycles.
+// Returns null on any failure (caller leaves the cursor unset). Tolerates a
+// ```json fenced body. All milestones come back PENDING; applyMilestonePlan
+// marks the first ACTIVE.
+function parseMilestonePlan(raw: unknown): Milestone[] | null {
+  let obj: unknown = raw
+  if (typeof raw === 'string') {
+    const stripped = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim()
+    try { obj = JSON.parse(stripped) } catch { return null }
+  }
+  const parsed = milestonePlanInputSchema.safeParse(obj)
+  if (!parsed.success) return null
+  const ms = parsed.data.milestones
+  const ids = new Set(ms.map(m => m.id))
+  if (ids.size !== ms.length) return null
+  for (const m of ms) for (const d of m.dependsOn) if (!ids.has(d) || d === m.id) return null
+  const byId = new Map(ms.map(m => [m.id, m]))
+  const indeg = new Map(ms.map(m => [m.id, m.dependsOn.length]))
+  const queue = ms.filter(m => (indeg.get(m.id) ?? 0) === 0).map(m => m.id)
+  const order: string[] = []
+  while (queue.length) {
+    const id = queue.shift() as string
+    order.push(id)
+    for (const m of ms) {
+      if (!m.dependsOn.includes(id)) continue
+      const n = (indeg.get(m.id) ?? 0) - 1
+      indeg.set(m.id, n)
+      if (n === 0) queue.push(m.id)
+    }
+  }
+  if (order.length !== ms.length) return null
+  return order.map((id): Milestone => {
+    const m = byId.get(id) as z.infer<typeof milestoneInputSchema>
+    return {
+      id: m.id, title: m.title, subGoal: m.subGoal,
+      acceptanceCriteria: m.acceptanceCriteria, dependsOn: m.dependsOn,
+      status: 'PENDING', estimate: m.estimate,
+    }
+  })
+}
+
+// Populate the cursor from a parsed plan: marks the first milestone ACTIVE and
+// sets currentMilestoneId. No-op when milestones aren't enabled.
+function applyMilestonePlan(state: LoopState, milestones: Milestone[]): LoopState {
+  if (!state.milestone?.enabled || milestones.length === 0) return state
+  const plan = milestones.map((m, i): Milestone => ({ ...m, status: i === 0 ? 'ACTIVE' : 'PENDING' }))
+  return { ...state, milestone: { ...state.milestone, plan, currentMilestoneId: plan[0].id } }
+}
+
+// Inject the milestone_plan expected artifact into the architect/design stage
+// (the stage right before the first DEVELOPER stage) so the architect produces
+// it and the stage gate enforces it. Idempotent.
+function withMilestonePlanArtifact(loopDef: LoopDefinition): LoopDefinition {
+  const devIdx = loopDef.stages.findIndex(s => (s.agentRole ?? '').toUpperCase() === 'DEVELOPER')
+  const targetIdx = devIdx > 0 ? devIdx - 1 : Math.max(0, loopDef.stages.length - 1)
+  const stages = loopDef.stages.map((stage, i) => {
+    if (i !== targetIdx) return stage
+    const existing = stage.expectedArtifacts ?? []
+    if (existing.some(a => a.kind === 'milestone_plan')) return stage
+    return {
+      ...stage,
+      expectedArtifacts: [
+        ...existing,
+        {
+          kind: 'milestone_plan', title: 'Milestone plan',
+          description: MILESTONE_PLAN_INSTRUCTIONS,
+          required: true, format: 'JSON' as const, editable: true,
+        },
+      ],
+    }
+  })
+  return { ...loopDef, stages }
+}
+
+// Load + parse the latest milestone_plan artifact for a session (null if none
+// or unparseable). Used to ingest the architect's decomposition into the cursor.
+async function loadLatestMilestonePlan(sessionId: string): Promise<Milestone[] | null> {
+  const artifact = await prisma.blueprintArtifact.findFirst({
+    where: { sessionId, kind: 'milestone_plan' },
+    orderBy: { createdAt: 'desc' },
+  })
+  if (!artifact?.content) return null
+  return parseMilestonePlan(artifact.content)
+}
+
 // Milestones — defensive parse of the persisted milestone state. Returns
 // undefined for legacy sessions (no `milestone` key) so they behave unchanged.
 function readMilestoneState(value: unknown): MilestoneState | undefined {
@@ -3754,6 +3874,10 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   const attempt: StageAttempt = {
     id: crypto.randomUUID(),
     stageKey: stage.key,
+    // Milestones — tag the attempt with the active milestone so the
+    // milestone-aware latestStageAttempt / gates scope correctly. undefined
+    // for legacy sessions and session-level stages (cursor null).
+    milestoneId: state.milestone?.enabled ? (state.milestone.currentMilestoneId ?? undefined) : undefined,
     stageLabel: stage.label,
     agentRole: stage.agentRole,
     agentTemplateId,
@@ -4759,8 +4883,16 @@ async function saveStageVerdict(
     acceptedById: accepted ? actorId : item.acceptedById,
   } : item)
   const nextStageKey = accepted ? stage.next ?? null : stage.key
+  // Milestones (P2) — when the architect stage that owns milestone_plan is
+  // accepted and the cursor isn't populated yet, ingest the decomposition.
+  let milestoneState = state.milestone
+  if (accepted && milestoneState?.enabled && milestoneState.plan.length === 0) {
+    const parsed = await loadLatestMilestonePlan(sessionId)
+    if (parsed) milestoneState = applyMilestonePlan(state, parsed).milestone
+  }
   const nextState: LoopState = {
     ...state,
+    milestone: milestoneState,
     decisionAnswers: mergedAnswers,
     currentStageKey: nextStageKey,
     stageAttempts: attempts,
