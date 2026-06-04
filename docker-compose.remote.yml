@@ -1,0 +1,61 @@
+# docker-compose.remote.yml — REMOTE side of a hybrid laptop deployment.
+#
+# The LLM gateway + mcp-server run on the operator's LAPTOP; this stack runs
+# elsewhere. See docs/hybrid-laptop-deployment.md. Layer it over the base:
+#
+#   JWT_SECRET=<shared> MCP_BEARER_TOKEN=<shared> LAPTOP_HOST=<laptop-addr> \
+#     docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d <services...>
+#
+# Env it reads:
+#   JWT_SECRET        one shared secret across ALL services + the laptop. The
+#                     base compose already reads ${JWT_SECRET}; just export it so
+#                     the laptop bridge device token (signed with it) validates.
+#                     (No per-service override needed here for JWT_SECRET.)
+#   MCP_BEARER_TOKEN  shared mcp-server auth token (>=16 chars, >=32 in prod).
+#   LAPTOP_HOST       laptop address reachable from this host, e.g. a Tailscale
+#                     100.x.y.z. DIRECT-HTTP mode only.
+#
+# ── BRIDGE MODE (preferred) ──────────────────────────────────────────────────
+# You do NOT need this file. The laptop connects OUTBOUND over WebSocket and
+# runs route to it via prefer_laptop=true; nothing remote dials the laptop.
+# Just `export JWT_SECRET=<shared>` and bring up the base compose.
+#
+# ── DIRECT-HTTP MODE ─────────────────────────────────────────────────────────
+# Use this file only when there is NO bridge and remote services must call the
+# laptop over a private tunnel. It re-points the six MCP consumers at the laptop.
+
+services:
+  context-api:
+    environment:
+      MCP_SERVER_URL: http://${LAPTOP_HOST:?set LAPTOP_HOST for direct mode}:7100
+      MCP_DEFAULT_BASE_URL: http://${LAPTOP_HOST}:7100
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?set a shared MCP_BEARER_TOKEN}
+      MCP_DEFAULT_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
+      # Full-local LLM (option a): also send the platform's own LLM calls to the
+      # laptop gateway instead of a remote one. Uncomment to route everything local.
+      # LLM_GATEWAY_URL: http://${LAPTOP_HOST}:8001
+
+  workgraph-api:
+    environment:
+      MCP_SERVER_URL: http://${LAPTOP_HOST}:7100
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
+
+  agent-service:
+    environment:
+      MCP_SERVER_URL: http://${LAPTOP_HOST}:7100
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
+
+  tool-service:
+    environment:
+      MCP_SERVER_URL: http://${LAPTOP_HOST}:7100
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
+
+  agent-runtime:
+    environment:
+      MCP_SERVER_URL: http://${LAPTOP_HOST}:7100
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
+
+  prompt-composer:
+    environment:
+      MCP_SERVER_URL: http://${LAPTOP_HOST}:7100
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}

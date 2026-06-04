@@ -147,39 +147,21 @@ docker compose up -d mcp-server     # (profile 'full') — or run on the host pe
 
 ### 4.2 Remote side (Docker)
 
-Run the rest of the stack with your normal compose, plus a small **override** for the split. Create `docker-compose.remote.yml`:
-
-```yaml
-# docker-compose.remote.yml — apply with: docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d
-services:
-  # --- shared identity: the bridge device token is signed with this ---
-  iam-service:        { environment: { JWT_SECRET: ${JWT_SECRET} } }
-  context-api:        { environment: { JWT_SECRET: ${JWT_SECRET} } }
-  workgraph-api:      { environment: { JWT_SECRET: ${JWT_SECRET} } }
-
-  # --- DIRECT-HTTP MODE ONLY: re-point MCP at the laptop. (Omit in Bridge mode.) ---
-  context-api:
-    environment:
-      MCP_SERVER_URL: http://<laptop>:7100
-      MCP_DEFAULT_BASE_URL: http://<laptop>:7100
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
-      MCP_DEFAULT_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
-      # option (a) full-local LLM:
-      # LLM_GATEWAY_URL: http://<laptop>:8001
-  workgraph-api:   { environment: { MCP_SERVER_URL: http://<laptop>:7100, MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN} } }
-  agent-service:   { environment: { MCP_SERVER_URL: http://<laptop>:7100, MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN} } }
-  tool-service:    { environment: { MCP_SERVER_URL: http://<laptop>:7100, MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN} } }
-  agent-runtime:   { environment: { MCP_SERVER_URL: http://<laptop>:7100, MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN} } }
-  prompt-composer: { environment: { MCP_SERVER_URL: http://<laptop>:7100, MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN} } }
-```
+Run the rest of the stack with your normal compose, plus the ready-made override [**`docker-compose.remote.yml`**](../docker-compose.remote.yml) (at the repo root). It re-points the six MCP consumers at the laptop for **Direct-HTTP mode**; in **Bridge mode** you don't need it at all (just export `JWT_SECRET`). The base compose already reads `${JWT_SECRET}`, so a single shared export covers identity for every service + the laptop bridge token.
 
 ```bash
-# On the remote host — do NOT start the laptop services there:
+# On the remote host — do NOT start the laptop services there.
+# Bridge mode: drop -f docker-compose.remote.yml and just `export JWT_SECRET=<shared>`.
+# Direct mode: set LAPTOP_HOST + MCP_BEARER_TOKEN (the override reads them).
+export JWT_SECRET=<shared> MCP_BEARER_TOKEN=<shared> LAPTOP_HOST=<laptop-addr>
+
 docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d \
   at-postgres wg-postgres wg-minio iam-service context-api workgraph-api workgraph-web \
   blueprint-workbench user-and-capability prompt-composer agent-runtime agent-service \
   tool-service agent-web formal-verifier prompt-compressor portal edge-gateway
 ```
+
+The override re-points `MCP_SERVER_URL`/`MCP_DEFAULT_BASE_URL` + `MCP_BEARER_TOKEN` on `context-api`, `workgraph-api`, `agent-service`, `tool-service`, `agent-runtime`, and `prompt-composer`. For **full-local LLM** (option a, §2.3), uncomment the `LLM_GATEWAY_URL` line in the file.
 
 > In **Bridge mode**, the remote `MCP_SERVER_URL` can stay at its default — it's only a fallback. The real routing happens over the WebSocket when `prefer_laptop=true`.
 
