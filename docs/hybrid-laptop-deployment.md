@@ -8,6 +8,8 @@ This guide has two halves you can mix:
 
 > The original planning notes are in [`office-hybrid-deployment-config.md`](./office-hybrid-deployment-config.md); this is the complete, runnable version.
 
+> ⭐ **Do I need the laptop's IP? No — in bridge mode (the default), the laptop *registers itself*.** `mcp-server` dials **out** to Context Fabric over a WebSocket and is routed to by the run's **user** (not its address), so the platform never needs a laptop IP or an inbound port. A laptop IP (`LAPTOP_HOST`) is required **only** for the Direct-HTTP fallback (§2.2) — i.e. when you deliberately don't use the bridge.
+
 ---
 
 ## 1. What runs where
@@ -73,12 +75,12 @@ For a true "AI only on my laptop" posture, use **(a)** or **(c)**.
 
 ## 3. The cross-service env vars you re-point
 
-When services are split across hosts, these are the only vars that must change from their compose defaults. **Defaults assume one host**; override them on the remote side.
+When services are split across hosts, these are the vars that change from their compose defaults. **Defaults assume one host.** In **bridge mode you set only `JWT_SECRET`** (shared, everywhere) — plus `MCP_BEARER_TOKEN` if you rotated it. The `MCP_*_URL` / `LAPTOP_HOST` rows below are **Direct-HTTP only** (skip them in bridge mode).
 
 | Env var | Default (single host) | Set to (split) | On which services |
 |---|---|---|---|
-| `MCP_SERVER_URL` | `http://mcp-server:7100` | **Bridge:** leave as a dummy/default. **Direct:** `http://<laptop>:7100` | context-api, workgraph-api, agent-service, tool-service, agent-runtime, prompt-composer, agent-web |
-| `MCP_DEFAULT_BASE_URL` | `http://mcp-server:7100` | same as above | context-api |
+| `MCP_SERVER_URL` · *Direct only* | `http://mcp-server:7100` | **Bridge:** leave default (unused). **Direct:** `http://<laptop>:7100` | context-api, workgraph-api, agent-service, tool-service, agent-runtime, prompt-composer, agent-web |
+| `MCP_DEFAULT_BASE_URL` · *Direct only* | `http://mcp-server:7100` | same as above | context-api |
 | `MCP_BEARER_TOKEN` / `MCP_DEFAULT_BEARER_TOKEN` | `demo-bearer-token-…` | one strong shared token (≥16 chars, ≥32 in prod) | all of the above + laptop mcp-server |
 | `LLM_GATEWAY_URL` | `http://llm-gateway:8001` | laptop mcp-server: `http://localhost:8001`. Remote (option a): `http://<laptop>:8001` | mcp-server (+ remote LLM consumers if option a) |
 | `LAPTOP_BRIDGE_URL` | — | `wss://<remote-context-api>/api/laptop-bridge/connect` | laptop mcp-server (bridge mode) |
