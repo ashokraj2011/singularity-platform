@@ -360,6 +360,10 @@ export type GateRecommendation = {
 export type StageAttempt = {
   id: string
   stageKey: string
+  // Milestones — the milestone this attempt belongs to (undefined for
+  // legacy / session-level / aggregation attempts). Used to scope the rail's
+  // green check to the active milestone.
+  milestoneId?: string
   stageLabel: string
   agentRole: Stage
   agentTemplateId: string
@@ -426,6 +430,46 @@ export type FinalPack = {
   finalPackArtifactId?: string
   finalPackConsumableId?: string
   finalPackConsumableVersion?: number
+  // Milestones — present only for milestonesMode runs; one entry per milestone.
+  milestones?: Array<{
+    id: string
+    title: string
+    status: string
+    commitShas: string[]
+    stages: Array<{ stageKey: string; attemptId: string }>
+  }>
+}
+
+// ── Milestones (big-change mode) ─────────────────────────────────────────────
+// A milestonesMode run decomposes one big goal into an ordered series; each
+// milestone runs the per-milestone stages (develop→security→qa) on the SAME
+// branch, then a single final certification covers the whole plan.
+export type MilestoneStatus = 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'SKIPPED'
+
+export type Milestone = {
+  id: string
+  title: string
+  subGoal: string
+  acceptanceCriteria: string[]
+  dependsOn: string[]
+  status: MilestoneStatus
+  estimate?: string
+}
+
+export type MilestoneHistoryEntry = {
+  milestoneId: string
+  status: 'COMPLETED' | 'SKIPPED'
+  completedAt: string
+  finalAttemptIdsByStage: Record<string, string>
+  commitShas: string[]
+}
+
+export type MilestoneState = {
+  enabled: boolean
+  plan: Milestone[]
+  currentMilestoneId: string | null
+  history: MilestoneHistoryEntry[]
+  planArtifactId?: string
 }
 
 export type BlueprintSession = {
@@ -453,6 +497,8 @@ export type BlueprintSession = {
   // M41.2 — Operator-to-agent conversation threads keyed by stage.
   stageChats?: Record<string, StageChatMessage[]>
   finalPack?: FinalPack
+  // Milestones — the outer-loop cursor. undefined for legacy/non-milestone runs.
+  milestone?: MilestoneState
   executionConfig?: WorkbenchExecutionConfig
   snapshots: BlueprintSnapshot[]
   stageRuns: BlueprintStageRun[]
@@ -509,6 +555,10 @@ export type CreateSessionRequest = {
   phaseId?: string
   loopDefinition?: LoopDefinition
   gateMode?: GateMode
+  // Milestones — when true, the architect/design stage decomposes the goal into
+  // an editable milestone_plan and the run executes each milestone in sequence
+  // on one branch before a single final certification.
+  milestonesMode?: boolean
   intakeDefaults?: {
     goal?: string
     sourceType?: SourceType
@@ -866,6 +916,9 @@ export const api = {
   sendBack: (id: string, stageKey: string, body: { targetStageKey: string; reason: string; requiredChanges?: string; blockingQuestions?: string[]; annotations?: SendBackAnnotation[] }) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/send-back`, { method: 'POST', body: JSON.stringify(body) }),
   finalize: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/finalize`, { method: 'POST' }),
+  // Milestones — explicit operator advance of the cursor (boundary card).
+  advanceMilestone: (id: string, milestoneId: string) =>
+    request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/milestones/${encodeURIComponent(milestoneId)}/advance`, { method: 'POST' }),
   approve: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/approve`, { method: 'POST' }),
   saveDecisionAnswers: (id: string, answers: DecisionAnswer[]) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/decision-answers`, { method: 'POST', body: JSON.stringify({ answers }) }),
   // M41.2 — Stage Chat.

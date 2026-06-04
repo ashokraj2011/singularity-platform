@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Singularity — Capability Governance & Policy Model</title>
+  
+  <!-- Google Fonts: Outfit & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <style>
+    /* -------------------------------------------------------------
+       PREMIUM DARK / CYBER SYSTEM TOKENS
+       ------------------------------------------------------------- */
+    :root {
+      --bg-main: #06090f;
+      --bg-darker: #020408;
+      --bg-gradient: radial-gradient(circle at 50% 0%, #0d1933 0%, #06090f 80%);
+      --bg-card: rgba(13, 23, 48, 0.45);
+      --bg-card-hover: rgba(18, 32, 66, 0.65);
+      --border-color: rgba(255, 255, 255, 0.06);
+      --border-highlight: rgba(0, 242, 254, 0.3);
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      
+      /* Glowing Cyber Accents */
+      --accent-cyan: #00f2fe;
+      --accent-cyan-glow: rgba(0, 242, 254, 0.4);
+      --accent-indigo: #7f5af0;
+      --accent-indigo-glow: rgba(127, 90, 240, 0.4);
+      --accent-purple: #ae3ec9;
+      --accent-purple-glow: rgba(174, 62, 201, 0.4);
+      --accent-green: #2ecc71;
+      --accent-amber: #f59e0b;
+      --accent-red: #ff5e62;
+      
+      --font-sans: 'Outfit', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+      
+      --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      --shadow-glow: 0 0 30px rgba(0, 242, 254, 0.15);
+      --shadow-soft: 0 15px 35px rgba(0, 0, 0, 0.6);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-main);
+      background-image: var(--bg-gradient);
+      background-attachment: fixed;
+      font-family: var(--font-sans);
+      color: var(--text-main);
+      line-height: 1.6;
+      padding: 2rem 4rem;
+      min-height: 100vh;
+    }
+
+    a {
+      color: var(--accent-cyan);
+      text-decoration: none;
+      transition: var(--transition);
+    }
+    a:hover {
+      text-shadow: 0 0 8px var(--accent-cyan-glow);
+    }
+
+    h1, h2, h3, h4 {
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    /* -------------------------------------------------------------
+       LAYOUT STRUCTURE
+       ------------------------------------------------------------- */
+    .header {
+      text-align: center;
+      margin-bottom: 3rem;
+      position: relative;
+    }
+    .header h1 {
+      font-size: 2.8rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, #fff 30%, var(--accent-cyan) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.5rem;
+    }
+    .header p {
+      font-size: 1.1rem;
+      color: var(--text-muted);
+    }
+    .back-link {
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.95rem;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      border: 1px solid var(--border-color);
+      padding: 0.5rem 1rem;
+      border-radius: 999px;
+      background: var(--bg-card);
+    }
+    .back-link:hover {
+      border-color: var(--accent-cyan);
+      background: var(--bg-card-hover);
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 7fr 5fr;
+      gap: 2.5rem;
+      align-items: start;
+    }
+
+    /* Card Panels */
+    .panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 2rem;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      box-shadow: var(--shadow-soft);
+      transition: var(--transition);
+      position: relative;
+      overflow: hidden;
+    }
+    .panel::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--border-highlight), transparent);
+    }
+    .panel:hover {
+      border-color: rgba(0, 242, 254, 0.15);
+    }
+
+    .panel-title {
+      font-size: 1.4rem;
+      margin-bottom: 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      padding-bottom: 0.75rem;
+    }
+    .panel-title span.badge {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      background: rgba(0, 242, 254, 0.1);
+      border: 1px solid var(--border-highlight);
+      color: var(--accent-cyan);
+    }
+
+    /* -------------------------------------------------------------
+       INTERACTIVE SVG DIAGRAM (ER & POLICY FLOW)
+       ------------------------------------------------------------- */
+    .diagram-container {
+      width: 100%;
+      height: 520px;
+      background: var(--bg-darker);
+      border: 1px solid rgba(255, 255, 255, 0.03);
+      border-radius: 12px;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .arch-svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* SVG Interactive States */
+    .node-box {
+      cursor: pointer;
+      transition: var(--transition);
+    }
+    .node-box rect {
+      fill: #0c1223;
+      stroke: var(--border-color);
+      stroke-width: 1.5px;
+      transition: var(--transition);
+      rx: 8px;
+    }
+    .node-box:hover rect, .node-box.active rect {
+      fill: #111a33;
+      stroke: var(--accent-cyan);
+      filter: drop-shadow(0px 0px 8px var(--accent-cyan-glow));
+    }
+    .node-box.active[data-type="policy"] rect {
+      stroke: var(--accent-purple);
+      filter: drop-shadow(0px 0px 8px var(--accent-purple-glow));
+    }
+    .node-box.active[data-type="capability"] rect {
+      stroke: var(--accent-indigo);
+      filter: drop-shadow(0px 0px 8px var(--accent-indigo-glow));
+    }
+    .node-box text.title {
+      font-family: var(--font-sans);
+      font-weight: 600;
+      font-size: 13px;
+      fill: #fff;
+    }
+    .node-box text.subtitle {
+      font-family: var(--font-sans);
+      font-size: 10px;
+      fill: var(--text-muted);
+    }
+
+    .link-line {
+      fill: none;
+      stroke: rgba(255, 255, 255, 0.08);
+      stroke-width: 2px;
+      transition: var(--transition);
+    }
+    .link-line.active {
+      stroke: var(--accent-cyan);
+      stroke-dasharray: 6 4;
+      animation: dash 15s linear infinite;
+    }
+    .link-line.active-purple {
+      stroke: var(--accent-purple);
+      stroke-dasharray: 6 4;
+      animation: dash 15s linear infinite;
+    }
+
+    @keyframes dash {
+      to {
+        stroke-dashoffset: -200;
+      }
+    }
+
+    /* -------------------------------------------------------------
+       STEP BY STEP FLOW CONTROLLER
+       ------------------------------------------------------------- */
+    .steps-container {
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+    }
+    .step-card {
+      background: rgba(255, 255, 255, 0.015);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      cursor: pointer;
+      transition: var(--transition);
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+    }
+    .step-card:hover {
+      border-color: rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .step-card.active {
+      border-color: var(--accent-cyan);
+      background: rgba(0, 242, 254, 0.04);
+      box-shadow: 0 0 15px rgba(0, 242, 254, 0.05);
+    }
+    .step-num {
+      font-size: 0.9rem;
+      font-weight: 800;
+      font-family: var(--font-mono);
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-muted);
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: var(--transition);
+    }
+    .step-card.active .step-num {
+      background: var(--accent-cyan);
+      color: var(--bg-main);
+    }
+    .step-content h4 {
+      font-size: 1rem;
+      margin-bottom: 0.25rem;
+      transition: var(--transition);
+    }
+    .step-card.active .step-content h4 {
+      color: var(--accent-cyan);
+    }
+    .step-content p {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    /* Detailed View for active step */
+    .details-box {
+      margin-top: 1.5rem;
+      background: #020408;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      border-radius: 10px;
+      padding: 1.25rem;
+    }
+    .details-box h5 {
+      font-size: 0.95rem;
+      color: var(--accent-cyan);
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .details-box p {
+      font-size: 0.88rem;
+      color: var(--text-main);
+      margin-bottom: 0.75rem;
+    }
+    .code-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .code-list li {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .code-list li::before {
+      content: '↪';
+      color: var(--accent-cyan);
+    }
+
+    /* -------------------------------------------------------------
+       DATABASE SCHEMA & CODE TABS
+       ------------------------------------------------------------- */
+    .tech-details {
+      grid-column: span 2;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2rem;
+      margin-top: 1rem;
+    }
+
+    .proto-badge {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      background: rgba(255, 255, 255, 0.04);
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--text-main);
+    }
+
+    .policy-rule-box {
+      background: rgba(127, 90, 240, 0.05);
+      border: 1px solid rgba(127, 90, 240, 0.2);
+      border-radius: 12px;
+      padding: 1.5rem;
+    }
+    .policy-rule-box h4 {
+      color: #7f5af0;
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      padding-bottom: 0.5rem;
+    }
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-family: var(--font-sans);
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      padding: 0.4rem 0.8rem;
+      border-radius: 6px;
+      transition: var(--transition);
+    }
+    .tab-btn:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .tab-btn.active {
+      color: var(--accent-cyan);
+      background: rgba(0, 242, 254, 0.08);
+    }
+
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+
+    code.snippet {
+      display: block;
+      background: #020408;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      overflow-x: auto;
+      color: #c9d1d9;
+      margin-top: 0.75rem;
+    }
+
+    /* Pulse/Dot effect */
+    .live-dot {
+      width: 8px;
+      height: 8px;
+      background-color: var(--accent-cyan);
+      border-radius: 50%;
+      display: inline-block;
+      box-shadow: 0 0 8px var(--accent-cyan);
+      animation: pulse 1.8s infinite;
+    }
+    .live-dot.purple {
+      background-color: var(--accent-purple);
+      box-shadow: 0 0 8px var(--accent-purple);
+    }
+
+    @keyframes pulse {
+      0% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(0, 242, 254, 0.7);
+      }
+      70% {
+        transform: scale(1);
+        box-shadow: 0 0 0 8px rgba(0, 242, 254, 0);
+      }
+      100% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(0, 242, 254, 0);
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <a href="agentic-handbook.html" class="back-link">
+      <span>←</span> Back to Handbook
+    </a>
+    <h1>Singularity Governance &amp; Policy Model</h1>
+    <p>How Capabilities, Parent Capabilities, and Governance Policies restrict and allow Agent actions.</p>
+  </div>
+
+  <div class="main-grid">
+    
+    <!-- LEFT PANEL: THE INTERACTIVE SVG DIAGRAM -->
+    <div class="panel">
+      <h2 class="panel-title">
+        <span>Capability &amp; Governance Overlay map</span>
+        <span class="badge">ERD</span>
+      </h2>
+      
+      <div class="diagram-container">
+        <!-- SVG DIAGRAM -->
+        <svg class="arch-svg" viewBox="0 0 750 480">
+          <!-- DEFINE GLOW FILTERS -->
+          <defs>
+            <filter id="glow-cyan" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="6" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
+            </filter>
+            <filter id="glow-indigo" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="6" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
+            </filter>
+            <filter id="glow-purple" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="6" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
+            </filter>
+          </defs>
+
+          <!-- CONNECTIONS / LINES -->
+          <!-- 1. Parent Capability -> Child Capability (Self-Relation) -->
+          <path id="link-parent-child" class="link-line" d="M 120 120 L 120 220" />
+          <path id="link-parent-child-flow" class="link-line" d="M 120 120 L 120 220" />
+          
+          <!-- 2. Child Capability -> Work Item -->
+          <path id="link-child-wi" class="link-line" d="M 200 275 L 340 275" />
+          <path id="link-child-wi-flow" class="link-line" d="M 200 275 L 340 275" />
+
+          <!-- 3. Work Item -> Workflow Node (Executes Stage) -->
+          <path id="link-wi-node" class="link-line" d="M 425 220 L 425 155" />
+          <path id="link-wi-node-flow" class="link-line" d="M 425 220 L 425 155" />
+
+          <!-- 4. Workflow Node -> Stage Policy (Checks allowed tools) -->
+          <path id="link-node-policy" class="link-line" d="M 510 110 L 580 110" />
+          <path id="link-node-policy-flow" class="link-line" d="M 510 110 L 580 110" />
+          
+          <!-- 5. Capability -> Governance Overlay Snapshot -->
+          <path id="link-cap-overlay" class="link-line" d="M 200 110 L 250 110 L 250 370 L 340 370" />
+          <path id="link-cap-overlay-flow" class="link-line" d="M 200 110 L 250 110 L 250 370 L 340 370" />
+
+          <!-- 6. Governance Overlay -> Governance Waiver (Overrides blocking) -->
+          <path id="link-overlay-waiver" class="link-line" d="M 510 370 L 580 370" />
+          <path id="link-overlay-waiver-flow" class="link-line" d="M 510 370 L 580 370" />
+
+          <!-- NODES GROUP -->
+          
+          <!-- NODE 1: PARENT CAPABILITY (Top Left) -->
+          <g id="node-parent-cap" class="node-box" data-component="parent-capability" data-type="capability">
+            <rect x="20" y="30" width="180" height="90" />
+            <text class="title" x="35" y="60">Parent Capability</text>
+            <text class="subtitle" x="35" y="80">e.g. Repository / System slug</text>
+            <text class="subtitle" x="35" y="95">scopes overall policies</text>
+          </g>
+
+          <!-- NODE 2: CHILD CAPABILITY (Middle Left) -->
+          <g id="node-child-cap" class="node-box" data-component="child-capability" data-type="capability">
+            <rect x="20" y="220" width="180" height="110" />
+            <text class="title" x="35" y="250">Child Capability</text>
+            <text class="subtitle" x="35" y="270">e.g. specific feature task</text>
+            <text class="subtitle" x="35" y="285">containsACharacter operator</text>
+            <text class="subtitle" x="35" y="300">inherits parent policies</text>
+          </g>
+
+          <!-- NODE 3: WORK ITEM (Middle Center) -->
+          <g id="node-workitem" class="node-box" data-component="work-item" data-type="process">
+            <rect x="340" y="220" width="170" height="110" />
+            <text class="title" x="355" y="250">Work Item</text>
+            <text class="subtitle" x="355" y="270">originType: CAPABILITY_LOCAL</text>
+            <text class="subtitle" x="355" y="285">binds parentCapabilityId</text>
+            <text class="subtitle" x="355" y="300">references targets</text>
+          </g>
+
+          <!-- NODE 4: WORKFLOW STAGE NODE (Top Center) -->
+          <g id="node-wf-node" class="node-box" data-component="workflow-node" data-type="process">
+            <rect x="340" y="60" width="170" height="95" />
+            <text class="title" x="355" y="85">Workflow Node</text>
+            <text class="subtitle" x="355" y="105">Executes Stage (e.g. ACT)</text>
+            <text class="subtitle" x="355" y="120">resolved via orchestrator</text>
+          </g>
+
+          <!-- NODE 5: STAGE EXECUTION POLICY (Top Right) -->
+          <g id="node-stage-policy" class="node-box" data-component="stage-policy" data-type="policy">
+            <rect x="580" y="60" width="150" height="100" />
+            <text class="title" x="595" y="85">Stage Policy</text>
+            <text class="subtitle" x="595" y="105">tool_policy: MUTATION</text>
+            <text class="subtitle" x="595" y="120">context_policy: CODE</text>
+            <text class="subtitle" x="595" y="135">auto_localize &amp; auto_verify</text>
+          </g>
+
+          <!-- NODE 6: GOVERNANCE OVERLAY SNAPSHOT (Bottom Center) -->
+          <g id="node-overlay" class="node-box" data-component="overlay-snapshot" data-type="policy">
+            <rect x="340" y="330" width="170" height="90" />
+            <text class="title" x="355" y="355">Governance Overlay</text>
+            <text class="subtitle" x="355" y="375">snapshot resolved overlay</text>
+            <text class="subtitle" x="355" y="390">PNT-in-time constraints</text>
+          </g>
+
+          <!-- NODE 7: GOVERNANCE WAIVER (Bottom Right) -->
+          <g id="node-waiver" class="node-box" data-component="waiver" data-type="policy">
+            <rect x="580" y="330" width="150" height="90" />
+            <text class="title" x="595" y="355">Governance Waiver</text>
+            <text class="subtitle" x="595" y="375">controlKey exemption</text>
+            <text class="subtitle" x="595" y="390">status: APPROVED</text>
+          </g>
+          
+        </svg>
+      </div>
+
+      <div style="margin-top: 1.5rem; font-size: 0.9rem; color: var(--text-muted);">
+        <p>💡 <strong>Tip:</strong> Click on the execution phases in the right panel to trace how policy evaluation happens and highlight relevant tables in the ERD.</p>
+      </div>
+    </div>
+    
+    <!-- RIGHT PANEL: GOVERNANCE PROCESS SEQUENCER -->
+    <div class="panel">
+      <h2 class="panel-title">
+        <span>Policy Evaluation Path</span>
+        <span class="badge">Trace</span>
+      </h2>
+      
+      <div class="steps-container">
+        
+        <!-- STEP 1 -->
+        <div class="step-card active" data-step="1">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            <h4>Capability Matching &amp; Extraction</h4>
+            <p>Load the target Work Item. Extract `parentCapabilityId` representing the boundary repository (e.g. RuleEngine).</p>
+          </div>
+        </div>
+
+        <!-- STEP 2 -->
+        <div class="step-card" data-step="2">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            <h4>Resolve Governance Overlay</h4>
+            <p>Fetch the point-in-time `GovernanceOverlaySnapshot` mapping resolved policy overlays to the active capability.</p>
+          </div>
+        </div>
+
+        <!-- STEP 3 -->
+        <div class="step-card" data-step="3">
+          <div class="step-num">3</div>
+          <div class="step-content">
+            <h4>Apply Stage-specific Gating Policy</h4>
+            <p>Connect the Workflow Node to `StageExecutionPolicy` containing `tool_policy` (e.g. READ_ONLY or MUTATION).</p>
+          </div>
+        </div>
+
+        <!-- STEP 4 -->
+        <div class="step-card" data-step="4">
+          <div class="step-num">4</div>
+          <div class="step-content">
+            <h4>Waiver Resolution &amp; Exemptions</h4>
+            <p>Scan `GovernanceWaiver` rows matching the work item. Approved controlKey waivers bypass blocking rules.</p>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- DETAILED INFO BLOCK -->
+      <div class="details-box" id="step-details-box">
+        <h5 id="detail-title"><span class="live-dot"></span> Capability Extraction</h5>
+        <p id="detail-desc">When a run initiates, the orchestrator retrieves the work item and resolves its bounding capability boundary.</p>
+        <ul class="code-list" id="detail-code">
+          <li>Database column: <code>parentCapabilityId</code> on <code>work_items</code></li>
+          <li>Refreshes from local cache: <code>capabilities_cache</code></li>
+          <li>Governing check: Governing capabilities are excluded from work-item routing.</li>
+        </ul>
+      </div>
+
+    </div>
+
+    <!-- ROW 2: SCHEMA & CODE SPECS -->
+    <div class="tech-details">
+      
+      <!-- CARD A: DB RELATION SCHEMA -->
+      <div class="panel">
+        <h3 class="panel-title">
+          <span>Prisma Schema Declarations</span>
+        </h3>
+        
+        <div class="tabs" id="protocol-tabs">
+          <button class="tab-btn active" data-tab="capability">Capability Model</button>
+          <button class="tab-btn" data-tab="overlay">Overlay Snapshot</button>
+          <button class="tab-btn" data-tab="waiver">Waiver Exemption</button>
+        </div>
+
+        <div class="tab-content active" id="tab-capability">
+          <p>Local sync of Singularity IAM capabilities, storing name, type, and governing flags:</p>
+          <code class="snippet">model Capability {
+  id          String   @id // IAM capability_id
+  name        String
+  type        String?
+  status      String?
+  isGoverning Boolean  @default(false)
+  syncedAt    DateTime @default(now())
+
+  @@map("capabilities_cache")
+}</code>
+        </div>
+
+        <div class="tab-content" id="tab-overlay">
+          <p>Point-in-time snapshot mapping constraints, ensuring policies don't retroactively rewrite execution audits:</p>
+          <code class="snippet">model GovernanceOverlaySnapshot {
+  id                   String   @id @default(uuid())
+  workItemId           String?
+  workflowInstanceId   String?
+  workflowNodeId       String?
+  governedCapabilityId String
+  overlayHash          String
+  resolvedOverlayJson  Json
+  resolvedAt           DateTime @default(now())
+
+  @@unique([workItemId, workflowNodeId, overlayHash])
+}</code>
+        </div>
+
+        <div class="tab-content" id="tab-waiver">
+          <p>Approved waivers that exempt the agent loop from specific blocking constraints in the policy:</p>
+          <code class="snippet">model GovernanceWaiver {
+  id                 String    @id @default(uuid())
+  workItemId         String?
+  workflowInstanceId String?
+  workflowNodeId     String?
+  controlKey         String    // e.g. "ALLOW_UNVERIFIED_EDIT"
+  reason             String
+  status             String    @default("REQUESTED") // APPROVED | REJECTED
+}</code>
+        </div>
+      </div>
+
+      <!-- CARD B: HOW FABRIC ENFORCES POLICIES -->
+      <div class="panel policy-rule-box">
+        <h4>
+          <span class="live-dot purple"></span>
+          Policy Enforcement at Tool Gateway
+        </h4>
+        <p style="font-size: 0.95rem; margin-bottom: 1rem;">
+          Enforcement runs as a hard coded double-validation logic inside <code>context-fabric</code>:
+        </p>
+        <ol style="margin-left: 1.5rem; font-size: 0.9rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 0.6rem; list-style-type: decimal;">
+          <li>
+            <strong>Wire Descriptor Check:</strong>
+            When resolving turn tools, <code>turn.py</code> only advertises the union of tools allowed by the active policy, preventing standard LLMs from planning unauthorized actions.
+          </li>
+          <li>
+            <strong>Server-Side Gate:</strong>
+            If an agent attempts to execute a tool outside its current phase scope (e.g. trying to run <code>apply_patch</code> during <code>EXPLORE</code>), the tool call is intercepted by <a href="file:///Users/ashokraj/Downloads/backupSingularity/singularity-platform/context-fabric/services/context_api_service/app/governed/tool_gateway.py">tool_gateway.py</a> and rejected with a <code>POLICY_BLOCKED</code> code.
+          </li>
+          <li>
+            <strong>Validation Verification:</strong>
+            Before completing stages, the system evaluates the edit provenance and verifies file target modifications against the plan via <a href="file:///Users/ashokraj/Downloads/backupSingularity/singularity-platform/context-fabric/services/context_api_service/app/governed/path_coverage.py">path_coverage.py</a>.
+          </li>
+        </ol>
+      </div>
+
+    </div>
+
+  </div>
+
+  <script>
+    /* -------------------------------------------------------------
+       INTERACTIVE ANIMATION AND DATA CONTROLLER
+       ------------------------------------------------------------- */
+    const stepData = {
+      1: {
+        title: "Capability Matching & Extraction",
+        desc: "The system reads the active Work Item. It extracts the parentCapabilityId which ties this item to its bounding system repository (e.g. RuleEngine), allowing hierarchical authorization checks.",
+        code: [
+          "Field resolved: <code>WorkItem.parentCapabilityId</code>",
+          "IAM mapping cached in: <a href='file:///Users/ashokraj/Downloads/backupSingularity/singularity-platform/workgraph-studio/apps/api/prisma/schema.prisma#L436'>Capability model</a>",
+          "Routing check: Governing capabilities block normal worker allocation"
+        ],
+        activeNodes: ["node-parent-cap", "node-child-cap", "node-workitem"],
+        flowLinks: [
+          { id: "link-parent-child-flow" },
+          { id: "link-child-wi-flow" }
+        ]
+      },
+      2: {
+        title: "Resolve Governance Overlay",
+        desc: "The orchestrator builds a GovernanceOverlaySnapshot. It resolved specific compliance rules (e.g. security audits or manual sign-off thresholds) and stores them to protect execution history against subsequent changes in IAM policies.",
+        code: [
+          "Model mapping: <a href='file:///Users/ashokraj/Downloads/backupSingularity/singularity-platform/workgraph-studio/apps/api/prisma/schema.prisma#L452'>GovernanceOverlaySnapshot</a>",
+          "JSON payload schema: Contains resolved compliance keys",
+          "Overlay resolution: Performed upon work item promotion"
+        ],
+        activeNodes: ["node-child-cap", "node-overlay"],
+        flowLinks: [
+          { id: "link-cap-overlay-flow" }
+        ]
+      },
+      3: {
+        title: "Apply Stage-specific Gating Policy",
+        desc: "Each Workflow Node is bound to a StageExecutionPolicy, dictating specific tool classifications (e.g. MUTATION, READ_ONLY) and automation flags (auto_localize, auto_verify).",
+        code: [
+          "API Policy model: <code>StageExecutionPolicy</code>",
+          "Validation logic: <a href='file:///Users/ashokraj/Downloads/backupSingularity/singularity-platform/context-fabric/services/context_api_service/app/governed/stage_execution_policy.py'>stage_execution_policy.py</a>",
+          "Wire forwarding: Triggers and options mapped in orchestrator"
+        ],
+        activeNodes: ["node-wf-node", "node-stage-policy"],
+        flowLinks: [
+          { id: "link-node-policy-flow" }
+        ]
+      },
+      4: {
+        title: "Waiver Resolution & Exemptions",
+        desc: "If a control in the overlay blocks execution, the engine queries the database for an APPROVED, unexpired GovernanceWaiver matching the work item. If found, the blocking rule is bypassed.",
+        code: [
+          "Waiver schema: <a href='file:///Users/ashokraj/Downloads/backupSingularity/singularity-platform/workgraph-studio/apps/api/prisma/schema.prisma#L472'>GovernanceWaiver model</a>",
+          "Status check: Must be APPROVED to unblock",
+          "Enforcement routing: Passed as bypass tokens into Context Fabric gates"
+        ],
+        activeNodes: ["node-overlay", "node-waiver"],
+        flowLinks: [
+          { id: "link-overlay-waiver-flow" }
+        ]
+      }
+    };
+
+    // DOM selectors
+    const stepCards = document.querySelectorAll('.step-card');
+    const nodes = document.querySelectorAll('.node-box');
+    const linkFlows = document.querySelectorAll('.link-line');
+
+    const detailTitle = document.getElementById('detail-title');
+    const detailDesc = document.getElementById('detail-desc');
+    const detailCode = document.getElementById('detail-code');
+
+    // Click handler for steps
+    stepCards.forEach(card => {
+      card.addEventListener('click', () => {
+        const stepNum = card.getAttribute('data-step');
+        activateStep(stepNum);
+      });
+    });
+
+    function activateStep(stepNum) {
+      // 1. Activate Step Cards
+      stepCards.forEach(c => c.classList.remove('active'));
+      document.querySelector(`.step-card[data-step="${stepNum}"]`).classList.add('active');
+
+      const data = stepData[stepNum];
+
+      // 2. Update Details panel
+      detailTitle.innerHTML = `<span class="live-dot"></span> ${data.title}`;
+      detailDesc.textContent = data.desc;
+      
+      let codeHTML = "";
+      data.code.forEach(item => {
+        codeHTML += `<li>${item}</li>`;
+      });
+      detailCode.innerHTML = codeHTML;
+
+      // 3. Highlight Nodes in SVG
+      nodes.forEach(node => {
+        const id = node.getAttribute('id');
+        
+        if (data.activeNodes.includes(id)) {
+          node.classList.add('active');
+        } else {
+          node.classList.remove('active');
+        }
+      });
+
+      // 4. Highlight Link Flows in SVG
+      linkFlows.forEach(flow => {
+        flow.classList.remove('active', 'active-purple');
+      });
+
+      // Activate corresponding lines
+      if (data.flowLinks) {
+        data.flowLinks.forEach(link => {
+          const pathEl = document.getElementById(link.id);
+          if (pathEl) {
+            if (link.id.includes('overlay') || link.id.includes('parent-child')) {
+              pathEl.classList.add('active-purple');
+            } else {
+              pathEl.classList.add('active');
+            }
+          }
+        });
+      }
+    }
+
+    // Protocol tab selection
+    const tabBtns = document.querySelectorAll('#protocol-tabs .tab-btn');
+    const tabContents = document.querySelectorAll('.tab-content');
+
+    tabBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        tabBtns.forEach(b => b.classList.remove('active'));
+        tabContents.forEach(c => c.classList.remove('active'));
+
+        btn.classList.add('active');
+        const tabId = btn.getAttribute('data-tab');
+        document.getElementById(`tab-${tabId}`).classList.add('active');
+      });
+    });
+
+    // Initialize with Step 1
+    activateStep(1);
+  </script>
+</body>
+</html>
