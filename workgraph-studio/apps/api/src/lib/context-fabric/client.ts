@@ -11,7 +11,19 @@
  *   mcpServerId, mcpInvocationId, plus llm/tool/artifact arrays.
  */
 
+import { Agent } from 'undici'
 import { config } from '../../config'
+
+// undici (Node's built-in fetch) enforces its own default headers/body timeouts
+// (~300s) PER CONNECTION, independent of the fetch AbortSignal. A governed stage
+// is one long synchronous request — Context Fabric returns no response bytes
+// until the whole agent loop finishes — so DEVELOP (now running a full pre-edit
+// `mvn test` baseline + the agent loop + post-edit verification) routinely
+// exceeds 300s and undici severs the socket, surfacing as a bare `fetch failed`
+// while CF actually completes the work. Disable undici's internal timeouts
+// (0 = no timeout) so the explicit `AbortSignal.timeout(...)` envelope below is
+// the single authoritative deadline.
+const longCallDispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 })
 
 export interface ExecuteRunContext {
   workflow_instance_id?: string
@@ -361,8 +373,9 @@ export const contextFabricClient = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
+      dispatcher: longCallDispatcher,
       signal: AbortSignal.timeout((input.limits?.timeoutSec ?? 240) * 1000 + 10_000),
-    })
+    } as RequestInit & { dispatcher: Agent })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       // FastAPI returns structured errors as { detail: { code, message, ... } }.
@@ -416,6 +429,10 @@ export const contextFabricClient = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
+      // undici's default ~300s headers/body timeout would sever this long
+      // synchronous call before CF responds; longCallDispatcher disables it so
+      // the AbortSignal below is the authoritative deadline.
+      dispatcher: longCallDispatcher,
       // Per-stage budget when the caller declared one (workflow node's
       // `stage.limits.timeoutSec`), with a 30s buffer so the server has
       // room to format its terminal response after its own internal
@@ -427,7 +444,7 @@ export const contextFabricClient = {
           ? input.timeout_sec * 1000 + 30_000
           : 900_000,
       ),
-    })
+    } as RequestInit & { dispatcher: Agent })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       let parsedDetail: unknown
