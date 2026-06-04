@@ -311,6 +311,17 @@ JSON
   ensure_install UserAndCapabillity       npm
   ensure_install singularity-portal       npm
 
+  # Build the agent-and-tools workspace libraries (@agentandtools/shared, db,
+  # tool-registry). The apps import them by their package "main" (dist/index.js),
+  # so they MUST be compiled before `npm run dev`, or agent/tool/composer/web all
+  # crash with: Cannot find module .../@agentandtools/shared/dist/index.js.
+  if [ ! -f agent-and-tools/packages/shared/dist/index.js ]; then
+    info "building agent-and-tools workspace libraries…"
+    ( cd agent-and-tools && npm run build --if-present \
+        --workspace=packages/shared --workspace=packages/db --workspace=packages/tool-registry >/dev/null 2>&1 ) \
+      || warn "agent-and-tools library build had warnings — agent/tool/composer services may not start"
+  fi
+
   # ── 4. Push schemas + seed ────────────────────────────────────────────────
   info "applying agent-runtime schema…"
   ( cd agent-and-tools/apps/agent-runtime \
