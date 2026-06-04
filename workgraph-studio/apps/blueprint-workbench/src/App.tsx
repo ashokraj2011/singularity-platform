@@ -107,6 +107,7 @@ import {
 } from './api'
 import { AppSwitcher } from './components/AppSwitcher'
 import { LoopRail } from './neo/LoopRail'
+import { MilestoneRail } from './neo/MilestoneRail'
 import { CopilotExportButton } from './neo/CopilotExportButton'
 import { LiveCockpit } from './neo/LiveCockpit'
 import { FocusPane, computeFocusIntent, type FocusAction } from './neo/FocusPane'
@@ -605,6 +606,8 @@ function WorkbenchSetup({
   const [sourceDefaultSource, setSourceDefaultSource] = useState(workflowDefaults.sourceUri ? 'workflow launch URL' : '')
   const [intakeTouched, setIntakeTouched] = useState({ goal: false, sourceType: false, sourceUri: false, sourceRef: false })
   const [gateMode, setGateMode] = useState<GateMode>(workflowDefaults.gateMode ?? 'manual')
+  // Milestones — opt a big-change run into the sequential milestone outer loop.
+  const [milestonesMode, setMilestonesMode] = useState(false)
   const [capabilityId, setCapabilityId] = useState(workflowDefaults.capabilityId ?? '')
   const [architectAgentTemplateId, setArchitectAgentTemplateId] = useState(workflowDefaults.architectAgentTemplateId ?? '')
   const [developerAgentTemplateId, setDeveloperAgentTemplateId] = useState(workflowDefaults.developerAgentTemplateId ?? '')
@@ -934,6 +937,15 @@ function WorkbenchSetup({
         </label>
       </div>
 
+      <label className="milestones-toggle" title="For a big change: the design stage decomposes the goal into an ordered milestone series (M1→M2→…), each built on the same branch, ending in one final certification.">
+        <input
+          type="checkbox"
+          checked={milestonesMode}
+          onChange={event => setMilestonesMode(event.target.checked)}
+        />
+        <span>Milestones mode <small>— decompose a big change into a sequential series on one branch</small></span>
+      </label>
+
       <div className="two-col">
         <label>
           <span>Include globs</span>
@@ -1089,6 +1101,7 @@ function WorkbenchSetup({
           developerAgentTemplateId: developerAgentTemplateId || undefined,
           qaAgentTemplateId: qaAgentTemplateId || undefined,
           gateMode,
+          milestonesMode: milestonesMode || undefined,
           workflowInstanceId: workflowDefaults.workflowInstanceId,
           browserRunId: workflowDefaults.browserRunId,
           workflowNodeId: workflowDefaults.workflowNodeId,
@@ -1162,6 +1175,12 @@ function WorkbenchNeo({
   const updateStageModelMutation = useMutation({
     mutationFn: ({ id, body }: { id: string; body: Parameters<typeof api.updateSettings>[1] }) =>
       api.updateSettings(id, body),
+    onSuccess: updated => onSession(updated),
+  })
+  // Milestones — explicit operator advance from the boundary card.
+  const advanceMilestoneMutation = useMutation({
+    mutationFn: ({ id, milestoneId }: { id: string; milestoneId: string }) =>
+      api.advanceMilestone(id, milestoneId),
     onSuccess: updated => onSession(updated),
   })
   const stages = session?.loopDefinition?.stages ?? []
@@ -1280,6 +1299,14 @@ function WorkbenchNeo({
         />
 
         <div className="neo-center-column">
+          {/* Milestones — outer-loop rail above the stage controller. Renders
+              nothing for non-milestone sessions. The Advance button is the
+              explicit boundary action (the verdict path also auto-advances). */}
+          <MilestoneRail
+            session={session}
+            advancing={advanceMilestoneMutation.isPending}
+            onAdvance={(milestoneId) => advanceMilestoneMutation.mutate({ id: session.id, milestoneId })}
+          />
           <NeoStageController
             session={session}
             stage={activeStage}
