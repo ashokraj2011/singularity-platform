@@ -59,15 +59,19 @@ services:
       context: .
       dockerfile: services/metrics_ledger_service/Dockerfile
     environment:
-      - CONTEXT_FABRIC_DATABASE_URL=${CONTEXT_FABRIC_DATABASE_URL:-postgresql://postgres:singularity@context-fabric-postgres:5432/singularity_context_fabric}
+      # Consolidated onto the shared Context Fabric Postgres — the SAME database
+      # (singularity_context_fabric on at-postgres) that the other three CF
+      # stores (call_log, events_store, context_memory) already use. at-postgres
+      # lives in the singularity compose network, so we reach it via its
+      # host-published port (host.docker.internal:5432) rather than by service
+      # name. The local context-fabric-postgres is no longer used. Override
+      # CONTEXT_FABRIC_DATABASE_URL to repoint.
+      - CONTEXT_FABRIC_DATABASE_URL=${CONTEXT_FABRIC_DATABASE_URL:-postgresql://postgres:singularity@host.docker.internal:5432/singularity_context_fabric}
       # M11.a
       - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       - PUBLIC_BASE_URL=${METRICS_LEDGER_PUBLIC_URL:-http://host.docker.internal:8003}
     ports:
       - "8003:8003"
-    depends_on:
-      context-fabric-postgres:
-        condition: service_healthy
 
   context-api-service:
     build:
