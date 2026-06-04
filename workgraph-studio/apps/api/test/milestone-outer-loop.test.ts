@@ -17,6 +17,7 @@ import {
   allMilestonesGreen,
   applyMilestonePlan,
   classifyMilestoneStages,
+  extractAttemptCommitShas,
   isMilestoneGreen,
   nextAdvanceableMilestone,
   parseMilestonePlan,
@@ -236,5 +237,38 @@ describe('allMilestonesGreen', () => {
 
   it('treats a non-milestone session as trivially green', () => {
     expect(allMilestonesGreen(state({ milestone: undefined }))).toBe(true)
+  })
+})
+
+// ── commit SHA harvesting (P4) ──────────────────────────────────────────────
+describe('extractAttemptCommitShas', () => {
+  const withCorrelation = (correlation: unknown, verificationReceipts: unknown[] = []) =>
+    ({ ...attempt('develop', 'M1', 'PASS'), correlation, verificationReceipts }) as never
+
+  it('harvests SHAs from correlation, nested governed/finalize, and receipts', () => {
+    const a = withCorrelation(
+      { commit_sha: 'abc1234', governed: { commitSha: 'def5678abcd' }, finalize: { commit_sha: 'abc1234' } },
+      [{ head_sha: '0011223' }],
+    )
+    expect(extractAttemptCommitShas(a).sort()).toEqual(['0011223', 'abc1234', 'def5678abcd'].sort())
+  })
+
+  it('ignores non-SHA values and returns [] when none present', () => {
+    expect(extractAttemptCommitShas(withCorrelation({ commit_sha: 'not a sha!', branch: 'wi/x' }))).toEqual([])
+    expect(extractAttemptCommitShas(withCorrelation(undefined))).toEqual([])
+  })
+})
+
+describe('advanceMilestone — commit SHA capture into history', () => {
+  it('records the SHAs the milestone\'s accepted attempts landed', () => {
+    const dev = { ...attempt('develop', 'M1', 'PASS'), correlation: { commit_sha: 'aaaa111' } } as never
+    const sec = { ...attempt('security', 'M1', 'PASS'), correlation: { commit_sha: 'bbbb222' } } as never
+    const qa = attempt('qa', 'M1', 'PASS') as never
+    const s = state({
+      stageAttempts: [dev, sec, qa],
+      milestone: { enabled: true, currentMilestoneId: 'M1', history: [], plan: [milestone('M1', 'ACTIVE')] },
+    })
+    const { milestone: next } = advanceMilestone(s)
+    expect(next.history[0].commitShas.sort()).toEqual(['aaaa111', 'bbbb222'])
   })
 })
