@@ -97,3 +97,4 @@ logs/
 agent-and-tools/apps/agent-runtime/generated/
 agent-and-tools/apps/prompt-composer/generated/
 mcp-server/.docker-sandbox/
+.singularity/setup.conf
