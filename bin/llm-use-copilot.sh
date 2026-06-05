@@ -17,7 +17,10 @@
 #      Copilot too — otherwise they'd still hit Anthropic).
 #   3. .env.llm-secrets                 → set COPILOT_TOKEN (the gateway reads
 #      provider creds only from this gitignored env_file).
-#   4. recreate the llm-gateway container and verify it's serving Copilot.
+#   4. restart the llm-gateway and verify it's serving Copilot. Works in BOTH
+#      Docker (recreates the singularity-llm-gateway container) and BARE-METAL
+#      (restarts the uvicorn process on :8001 with COPILOT_TOKEN; detected via
+#      the repo-root .env.local + .pids that bin/bare-metal.sh writes).
 #
 # Idempotent. Originals are backed up to *.copilot-bak on first run; re-run with
 # --restore to flip everything back to the previous (Anthropic) config.
@@ -73,9 +76,30 @@ command -v python3 >/dev/null || die "python3 is required"
 [ -f "$CATALOG" ]   || die "missing $CATALOG"
 
 recreate_and_verify() {
-  info "recreating the llm-gateway container…"
-  ( cd "$ROOT" && COMPOSE_PROFILES="${COMPOSE_PROFILES:-full}" \
-      docker compose up -d --force-recreate --no-deps llm-gateway >/dev/null )
+  # Bare-metal first: bin/bare-metal.sh writes .env.local + .pids in the repo
+  # root, so detect that BEFORE Docker — otherwise a Docker stack running
+  # elsewhere on the same machine would steal the restart.
+  if [ -f "$ROOT/.env.local" ] && [ -f "$ROOT/.pids" ]; then
+    info "bare-metal mode: restarting the llm-gateway process on :${GATEWAY_PORT}…"
+    local pybin="$ROOT/.venv/bin/python"; [ -x "$pybin" ] || pybin="python3"
+    # shellcheck source=/dev/null
+    set -a; . "$ROOT/.env.local"; [ -f "$SECRETS" ] && . "$SECRETS"; set +a
+    lsof -ti :"${GATEWAY_PORT}" 2>/dev/null | xargs kill -9 2>/dev/null || true
+    mkdir -p "$ROOT/logs"
+    ( cd "$ROOT/context-fabric" && \
+        LLM_PROVIDER_CONFIG_PATH="$PROVIDERS" LLM_MODEL_CATALOG_PATH="$CATALOG" \
+        COPILOT_TOKEN="${COPILOT_TOKEN:-${TOKEN:-}}" ALLOW_CALLER_PROVIDER_OVERRIDE=false \
+        nohup "$pybin" -m uvicorn services.llm_gateway_service.app.main:app \
+          --host 0.0.0.0 --port "${GATEWAY_PORT}" > "$ROOT/logs/llm-gateway.log" 2>&1 & )
+  elif command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' | grep -qx 'singularity-llm-gateway'; then
+    info "recreating the llm-gateway container…"
+    ( cd "$ROOT" && COMPOSE_PROFILES="${COMPOSE_PROFILES:-full}" \
+        docker compose up -d --force-recreate --no-deps llm-gateway >/dev/null )
+  else
+    warn "no bare-metal (.env.local/.pids) state and no Docker llm-gateway container found."
+    warn "config is written — restart your llm-gateway manually to apply it, then: curl :${GATEWAY_PORT}/llm/providers"
+    return 0
+  fi
   info "waiting for the gateway to come up…"
   local i body
   for i in $(seq 1 30); do
@@ -83,7 +107,7 @@ recreate_and_verify() {
     [ -n "$body" ] && break
     sleep 2
   done
-  [ -n "$body" ] || die "gateway did not respond on :${GATEWAY_PORT} — check 'docker logs singularity-llm-gateway'"
+  [ -n "$body" ] || die "gateway did not respond on :${GATEWAY_PORT} — check 'docker logs singularity-llm-gateway' or logs/llm-gateway.log"
   printf '%s' "$body" | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
