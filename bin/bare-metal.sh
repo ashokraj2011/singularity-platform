@@ -433,7 +433,11 @@ JSON
   # IAM admin SPA — hosts the capability-governance authoring UI (G7–G9).
   boot user-and-capability "cd UserAndCapabillity && VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" npm run dev -- --host 0.0.0.0 --port 5175"
   # Unified operations/launcher portal (Vite; dev script binds 5180 itself).
-  boot portal "cd singularity-portal && VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" npm run dev -- --host 0.0.0.0"
+  # VITE_LINK_* point the portal's app cards at the per-port bare-metal apps.
+  # Without them the portal defaults to single-origin paths (/workflow, /workbench,
+  # …) that only resolve behind the Docker edge-gateway — in bare-metal they bounce
+  # back to the portal index.
+  boot portal "cd singularity-portal && VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" VITE_LINK_WORKGRAPH_DESIGNER=http://localhost:5174 VITE_LINK_BLUEPRINT_WORKBENCH=http://localhost:5176 VITE_LINK_AGENT_ADMIN=http://localhost:3000 VITE_LINK_IAM_ADMIN=http://localhost:5175 npm run dev -- --host 0.0.0.0"
 
   echo
   ok "all services booted — run '$0 smoke' in ~30s to verify, then open:"
