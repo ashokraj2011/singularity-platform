@@ -98,7 +98,7 @@ function StageNode({ data }: NodeProps<StageNodeData>) {
 const nodeTypes = { stage: StageNode }
 
 // ─── Canvas ──────────────────────────────────────────────────────────────────
-function Canvas({ nodeId, onSelectStage }: { nodeId: string; onSelectStage?: (k: string) => void }) {
+function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectStage?: (k: string) => void; fullSize?: boolean }) {
   const qc = useQueryClient()
   const base = `/workflow-nodes/${encodeURIComponent(nodeId)}/workbench`
   const { data, isLoading, error } = useQuery<DefinitionView | null>({
@@ -204,7 +204,7 @@ function Canvas({ nodeId, onSelectStage }: { nodeId: string; onSelectStage?: (k:
   }), [data])
 
   return (
-    <div style={{ border: '1px solid #dbe4f0', borderRadius: 10, background: '#fff', marginBottom: 14, overflow: 'hidden' }}>
+    <div style={{ border: '1px solid #dbe4f0', borderRadius: 10, background: '#fff', marginBottom: fullSize ? 0 : 14, overflow: 'hidden', height: fullSize ? '100%' : undefined, display: fullSize ? 'flex' : undefined, flexDirection: fullSize ? 'column' : undefined }}>
       {/* Toolbar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderBottom: '1px solid #e5e7eb', flexWrap: 'wrap' }}>
         <strong style={{ fontSize: 13, color: '#0f172a' }}>Stage graph</strong>
@@ -231,7 +231,7 @@ function Canvas({ nodeId, onSelectStage }: { nodeId: string; onSelectStage?: (k:
         </button>
       </div>
 
-      <div style={{ height: 420, background: '#f8fafc' }}>
+      <div style={{ height: fullSize ? undefined : 420, flex: fullSize ? 1 : undefined, minHeight: fullSize ? 420 : undefined, background: '#f8fafc' }}>
         {isLoading ? (
           <div style={{ padding: 20, fontSize: 12, color: '#888', fontStyle: 'italic' }}>Loading stage graph…</div>
         ) : error ? (
@@ -370,7 +370,7 @@ function StageInspector({ stage, agents, busy, onSave, onClose }: {
   )
 }
 
-export function WorkbenchStageCanvas(props: { nodeId: string; onSelectStage?: (k: string) => void }): React.ReactElement {
+export function WorkbenchStageCanvas(props: { nodeId: string; onSelectStage?: (k: string) => void; fullSize?: boolean }): React.ReactElement {
   return (
     <ReactFlowProvider>
       <Canvas {...props} />
