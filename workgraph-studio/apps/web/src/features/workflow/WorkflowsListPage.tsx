@@ -1245,7 +1245,12 @@ export function WorkflowsListPage() {
                           <button
                             key={profile}
                             type="button"
-                            onClick={() => setCreateProfile(profile)}
+                            onClick={() => {
+                              setCreateProfile(profile)
+                              // Workbench workflows are always sub-workflows built
+                              // blank — the main-style "bridge" starter doesn't apply.
+                              if (profile === 'workbench') setCreateStarter('EMPTY')
+                            }}
                             style={{
                               textAlign: 'left',
                               padding: 12,
@@ -1298,6 +1303,8 @@ export function WorkflowsListPage() {
                     </p>
                   </Field>
                   <Field label="Starter pattern">
+                    {createProfile === 'main' ? (
+                    <>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                       {STARTER_OPTIONS.map(option => {
                         const selected = createStarter === option.value
@@ -1358,6 +1365,16 @@ export function WorkflowsListPage() {
                           {starterRequiresCapability
                             ? 'Select a capability so the Workbench can bind derived agents and save its final pack against the correct boundary.'
                             : 'This creates Start → Agent Task → Workbench Task → Human Approval → Done. You can edit phases, agents, gates, and artifacts in the designer.'}
+                        </p>
+                      </div>
+                    )}
+                    </>
+                    ) : (
+                      <div style={{ padding: '10px 12px', borderRadius: 10, border: '1px solid #ddd6fe', background: '#f5f3ff' }}>
+                        <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: '#5b21b6' }}>
+                          <strong>Workbench workflows are sub-workflows.</strong> They start blank — you build the agentic stages
+                          (Story Intake → Design → Develop → QA, gates, human hand-offs) in the Workbench designer. A <strong>main</strong>
+                          workflow runs this one via a <strong>CALL_WORKFLOW</strong> node; there is no manual start.
                         </p>
                       </div>
                     )}

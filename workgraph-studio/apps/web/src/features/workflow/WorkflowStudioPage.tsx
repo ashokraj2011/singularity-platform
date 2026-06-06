@@ -27,6 +27,7 @@ import {
 import { WorkflowVariablesPanel } from '../variables/WorkflowVariablesPanel'
 import type { TemplateVariableDef, TeamVariable } from '../variables/types'
 import { BranchTestPanel } from './BranchTestPanel'
+import { WorkbenchStageCanvas } from './WorkbenchStageCanvas'
 
 // ─── Node visual map ──────────────────────────────────────────────────────────
 
@@ -3042,6 +3043,10 @@ export function WorkflowStudioPage() {
   const validationErrors = validationResult?.issues.filter(i => i.severity === 'error').length ?? 0
   const validationWarnings = validationResult?.issues.filter(i => i.severity === 'warning').length ?? 0
   const canValidateCanvas = rfNodes.length > 0
+  // M93.s7 — a workbench-profile workflow's loop lives on a single WORKBENCH_TASK
+  // node; the designer presents that node's stages AS the canvas (full drag/drop
+  // stage graph) rather than a node to drill into.
+  const workbenchNodeId = rfNodes.find(n => n.data?.nodeType === 'WORKBENCH_TASK')?.id ?? null
 
   return (
     <WFNodeContext.Provider value={{ onDelete: handleDeleteNode, onAddDecorator: handleAddDecorator, onRemoveDecorator: handleRemoveDecorator, theme }}>
@@ -3050,7 +3055,26 @@ export function WorkflowStudioPage() {
         position: 'relative', width: '100%', height: '100%', overflow: 'hidden',
         background: canvasBg,
       }}>
-        <div ref={reactFlowWrapper} style={{ position: 'absolute', inset: 0 }}>
+        {isWorkbenchProfile && isDesignMode ? (
+          <div style={{ position: 'absolute', inset: 0, overflow: 'auto', padding: 14, background: canvasBg }}>
+            {workbenchNodeId ? (
+              <WorkbenchStageCanvas nodeId={workbenchNodeId} fullSize />
+            ) : (
+              <div style={{ maxWidth: 540, margin: '64px auto 0', textAlign: 'center', padding: '30px 32px', background: '#fff', border: '1px solid rgba(15,23,42,0.10)', borderRadius: 14, boxShadow: '0 12px 28px rgba(15,23,42,0.08)' }}>
+                <p style={{ fontSize: 18, fontWeight: 900, color: '#0f172a', marginBottom: 8 }}>Build your workbench loop</p>
+                <p style={{ fontSize: 13, color: '#64748b', lineHeight: 1.6, marginBottom: 18 }}>
+                  This is a workbench (agent-loop) workflow. Initialize it, then add <b>agent stages</b> and <b>human-approval</b> gates and connect them into a flow — no single node to drill into.
+                </p>
+                <button type="button" disabled={isReadOnly || addNode.isPending}
+                  onClick={() => addNode.mutate({ label: 'Workbench Task', nodeType: 'WORKBENCH_TASK', positionX: 240, positionY: 160, config: WORKBENCH_TASK_NODE_CONFIG })}
+                  style={{ fontSize: 13, fontWeight: 800, padding: '9px 18px', borderRadius: 10, border: '1px solid #0ea5e9', background: isReadOnly || addNode.isPending ? '#cbd5e1' : '#0ea5e9', color: '#fff', cursor: isReadOnly || addNode.isPending ? 'default' : 'pointer' }}>
+                  {addNode.isPending ? 'Initializing…' : 'Initialize workbench'}
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div ref={reactFlowWrapper} style={{ position: 'absolute', inset: 0 }}>
           <ReactFlow
             nodes={canvasNodes} edges={rfEdges}
             nodeTypes={nodeTypes}
@@ -3101,7 +3125,8 @@ export function WorkflowStudioPage() {
               </div>
             )}
           </ReactFlow>
-        </div>
+          </div>
+        )}
 
         {/* ─── FLOATING COMMANDBAR ──────────────────────────────────────────── */}
         <motion.div
@@ -3503,7 +3528,11 @@ export function WorkflowStudioPage() {
           )}
         </AnimatePresence>
 
-        {/* ─── FLOATING ADD NODE MENU ───────────────────────────────────────── */}
+        {/* ─── FLOATING ADD NODE MENU ─────────────────────────────────────────
+             Hidden for workbench-profile workflows: there the canvas IS the
+             stage graph, and stages are added with the on-canvas ＋ Agent stage /
+             ＋ Human approval buttons — the node palette would only confuse. */}
+        {!isWorkbenchProfile && (
         <motion.div
           initial={{ opacity: 0, x: -12 }}
           animate={{ opacity: 1, x: 0 }}
@@ -3661,6 +3690,7 @@ export function WorkflowStudioPage() {
             )}
           </AnimatePresence>
         </motion.div>
+        )}
 
         {/* ─── FLOATING TRIGGERS PANEL ─────────────────────────────────────── */}
         <AnimatePresence>
