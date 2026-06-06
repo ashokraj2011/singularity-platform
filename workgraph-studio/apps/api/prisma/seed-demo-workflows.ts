@@ -303,7 +303,7 @@ export async function seedDemoWorkflows(prisma: AnyPrisma) {
     const phaseId = '31000000-0000-0000-0000-000000000012'
     const n1 = '32000000-0000-0000-0000-000000000030', n2 = '32000000-0000-0000-0000-000000000031', n3 = '32000000-0000-0000-0000-000000000032', n4 = '32000000-0000-0000-0000-000000000033'
     await upsertWorkflowShell(prisma, {
-      id: wfId, name: 'Approval Pipeline (Sample)', description: 'Agent drafts an output, a human approves it.',
+      id: wfId, name: 'Approval Pipeline', description: 'An agent drafts an output, then a human approves it before completion.',
       profile: 'main', workflowTypeKey: 'GENERAL',
       graphSnapshot: { nodes: [n1, n2, n3, n4].map(id => ({ id })) }, phaseId, phaseName: 'Main',
     })
@@ -321,7 +321,7 @@ export async function seedDemoWorkflows(prisma: AnyPrisma) {
     const phaseId = '31000000-0000-0000-0000-000000000013'
     const n1 = '32000000-0000-0000-0000-000000000040', n2 = '32000000-0000-0000-0000-000000000041', n3 = '32000000-0000-0000-0000-000000000042', n4 = '32000000-0000-0000-0000-000000000043'
     await upsertWorkflowShell(prisma, {
-      id: wfId, name: 'Branching Review (Sample)', description: 'A decision gate routes to auto-approve or a manual review.',
+      id: wfId, name: 'Branching Review', description: 'A decision gate auto-approves low-risk items and routes the rest to a manual review.',
       profile: 'main', workflowTypeKey: 'GENERAL',
       graphSnapshot: { nodes: [n1, n2, n3, n4].map(id => ({ id })) }, phaseId, phaseName: 'Main',
     })
@@ -340,12 +340,12 @@ export async function seedDemoWorkflows(prisma: AnyPrisma) {
     const phaseId = '31000000-0000-0000-0000-000000000014'
     const n1 = '32000000-0000-0000-0000-000000000050', n2 = '32000000-0000-0000-0000-000000000051', n3 = '32000000-0000-0000-0000-000000000052'
     await upsertWorkflowShell(prisma, {
-      id: wfId, name: 'Parent → Child (Sample)', description: 'Calls the SDLC workbench workflow as a sub-workflow.',
+      id: wfId, name: 'Epic → Story (Parent → Child)', description: 'An epic dispatches child stories, each running the SDLC workbench loop as a sub-workflow.',
       profile: 'main', workflowTypeKey: 'GENERAL',
       graphSnapshot: { nodes: [n1, n2, n3].map(id => ({ id })) }, phaseId, phaseName: 'Main',
     })
-    await upsertNode(prisma, { id: n1, workflowId: wfId, phaseId, nodeType: 'START', label: 'Start', positionX: 80, positionY: 160 })
-    await upsertNode(prisma, { id: n2, workflowId: wfId, phaseId, nodeType: 'CALL_WORKFLOW', label: 'Run SDLC', config: { workflowId: '30000000-0000-0000-0000-000000000010' }, positionX: 320, positionY: 160 })
+    await upsertNode(prisma, { id: n1, workflowId: wfId, phaseId, nodeType: 'START', label: 'Epic intake', positionX: 80, positionY: 160 })
+    await upsertNode(prisma, { id: n2, workflowId: wfId, phaseId, nodeType: 'CALL_WORKFLOW', label: 'Dispatch story → SDLC', config: { workflowId: '30000000-0000-0000-0000-000000000010' }, positionX: 320, positionY: 160 })
     await upsertNode(prisma, { id: n3, workflowId: wfId, phaseId, nodeType: 'END', label: 'End', positionX: 600, positionY: 160 })
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000050', workflowId: wfId, sourceNodeId: n1, targetNodeId: n2 })
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000051', workflowId: wfId, sourceNodeId: n2, targetNodeId: n3 })
@@ -410,5 +410,5 @@ export async function seedDemoWorkflows(prisma: AnyPrisma) {
     })
   }
 
-  console.log('  ✓ demo workflows: SDLC + bug-fix + 3 samples + routing policies + 1 completed session (3 artifacts)')
+  console.log('  ✓ demo workflows: SDLC + Bug Fix + Epic→Story + Approval Pipeline + Branching Review + routing policies + 1 completed session (3 artifacts)')
 }
