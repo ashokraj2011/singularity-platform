@@ -3528,7 +3528,11 @@ export function WorkflowStudioPage() {
           )}
         </AnimatePresence>
 
-        {/* ─── FLOATING ADD NODE MENU ───────────────────────────────────────── */}
+        {/* ─── FLOATING ADD NODE MENU ─────────────────────────────────────────
+             Hidden for workbench-profile workflows: there the canvas IS the
+             stage graph, and stages are added with the on-canvas ＋ Agent stage /
+             ＋ Human approval buttons — the node palette would only confuse. */}
+        {!isWorkbenchProfile && (
         <motion.div
           initial={{ opacity: 0, x: -12 }}
           animate={{ opacity: 1, x: 0 }}
@@ -3686,6 +3690,7 @@ export function WorkflowStudioPage() {
             )}
           </AnimatePresence>
         </motion.div>
+        )}
 
         {/* ─── FLOATING TRIGGERS PANEL ─────────────────────────────────────── */}
         <AnimatePresence>
