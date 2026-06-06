@@ -12,8 +12,10 @@
  * drag-to-reposition (persisted).
  * P2: click a stage → inline inspector to edit identity (label/key/role/agent
  * template), policies (context/tool), flags (repoAccess/required/terminal/
- * approval), and prompt profile → PATCH /stages. Artifacts/questions land in P3;
- * the legacy accordion stays available (collapsed) until P3 subsumes it.
+ * approval), and prompt profile → PATCH /stages.
+ * P3: per-stage expected-artifacts editor in the inspector (add/edit/delete →
+ * POST/PATCH/DELETE artifacts). Questions + definition-level fields (goal,
+ * source, agent bindings) still live in the legacy accordion until a follow-up.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -42,13 +44,15 @@ type StageView = {
   repoAccess: boolean
   toolPolicy: string
   contextPolicy: string
-  expectedArtifacts: Array<{ id: string; kind: string; title: string }>
+  expectedArtifacts: ArtifactView[]
 }
+type ArtifactView = { id: string; kind: string; title: string; description: string | null; format: string; required: boolean }
 type EdgeView = { id: string; fromStageId: string; toStageId: string; kind: 'FORWARD' | 'SEND_BACK'; label: string | null }
 type DefinitionView = { id: string; name: string; capabilityId: string | null; stages: StageView[]; edges: EdgeView[] }
 
 const CONTEXT_POLICIES = ['NONE', 'STORY_ONLY', 'REPO_READ_ONLY', 'CODE_EDIT', 'VERIFY_ONLY', 'EVIDENCE_REVIEW'] as const
 const TOOL_POLICIES = ['NONE', 'READ_ONLY', 'MUTATION', 'VERIFICATION'] as const
+const ARTIFACT_FORMATS = ['MARKDOWN', 'TEXT', 'JSON', 'CODE'] as const
 
 const NODE_W = 230
 
@@ -117,6 +121,9 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
   const mPatchStage = useMutation({ mutationFn: (v: { id: string; body: Record<string, unknown> }) => api.patch(`${base}/stages/${v.id}`, v.body), onSuccess: refresh, onError: onErr })
   const mCreateEdge = useMutation({ mutationFn: (b: Record<string, unknown>) => api.post(`${base}/edges`, b), onSuccess: refresh, onError: onErr })
   const mDeleteEdge = useMutation({ mutationFn: (id: string) => api.delete(`${base}/edges/${id}`), onSuccess: refresh, onError: onErr })
+  const mCreateArtifact = useMutation({ mutationFn: (v: { stageId: string; body: Record<string, unknown> }) => api.post(`${base}/stages/${v.stageId}/artifacts`, v.body), onSuccess: refresh, onError: onErr })
+  const mPatchArtifact = useMutation({ mutationFn: (v: { id: string; body: Record<string, unknown> }) => api.patch(`${base}/artifacts/${v.id}`, v.body), onSuccess: refresh, onError: onErr })
+  const mDeleteArtifact = useMutation({ mutationFn: (id: string) => api.delete(`${base}/artifacts/${id}`), onSuccess: refresh, onError: onErr })
 
   const [edgeKind, setEdgeKind] = useState<'FORWARD' | 'SEND_BACK'>('FORWARD')
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null)
@@ -264,7 +271,11 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
           stage={selectedStage}
           agents={agents ?? []}
           busy={mPatchStage.isPending}
+          artifactBusy={mCreateArtifact.isPending || mPatchArtifact.isPending || mDeleteArtifact.isPending}
           onSave={body => mPatchStage.mutate({ id: selectedStage.id, body })}
+          onArtifactAdd={(stageId, body) => mCreateArtifact.mutate({ stageId, body })}
+          onArtifactPatch={(id, body) => mPatchArtifact.mutate({ id, body })}
+          onArtifactDelete={id => mDeleteArtifact.mutate(id)}
           onClose={() => setSelectedStageId(null)}
         />
       )}
@@ -289,9 +300,13 @@ function draftFromStage(s: StageView): StageDraft {
 const fieldLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#64748b', display: 'block', marginBottom: 3 }
 const fieldInput: React.CSSProperties = { width: '100%', boxSizing: 'border-box', padding: '6px 8px', borderRadius: 7, border: '1px solid #cbd5e1', fontSize: 12 }
 
-function StageInspector({ stage, agents, busy, onSave, onClose }: {
-  stage: StageView; agents: RegistryAgent[]; busy: boolean
-  onSave: (body: Record<string, unknown>) => void; onClose: () => void
+function StageInspector({ stage, agents, busy, artifactBusy, onSave, onArtifactAdd, onArtifactPatch, onArtifactDelete, onClose }: {
+  stage: StageView; agents: RegistryAgent[]; busy: boolean; artifactBusy: boolean
+  onSave: (body: Record<string, unknown>) => void
+  onArtifactAdd: (stageId: string, body: Record<string, unknown>) => void
+  onArtifactPatch: (id: string, body: Record<string, unknown>) => void
+  onArtifactDelete: (id: string) => void
+  onClose: () => void
 }) {
   const [draft, setDraft] = useState<StageDraft>(() => draftFromStage(stage))
   useEffect(() => { setDraft(draftFromStage(stage)) }, [stage])
@@ -365,6 +380,65 @@ function StageInspector({ stage, agents, busy, onSave, onClose }: {
         {dirty && <span style={{ fontSize: 11, color: '#b45309' }}>unsaved changes</span>}
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 10, color: '#94a3b8' }}>Changing the stage key rewires its edges by key.</span>
+      </div>
+
+      {/* Expected artifacts (P3) */}
+      <div style={{ marginTop: 16, borderTop: '1px solid #e5e7eb', paddingTop: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <span style={fieldLabel}>Expected artifacts ({stage.expectedArtifacts.length})</span>
+          <button type="button" disabled={artifactBusy}
+            onClick={() => onArtifactAdd(stage.id, { kind: uniqueArtifactKind(stage), title: 'New artifact', format: 'MARKDOWN', required: true })}
+            style={{ fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 7, border: '1px solid #0ea5e9', background: '#fff', color: '#0ea5e9', cursor: artifactBusy ? 'default' : 'pointer' }}>
+            ＋ Artifact
+          </button>
+        </div>
+        {stage.expectedArtifacts.length === 0 ? (
+          <p style={{ fontSize: 11, color: '#94a3b8', margin: '2px 0 0' }}>No artifacts yet — this stage emits no expected output.</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {stage.expectedArtifacts.map(a => (
+              <ArtifactRow key={a.id} artifact={a} busy={artifactBusy}
+                onPatch={body => onArtifactPatch(a.id, body)} onDelete={() => onArtifactDelete(a.id)} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function uniqueArtifactKind(stage: StageView): string {
+  const existing = new Set(stage.expectedArtifacts.map(a => a.kind))
+  let i = stage.expectedArtifacts.length + 1
+  let k = `artifact_${i}`
+  while (existing.has(k)) { i++; k = `artifact_${i}` }
+  return k
+}
+
+function ArtifactRow({ artifact, busy, onPatch, onDelete }: {
+  artifact: ArtifactView; busy: boolean
+  onPatch: (body: Record<string, unknown>) => void; onDelete: () => void
+}) {
+  const [title, setTitle] = useState(artifact.title)
+  const [kind, setKind] = useState(artifact.kind)
+  useEffect(() => { setTitle(artifact.title); setKind(artifact.kind) }, [artifact.title, artifact.kind])
+  return (
+    <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', background: '#fff' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <input value={title} onChange={e => setTitle(e.target.value)} onBlur={() => { if (title.trim() && title !== artifact.title) onPatch({ title: title.trim() }) }}
+          placeholder="Title" style={{ ...fieldInput, flex: 2 }} />
+        <input value={kind} onChange={e => setKind(e.target.value.toLowerCase().replace(/[^a-z0-9_]+/g, '_'))} onBlur={() => { if (kind && kind !== artifact.kind) onPatch({ kind }) }}
+          placeholder="kind_key" style={{ ...fieldInput, flex: 1, fontFamily: 'ui-monospace, monospace' }} />
+        <button type="button" onClick={onDelete} disabled={busy} title="Delete artifact"
+          style={{ border: 'none', background: 'none', color: '#ef4444', cursor: busy ? 'default' : 'pointer', fontSize: 16, fontWeight: 800, lineHeight: 1, padding: '0 4px' }}>×</button>
+      </div>
+      <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginTop: 6 }}>
+        <select value={artifact.format} onChange={e => onPatch({ format: e.target.value })} style={{ ...fieldInput, width: 'auto', fontSize: 11, padding: '3px 6px' }}>
+          {ARTIFACT_FORMATS.map(f => <option key={f} value={f}>{f.toLowerCase()}</option>)}
+        </select>
+        <label style={{ fontSize: 11, color: '#334155', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+          <input type="checkbox" checked={artifact.required} onChange={e => onPatch({ required: e.target.checked })} /> required
+        </label>
       </div>
     </div>
   )
