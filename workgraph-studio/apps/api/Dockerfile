@@ -50,7 +50,12 @@ COPY packages/engine ./packages/engine
 RUN pnpm --filter @workgraph/api exec prisma generate --generator client
 WORKDIR /app/apps/api
 EXPOSE 8080
-CMD ["sh", "-c", "npx prisma migrate deploy && pnpm dev"]
+# dev image: apply migrations, then seed the demo data (agents + SDLC/bug-fix +
+# sample workflows + a completed blueprint session with artifacts). Idempotent
+# upserts (prisma/seed.ts → seed-demo-workflows.ts), best-effort so a seed hiccup
+# never blocks the API from starting. Runs via ts-node, present in this dev image.
+# (The prod stage ships compiled JS without ts-node, so it is NOT seeded here.)
+CMD ["sh", "-c", "npx prisma migrate deploy && (npx prisma db seed || echo 'seed skipped/failed (non-fatal)') && pnpm dev"]
 
 FROM base AS build
 WORKDIR /app
