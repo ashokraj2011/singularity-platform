@@ -11,3 +11,5 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv
 }
+
+declare module 'elkjs/lib/elk.bundled.js'

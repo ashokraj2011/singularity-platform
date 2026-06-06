@@ -650,10 +650,10 @@ function getNodeCardBadges(data: NodeData, showStatus: boolean) {
     const approvals = stages.filter(stage => stage.approvalRequired !== false).length
     const summary = getWorkbenchStageSummary(stages)
     badges.push({ label: `${stages.length || 0} stages`, color: '#ff8a3d' })
-    badges.push({ label: approvals > 0 ? `${approvals} approvals` : 'no approvals', color: approvals > 0 ? '#22c55e' : '#64748b' })
     badges.push(summary.policy)
-    badges.push(summary.validation)
-    return badges.slice(0, 4)
+    if (!summary.isValid) badges.push(summary.validation)
+    else if (approvals > 0) badges.push({ label: `${approvals} approvals`, color: '#22c55e' })
+    return badges.slice(0, 2)
   }
 
   const config = data.config as Record<string, unknown> | undefined
@@ -766,8 +766,7 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
           </p>
           <p style={{
             fontSize: 10, color: descClr, lineHeight: 1.45, margin: 0,
-            overflow: 'hidden', display: '-webkit-box',
-            WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
             {description}
           </p>
@@ -1014,11 +1013,12 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
 const nodeTypes: NodeTypes = { wgNode: WGNode }
 
 function NodePickerRow({
-  nodeType, color, Icon, label, dragPayload, actualNodeType,
+  nodeType, color, Icon, label, dragPayload, actualNodeType, onPick,
 }: {
   nodeType: string; color: string; Icon: React.ElementType
   label: string; dragPayload?: string
   actualNodeType?: string
+  onPick?: () => void
 }) {
   const description = NODE_DESCRIPTIONS[nodeType] ?? 'Add this step to the workflow.'
   const onDragStart = (e: React.DragEvent) => {
@@ -1030,9 +1030,10 @@ function NodePickerRow({
     <div
       draggable
       onDragStart={onDragStart}
+      onClick={onPick}
       style={{
         display: 'grid', gridTemplateColumns: '34px 1fr auto', gap: 10, alignItems: 'center',
-        padding: '10px', borderRadius: 8, cursor: 'grab',
+        padding: '10px', borderRadius: 8, cursor: onPick ? 'pointer' : 'grab',
         border: '1px solid rgba(148,163,184,0.20)',
         background: '#ffffff',
         boxShadow: '0 1px 0 rgba(15,23,42,0.02)',
@@ -1066,7 +1067,7 @@ function NodePickerRow({
         fontSize: 9, color: '#94a3b8', fontWeight: 800,
         textTransform: 'uppercase', letterSpacing: '0.08em',
       }}>
-        Drag
+        Add
       </span>
     </div>
   )
@@ -2752,6 +2753,26 @@ export function WorkflowStudioPage() {
     addNode.mutate({ label, nodeType, positionX: Math.round(position.x), positionY: Math.round(position.y), ...(config ? { config } : {}) })
   }, [rfInstance, addNode, isReadOnly])
 
+  const createNodeFromPalette = useCallback((nodeType: string, payload?: Record<string, unknown>) => {
+    if (isReadOnly || !reactFlowWrapper.current) return
+    const bounds = reactFlowWrapper.current.getBoundingClientRect()
+    const center = { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 }
+    const position = rfInstance
+      ? rfInstance.screenToFlowPosition(center)
+      : { x: 120 + rfNodes.length * 36, y: 120 + rfNodes.length * 24 }
+    const config = (payload?.config ?? payload) as Record<string, unknown> | undefined
+    const label = typeof payload?.label === 'string' ? payload.label : NODE_LABELS[nodeType] ?? nodeType
+    addNode.mutate({
+      label,
+      nodeType,
+      positionX: Math.round(position.x),
+      positionY: Math.round(position.y),
+      ...(config ? { config } : {}),
+    })
+    setPaletteOpen(false)
+    setNodeSearch('')
+  }, [addNode, isReadOnly, rfInstance, rfNodes.length])
+
   const onDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
@@ -2797,6 +2818,53 @@ export function WorkflowStudioPage() {
       },
     })
   }, [patchNode, setRfNodes])
+
+  const cleanLayout = useCallback(async () => {
+    if (isReadOnly || rfNodes.length === 0) return
+    const { default: ELK } = await import('elkjs/lib/elk.bundled.js')
+    const elk = new ELK()
+    const graph = {
+      id: 'workflow',
+      layoutOptions: {
+        'elk.algorithm': 'layered',
+        'elk.direction': 'RIGHT',
+        'elk.spacing.nodeNode': '80',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '120',
+        'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+        'elk.edgeRouting': 'ORTHOGONAL',
+      },
+      children: rfNodes.map(node => ({
+        id: node.id,
+        width: node.data.nodeType === 'WORKBENCH_TASK' ? 330 : 290,
+        height: node.data.nodeType === 'WORKBENCH_TASK' ? 140 : 112,
+      })),
+      edges: rfEdges.map(edge => ({
+        id: edge.id,
+        sources: [edge.source],
+        targets: [edge.target],
+      })),
+    }
+    const layout = await elk.layout(graph)
+    const positions = new Map<string, { x: number; y: number }>((layout.children ?? []).map((child: any) => [
+      child.id,
+      { x: Number(child.x ?? 0), y: Number(child.y ?? 0) },
+    ]))
+    setRfNodes(nodes => nodes.map(node => {
+      const position = positions.get(node.id)
+      return position ? { ...node, position } : node
+    }))
+    for (const node of rfNodes) {
+      const position = positions.get(node.id)
+      if (position) {
+        patchNode.mutate({
+          nodeId: node.id,
+          positionX: Math.round(position.x),
+          positionY: Math.round(position.y),
+        })
+      }
+    }
+    window.setTimeout(() => rfInstance?.fitView({ padding: 0.24, duration: 420 }), 80)
+  }, [isReadOnly, patchNode, rfEdges, rfInstance, rfNodes, setRfNodes])
 
   const handleUpdateBranch = useCallback((edgeId: string, label: string | undefined, branch: Branch) => {
     patchEdge.mutate({
@@ -3013,21 +3081,21 @@ export function WorkflowStudioPage() {
                 alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', zIndex: 1,
               }}>
                 <div style={{
-                  ...glassPanel(isLight),
-                  padding: '40px 48px', textAlign: 'center', maxWidth: 380,
+                  padding: '28px 34px', textAlign: 'center', maxWidth: 420,
                 }}>
                   <div style={{
-                    width: 64, height: 64, borderRadius: 20, margin: '0 auto 20px',
+                    width: 64, height: 64, borderRadius: 18, margin: '0 auto 20px',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    background: 'rgba(34,197,94,0.10)', border: '1.5px solid rgba(34,197,94,0.22)',
+                    background: '#ffffff', border: '1px solid rgba(15,23,42,0.10)',
+                    boxShadow: '0 12px 28px rgba(15,23,42,0.10)',
                   }}>
                     <GitBranch size={28} style={{ color: 'rgba(34,197,94,0.6)' }} />
                   </div>
-                  <p style={{ fontSize: 16, fontWeight: 700, color: panelText, marginBottom: 10 }}>
-                    Empty canvas
+                  <p style={{ fontSize: 18, fontWeight: 900, color: panelText, marginBottom: 10 }}>
+                    Start with a trigger or work stage
                   </p>
-                  <p style={{ fontSize: 11, color: panelMuted, lineHeight: 1.7 }}>
-                    Use Add node to place the first step, then connect cards directly on the canvas.
+                  <p style={{ fontSize: 12, color: panelMuted, lineHeight: 1.65 }}>
+                    Add a scheduled start, event trigger, Workbench task, or approval step. Connect cards directly on the canvas.
                   </p>
                 </div>
               </div>
@@ -3191,6 +3259,9 @@ export function WorkflowStudioPage() {
             </span>
             <ToolBtn icon={ZoomIn} title="Zoom in" onClick={() => rfInstance?.zoomIn()} />
             <ToolBtn icon={Maximize2} title="Fit view" onClick={() => rfInstance?.fitView({ padding: 0.25 })} />
+            {isDesignMode && rfNodes.length > 1 && (
+              <ToolBtn icon={Shuffle} title="Clean layout" onClick={cleanLayout} active color="#0f172a" />
+            )}
           </div>
 
           <div style={{ width: 1, height: 20, background: panelBdr, flexShrink: 0 }} />
@@ -3508,6 +3579,7 @@ export function WorkflowStudioPage() {
                               Icon={Icon}
                               label={preset.label}
                               dragPayload={JSON.stringify(preset.payload)}
+                              onPick={() => createNodeFromPalette(preset.actualNodeType, preset.payload)}
                             />
                           )
                         })}
@@ -3540,6 +3612,7 @@ export function WorkflowStudioPage() {
                               Icon={Icon}
                               label={NODE_LABELS[type] ?? type}
                               dragPayload={payload ? JSON.stringify(payload) : undefined}
+                              onPick={() => createNodeFromPalette(type, payload ?? undefined)}
                             />
                           )
                         })}
@@ -3557,6 +3630,11 @@ export function WorkflowStudioPage() {
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                         {filteredCustomNodeTypes.map(ct => {
                           const Icon = ALL_CUSTOM_ICONS[ct.icon] ?? Box
+                          const payload = {
+                            _baseType: ct.baseType, _customTypeId: ct.id,
+                            _customTypeName: ct.name, _customTypeLabel: ct.label,
+                            _customTypeColor: ct.color, _customTypeIcon: ct.icon,
+                          }
                           return (
                             <NodePickerRow
                               key={ct.id}
@@ -3565,11 +3643,8 @@ export function WorkflowStudioPage() {
                               color={ct.color}
                               Icon={Icon}
                               label={ct.label}
-                              dragPayload={JSON.stringify({
-                                _baseType: ct.baseType, _customTypeId: ct.id,
-                                _customTypeName: ct.name, _customTypeLabel: ct.label,
-                                _customTypeColor: ct.color, _customTypeIcon: ct.icon,
-                              })}
+                              dragPayload={JSON.stringify(payload)}
+                              onPick={() => createNodeFromPalette('CUSTOM', payload)}
                             />
                           )
                         })}
@@ -3939,18 +4014,28 @@ export function WorkflowStudioPage() {
 
                 {/* Errors */}
                 {validationResult.issues.filter(i => i.severity === 'error').map((issue, idx) => (
-                  <div key={idx} style={{ display: 'flex', gap: 8, marginBottom: 6, alignItems: 'flex-start' }}>
-                    <span style={{ fontSize: 10, color: '#f87171', flexShrink: 0, marginTop: 2 }}>●</span>
-                    <p style={{ fontSize: 11, color: '#f87171', lineHeight: 1.5 }}>{issue.message}</p>
+                  <div key={idx} style={{
+                    display: 'flex', gap: 10, marginBottom: 8, alignItems: 'flex-start',
+                    padding: '10px 11px', borderRadius: 12,
+                    background: isLight ? 'rgba(254,242,242,0.96)' : 'rgba(127,29,29,0.18)',
+                    border: '1px solid rgba(248,113,113,0.28)',
+                  }}>
+                    <AlertTriangle size={15} style={{ color: '#ef4444', flexShrink: 0, marginTop: 1 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <p style={{ fontSize: 9, color: '#ef4444', fontWeight: 900, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 4 }}>
+                        {issue.code.replaceAll('_', ' ')}
+                      </p>
+                      <p style={{ fontSize: 11, color: isLight ? '#7f1d1d' : '#fecaca', lineHeight: 1.5 }}>{issue.message}</p>
+                    </div>
                     {issue.nodeId && (
                       <button
                         onClick={() => {
                           const node = rfNodes.find(n => n.id === issue.nodeId)
                           if (node) { rfInstance?.setCenter(node.position.x + 75, node.position.y + 40, { zoom: 1.2, duration: 400 }); setSelectedNode(node) }
                         }}
-                        style={{ marginLeft: 'auto', flexShrink: 0, background: 'none', border: '1px solid rgba(248,113,113,0.4)', borderRadius: 5, color: '#f87171', fontSize: 9, padding: '2px 6px', cursor: 'pointer', fontWeight: 700 }}
+                        style={{ flexShrink: 0, background: '#ffffff', border: '1px solid rgba(248,113,113,0.36)', borderRadius: 999, color: '#b91c1c', fontSize: 9, padding: '4px 9px', cursor: 'pointer', fontWeight: 900 }}
                       >
-                        Show
+                        Fix
                       </button>
                     )}
                   </div>
@@ -3961,18 +4046,28 @@ export function WorkflowStudioPage() {
                   <>
                     <p style={{ fontSize: 9, fontWeight: 700, color: panelMuted, textTransform: 'uppercase', letterSpacing: '0.12em', margin: '10px 0 6px' }}>Warnings</p>
                     {validationResult.issues.filter(i => i.severity === 'warning').map((issue, idx) => (
-                      <div key={idx} style={{ display: 'flex', gap: 8, marginBottom: 5, alignItems: 'flex-start' }}>
-                        <span style={{ fontSize: 10, color: '#fbbf24', flexShrink: 0, marginTop: 2 }}>▲</span>
-                        <p style={{ fontSize: 11, color: panelMuted, lineHeight: 1.5 }}>{issue.message}</p>
+                      <div key={idx} style={{
+                        display: 'flex', gap: 10, marginBottom: 8, alignItems: 'flex-start',
+                        padding: '10px 11px', borderRadius: 12,
+                        background: isLight ? 'rgba(255,251,235,0.94)' : 'rgba(120,53,15,0.16)',
+                        border: '1px solid rgba(245,158,11,0.28)',
+                      }}>
+                        <AlertTriangle size={15} style={{ color: '#f59e0b', flexShrink: 0, marginTop: 1 }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <p style={{ fontSize: 9, color: '#d97706', fontWeight: 900, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 4 }}>
+                            {issue.code.replaceAll('_', ' ')}
+                          </p>
+                          <p style={{ fontSize: 11, color: panelMuted, lineHeight: 1.5 }}>{issue.message}</p>
+                        </div>
                         {issue.nodeId && (
                           <button
                             onClick={() => {
                               const node = rfNodes.find(n => n.id === issue.nodeId)
                               if (node) { rfInstance?.setCenter(node.position.x + 75, node.position.y + 40, { zoom: 1.2, duration: 400 }); setSelectedNode(node) }
                             }}
-                            style={{ marginLeft: 'auto', flexShrink: 0, background: 'none', border: `1px solid ${panelBdr}`, borderRadius: 5, color: panelMuted, fontSize: 9, padding: '2px 6px', cursor: 'pointer', fontWeight: 700 }}
+                            style={{ flexShrink: 0, background: '#ffffff', border: '1px solid rgba(245,158,11,0.34)', borderRadius: 999, color: '#92400e', fontSize: 9, padding: '4px 9px', cursor: 'pointer', fontWeight: 900 }}
                           >
-                            Show
+                            View
                           </button>
                         )}
                       </div>

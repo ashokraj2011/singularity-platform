@@ -247,6 +247,9 @@ importers:
       cmdk:
         specifier: ^1.1.1
         version: 1.1.1(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      elkjs:
+        specifier: ^0.9.3
+        version: 0.9.3
       idb:
         specifier: ^8.0.0
         version: 8.0.3
