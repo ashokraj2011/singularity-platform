@@ -65,12 +65,37 @@ require_compose() {
   fi
 }
 
+# App ports the platform publishes. Storage ports (5432/5434/9000/9001) are
+# owned by the Docker postgres/minio and intentionally excluded. Frees any
+# NON-Docker host process squatting on an app port (e.g. a bare-metal stack from
+# another clone) so `docker compose up` doesn't fail with "address already in
+# use". NEVER kills Docker's own proxy. Opt out with SINGULARITY_NO_FREE_PORTS=1.
+SINGULARITY_APP_PORTS=(3000 3001 3002 3003 3004 5174 5175 5176 5180 7100 8000 8001 8002 8003 8010 8080 8100 8101 8500)
+free_host_ports() {
+  if [ "${SINGULARITY_NO_FREE_PORTS:-0}" = "1" ]; then return 0; fi
+  command -v lsof >/dev/null 2>&1 || return 0
+  local port pid cmd sig
+  for sig in TERM KILL; do
+    for port in "${SINGULARITY_APP_PORTS[@]}"; do
+      for pid in $(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true); do
+        cmd="$(ps -p "$pid" -o comm= 2>/dev/null || echo '')"
+        case "$cmd" in *docker*|*Docker*|*vpnkit*) continue ;; esac   # never kill Docker's own
+        if [ "$sig" = "TERM" ]; then info "  freeing :$port — ${cmd##*/} (pid $pid)"; fi
+        kill "-$sig" "$pid" 2>/dev/null || true
+      done
+    done
+    if [ "$sig" = "TERM" ]; then sleep 1; fi
+  done
+}
+
 cmd=${1:-help}
 shift || true
 
 case "$cmd" in
   up)
     require_compose
+    info "freeing app ports held by non-Docker processes (set SINGULARITY_NO_FREE_PORTS=1 to skip)…"
+    free_host_ports
     target="${1:-}"
     if [ -n "$target" ]; then
       info "starting $target …"
