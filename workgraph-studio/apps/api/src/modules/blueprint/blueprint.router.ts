@@ -57,6 +57,22 @@ function positiveIntEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 const WORKBENCH_DEFAULT_MODEL_ALIAS = process.env.WORKBENCH_DEFAULT_MODEL_ALIAS?.trim() || undefined
+// Default per-stage model map applied at launch when the operator doesn't pass
+// stageModelAliases: code-heavy stages (design/develop) get a stronger model
+// (Sonnet) than the cheap global default (Haiku), matching the model catalog's
+// recommendation. Override per-launch via body.stageModelAliases, or globally
+// via WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES (JSON map of stageKey→alias).
+const WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES: Record<string, string> = (() => {
+  const raw = process.env.WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES?.trim()
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, string>
+    } catch { /* fall through to built-in default */ }
+  }
+  // design/develop (SDLC) + fix (bug-fix) are the code-heavy stages.
+  return { design: 'claude-sonnet-4-5', develop: 'claude-sonnet-4-5', fix: 'claude-sonnet-4-5' }
+})()
 // (2026-05-26) Bumped from 8 to 14 after design stage MAX_TURNS at
 // turn 8 on workflowInstance 8d42bedf — Architect spent 2 turns in
 // PLAN (repo_map) and 6 in EXPLORE (read_file, get_ast_slice, get_symbol,
@@ -1040,7 +1056,8 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         reuseUnchangedAttempt: body.reuseUnchangedAttempt,
         governanceMode,
         modelAlias: body.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS,
-        stageModelAliases: sanitizeStageModelAliases(body.stageModelAliases),
+        stageModelAliases: sanitizeStageModelAliases(body.stageModelAliases)
+          ?? sanitizeStageModelAliases(WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES),
         stagePhaseModelAliases: sanitizeStagePhaseModelAliases(body.stagePhaseModelAliases),
         maxContextTokens: body.maxContextTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxContextTokens,
         maxOutputTokens: body.maxOutputTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxOutputTokens,
