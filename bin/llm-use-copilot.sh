@@ -6,13 +6,13 @@
 # Every service in the stack (context-fabric, mcp-server, agent-runtime, …)
 # calls the central llm-gateway, and the gateway picks a provider from
 # .singularity/llm-providers.json + resolves a model alias from
-# .singularity/mcp-models.json. This script flips BOTH so every request —
+# .singularity/llm-models.json. This script flips BOTH so every request —
 # whether it sends a model_alias (the agents do) or not — lands on Copilot:
 #
 #   1. .singularity/llm-providers.json  → add/enable a `copilot` provider
 #      (baseUrl=<your headless server>, credentialEnv=COPILOT_TOKEN), add it to
 #      allowedProviders, and set defaultProvider/defaultModel to copilot.
-#   2. .singularity/mcp-models.json     → repoint ALL model aliases to
+#   2. .singularity/llm-models.json     → repoint ALL model aliases to
 #      provider=copilot / model=<your model> (so claude-* aliases route to
 #      Copilot too — otherwise they'd still hit Anthropic).
 #   3. .env.llm-secrets                 → set COPILOT_TOKEN (the gateway reads
@@ -48,7 +48,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROVIDERS="$ROOT/.singularity/llm-providers.json"
-CATALOG="$ROOT/.singularity/mcp-models.json"
+CATALOG="$ROOT/.singularity/llm-models.json"
 SECRETS="$ROOT/.env.llm-secrets"
 GATEWAY_PORT="${LLM_GATEWAY_HOST_PORT:-8001}"
 
@@ -227,7 +227,7 @@ json.dump(models, open(path, "w"), indent=2)
 open(path, "a").write("\n")
 print(f"   repointed {n} model aliases → copilot/{model}")
 PY
-ok "mcp-models.json → all aliases route to copilot"
+ok "llm-models.json → all aliases route to copilot"
 
 # 3) secret: set COPILOT_TOKEN in the gitignored env_file the gateway reads.
 touch "$SECRETS"

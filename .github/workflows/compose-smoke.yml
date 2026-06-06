@@ -152,13 +152,13 @@ jobs:
           cat > .singularity/llm-providers.json <<'JSON'
           {"defaultProvider":"mock","defaultModel":"mock-fast","allowedProviders":["mock"],"providers":{"mock":{"enabled":true,"defaultModel":"mock-fast"}}}
           JSON
-          cat > .singularity/mcp-models.json <<'JSON'
+          cat > .singularity/llm-models.json <<'JSON'
           [{"id":"mock","label":"Mock offline","provider":"mock","model":"mock-fast","default":true,"supportsTools":false,"costTier":"mock"}]
           JSON
 
           # llm-gateway (mock-only in CI)
           ( cd context-fabric && LLM_PROVIDER_CONFIG_PATH="$GITHUB_WORKSPACE/.singularity/llm-providers.json" \
-            LLM_MODEL_CATALOG_PATH="$GITHUB_WORKSPACE/.singularity/mcp-models.json" \
+            LLM_MODEL_CATALOG_PATH="$GITHUB_WORKSPACE/.singularity/llm-models.json" \
             ALLOW_CALLER_PROVIDER_OVERRIDE=false \
             nohup python -m uvicorn services.llm_gateway_service.app.main:app --host 0.0.0.0 --port 8001 > "$GITHUB_WORKSPACE/logs/llm-gateway.log" 2>&1 &)
 
@@ -174,7 +174,7 @@ jobs:
             MCP_AST_DB_PATH=/tmp/mcp-sandbox/.mcp-ast.sqlite \
             LLM_GATEWAY_URL=http://localhost:8001 \
             MCP_LLM_PROVIDER_CONFIG_PATH="$GITHUB_WORKSPACE/.singularity/llm-providers.json" \
-            MCP_LLM_MODEL_CATALOG_PATH="$GITHUB_WORKSPACE/.singularity/mcp-models.json" \
+            MCP_LLM_MODEL_CATALOG_PATH="$GITHUB_WORKSPACE/.singularity/llm-models.json" \
             AUDIT_GOV_URL=http://localhost:8500 \
             nohup npm run dev > "$PWD/../logs/mcp-server.log" 2>&1 &)
 

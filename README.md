@@ -584,7 +584,7 @@ This mode is intentionally strict: generated env files leave `OPENAI_API_KEY`, `
 The gateway reads two local JSON files:
 
 - `.singularity/llm-providers.json` — provider policy: allowlist, default provider/model, base URLs, credential env names, and enabled/disabled flags.
-- `.singularity/mcp-models.json` — approved workflow-facing model aliases. Workflows choose aliases; the gateway resolves aliases to real providers/models.
+- `.singularity/llm-models.json` — approved workflow-facing model aliases. Workflows choose aliases; the gateway resolves aliases to real providers/models.
 
 These generated files are intentionally ignored by git because they are local setup state. Checked-in examples live under:
 
@@ -595,7 +595,7 @@ The provider config is selected with:
 
 ```bash
 LLM_PROVIDER_CONFIG_PATH=/etc/singularity/llm-providers.json
-LLM_MODEL_CATALOG_PATH=/etc/singularity/mcp-models.json
+LLM_MODEL_CATALOG_PATH=/etc/singularity/llm-models.json
 ```
 
 Secrets stay in generated env files, not JSON, and are passed only to `llm-gateway`:

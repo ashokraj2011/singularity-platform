@@ -62,6 +62,14 @@ def _load_catalog() -> List[Dict[str, Any]]:
     if _loaded_catalog is not None:
         return _loaded_catalog
     path = Path(settings.model_catalog_path)
+    if not path.exists():
+        # Back-compat: the catalog was historically named `mcp-models.json`; the
+        # canonical name is now `llm-models.json` (it has nothing to do with MCP —
+        # it is the LLM gateway's model-alias catalog). Fall back to the sibling
+        # alternate name so old configs/mounts keep working.
+        alt = path.with_name("llm-models.json" if path.name == "mcp-models.json" else "mcp-models.json")
+        if alt.exists():
+            path = alt
     try:
         raw = json.loads(path.read_text())
     except FileNotFoundError:

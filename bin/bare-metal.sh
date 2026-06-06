@@ -187,7 +187,7 @@ export MCP_BEARER_TOKEN="demo-bearer-token-must-be-min-16-chars"
 
 export LLM_GATEWAY_URL="http://localhost:8001"
 export LLM_PROVIDER_CONFIG_PATH="$ROOT/.singularity/llm-providers.json"
-export LLM_MODEL_CATALOG_PATH="$ROOT/.singularity/mcp-models.json"
+export LLM_MODEL_CATALOG_PATH="$ROOT/.singularity/llm-models.json"
 export WORKBENCH_DEFAULT_MODEL_ALIAS="mock"
 EOF
   ok "wrote env to ${ENV_FILE}"
@@ -239,8 +239,8 @@ EOF
 }
 JSON
   fi
-  if [ ! -f "$ROOT/.singularity/mcp-models.json" ]; then
-    cat > "$ROOT/.singularity/mcp-models.json" <<'JSON'
+  if [ ! -f "$ROOT/.singularity/llm-models.json" ]; then
+    cat > "$ROOT/.singularity/llm-models.json" <<'JSON'
 [
   {
     "id": "mock",

@@ -814,7 +814,7 @@ services:
       LOG_LEVEL: info
       # External config files declare providers + model aliases. Mounted RO.
       LLM_PROVIDER_CONFIG_PATH: /etc/singularity/llm-providers.json
-      LLM_MODEL_CATALOG_PATH:   /etc/singularity/mcp-models.json
+      LLM_MODEL_CATALOG_PATH:   /etc/singularity/llm-models.json
       # Optional bearer that every consumer must present. Empty = open in dev.
       LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
       # When ALLOW_CALLER_PROVIDER_OVERRIDE=false the gateway refuses
@@ -1261,7 +1261,7 @@ services:
       # External catalog (display-only after M33 — the gateway is authoritative).
       MCP_ALLOWED_LLM_PROVIDERS: ${MCP_ALLOWED_LLM_PROVIDERS:-}
       MCP_LLM_PROVIDER_CONFIG_PATH: ${MCP_LLM_PROVIDER_CONFIG_CONTAINER_PATH:-/app/.singularity/llm-providers.json}
-      MCP_LLM_MODEL_CATALOG_PATH:  ${MCP_LLM_MODEL_CATALOG_CONTAINER_PATH:-/app/.singularity/mcp-models.json}
+      MCP_LLM_MODEL_CATALOG_PATH:  ${MCP_LLM_MODEL_CATALOG_CONTAINER_PATH:-/app/.singularity/llm-models.json}
       MAX_AGENT_STEPS: 12
       # M64 — Overall agent-loop budget. Bumped 240 → 300 so a single
       # LLM call with the gateway mid-retry of a 529 has time to

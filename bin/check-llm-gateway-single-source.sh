@@ -224,7 +224,7 @@ if providers_path.exists():
             if not str(body.get("baseUrl", "")).strip():
                 failures.append(f"{providers_path}: enabled provider {provider} is missing baseUrl")
 
-catalog_path = Path(".singularity/mcp-models.json")
+catalog_path = Path(".singularity/llm-models.json")
 if catalog_path.exists():
     catalog = json.loads(catalog_path.read_text())
     if isinstance(catalog, list):

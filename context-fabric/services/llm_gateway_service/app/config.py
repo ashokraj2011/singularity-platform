@@ -2,8 +2,9 @@
 
 This service is the ONLY place provider keys are read. It also owns the
 external provider config file (`.singularity/llm-providers.json`) and the
-model alias catalog (`.singularity/mcp-models.json`). Every other service
-calls the routes here over HTTP via `LLM_GATEWAY_URL`.
+model alias catalog (`.singularity/llm-models.json`, formerly `mcp-models.json`
+— a back-compat fallback to the old name remains in provider_config). Every
+other service calls the routes here over HTTP via `LLM_GATEWAY_URL`.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ class Settings(BaseSettings):
     # External config paths (mounted RO at /etc/singularity in docker, or
     # ./.singularity/ in bare-metal dev).
     provider_config_path: str = "/etc/singularity/llm-providers.json"
-    model_catalog_path:   str = "/etc/singularity/mcp-models.json"
+    model_catalog_path:   str = "/etc/singularity/llm-models.json"
 
     # Per-provider env-var-resolved credentials (read ONLY here).
     openai_api_key:     Optional[str] = None

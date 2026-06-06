@@ -14,7 +14,7 @@ local_only_patterns=(
   ".env"
   ".singularity/config.local.json"
   ".singularity/llm-providers.json"
-  ".singularity/mcp-models.json"
+  ".singularity/llm-models.json"
   ".singularity/git-credentials"
 )
 

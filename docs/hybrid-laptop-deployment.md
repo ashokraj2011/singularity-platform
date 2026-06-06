@@ -184,7 +184,7 @@ python -m venv .venv && . .venv/bin/activate
 pip install -r services/llm_gateway_service/requirements.txt
 export PYTHONPATH="$PWD:$PWD/shared"
 export LLM_PROVIDER_CONFIG_PATH=./.singularity/llm-providers.json
-export LLM_MODEL_CATALOG_PATH=./.singularity/mcp-models.json
+export LLM_MODEL_CATALOG_PATH=./.singularity/llm-models.json
 export ANTHROPIC_API_KEY=...          # or COPILOT_TOKEN, etc. (laptop only)
 export LLM_GATEWAY_BEARER=<optional-strong-bearer>
 uvicorn services.llm_gateway_service.app.main:app --host 0.0.0.0 --port 8001

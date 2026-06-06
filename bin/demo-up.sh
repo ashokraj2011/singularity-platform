@@ -100,7 +100,7 @@ sleep 1
    MCP_AST_DB_PATH="$SANDBOX/.singularity/mcp-ast.sqlite" \
    LLM_GATEWAY_URL="$LLM_GATEWAY_URL" \
    MCP_LLM_PROVIDER_CONFIG_PATH="$ROOT/.singularity/llm-providers.json" \
-   MCP_LLM_MODEL_CATALOG_PATH="$ROOT/.singularity/mcp-models.json" \
+   MCP_LLM_MODEL_CATALOG_PATH="$ROOT/.singularity/llm-models.json" \
    AUDIT_GOV_URL="${AUDIT_GOV_URL:-http://localhost:8500}" \
    MAX_AGENT_STEPS=8 \
    npm run dev > "$LOG_DIR/mcp-server.log" 2>&1 &)

@@ -776,7 +776,7 @@ Important local files:
 
 - `.singularity/config.local.json`
 - `.singularity/llm-providers.json`
-- `.singularity/mcp-models.json`
+- `.singularity/llm-models.json`
 - generated service env files created by `./singularity.sh config write`
 
 ### 11.2 Common Environment Areas
