@@ -188,9 +188,18 @@ Operators wanting reproducible deployments author a
 
 ## Bare-metal alternative — single Postgres, no Docker
 
-For dev machines that already have Postgres and don't want Docker. Runs real IAM, agent-and-tools services, Workgraph API/web, blueprint-workbench, audit-governance, context-api, context-memory, formal-verifier, the local Agent Execution Runtime, and the UserAndCapabillity SPA (IAM admin + capability-governance authoring). Context Fabric stores run on Postgres (DB `singularity_context_fabric`), matching the Docker stack. It skips metrics-ledger (sunset; savings moved to audit-gov), MinIO, and portal.
+For dev machines that already have Postgres and don't want Docker. Runs real IAM, agent-and-tools services, Workgraph API/web, blueprint-workbench, audit-governance, context-api, context-memory, formal-verifier, the local Agent Execution Runtime, the UserAndCapabillity SPA (IAM admin + capability-governance authoring), and the portal. Context Fabric stores run on Postgres (DB `singularity_context_fabric`), matching the Docker stack. It skips metrics-ledger (sunset; savings moved to audit-gov) and MinIO.
 
-### Just run the script (recommended)
+### Simplest — the interactive wizard
+
+```bash
+bin/setup.sh        # asks Postgres + LLM, then brings everything up, seeds, smoke-checks, prints URLs
+bin/setup.sh --yes  # non-interactive: reuse saved answers (.singularity/setup.conf) or defaults
+```
+
+It wraps everything below — collects a few answers once, runs the stack, optionally points the LLM gateway at an OpenAI-compatible bridge (Copilot etc.), and remembers your answers for next time.
+
+### Or run the stack script directly
 
 ```bash
 bin/bare-metal.sh up <db_user> [db_password] [db_host] [db_port]

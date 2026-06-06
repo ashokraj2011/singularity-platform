@@ -521,14 +521,38 @@ cmd_logs() {
 }
 
 # ── Dispatch ───────────────────────────────────────────────────────────────
+# ── reset-db ────────────────────────────────────────────────────────────────
+# Drop every platform database for a clean slate. DESTRUCTIVE. Services holding
+# a connection block a drop, so run 'down' first (DROP … WITH (FORCE) also
+# terminates lingering sessions on PG 13+). Then 'up' recreates + reseeds.
+cmd_reset_db() {
+  local db_user="${1:?usage: $0 reset-db <db_user> [db_password] [db_host] [db_port]}"
+  local db_pass="${2:-${PGPASSWORD:-postgres}}"
+  local db_host="${3:-localhost}"
+  local db_port="${4:-5432}"
+  require psql
+  warn "DROPPING all Singularity databases on ${db_user}@${db_host}:${db_port} — ALL DATA WILL BE LOST."
+  local db
+  for db in singularity singularity_composer workgraph audit_governance singularity_iam singularity_context_fabric; do
+    if PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d postgres \
+         -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE);" >/dev/null 2>&1; then
+      dim "  dropped $db"
+    else
+      warn "  could not drop $db — stop connected services first ('$0 down') and retry"
+    fi
+  done
+  ok "databases dropped — run '$0 up <db_user>' to recreate fresh."
+}
+
 cmd="${1:-help}"
 shift || true
 case "$cmd" in
-  up)     cmd_up "$@" ;;
-  down)   cmd_down ;;
-  smoke)  cmd_smoke ;;
-  status) cmd_status ;;
-  logs)   cmd_logs "$@" ;;
+  up)       cmd_up "$@" ;;
+  down)     cmd_down ;;
+  reset-db) cmd_reset_db "$@" ;;
+  smoke)    cmd_smoke ;;
+  status)   cmd_status ;;
+  logs)     cmd_logs "$@" ;;
   *)
     cat <<USAGE
 Singularity bare-metal launcher.
@@ -536,6 +560,10 @@ Singularity bare-metal launcher.
   $0 up <db_user> [db_password] [db_host] [db_port]
                             create DBs, install deps, push schemas, seed,
                             boot all services. Idempotent.
+
+  $0 reset-db <db_user> [db_password] [db_host] [db_port]
+                            DROP all platform databases (clean slate). DESTRUCTIVE.
+                            Run '$0 down' first, then '$0 up' to recreate fresh.
 
   $0 smoke                  curl every /health endpoint — green when healthy.
   $0 status                 list running PIDs.
