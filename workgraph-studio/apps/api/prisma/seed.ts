@@ -238,43 +238,9 @@ async function main() {
     },
   })
 
-  // Sample Workflow: Business Initiative Delivery
-  const template = await prisma.workflow.upsert({
-    where: { id: '30000000-0000-0000-0000-000000000001' },
-    update: {},
-    create: {
-      id: '30000000-0000-0000-0000-000000000001',
-      name: 'Business Initiative Delivery',
-      description: 'Standard template for delivering business initiatives from intake to outcome',
-      teamId: platformTeam.id,
-    },
-  })
-
-  await prisma.workflowVersion.upsert({
-    where: { templateId_version: { templateId: template.id, version: 1 } },
-    update: {},
-    create: {
-      templateId: template.id,
-      version: 1,
-      graphSnapshot: {
-        phases: [
-          { name: 'Intake', displayOrder: 0 },
-          { name: 'Impact Analysis', displayOrder: 1 },
-          { name: 'Planning', displayOrder: 2 },
-          { name: 'Execution', displayOrder: 3 },
-          { name: 'Launch Review', displayOrder: 4 },
-        ],
-        nodes: [
-          { nodeType: 'HUMAN_TASK', label: 'Define Business Intent', config: { assignmentMode: 'TEAM_QUEUE' } },
-          { nodeType: 'AGENT_TASK', label: 'Generate Impact Analysis', config: { agentId: 'a0000000-0000-0000-0000-000000000001' } },
-          { nodeType: 'APPROVAL', label: 'Review Impact Analysis', config: {} },
-          { nodeType: 'AGENT_TASK', label: 'Generate Epic Bundle', config: { agentId: 'a0000000-0000-0000-0000-000000000002' } },
-          { nodeType: 'APPROVAL', label: 'Approve Epic Bundle', config: {} },
-          { nodeType: 'TOOL_REQUEST', label: 'Create Jira Epics', config: { toolId: 't0000000-0000-0000-0000-000000000001' } },
-        ],
-      },
-    },
-  })
+  // (Legacy 'Business Initiative Delivery' sample removed — the curated demo
+  //  workflow set now lives entirely in seedDemoWorkflows: SDLC, Bug Fix,
+  //  Epic → Story, Approval Pipeline, Branching Review.)
 
   // Seed admin user
   const adminPasswordHash = await bcrypt.hash('admin123', 12)
@@ -349,12 +315,19 @@ async function main() {
       description: 'Allow the Foundry to dispatch LLM patch tasks when the deterministic generator leaves a gap. When OFF the deterministic spine still runs but the gap report is returned unresolved.',
     },
   ]
-  for (const f of codeFoundryFlags) {
-    await prisma.featureFlag.upsert({
-      where: { key: f.key },
-      update: { description: f.description },  // never override admin-toggled `enabled` on re-seed
-      create: { key: f.key, enabled: f.enabled, description: f.description },
-    })
+  // Optional (code-foundry) feature flags — never let this non-core step abort
+  // the whole seed. If the feature_flags table is somehow absent (legacy schema
+  // drift), log and continue rather than failing the demo seed.
+  try {
+    for (const f of codeFoundryFlags) {
+      await prisma.featureFlag.upsert({
+        where: { key: f.key },
+        update: { description: f.description },  // never override admin-toggled `enabled` on re-seed
+        create: { key: f.key, enabled: f.enabled, description: f.description },
+      })
+    }
+  } catch (e) {
+    console.warn(`  ⚠ feature-flag seed skipped (non-fatal): ${(e as Error).message}`)
   }
 
   console.log('Seed complete!')
