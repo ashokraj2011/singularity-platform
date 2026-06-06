@@ -278,7 +278,7 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
     <div style={{ border: '1px solid #dbe4f0', borderRadius: 10, background: '#fff', marginBottom: fullSize ? 0 : 14, overflow: 'hidden', height: fullSize ? '100%' : undefined, display: fullSize ? 'flex' : undefined, flexDirection: fullSize ? 'column' : undefined }}>
       {/* Toolbar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderBottom: '1px solid #e5e7eb', flexWrap: 'wrap' }}>
-        <strong style={{ fontSize: 13, color: '#0f172a' }}>Stage graph</strong>
+        <strong style={{ fontSize: 13, color: '#0f172a' }} title="The loop this Workbench Task node owns">{data?.name || 'Stage graph'}</strong>
         <span style={{ fontSize: 11, color: '#64748b' }}>{counts.stages} stages · {counts.fwd} forward · {counts.sb} send-back{busy ? ' · saving…' : ''}</span>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 11, color: '#64748b' }}>Connect as:</span>
