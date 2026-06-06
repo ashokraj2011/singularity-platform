@@ -142,7 +142,7 @@ if [ "$LLM_MODE" = "bridge" ]; then
   lsof -ti :8001 2>/dev/null | xargs kill -9 2>/dev/null || true
   ( cd "$ROOT/context-fabric" && \
       LLM_PROVIDER_CONFIG_PATH="${LLM_PROVIDER_CONFIG_PATH:-$ROOT/.singularity/llm-providers.json}" \
-      LLM_MODEL_CATALOG_PATH="${LLM_MODEL_CATALOG_PATH:-$ROOT/.singularity/mcp-models.json}" \
+      LLM_MODEL_CATALOG_PATH="${LLM_MODEL_CATALOG_PATH:-$ROOT/.singularity/llm-models.json}" \
       COPILOT_TOKEN="${COPILOT_TOKEN:-$LLM_TOKEN}" ALLOW_CALLER_PROVIDER_OVERRIDE=false \
       nohup "$PYBIN" -m uvicorn services.llm_gateway_service.app.main:app --host 0.0.0.0 --port 8001 \
       > "$ROOT/logs/llm-gateway.log" 2>&1 & )

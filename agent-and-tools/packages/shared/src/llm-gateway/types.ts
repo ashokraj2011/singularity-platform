@@ -29,7 +29,7 @@ export interface ToolCall {
 export type FinishReason = "stop" | "tool_call" | "length" | "error";
 
 export interface ChatCompletionRequest {
-  /** Preferred — pick a curated alias from .singularity/mcp-models.json. */
+  /** Preferred — pick a curated alias from .singularity/llm-models.json. */
   model_alias?: string;
 
   messages: ChatMessage[];

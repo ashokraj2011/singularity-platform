@@ -68,7 +68,7 @@ export async function GET() {
     authMode: process.env.MCP_BEARER_TOKEN?.trim() ? "bearer" : "none",
     configuredPaths: {
       providerConfigPath: configuredPath("LLM_PROVIDER_CONFIG_PATH", "/etc/singularity/llm-providers.json"),
-      modelCatalogPath: configuredPath("LLM_MODEL_CATALOG_PATH", "/etc/singularity/mcp-models.json"),
+      modelCatalogPath: configuredPath("LLM_MODEL_CATALOG_PATH", "/etc/singularity/llm-models.json"),
     },
     consumers: {
       agentRuntimeUrl: process.env.AGENT_RUNTIME_URL ?? null,

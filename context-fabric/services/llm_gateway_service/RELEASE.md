@@ -24,7 +24,7 @@ Request validation rejects callers attempting `provider` overrides when
 | Var                                       | Default                                                | Notes                                                       |
 |-------------------------------------------|--------------------------------------------------------|-------------------------------------------------------------|
 | `LLM_PROVIDER_CONFIG_PATH`                | `/etc/singularity/llm-providers.json`                  | Provider config (base URLs, API key references).            |
-| `LLM_MODEL_CATALOG_PATH`                  | `/etc/singularity/mcp-models.json`                     | Alias → (provider, model, pricing) map.                      |
+| `LLM_MODEL_CATALOG_PATH`                  | `/etc/singularity/llm-models.json`                     | Alias → (provider, model, pricing) map.                      |
 | `LLM_GATEWAY_BEARER`                      | empty                                                  | When set, every caller must `Authorization: Bearer …`.       |
 | `ALLOW_CALLER_PROVIDER_OVERRIDE`          | `false`                                                | When true, callers can bypass `model_alias` (dev only).      |
 | `UPSTREAM_TIMEOUT_SEC`                    | `300` (M64)                                            | Wait on the upstream provider before aborting.               |
@@ -60,5 +60,5 @@ The gateway has no DB dependency.
 ## Known limitations
 
 - `openai_compat` provider has no retry logic of its own — only the Anthropic provider implements the M64 retry set. Adding the same logic to `openai_compat.py` is tracked as a follow-up.
-- The model catalog is loaded at startup, not hot-reloaded. Changes to `mcp-models.json` require a container restart.
+- The model catalog is loaded at startup, not hot-reloaded. Changes to `llm-models.json` require a container restart.
 - No per-caller rate limit at the gateway layer. Rate limiting happens upstream-side (provider quotas) and downstream-side (audit-gov budgets).

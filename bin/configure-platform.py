@@ -273,7 +273,7 @@ def config_template(profile: str, args: argparse.Namespace | None = None) -> dic
             "allowedProviders": "copilot" if copilot_only else provider,
             "providerConfigPath": ".singularity/llm-providers.json",
             "providerConfigJson": "",
-            "modelCatalogPath": ".singularity/mcp-models.json",
+            "modelCatalogPath": ".singularity/llm-models.json",
             "modelCatalogJson": "",
             "openai": {
                 "apiKey": openai_key if provider == "openai" and not copilot_only else "",
@@ -797,7 +797,7 @@ def command_init(args: argparse.Namespace) -> None:
         return
     command_write(args)
     if args.profile in COPILOT_ONLY_PROFILES:
-        args.path = ".singularity/mcp-models.json"
+        args.path = ".singularity/llm-models.json"
         args.default_alias = "copilot"
         args.copilot_only = True
         args.copilot_model = getattr(args, "llm_model", None) or "gpt-4o"
@@ -950,7 +950,7 @@ def apply_copilot_only(
     set_path(data, "llm.allowedProviders", "copilot")
     set_path(data, "llm.providerConfigPath", ".singularity/llm-providers.json")
     set_path(data, "llm.providerConfigJson", "")
-    set_path(data, "llm.modelCatalogPath", ".singularity/mcp-models.json")
+    set_path(data, "llm.modelCatalogPath", ".singularity/llm-models.json")
     set_path(data, "llm.modelCatalogJson", "")
     set_path(data, "llm.openai.apiKey", "")
     set_path(data, "llm.openai.baseUrl", "")
@@ -981,14 +981,14 @@ def command_office_copilot_only(args: argparse.Namespace) -> None:
     args.anthropic_api_key = ""
     args.copilot_base_url = "https://api.githubcopilot.com"
     command_write(args)
-    args.path = ".singularity/mcp-models.json"
+    args.path = ".singularity/llm-models.json"
     args.default_alias = "copilot"
     args.copilot_only = True
     command_mcp_catalog(args)
     print("\nOffice Copilot-only mode is active.")
     print("Non-Copilot provider keys are blanked in generated env files and MCP enforces:")
     print("  .singularity/llm-providers.json")
-    print("  .singularity/mcp-models.json")
+    print("  .singularity/llm-models.json")
     print("  MCP_ALLOWED_LLM_PROVIDERS=copilot")
     print("\nIf you only use the GitHub Copilot CLI tools, make sure this passes:")
     print("  cd mcp-server && npm run build && npx singularity-mcp doctor")
@@ -1672,7 +1672,7 @@ def command_mcp_catalog(args: argparse.Namespace) -> None:
         raise SystemExit(
             "Generated model catalogs are restricted to mock or Copilot. "
             "Use --default-alias mock locally, --copilot-only in office mode, "
-            "or edit .singularity/mcp-models.json explicitly for another approved provider."
+            "or edit .singularity/llm-models.json explicitly for another approved provider."
         )
     catalog = [
         {
@@ -1770,7 +1770,7 @@ def command_mcp_catalog(args: argparse.Namespace) -> None:
 
 def command_models(_: argparse.Namespace) -> None:
     values = default_values(argparse.Namespace())
-    catalog_path = values.get("MCP_LLM_MODEL_CATALOG_PATH") or ".singularity/mcp-models.json"
+    catalog_path = values.get("MCP_LLM_MODEL_CATALOG_PATH") or ".singularity/llm-models.json"
     p = Path(catalog_path)
     if not p.is_absolute():
         p = ROOT / p
@@ -1965,7 +1965,7 @@ def main() -> None:
     p_mcp.set_defaults(func=command_mcp_register)
 
     p_mcp_catalog = sub.add_parser("mcp-catalog", help="Create a local MCP model catalog file and wire env files to it")
-    p_mcp_catalog.add_argument("--path", default=".singularity/mcp-models.json")
+    p_mcp_catalog.add_argument("--path", default=".singularity/llm-models.json")
     p_mcp_catalog.add_argument("--default-alias", choices=["mock", "copilot"], default="mock")
     p_mcp_catalog.add_argument("--copilot-only", action="store_true", help="Write a catalog containing only the GitHub Copilot alias")
     p_mcp_catalog.add_argument("--copilot-model", default="gpt-4o")

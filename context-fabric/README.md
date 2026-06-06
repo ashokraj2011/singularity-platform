@@ -7,7 +7,7 @@ Context Fabric is a standalone LLM context optimization platform. It sits betwee
 This MVP contains four independent FastAPI services:
 
 1. **context-api-service** — public API for clients. Orchestrates memory, context compile, MCP execution, and metrics.
-2. **llm-gateway-service** — the only provider-calling gateway. Provider/model selection comes from `.singularity/llm-providers.json` and `.singularity/mcp-models.json`; raw provider/model request overrides are disabled by default.
+2. **llm-gateway-service** — the only provider-calling gateway. Provider/model selection comes from `.singularity/llm-providers.json` and `.singularity/llm-models.json`; raw provider/model request overrides are disabled by default.
 3. **context-memory-service** — conversation storage, summaries, memories, and context compiler.
 4. **metrics-ledger-service** — token-savings and cost-savings ledger.
 
