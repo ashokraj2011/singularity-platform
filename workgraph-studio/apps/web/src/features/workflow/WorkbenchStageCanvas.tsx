@@ -8,10 +8,12 @@
  * write-throughs to the runtime loopDefinition + reconciles governance — so the
  * blueprint runtime is untouched.
  *
- * P1 scope: add / delete stage, connect / delete edge (FORWARD|SEND_BACK),
- * drag-to-reposition (persisted). Per-stage field editing (agentRole, policies,
- * artifacts, questions) lands in P2 (the stage inspector); for now a stage is
- * created with sensible defaults and the legacy accordion stays available below.
+ * P1: add / delete stage, connect / delete edge (FORWARD|SEND_BACK),
+ * drag-to-reposition (persisted).
+ * P2: click a stage → inline inspector to edit identity (label/key/role/agent
+ * template), policies (context/tool), flags (repoAccess/required/terminal/
+ * approval), and prompt profile → PATCH /stages. Artifacts/questions land in P3;
+ * the legacy accordion stays available (collapsed) until P3 subsumes it.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -22,23 +24,31 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { api } from '../../lib/api'
+import { fetchAgents, type RegistryAgent } from '../../lib/registry'
 
 type StageView = {
   id: string
   stageKey: string
   label: string
   agentRole: string
+  agentTemplateId: string | null
+  promptProfileKey: string | null
   ordinal: number
   positionX: number | null
   positionY: number | null
+  required: boolean
   terminal: boolean
   approvalRequired: boolean
+  repoAccess: boolean
   toolPolicy: string
   contextPolicy: string
   expectedArtifacts: Array<{ id: string; kind: string; title: string }>
 }
 type EdgeView = { id: string; fromStageId: string; toStageId: string; kind: 'FORWARD' | 'SEND_BACK'; label: string | null }
-type DefinitionView = { id: string; name: string; stages: StageView[]; edges: EdgeView[] }
+type DefinitionView = { id: string; name: string; capabilityId: string | null; stages: StageView[]; edges: EdgeView[] }
+
+const CONTEXT_POLICIES = ['NONE', 'STORY_ONLY', 'REPO_READ_ONLY', 'CODE_EDIT', 'VERIFY_ONLY', 'EVIDENCE_REVIEW'] as const
+const TOOL_POLICIES = ['NONE', 'READ_ONLY', 'MUTATION', 'VERIFICATION'] as const
 
 const NODE_W = 230
 
@@ -109,8 +119,17 @@ function Canvas({ nodeId, onSelectStage }: { nodeId: string; onSelectStage?: (k:
   const mDeleteEdge = useMutation({ mutationFn: (id: string) => api.delete(`${base}/edges/${id}`), onSuccess: refresh, onError: onErr })
 
   const [edgeKind, setEdgeKind] = useState<'FORWARD' | 'SEND_BACK'>('FORWARD')
+  const [selectedStageId, setSelectedStageId] = useState<string | null>(null)
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
+
+  // P2 — agents for the stage inspector's agent-template picker (capability-scoped).
+  const { data: agents } = useQuery<RegistryAgent[]>({
+    queryKey: ['workbench-agents', data?.capabilityId ?? null],
+    queryFn: () => fetchAgents(data?.capabilityId ?? undefined),
+    enabled: !!data,
+    staleTime: 60_000,
+  })
 
   // Sync RF state from the server view whenever it changes.
   useEffect(() => {
@@ -146,6 +165,13 @@ function Canvas({ nodeId, onSelectStage }: { nodeId: string; onSelectStage?: (k:
 
   const onNodesDelete = useCallback((deleted: Node[]) => { deleted.forEach(n => mDeleteStage.mutate(n.id)) }, [mDeleteStage])
   const onEdgesDelete = useCallback((deleted: RFEdge[]) => { deleted.forEach(e => mDeleteEdge.mutate(e.id)) }, [mDeleteEdge])
+  const onNodeClick = useCallback((_e: unknown, node: Node) => setSelectedStageId(node.id), [])
+
+  // Drop the selection if its stage was deleted/renamed out from under us.
+  useEffect(() => {
+    if (selectedStageId && data && !data.stages.some(s => s.id === selectedStageId)) setSelectedStageId(null)
+  }, [data, selectedStageId])
+  const selectedStage = useMemo(() => data?.stages.find(s => s.id === selectedStageId) ?? null, [data, selectedStageId])
 
   const onAddStage = useCallback(() => {
     const label = window.prompt('New stage label', 'New Stage')
@@ -206,6 +232,7 @@ function Canvas({ nodeId, onSelectStage }: { nodeId: string; onSelectStage?: (k:
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
             onConnect={onConnect} onNodeDragStop={onNodeDragStop}
             onNodesDelete={onNodesDelete} onEdgesDelete={onEdgesDelete}
+            onNodeClick={onNodeClick} onPaneClick={() => setSelectedStageId(null)}
             fitView proOptions={{ hideAttribution: true }} deleteKeyCode={['Backspace', 'Delete']}
           >
             <Background color="#e2e8f0" gap={18} />
@@ -214,7 +241,115 @@ function Canvas({ nodeId, onSelectStage }: { nodeId: string; onSelectStage?: (k:
         )}
       </div>
       <div style={{ fontSize: 10, color: '#64748b', padding: '6px 12px', borderTop: '1px solid #eef2f7' }}>
-        Drag bottom→top handles to connect (toggle Forward/Send-back above). Select a node/edge + Delete to remove. Drag to reposition (saved). Per-stage config editing arrives next.
+        Click a stage to edit it. Drag bottom→top handles to connect (toggle Forward/Send-back above). Select a node/edge + Delete to remove. Drag to reposition (saved).
+      </div>
+      {selectedStage && (
+        <StageInspector
+          key={selectedStage.id}
+          stage={selectedStage}
+          agents={agents ?? []}
+          busy={mPatchStage.isPending}
+          onSave={body => mPatchStage.mutate({ id: selectedStage.id, body })}
+          onClose={() => setSelectedStageId(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Stage inspector (P2) ────────────────────────────────────────────────────
+type StageDraft = {
+  label: string; stageKey: string; agentRole: string; agentTemplateId: string
+  promptProfileKey: string; contextPolicy: string; toolPolicy: string
+  repoAccess: boolean; required: boolean; terminal: boolean; approvalRequired: boolean
+}
+function draftFromStage(s: StageView): StageDraft {
+  return {
+    label: s.label, stageKey: s.stageKey, agentRole: s.agentRole,
+    agentTemplateId: s.agentTemplateId ?? '', promptProfileKey: s.promptProfileKey ?? '',
+    contextPolicy: s.contextPolicy, toolPolicy: s.toolPolicy,
+    repoAccess: s.repoAccess, required: s.required, terminal: s.terminal, approvalRequired: s.approvalRequired,
+  }
+}
+const fieldLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#64748b', display: 'block', marginBottom: 3 }
+const fieldInput: React.CSSProperties = { width: '100%', boxSizing: 'border-box', padding: '6px 8px', borderRadius: 7, border: '1px solid #cbd5e1', fontSize: 12 }
+
+function StageInspector({ stage, agents, busy, onSave, onClose }: {
+  stage: StageView; agents: RegistryAgent[]; busy: boolean
+  onSave: (body: Record<string, unknown>) => void; onClose: () => void
+}) {
+  const [draft, setDraft] = useState<StageDraft>(() => draftFromStage(stage))
+  useEffect(() => { setDraft(draftFromStage(stage)) }, [stage])
+  const set = <K extends keyof StageDraft>(k: K, v: StageDraft[K]) => setDraft(d => ({ ...d, [k]: v }))
+  const dirty = JSON.stringify(draft) !== JSON.stringify(draftFromStage(stage))
+
+  // Keep the current template id selectable even if it's not in the fetched list.
+  const agentOptions = useMemo(() => {
+    const opts = agents.map(a => ({ id: a.id, name: a.name }))
+    if (draft.agentTemplateId && !opts.some(o => o.id === draft.agentTemplateId)) opts.unshift({ id: draft.agentTemplateId, name: `(current) ${draft.agentTemplateId.slice(0, 8)}…` })
+    return opts
+  }, [agents, draft.agentTemplateId])
+
+  const save = () => onSave({
+    label: draft.label.trim(),
+    stageKey: draft.stageKey.trim(),
+    agentRole: draft.agentRole.trim(),
+    agentTemplateId: draft.agentTemplateId || null,
+    promptProfileKey: draft.promptProfileKey.trim() || null,
+    contextPolicy: draft.contextPolicy,
+    toolPolicy: draft.toolPolicy,
+    repoAccess: draft.repoAccess, required: draft.required, terminal: draft.terminal, approvalRequired: draft.approvalRequired,
+  })
+
+  return (
+    <div style={{ borderTop: '1px solid #e5e7eb', background: '#f8fafc', padding: '12px 14px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <strong style={{ fontSize: 13, color: '#0f172a' }}>Edit stage · <span style={{ fontFamily: 'ui-monospace, monospace', color: '#475569' }}>{stage.stageKey}</span></strong>
+        <button type="button" onClick={onClose} style={{ fontSize: 11, border: 'none', background: 'none', cursor: 'pointer', color: '#64748b', fontWeight: 700 }}>✕ close</button>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <div><label style={fieldLabel}>Label</label><input style={fieldInput} value={draft.label} onChange={e => set('label', e.target.value)} /></div>
+        <div><label style={fieldLabel}>Stage key</label><input style={{ ...fieldInput, fontFamily: 'ui-monospace, monospace' }} value={draft.stageKey} onChange={e => set('stageKey', e.target.value.toUpperCase())} /></div>
+        <div><label style={fieldLabel}>Agent role</label><input style={fieldInput} value={draft.agentRole} onChange={e => set('agentRole', e.target.value)} /></div>
+        <div>
+          <label style={fieldLabel}>Agent template</label>
+          <select style={fieldInput} value={draft.agentTemplateId} onChange={e => set('agentTemplateId', e.target.value)}>
+            <option value="">— none (use role binding) —</option>
+            {agentOptions.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={fieldLabel}>Context policy</label>
+          <select style={fieldInput} value={draft.contextPolicy} onChange={e => set('contextPolicy', e.target.value)}>
+            {CONTEXT_POLICIES.map(p => <option key={p} value={p}>{p.replaceAll('_', ' ').toLowerCase()}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={fieldLabel}>Tool policy</label>
+          <select style={fieldInput} value={draft.toolPolicy} onChange={e => set('toolPolicy', e.target.value)}>
+            {TOOL_POLICIES.map(p => <option key={p} value={p}>{p.replaceAll('_', ' ').toLowerCase()}</option>)}
+          </select>
+        </div>
+        <div style={{ gridColumn: '1 / span 2' }}><label style={fieldLabel}>Prompt profile key</label><input style={fieldInput} value={draft.promptProfileKey} onChange={e => set('promptProfileKey', e.target.value)} placeholder="(optional)" /></div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 10 }}>
+        {([['repoAccess', 'Repo access'], ['required', 'Required'], ['terminal', 'Terminal'], ['approvalRequired', 'Approval required']] as const).map(([k, lbl]) => (
+          <label key={k} style={{ fontSize: 12, color: '#334155', display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
+            <input type="checkbox" checked={draft[k]} onChange={e => set(k, e.target.checked)} /> {lbl}
+          </label>
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
+        <button type="button" onClick={save} disabled={!dirty || busy}
+          style={{ fontSize: 12, fontWeight: 800, padding: '6px 14px', borderRadius: 8, border: '1px solid #0ea5e9', cursor: !dirty || busy ? 'default' : 'pointer', background: !dirty || busy ? '#cbd5e1' : '#0ea5e9', color: '#fff' }}>
+          {busy ? 'Saving…' : 'Save changes'}
+        </button>
+        {dirty && <span style={{ fontSize: 11, color: '#b45309' }}>unsaved changes</span>}
+        <span style={{ flex: 1 }} />
+        <span style={{ fontSize: 10, color: '#94a3b8' }}>Changing the stage key rewires its edges by key.</span>
       </div>
     </div>
   )
