@@ -79,6 +79,18 @@ cmd_up() {
   require python3
   command -v pnpm >/dev/null 2>&1 || warn "pnpm not found — workgraph install will fail; install with 'npm i -g pnpm'"
 
+  # ── 0. Free our app ports FIRST ──────────────────────────────────────────
+  # Kill any stale listeners on our service ports (a prior 'up' not 'down'ed, a
+  # duplicate/Docker stack, or a hung dev server) so nothing later fails with
+  # EADDRINUSE — and so killing services releases their DB connections before we
+  # touch the databases. Storage ports (5432/5434/9000/9001) are EXCLUDED on
+  # purpose: those are your Postgres/MinIO, not ours to kill.
+  info "freeing our service ports…"
+  for _p in 3000 3001 3002 3003 3004 5174 5175 5176 5180 7100 8000 8001 8002 8003 8010 8080 8100 8101 8500; do
+    _pids=$(lsof -ti tcp:"$_p" -sTCP:LISTEN 2>/dev/null || true)
+    if [ -n "$_pids" ]; then kill $_pids 2>/dev/null || true; sleep 0.2; kill -9 $_pids 2>/dev/null || true; fi
+  done
+
   info "using Postgres at ${db_user}@${db_host}:${db_port}"
 
   # ── 1. Create databases + extensions ────────────────────────────────────
@@ -393,15 +405,6 @@ JSON
     pid=$(tail -n 1 "$PID_FILE")
     ok "${name} (PID ${pid})  → tail -f logs/${name}.log"
   }
-
-  # Free our app ports from any stale listeners (e.g. a prior 'up' that wasn't
-  # 'down'ed, or a duplicate stack) so boots don't fail with EADDRINUSE.
-  info "freeing stale processes on our ports…"
-  for _p in 3000 3001 3002 3003 3004 5174 5175 5176 5180 7100 8000 8001 8002 8010 8080 8100 8101 8500; do
-    _pids=$(lsof -ti tcp:"$_p" -sTCP:LISTEN 2>/dev/null || true)
-    if [ -n "$_pids" ]; then kill $_pids 2>/dev/null || true; sleep 0.2; kill -9 $_pids 2>/dev/null || true; fi
-  done
-
   info "booting services…"
   boot iam-service      "cd singularity-iam-service  && DATABASE_URL=\"postgresql+asyncpg://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_iam\" JWT_SECRET=\"$JWT_SECRET\" JWT_EXPIRE_MINUTES=720 LOCAL_SUPER_ADMIN_EMAIL=admin@singularity.local LOCAL_SUPER_ADMIN_PASSWORD=Admin1234! CORS_ORIGINS='[\"http://localhost:3000\",\"http://localhost:5174\",\"http://localhost:5175\",\"http://localhost:5176\",\"http://localhost:5180\"]' python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8100"
   wait_http iam-service "http://localhost:8100/api/v1/health" 45
