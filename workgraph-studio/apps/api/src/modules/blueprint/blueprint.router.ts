@@ -8623,7 +8623,9 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
   return Array.from(new Set(values.filter((value): value is string => Boolean(value?.trim()))))
 }
 
-function stageConsumablesByKind(refs: WorkbenchConsumableRef[]): Record<string, WorkbenchConsumableRef[]> {
+// Exported for unit testing — this is the exact function that builds the
+// WORKBENCH_TASK node's `workbench.stageArtifactsByKind` output map.
+export function stageConsumablesByKind(refs: WorkbenchConsumableRef[]): Record<string, WorkbenchConsumableRef[]> {
   return refs.reduce<Record<string, WorkbenchConsumableRef[]>>((acc, ref) => {
     const key = ref.artifactKind || 'artifact'
     acc[key] = [...(acc[key] ?? []), ref]
