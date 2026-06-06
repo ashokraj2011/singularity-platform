@@ -75,6 +75,12 @@ function policyText(s: StageView): string {
   const tool = s.toolPolicy === 'NONE' ? 'no tools' : s.toolPolicy === 'READ_ONLY' ? 'read-only' : s.toolPolicy === 'MUTATION' ? 'mutation' : 'verification'
   return `${tool} · ${s.contextPolicy.replaceAll('_', ' ').toLowerCase()}`
 }
+// A stage reads as a human-approval gate when it does no tool work and exists to
+// gate on a human (the shape ＋ Human approval creates, plus equivalent loops).
+function isApprovalNode(s: StageView): boolean {
+  return s.approvalRequired && s.toolPolicy === 'NONE'
+    && (s.contextPolicy === 'EVIDENCE_REVIEW' || /REVIEW|APPROV|SIGN.?OFF/i.test(s.agentRole))
+}
 
 // ─── Custom stage node ───────────────────────────────────────────────────────
 type StageNodeData = { stage: StageView; onClick?: (stageKey: string) => void }
@@ -107,7 +113,25 @@ function StageNode({ data }: NodeProps<StageNodeData>) {
     </div>
   )
 }
-const nodeTypes = { stage: StageNode }
+
+// Human-approval gate — rendered as a distinct diamond so reviewers stand out
+// from the rectangular agent stages.
+function ApprovalNode({ data }: NodeProps<StageNodeData>) {
+  const s = data.stage
+  return (
+    <div onClick={() => data.onClick?.(s.stageKey)} style={{ width: 176, height: 108, position: 'relative', cursor: 'pointer' }}>
+      <Handle type="target" position={Position.Top} style={{ background: '#7c3aed' }} />
+      <div style={{ position: 'absolute', inset: 0, background: s.terminal ? '#ecfdf5' : '#f5f3ff', border: `1.5px solid ${s.terminal ? '#16a34a' : '#7c3aed'}`, clipPath: 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)', boxShadow: '0 1px 3px rgba(15,23,42,0.10)' }} />
+      <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '0 38px' }}>
+        <span style={{ fontSize: 9, fontWeight: 800, color: '#7c3aed', letterSpacing: '0.04em' }}>✓ APPROVAL</span>
+        <span style={{ fontSize: 11, fontWeight: 800, color: '#0f172a', lineHeight: 1.12, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const }}>{s.label}</span>
+        <span style={{ fontSize: 8.5, color: '#7c3aed', fontFamily: 'ui-monospace, monospace' }}>{s.agentRole}</span>
+      </div>
+      <Handle type="source" position={Position.Bottom} style={{ background: '#7c3aed' }} />
+    </div>
+  )
+}
+const nodeTypes = { stage: StageNode, approval: ApprovalNode }
 
 // ─── Canvas ──────────────────────────────────────────────────────────────────
 function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectStage?: (k: string) => void; fullSize?: boolean }) {
@@ -136,6 +160,7 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
   const mPatchQuestion = useMutation({ mutationFn: (v: { id: string; body: Record<string, unknown> }) => api.patch(`${base}/questions/${v.id}`, v.body), onSuccess: refresh, onError: onErr })
   const mDeleteQuestion = useMutation({ mutationFn: (id: string) => api.delete(`${base}/questions/${id}`), onSuccess: refresh, onError: onErr })
   const mPatchDef = useMutation({ mutationFn: (body: Record<string, unknown>) => api.patch(base, body), onSuccess: refresh, onError: onErr })
+  const mReorder = useMutation({ mutationFn: (stageIds: string[]) => api.post(`${base}/stages/reorder`, { stageIds }), onSuccess: refresh, onError: onErr })
 
   const [edgeKind, setEdgeKind] = useState<'FORWARD' | 'SEND_BACK'>('FORWARD')
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null)
@@ -157,7 +182,7 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
     const sorted = [...data.stages].sort((a, b) => a.ordinal - b.ordinal)
     setNodes(sorted.map((s, i): Node<StageNodeData> => ({
       id: s.id,
-      type: 'stage',
+      type: isApprovalNode(s) ? 'approval' : 'stage',
       position: { x: s.positionX ?? 60, y: s.positionY ?? 40 + i * 150 },
       data: { stage: s, onClick: onSelectStage },
     })))
@@ -216,12 +241,38 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
     } catch { /* onErr handles */ }
   }, [data?.stages, mCreateStage])
 
-  const busy = mCreateStage.isPending || mDeleteStage.isPending || mCreateEdge.isPending || mDeleteEdge.isPending || mPatchStage.isPending
+  // Reorder ordinal (the default forward chain + runtime order) to match the
+  // visual top-to-bottom layout. Explicit (button) so horizontal drags don't reorder.
+  const onSortByLayout = useCallback(() => {
+    if (!data || data.stages.length < 2) return
+    const ids = [...data.stages]
+      .sort((a, b) => (a.positionY ?? 0) - (b.positionY ?? 0) || (a.positionX ?? 0) - (b.positionX ?? 0))
+      .map(s => s.id)
+    mReorder.mutate(ids)
+  }, [data, mReorder])
+
+  const busy = mCreateStage.isPending || mDeleteStage.isPending || mCreateEdge.isPending || mDeleteEdge.isPending || mPatchStage.isPending || mReorder.isPending
   const counts = useMemo(() => ({
     stages: data?.stages.length ?? 0,
     fwd: data?.edges.filter(e => e.kind === 'FORWARD').length ?? 0,
     sb: data?.edges.filter(e => e.kind === 'SEND_BACK').length ?? 0,
   }), [data])
+
+  // Non-blocking graph health checks surfaced as warnings.
+  const warnings = useMemo(() => {
+    if (!data || data.stages.length === 0) return [] as string[]
+    const w: string[] = []
+    const fwd = data.edges.filter(e => e.kind === 'FORWARD')
+    const incoming = new Set(fwd.map(e => e.toStageId))
+    const outgoing = new Set(fwd.map(e => e.fromStageId))
+    const terminals = data.stages.filter(s => s.terminal)
+    if (terminals.length === 0) w.push('No terminal stage — mark the final stage as Terminal.')
+    if (terminals.length > 1) w.push(`${terminals.length} terminal stages — only one should be terminal.`)
+    const firstId = [...data.stages].sort((a, b) => a.ordinal - b.ordinal)[0]?.id
+    data.stages.forEach(s => { if (s.id !== firstId && !incoming.has(s.id)) w.push(`"${s.label}" has no incoming connection (unreachable).`) })
+    data.stages.forEach(s => { if (!s.terminal && !outgoing.has(s.id)) w.push(`"${s.label}" has no forward connection.`) })
+    return w
+  }, [data])
 
   return (
     <div style={{ border: '1px solid #dbe4f0', borderRadius: 10, background: '#fff', marginBottom: fullSize ? 0 : 14, overflow: 'hidden', height: fullSize ? '100%' : undefined, display: fullSize ? 'flex' : undefined, flexDirection: fullSize ? 'column' : undefined }}>
@@ -249,6 +300,12 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
           style={{ fontSize: 12, fontWeight: 800, padding: '5px 12px', border: '1px solid #7c3aed', borderRadius: 8, background: '#fff', color: '#7c3aed', cursor: 'pointer' }}>
           ＋ Human approval
         </button>
+        {counts.stages > 1 && (
+          <button type="button" onClick={onSortByLayout} disabled={busy} title="Renumber stage order to match top-to-bottom layout"
+            style={{ fontSize: 12, fontWeight: 800, padding: '5px 12px', border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', color: '#475569', cursor: busy ? 'default' : 'pointer' }}>
+            ↕ Sort by layout
+          </button>
+        )}
         <button type="button" onClick={() => setHeaderOpen(o => !o)} title="Workflow settings (goal, source, agents, limits)"
           style={{ fontSize: 12, fontWeight: 800, padding: '5px 12px', border: '1px solid #cbd5e1', borderRadius: 8, background: headerOpen ? '#eef2ff' : '#fff', color: '#475569', cursor: 'pointer' }}>
           ⚙ Settings
@@ -256,6 +313,14 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
       </div>
       {headerOpen && data && (
         <DefinitionHeader def={data} agents={agents ?? []} busy={mPatchDef.isPending} onSave={body => mPatchDef.mutate(body)} />
+      )}
+      {warnings.length > 0 && (
+        <div style={{ background: '#fffbeb', borderBottom: '1px solid #fde68a', padding: '7px 12px' }}>
+          <span style={{ fontSize: 11, fontWeight: 800, color: '#92400e' }}>⚠ {warnings.length} warning{warnings.length === 1 ? '' : 's'}</span>
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+            {warnings.slice(0, 6).map((w, i) => <li key={i} style={{ fontSize: 11, color: '#92400e', lineHeight: 1.5 }}>{w}</li>)}
+          </ul>
+        </div>
       )}
 
       <div style={{ height: fullSize ? undefined : 420, flex: fullSize ? 1 : undefined, minHeight: fullSize ? 420 : undefined, background: '#f8fafc' }}>
