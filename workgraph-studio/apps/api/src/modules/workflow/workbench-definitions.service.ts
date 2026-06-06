@@ -709,6 +709,65 @@ export async function deleteArtifact(
   return (await getDefinition(nodeId, userId))!
 }
 
+// ─── Questions ───────────────────────────────────────────────────────────────
+export async function createQuestion(
+  nodeId: string,
+  stageId: string,
+  input: { questionId: string; text: string; required?: boolean; freeform?: boolean; options?: unknown },
+  userId: string,
+): Promise<WorkbenchDefinitionView> {
+  await requireEditAccess(nodeId, userId)
+  await assertStageBelongsToNode(stageId, nodeId)
+  const maxOrd = await prisma.workbenchStageQuestion.aggregate({ where: { stageId }, _max: { ordinal: true } })
+  await prisma.workbenchStageQuestion.create({
+    data: {
+      stageId,
+      questionId: input.questionId,
+      text: input.text,
+      required: input.required ?? false,
+      freeform: input.freeform ?? true,
+      ordinal: (maxOrd._max.ordinal ?? -1) + 1,
+      ...(input.options !== undefined ? { options: input.options as Prisma.InputJsonValue } : {}),
+    },
+  })
+  await writeThroughToLegacy(nodeId)
+  await recordAudit(nodeId, 'QuestionCreated', userId, { stageId, questionId: input.questionId })
+  return (await getDefinition(nodeId, userId))!
+}
+
+export async function patchQuestion(
+  nodeId: string,
+  questionRowId: string,
+  input: Partial<{ questionId: string; text: string; required: boolean; freeform: boolean; options: unknown }>,
+  userId: string,
+): Promise<WorkbenchDefinitionView> {
+  await requireEditAccess(nodeId, userId)
+  await assertQuestionBelongsToNode(questionRowId, nodeId)
+  const data: Prisma.WorkbenchStageQuestionUpdateInput = {}
+  if (input.questionId !== undefined) data.questionId = input.questionId
+  if (input.text !== undefined) data.text = input.text
+  if (input.required !== undefined) data.required = input.required
+  if (input.freeform !== undefined) data.freeform = input.freeform
+  if (input.options !== undefined) data.options = input.options as Prisma.InputJsonValue
+  await prisma.workbenchStageQuestion.update({ where: { id: questionRowId }, data })
+  await writeThroughToLegacy(nodeId)
+  await recordAudit(nodeId, 'QuestionPatched', userId, { questionRowId, fields: Object.keys(input) })
+  return (await getDefinition(nodeId, userId))!
+}
+
+export async function deleteQuestion(
+  nodeId: string,
+  questionRowId: string,
+  userId: string,
+): Promise<WorkbenchDefinitionView> {
+  await requireEditAccess(nodeId, userId)
+  await assertQuestionBelongsToNode(questionRowId, nodeId)
+  await prisma.workbenchStageQuestion.delete({ where: { id: questionRowId } })
+  await writeThroughToLegacy(nodeId)
+  await recordAudit(nodeId, 'QuestionDeleted', userId, { questionRowId })
+  return (await getDefinition(nodeId, userId))!
+}
+
 /** Add a FORWARD or SEND_BACK edge between two stages. */
 export async function createEdge(
   nodeId: string,
@@ -847,5 +906,16 @@ async function assertArtifactBelongsToNode(artifactId: string, nodeId: string): 
   if (!art) throw new NotFoundError('WorkbenchExpectedArtifact', artifactId)
   if (art.stage.definition.workflowNodeId !== nodeId) {
     throw new ValidationError(`Artifact ${artifactId} does not belong to node ${nodeId}`)
+  }
+}
+
+async function assertQuestionBelongsToNode(questionRowId: string, nodeId: string): Promise<void> {
+  const q = await prisma.workbenchStageQuestion.findUnique({
+    where: { id: questionRowId },
+    select: { stage: { select: { definition: { select: { workflowNodeId: true } } } } },
+  })
+  if (!q) throw new NotFoundError('WorkbenchStageQuestion', questionRowId)
+  if (q.stage.definition.workflowNodeId !== nodeId) {
+    throw new ValidationError(`Question ${questionRowId} does not belong to node ${nodeId}`)
   }
 }

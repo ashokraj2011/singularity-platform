@@ -210,6 +210,15 @@ const createArtifactSchema = z.object({
 
 const patchArtifactSchema = createArtifactSchema.partial()
 
+const createQuestionSchema = z.object({
+  questionId: z.string().min(1).max(120).regex(/^[a-z0-9_]+$/, 'questionId must be lower_snake_case'),
+  text: z.string().min(1).max(2_000),
+  required: z.boolean().optional(),
+  freeform: z.boolean().optional(),
+  options: z.any().optional(),
+})
+const patchQuestionSchema = createQuestionSchema.partial()
+
 const createEdgeSchema = z.object({
   fromStageId: z.string().uuid(),
   toStageId: z.string().uuid(),
@@ -464,6 +473,50 @@ workbenchDefinitionsRouter.delete('/artifacts/:artifactId', async (req, res, nex
     const view = await service.deleteArtifact(
       nodeIdOf(req),
       req.params.artifactId!,
+      req.user!.userId,
+    )
+    res.json({ data: view })
+  } catch (err) { next(err) }
+})
+
+// ─── Questions ───────────────────────────────────────────────────────────────
+workbenchDefinitionsRouter.post(
+  '/stages/:stageId/questions',
+  validate(createQuestionSchema),
+  async (req, res, next) => {
+    try {
+      const view = await service.createQuestion(
+        nodeIdOf(req),
+        req.params.stageId!,
+        req.body as z.infer<typeof createQuestionSchema>,
+        req.user!.userId,
+      )
+      res.status(201).json({ data: view })
+    } catch (err) { next(err) }
+  },
+)
+
+workbenchDefinitionsRouter.patch(
+  '/questions/:questionId',
+  validate(patchQuestionSchema),
+  async (req, res, next) => {
+    try {
+      const view = await service.patchQuestion(
+        nodeIdOf(req),
+        req.params.questionId!,
+        req.body as z.infer<typeof patchQuestionSchema>,
+        req.user!.userId,
+      )
+      res.json({ data: view })
+    } catch (err) { next(err) }
+  },
+)
+
+workbenchDefinitionsRouter.delete('/questions/:questionId', async (req, res, next) => {
+  try {
+    const view = await service.deleteQuestion(
+      nodeIdOf(req),
+      req.params.questionId!,
       req.user!.userId,
     )
     res.json({ data: view })

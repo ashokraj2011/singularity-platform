@@ -45,10 +45,18 @@ type StageView = {
   toolPolicy: string
   contextPolicy: string
   expectedArtifacts: ArtifactView[]
+  questions: QuestionView[]
 }
 type ArtifactView = { id: string; kind: string; title: string; description: string | null; format: string; required: boolean }
+type QuestionView = { id: string; questionId: string; text: string; required: boolean; freeform: boolean }
 type EdgeView = { id: string; fromStageId: string; toStageId: string; kind: 'FORWARD' | 'SEND_BACK'; label: string | null }
-type DefinitionView = { id: string; name: string; capabilityId: string | null; stages: StageView[]; edges: EdgeView[] }
+type DefinitionView = {
+  id: string; name: string; capabilityId: string | null
+  goal: string | null; sourceType: string | null; sourceUri: string | null; sourceRef: string | null
+  architectAgentTemplateId: string | null; developerAgentTemplateId: string | null; qaAgentTemplateId: string | null
+  maxLoopsPerStage: number; maxTotalSendBacks: number; gateMode: string; finalPackKey: string | null
+  stages: StageView[]; edges: EdgeView[]
+}
 
 const CONTEXT_POLICIES = ['NONE', 'STORY_ONLY', 'REPO_READ_ONLY', 'CODE_EDIT', 'VERIFY_ONLY', 'EVIDENCE_REVIEW'] as const
 const TOOL_POLICIES = ['NONE', 'READ_ONLY', 'MUTATION', 'VERIFICATION'] as const
@@ -124,9 +132,14 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
   const mCreateArtifact = useMutation({ mutationFn: (v: { stageId: string; body: Record<string, unknown> }) => api.post(`${base}/stages/${v.stageId}/artifacts`, v.body), onSuccess: refresh, onError: onErr })
   const mPatchArtifact = useMutation({ mutationFn: (v: { id: string; body: Record<string, unknown> }) => api.patch(`${base}/artifacts/${v.id}`, v.body), onSuccess: refresh, onError: onErr })
   const mDeleteArtifact = useMutation({ mutationFn: (id: string) => api.delete(`${base}/artifacts/${id}`), onSuccess: refresh, onError: onErr })
+  const mCreateQuestion = useMutation({ mutationFn: (v: { stageId: string; body: Record<string, unknown> }) => api.post(`${base}/stages/${v.stageId}/questions`, v.body), onSuccess: refresh, onError: onErr })
+  const mPatchQuestion = useMutation({ mutationFn: (v: { id: string; body: Record<string, unknown> }) => api.patch(`${base}/questions/${v.id}`, v.body), onSuccess: refresh, onError: onErr })
+  const mDeleteQuestion = useMutation({ mutationFn: (id: string) => api.delete(`${base}/questions/${id}`), onSuccess: refresh, onError: onErr })
+  const mPatchDef = useMutation({ mutationFn: (body: Record<string, unknown>) => api.patch(base, body), onSuccess: refresh, onError: onErr })
 
   const [edgeKind, setEdgeKind] = useState<'FORWARD' | 'SEND_BACK'>('FORWARD')
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null)
+  const [headerOpen, setHeaderOpen] = useState(false)
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
 
@@ -236,7 +249,14 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
           style={{ fontSize: 12, fontWeight: 800, padding: '5px 12px', border: '1px solid #7c3aed', borderRadius: 8, background: '#fff', color: '#7c3aed', cursor: 'pointer' }}>
           ＋ Human approval
         </button>
+        <button type="button" onClick={() => setHeaderOpen(o => !o)} title="Workflow settings (goal, source, agents, limits)"
+          style={{ fontSize: 12, fontWeight: 800, padding: '5px 12px', border: '1px solid #cbd5e1', borderRadius: 8, background: headerOpen ? '#eef2ff' : '#fff', color: '#475569', cursor: 'pointer' }}>
+          ⚙ Settings
+        </button>
       </div>
+      {headerOpen && data && (
+        <DefinitionHeader def={data} agents={agents ?? []} busy={mPatchDef.isPending} onSave={body => mPatchDef.mutate(body)} />
+      )}
 
       <div style={{ height: fullSize ? undefined : 420, flex: fullSize ? 1 : undefined, minHeight: fullSize ? 420 : undefined, background: '#f8fafc' }}>
         {isLoading ? (
@@ -272,10 +292,14 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
           agents={agents ?? []}
           busy={mPatchStage.isPending}
           artifactBusy={mCreateArtifact.isPending || mPatchArtifact.isPending || mDeleteArtifact.isPending}
+          questionBusy={mCreateQuestion.isPending || mPatchQuestion.isPending || mDeleteQuestion.isPending}
           onSave={body => mPatchStage.mutate({ id: selectedStage.id, body })}
           onArtifactAdd={(stageId, body) => mCreateArtifact.mutate({ stageId, body })}
           onArtifactPatch={(id, body) => mPatchArtifact.mutate({ id, body })}
           onArtifactDelete={id => mDeleteArtifact.mutate(id)}
+          onQuestionAdd={(stageId, body) => mCreateQuestion.mutate({ stageId, body })}
+          onQuestionPatch={(id, body) => mPatchQuestion.mutate({ id, body })}
+          onQuestionDelete={id => mDeleteQuestion.mutate(id)}
           onClose={() => setSelectedStageId(null)}
         />
       )}
@@ -300,12 +324,15 @@ function draftFromStage(s: StageView): StageDraft {
 const fieldLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#64748b', display: 'block', marginBottom: 3 }
 const fieldInput: React.CSSProperties = { width: '100%', boxSizing: 'border-box', padding: '6px 8px', borderRadius: 7, border: '1px solid #cbd5e1', fontSize: 12 }
 
-function StageInspector({ stage, agents, busy, artifactBusy, onSave, onArtifactAdd, onArtifactPatch, onArtifactDelete, onClose }: {
-  stage: StageView; agents: RegistryAgent[]; busy: boolean; artifactBusy: boolean
+function StageInspector({ stage, agents, busy, artifactBusy, questionBusy, onSave, onArtifactAdd, onArtifactPatch, onArtifactDelete, onQuestionAdd, onQuestionPatch, onQuestionDelete, onClose }: {
+  stage: StageView; agents: RegistryAgent[]; busy: boolean; artifactBusy: boolean; questionBusy: boolean
   onSave: (body: Record<string, unknown>) => void
   onArtifactAdd: (stageId: string, body: Record<string, unknown>) => void
   onArtifactPatch: (id: string, body: Record<string, unknown>) => void
   onArtifactDelete: (id: string) => void
+  onQuestionAdd: (stageId: string, body: Record<string, unknown>) => void
+  onQuestionPatch: (id: string, body: Record<string, unknown>) => void
+  onQuestionDelete: (id: string) => void
   onClose: () => void
 }) {
   const [draft, setDraft] = useState<StageDraft>(() => draftFromStage(stage))
@@ -403,6 +430,28 @@ function StageInspector({ stage, agents, busy, artifactBusy, onSave, onArtifactA
           </div>
         )}
       </div>
+
+      {/* Clarifying questions (P3.5) */}
+      <div style={{ marginTop: 14, borderTop: '1px solid #e5e7eb', paddingTop: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <span style={fieldLabel}>Clarifying questions ({stage.questions.length})</span>
+          <button type="button" disabled={questionBusy}
+            onClick={() => onQuestionAdd(stage.id, { questionId: uniqueQuestionId(stage), text: 'New question?', required: false, freeform: true })}
+            style={{ fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 7, border: '1px solid #7c3aed', background: '#fff', color: '#7c3aed', cursor: questionBusy ? 'default' : 'pointer' }}>
+            ＋ Question
+          </button>
+        </div>
+        {stage.questions.length === 0 ? (
+          <p style={{ fontSize: 11, color: '#94a3b8', margin: '2px 0 0' }}>No questions — the agent won't be prompted for clarifications at this stage.</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {stage.questions.map(q => (
+              <QuestionRow key={q.id} question={q} busy={questionBusy}
+                onPatch={body => onQuestionPatch(q.id, body)} onDelete={() => onQuestionDelete(q.id)} />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -439,6 +488,114 @@ function ArtifactRow({ artifact, busy, onPatch, onDelete }: {
         <label style={{ fontSize: 11, color: '#334155', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
           <input type="checkbox" checked={artifact.required} onChange={e => onPatch({ required: e.target.checked })} /> required
         </label>
+      </div>
+    </div>
+  )
+}
+
+function uniqueQuestionId(stage: StageView): string {
+  const existing = new Set(stage.questions.map(q => q.questionId))
+  let i = stage.questions.length + 1
+  let k = `q_${i}`
+  while (existing.has(k)) { i++; k = `q_${i}` }
+  return k
+}
+
+function QuestionRow({ question, busy, onPatch, onDelete }: {
+  question: QuestionView; busy: boolean
+  onPatch: (body: Record<string, unknown>) => void; onDelete: () => void
+}) {
+  const [text, setText] = useState(question.text)
+  useEffect(() => { setText(question.text) }, [question.text])
+  return (
+    <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', background: '#fff' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <input value={text} onChange={e => setText(e.target.value)} onBlur={() => { if (text.trim() && text !== question.text) onPatch({ text: text.trim() }) }}
+          placeholder="Question text" style={{ ...fieldInput, flex: 1 }} />
+        <button type="button" onClick={onDelete} disabled={busy} title="Delete question"
+          style={{ border: 'none', background: 'none', color: '#ef4444', cursor: busy ? 'default' : 'pointer', fontSize: 16, fontWeight: 800, lineHeight: 1, padding: '0 4px' }}>×</button>
+      </div>
+      <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginTop: 6 }}>
+        <label style={{ fontSize: 11, color: '#334155', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+          <input type="checkbox" checked={question.required} onChange={e => onPatch({ required: e.target.checked })} /> required
+        </label>
+        <label style={{ fontSize: 11, color: '#334155', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+          <input type="checkbox" checked={question.freeform} onChange={e => onPatch({ freeform: e.target.checked })} /> freeform
+        </label>
+        <span style={{ fontSize: 10, color: '#94a3b8', fontFamily: 'ui-monospace, monospace' }}>{question.questionId}</span>
+      </div>
+    </div>
+  )
+}
+
+// ─── Definition header (workflow-wide settings) ──────────────────────────────
+function DefinitionHeader({ def, agents, busy, onSave }: {
+  def: DefinitionView; agents: RegistryAgent[]; busy: boolean
+  onSave: (body: Record<string, unknown>) => void
+}) {
+  type DefDraft = {
+    name: string; goal: string; sourceType: string; sourceUri: string; sourceRef: string
+    architectAgentTemplateId: string; developerAgentTemplateId: string; qaAgentTemplateId: string
+    maxLoopsPerStage: number; maxTotalSendBacks: number; gateMode: string; finalPackKey: string
+  }
+  const fromDef = (d: DefinitionView): DefDraft => ({
+    name: d.name, goal: d.goal ?? '', sourceType: d.sourceType ?? 'localdir', sourceUri: d.sourceUri ?? '', sourceRef: d.sourceRef ?? '',
+    architectAgentTemplateId: d.architectAgentTemplateId ?? '', developerAgentTemplateId: d.developerAgentTemplateId ?? '', qaAgentTemplateId: d.qaAgentTemplateId ?? '',
+    maxLoopsPerStage: d.maxLoopsPerStage, maxTotalSendBacks: d.maxTotalSendBacks, gateMode: d.gateMode, finalPackKey: d.finalPackKey ?? '',
+  })
+  const [draft, setDraft] = useState<DefDraft>(() => fromDef(def))
+  useEffect(() => { setDraft(fromDef(def)) }, [def])
+  const set = <K extends keyof DefDraft>(k: K, v: DefDraft[K]) => setDraft(d => ({ ...d, [k]: v }))
+  const dirty = JSON.stringify(draft) !== JSON.stringify(fromDef(def))
+  const agentOpts = (cur: string) => {
+    const opts = agents.map(a => ({ id: a.id, name: a.name }))
+    if (cur && !opts.some(o => o.id === cur)) opts.unshift({ id: cur, name: `(current) ${cur.slice(0, 8)}…` })
+    return opts
+  }
+  const save = () => onSave({
+    name: draft.name.trim(), goal: draft.goal.trim() || null,
+    sourceType: draft.sourceType, sourceUri: draft.sourceUri.trim() || null, sourceRef: draft.sourceRef.trim() || null,
+    architectAgentTemplateId: draft.architectAgentTemplateId || null, developerAgentTemplateId: draft.developerAgentTemplateId || null, qaAgentTemplateId: draft.qaAgentTemplateId || null,
+    maxLoopsPerStage: draft.maxLoopsPerStage, maxTotalSendBacks: draft.maxTotalSendBacks, gateMode: draft.gateMode, finalPackKey: draft.finalPackKey.trim() || null,
+  })
+  return (
+    <div style={{ borderBottom: '1px solid #e5e7eb', background: '#f8fafc', padding: '12px 14px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <div style={{ gridColumn: '1 / span 2' }}><label style={fieldLabel}>Workflow name</label><input style={fieldInput} value={draft.name} onChange={e => set('name', e.target.value)} /></div>
+        <div style={{ gridColumn: '1 / span 2' }}><label style={fieldLabel}>Goal</label><input style={fieldInput} value={draft.goal} onChange={e => set('goal', e.target.value)} placeholder="What this workbench loop should achieve" /></div>
+        <div>
+          <label style={fieldLabel}>Source type</label>
+          <select style={fieldInput} value={draft.sourceType} onChange={e => set('sourceType', e.target.value)}>
+            <option value="localdir">localdir</option><option value="github">github</option>
+          </select>
+        </div>
+        <div><label style={fieldLabel}>Source ref</label><input style={fieldInput} value={draft.sourceRef} onChange={e => set('sourceRef', e.target.value)} placeholder="branch / ref" /></div>
+        <div style={{ gridColumn: '1 / span 2' }}><label style={fieldLabel}>Source URI</label><input style={fieldInput} value={draft.sourceUri} onChange={e => set('sourceUri', e.target.value)} placeholder="repo URL or path" /></div>
+        {([['architectAgentTemplateId', 'Architect agent'], ['developerAgentTemplateId', 'Developer agent'], ['qaAgentTemplateId', 'QA agent']] as const).map(([k, lbl]) => (
+          <div key={k}>
+            <label style={fieldLabel}>{lbl}</label>
+            <select style={fieldInput} value={draft[k]} onChange={e => set(k, e.target.value)}>
+              <option value="">— none —</option>
+              {agentOpts(draft[k]).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
+        ))}
+        <div>
+          <label style={fieldLabel}>Gate mode</label>
+          <select style={fieldInput} value={draft.gateMode} onChange={e => set('gateMode', e.target.value)}>
+            <option value="manual">manual</option><option value="auto">auto</option>
+          </select>
+        </div>
+        <div><label style={fieldLabel}>Max loops / stage</label><input type="number" min={1} max={20} style={fieldInput} value={draft.maxLoopsPerStage} onChange={e => set('maxLoopsPerStage', Number(e.target.value))} /></div>
+        <div><label style={fieldLabel}>Max total send-backs</label><input type="number" min={0} max={50} style={fieldInput} value={draft.maxTotalSendBacks} onChange={e => set('maxTotalSendBacks', Number(e.target.value))} /></div>
+        <div><label style={fieldLabel}>Final pack key</label><input style={fieldInput} value={draft.finalPackKey} onChange={e => set('finalPackKey', e.target.value)} placeholder="(optional)" /></div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+        <button type="button" onClick={save} disabled={!dirty || busy}
+          style={{ fontSize: 12, fontWeight: 800, padding: '6px 14px', borderRadius: 8, border: '1px solid #6366f1', cursor: !dirty || busy ? 'default' : 'pointer', background: !dirty || busy ? '#cbd5e1' : '#6366f1', color: '#fff' }}>
+          {busy ? 'Saving…' : 'Save settings'}
+        </button>
+        {dirty && <span style={{ fontSize: 11, color: '#b45309' }}>unsaved changes</span>}
       </div>
     </div>
   )
