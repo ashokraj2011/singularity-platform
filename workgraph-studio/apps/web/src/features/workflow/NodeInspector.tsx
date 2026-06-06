@@ -17,6 +17,7 @@ import { fetchAgents, fetchStudioAgents, deriveStudioAgent, fetchTools, fetchCap
 import { useActiveContextStore } from '../../store/activeContext.store'
 import { api } from '../../lib/api'
 import { UserPicker, TeamPicker, RolePicker, SkillPicker, ConnectorPicker, PickerOrText } from '../../components/lookup/EntityPickers'
+import { WorkbenchStageCanvas } from './WorkbenchStageCanvas'
 import type { FormWidget } from '../forms/widgets/types'
 import { WidgetListEditor } from '../forms/widgets/WidgetListEditor'
 import { WidgetEditor } from '../forms/widgets/WidgetEditor'
@@ -4398,13 +4399,26 @@ export function NodeInspector({
               </div>
             )}
 
-            {/* WORKBENCH — first-class WORKBENCH_TASK builder */}
+            {/* WORKBENCH — first-class WORKBENCH_TASK builder.
+                P1: editable stage-graph canvas on top; the legacy accordion is
+                tucked into a collapsed <details> as the per-stage field editor
+                until the canvas inspector (P2) subsumes it. */}
             {tab === 'Workbench' && (
-              <WorkbenchStageBuilder
-                config={config.workbench}
-                onChange={workbench => setConfig(c => ({ ...c, workbench }))}
-                nodeId={node.id}
-              />
+              <>
+                <WorkbenchStageCanvas nodeId={node.id} />
+                <details style={{ marginTop: 4 }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700, color: '#475569', padding: '6px 0' }}>
+                    Legacy stage form — per-stage fields (agent, policies, artifacts). Canvas config editor arrives next.
+                  </summary>
+                  <div style={{ marginTop: 8 }}>
+                    <WorkbenchStageBuilder
+                      config={config.workbench}
+                      onChange={workbench => setConfig(c => ({ ...c, workbench }))}
+                      nodeId={node.id}
+                    />
+                  </div>
+                </details>
+              </>
             )}
 
             {/* CONFIG — standard fields + design-time KV */}
