@@ -173,17 +173,28 @@ function Canvas({ nodeId, onSelectStage }: { nodeId: string; onSelectStage?: (k:
   }, [data, selectedStageId])
   const selectedStage = useMemo(() => data?.stages.find(s => s.id === selectedStageId) ?? null, [data, selectedStageId])
 
-  const onAddStage = useCallback(() => {
-    const label = window.prompt('New stage label', 'New Stage')
-    if (!label || !label.trim()) return
-    let key = label.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 70)
-    if (!/^[A-Z]/.test(key)) key = `S_${key}` || `STAGE_${(data?.stages.length ?? 0) + 1}`
-    mCreateStage.mutate({
-      stageKey: key, label: label.trim(), agentRole: 'DEVELOPER',
-      contextPolicy: 'REPO_READ_ONLY', toolPolicy: 'READ_ONLY',
-      positionX: 60, positionY: 40 + (data?.stages.length ?? 0) * 150,
-    })
-  }, [data?.stages.length, mCreateStage])
+  // Add a stage with sensible defaults (no native prompt) and immediately open
+  // the inspector on it so the operator renames/configures inline.
+  const onAddStage = useCallback(async (kind: 'AGENT' | 'APPROVAL') => {
+    const existing = new Set((data?.stages ?? []).map(s => s.stageKey))
+    let i = (data?.stages.length ?? 0) + 1
+    const prefix = kind === 'APPROVAL' ? 'APPROVAL' : 'STAGE'
+    let key = `${prefix}_${i}`
+    while (existing.has(key)) { i++; key = `${prefix}_${i}` }
+    try {
+      const res = await mCreateStage.mutateAsync({
+        stageKey: key,
+        label: kind === 'APPROVAL' ? 'Human Approval' : 'New Stage',
+        agentRole: kind === 'APPROVAL' ? 'REVIEWER' : 'DEVELOPER',
+        contextPolicy: kind === 'APPROVAL' ? 'EVIDENCE_REVIEW' : 'REPO_READ_ONLY',
+        toolPolicy: kind === 'APPROVAL' ? 'NONE' : 'READ_ONLY',
+        approvalRequired: kind === 'APPROVAL',
+        positionX: 60, positionY: 40 + (data?.stages.length ?? 0) * 150,
+      })
+      const created = (res as { data?: { data?: DefinitionView } })?.data?.data?.stages.find(s => s.stageKey === key)
+      if (created) setSelectedStageId(created.id)
+    } catch { /* onErr handles */ }
+  }, [data?.stages, mCreateStage])
 
   const busy = mCreateStage.isPending || mDeleteStage.isPending || mCreateEdge.isPending || mDeleteEdge.isPending || mPatchStage.isPending
   const counts = useMemo(() => ({
@@ -210,9 +221,13 @@ function Canvas({ nodeId, onSelectStage }: { nodeId: string; onSelectStage?: (k:
             </button>
           ))}
         </div>
-        <button type="button" onClick={onAddStage}
+        <button type="button" onClick={() => onAddStage('AGENT')}
           style={{ fontSize: 12, fontWeight: 800, padding: '5px 12px', border: '1px solid #0ea5e9', borderRadius: 8, background: '#0ea5e9', color: '#fff', cursor: 'pointer' }}>
-          ＋ Stage
+          ＋ Agent stage
+        </button>
+        <button type="button" onClick={() => onAddStage('APPROVAL')}
+          style={{ fontSize: 12, fontWeight: 800, padding: '5px 12px', border: '1px solid #7c3aed', borderRadius: 8, background: '#fff', color: '#7c3aed', cursor: 'pointer' }}>
+          ＋ Human approval
         </button>
       </div>
 
@@ -224,7 +239,7 @@ function Canvas({ nodeId, onSelectStage }: { nodeId: string; onSelectStage?: (k:
         ) : counts.stages === 0 ? (
           <div style={{ padding: 28, textAlign: 'center', color: '#555' }}>
             <strong style={{ fontSize: 14 }}>No stages yet.</strong>
-            <div style={{ marginTop: 6, fontSize: 12, color: '#6b7280' }}>Click <b>＋ Stage</b> to add the first agentic stage, then drag from a stage's bottom handle to another's top to connect them.</div>
+            <div style={{ marginTop: 6, fontSize: 12, color: '#6b7280' }}>Add an <b>Agent stage</b> or a <b>Human approval</b>, then drag from a stage's bottom handle to another's top to connect them into a flow.</div>
           </div>
         ) : (
           <ReactFlow
