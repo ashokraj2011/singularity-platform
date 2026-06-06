@@ -16,6 +16,8 @@
 # Usage:
 #   bin/setup.sh            # interactive
 #   bin/setup.sh --yes      # non-interactive (saved answers or defaults)
+#   bin/setup.sh --reset    # DROP existing databases first, then set up fresh
+#                           # (also offered as a prompt in interactive mode)
 #
 set -uo pipefail
 
@@ -31,8 +33,15 @@ ok()   { echo "${C_G}✓${C_E} $*"; }
 warn() { echo "${C_Y}!${C_E} $*"; }
 err()  { echo "${C_R}✗${C_E} $*" >&2; }
 
-ASSUME_YES=0
-case "${1:-}" in --yes|-y) ASSUME_YES=1 ;; -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+ASSUME_YES=0; RESET_DB=0
+for arg in "$@"; do
+  case "$arg" in
+    --yes|-y)      ASSUME_YES=1 ;;
+    --reset|--fresh) RESET_DB=1 ;;
+    -h|--help)     grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) err "unknown arg: $arg (try --help)"; exit 1 ;;
+  esac
+done
 
 # ── defaults (overridden by saved answers, then prompts) ─────────────────────
 PG_USER="${USER:-postgres}"; PG_PASS="postgres"; PG_HOST="localhost"; PG_PORT="5432"
@@ -94,6 +103,19 @@ if command -v psql >/dev/null 2>&1; then
     exit 1
   fi
   ok "Postgres reachable as ${PG_USER}@${PG_HOST}:${PG_PORT}"
+fi
+
+# ── optional clean slate: drop existing databases first ──────────────────────
+if [ "$RESET_DB" != "1" ] && [ "$ASSUME_YES" != "1" ]; then
+  printf "  drop existing databases for a clean start? (DESTRUCTIVE) [y/N]: "; read -r dr || true
+  case "${dr:-}" in [yY]*) RESET_DB=1 ;; esac
+fi
+if [ "$RESET_DB" = "1" ]; then
+  warn "clean start: stopping services + dropping all platform databases…"
+  bin/bare-metal.sh down >/dev/null 2>&1 || true
+  if ! bin/bare-metal.sh reset-db "$PG_USER" "$PG_PASS" "$PG_HOST" "$PG_PORT"; then
+    err "reset-db failed — see output above"; exit 1
+  fi
 fi
 
 # ── 1. bring up the whole stack ──────────────────────────────────────────────
