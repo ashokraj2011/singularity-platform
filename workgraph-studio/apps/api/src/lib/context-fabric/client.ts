@@ -426,14 +426,15 @@ export const contextFabricClient = {
     return (await res.json()) as ExecuteResponse
   },
 
-  // Governed SINGLE-TURN execution — POST /api/v1/execute-governed-turn.
+  // Governed VERBATIM single-turn execution — POST /api/v1/execute-governed-single-turn.
   // One LLM turn with the caller's prompt VERBATIM (no phase machine, no
   // per-phase re-assembly) wrapped in the governed audit trail + 'governed'
   // posture. For single-shot callers that already hold their assembled/frozen
   // prompt (event-horizon chat, prompt-composer respond, contracts replay) and
-  // must NOT be re-assembled. Returns the same ExecuteResponse shape as /execute.
+  // must NOT be re-assembled. Distinct from /api/v1/execute-governed-turn (the
+  // phase-machine single turn). Returns the same ExecuteResponse shape as /execute.
   async executeGovernedTurn(input: GovernedTurnRequest): Promise<ExecuteResponse> {
-    const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/api/v1/execute-governed-turn`
+    const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/api/v1/execute-governed-single-turn`
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -446,7 +447,7 @@ export const contextFabricClient = {
       let parsedDetail: unknown
       try { parsedDetail = (JSON.parse(text) as { detail?: unknown })?.detail } catch { /* noop */ }
       throw new ContextFabricError(
-        `context-fabric /execute-governed-turn returned ${res.status}: ${text.slice(0, 500)}`,
+        `context-fabric /execute-governed-single-turn returned ${res.status}: ${text.slice(0, 500)}`,
         res.status,
         parsedDetail,
       )

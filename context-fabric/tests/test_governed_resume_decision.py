@@ -69,3 +69,24 @@ def test_repair_cap_exhausted_leaves_state_paused():
     s = _paused(repair_attempts=3)
     out = apply_approval_decision(s, "rejected")
     assert out.current_phase is Phase.SELF_REVIEW and out.approval_pending is True
+
+
+def test_run_stage_paused_entry_short_circuits_without_a_turn(monkeypatch):
+    # P2 — a stage entered already at the approval gate (e.g. a rejected resume
+    # whose REPAIR cap is exhausted, leaving the state unchanged) must re-surface
+    # APPROVAL_PENDING WITHOUT spending an LLM turn.
+    import asyncio
+    from context_api_service.app.governed import stage_driver
+
+    calls = {"run_turn": 0}
+
+    async def _boom(*a, **k):
+        calls["run_turn"] += 1
+        raise AssertionError("run_turn must not run for a paused entry")
+
+    monkeypatch.setattr(stage_driver, "run_turn", _boom)
+    result = asyncio.new_event_loop().run_until_complete(
+        stage_driver.run_stage(state=_paused(repair_attempts=3), stage_key="loop.stage", agent_role="DEVELOPER")
+    )
+    assert result.stop_reason == "APPROVAL_PENDING"
+    assert calls["run_turn"] == 0
