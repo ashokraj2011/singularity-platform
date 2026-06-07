@@ -241,7 +241,7 @@ export async function seedDemoWorkflows(prisma: AnyPrisma) {
   // 1. Agents (architect / developer / qa) with externalTemplateId pins.
   const agents = [
     { id: 'a0000000-0000-0000-0000-000000000010', name: 'Architect Agent', externalTemplateId: TMPL_ARCHITECT, systemPrompt: 'You are a senior software architect. Produce clear, implementable designs grounded in the repository.' },
-    { id: 'a0000000-0000-0000-0000-000000000011', name: 'Developer Agent', externalTemplateId: TMPL_DEVELOPER, systemPrompt: 'You are a senior software engineer. Make the smallest correct change with verifiable evidence.' },
+    { id: 'a0000000-0000-0000-0000-000000000011', name: 'Developer Agent', externalTemplateId: TMPL_DEVELOPER, systemPrompt: 'You are a senior software engineer. Implement the smallest correct change that satisfies the story and design. You MUST also add or extend unit tests covering the new behavior and its edge cases, and you MUST run the test suite and confirm it passes before reporting completion. Never declare success on the basis of existing tests alone — new or changed behavior requires new/updated tests with a passing test run as evidence.' },
     { id: 'a0000000-0000-0000-0000-000000000012', name: 'QA Agent', externalTemplateId: TMPL_QA, systemPrompt: 'You are a QA engineer. Verify changes against acceptance criteria and guard against regressions.' },
   ]
   for (const a of agents) {
