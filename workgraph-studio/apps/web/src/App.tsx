@@ -21,6 +21,7 @@ import { ArtifactEditorPage } from './features/artifact/ArtifactEditorPage'
 import { MetadataRegistryPage } from './features/metadata/MetadataRegistryPage'
 import { TeamVariablesPage } from './features/identity/TeamVariablesPage'
 import { InboxPage } from './features/runtime/InboxPage'
+import { PlannerPage } from './features/planner/PlannerPage'
 import { WorkDetailPage } from './features/runtime/WorkDetailPage'
 import { WorkItemsPage } from './features/runtime/WorkItemsPage'
 import { HistoryPage } from './features/runtime/HistoryPage'
@@ -73,6 +74,7 @@ export default function App() {
         >
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard"          element={<DashboardPage />} />
+          <Route path="planner"            element={<PlannerPage />} />
           <Route path="runtime"            element={<InboxPage />} />
           <Route path="work-items"         element={<WorkItemsPage />} />
           <Route path="runtime/history"    element={<HistoryPage />} />

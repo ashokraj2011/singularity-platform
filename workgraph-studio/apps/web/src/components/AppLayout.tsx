@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react'
 import {
   LayoutDashboard, FileText, GitBranch, ScrollText, Globe, Inbox,
   LogOut, Bell, Settings, ChevronLeft, ChevronRight, Puzzle, Link2, Activity, Play, Network,
-  Building2, Database, ClipboardCheck, Package,
+  Building2, Database, ClipboardCheck, Package, Sparkles,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth.store'
 import { useActiveContextStore } from '../store/activeContext.store'
@@ -12,6 +12,7 @@ import { AppSwitcher } from './AppSwitcher'
 
 // Top-level (everyday) navigation — no design / authoring access required.
 const navItems = [
+  { to: '/planner',         label: 'Planner',            icon: Sparkles },
   { to: '/runtime',         label: 'Inbox',              icon: Inbox },
   { to: '/work-items',      label: 'Work Hub',           icon: Network },
   { to: '/run',             label: 'Start Workflow',     icon: Play },
