@@ -38,6 +38,7 @@ import {
 import { promptComposerClient } from '../../lib/prompt-composer/client'
 import { recordWorkflowLlmUsage } from '../workflow/runtime/budget'
 import { readStageBudget, evaluateStageBudget } from './stage-budget'
+import { stageRequiresUnitTests, evaluateDevelopTestGate } from './develop-test-gate'
 
 export const blueprintRouter: Router = Router()
 
@@ -4939,6 +4940,38 @@ async function saveStageVerdict(
       'Code-changing stages need at least one passing MCP verification receipt before approval.',
     )
   }
+  // ── Develop unit-test gate (prompt-RCA follow-up) ─────────────────────────
+  // Stages that OWN unit tests (declare a required `unit_tests` artifact) can't
+  // be approved unless THIS attempt actually edited a test file AND captured a
+  // PASSING test RUN (lint/compile/"no tests ran" don't count). This is the
+  // real gate behind the test mandate — gating on the auto-generated unit_tests
+  // artifact would be a no-op. Escape hatches: ACCEPTED_WITH_RISK + acceptRisk,
+  // or WORKBENCH_REQUIRE_UNIT_TESTS=false. Only fires for stages that declare
+  // the artifact, so non-test workflows are unaffected.
+  {
+    const riskOverride = persistedVerdict === 'ACCEPTED_WITH_RISK' && body.acceptRisk === true
+    if (
+      accepted
+      && !riskOverride
+      && process.env.WORKBENCH_REQUIRE_UNIT_TESTS !== 'false'
+      && stageRequiresUnitTests(stage.expectedArtifacts)
+    ) {
+      const { paths, known } = await attemptChangedPaths(latestAttempt)
+      const gate = evaluateDevelopTestGate({
+        changedPaths: paths,
+        pathsKnown: known,
+        receipts: Array.isArray(latestAttempt.verificationReceipts) ? latestAttempt.verificationReceipts : [],
+      })
+      if (!gate.ok) {
+        throw new ValidationError(gate.reason ?? 'Develop requires unit tests with a passing run before approval.', {
+          kind: 'unit_test_gate',
+          testFileEdited: gate.testFileEdited,
+          passingTestRun: gate.passingTestRun,
+          recommendedActions: ['send_back_to_develop'],
+        })
+      }
+    }
+  }
   // ── Phased Agent Reasoning Model (v4) — path-coverage gate ────────────
   // When the run was a phased developer attempt, mcp-server's response
   // includes `correlation.codeChangeCoverage`. If any `required: true` code
@@ -6932,6 +6965,38 @@ function attemptHasActualCodeChange(attempt: StageAttempt): boolean {
   const correlation = isRecord(attempt.correlation) ? attempt.correlation : {}
   const codeChangeIds = correlation.codeChangeIds
   return Array.isArray(codeChangeIds) && codeChangeIds.some(id => typeof id === 'string' && id.trim().length > 0)
+}
+
+// Files the agent actually edited in this attempt. Primary source is
+// context-fabric's code-change records (paths_touched via cfCallId +
+// codeChangeIds — the same provenance analyzeAttemptFailures uses); we also
+// fold in any changed_paths the verification receipts carry. `known=false`
+// means we couldn't resolve provenance (e.g. CF unreachable) so callers can
+// fail-open on path-based checks instead of blocking on infra.
+async function attemptChangedPaths(attempt: StageAttempt): Promise<{ paths: string[]; known: boolean }> {
+  const correlation = isRecord(attempt.correlation) ? attempt.correlation : {}
+  const cfCallId = typeof correlation.cfCallId === 'string' ? correlation.cfCallId : ''
+  const codeChangeIds = Array.isArray(correlation.codeChangeIds)
+    ? (correlation.codeChangeIds as unknown[]).filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+    : []
+  const receiptPaths: string[] = []
+  for (const r of attempt.verificationReceipts ?? []) {
+    const cp = (r as Record<string, unknown>).changed_paths
+    if (Array.isArray(cp)) for (const p of cp) if (typeof p === 'string' && p.trim()) receiptPaths.push(p)
+  }
+  if (!cfCallId || codeChangeIds.length === 0) {
+    return { paths: uniqueStrings(receiptPaths), known: receiptPaths.length > 0 }
+  }
+  try {
+    const { items } = await contextFabricClient.listCodeChanges(cfCallId, { codeChangeIds })
+    const cfPaths = items.flatMap(item =>
+      Array.isArray((item as { paths_touched?: unknown }).paths_touched)
+        ? ((item as { paths_touched: unknown[] }).paths_touched.filter((p): p is string => typeof p === 'string' && p.trim().length > 0))
+        : [])
+    return { paths: uniqueStrings([...cfPaths, ...receiptPaths]), known: true }
+  } catch {
+    return { paths: uniqueStrings(receiptPaths), known: receiptPaths.length > 0 }
+  }
 }
 
 // (2026-05-26) Under M81's per-workitem branch model, a dev stage's
