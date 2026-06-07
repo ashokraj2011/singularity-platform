@@ -55,11 +55,6 @@ export interface VerificationReceiptSummary {
   stdoutExcerpt?: string
 }
 
-export async function runCodingStage(input: CodingRunRequest): Promise<CodingRunResult> {
-  const response = await contextFabricClient.execute(input.executeRequest)
-  return normalizeCodingRunResult(response, input.policy)
-}
-
 export async function resumeCodingStage(input: {
   cfCallId?: string
   continuationToken?: string
