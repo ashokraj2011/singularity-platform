@@ -1952,3 +1952,108 @@ async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
         )
 
     return {"success": True, "data": outcome.to_dict()}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Governed SINGLE-TURN execution
+# ──────────────────────────────────────────────────────────────────────────
+# The governed STAGE loop (above) re-assembles the prompt per-phase via
+# prompt-composer and runs PLAN→…→FINALIZE. That's correct for coding/agent
+# stages, but WRONG for single-shot callers that already hold the exact prompt
+# they want executed once:
+#   • prompt-composer compose-and-respond — has the fully assembled prompt; the
+#     stage loop would discard it (re-assemble) and create a composer↔CF cycle.
+#   • contracts replay — needs the FROZEN bundle prompt executed verbatim for
+#     determinism; per-phase re-assembly would invalidate the replay.
+#   • event-horizon chat — a one-shot Q&A with a provided system prompt.
+# This endpoint gives those callers the governed audit trail + governance-overlay
+# record + 'governed' posture WITHOUT the multi-phase machine: one gateway turn
+# with the caller's prompt verbatim. (A single LLM turn dispatches no tools, so
+# there is no tool-policy/evidence gate to enforce — the overlay is recorded for
+# the audit-gov trail; G4 hard-blocking remains a stage-loop concern.)
+class GovernedTurnRequest(BaseModel):
+    trace_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    run_context: Optional[dict[str, Any]] = None
+    # Caller-supplied prompt, used VERBATIM (the whole point — no re-assembly).
+    system_prompt: str = ""
+    task: str
+    model_overrides: Optional[dict[str, Any]] = None  # {modelAlias, temperature, maxOutputTokens}
+    limits: Optional[dict[str, Any]] = None
+    governance_overlay: Optional[dict[str, Any]] = None
+    governance_waivers: Optional[list[str]] = None
+
+
+@router.post("/api/v1/execute-governed-turn")
+async def execute_governed_turn(req: GovernedTurnRequest) -> dict[str, Any]:
+    from .governed.llm_client import call_gateway_chat
+
+    rc = req.run_context or {}
+    trace_id = req.trace_id or rc.get("trace_id")
+    cap = rc.get("capability_id") or rc.get("capabilityId")
+    overlay = req.governance_overlay if isinstance(req.governance_overlay, dict) else None
+    overlay_hash = overlay.get("overlayHash") if overlay else None
+    mo = req.model_overrides or {}
+    limits = req.limits or {}
+
+    messages: list[dict[str, Any]] = []
+    if req.system_prompt and req.system_prompt.strip():
+        messages.append({"role": "system", "content": req.system_prompt})
+    messages.append({"role": "user", "content": req.task})
+
+    try:
+        resp = await call_gateway_chat(
+            messages=messages,
+            model_alias=mo.get("modelAlias") or mo.get("model_alias"),
+            temperature=mo.get("temperature"),
+            max_output_tokens=(
+                mo.get("maxOutputTokens")
+                or mo.get("max_output_tokens")
+                or limits.get("outputTokenBudget")
+            ),
+        )
+    except LLMGatewayError as exc:
+        emit_audit_event(
+            kind="governed.turn_failed", trace_id=trace_id, capability_id=cap,
+            subject_type="governed_turn", severity="error",
+            payload={"posture": "governed_turn", "overlayHash": overlay_hash, "error": str(exc)},
+        )
+        raise HTTPException(status_code=502, detail={"code": "LLM_ERROR", "message": str(exc)})
+
+    emit_audit_event(
+        kind="governed.turn_completed", trace_id=trace_id, capability_id=cap,
+        subject_type="governed_turn",
+        payload={
+            "posture": "governed_turn",
+            "overlayHash": overlay_hash,
+            "governanceOverlay": overlay,
+            "governanceWaivers": req.governance_waivers,
+            "provider": resp.provider, "model": resp.model, "modelAlias": resp.model_alias,
+            "inputTokens": resp.input_tokens, "outputTokens": resp.output_tokens,
+        },
+    )
+
+    total_tokens = resp.input_tokens + resp.output_tokens
+    usage = {
+        "modelAlias": resp.model_alias, "provider": resp.provider, "model": resp.model,
+        "inputTokens": resp.input_tokens, "outputTokens": resp.output_tokens,
+        "totalTokens": total_tokens, "estimatedCost": resp.estimated_cost or 0,
+    }
+    return {
+        "status": "COMPLETED",
+        "finalResponse": resp.content,
+        "finishReason": resp.finish_reason,
+        "correlation": {
+            "cfCallId": f"governed-turn:{trace_id}",
+            "traceId": trace_id,
+            "modelAlias": resp.model_alias,
+            "governanceMode": "fail_open",
+            "executionPosture": "governed",
+            "llmCallIds": [], "toolInvocationIds": [], "artifactIds": [], "codeChangeIds": [],
+        },
+        "tokensUsed": {"input": resp.input_tokens, "output": resp.output_tokens, "total": total_tokens},
+        "usage": usage,
+        "modelUsage": usage,
+        "warnings": [],
+        "pendingApproval": None,
+    }

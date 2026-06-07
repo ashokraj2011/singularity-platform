@@ -2,11 +2,6 @@ import { Router, type Router as ExpressRouter } from 'express'
 import { z } from 'zod'
 import { config } from '../../config'
 import { contextFabricClient, type ExecuteRequest } from '../../lib/context-fabric/client'
-import {
-  executeReqToGovernedStageReq,
-  governedStageRespToExecuteResp,
-} from '../workflow/runtime/executors/governed-execute-adapter'
-import { enrichStageRequestWithGovernance } from '../governance/governance.service'
 // M36.4 — system_prompt now resolved from prompt-composer SystemPrompt table
 import { promptComposerClient } from '../../lib/prompt-composer/client'
 import { prisma } from '../../lib/prisma'
@@ -159,17 +154,20 @@ eventHorizonRouter.post('/chat', async (req, res) => {
     },
     prefer_laptop: false,
   }
-  // Phase 4 cutover — flag-gated dual path. Governed routes the single-shot chat
-  // through the generic 'loop.stage' policy + governance overlay; legacy is the
-  // default until CONTEXT_FABRIC_GOVERN_SIDE_CALLERS is flipped + soaked.
+  // Phase 4 cutover — flag-gated dual path. EH chat is single-shot Q&A with a
+  // PROVIDED system prompt, so it routes through the governed SINGLE-TURN path
+  // (governed audit + posture, prompt used verbatim) — NOT the multi-phase stage
+  // loop, which would re-assemble the prompt. Legacy is the default until
+  // CONTEXT_FABRIC_GOVERN_SIDE_CALLERS is flipped + soaked.
   let result
   if (config.CONTEXT_FABRIC_GOVERN_SIDE_CALLERS) {
-    const gov = executeReqToGovernedStageReq(executeReq, { agentRole: 'ASSISTANT', maxTurns: 4 })
-    await enrichStageRequestWithGovernance(gov)
-    const govResp = await contextFabricClient.executeGovernedStage(gov)
-    result = governedStageRespToExecuteResp(govResp, {
-      traceId: executeReq.trace_id,
-      sessionId: `event-horizon-${body.sessionId}`,
+    result = await contextFabricClient.executeGovernedTurn({
+      trace_id: executeReq.trace_id,
+      run_context: executeReq.run_context as unknown as Record<string, unknown>,
+      system_prompt: executeReq.system_prompt,
+      task: executeReq.task,
+      model_overrides: executeReq.model_overrides,
+      limits: { outputTokenBudget: executeReq.limits?.outputTokenBudget },
     })
   } else {
     result = await contextFabricClient.execute(executeReq)
