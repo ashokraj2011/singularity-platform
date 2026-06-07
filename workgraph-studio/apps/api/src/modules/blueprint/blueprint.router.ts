@@ -4145,6 +4145,10 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
           status: codingResult.status,
           policy: codingResult.policy,
           executeStatus: codingResult.executeStatus,
+          // Phase 3 — persist the governed PhaseState dict so an APPROVAL_PENDING
+          // pause can be rehydrated + resumed via the governed path (not the
+          // legacy continuation-token path, which governed pauses don't produce).
+          ...(codingResult.governedFinalState ? { governedFinalState: codingResult.governedFinalState } : {}),
         },
       },
       tokensUsed: result.tokensUsed as unknown as Record<string, unknown>,
@@ -4337,7 +4341,16 @@ async function resumeLoopStageApproval(
   const continuationToken = pendingApproval && typeof pendingApproval.continuation_token === 'string'
     ? pendingApproval.continuation_token
     : undefined
-  if (!cfCallId && !continuationToken) {
+  // Phase 3 — governed pauses persist their PhaseState and have only a synthetic
+  // cfCallId (no legacy continuation token), so they MUST resume via the governed
+  // loop with the rehydrated state + decision. Legacy pauses keep the legacy
+  // continuation-token resume. WORKGRAPH_GOVERNED_RESUME=0 forces legacy (escape hatch).
+  const codingAgentMeta = isRecord(correlation.codingAgent) ? correlation.codingAgent : {}
+  const governedFinalState = isRecord(codingAgentMeta.governedFinalState)
+    ? (codingAgentMeta.governedFinalState as Record<string, unknown>)
+    : null
+  const useGovernedResume = governedFinalState !== null && process.env.WORKGRAPH_GOVERNED_RESUME !== '0'
+  if (!useGovernedResume && !cfCallId && !continuationToken) {
     throw new ValidationError('Paused stage is missing Context Fabric call id and continuation token')
   }
 
@@ -4369,14 +4382,21 @@ async function resumeLoopStageApproval(
     })
   }
 
-  const codingResult = await resumeCodingStage({
-    cfCallId,
-    continuationToken,
-    decision: body.decision,
-    reason: body.reason,
-    argsOverride: body.argsOverride ?? body.args_override,
-    policy,
-  })
+  const codingResult = useGovernedResume
+    ? await runLoopStageExecute(
+        // Governed path ignores task/systemPromptAppend/extraContext (prompts
+        // resolve per-phase server-side); it rebuilds run_context/policy itself.
+        session, snapshot, stage, latestAttempt, '', '', '',
+        { phaseState: governedFinalState, decision: body.decision, reason: body.reason },
+      )
+    : await resumeCodingStage({
+        cfCallId,
+        continuationToken,
+        decision: body.decision,
+        reason: body.reason,
+        argsOverride: body.argsOverride ?? body.args_override,
+        policy,
+      })
   const result = codingResult.response
   await recordBlueprintBudgetUsage(session, result, stage.key, state.workflowNodeId)
   // M66 — Same persist-after-stage pattern as the fresh-execute path above.
@@ -5556,6 +5576,12 @@ async function runLoopStageExecute(
   systemPromptAppend: string,
   // M36.6 — resolved by caller from prompt-composer (was: inline isDeveloperStage ternary)
   extraContext: string,
+  // Phase 3 — present only on an approval-gate RESUME: rehydrate the persisted
+  // governed PhaseState + apply the operator's decision (approved → FINALIZE,
+  // rejected → REPAIR). On the governed path task/systemPromptAppend/extraContext
+  // are ignored (prompts resolve per-phase server-side), so resume callers pass
+  // them empty and this function rebuilds all the run_context/policy correctly.
+  resume?: { phaseState?: Record<string, unknown> | null; decision?: string; reason?: string },
 ): Promise<CodingRunResult> {
   const traceId = `blueprint-${session.id}-${stage.key}`
   const state = readLoopState(session)
@@ -5839,6 +5865,10 @@ async function runLoopStageExecute(
     // resolveStageMaxSteps / resolveStageTimeoutSec.
     maxTurns: resolveStageMaxSteps(stage),
     timeoutSec: resolveStageTimeoutSec(stage),
+    // Phase 3 — approval-gate resume: rehydrate the persisted PhaseState +
+    // apply the decision so the governed loop drives FINALIZE / REPAIR.
+    ...(resume?.phaseState ? { phaseState: resume.phaseState } : {}),
+    ...(resume?.decision ? { decision: resume.decision, ...(resume.reason ? { reason: resume.reason } : {}) } : {}),
   })
 }
 

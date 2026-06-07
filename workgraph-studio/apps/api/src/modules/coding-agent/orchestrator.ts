@@ -33,6 +33,10 @@ export interface CodingRunResult {
   modelUsage: ExecuteResponse['modelUsage']
   tokensUsed: ExecuteResponse['tokensUsed']
   warnings: string[]
+  // Governed path only — the StageRunResult.final_state (PhaseState dict). The
+  // caller persists this on an APPROVAL_PENDING pause so resume can rehydrate it
+  // (legacy path leaves it undefined).
+  governedFinalState?: Record<string, unknown> | null
 }
 
 export interface VerificationReceiptSummary {
@@ -303,6 +307,12 @@ export interface CodingStageGovernedRequest {
   // resolves. Optional — legacy callers omitting this still get the
   // unfiltered base policy (back-compat preserved).
   stageExecutionPolicy?: GovernedStageRequest['stage_execution_policy']
+  // Phase 3 — human approval-gate resume. When resuming a stage paused at
+  // APPROVAL_PENDING, pass the persisted phaseState PLUS a decision: 'approved'
+  // drives SELF_REVIEW→FINALIZE, 'rejected'/'changes_requested' → REPAIR (reason
+  // surfaced as eval_feedback). Omitted ⇒ plain run/continuation.
+  decision?: string
+  reason?: string
 }
 
 export async function runCodingStageGoverned(
@@ -328,6 +338,8 @@ export async function runCodingStageGoverned(
     // stage_execution_policy isn't sent so CF sees a clean "no override"
     // signal (back-compat with pre-M93.D wire).
     ...(input.stageExecutionPolicy ? { stage_execution_policy: input.stageExecutionPolicy } : {}),
+    // Phase 3 — approval-gate resume decision (only when resuming a pause).
+    ...(input.decision ? { decision: input.decision, ...(input.reason ? { reason: input.reason } : {}) } : {}),
   }
   // Capability Governance Model (G5) — resolve + attach the governance overlay +
   // active waivers so CF's enforcement gate can block on unmet BLOCKING/REQUIRED
@@ -701,6 +713,9 @@ export function adaptGovernedStageToCodingRun(
     modelUsage: syntheticResponse.modelUsage,
     tokensUsed: syntheticResponse.tokensUsed,
     warnings,
+    // Phase 3 — expose the PhaseState dict so the caller can persist it on an
+    // APPROVAL_PENDING pause and rehydrate it on resume.
+    governedFinalState: (resp.final_state as Record<string, unknown> | undefined) ?? null,
   }
 }
 
