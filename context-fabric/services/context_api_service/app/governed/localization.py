@@ -34,6 +34,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .dispatch import ToolDispatchError, dispatch_tool
+from .grant import mint_tool_grant
+from .phase_state import Phase
+from .policy_loader import StagePolicy
 
 log = logging.getLogger(__name__)
 
@@ -133,6 +136,8 @@ async def synthesize_localization(
     workspace_id: str | None,
     run_context: dict[str, Any] | None,
     bearer: str | None,
+    policy: StagePolicy | None = None,
+    phase: Phase | None = None,
 ) -> LocalizationResult:
     """Run the read-only localizer sweep. Never raises.
 
@@ -160,6 +165,13 @@ async def synthesize_localization(
                 workspace_id=workspace_id,
                 run_context=run_context,
                 bearer=bearer,
+                grant=mint_tool_grant(
+                    policy=policy,
+                    phase=phase,
+                    tool_name=tool,
+                    args=args,
+                    run_context=run_context,
+                ),
             )
         except ToolDispatchError as exc:
             log.info("localization: %s dispatch failed (skipping): %s", tool, exc)

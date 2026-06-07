@@ -49,7 +49,13 @@ from .dispatch import (
     ToolDispatchResult,
     dispatch_tool,
 )
-from .audit_emit import emit_governed_event
+from .grant import (
+    grant_enabled,
+    hash_args,
+    mint_tool_grant,
+    policy_hash,
+)
+from .audit_emit import emit_governed_event, emit_governed_event_durable
 from .loop import (
     GovernedStepResult,
     ToolCallOutcome,
@@ -111,8 +117,14 @@ __all__ = [
     "ToolDispatchError",
     "ToolDispatchResult",
     "dispatch_tool",
+    # grant
+    "mint_tool_grant",
+    "grant_enabled",
+    "hash_args",
+    "policy_hash",
     # audit_emit
     "emit_governed_event",
+    "emit_governed_event_durable",
     # loop
     "GovernedStepResult",
     "ToolCallOutcome",

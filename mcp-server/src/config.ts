@@ -30,6 +30,36 @@ const schema = z.object({
   MCP_SESSION_TOKEN_TTL_SEC: z.coerce.number().int().positive().default(12 * 60 * 60),
   MCP_SESSION_TOKEN_ISSUER: z.string().default("singularity-mcp"),
 
+  // ── ToolInvocationGrant — defence-in-depth over the policy-dumb runner ───
+  // /mcp/tool-run only checks the bearer scope; the bearer proves "a caller in
+  // IAM may talk to MCP" but NOT that this specific (tool, args, stage/phase)
+  // was authorized by Context Fabric's governed loop. A leaked/over-scoped
+  // bearer could therefore dispatch any tool — including mutating ones. When
+  // enabled, MCP requires a CF-signed grant for mutating/high-risk tools and
+  // verifies its signature, expiry, nonce (replay), and tool/args binding.
+  //
+  // TOOL_GRANT_SIGNING_SECRET — shared HMAC key; MUST equal context-fabric's
+  //   TOOL_GRANT_SIGNING_SECRET. Optional so dev/test boot without it (in
+  //   which case only mode=off is valid; see the assertion below).
+  TOOL_GRANT_SIGNING_SECRET: z.string().optional(),
+  // Enforcement mode (flag-gated rollout, default off = pre-hardening shape):
+  //   off     — grants ignored entirely. Backward compatible.
+  //   grace   — rollout window: if a grant is PRESENT it must be valid
+  //             (reject tampered/expired/replayed/mismatched), but a MISSING
+  //             grant is allowed (logged). Lets callers that haven't shipped
+  //             grant-minting yet keep working while you watch the logs.
+  //   enforce — mutating/high-risk tools REQUIRE a valid grant; missing or
+  //             invalid → 403. Read-only tools are never gated.
+  MCP_TOOL_GRANT_MODE: z.enum(["off", "grace", "enforce"]).default("off"),
+  // Tool registry categories that require a grant under grace/enforce. The
+  // genuinely state-changing + arbitrary-execution categories. Read-only ones
+  // (read/analyzer/verify_meta) are intentionally excluded so the rollout
+  // never blocks safe tools. Comma-separated; parsed below.
+  MCP_TOOL_GRANT_REQUIRED_CATEGORIES: z.string().default("mutate,finalize,run"),
+  // Allowance for clock drift between CF (issuer) and MCP (verifier) when
+  // checking issuedAt/expiresAt, in seconds.
+  MCP_TOOL_GRANT_CLOCK_SKEW_SEC: z.coerce.number().int().nonnegative().default(30),
+
   // ── M33 — Central LLM Gateway ───────────────────────────────────────────
   // Every LLM call from mcp-server routes through the central
   // `llm-gateway-service` (context-fabric, port 8001). Provider keys live
@@ -180,6 +210,24 @@ function assertProductionSecretLocal(name: string, value: string | undefined, mi
   }
 }
 assertProductionSecretLocal("MCP_BEARER_TOKEN", parsed.data.MCP_BEARER_TOKEN, 16);
+
+// ToolInvocationGrant: you cannot turn on grant verification without a key to
+// verify with. Refuse to boot in grace/enforce mode if the shared signing
+// secret is unset — otherwise every grant check would fail open (in grace) or
+// hard-fail every mutating dispatch (in enforce), neither of which is what an
+// operator flipping the flag intends. In production the key must also be
+// strong, same as every other secret.
+if (parsed.data.MCP_TOOL_GRANT_MODE !== "off") {
+  if (!parsed.data.TOOL_GRANT_SIGNING_SECRET) {
+    console.error(
+      `FATAL: MCP_TOOL_GRANT_MODE=${parsed.data.MCP_TOOL_GRANT_MODE} requires ` +
+        `TOOL_GRANT_SIGNING_SECRET to be set (it must match context-fabric's value). ` +
+        `Set it and restart, or set MCP_TOOL_GRANT_MODE=off.`,
+    );
+    process.exit(1);
+  }
+  assertProductionSecretLocal("TOOL_GRANT_SIGNING_SECRET", parsed.data.TOOL_GRANT_SIGNING_SECRET, 32);
+}
 
 export const config = {
   ...parsed.data,

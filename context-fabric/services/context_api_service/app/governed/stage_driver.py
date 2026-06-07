@@ -1291,6 +1291,8 @@ async def _salvage_mutating_phase(
             or (run_context or {}).get("workspaceId"),
             run_context=run_context,
             bearer=bearer,
+            policy=stage_policy,
+            phase=state.current_phase,
         )
     except Exception as exc:  # pragma: no cover — synthesize never raises
         log.warning("salvage: verifier synthesis raised (defensive): %s", exc)
@@ -1422,6 +1424,8 @@ async def _maybe_run_localization(
             workspace_id=wsid,
             run_context=run_context,
             bearer=bearer,
+            policy=stage_policy,
+            phase=state.current_phase,
         )
         receipt_dict = LocalizationReceipt(
             **loc_result.to_receipt_payload()
@@ -1497,6 +1501,8 @@ async def _maybe_run_git_preflight(
             workspace_id=wsid,
             run_context=run_context,
             bearer=bearer,
+            policy=stage_policy,
+            phase=state.current_phase,
         )
         receipt_dict = GitPreflightReceipt(**pf.to_receipt_payload()).model_dump(mode="json")
         state.receipts[_GIT_PREFLIGHT_KEY] = [receipt_dict]
@@ -1559,6 +1565,8 @@ async def _maybe_run_auto_baseline(
             workspace_id=wsid,
             run_context=run_context,
             bearer=bearer,
+            policy=stage_policy,
+            phase=state.current_phase,
         )
         receipt_dict = BaselineReceipt(**result.to_receipt_payload()).model_dump(mode="json")
         # Persist the receipt alongside the stash (distinct sentinel so the

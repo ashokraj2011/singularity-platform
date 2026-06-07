@@ -37,6 +37,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from .dispatch import ToolDispatchError, dispatch_tool
+from .grant import mint_tool_grant
+from .phase_state import Phase
+from .policy_loader import StagePolicy
 
 log = logging.getLogger(__name__)
 
@@ -146,7 +149,7 @@ def _changed_paths_from_edit_receipt(edit_receipt: dict[str, Any]) -> list[str]:
     return out
 
 
-def _first_runnable(recommended: list[dict[str, Any]]) -> dict[str, Any] | None:
+def first_runnable(recommended: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Pick the highest-ranked (already sorted) recommendation that the
     MCP allowlist will actually execute."""
     for entry in recommended:
@@ -182,6 +185,8 @@ async def synthesize_verifier_run(
     workspace_id: str | None,
     run_context: dict[str, Any] | None,
     bearer: str | None,
+    policy: StagePolicy | None = None,
+    phase: Phase | None = None,
 ) -> SyntheticVerifierResult:
     """Run recommended_verification → first runnable → run_test in sequence.
 
@@ -194,13 +199,21 @@ async def synthesize_verifier_run(
 
     # ── 1. Ask mcp-server for the ranked verifier list ────────────────
     try:
+        rec_args = {"changed_paths": changed} if changed else {}
         rec_outcome = await dispatch_tool(
             "recommended_verification",
-            {"changed_paths": changed} if changed else {},
+            rec_args,
             work_item_id=work_item_id,
             workspace_id=workspace_id,
             run_context=run_context,
             bearer=bearer,
+            grant=mint_tool_grant(
+                policy=policy,
+                phase=phase,
+                tool_name="recommended_verification",
+                args=rec_args,
+                run_context=run_context,
+            ),
         )
     except ToolDispatchError as exc:
         log.warning("auto-verify: recommended_verification dispatch failed: %s", exc)
@@ -220,7 +233,7 @@ async def synthesize_verifier_run(
         if isinstance(rec_outcome.result, dict)
         else []
     )
-    pick = _first_runnable(recommended)
+    pick = first_runnable(recommended)
     if pick is None:
         none_msg = (
             (rec_outcome.result or {}).get("guidance")
@@ -242,6 +255,13 @@ async def synthesize_verifier_run(
             workspace_id=workspace_id,
             run_context=run_context,
             bearer=bearer,
+            grant=mint_tool_grant(
+                policy=policy,
+                phase=phase,
+                tool_name="run_test",
+                args=run_args,
+                run_context=run_context,
+            ),
         )
     except ToolDispatchError as exc:
         log.warning("auto-verify: run_test dispatch failed: %s", exc)

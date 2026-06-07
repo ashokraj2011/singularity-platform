@@ -78,6 +78,7 @@ async def dispatch_tool(
     run_context: dict[str, Any] | None = None,
     bearer: str | None = None,
     laptop_user_id: str | None = None,
+    grant: dict[str, Any] | None = None,
 ) -> ToolDispatchResult:
     """Dispatch a single tool invocation. Default transport is HTTP
     POST to mcp-server's /mcp/tool-run; when ``laptop_user_id`` is set
@@ -100,6 +101,16 @@ async def dispatch_tool(
                      audit invocation record.
       bearer:        Override the env-default MCP_BEARER_TOKEN. Ignored on
                      the laptop path (the bridge handshake owns auth there).
+      grant:         Optional signed ToolInvocationGrant (see governed.grant).
+                     When present it's attached to the HTTP payload as
+                     ``tool_grant`` so mcp-server can verify the call was
+                     authorized by CF's governed loop before executing a
+                     mutating / high-risk tool. ``None`` (the default, and what
+                     ``mint_tool_grant`` returns when the feature is off) means
+                     no grant is sent — the pre-hardening wire shape. Only the
+                     HTTP transport carries the grant today; the laptop bridge
+                     runs on the user's own device behind the handshake and is
+                     out of scope for this slice.
       laptop_user_id: M75 Slice 3 — when set, route via the laptop bridge
                      instead of HTTP. The caller (loop.py) populates this
                      from run_context.user_id when prefer_laptop is true
@@ -173,6 +184,11 @@ async def dispatch_tool(
         payload["workspace_id"] = workspace_id
     if run_context:
         payload["run_context"] = run_context
+    if grant:
+        # Defence-in-depth: signed proof that CF's governed loop authorized
+        # THIS (tool, args, stage/phase/policy). mcp-server verifies it before
+        # executing mutating / high-risk tools (see security/tool-grant.ts).
+        payload["tool_grant"] = grant
 
     headers = {
         "content-type": "application/json",

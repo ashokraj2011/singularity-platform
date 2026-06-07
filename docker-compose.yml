@@ -613,6 +613,15 @@ services:
       MCP_SERVER_URL: http://mcp-server:7100
       MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       MCP_DEFAULT_SERVER_ID: ${MCP_DEFAULT_SERVER_ID:-local-default-mcp}
+      # ── ToolInvocationGrant (defence-in-depth) ──────────────────────────
+      # The governed loop signs a per-call grant binding (tool, args,
+      # stage/phase/policy); mcp-server verifies it before running mutating /
+      # high-risk tools. OFF by default. Flip CF_TOOL_GRANT_ENABLED=true here
+      # AND set MCP_TOOL_GRANT_MODE=grace|enforce on mcp-server, sharing the
+      # SAME TOOL_GRANT_SIGNING_SECRET on both.
+      CF_TOOL_GRANT_ENABLED: ${CF_TOOL_GRANT_ENABLED:-false}
+      TOOL_GRANT_SIGNING_SECRET: ${TOOL_GRANT_SIGNING_SECRET:-dev-tool-grant-signing-secret-min-32-chars!!}
+      CF_TOOL_GRANT_TTL_SEC: ${CF_TOOL_GRANT_TTL_SEC:-120}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       # M83.r (2026-05-27) — Anthropic extended thinking budget in
       # output tokens. 0 = off (default). 4096 is the empirical sweet
@@ -1201,6 +1210,17 @@ services:
       PORT: 7100
       LOG_LEVEL: info
       MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      # ── ToolInvocationGrant verification (defence-in-depth) ─────────────
+      # Verify CF-signed grants before running mutating / high-risk tools.
+      #   off (default) — grants ignored; pre-hardening behaviour.
+      #   grace         — present grants must be valid; a MISSING grant is
+      #                   allowed + logged (rollout window).
+      #   enforce       — mutating/high-risk tools REQUIRE a valid grant.
+      # TOOL_GRANT_SIGNING_SECRET MUST equal context_api_service's value.
+      MCP_TOOL_GRANT_MODE: ${MCP_TOOL_GRANT_MODE:-off}
+      TOOL_GRANT_SIGNING_SECRET: ${TOOL_GRANT_SIGNING_SECRET:-dev-tool-grant-signing-secret-min-32-chars!!}
+      MCP_TOOL_GRANT_REQUIRED_CATEGORIES: ${MCP_TOOL_GRANT_REQUIRED_CATEGORIES:-mutate,finalize,run}
+      MCP_TOOL_GRANT_CLOCK_SKEW_SEC: ${MCP_TOOL_GRANT_CLOCK_SKEW_SEC:-30}
       # M28 boot-1 — explicit container-internal paths so /healthz/strict
       # invariants pass. Bound to a writable git repo via the volume mount
       # below. Override MCP_SANDBOX_HOST_PATH to point at a real working
