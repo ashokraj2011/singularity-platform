@@ -22,6 +22,15 @@ jobs:
   typecheck-ts:
     name: typecheck ${{ matrix.service.name }}
     runs-on: ubuntu-latest
+    # `prisma validate` / `prisma generate` read env("DATABASE_URL") (and
+    # env("DATABASE_URL_RUNTIME_READ")) purely to PARSE the datasource block —
+    # no DB connection is made (generate/validate are offline). Without these
+    # the steps fail P1012 "Environment variable not found: DATABASE_URL",
+    # which was failing every prisma-enabled typecheck job in CI. Dummy values
+    # are sufficient; they are never connected to.
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci?schema=public
+      DATABASE_URL_RUNTIME_READ: postgresql://ci:ci@localhost:5432/ci?schema=public
     strategy:
       fail-fast: false
       matrix:
