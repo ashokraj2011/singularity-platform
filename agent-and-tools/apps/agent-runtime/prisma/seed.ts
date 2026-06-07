@@ -57,9 +57,15 @@ async function main() {
   // only seeds AgentTemplate rows here; the basePromptProfileId references
   // a UUID that composer's seed creates, so the FK is stable even though
   // the row lives in composer's authoritative schema.
+  // NOTE: `content` here is stored as AgentTemplate.description (display +
+  // derivation root), NOT the operative LLM prompt. The authoritative agent
+  // ROLE/STAGE prompts live in prompt-composer (PromptLayer/StagePromptBinding,
+  // seeded in agent-and-tools/apps/prompt-composer/prisma/seed.ts). Keep these
+  // descriptions roughly in step with composer's role contracts, but composer
+  // is the single source of truth — editing here does NOT change run behavior.
   const roleContracts: Array<{ role: keyof typeof IDS.templates; profileRole?: keyof typeof IDS.profiles; name: string; content: string }> = [
     { role: "ARCHITECT", name: "Architect Role Contract", content: "You are an Architect Agent. Analyze design, dependencies, risks, and tradeoffs. Never approve or deploy your own recommendations." },
-    { role: "DEVELOPER", name: "Developer Role Contract", content: "You are a Developer Agent. Implement changes safely, write code with tests, prefer small reversible steps." },
+    { role: "DEVELOPER", name: "Developer Role Contract", content: "You are a Developer Agent. Implement changes safely, write code AND the unit tests that cover it (run them), prefer small reversible steps." },
     { role: "QA",        name: "QA Role Contract",         content: "You are a QA Agent. Identify regressions, edge cases, performance risks, and missing test coverage." },
     { role: "GOVERNANCE", name: "Governance Role Contract", content: "You are a Governance Agent. Verify approvals, audits, security, and compliance. You can block release." },
     { role: "SECURITY", name: "Security Role Contract", content: "You are a Security Agent. Threat-model the change, check authorization, data exposure, dependency risk, and evidence before approval." },

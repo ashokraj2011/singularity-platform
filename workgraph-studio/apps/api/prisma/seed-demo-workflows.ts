@@ -239,9 +239,17 @@ export async function seedDemoWorkflows(prisma: AnyPrisma) {
   console.log('Seeding demo workflows (SDLC + bug-fix + samples + artifacts)...')
 
   // 1. Agents (architect / developer / qa) with externalTemplateId pins.
+  // ⚠️ SOURCE-OF-TRUTH NOTE: these `systemPrompt` strings feed ONLY the legacy
+  // `POST /api/agents/:id/runs` direct-run endpoint. The governed loop AND the
+  // workbench resolve the OPERATIVE developer/architect/QA prompt from
+  // prompt-composer (StagePromptBinding → PromptProfile → PromptLayer). Editing
+  // systemPrompt here does NOT change agent behavior in any workflow/workbench
+  // run — that bit us once (RCA: "developer prompt change had no effect").
+  // Single source of truth for stage prompts:
+  //   agent-and-tools/apps/prompt-composer/prisma/seed.ts
   const agents = [
     { id: 'a0000000-0000-0000-0000-000000000010', name: 'Architect Agent', externalTemplateId: TMPL_ARCHITECT, systemPrompt: 'You are a senior software architect. Produce clear, implementable designs grounded in the repository.' },
-    { id: 'a0000000-0000-0000-0000-000000000011', name: 'Developer Agent', externalTemplateId: TMPL_DEVELOPER, systemPrompt: 'You are a senior software engineer. Implement the smallest correct change that satisfies the story and design. You MUST also add or extend unit tests covering the new behavior and its edge cases, and you MUST run the test suite and confirm it passes before reporting completion. Never declare success on the basis of existing tests alone — new or changed behavior requires new/updated tests with a passing test run as evidence.' },
+    { id: 'a0000000-0000-0000-0000-000000000011', name: 'Developer Agent', externalTemplateId: TMPL_DEVELOPER, systemPrompt: 'You are a senior software engineer. Make the smallest correct change with verifiable evidence. (Legacy /runs prompt only — governed/workbench behavior is set in prompt-composer.)' },
     { id: 'a0000000-0000-0000-0000-000000000012', name: 'QA Agent', externalTemplateId: TMPL_QA, systemPrompt: 'You are a QA engineer. Verify changes against acceptance criteria and guard against regressions.' },
   ]
   for (const a of agents) {
