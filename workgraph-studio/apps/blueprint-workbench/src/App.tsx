@@ -606,6 +606,9 @@ function WorkbenchSetup({
   const [sourceDefaultSource, setSourceDefaultSource] = useState(workflowDefaults.sourceUri ? 'workflow launch URL' : '')
   const [intakeTouched, setIntakeTouched] = useState({ goal: false, sourceType: false, sourceUri: false, sourceRef: false })
   const [gateMode, setGateMode] = useState<GateMode>(workflowDefaults.gateMode ?? 'manual')
+  // Per-stage soft budget (WARN_ONLY). Empty unit = no budget.
+  const [budgetUnit, setBudgetUnit] = useState<'' | 'USD' | 'TOKENS'>('')
+  const [budgetAmount, setBudgetAmount] = useState<string>('')
   // Milestones — opt a big-change run into the sequential milestone outer loop.
   const [milestonesMode, setMilestonesMode] = useState(false)
   const [capabilityId, setCapabilityId] = useState(workflowDefaults.capabilityId ?? '')
@@ -935,6 +938,25 @@ function WorkbenchSetup({
             <option value="auto">Conservative auto gates</option>
           </select>
         </label>
+        <label>
+          <span>Stage budget (soft · warn only)</span>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <select value={budgetUnit} onChange={event => setBudgetUnit(event.target.value as '' | 'USD' | 'TOKENS')}>
+              <option value="">No budget</option>
+              <option value="USD">USD / stage</option>
+              <option value="TOKENS">Tokens / stage</option>
+            </select>
+            <input
+              type="number"
+              min="0"
+              step="any"
+              value={budgetAmount}
+              onChange={event => setBudgetAmount(event.target.value)}
+              disabled={!budgetUnit}
+              placeholder={budgetUnit === 'USD' ? 'e.g. 2.50' : budgetUnit === 'TOKENS' ? 'e.g. 200000' : 'amount'}
+            />
+          </div>
+        </label>
       </div>
 
       <label className="milestones-toggle" title="For a big change: the design stage decomposes the goal into an ordered milestone series (M1→M2→…), each built on the same branch, ending in one final certification.">
@@ -1101,6 +1123,8 @@ function WorkbenchSetup({
           developerAgentTemplateId: developerAgentTemplateId || undefined,
           qaAgentTemplateId: qaAgentTemplateId || undefined,
           gateMode,
+          stageBudgetUnit: budgetUnit || undefined,
+          stageBudgetAmount: budgetUnit && budgetAmount ? Number(budgetAmount) : undefined,
           milestonesMode: milestonesMode || undefined,
           workflowInstanceId: workflowDefaults.workflowInstanceId,
           browserRunId: workflowDefaults.browserRunId,
