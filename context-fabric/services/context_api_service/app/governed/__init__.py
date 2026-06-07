@@ -55,7 +55,7 @@ from .grant import (
     mint_tool_grant,
     policy_hash,
 )
-from .audit_emit import emit_governed_event, emit_governed_event_durable
+from .audit_emit import emit_governed_event
 from .loop import (
     GovernedStepResult,
     ToolCallOutcome,
@@ -124,7 +124,6 @@ __all__ = [
     "policy_hash",
     # audit_emit
     "emit_governed_event",
-    "emit_governed_event_durable",
     # loop
     "GovernedStepResult",
     "ToolCallOutcome",
