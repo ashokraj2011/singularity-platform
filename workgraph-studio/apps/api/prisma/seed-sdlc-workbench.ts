@@ -45,6 +45,10 @@ interface StageSpec {
   toolPolicy: string; contextPolicy: string; repoAccess: boolean
   terminal: boolean; approvalRequired: boolean
   expectedArtifacts: ArtifactSpec[]; sendBackTo: string[]
+  // Per-stage step budget (overrides the runtime default, e.g. 28 for a
+  // mutating dev stage). Develop needs more headroom because the agent must
+  // implement AND add/run unit tests AND self-review in one stage.
+  limits?: { maxSteps?: number }
 }
 
 const SDLC_STAGES: StageSpec[] = [
@@ -68,6 +72,9 @@ const SDLC_STAGES: StageSpec[] = [
   {
     key: 'DEVELOP', label: 'Develop', agentRole: 'DEVELOPER', agentTemplateId: DEVELOPER_AGENT,
     toolPolicy: 'MUTATION', contextPolicy: 'CODE_EDIT', repoAccess: true, terminal: false, approvalRequired: true,
+    // Implement + add/extend unit tests + run them + self-review in one stage
+    // needs well above the default ~40-step dev budget (WORKBENCH_DEVELOPER_MAX_STEPS).
+    limits: { maxSteps: 160 },
     expectedArtifacts: [
       { kind: 'developer_task_pack', title: 'Developer task pack', format: 'MARKDOWN', required: true },
       { kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence', format: 'MARKDOWN', required: true },
@@ -138,6 +145,7 @@ async function main(): Promise<void> {
         next: idx < SDLC_STAGES.length - 1 ? SDLC_STAGES[idx + 1]!.key : undefined,
         terminal: stage.terminal, required: true, approvalRequired: stage.approvalRequired,
         allowedSendBackTo: stage.sendBackTo, toolPolicy: stage.toolPolicy, contextPolicy: stage.contextPolicy, repoAccess: stage.repoAccess,
+        ...(stage.limits ? { limits: stage.limits } : {}),
         // templateId rides the JSON loopDefinition → normalizeExpectedArtifacts →
         // renderExpectedArtifacts injects the catalog section skeleton (M102).
         expectedArtifacts: stage.expectedArtifacts.map(a => ({ kind: a.kind, title: a.title, required: a.required, format: a.format, templateId: a.templateId })),
