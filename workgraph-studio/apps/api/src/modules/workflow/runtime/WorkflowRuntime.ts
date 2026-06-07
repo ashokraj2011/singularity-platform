@@ -26,6 +26,7 @@ import { activateDataSink } from './executors/DataSinkExecutor'
 import { activateParallelFork } from './executors/ParallelForkExecutor'
 import { activateParallelJoin } from './executors/ParallelJoinExecutor'
 import { activateSignalEmit } from './executors/SignalEmitExecutor'
+import { activateEventEmit } from './executors/EventEmitExecutor'
 import { activateSetContext } from './executors/SetContextExecutor'
 import { activateErrorCatch } from './executors/ErrorCatchExecutor'
 
@@ -559,6 +560,20 @@ async function executeServerNode(
       await activateSignalEmit(node, instance)
       await advance(instance.id, node.id, context, actorId)
       break
+    case 'EVENT_EMIT': {
+      // Publish to the configured sink (eventbus/Kafka/SQS/SNS/AMQP). On a
+      // delivery error the executor honours failOnError: passed=false → fail
+      // the node; passed=true (failOnError off) → advance best-effort with the
+      // error recorded in the node output.
+      const result = await activateEventEmit(node, instance, actorId)
+      if (result.passed) await advance(instance.id, node.id, { ...context, ...result.output }, actorId)
+      else await failNode(instance.id, node.id, {
+        message: 'EVENT_EMIT node failed',
+        code: result.output.eventEmit.code ?? 'EVENT_EMIT_FAILED',
+        details: result.output.eventEmit,
+      }, actorId)
+      break
+    }
     case 'SET_CONTEXT':
       await activateSetContext(node, instance)
       await advance(instance.id, node.id, context, actorId)
@@ -931,6 +946,14 @@ export async function failNode(
           await activateSetContext(target, instance)
           await advance(instanceId, target.id, errorContext, actorId)
           break
+        case 'EVENT_EMIT': {
+          // "Emit an alert event on failure" — a natural error-boundary handler.
+          // The failing node's error is already in errorContext._lastError, so a
+          // payloadPath of `_lastError` surfaces it to the sink.
+          const result = await activateEventEmit(target, instance, actorId)
+          if (result.passed) await advance(instanceId, target.id, { ...errorContext, ...result.output }, actorId)
+          break
+        }
         case 'CUSTOM': {
           const cfg = (target.config ?? {}) as Record<string, unknown>
           const bt = cfg._baseType as string | undefined

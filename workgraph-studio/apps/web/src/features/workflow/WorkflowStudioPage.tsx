@@ -16,7 +16,7 @@ import {
   Star, Briefcase as BriefcaseIcon, Database, Globe, Mail, Phone,
   Calendar, AlertTriangle, Search, Filter, Activity, Coins,
   SlidersHorizontal, Plus, Trash2, GitFork, ShieldAlert,
-  Minimize2, GripVertical, HelpCircle, BookOpen, ChevronDown, Lock, Download, Braces, PenLine, Network, Terminal,
+  Minimize2, GripVertical, HelpCircle, BookOpen, ChevronDown, Lock, Download, Braces, PenLine, Network, Terminal, Send,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import {
@@ -58,6 +58,7 @@ const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType }> = 
   SET_CONTEXT:         { color: '#84cc16', Icon: SlidersHorizontal },
   ERROR_CATCH:         { color: '#ef4444', Icon: ShieldAlert },
   RUN_PYTHON:          { color: '#3776ab', Icon: Terminal },
+  EVENT_EMIT:          { color: '#0d9488', Icon: Send },
   SCHEDULED_START:     { color: '#2563eb', Icon: Calendar },
   EVENT_TRIGGER_START: { color: '#f59e0b', Icon: Zap },
   SERVER_TIME_INIT:    { color: '#0ea5e9', Icon: Clock },
@@ -74,6 +75,7 @@ const NODE_LABELS: Record<string, string> = {
   INCLUSIVE_GATEWAY: 'Inclusive GW', EVENT_GATEWAY: 'Event GW',
   DATA_SINK: 'Data Sink', SET_CONTEXT: 'Set Context', ERROR_CATCH: 'Error Catch',
   RUN_PYTHON: 'Run Python',
+  EVENT_EMIT: 'Event Emit',
   SCHEDULED_START: 'Scheduled Start',
   EVENT_TRIGGER_START: 'Event Trigger',
   SERVER_TIME_INIT: 'Server Time Init',
@@ -250,7 +252,7 @@ const NODE_GROUPS: Array<{ label: string; types: string[] }> = [
   { label: 'Work & Agents', types: ['AGENT_TASK', 'WORKBENCH_TASK'] },
   { label: 'Human Review', types: ['HUMAN_TASK', 'APPROVAL'] },
   { label: 'Decisions', types: ['DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'FOREACH'] },
-  { label: 'Data & Integration', types: ['WORK_ITEM', 'CONSUMABLE_CREATION', 'SET_CONTEXT', 'DATA_SINK'] },
+  { label: 'Data & Integration', types: ['WORK_ITEM', 'CONSUMABLE_CREATION', 'SET_CONTEXT', 'DATA_SINK', 'EVENT_EMIT'] },
   { label: 'Reliability', types: ['TIMER', 'POLICY_CHECK', 'EVAL_GATE', 'ERROR_CATCH'] },
   { label: 'Advanced', types: ['TOOL_REQUEST', 'RUN_PYTHON', 'GIT_PUSH', 'CALL_WORKFLOW', 'SIGNAL_WAIT', 'SIGNAL_EMIT'] },
 ]
@@ -535,6 +537,7 @@ const NODE_DESCRIPTIONS: Record<string, string> = {
   INCLUSIVE_GATEWAY: 'Start every matching path whose condition is true.',
   EVENT_GATEWAY: 'Continue with whichever event or timer fires first.',
   DATA_SINK: 'Write selected workflow output to an external destination.',
+  EVENT_EMIT: 'Publish an event to a queue or sink (eventbus, Kafka, SQS/SNS, RabbitMQ).',
   SET_CONTEXT: 'Set workflow variables for later steps.',
   ERROR_CATCH: 'Route failures into a fallback path.',
   SCHEDULED_START: 'Start from a server-time schedule.',
@@ -1087,7 +1090,7 @@ const NODE_HELP_SECTIONS = [
   },
   {
     title: 'Data & State',
-    types: ['SET_CONTEXT', 'DATA_SINK', 'ERROR_CATCH'],
+    types: ['SET_CONTEXT', 'DATA_SINK', 'EVENT_EMIT', 'ERROR_CATCH'],
   },
   {
     title: 'Async & Timing',
@@ -1111,6 +1114,7 @@ const NODE_USAGE_TIPS: Record<string, string> = {
   EVENT_GATEWAY:     'Connect to SIGNAL_WAIT and TIMER nodes. First to fire wins; others are cancelled.',
   SET_CONTEXT:       'Use {{ context.path }} syntax to copy values. Supports dot-notation for nesting.',
   DATA_SINK:         'Use ARTIFACT kind for versioned outputs that need human review and sign-off.',
+  EVENT_EMIT:        'Pick a transport, set topic/queue + payloadPath. Default EVENTBUS needs no broker SDK; secrets come from env.',
   ERROR_CATCH:       'Draw an ERROR_BOUNDARY edge (not a normal edge) from the failing node into this.',
   SIGNAL_WAIT:       'External system calls POST /workflow-instances/:id/signals/:name to wake it.',
   SIGNAL_EMIT:       'Use Correlation Key to target a specific instance rather than all listeners.',
