@@ -111,7 +111,10 @@ async function main() {
     phaseName: 'Main',
   })
   await upsertNode({ id: N_START, nodeType: 'START', label: 'Intake', positionX: 80, positionY: 160 })
-  await upsertNode({ id: N_CALL, nodeType: 'CALL_WORKFLOW', label: 'Run SDLC loop', config: { workflowId: loop.id }, positionX: 320, positionY: 160 })
+  // CALL_WORKFLOW executor resolves the child via config.standard.templateId
+  // (or config.templateId) — NOT workflowId. Set standard.templateId so the
+  // node both spawns at runtime and renders correctly in NodeInspector.
+  await upsertNode({ id: N_CALL, nodeType: 'CALL_WORKFLOW', label: 'Run SDLC loop', config: { standard: { templateId: loop.id }, templateId: loop.id, workflowId: loop.id }, positionX: 320, positionY: 160 })
   await upsertNode({ id: N_END, nodeType: 'END', label: 'Done', positionX: 600, positionY: 160 })
   await upsertEdge({ id: E1, sourceNodeId: N_START, targetNodeId: N_CALL })
   await upsertEdge({ id: E2, sourceNodeId: N_CALL, targetNodeId: N_END })

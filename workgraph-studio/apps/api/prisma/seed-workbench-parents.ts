@@ -68,7 +68,9 @@ async function seedParent(wb: { id: string; name: string; capabilityId: string |
   })
   await (prisma as any).workflowDesignPhase.create({ data: { id: phaseId, workflowId: wfId, name: 'Main', displayOrder: 0 } })
   await node(wfId, phaseId, nStart, 'START', 'Intake', {}, 80)
-  await node(wfId, phaseId, nCall, 'CALL_WORKFLOW', `Run ${wb.name}`, { workflowId: wb.id }, 320)
+  // CALL_WORKFLOW resolves the child via config.standard.templateId (see
+  // CallWorkflowExecutor), not workflowId.
+  await node(wfId, phaseId, nCall, 'CALL_WORKFLOW', `Run ${wb.name}`, { standard: { templateId: wb.id }, templateId: wb.id, workflowId: wb.id }, 320)
   await node(wfId, phaseId, nEnd, 'END', 'Done', {}, 600)
   await edge(wfId, e1, nStart, nCall)
   await edge(wfId, e2, nCall, nEnd)
