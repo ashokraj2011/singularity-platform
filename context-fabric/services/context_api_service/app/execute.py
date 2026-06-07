@@ -1796,11 +1796,37 @@ class GovernedStageRequest(BaseModel):
     # unless controls are satisfied or waived. Absent/ADVISORY ⇒ no enforcement.
     governance_overlay: Optional[dict[str, Any]] = None
     governance_waivers: Optional[list[str]] = None
+    # Laptop bridge requirement (parity with legacy /execute). True ⇒ this stage
+    # MUST run on the user's laptop mcp-server; if no live bridge, fail fast with
+    # 503 MCP_NOT_CONNECTED instead of silently using the shared runtime. May also
+    # be supplied via run_context["prefer_laptop"] (what loop.py dispatch reads).
+    prefer_laptop: Optional[bool] = None
 
 
 @router.post("/api/v1/execute-governed-stage")
 async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
     """Run a governed stage end-to-end (multi-turn)."""
+    # Laptop preflight — when the caller requires the user's laptop bridge but no
+    # live bridge is connected, refuse rather than silently falling back to the
+    # managed HTTP runtime (governed dispatch.py would otherwise do a silent
+    # fallback, running governed tools on the shared runtime in hybrid mode).
+    _gov_run_ctx = req.run_context or {}
+    _gov_prefer_laptop = req.prefer_laptop
+    if _gov_prefer_laptop is None:
+        _gov_prefer_laptop = _gov_run_ctx.get("prefer_laptop")
+    _gov_user_id = _gov_run_ctx.get("user_id") or _gov_run_ctx.get("userId")
+    if _gov_prefer_laptop is True and _gov_user_id:
+        _use_laptop, _, _ = await _laptop_mod.resolve_laptop_target(
+            user_id=str(_gov_user_id),
+            prefer_laptop=True,
+        )
+        if not _use_laptop:
+            raise HTTPException(status_code=503, detail={
+                "code": "MCP_NOT_CONNECTED",
+                "message": "Your laptop mcp-server is not connected. Run `singularity-mcp start` and retry.",
+                "user_id": str(_gov_user_id),
+            })
+
     if req.phase_state:
         try:
             state = PhaseState.from_dict(req.phase_state)

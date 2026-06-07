@@ -242,7 +242,7 @@ def _build_messages(prompt: ResolvedPrompt, history: list[dict[str, Any]]) -> li
     return messages
 
 
-def _build_tool_descriptors(policy: StagePolicy, phase: Phase) -> list[dict[str, Any]]:
+def _build_tool_descriptors(policy: StagePolicy, phase: Phase, blocked: set[str] | None = None) -> list[dict[str, Any]]:
     """Tool descriptors handed to the LLM.
 
     M72 Slice A — Cache-stable variant. The descriptor list is now the UNION
@@ -271,6 +271,11 @@ def _build_tool_descriptors(policy: StagePolicy, phase: Phase) -> list[dict[str,
         deny = phase_policy.forbidden_tools
         for tool_name in phase_policy.allowed_tools:
             if tool_name in deny:
+                continue
+            # G4 governance overlay: drop overlay-blocked tools from the LLM's
+            # tool list entirely (the dispatch-side hard refuse in governed_step
+            # is the backstop if the model emits one anyway).
+            if blocked and tool_name in blocked:
                 continue
             union.setdefault(tool_name, set()).add(phase_policy.phase.value)
 
@@ -723,7 +728,11 @@ async def run_turn(
         # /execute path, which built it once per attempt, not per turn.
         # GOVERNED_CODE_CONTEXT_CACHE=0 forces the old rebuild-every-turn
         # behavior for debugging.
-        cache_sig = [goal_text, capability_id or ""]
+        # Include the phase in the signature: the code-context budget is
+        # phase-derived (_resolve_code_context_budget(..., state.current_phase, ...)),
+        # so a PLAN-phase package (smaller budget) must not be reused for a later
+        # ACT phase. Same goal+capability within one phase still hits the cache.
+        cache_sig = [goal_text, capability_id or "", state.current_phase.value]
         cache_enabled = (
             code_context_cache is not None
             and os.environ.get("GOVERNED_CODE_CONTEXT_CACHE", "1").lower()
@@ -849,7 +858,18 @@ async def run_turn(
 
     # 3. Messages + tool descriptors.
     messages = _build_messages(prompt, history)
-    tools = _build_tool_descriptors(policy, state.current_phase)
+    # G4 governance overlay — tools the governing entity blocks (or requires
+    # approval for) are enforced, not just rendered as advisory text: excluded
+    # from the LLM's tool list here and hard-refused at dispatch (governed_step).
+    # Enforce the unambiguous `blocked` list (hard refuse). `approvalRequired`
+    # stays advisory for now — a per-tool approval gate in the governed loop is a
+    # separate feature; blocking those outright would break the intended
+    # run-after-approval flow.
+    _gov_tp = (governance_overlay or {}).get("toolPolicy") if isinstance(governance_overlay, dict) else None
+    _blocked_tools: set[str] = set()
+    if isinstance(_gov_tp, dict):
+        _blocked_tools.update(str(t) for t in (_gov_tp.get("blocked") or []) if t)
+    tools = _build_tool_descriptors(policy, state.current_phase, _blocked_tools or None)
 
     # Audit the LLM call now — useful for cost accounting even when the
     # call fails. The completion event lands after the response below.
@@ -1091,6 +1111,7 @@ async def run_turn(
         run_context=run_context,
         bearer=bearer,
         policy=policy,
+        blocked_tools=_blocked_tools or None,
     )
 
     return TurnResult(

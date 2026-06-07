@@ -401,6 +401,7 @@ async def governed_step(
     run_context: dict[str, Any] | None = None,
     bearer: str | None = None,
     policy: StagePolicy | None = None,
+    blocked_tools: set[str] | None = None,
 ) -> GovernedStepResult:
     """Run one governed turn.
 
@@ -495,6 +496,32 @@ async def governed_step(
             )
             continue
 
+        # G4 governance overlay enforcement — a governing entity may block a
+        # tool outright. This is a HARD refuse (independent of the stage policy's
+        # phase allowlist) so a blocked/approval-required tool never dispatches,
+        # even if the LLM emits it anyway.
+        if blocked_tools and tool_name in blocked_tools:
+            log.info("tool blocked by governance overlay tool=%s phase=%s", tool_name, state.current_phase.value)
+            result.tool_outcomes.append(
+                ToolCallOutcome(
+                    tool_name=tool_name,
+                    phase=state.current_phase.value,
+                    allowed=False,
+                    args=args,
+                    refusal_reason=f"tool '{tool_name}' is blocked by governance policy for this stage",
+                    submission_index=sub_idx,
+                )
+            )
+            await emit_governed_event(
+                kind="governed.tool_refused",
+                state=state,
+                policy=policy,
+                run_context=run_context,
+                payload={"tool_name": tool_name, "reason": "governance_blocked", "allowed_tools": []},
+                severity="warn",
+            )
+            continue
+
         try:
             check_tool_allowed(policy, state.current_phase, tool_name)
         except PhaseToolForbidden as refusal:
@@ -548,10 +575,18 @@ async def governed_step(
     # entirely), so the practical impact is nil.
     pre_dispatched: dict[int, ToolDispatchResult | Exception] = {}
     if allowed_queue:
-        parallel_indices = [
-            i for i, (_, _, name, _) in enumerate(allowed_queue)
-            if name in _PARALLEL_SAFE_TOOLS
-        ]
+        # Barrier: parallelize ONLY the contiguous read-only prefix that precedes
+        # the first stateful/mutating tool in the batch. A read submitted AFTER a
+        # mutating tool (e.g. apply_patch → read_file) must run sequentially so it
+        # observes the post-mutation state — pre-dispatching it via gather would
+        # read stale file content. Calls after the first non-parallel-safe tool
+        # fall through to the ordered sequential loop below.
+        parallel_indices: list[int] = []
+        for i, (_, _, name, _) in enumerate(allowed_queue):
+            if name in _PARALLEL_SAFE_TOOLS:
+                parallel_indices.append(i)
+            else:
+                break
         if len(parallel_indices) >= 2:
             # Only gather when there's actual parallelism to win. A
             # single parallel-safe call just goes through the sequential

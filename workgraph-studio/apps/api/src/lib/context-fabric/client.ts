@@ -244,6 +244,10 @@ export interface GovernedStageRequest {
   // resolveGovernance() + activeWaiverControlKeys(); omitted ⇒ no enforcement.
   governance_overlay?: Record<string, unknown>
   governance_waivers?: string[]
+  // Laptop bridge requirement (parity with legacy /execute). true ⇒ the governed
+  // stage must run on the user's laptop mcp-server; CF returns 503 MCP_NOT_CONNECTED
+  // if no live bridge. Also honoured via run_context.prefer_laptop.
+  prefer_laptop?: boolean
 }
 
 // M91.A — workflow's resolved stage intent. Built by blueprint.router
