@@ -104,6 +104,15 @@ const envSchema = z.object({
   // validated in shadow. The CF env flags (CF_AGENTIC_CODING_V2_ENABLED etc.)
   // gate the automation behaviors independently.
   WORKGRAPH_FORCE_GOVERNED_CODING: z.coerce.boolean().default(false),
+
+  // Phase 4 cutover — route the single-shot "side" CF callers (Event Horizon
+  // chat, contracts replay) through /api/v1/execute-governed-stage via the
+  // generic governed-execute adapter instead of legacy /execute. Off by default
+  // (ships dark): these are single-shot Q&A, not coding stages, so flip + soak
+  // per-deployment after validating the governed 'loop.stage' policy behaves for
+  // them. prompt-composer (separate repo) + the AgentTaskExecutor default flip
+  // are gated independently.
+  CONTEXT_FABRIC_GOVERN_SIDE_CALLERS: z.coerce.boolean().default(false),
 })
 
 // M35.1 — production-class envs refuse to start with weak secrets.

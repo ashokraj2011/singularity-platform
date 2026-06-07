@@ -1,7 +1,12 @@
 import { Router, type Router as ExpressRouter } from 'express'
 import { z } from 'zod'
 import { config } from '../../config'
-import { contextFabricClient } from '../../lib/context-fabric/client'
+import { contextFabricClient, type ExecuteRequest } from '../../lib/context-fabric/client'
+import {
+  executeReqToGovernedStageReq,
+  governedStageRespToExecuteResp,
+} from '../workflow/runtime/executors/governed-execute-adapter'
+import { enrichStageRequestWithGovernance } from '../governance/governance.service'
 // M36.4 — system_prompt now resolved from prompt-composer SystemPrompt table
 import { promptComposerClient } from '../../lib/prompt-composer/client'
 import { prisma } from '../../lib/prisma'
@@ -109,7 +114,7 @@ eventHorizonRouter.post('/chat', async (req, res) => {
   const capabilityId = nonBlank(body.capabilityId) || defaultCapabilityId()
   // M37.3 — load PLATFORM_CONTEXT + snapshot in parallel.
   const [snapshot, platformContext] = await Promise.all([platformSnapshot(), loadPlatformContext()])
-  const result = await contextFabricClient.execute({
+  const executeReq: ExecuteRequest = {
     trace_id: `event-horizon:${body.sessionId}:${Date.now()}`,
     idempotency_key: `event-horizon:${body.sessionId}:${Date.now()}`,
     run_context: {
@@ -153,7 +158,22 @@ eventHorizonRouter.post('/chat', async (req, res) => {
       timeoutSec: 180,
     },
     prefer_laptop: false,
-  })
+  }
+  // Phase 4 cutover — flag-gated dual path. Governed routes the single-shot chat
+  // through the generic 'loop.stage' policy + governance overlay; legacy is the
+  // default until CONTEXT_FABRIC_GOVERN_SIDE_CALLERS is flipped + soaked.
+  let result
+  if (config.CONTEXT_FABRIC_GOVERN_SIDE_CALLERS) {
+    const gov = executeReqToGovernedStageReq(executeReq, { agentRole: 'ASSISTANT', maxTurns: 4 })
+    await enrichStageRequestWithGovernance(gov)
+    const govResp = await contextFabricClient.executeGovernedStage(gov)
+    result = governedStageRespToExecuteResp(govResp, {
+      traceId: executeReq.trace_id,
+      sessionId: `event-horizon-${body.sessionId}`,
+    })
+  } else {
+    result = await contextFabricClient.execute(executeReq)
+  }
   res.json({
     response: result.finalResponse,
     status: result.status,
