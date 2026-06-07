@@ -37,6 +37,7 @@ import {
 // We resolve them at call time instead of hardcoding them in this file.
 import { promptComposerClient } from '../../lib/prompt-composer/client'
 import { recordWorkflowLlmUsage } from '../workflow/runtime/budget'
+import { readStageBudget, evaluateStageBudget } from './stage-budget'
 
 export const blueprintRouter: Router = Router()
 
@@ -222,6 +223,12 @@ const executionSettingsSchema = z.object({
   maxOutputTokens: z.number().int().min(128).max(32_000).optional(),
   maxPromptChars: z.number().int().min(2_000).max(500_000).optional(),
   maxLayerChars: z.number().int().min(500).max(100_000).optional(),
+  // Per-stage budget (set at workbench launch). Soft (WARN_ONLY): the loop
+  // emits a StageBudgetWarning/Exceeded event and keeps running. Unit is USD
+  // (estimated cost) or TOKENS (total tokens); amount is the per-stage cap.
+  stageBudgetUnit: z.enum(['USD', 'TOKENS']).optional(),
+  stageBudgetAmount: z.number().positive().max(1_000_000).optional(),
+  stageBudgetWarnAtPercent: z.number().int().min(1).max(100).optional(),
 })
 
 const intakeDefaultsSchema = z.object({
@@ -704,6 +711,8 @@ type LoopState = {
     maxOutputTokens?: number
     maxPromptChars?: number
     maxLayerChars?: number
+    // Per-stage soft budget (WARN_ONLY). Set at launch; enforced per stage.
+    stageBudget?: { unit: 'USD' | 'TOKENS'; amount: number; warnAtPercent: number }
   }
 }
 
@@ -1062,6 +1071,9 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         maxOutputTokens: body.maxOutputTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxOutputTokens,
         maxPromptChars: body.maxPromptChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxPromptChars,
         maxLayerChars: body.maxLayerChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxLayerChars,
+        stageBudget: (body.stageBudgetUnit && body.stageBudgetAmount)
+          ? { unit: body.stageBudgetUnit, amount: body.stageBudgetAmount, warnAtPercent: body.stageBudgetWarnAtPercent ?? 80 }
+          : undefined,
       },
       // Milestones — seed the cursor when launched in milestones mode. The plan
       // is populated once the Architect emits the milestone_plan artifact.
@@ -7911,12 +7923,13 @@ async function completeLinkedWorkbenchTask({
 }
 
 async function recordBlueprintBudgetUsage(
-  session: { workflowInstanceId?: string | null; workflowNodeId?: string | null; phaseId?: string | null },
+  session: { workflowInstanceId?: string | null; workflowNodeId?: string | null; phaseId?: string | null; metadata?: unknown },
   result: ExecuteResponse,
   stageKey: string,
   workflowNodeId?: string | null,
 ) {
   if (!session.workflowInstanceId) return
+  const estCost = result.modelUsage?.estimatedCost ?? result.usage?.estimatedCost ?? result.tokensUsed?.estimatedCost ?? result.tokensUsed?.estimated_cost
   try {
     await recordWorkflowLlmUsage(session.workflowInstanceId, {
       nodeId: workflowNodeId ?? session.workflowNodeId ?? session.phaseId ?? null,
@@ -7945,6 +7958,78 @@ async function recordBlueprintBudgetUsage(
       error: (err as Error).message,
     })
   }
+
+  // Per-stage SOFT budget (WARN_ONLY). Non-fatal: a budget-check failure must
+  // never break a run. Emits a warning/exceeded event once per threshold cross.
+  try {
+    await evaluateAndWarnStageBudget(
+      session.workflowInstanceId,
+      session.metadata,
+      stageKey,
+      { tokens: Number(result.tokensUsed?.total ?? 0), usd: typeof estCost === 'number' ? estCost : null },
+    )
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[stage-budget] evaluation failed for stage=${stageKey}: ${(err as Error).message}`)
+  }
+}
+
+/**
+ * Per-stage soft budget evaluation (WARN_ONLY). Sums the stage's cumulative
+ * spend from the run-budget events (already tagged with stageKey), compares to
+ * the launch-time budget, and emits a StageBudgetWarning / StageBudgetExceeded
+ * event the first time each threshold is crossed (pre-vs-post comparison avoids
+ * re-warning on every turn). Never blocks the stage.
+ */
+async function evaluateAndWarnStageBudget(
+  instanceId: string,
+  sessionMetadata: unknown,
+  stageKey: string,
+  currentDelta: { tokens: number; usd: number | null },
+) {
+  const meta = (sessionMetadata && typeof sessionMetadata === 'object') ? sessionMetadata as Record<string, unknown> : {}
+  const execCfg = (meta.executionConfig && typeof meta.executionConfig === 'object') ? meta.executionConfig as Record<string, unknown> : {}
+  const cfg = readStageBudget(execCfg.stageBudget)
+  if (!cfg) return
+
+  const events = await prisma.workflowRunBudgetEvent.findMany({
+    where: { instanceId, metadata: { path: ['stageKey'], equals: stageKey } },
+    select: { totalTokensDelta: true, estimatedCostDelta: true },
+  })
+  if (events.length === 0) return
+
+  let postTokens = 0
+  let postUsd = 0
+  let anyPriced = false
+  for (const e of events) {
+    postTokens += e.totalTokensDelta ?? 0
+    if (e.estimatedCostDelta != null) { postUsd += e.estimatedCostDelta; anyPriced = true }
+  }
+  const post = { tokens: postTokens, usd: anyPriced ? postUsd : null }
+  const pre = {
+    tokens: Math.max(0, postTokens - (currentDelta.tokens || 0)),
+    usd: post.usd === null ? null : Math.max(0, post.usd - (currentDelta.usd ?? 0)),
+  }
+
+  const rank = (l: string) => (l === 'exceeded' ? 2 : l === 'warn' ? 1 : 0)
+  const postEval = evaluateStageBudget(cfg, post)
+  const preEval = evaluateStageBudget(cfg, pre)
+  if (rank(postEval.level) <= rank(preEval.level) || postEval.level === 'ok') return
+
+  const eventType = postEval.level === 'exceeded' ? 'StageBudgetExceeded' : 'StageBudgetWarning'
+  const payload = {
+    instanceId,
+    stageKey,
+    enforcement: 'WARN_ONLY',
+    unit: postEval.unit,
+    amount: postEval.amount,
+    spent: postEval.spent,
+    percent: postEval.percent,
+    warnAtPercent: postEval.warnAtPercent,
+    priced: postEval.priced,
+  }
+  await logEvent(eventType, 'WorkflowInstance', instanceId, undefined, payload)
+  await publishOutbox('WorkflowInstance', instanceId, eventType, payload)
 }
 
 type ArtifactSession = {

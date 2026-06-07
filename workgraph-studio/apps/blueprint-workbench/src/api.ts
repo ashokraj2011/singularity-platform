@@ -555,6 +555,11 @@ export type CreateSessionRequest = {
   phaseId?: string
   loopDefinition?: LoopDefinition
   gateMode?: GateMode
+  // Per-stage soft budget (WARN_ONLY): warns when a stage's cumulative spend
+  // crosses the threshold but never blocks. Unit USD (estimated cost) or TOKENS.
+  stageBudgetUnit?: 'USD' | 'TOKENS'
+  stageBudgetAmount?: number
+  stageBudgetWarnAtPercent?: number
   // Milestones — when true, the architect/design stage decomposes the goal into
   // an editable milestone_plan and the run executes each milestone in sequence
   // on one branch before a single final certification.
