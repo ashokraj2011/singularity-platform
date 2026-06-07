@@ -71,6 +71,9 @@ const SDLC_STAGES: StageSpec[] = [
     expectedArtifacts: [
       { kind: 'developer_task_pack', title: 'Developer task pack', format: 'MARKDOWN', required: true },
       { kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence', format: 'MARKDOWN', required: true },
+      // Tests are written in Develop (not QA): the developer must add/extend unit
+      // tests for the new behavior AND run them green before this stage completes.
+      { kind: 'unit_tests', title: 'Unit Test Cases (added/updated) + passing run', format: 'MARKDOWN', required: true },
     ],
     sendBackTo: ['REQUIREMENTS', 'DESIGN'],
   },
