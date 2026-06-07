@@ -1881,6 +1881,17 @@ async def run_stage(
     # keeping localization (above) at planning time where it belongs.
     _act_automation_done = False
 
+    # P2 — a stage entered ALREADY at the approval gate has nothing to execute:
+    # either a resume whose decision could not advance it (e.g. REPAIR cap
+    # exhausted, so apply_approval_decision returned the state unchanged), or a
+    # plain no-decision continuation of a paused stage. Re-surface APPROVAL_PENDING
+    # immediately instead of spending an LLM turn that the post-turn gate (below)
+    # would only halt on anyway. The normal first entry is PLAN, never SELF_REVIEW
+    # with approval_pending, so this never short-circuits a fresh run.
+    if state.approval_pending and state.current_phase is Phase.SELF_REVIEW:
+        result.stop_reason = "APPROVAL_PENDING"
+        return result
+
     for turn_idx in range(max_turns):
         # E1 — fire once, the first time we enter ACT, before this iteration's
         # run_turn dispatches any mutating tool.
