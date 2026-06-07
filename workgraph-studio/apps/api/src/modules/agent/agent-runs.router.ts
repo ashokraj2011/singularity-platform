@@ -6,6 +6,7 @@ import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 import { contextFabricClient, ContextFabricError } from '../../lib/context-fabric/client'
+import { governedStageRespToExecuteResp } from '../workflow/runtime/executors/governed-execute-adapter'
 
 export const agentRunsRouter: Router = Router()
 
@@ -143,17 +144,42 @@ agentRunsRouter.post('/:id/approve', validate(approveSchema), async (req, res, n
     }
     const approvalOutput = run.outputs[0]
     const payload = (approvalOutput?.structuredPayload ?? {}) as Record<string, unknown>
+    // Governed pause persists a PhaseState (no usable legacy continuation token —
+    // the cfCallId is synthetic). Resume it through the governed loop with the
+    // rehydrated state + decision; legacy tool pauses keep the legacy resume.
+    const governedFinalState = payload.governedFinalState && typeof payload.governedFinalState === 'object'
+      ? payload.governedFinalState as Record<string, unknown>
+      : null
     const cfCallId = payload.cfCallId as string | undefined
-    if (!cfCallId) throw new ValidationError(`AgentRun ${id} has no cfCallId on its APPROVAL_REQUIRED output`)
+    if (!governedFinalState && !cfCallId) {
+      throw new ValidationError(`AgentRun ${id} has no cfCallId/phase_state on its APPROVAL_REQUIRED output`)
+    }
 
     let cfResult
     try {
-      cfResult = await contextFabricClient.resume({
-        cf_call_id: cfCallId,
-        decision,
-        reason,
-        args_override,
-      })
+      if (governedFinalState) {
+        const govRunContext = (payload.governedRunContext && typeof payload.governedRunContext === 'object'
+          ? payload.governedRunContext : {}) as Record<string, unknown>
+        const govResp = await contextFabricClient.executeGovernedStage({
+          stage_key: (governedFinalState.stage_key as string | undefined) ?? 'loop.stage',
+          agent_role: governedFinalState.agent_role as string | undefined,
+          phase_state: governedFinalState,
+          decision,
+          reason,
+          args_override,
+          run_context: govRunContext,
+        })
+        cfResult = governedStageRespToExecuteResp(govResp, {
+          traceId: (govRunContext.trace_id as string | undefined) ?? null,
+        })
+      } else {
+        cfResult = await contextFabricClient.resume({
+          cf_call_id: cfCallId!,
+          decision,
+          reason,
+          args_override,
+        })
+      }
     } catch (err) {
       const message = err instanceof ContextFabricError
         ? `context-fabric resume error (${err.status}): ${err.message}`
@@ -194,7 +220,14 @@ agentRunsRouter.post('/:id/approve', validate(approveSchema), async (req, res, n
         outputType: cfResult.status === 'WAITING_APPROVAL' ? 'APPROVAL_REQUIRED' : 'LLM_RESPONSE',
         rawContent: cfResult.finalResponse ?? '',
         structuredPayload: cfResult.status === 'WAITING_APPROVAL'
-          ? ({ ...correlation, pendingApproval: cfResult.pendingApproval ?? null } as unknown as object)
+          ? ({
+              ...correlation,
+              pendingApproval: cfResult.pendingApproval ?? null,
+              // Carry the (possibly advanced) governed state forward so a
+              // follow-up /approve can resume the re-paused stage again.
+              governedFinalState: cfResult.governedFinalState ?? governedFinalState,
+              governedRunContext: payload.governedRunContext ?? null,
+            } as unknown as object)
           : (correlation as unknown as object),
         tokenCount: cfResult.tokensUsed?.input ?? null,
       },

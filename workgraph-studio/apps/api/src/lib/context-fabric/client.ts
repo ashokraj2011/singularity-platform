@@ -193,6 +193,11 @@ export interface ExecuteResponse {
   metrics?: { mcpLatencyMs?: number }
   warnings?: string[]
   pendingApproval?: PendingApproval | null
+  // Governed path only — the PhaseState dict from a stage that paused at the
+  // approval gate (status WAITING_APPROVAL via APPROVAL_PENDING). The caller
+  // persists it so the resume can rehydrate + apply the decision. The governed
+  // pause is phase-level (not a tool pause), so pendingApproval stays null.
+  governedFinalState?: Record<string, unknown> | null
 }
 
 export interface ResumeRequest {
@@ -209,6 +214,12 @@ export interface GovernedStageRequest {
   stage_key: string
   agent_role?: string
   phase_state?: Record<string, unknown> | null
+  // Phase 3 — approval-gate resume. With phase_state, a decision drives
+  // SELF_REVIEW→FINALIZE (approved) / →REPAIR (rejected/changes_requested);
+  // reason surfaces as eval_feedback. Omitted ⇒ plain run/continuation.
+  decision?: string
+  reason?: string
+  args_override?: Record<string, unknown>
   vars?: Record<string, unknown>
   initial_history?: unknown[]
   model_alias?: string
