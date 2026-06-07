@@ -32,7 +32,10 @@ from typing import Any
 
 from .baseline_diff import extract_failing_tests_from_tool_output, stash_baseline
 from .dispatch import ToolDispatchError, dispatch_tool
-from .verify_synthesis import _first_runnable
+from .grant import mint_tool_grant
+from .phase_state import Phase
+from .policy_loader import StagePolicy
+from .verify_synthesis import first_runnable
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +71,8 @@ async def synthesize_baseline(
     workspace_id: str | None,
     run_context: dict[str, Any] | None,
     bearer: str | None,
+    policy: StagePolicy | None = None,
+    phase: Phase | None = None,
 ) -> BaselineResult:
     """Capture a pre-mutation test baseline. Never raises.
 
@@ -85,6 +90,13 @@ async def synthesize_baseline(
             workspace_id=workspace_id,
             run_context=run_context,
             bearer=bearer,
+            grant=mint_tool_grant(
+                policy=policy,
+                phase=phase,
+                tool_name="recommended_verification",
+                args={},
+                run_context=run_context,
+            ),
         )
     except ToolDispatchError as exc:
         log.info("auto-baseline: recommended_verification dispatch failed: %s", exc)
@@ -100,7 +112,7 @@ async def synthesize_baseline(
         if isinstance(rec_outcome.result, dict)
         else []
     )
-    pick = _first_runnable(recommended)
+    pick = first_runnable(recommended)
     if pick is None:
         guidance = (
             (rec_outcome.result or {}).get("guidance")
@@ -126,6 +138,13 @@ async def synthesize_baseline(
             workspace_id=workspace_id,
             run_context=run_context,
             bearer=bearer,
+            grant=mint_tool_grant(
+                policy=policy,
+                phase=phase,
+                tool_name="capture_test_baseline",
+                args=base_args,
+                run_context=run_context,
+            ),
         )
     except ToolDispatchError as exc:
         log.info("auto-baseline: capture_test_baseline dispatch failed: %s", exc)

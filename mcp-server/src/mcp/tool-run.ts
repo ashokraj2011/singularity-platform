@@ -86,6 +86,13 @@ import { indexWorkspace } from "../workspace/ast-index";
 import { workspaceIndependentTools } from "../tools/tool-registry-loader";
 const _WORKSPACE_INDEPENDENT_TOOLS = workspaceIndependentTools();
 
+// Defence-in-depth: signed ToolInvocationGrant from context-fabric. MCP stays
+// policy-dumb but verifies the grant before executing mutating / high-risk
+// tools so a leaked/over-scoped bearer can't dispatch them directly. No-op
+// unless MCP_TOOL_GRANT_MODE is grace/enforce.
+import { grantMode, toolRequiresGrant, verifyToolGrant } from "../security/tool-grant";
+import { log } from "../shared/log";
+
 export function isWorkspaceIndependentTool(name: string): boolean {
   return _WORKSPACE_INDEPENDENT_TOOLS.has(name);
 }
@@ -166,6 +173,14 @@ export const ToolRunSchema = z.object({
       repoAccess: z.boolean().optional(),
     })
     .default({}),
+  // Signed ToolInvocationGrant minted by context-fabric's governed loop (see
+  // services/context_api_service/app/governed/grant.py). Verified below for
+  // mutating / high-risk tools when MCP_TOOL_GRANT_MODE != off. Kept as an
+  // opaque passthrough here (the grant module owns the strict shape) so an
+  // older caller that doesn't send one still parses cleanly — z.object()
+  // strips unknown keys, so without this field the grant would be dropped
+  // before the handler ever saw it.
+  tool_grant: z.unknown().optional(),
 });
 
 /**
@@ -474,6 +489,48 @@ toolRunRouter.post("/tool-run", async (req, res) => {
   const parsed = ToolRunSchema.safeParse(req.body);
   if (!parsed.success) {
     throw new AppError("invalid /mcp/tool-run payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
+  }
+
+  // ── ToolInvocationGrant enforcement (defence-in-depth) ──────────────────
+  //
+  // The bearer (checked by middleware upstream) only proves the caller may
+  // talk to MCP — not that THIS (tool, args, stage/phase) was authorized by
+  // CF's governed loop. For mutating / high-risk tools we additionally require
+  // a CF-signed grant and verify it here, BEFORE any workspace materialization
+  // or tool execution.
+  //
+  // Crucially the args-hash is checked against the RAW received args, before
+  // runToolByName runs its alias-normalization pass — CF hashed the same raw
+  // args it sent, so the two hashes line up only at this point.
+  //
+  // Modes: off = skip entirely (backward compatible). grace = a present grant
+  // must be valid, but a MISSING one is allowed + logged (rollout window).
+  // enforce = a valid grant is mandatory. Read-only tools are never gated.
+  const mode = grantMode();
+  if (mode !== "off" && toolRequiresGrant(parsed.data.tool_name)) {
+    const verdict = verifyToolGrant(parsed.data.tool_grant, {
+      toolName: parsed.data.tool_name,
+      args: parsed.data.args,
+      runContext: parsed.data.run_context,
+    });
+    if (!verdict.ok) {
+      const missing = verdict.code === "TOOL_GRANT_REQUIRED";
+      if (mode === "grace" && missing) {
+        log.warn(
+          { tool: parsed.data.tool_name, mode },
+          "[tool-run] grace mode: dispatching mutating/high-risk tool WITHOUT a ToolInvocationGrant",
+        );
+      } else {
+        log.warn(
+          { tool: parsed.data.tool_name, mode, code: verdict.code },
+          "[tool-run] refusing tool dispatch: grant verification failed",
+        );
+        throw new AppError(verdict.message, 403, verdict.code, {
+          tool_name: parsed.data.tool_name,
+          mode,
+        });
+      }
+    }
   }
 
   // M75 Slice 2 — both transports share runToolByName. HTTP wraps the

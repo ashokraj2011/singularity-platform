@@ -10,7 +10,7 @@ import {
   Box, Star, Briefcase, Database, Globe, Mail, Phone,
   Calendar, AlertTriangle, Search, Filter, Activity,
   GitFork, ShieldAlert, SlidersHorizontal, Play, Square, Braces,
-  Terminal,
+  Terminal, Send,
 } from 'lucide-react'
 import type { Node } from 'reactflow'
 import { fetchAgents, fetchStudioAgents, deriveStudioAgent, fetchTools, fetchCapabilities, registrySource, type RegistryAgent } from '../../lib/registry'
@@ -569,6 +569,27 @@ const NODE_META: Record<string, {
       { key: 'signalName',     label: 'Signal name',     placeholder: 'order_ready' },
       { key: 'correlationKey', label: 'Correlation key', placeholder: 'optional' },
       { key: 'payloadPath',    label: 'Payload path',    placeholder: 'context.order (dot-notation)' },
+    ],
+  },
+  EVENT_EMIT: {
+    label: 'Event Emit', color: '#0d9488', Icon: Send,
+    description: 'Publishes a workflow event to a configurable sink: the internal eventbus (default — fans out to webhook subscriptions), Kafka, AWS SQS/SNS, or RabbitMQ/AMQP. Set the transport and its routing (topic/queue/exchange) here; broker credentials come from server env (AWS chain, KAFKA_SASL_*, AMQP_URL), never the graph. Fill only the fields for your chosen transport. Booleans are the text "true"/"false".',
+    standardFields: [
+      { key: 'transport',      label: 'Transport',            placeholder: 'EVENTBUS | KAFKA | SQS | SNS | AMQP' },
+      { key: 'eventName',      label: 'Event name',           placeholder: 'order.shipped (defaults to node label)' },
+      { key: 'payloadPath',    label: 'Payload path',         placeholder: 'context path; blank = whole context' },
+      { key: 'keyPath',        label: 'Key path',             placeholder: 'context path → partition/message key (optional)' },
+      { key: 'headers',        label: 'Headers / attrs (JSON)', placeholder: '{"source":"workgraph"}', multiline: true },
+      { key: 'failOnError',    label: 'Fail node on emit error', placeholder: 'true' },
+      { key: 'topic',          label: 'Kafka · topic',        placeholder: 'KAFKA only' },
+      { key: 'brokers',        label: 'Kafka · brokers',      placeholder: 'host:9092,host2:9092 (or KAFKA_BROKERS env)' },
+      { key: 'queueUrl',       label: 'SQS · queue URL',      placeholder: 'SQS only' },
+      { key: 'messageGroupId', label: 'SQS · message group',  placeholder: 'FIFO queues only (optional)' },
+      { key: 'topicArn',       label: 'SNS · topic ARN',      placeholder: 'SNS only' },
+      { key: 'region',         label: 'AWS region',           placeholder: 'SQS/SNS (or AWS_REGION env)' },
+      { key: 'url',            label: 'AMQP · URL',           placeholder: 'AMQP only (or AMQP_URL env)' },
+      { key: 'exchange',       label: 'AMQP · exchange',      placeholder: 'AMQP; blank = default exchange' },
+      { key: 'routingKey',     label: 'AMQP · routing key',   placeholder: 'AMQP only' },
     ],
   },
   SET_CONTEXT: {

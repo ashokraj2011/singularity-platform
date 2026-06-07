@@ -24,6 +24,7 @@ export type NodeType =
   | 'ERROR_CATCH'
   | 'CUSTOM'
   | 'RUN_PYTHON'
+  | 'EVENT_EMIT'
 
 export type EdgeType =
   | 'SEQUENTIAL'

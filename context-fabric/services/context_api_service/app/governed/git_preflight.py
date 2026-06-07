@@ -24,6 +24,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .dispatch import ToolDispatchError, dispatch_tool
+from .grant import mint_tool_grant
+from .phase_state import Phase
+from .policy_loader import StagePolicy
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +68,8 @@ async def synthesize_git_preflight(
     workspace_id: str | None,
     run_context: dict[str, Any] | None,
     bearer: str | None,
+    policy: StagePolicy | None = None,
+    phase: Phase | None = None,
 ) -> GitPreflightResult:
     """Dispatch the git_push_preflight tool and shape its result. Never raises."""
     args: dict[str, Any] = {}
@@ -81,6 +86,13 @@ async def synthesize_git_preflight(
             workspace_id=workspace_id,
             run_context=run_context,
             bearer=bearer,
+            grant=mint_tool_grant(
+                policy=policy,
+                phase=phase,
+                tool_name="git_push_preflight",
+                args=args,
+                run_context=run_context,
+            ),
         )
     except ToolDispatchError as exc:
         log.info("git preflight dispatch failed (non-fatal): %s", exc)

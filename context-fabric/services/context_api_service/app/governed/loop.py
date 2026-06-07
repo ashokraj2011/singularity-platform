@@ -38,6 +38,7 @@ from typing import Any
 
 from .audit_emit import emit_governed_event
 from .dispatch import ToolDispatchError, ToolDispatchResult, dispatch_tool
+from .grant import mint_tool_grant
 # M99 S3.3 — hard full-file-read gate (pure decision fn; no-op unless the
 # stage policy sets full_file_read_requires_justification).
 from .read_gate import evaluate_full_file_read_gate, refusal_result
@@ -607,10 +608,14 @@ async def governed_step(
 
             async def _bounded(i: int) -> ToolDispatchResult:
                 _, _, tname, targs = allowed_queue[i]
+                # Hash the SAME args we dispatch (post-PII-unmask). The grant's
+                # args-hash must cover what actually hits the wire, or MCP's
+                # recompute over the received args won't match.
+                dispatch_args = unmask_pii_in_args(targs, snapshot_token_map)
                 async with semaphore:
                     return await dispatch_tool(
                         tool_name=tname,
-                        args=unmask_pii_in_args(targs, snapshot_token_map),
+                        args=dispatch_args,
                         work_item_id=run_ctx_for_gather.get("work_item_id")
                         or run_ctx_for_gather.get("workItemId"),
                         workspace_id=run_ctx_for_gather.get("workspace_id")
@@ -618,6 +623,13 @@ async def governed_step(
                         run_context=run_context,
                         bearer=bearer,
                         laptop_user_id=laptop_user_id_g,
+                        grant=mint_tool_grant(
+                            policy=policy,
+                            phase=state.current_phase,
+                            tool_name=tname,
+                            args=dispatch_args,
+                            run_context=run_context,
+                        ),
                     )
 
             gather_results = await asyncio.gather(
@@ -694,6 +706,16 @@ async def governed_step(
                     run_context=run_context,
                     bearer=bearer,
                     laptop_user_id=laptop_user_id,
+                    # Signed grant binding this exact (tool, args) to the
+                    # current stage/phase/policy. mint returns None when the
+                    # feature flag is off, leaving the dispatch unchanged.
+                    grant=mint_tool_grant(
+                        policy=policy,
+                        phase=state.current_phase,
+                        tool_name=tool_name,
+                        args=dispatch_args,
+                        run_context=run_context,
+                    ),
                 )
             # M90.A — Baseline test-failure capture. When the agent
             # dispatches capture_test_baseline (per M70.4) and the tool
@@ -1283,6 +1305,10 @@ async def governed_step(
                     or (run_context or {}).get("workspaceId"),
                     run_context=run_context,
                     bearer=bearer,
+                    # Thread the policy/phase so the system-initiated verifier
+                    # dispatch (run_test) carries a signed grant too.
+                    policy=policy,
+                    phase=state.current_phase,
                 )
                 result.synthetic_verifier = synth.to_dict()
                 await emit_governed_event(
