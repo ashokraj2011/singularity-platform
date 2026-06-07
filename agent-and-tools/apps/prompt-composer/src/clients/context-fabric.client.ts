@@ -100,7 +100,7 @@ export const contextFabricClient = {
     // SINGLE-TURN endpoint when enabled (prompt sent verbatim — no re-assembly,
     // no composer↔CF cycle) for the governed audit trail; else legacy /execute.
     const governed = env.CONTEXT_FABRIC_GOVERNED_TURN;
-    const path = governed ? "/api/v1/execute-governed-turn" : "/execute";
+    const path = governed ? "/api/v1/execute-governed-single-turn" : "/execute";
     const url = `${env.CONTEXT_FABRIC_URL}${path}`;
     const res = await fetch(url, {
       method: "POST",

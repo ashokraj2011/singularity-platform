@@ -18,7 +18,7 @@ const schema = z.object({
   AGENT_RUNTIME_URL: z.string().url().default("http://localhost:3003"),
   CONTEXT_FABRIC_URL: z.string().url().default("http://localhost:8000"),
   // Cutover — route compose-and-respond's LLM turn through CF's governed
-  // SINGLE-TURN endpoint (/api/v1/execute-governed-turn) instead of legacy
+  // SINGLE-TURN endpoint (/api/v1/execute-governed-single-turn) instead of legacy
   // /execute. The assembled prompt is sent verbatim (NOT re-assembled), so this
   // is safe; it adds the governed audit trail + 'governed' posture. Off by
   // default — flip + soak per-deployment.

@@ -1971,7 +1971,11 @@ async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
 # with the caller's prompt verbatim. (A single LLM turn dispatches no tools, so
 # there is no tool-policy/evidence gate to enforce — the overlay is recorded for
 # the audit-gov trail; G4 hard-blocking remains a stage-loop concern.)
-class GovernedTurnRequest(BaseModel):
+# NOTE: distinct from the older /api/v1/execute-governed-turn (phase-machine
+# single turn — requires stage_key + resolves policy/prompt + run_turn). THIS is
+# the verbatim-prompt single turn, so it lives at a SEPARATE path + class to
+# avoid clobbering that route (and its request model).
+class GovernedSingleTurnRequest(BaseModel):
     trace_id: Optional[str] = None
     idempotency_key: Optional[str] = None
     run_context: Optional[dict[str, Any]] = None
@@ -1984,8 +1988,8 @@ class GovernedTurnRequest(BaseModel):
     governance_waivers: Optional[list[str]] = None
 
 
-@router.post("/api/v1/execute-governed-turn")
-async def execute_governed_turn(req: GovernedTurnRequest) -> dict[str, Any]:
+@router.post("/api/v1/execute-governed-single-turn")
+async def execute_governed_single_turn(req: GovernedSingleTurnRequest) -> dict[str, Any]:
     from .governed.llm_client import call_gateway_chat
 
     rc = req.run_context or {}

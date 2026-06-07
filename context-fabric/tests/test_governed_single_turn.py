@@ -29,12 +29,12 @@ def _run_turn(req, monkeypatch, resp=None):
 
     monkeypatch.setattr(llm_mod, "call_gateway_chat", _fake_gateway)
     monkeypatch.setattr(execute_mod, "emit_audit_event", lambda **k: None)
-    out = asyncio.new_event_loop().run_until_complete(execute_mod.execute_governed_turn(req))
+    out = asyncio.new_event_loop().run_until_complete(execute_mod.execute_governed_single_turn(req))
     return out, captured
 
 
 def test_uses_caller_prompt_verbatim_and_reports_governed(monkeypatch):
-    req = execute_mod.GovernedTurnRequest(
+    req = execute_mod.GovernedSingleTurnRequest(
         trace_id="t1",
         task="what is 2+2?",
         system_prompt="You are precise.",
@@ -53,13 +53,52 @@ def test_uses_caller_prompt_verbatim_and_reports_governed(monkeypatch):
 
 
 def test_no_system_prompt_sends_only_user_message(monkeypatch):
-    req = execute_mod.GovernedTurnRequest(trace_id="t2", task="hi", system_prompt="")
+    req = execute_mod.GovernedSingleTurnRequest(trace_id="t2", task="hi", system_prompt="")
     _out, captured = _run_turn(req, monkeypatch)
     assert captured["messages"] == [{"role": "user", "content": "hi"}]
 
 
 def test_token_usage_rolled_up(monkeypatch):
-    req = execute_mod.GovernedTurnRequest(trace_id="t3", task="x", system_prompt="y")
+    req = execute_mod.GovernedSingleTurnRequest(trace_id="t3", task="x", system_prompt="y")
     out, _ = _run_turn(req, monkeypatch)
     assert out["tokensUsed"] == {"input": 10, "output": 5, "total": 15}
     assert out["modelUsage"]["provider"] == "mock"
+
+
+# ── HTTP-level routing tests ────────────────────────────────────────────────
+# Regression guard for the duplicate-route bug: a direct function call can't
+# catch two @router.post handlers sharing a path, so post real JSON through the
+# ASGI router. /execute-governed-single-turn (verbatim) must be DISTINCT from the
+# older /execute-governed-turn (phase-machine, requires stage_key).
+def _client(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from context_api_service.app.execute import router
+
+    async def _fake_gateway(**kwargs):
+        return _fake()
+
+    monkeypatch.setattr(llm_mod, "call_gateway_chat", _fake_gateway)
+    monkeypatch.setattr(execute_mod, "emit_audit_event", lambda **k: None)
+    app = FastAPI()
+    app.include_router(router)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_http_single_turn_route_accepts_verbatim_body(monkeypatch):
+    c = _client(monkeypatch)
+    r = c.post("/api/v1/execute-governed-single-turn",
+               json={"trace_id": "t", "task": "hi", "system_prompt": "sys"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["finalResponse"] == "the answer"
+    assert body["correlation"]["executionPosture"] == "governed"
+
+
+def test_http_verbatim_body_does_not_hit_phase_turn_route(monkeypatch):
+    # The OLD phase-machine route requires stage_key — a verbatim body must be
+    # rejected there (422), proving the two routes/models are not conflated.
+    c = _client(monkeypatch)
+    r = c.post("/api/v1/execute-governed-turn",
+               json={"trace_id": "t", "task": "hi", "system_prompt": "sys"})
+    assert r.status_code == 422, r.text
