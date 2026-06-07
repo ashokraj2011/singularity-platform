@@ -1805,6 +1805,18 @@ class GovernedStageRequest(BaseModel):
     # (Neither path performs hard dedup today; carried for tracing + so the
     # contracts replay path can thread it through after its Phase-4 migration.)
     idempotency_key: Optional[str] = None
+    # Human-approval-gate resume. When resuming a stage paused at APPROVAL_PENDING
+    # (SELF_REVIEW), the caller passes the persisted phase_state PLUS a decision:
+    #   "approved"  → drive SELF_REVIEW → FINALIZE (the loop then runs the
+    #                 FINALIZE turn: finish_work_branch / git push).
+    #   "rejected"/"changes_requested" → drive SELF_REVIEW → REPAIR, with `reason`
+    #                 surfaced to the agent as eval_feedback for the rework.
+    # Omitted ⇒ plain continuation (back-compat). args_override is accepted for
+    # legacy /execute/resume shape parity (governed pauses at a phase, not a tool,
+    # so it is currently a no-op on this path).
+    decision: Optional[str] = None
+    reason: Optional[str] = None
+    args_override: Optional[dict[str, Any]] = None
 
 
 @router.post("/api/v1/execute-governed-stage")
@@ -1841,6 +1853,20 @@ async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
             )
     else:
         state = PhaseState.fresh(req.stage_key, req.agent_role)
+
+    # Human-approval-gate resume — apply the operator's decision to a paused
+    # (APPROVAL_PENDING) state before the loop runs. approved → SELF_REVIEW →
+    # FINALIZE (loop then runs the FINALIZE turn); rejected/changes → SELF_REVIEW
+    # → REPAIR with the reason as eval_feedback. If the REPAIR cap is exhausted,
+    # leave the state paused (re-surfaces APPROVAL_PENDING) rather than erroring.
+    if req.decision:
+        from .governed.phase_state import apply_approval_decision as _apply_decision
+        _was_paused = state.approval_pending and state.current_phase is Phase.SELF_REVIEW
+        state = _apply_decision(state, req.decision)
+        # On a rework decision that actually transitioned to REPAIR, surface the
+        # operator's reason to the agent as eval_feedback for the next attempt.
+        if _was_paused and req.reason and state.current_phase is Phase.REPAIR:
+            req.vars = {**(req.vars or {}), "eval_feedback": str(req.reason)}
 
     # M83.r — Anthropic extended thinking ("deep reasoning"). Default
     # via env DEEP_REASONING_BUDGET_TOKENS (0 = off). Operators can

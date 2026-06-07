@@ -328,3 +328,37 @@ def advance_phase(
         history=history,
         approval_pending=approval_pending,
     )
+
+
+def apply_approval_decision(state: PhaseState, decision: str) -> PhaseState:
+    """Apply a human approval-gate decision to a stage paused at the approval gate.
+
+    The governed loop halts at APPROVAL_PENDING (current_phase=SELF_REVIEW,
+    approval_pending=True) and the human gate decides BETWEEN SELF_REVIEW and
+    FINALIZE. This maps that decision onto the phase machine:
+
+      * approved / approve / accept(ed)        → SELF_REVIEW → FINALIZE
+        (the loop then runs the FINALIZE turn: finish_work_branch / git push)
+      * rejected / reject / changes(_requested) → SELF_REVIEW → REPAIR (rework)
+
+    Returns the state UNCHANGED when it isn't paused at the gate, the decision is
+    unrecognised, or the transition is illegal (e.g. the REPAIR cap is exhausted —
+    the caller then re-surfaces APPROVAL_PENDING rather than hard-failing).
+    """
+    if not (state.approval_pending and state.current_phase is Phase.SELF_REVIEW):
+        return state
+    dec = (decision or "").strip().lower()
+    if dec in ("approved", "approve", "accept", "accepted"):
+        target = Phase.FINALIZE
+    elif dec in ("rejected", "reject", "changes_requested", "changes"):
+        target = Phase.REPAIR
+    else:
+        return state
+    try:
+        advanced = advance_phase(state, target)
+    except ValueError:
+        return state
+    # The human gate has resolved — clear approval_pending regardless of target
+    # (FINALIZE = granted; REPAIR = changes requested). advance_phase otherwise
+    # preserves the flag across non-SELF_REVIEW transitions.
+    return replace(advanced, approval_pending=False)
