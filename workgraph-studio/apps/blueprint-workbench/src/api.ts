@@ -746,7 +746,6 @@ export const api = {
   cancelInflightAttempt: (id: string, stageKey: string) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/cancel-attempt`, { method: 'POST' }),
   snapshot: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/snapshot`, { method: 'POST' }),
-  run: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/run`, { method: 'POST' }),
   runStage: (id: string, stageKey: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/run`, { method: 'POST' }),
   // M78 Slice 3 — One-click remediation WI creation from an inherited
   // failure card. Returns { id, workCode, title, capabilityId } so the

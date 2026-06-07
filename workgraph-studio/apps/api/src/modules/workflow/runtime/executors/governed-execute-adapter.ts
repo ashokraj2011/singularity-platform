@@ -135,9 +135,15 @@ export function governedStageRespToExecuteResp(
     }
   }
   const finishReason = stopReasonToFinishReason(resp.stop_reason)
-  const status = resp.stop_reason === 'FINALIZED' || resp.stop_reason === 'APPROVAL_PENDING'
+  // APPROVAL_PENDING is a HUMAN-gate pause, not a completion. Mapping it to
+  // COMPLETED made governed agent tasks silently skip approvalRequired gates;
+  // surface it as WAITING_APPROVAL so callers (AgentTaskExecutor) pause + persist
+  // the PhaseState for a governed resume. FINALIZED = done; everything else fails.
+  const status = resp.stop_reason === 'FINALIZED'
     ? 'COMPLETED' as const
-    : 'FAILED' as const
+    : resp.stop_reason === 'APPROVAL_PENDING'
+      ? 'WAITING_APPROVAL' as const
+      : 'FAILED' as const
   return {
     status,
     finalResponse: synthesiseFinalResponse(resp),
@@ -183,6 +189,9 @@ export function governedStageRespToExecuteResp(
     workspace: null,
     warnings: resp.error_message ? [resp.error_message] : [],
     pendingApproval: null,
+    // Phase-level governed pause payload — the PhaseState the caller persists +
+    // rehydrates on resume (only meaningful when status === WAITING_APPROVAL).
+    governedFinalState: (resp.final_state as Record<string, unknown> | undefined) ?? null,
     blockedReason: resp.error_code ?? null,
     requiredContextStatus: null,
     contextPlanHash: null,

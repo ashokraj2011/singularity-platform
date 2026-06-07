@@ -103,6 +103,22 @@ describe('#119 — governedStageRespToExecuteResp', () => {
     expect(out.finishReason).toBe('length')
   })
 
+  it('maps APPROVAL_PENDING → WAITING_APPROVAL and carries the PhaseState for resume', () => {
+    // Regression: APPROVAL_PENDING used to map to COMPLETED, silently skipping
+    // approvalRequired gates for governed agent tasks. It must pause instead, and
+    // expose final_state so the caller can persist + resume it.
+    const out = governedStageRespToExecuteResp({
+      ...baseResp,
+      stop_reason: 'APPROVAL_PENDING',
+      final_state: { ...baseResp.final_state, current_phase: 'SELF_REVIEW', approval_pending: true },
+    })
+    expect(out.status).toBe('WAITING_APPROVAL')
+    expect((out as { governedFinalState?: Record<string, unknown> }).governedFinalState).toMatchObject({
+      current_phase: 'SELF_REVIEW',
+      approval_pending: true,
+    })
+  })
+
   it('synthesises a cfCallId from stage_key + turn count', () => {
     const out = governedStageRespToExecuteResp({
       ...baseResp,

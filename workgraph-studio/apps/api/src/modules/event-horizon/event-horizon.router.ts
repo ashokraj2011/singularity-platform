@@ -1,7 +1,7 @@
 import { Router, type Router as ExpressRouter } from 'express'
 import { z } from 'zod'
 import { config } from '../../config'
-import { contextFabricClient } from '../../lib/context-fabric/client'
+import { contextFabricClient, type ExecuteRequest } from '../../lib/context-fabric/client'
 // M36.4 — system_prompt now resolved from prompt-composer SystemPrompt table
 import { promptComposerClient } from '../../lib/prompt-composer/client'
 import { prisma } from '../../lib/prisma'
@@ -109,7 +109,7 @@ eventHorizonRouter.post('/chat', async (req, res) => {
   const capabilityId = nonBlank(body.capabilityId) || defaultCapabilityId()
   // M37.3 — load PLATFORM_CONTEXT + snapshot in parallel.
   const [snapshot, platformContext] = await Promise.all([platformSnapshot(), loadPlatformContext()])
-  const result = await contextFabricClient.execute({
+  const executeReq: ExecuteRequest = {
     trace_id: `event-horizon:${body.sessionId}:${Date.now()}`,
     idempotency_key: `event-horizon:${body.sessionId}:${Date.now()}`,
     run_context: {
@@ -153,7 +153,25 @@ eventHorizonRouter.post('/chat', async (req, res) => {
       timeoutSec: 180,
     },
     prefer_laptop: false,
-  })
+  }
+  // Phase 4 cutover — flag-gated dual path. EH chat is single-shot Q&A with a
+  // PROVIDED system prompt, so it routes through the governed SINGLE-TURN path
+  // (governed audit + posture, prompt used verbatim) — NOT the multi-phase stage
+  // loop, which would re-assemble the prompt. Legacy is the default until
+  // CONTEXT_FABRIC_GOVERN_SIDE_CALLERS is flipped + soaked.
+  let result
+  if (config.CONTEXT_FABRIC_GOVERN_SIDE_CALLERS) {
+    result = await contextFabricClient.executeGovernedTurn({
+      trace_id: executeReq.trace_id,
+      run_context: executeReq.run_context as unknown as Record<string, unknown>,
+      system_prompt: executeReq.system_prompt,
+      task: executeReq.task,
+      model_overrides: executeReq.model_overrides,
+      limits: { outputTokenBudget: executeReq.limits?.outputTokenBudget },
+    })
+  } else {
+    result = await contextFabricClient.execute(executeReq)
+  }
   res.json({
     response: result.finalResponse,
     status: result.status,

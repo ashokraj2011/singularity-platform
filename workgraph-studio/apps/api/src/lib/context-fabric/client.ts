@@ -193,6 +193,11 @@ export interface ExecuteResponse {
   metrics?: { mcpLatencyMs?: number }
   warnings?: string[]
   pendingApproval?: PendingApproval | null
+  // Governed path only — the PhaseState dict from a stage that paused at the
+  // approval gate (status WAITING_APPROVAL via APPROVAL_PENDING). The caller
+  // persists it so the resume can rehydrate + apply the decision. The governed
+  // pause is phase-level (not a tool pause), so pendingApproval stays null.
+  governedFinalState?: Record<string, unknown> | null
 }
 
 export interface ResumeRequest {
@@ -203,12 +208,33 @@ export interface ResumeRequest {
   args_override?: Record<string, unknown>
 }
 
+// Governed single-turn request — mirrors GovernedTurnRequest in execute.py.
+// The caller supplies the prompt VERBATIM (system_prompt + task); CF runs ONE
+// gateway turn with no per-phase re-assembly. Returns an ExecuteResponse.
+export interface GovernedTurnRequest {
+  trace_id?: string
+  idempotency_key?: string
+  run_context?: Record<string, unknown>
+  system_prompt?: string
+  task: string
+  model_overrides?: { modelAlias?: string; temperature?: number; maxOutputTokens?: number }
+  limits?: { outputTokenBudget?: number; timeoutSec?: number }
+  governance_overlay?: Record<string, unknown>
+  governance_waivers?: string[]
+}
+
 // M71 Slice F — Governed-stage request shape. Mirrors the GovernedStageRequest
 // Pydantic model in context-fabric's execute.py.
 export interface GovernedStageRequest {
   stage_key: string
   agent_role?: string
   phase_state?: Record<string, unknown> | null
+  // Phase 3 — approval-gate resume. With phase_state, a decision drives
+  // SELF_REVIEW→FINALIZE (approved) / →REPAIR (rejected/changes_requested);
+  // reason surfaces as eval_feedback. Omitted ⇒ plain run/continuation.
+  decision?: string
+  reason?: string
+  args_override?: Record<string, unknown>
   vars?: Record<string, unknown>
   initial_history?: unknown[]
   model_alias?: string
@@ -244,6 +270,12 @@ export interface GovernedStageRequest {
   // resolveGovernance() + activeWaiverControlKeys(); omitted ⇒ no enforcement.
   governance_overlay?: Record<string, unknown>
   governance_waivers?: string[]
+  // Laptop bridge requirement (parity with legacy /execute). true ⇒ the governed
+  // stage must run on the user's laptop mcp-server; CF returns 503 MCP_NOT_CONNECTED
+  // if no live bridge. Also honoured via run_context.prefer_laptop.
+  prefer_laptop?: boolean
+  // Correlation/dedup passthrough — shape parity with the legacy ExecuteRequest.
+  idempotency_key?: string
 }
 
 // M91.A — workflow's resolved stage intent. Built by blueprint.router
@@ -387,6 +419,34 @@ export const contextFabricClient = {
       } catch { /* leave undefined */ }
       throw new ContextFabricError(
         `context-fabric /execute returned ${res.status}: ${text.slice(0, 500)}`,
+        res.status,
+        parsedDetail,
+      )
+    }
+    return (await res.json()) as ExecuteResponse
+  },
+
+  // Governed SINGLE-TURN execution — POST /api/v1/execute-governed-turn.
+  // One LLM turn with the caller's prompt VERBATIM (no phase machine, no
+  // per-phase re-assembly) wrapped in the governed audit trail + 'governed'
+  // posture. For single-shot callers that already hold their assembled/frozen
+  // prompt (event-horizon chat, prompt-composer respond, contracts replay) and
+  // must NOT be re-assembled. Returns the same ExecuteResponse shape as /execute.
+  async executeGovernedTurn(input: GovernedTurnRequest): Promise<ExecuteResponse> {
+    const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/api/v1/execute-governed-turn`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+      dispatcher: longCallDispatcher,
+      signal: AbortSignal.timeout((input.limits?.timeoutSec ?? 240) * 1000 + 10_000),
+    } as RequestInit & { dispatcher: Agent })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      let parsedDetail: unknown
+      try { parsedDetail = (JSON.parse(text) as { detail?: unknown })?.detail } catch { /* noop */ }
+      throw new ContextFabricError(
+        `context-fabric /execute-governed-turn returned ${res.status}: ${text.slice(0, 500)}`,
         res.status,
         parsedDetail,
       )

@@ -96,7 +96,12 @@ export interface ExecuteRespondResponse {
 
 export const contextFabricClient = {
   async executeRespond(input: ExecuteRespondRequest): Promise<ExecuteRespondResponse> {
-    const url = `${env.CONTEXT_FABRIC_URL}/execute`;
+    // The prompt is ALREADY assembled here, so route through CF's governed
+    // SINGLE-TURN endpoint when enabled (prompt sent verbatim — no re-assembly,
+    // no composer↔CF cycle) for the governed audit trail; else legacy /execute.
+    const governed = env.CONTEXT_FABRIC_GOVERNED_TURN;
+    const path = governed ? "/api/v1/execute-governed-turn" : "/execute";
+    const url = `${env.CONTEXT_FABRIC_URL}${path}`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -106,7 +111,7 @@ export const contextFabricClient = {
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new AppError(
-        `context-fabric /execute returned ${res.status}: ${text.slice(0, 500)}`,
+        `context-fabric ${path} returned ${res.status}: ${text.slice(0, 500)}`,
         502,
         "CONTEXT_FABRIC_ERROR",
       );

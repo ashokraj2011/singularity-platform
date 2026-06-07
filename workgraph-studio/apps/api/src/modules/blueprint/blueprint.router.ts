@@ -28,7 +28,6 @@ import {
   hasVerificationReceipt,
   isTerminalCodingResult,
   resumeCodingStage,
-  runCodingStage,
   runCodingStageGoverned,
   stageRequiresVerification,
   type CodingRunResult,
@@ -2215,147 +2214,6 @@ blueprintRouter.post('/sessions/:id/snapshot', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
-blueprintRouter.post('/sessions/:id/run', async (req, res, next) => {
-  try {
-    const session = await prisma.blueprintSession.findUnique({
-      where: { id: req.params.id },
-      include: {
-        snapshots: { orderBy: { createdAt: 'desc' }, take: 1 },
-        artifacts: { orderBy: { createdAt: 'asc' } },
-      },
-    })
-    if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
-    assertBlueprintAccess(session, req.user!.userId)
-    const snapshot = session.snapshots[0]
-    if (!snapshot || snapshot.status !== 'COMPLETED') {
-      throw new ValidationError('Create a successful source snapshot before running the workbench agents')
-    }
-
-    await prisma.blueprintSession.update({ where: { id: session.id }, data: { status: BlueprintSessionStatus.RUNNING } })
-
-    // M36.2 — Resolve each stage's task body + system-prompt fragment from
-    // prompt-composer (StagePromptBinding). Replaces the inline architectTask
-    // / developerTask / qaTask / stageSystemPrompt functions. Prompt text now
-    // lives in singularity_composer DB; edit via seed.ts and re-seed to roll
-    // forward without redeploying workgraph-api.
-    const resolved = await Promise.all([
-      promptComposerClient.resolveStage({
-        stageKey: 'blueprint.architect',
-        vars: { goal: session.goal },
-      }),
-      promptComposerClient.resolveStage({
-        stageKey: 'blueprint.developer',
-        vars: { goal: session.goal },
-      }),
-      promptComposerClient.resolveStage({
-        stageKey: 'blueprint.qa',
-        vars: { goal: session.goal },
-      }),
-    ])
-
-    const stages: Array<{
-      stage: BlueprintStage;
-      agentTemplateId: string;
-      task: string;
-      systemPromptAppend: string;
-    }> = [
-      {
-        stage: BlueprintStage.ARCHITECT,
-        agentTemplateId: session.architectAgentTemplateId,
-        task: resolved[0].task,
-        systemPromptAppend: resolved[0].systemPromptAppend,
-      },
-      {
-        stage: BlueprintStage.DEVELOPER,
-        agentTemplateId: session.developerAgentTemplateId,
-        task: resolved[1].task,
-        systemPromptAppend: resolved[1].systemPromptAppend,
-      },
-      {
-        stage: BlueprintStage.QA,
-        agentTemplateId: session.qaAgentTemplateId,
-        task: resolved[2].task,
-        systemPromptAppend: resolved[2].systemPromptAppend,
-      },
-    ]
-
-    const queuedRuns = new Map<BlueprintStage, string>()
-    for (const stage of stages) {
-      const created = await prisma.blueprintStageRun.create({
-        data: {
-          sessionId: session.id,
-          stage: stage.stage,
-          status: BlueprintStageStatus.PENDING,
-          task: stage.task,
-        },
-      })
-      queuedRuns.set(stage.stage, created.id)
-    }
-
-    let failed = false
-    for (const stage of stages) {
-      const runId = queuedRuns.get(stage.stage)
-      if (!runId) throw new ValidationError(`Missing queued run for stage ${stage.stage}`)
-      await prisma.blueprintStageRun.update({
-        where: { id: runId },
-        data: { status: BlueprintStageStatus.RUNNING, startedAt: new Date() },
-      })
-      try {
-        const result = await runStage(session, snapshot, stage.stage, stage.agentTemplateId, stage.task, stage.systemPromptAppend)
-        await recordBlueprintBudgetUsage(session, result, stage.stage.toLowerCase())
-        await prisma.blueprintStageRun.update({
-          where: { id: runId },
-          data: {
-            status: result.status === 'FAILED' ? BlueprintStageStatus.FAILED : BlueprintStageStatus.COMPLETED,
-            response: result.finalResponse ?? '',
-            correlation: result.correlation as unknown as Prisma.InputJsonValue,
-            tokensUsed: result.tokensUsed as unknown as Prisma.InputJsonValue,
-            completedAt: new Date(),
-            error: result.status === 'FAILED' ? result.finishReason ?? 'stage failed' : null,
-          },
-        })
-        await createStageArtifacts(session, snapshot, stage.stage, result)
-        if (result.status === 'FAILED') {
-          failed = true
-          break
-        }
-      } catch (err) {
-        const message = err instanceof ContextFabricError
-          ? `context-fabric error (${err.status}): ${err.message}`
-          : (err as Error).message
-        await prisma.blueprintStageRun.update({
-          where: { id: runId },
-          data: {
-            status: BlueprintStageStatus.FAILED,
-            error: message,
-            completedAt: new Date(),
-          },
-        })
-        await prisma.blueprintArtifact.create({
-          data: {
-            sessionId: session.id,
-            stage: stage.stage,
-            kind: 'stage_error',
-            title: `${humanStage(stage.stage)} error`,
-            content: message,
-          },
-        })
-        failed = true
-        break
-      }
-    }
-
-    await prisma.blueprintSession.update({
-      where: { id: session.id },
-      data: { status: failed ? BlueprintSessionStatus.FAILED : BlueprintSessionStatus.COMPLETED },
-    })
-    await recordBlueprintAudit(session.id, failed ? 'BlueprintRunFailed' : 'BlueprintRunCompleted', req.user!.userId, {
-      sessionId: session.id,
-    })
-    res.json(await loadSession(session.id, req.user!.userId))
-  } catch (err) { next(err) }
-})
-
 blueprintRouter.post('/sessions/:id/stages/:stageKey/run', async (req, res, next) => {
   try {
     const params = stageActionParamsSchema.parse(req.params)
@@ -4287,6 +4145,10 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
           status: codingResult.status,
           policy: codingResult.policy,
           executeStatus: codingResult.executeStatus,
+          // Phase 3 — persist the governed PhaseState dict so an APPROVAL_PENDING
+          // pause can be rehydrated + resumed via the governed path (not the
+          // legacy continuation-token path, which governed pauses don't produce).
+          ...(codingResult.governedFinalState ? { governedFinalState: codingResult.governedFinalState } : {}),
         },
       },
       tokensUsed: result.tokensUsed as unknown as Record<string, unknown>,
@@ -4479,7 +4341,16 @@ async function resumeLoopStageApproval(
   const continuationToken = pendingApproval && typeof pendingApproval.continuation_token === 'string'
     ? pendingApproval.continuation_token
     : undefined
-  if (!cfCallId && !continuationToken) {
+  // Phase 3 — governed pauses persist their PhaseState and have only a synthetic
+  // cfCallId (no legacy continuation token), so they MUST resume via the governed
+  // loop with the rehydrated state + decision. Legacy pauses keep the legacy
+  // continuation-token resume. WORKGRAPH_GOVERNED_RESUME=0 forces legacy (escape hatch).
+  const codingAgentMeta = isRecord(correlation.codingAgent) ? correlation.codingAgent : {}
+  const governedFinalState = isRecord(codingAgentMeta.governedFinalState)
+    ? (codingAgentMeta.governedFinalState as Record<string, unknown>)
+    : null
+  const useGovernedResume = governedFinalState !== null && process.env.WORKGRAPH_GOVERNED_RESUME !== '0'
+  if (!useGovernedResume && !cfCallId && !continuationToken) {
     throw new ValidationError('Paused stage is missing Context Fabric call id and continuation token')
   }
 
@@ -4511,14 +4382,21 @@ async function resumeLoopStageApproval(
     })
   }
 
-  const codingResult = await resumeCodingStage({
-    cfCallId,
-    continuationToken,
-    decision: body.decision,
-    reason: body.reason,
-    argsOverride: body.argsOverride ?? body.args_override,
-    policy,
-  })
+  const codingResult = useGovernedResume
+    ? await runLoopStageExecute(
+        // Governed path ignores task/systemPromptAppend/extraContext (prompts
+        // resolve per-phase server-side); it rebuilds run_context/policy itself.
+        session, snapshot, stage, latestAttempt, '', '', '',
+        { phaseState: governedFinalState, decision: body.decision, reason: body.reason },
+      )
+    : await resumeCodingStage({
+        cfCallId,
+        continuationToken,
+        decision: body.decision,
+        reason: body.reason,
+        argsOverride: body.argsOverride ?? body.args_override,
+        policy,
+      })
   const result = codingResult.response
   await recordBlueprintBudgetUsage(session, result, stage.key, state.workflowNodeId)
   // M66 — Same persist-after-stage pattern as the fresh-execute path above.
@@ -5698,6 +5576,12 @@ async function runLoopStageExecute(
   systemPromptAppend: string,
   // M36.6 — resolved by caller from prompt-composer (was: inline isDeveloperStage ternary)
   extraContext: string,
+  // Phase 3 — present only on an approval-gate RESUME: rehydrate the persisted
+  // governed PhaseState + apply the operator's decision (approved → FINALIZE,
+  // rejected → REPAIR). On the governed path task/systemPromptAppend/extraContext
+  // are ignored (prompts resolve per-phase server-side), so resume callers pass
+  // them empty and this function rebuilds all the run_context/policy correctly.
+  resume?: { phaseState?: Record<string, unknown> | null; decision?: string; reason?: string },
 ): Promise<CodingRunResult> {
   const traceId = `blueprint-${session.id}-${stage.key}`
   const state = readLoopState(session)
@@ -5981,6 +5865,10 @@ async function runLoopStageExecute(
     // resolveStageMaxSteps / resolveStageTimeoutSec.
     maxTurns: resolveStageMaxSteps(stage),
     timeoutSec: resolveStageTimeoutSec(stage),
+    // Phase 3 — approval-gate resume: rehydrate the persisted PhaseState +
+    // apply the decision so the governed loop drives FINALIZE / REPAIR.
+    ...(resume?.phaseState ? { phaseState: resume.phaseState } : {}),
+    ...(resume?.decision ? { decision: resume.decision, ...(resume.reason ? { reason: resume.reason } : {}) } : {}),
   })
 }
 
@@ -8020,141 +7908,6 @@ async function completeLinkedWorkbenchTask({
       error: err instanceof Error ? err.message : String(err),
     })
   }
-}
-
-async function runStage(
-  session: Awaited<ReturnType<typeof prisma.blueprintSession.findUnique>> & { id: string },
-  snapshot: { id?: string; summary: Prisma.JsonValue; manifest: Prisma.JsonValue; rootHash: string | null },
-  stage: BlueprintStage,
-  agentTemplateId: string,
-  task: string,
-  // M36.2 — resolved by caller from prompt-composer (was: stageSystemPrompt(stage))
-  systemPromptAppend: string,
-): Promise<ExecuteResponse> {
-  const traceId = `blueprint-${session.id}-${stage.toLowerCase()}`
-  const loopStateForStage = readLoopState(session)
-  const executionConfig = loopStateForStage.executionConfig
-  const stageKey = stage.toLowerCase()
-  const modelAlias = stageModelAlias(executionConfig, stageKey, humanStage(stage))
-  const limits = workbenchExecutionLimits(executionConfig)
-  const isDeveloperStage = stage === BlueprintStage.DEVELOPER
-  // Pull the stage definition off the workflow's loopDefinition so we
-  // can honor `limits.maxSteps` if the WORKBENCH_TASK node declared one.
-  // Falls back to env-based class defaults via resolveStageMaxSteps when
-  // the loopDefinition is silent.
-  const stageDefForLimits = loopStateForStage.loopDefinition.stages.find(s => s.key === stageKey)
-  const stageMaxSteps = stageDefForLimits ? resolveStageMaxSteps(stageDefForLimits)
-    : isDeveloperStage ? WORKBENCH_DEVELOPER_MAX_STEPS
-      : stage === BlueprintStage.QA ? WORKBENCH_QA_MAX_STEPS
-        : WORKBENCH_DEFAULT_MAX_STEPS
-  // Same precedence for the wall-clock budget — workflow node's
-  // `limits.timeoutSec` wins, else role-class default. See
-  // resolveStageTimeoutSec for the nginx-coordinated ceiling.
-  const stageTimeoutSec = stageDefForLimits ? resolveStageTimeoutSec(stageDefForLimits)
-    : isDeveloperStage ? 540
-      : stage === BlueprintStage.QA ? 540
-        : 360
-  const linkedWorkItem = await workflowWorkItemContext(session.workflowInstanceId)
-  const snapshotArtifact = buildSnapshotExecuteArtifact(snapshot, {
-    stageKey,
-    stageLabel: humanStage(stage),
-    task,
-    snapshotMode: executionConfig?.snapshotMode,
-    excerptBudgetChars: executionConfig?.excerptBudgetChars,
-  })
-  return contextFabricClient.execute({
-    trace_id: traceId,
-    idempotency_key: `${session.id}:${stage}`,
-    run_context: {
-      workflow_instance_id: session.workflowInstanceId ?? `blueprint-${session.id}`,
-      workflow_node_id: session.phaseId ?? `blueprint-${stage.toLowerCase()}`,
-      // (2026-06-02 M81 cross-stage fix) The WorkItem identity is no longer
-      // gated to the developer stage. This legacy ARCHITECT → DEVELOPER → QA
-      // flow shares one workspace, but gating work_item_id/work_item_code to
-      // the developer meant the QA stage reached mcp-server with NO workitem
-      // identity — so workspaceRootForRunContext dropped it onto the base
-      // sandbox root instead of the per-workitem worktree the developer
-      // committed to, and QA reviewed an empty/re-cloned tree rather than the
-      // diff. Every stage now keys off the same workitem (the governed coding
-      // path at the runCodingStageGoverned call site already does this), so
-      // downstream review stages read the developer's work directly.
-      work_item_id: linkedWorkItem.workItemId,
-      work_item_code: linkedWorkItem.workItemCode,
-      capability_id: session.capabilityId,
-      agent_template_id: agentTemplateId,
-      user_id: session.createdById ?? undefined,
-      trace_id: traceId,
-    },
-    task,
-    vars: {
-      blueprintSessionId: session.id,
-      sourceType: session.sourceType,
-      sourceUri: session.sourceUri,
-      sourceRef: session.sourceRef,
-      stage,
-      modelAlias,
-    },
-    artifacts: [
-      {
-        label: 'Source snapshot',
-        role: 'CONTEXT',
-        mediaType: 'application/json',
-        content: encodeComposerArtifactContent(snapshotArtifact),
-      },
-    ],
-    overrides: {
-      // M36.2 — systemPromptAppend resolved by caller via prompt-composer
-      // /api/v1/stage-prompts/resolve.
-      systemPromptAppend,
-      extraContext: isDeveloperStage
-        ? 'Use the writable MCP workspace for real code edits. Inspect relevant symbols/files first, apply the requested change with tools, and finish the work branch so MCP returns code-change receipts and a git diff for human review.'
-        : undefined,
-    },
-    model_overrides: {
-      ...(modelAlias ? { modelAlias } : {}),
-      temperature: 0.2,
-      maxOutputTokens: limits.maxOutputTokens,
-      promptCache: {
-        enabled: true,
-        strategy: 'provider_auto',
-        key: `${session.id}:${stageKey}:${session.sourceRef ?? 'default'}`,
-      },
-    },
-    context_policy: {
-      optimizationMode: 'code_aware',
-      maxContextTokens: limits.maxContextTokens,
-      compareWithRaw: false,
-      knowledgeTopK: 4,
-      memoryTopK: 2,
-      codeTopK: 5,
-      maxLayerChars: limits.maxLayerChars,
-      maxPromptChars: limits.maxPromptChars,
-    },
-    limits: {
-      maxSteps: stageMaxSteps,
-      timeoutSec: stageTimeoutSec,
-      inputTokenBudget: limits.maxContextTokens,
-      outputTokenBudget: limits.maxOutputTokens,
-      maxHistoryMessages: 16,
-      maxHistoryTokens: Math.max(1000, Math.floor(limits.maxContextTokens * 0.75)),
-      summaryEveryMessages: 6,
-      compressToolResults: true,
-      maxToolResultChars: 8000,
-      maxPromptChars: limits.maxPromptChars,
-      // ── Phased Agent Reasoning Model (v4) ──────────────────────────
-      // Only opted in for developer stages; read-only stages (PLAN, DESIGN,
-      // QA_REVIEW etc.) use the existing flat-loop path. Server still has
-      // to honor MCP_AGENT_PHASES_ENABLED; passing this here is a no-op
-      // unless both flags align.
-      ...(WORKBENCH_AGENT_PHASES_ENABLED && isDeveloperStage
-        ? {
-            agentReasoningMode: 'phased' as const,
-            phaseBudgets: WORKBENCH_DEVELOPER_PHASE_BUDGETS,
-          }
-        : {}),
-    },
-    governance_mode: executionConfig?.governanceMode ?? 'fail_open',
-  })
 }
 
 async function recordBlueprintBudgetUsage(

@@ -499,7 +499,14 @@ export async function activateAgentTask(
           cfCallId: result.correlation.cfCallId,
           traceId: result.correlation.traceId,
           mcpInvocationId: result.correlation.mcpInvocationId,
-        },
+          // Governed pause — persist the PhaseState + run_context so /approve can
+          // rehydrate + resume via the governed path (legacy resume can't: the
+          // cfCallId is synthetic). null for legacy tool pauses (continuation_token).
+          governedFinalState: (result as unknown as { governedFinalState?: unknown }).governedFinalState ?? null,
+          governedRunContext: (result as unknown as { governedFinalState?: unknown }).governedFinalState
+            ? (executeReq.run_context as unknown as Record<string, unknown>)
+            : null,
+        } as unknown as Prisma.InputJsonValue,
       },
     })
     await prisma.agentRun.update({
