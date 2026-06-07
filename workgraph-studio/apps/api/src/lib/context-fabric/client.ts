@@ -248,6 +248,8 @@ export interface GovernedStageRequest {
   // stage must run on the user's laptop mcp-server; CF returns 503 MCP_NOT_CONNECTED
   // if no live bridge. Also honoured via run_context.prefer_laptop.
   prefer_laptop?: boolean
+  // Correlation/dedup passthrough — shape parity with the legacy ExecuteRequest.
+  idempotency_key?: string
 }
 
 // M91.A — workflow's resolved stage intent. Built by blueprint.router

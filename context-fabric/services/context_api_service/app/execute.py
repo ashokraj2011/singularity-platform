@@ -1801,6 +1801,10 @@ class GovernedStageRequest(BaseModel):
     # 503 MCP_NOT_CONNECTED instead of silently using the shared runtime. May also
     # be supplied via run_context["prefer_laptop"] (what loop.py dispatch reads).
     prefer_laptop: Optional[bool] = None
+    # Correlation/dedup passthrough — shape parity with the legacy ExecuteRequest.
+    # (Neither path performs hard dedup today; carried for tracing + so the
+    # contracts replay path can thread it through after its Phase-4 migration.)
+    idempotency_key: Optional[str] = None
 
 
 @router.post("/api/v1/execute-governed-stage")
