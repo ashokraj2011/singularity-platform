@@ -37,8 +37,10 @@ const PHASE_ID = '31000000-0000-0000-0000-0000000000a0'
 const N_START = '32000000-0000-0000-0000-0000000000a0'
 const N_CALL = '32000000-0000-0000-0000-0000000000a1'
 const N_END = '32000000-0000-0000-0000-0000000000a2'
+const N_PUSH = '32000000-0000-0000-0000-0000000000a3'
 const E1 = '33000000-0000-0000-0000-0000000000a0'
 const E2 = '33000000-0000-0000-0000-0000000000a1'
+const E3 = '33000000-0000-0000-0000-0000000000a2'
 const ROUTE_ID = '34000000-0000-0000-0000-0000000000a0'
 
 type Json = Record<string, unknown>
@@ -104,8 +106,8 @@ async function main() {
     profile: 'main',
     workflowTypeKey: 'SDLC',
     graphSnapshot: {
-      nodes: [{ id: N_START, type: 'START' }, { id: N_CALL, type: 'CALL_WORKFLOW' }, { id: N_END, type: 'END' }],
-      edges: [{ from: N_START, to: N_CALL }, { from: N_CALL, to: N_END }],
+      nodes: [{ id: N_START, type: 'START' }, { id: N_CALL, type: 'CALL_WORKFLOW' }, { id: N_PUSH, type: 'GIT_PUSH' }, { id: N_END, type: 'END' }],
+      edges: [{ from: N_START, to: N_CALL }, { from: N_CALL, to: N_PUSH }, { from: N_PUSH, to: N_END }],
     },
     phaseId: PHASE_ID,
     phaseName: 'Main',
@@ -115,10 +117,16 @@ async function main() {
   // (or config.templateId) — NOT workflowId. Set standard.templateId so the
   // node both spawns at runtime and renders correctly in NodeInspector.
   await upsertNode({ id: N_CALL, nodeType: 'CALL_WORKFLOW', label: 'Run SDLC loop', config: { standard: { templateId: loop.id }, templateId: loop.id, workflowId: loop.id }, positionX: 320, positionY: 160 })
-  await upsertNode({ id: N_END, nodeType: 'END', label: 'Done', positionX: 600, positionY: 160 })
+  // GIT_PUSH after the loop: push the branch the SDLC loop committed to the
+  // capability's remote. Auto-push (requireApproval defaults to true, so set it
+  // false); branch/commit are auto-resolved from the run's code-change evidence
+  // (workspaceBranch / wi/<workItemCode>); remote defaults to 'origin'.
+  await upsertNode({ id: N_PUSH, nodeType: 'GIT_PUSH', label: 'Push to remote', config: { requireApproval: false, remote: 'origin', standard: { requireApproval: 'false', remote: 'origin' } }, positionX: 600, positionY: 160 })
+  await upsertNode({ id: N_END, nodeType: 'END', label: 'Done', positionX: 840, positionY: 160 })
   await upsertEdge({ id: E1, sourceNodeId: N_START, targetNodeId: N_CALL })
-  await upsertEdge({ id: E2, sourceNodeId: N_CALL, targetNodeId: N_END })
-  console.log(`✓ Main workflow "SDLC Delivery" (${WF_ID})`)
+  await upsertEdge({ id: E2, sourceNodeId: N_CALL, targetNodeId: N_PUSH })
+  await upsertEdge({ id: E3, sourceNodeId: N_PUSH, targetNodeId: N_END })
+  console.log(`✓ Main workflow "SDLC Delivery" (${WF_ID}) — START → CALL_WORKFLOW → GIT_PUSH → END`)
 
   // feature → SDLC → this wrapper, priority 200 (wins over the demo's 100).
   await (prisma as any).workItemRoutingPolicy.upsert({
