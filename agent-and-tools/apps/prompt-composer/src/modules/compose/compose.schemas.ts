@@ -187,6 +187,18 @@ export const composeSchema = z.object({
       })).optional(),
       extras: z.record(z.unknown()).optional(),
     }).optional(),
+    // Richer LLM-distilled grounding (world-model-distill) — surfaced in the
+    // CODE_WORLD_MODEL prompt layer for the Design/Plan/Develop stages.
+    codeConventions: z.array(z.object({
+      topic: z.string(),
+      rule: z.string(),
+      source: z.string().optional(),
+    })).default([]),
+    entrypoints: z.array(z.object({
+      kind: z.string(),
+      target: z.string(),
+      command: z.string().optional(),
+    })).default([]),
   }).optional(),
   // M62 Slice D — LLMLingua-2 prompt compression. Opt-in per-layer.
   //

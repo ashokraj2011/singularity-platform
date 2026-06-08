@@ -1957,6 +1957,18 @@ export function renderCodeWorldModelLayer(wm: WorldModelInput): string | null {
     sections.push(["### Top-level package map", "", ...lines].join("\n"));
   }
 
+  const conventions = wm.codeConventions ?? [];
+  if (conventions.length > 0) {
+    const lines = conventions.map((c) => `- **${c.topic}**: ${c.rule}`);
+    sections.push(["### Code conventions", "", ...lines].join("\n"));
+  }
+
+  const eps = wm.entrypoints ?? [];
+  if (eps.length > 0) {
+    const lines = eps.map((e) => `- ${e.kind}: \`${e.target}\`${e.command ? ` — \`${e.command}\`` : ""}`);
+    sections.push(["### Entrypoints", "", ...lines].join("\n"));
+  }
+
   if (sections.length === 0) return null;
   return ["## Capability World Model", "", sections.join("\n\n")].join("\n");
 }
