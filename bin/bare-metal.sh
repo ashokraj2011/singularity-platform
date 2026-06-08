@@ -442,21 +442,26 @@ JSON
   boot workgraph-web    "cd workgraph-studio/apps/web  && VITE_API_BASE=http://localhost:8080 VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" VITE_IAM_LOGIN_URL=http://localhost:5175/login VITE_AUTO_LOGIN=0 npm run dev -- --host 0.0.0.0 --port 5174"
   boot blueprint-workbench "cd workgraph-studio/apps/blueprint-workbench && npm run dev -- --host 0.0.0.0 --port 5176"
   # Vite reliably reads .env.local; the inline VITE_LINK_* on the boot lines do
-  # not always reach import.meta.env. Write the cross-app link targets so the
-  # portal tiles and the IAM-admin "Bootstrap in Agent Studio" button resolve to
-  # the per-port apps instead of single-origin /agent, /workflow, … paths (which
-  # only exist behind the Docker edge-gateway and otherwise bounce back).
-  cat > "$ROOT/singularity-portal/.env.local" <<EOF
-VITE_IAM_BASE_URL=$IAM_BASE_URL
-VITE_LINK_WORKGRAPH_DESIGNER=http://localhost:5174
-VITE_LINK_BLUEPRINT_WORKBENCH=http://localhost:5176
-VITE_LINK_AGENT_ADMIN=http://localhost:3000
-VITE_LINK_IAM_ADMIN=http://localhost:5175
-EOF
-  cat > "$ROOT/UserAndCapabillity/.env.local" <<EOF
-VITE_IAM_BASE_URL=$IAM_BASE_URL
-VITE_LINK_AGENT_ADMIN=http://localhost:3000
-EOF
+  # not always reach import.meta.env. Ensure each SPA's .env.local carries the
+  # cross-app link targets so the portal tiles, the AppSwitcher dropdown, and the
+  # IAM-admin "Bootstrap in Agent Studio" button resolve to the per-port apps
+  # instead of single-origin /agent, /workflow, … paths (which only exist behind
+  # the Docker edge-gateway and otherwise bounce back to the same app).
+  # Append-only — never clobbers an existing key (e.g. workgraph-web's API config).
+  _ensure_kv() { # $1=file  $2=KEY=VALUE
+    local f="$1" kv="$2" key="${2%%=*}"
+    mkdir -p "$(dirname "$f")"; touch "$f"
+    grep -q "^${key}=" "$f" 2>/dev/null || printf '%s\n' "$kv" >> "$f"
+  }
+  for _app in singularity-portal UserAndCapabillity workgraph-studio/apps/web workgraph-studio/apps/blueprint-workbench; do
+    _f="$ROOT/$_app/.env.local"
+    _ensure_kv "$_f" "VITE_IAM_BASE_URL=$IAM_BASE_URL"
+    _ensure_kv "$_f" "VITE_LINK_OPERATIONS_PORTAL=http://localhost:5180/operations"
+    _ensure_kv "$_f" "VITE_LINK_AGENT_ADMIN=http://localhost:3000"
+    _ensure_kv "$_f" "VITE_LINK_WORKGRAPH_DESIGNER=http://localhost:5174"
+    _ensure_kv "$_f" "VITE_LINK_BLUEPRINT_WORKBENCH=http://localhost:5176"
+    _ensure_kv "$_f" "VITE_LINK_IAM_ADMIN=http://localhost:5175"
+  done
 
   # IAM admin SPA — hosts the capability-governance authoring UI (G7–G9).
   boot user-and-capability "cd UserAndCapabillity && VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" npm run dev -- --host 0.0.0.0 --port 5175"
