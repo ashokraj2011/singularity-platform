@@ -658,6 +658,74 @@ curl http://localhost:7100/llm/models
 
 In office Copilot-only mode, `/llm/providers` should report `copilot` as allowed/enabled and `openai`, `openrouter`, `anthropic`, and `mock` as disabled or not allowed. If a workflow tries to force a disabled provider or raw provider/model, the gateway rejects it before any provider call.
 
+#### Switch the gateway to GitHub Copilot — `switch-llm-to-copilot.sh`
+
+A one-shot helper at the repo root flips the gateway from the Anthropic default to **GitHub Copilot / GitHub Models** (and back). It edits the two config files above, writes `COPILOT_TOKEN` to the gateway env file, restarts the affected services, and verifies — and it works for **both Docker and bare-metal** deployments. Every file it touches is backed up to `*.bak.<timestamp>`.
+
+It restarts `llm-gateway`, `context-api`, and `mcp-server` (the Agent Execution Runtime — it reads the same provider/model config), restarting only the ones present.
+
+```bash
+# Docker (auto-detected) — GitHub Models endpoint (Bearer-only, works as-is):
+./switch-llm-to-copilot.sh --token <GITHUB_MODELS_PAT>
+
+# Bare-metal with systemd units:
+./switch-llm-to-copilot.sh --mode baremetal --token <TOKEN> \
+  --gateway-unit singularity-llm-gateway \
+  --context-unit singularity-context-api \
+  --mcp-unit     singularity-mcp-server
+
+# Bare-metal with non-standard config paths + a custom restart command:
+./switch-llm-to-copilot.sh --mode baremetal \
+  --providers-config /etc/singularity/llm-providers.json \
+  --models-config    /etc/singularity/llm-models.json \
+  --env-file         /etc/singularity/llm.env \
+  --restart-cmd "pm2 restart llm-gateway context-api mcp-server" \
+  --token <TOKEN>
+
+# Use the Copilot editor API instead of GitHub Models:
+./switch-llm-to-copilot.sh --endpoint copilot-editor --model gpt-4o --token <COPILOT_TOKEN>
+
+# Add Copilot but keep Anthropic as the default alias:
+./switch-llm-to-copilot.sh --token <TOKEN> --no-default
+
+# Revert to Anthropic (Haiku):
+./switch-llm-to-copilot.sh --revert
+```
+
+Flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--mode docker\|baremetal\|auto` | Deployment. `auto` picks `docker` if the `singularity-llm-gateway` container exists, else `baremetal`. |
+| `--endpoint github-models\|copilot-editor` | `github-models` (default) → `https://models.github.ai/inference`; `copilot-editor` → `https://api.githubcopilot.com`. |
+| `--model <id>` | Model id (default `openai/gpt-4o` for GitHub Models, `gpt-4o` for the editor API). |
+| `--token <T>` | Token written to the env file (or `export COPILOT_TOKEN`). |
+| `--providers-config` / `--models-config` | Config file paths (bare-metal also honors `$LLM_PROVIDER_CONFIG_PATH` / `$LLM_MODEL_CATALOG_PATH`). |
+| `--env-file <P>` | Secrets file for `COPILOT_TOKEN` (default `./.env.llm-secrets`). |
+| `--gateway-url <U>` | Gateway base URL for the verify step (default `http://localhost:8001`). |
+| `--restart-cmd "…"` | Explicit restart command (overrides the per-mode default). |
+| `--gateway-unit` / `--context-unit` / `--mcp-unit` | systemd unit names (bare-metal). |
+| `--no-default` / `--no-restart` / `--revert` | Add Copilot without making it the default alias / edit config only / restore Anthropic. |
+
+How it restarts:
+
+- **Docker** → `docker compose --profile full up -d --force-recreate llm-gateway context-api mcp-server` (only services that exist).
+- **Bare-metal** → `systemctl restart <units>` if present, else your `--restart-cmd`, else it prints manual instructions (systemd / pm2 / `./singularity.sh restart …`).
+
+Verify:
+
+```bash
+curl -s http://localhost:8001/llm/providers | jq    # gateway: copilot allowed + ready
+curl -s http://localhost:7100/llm/providers | jq    # Agent Execution Runtime (mcp-server)
+```
+
+Caveats:
+
+- **Token required.** Without a valid `COPILOT_TOKEN` the provider loads but reports *not ready* (503). Use a GitHub PAT with the `models` permission for `github-models`; a short-lived Copilot session token for `copilot-editor`.
+- **Bare-metal env loading.** The gateway only sees `COPILOT_TOKEN` if its process loads the env file (systemd `EnvironmentFile=`, or `source` it before launch).
+- **Copilot editor headers.** `api.githubcopilot.com` also requires `Editor-Version` / `Copilot-Integration-Id` headers, which the `openai_compat` adapter does not yet send — that endpoint needs a small adapter change. The default `github-models` path is Bearer-only and works unchanged.
+- This is a thin, scriptable alternative to `./singularity.sh config office-copilot-only`; the script additionally supports the GitHub Models endpoint and handles the token write + multi-service restart for both deployment types.
+
 ### Optional governance path analyzer
 
 Formal verification is a platform-level feature toggle, off by default:
