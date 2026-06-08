@@ -493,6 +493,11 @@ JSON
     _ensure_kv "$_f" "VITE_LINK_AGENT_ADMIN=http://localhost:3000"
     _ensure_kv "$_f" "VITE_LINK_WORKGRAPH_DESIGNER=http://localhost:5174"
     _ensure_kv "$_f" "VITE_LINK_BLUEPRINT_WORKBENCH=http://localhost:5176"
+    # The run pages (RunViewer/WorkDetail/NodeRunModal "Open WorkbenchNeo") read
+    # VITE_BLUEPRINT_WORKBENCH_URL — NOT the _LINK_ var the AppSwitcher uses.
+    # Without it they fall back to same-origin '/workbench/', which bounces back
+    # to :5174 on bare-metal (no edge gateway). Point it at the standalone app.
+    _ensure_kv "$_f" "VITE_BLUEPRINT_WORKBENCH_URL=http://localhost:5176"
     _ensure_kv "$_f" "VITE_LINK_IAM_ADMIN=http://localhost:5175"
   done
   # Agent Studio (:3000) is Next.js (NEXT_PUBLIC_* prefix). Its AppSwitcher uses
