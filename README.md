@@ -662,6 +662,8 @@ In office Copilot-only mode, `/llm/providers` should report `copilot` as allowed
 
 `bin/llm-use-copilot.sh` flips **every** model alias through Copilot via the gateway, and back. It edits `llm-providers.json` (adds + enables a `copilot` provider, makes it the default), repoints **all** aliases in `llm-models.json` to `copilot/<model>` (so `claude-*`/`gpt-4o` aliases route to Copilot too), writes `COPILOT_TOKEN` to `.env.llm-secrets`, then restarts the gateway and verifies. It auto-detects deployment and works for **both** — bare-metal (restarts the `uvicorn` process on `:8001` via the repo-root `.env.local`/`.pids` that `bin/bare-metal.sh` writes) and Docker (recreates the `singularity-llm-gateway` container). Originals are backed up to `*.copilot-bak`; `--restore` reverts.
 
+> **Prerequisite (fresh clone):** `.singularity/llm-providers.json` + `llm-models.json` are gitignored, so generate them and bring a stack up *before* running this — `./singularity.sh config init --profile office-laptop && ./singularity.sh config mcp-catalog --default-alias mock && ./singularity.sh up` (Docker). For bare-metal, just run `bin/setup.sh`: it generates config, brings the stack up, **and** points the gateway at your Copilot bridge in one step (you don't call this script yourself).
+
 Two ways to point at Copilot:
 
 ```bash
