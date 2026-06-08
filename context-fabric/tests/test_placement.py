@@ -9,6 +9,7 @@ from context_api_service.app.governed import placement as p
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("ENTERPRISE_LLM_GATEWAY", raising=False)
+    monkeypatch.delenv("PREFER_LAPTOP_LLM", raising=False)
 
 
 @pytest.mark.parametrize(
@@ -53,3 +54,16 @@ def test_llm_laptop_target_returns_user_when_opted_in():
 def test_llm_laptop_target_enterprise_forces_cloud(monkeypatch):
     monkeypatch.setenv("ENTERPRISE_LLM_GATEWAY", "true")
     assert p.llm_laptop_target({"prefer_laptop_llm": True, "user_id": "u1"}) is None
+
+
+def test_llm_laptop_target_env_optin(monkeypatch):
+    monkeypatch.setenv("PREFER_LAPTOP_LLM", "true")
+    # deployment-wide opt-in routes to the launching user's laptop without the per-run flag
+    assert p.llm_laptop_target({"user_id": "u1"}) == "u1"
+    assert p.llm_laptop_target({}) is None  # still needs a user_id
+
+
+def test_llm_laptop_target_env_optin_loses_to_enterprise(monkeypatch):
+    monkeypatch.setenv("PREFER_LAPTOP_LLM", "true")
+    monkeypatch.setenv("ENTERPRISE_LLM_GATEWAY", "true")
+    assert p.llm_laptop_target({"user_id": "u1"}) is None

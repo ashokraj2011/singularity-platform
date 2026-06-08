@@ -41,21 +41,34 @@ def mcp_laptop_allowed(prefer_laptop: bool | None) -> bool | None:
     return prefer_laptop
 
 
+def _env_prefer_laptop_llm() -> bool:
+    """Deployment-wide opt-in for laptop LLM, independent of the per-run flag.
+
+    Set PREFER_LAPTOP_LLM=true to route LLM to the launching user's laptop for
+    every run (useful for testing, or a homogeneous BYO-laptop fleet). The
+    enterprise override still wins, and a laptop must actually be connected +
+    serving model-run or it falls back to the cloud gateway.
+    """
+    return os.environ.get("PREFER_LAPTOP_LLM", "false").strip().lower() in _TRUTHY
+
+
 def llm_laptop_target(run_context: dict[str, Any] | None) -> str | None:
     """Return the user_id whose laptop should serve LLM for this run, else None.
 
     None (→ cloud gateway) unless ALL hold:
       • not enterprise_mode()
-      • run_context["prefer_laptop_llm"] is truthy
+      • run opted in — either run_context["prefer_laptop_llm"] is truthy OR the
+        deployment-wide PREFER_LAPTOP_LLM env is set
       • run_context carries a user_id
 
     Whether that user's laptop is actually connected and advertises the
     'model-run' frame is verified at dispatch time (call_gateway_chat falls
     back to the cloud gateway if not), so this never hard-fails a run.
     """
-    if not run_context or enterprise_mode():
+    if enterprise_mode():
         return None
-    if not run_context.get("prefer_laptop_llm"):
+    rc = run_context or {}
+    if not (rc.get("prefer_laptop_llm") or _env_prefer_laptop_llm()):
         return None
-    uid = run_context.get("user_id") or run_context.get("userId")
+    uid = rc.get("user_id") or rc.get("userId")
     return str(uid) if uid else None
