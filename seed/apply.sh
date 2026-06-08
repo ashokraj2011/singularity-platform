@@ -31,5 +31,6 @@ run singularity      01-agent-runtime.sql
 run workgraph        02-workgraph.sql
 run audit_governance 03-audit-governance.sql
 run singularity_iam  04-demo-users.sql
+run singularity_iam  05-demo-user-capabilities.sql
 
 echo "✓ all seeds applied."
