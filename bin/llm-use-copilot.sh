@@ -28,9 +28,20 @@
 # Usage:
 #   bin/llm-use-copilot.sh --base-url http://host.docker.internal:4141/v1 \
 #                          --model gpt-4o [--token <copilot-token>]
+#   bin/llm-use-copilot.sh --preset github-models --token <GITHUB_PAT>
 #   bin/llm-use-copilot.sh --restore
 #
 # Notes:
+#   * --preset is a shortcut for a known OpenAI-compatible endpoint (overridable
+#     with --base-url/--model):
+#       copilot-bridge (default) — you supply --base-url: a local OpenAI-compatible
+#         Copilot server (e.g. copilot-api on :4141/v1).
+#       github-models — GitHub-hosted models at https://models.github.ai/inference
+#         (default model openai/gpt-4o). --token MUST be a GitHub PAT with the
+#         `models` permission; Bearer-only, so it works with the gateway as-is.
+#       copilot-editor — https://api.githubcopilot.com (default model gpt-4o). The
+#         gateway adapter does NOT send the Editor-Version/Copilot-Integration-Id
+#         headers this endpoint needs, so it will likely 400/403 without a tweak.
 #   * --base-url must be reachable FROM the gateway container and is used as
 #     `<base-url>/chat/completions`. If your headless server runs on the host,
 #     use host.docker.internal; include the OpenAI path prefix (usually /v1).
@@ -58,18 +69,34 @@ ok()   { c "32" "✓ $1"; }
 warn() { c "33" "! $1"; }
 die()  { c "31" "✗ $1"; exit 1; }
 
-BASE_URL=""; MODEL=""; TOKEN="${COPILOT_TOKEN:-}"; RESTORE=0; SKIP_PREFLIGHT=0
+BASE_URL=""; MODEL=""; TOKEN="${COPILOT_TOKEN:-}"; RESTORE=0; SKIP_PREFLIGHT=0; PRESET=""; GH_MODELS=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --base-url) BASE_URL="${2:?--base-url needs a value}"; shift 2 ;;
     --model)    MODEL="${2:?--model needs a value}"; shift 2 ;;
     --token)    TOKEN="${2:?--token needs a value}"; shift 2 ;;
+    --preset)   PRESET="${2:?--preset needs a value}"; shift 2 ;;
     --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
     --restore)  RESTORE=1; shift ;;
     -h|--help)  grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown arg: $1 (see --help)" ;;
   esac
 done
+
+# Presets fill base-url/model for known endpoints (explicit flags still win).
+case "$PRESET" in
+  ""|copilot-bridge) : ;;
+  github-models)
+    [ -n "$BASE_URL" ] || BASE_URL="https://models.github.ai/inference"
+    [ -n "$MODEL" ]    || MODEL="openai/gpt-4o"
+    SKIP_PREFLIGHT=1   # /models needs the PAT; skip the unauth reachability probe
+    GH_MODELS=1 ;;
+  copilot-editor)
+    [ -n "$BASE_URL" ] || BASE_URL="https://api.githubcopilot.com"
+    [ -n "$MODEL" ]    || MODEL="gpt-4o"
+    warn "preset copilot-editor: api.githubcopilot.com needs Editor-Version/Copilot-Integration-Id headers the gateway does not send — it will likely 400/403." ;;
+  *) die "unknown --preset: $PRESET (copilot-bridge | github-models | copilot-editor)" ;;
+esac
 
 command -v python3 >/dev/null || die "python3 is required"
 [ -f "$PROVIDERS" ] || die "missing $PROVIDERS"
@@ -178,7 +205,10 @@ fi
 # ── flip to copilot ──────────────────────────────────────────────────────────
 [ -n "$BASE_URL" ] || die "--base-url is required (e.g. http://host.docker.internal:4141/v1)"
 [ -n "$MODEL" ]    || die "--model is required (e.g. gpt-4o)"
-if [ -z "$TOKEN" ]; then TOKEN="copilot-local"; warn "no --token/\$COPILOT_TOKEN; using placeholder 'copilot-local' (fine if your server ignores auth)"; fi
+if [ -z "$TOKEN" ]; then
+  [ "$GH_MODELS" = "1" ] && die "preset github-models needs a real GitHub PAT (models permission): pass --token <PAT>"
+  TOKEN="copilot-local"; warn "no --token/\$COPILOT_TOKEN; using placeholder 'copilot-local' (fine if your server ignores auth)"
+fi
 
 preflight_headless_http
 
