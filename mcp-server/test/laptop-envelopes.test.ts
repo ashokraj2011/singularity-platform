@@ -77,7 +77,7 @@ describe("HelloFrame.supported_frame_types", () => {
   it("SUPPORTED_FRAME_TYPES export matches schema enum", () => {
     // Pin the constant to prevent drift — Slice 2 imports this to
     // build the bridge's capability matcher.
-    expect(SUPPORTED_FRAME_TYPES).toEqual(["invoke", "tool-run"]);
+    expect(SUPPORTED_FRAME_TYPES).toEqual(["invoke", "tool-run", "model-run"]);
   });
 });
 

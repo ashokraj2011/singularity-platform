@@ -134,6 +134,10 @@ async def laptop_connect(ws: WebSocket) -> None:
         return
 
     device_name = str(hello.get("device_name") or claims.get("device_name") or "unknown-laptop")
+    sft_raw = hello.get("supported_frame_types")
+    supported_frame_types = (
+        [str(s) for s in sft_raw] if isinstance(sft_raw, list) and sft_raw else ["invoke"]
+    )
 
     conn = ActiveConnection(
         user_id=user_id,
@@ -142,6 +146,7 @@ async def laptop_connect(ws: WebSocket) -> None:
         ws=ws,
         connected_at=time.time(),
         last_seen_at=time.time(),
+        supported_frame_types=supported_frame_types,
     )
     await REGISTRY.register(conn)
     log.info("laptop connected user=%s device=%s name=%s", user_id, device_id, device_name)

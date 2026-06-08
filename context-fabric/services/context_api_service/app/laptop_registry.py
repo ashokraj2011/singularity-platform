@@ -35,6 +35,10 @@ class ActiveConnection:
     connected_at:  float
     last_seen_at:  float
     pending:       dict[str, asyncio.Future] = field(default_factory=dict)
+    # Frame types the laptop advertised in its `hello` (e.g. ["invoke",
+    # "tool-run", "model-run"]). Used to route model-run frames only to
+    # laptops that can serve LLM. Defaults to the legacy ["invoke"].
+    supported_frame_types: list[str] = field(default_factory=lambda: ["invoke"])
 
 
 class LaptopRegistry:
@@ -84,6 +88,18 @@ class LaptopRegistry:
             by_device = self._by_user.get(user_id) or {}
             for conn in by_device.values():
                 return conn
+            return None
+
+    async def any_for_user_serving(self, user_id: str, frame_type: str) -> Optional[ActiveConnection]:
+        """Pick a live connection for this user that advertised ``frame_type`` in
+        its hello.supported_frame_types. Used so model-run frames only go to a
+        laptop that can serve LLM (avoids sending LLM work to a tools-only
+        laptop). Returns None when none qualify → caller falls back to cloud."""
+        async with self._lock:
+            by_device = self._by_user.get(user_id) or {}
+            for conn in by_device.values():
+                if frame_type in (conn.supported_frame_types or []):
+                    return conn
             return None
 
     # ── invoke routing ─────────────────────────────────────────────────────
@@ -166,6 +182,39 @@ class LaptopRegistry:
         )
         return body, {"device_id": conn.device_id, "device_name": conn.device_name}
 
+    # ── LLM dispatch over the bridge (full-BYO-laptop placement) ───────────
+    async def dispatch_model_via_laptop(
+        self,
+        *,
+        user_id: str,
+        request_body: dict[str, Any],
+        timeout: float = INVOKE_TIMEOUT_SEC,
+    ) -> dict[str, Any]:
+        """Send a chat-completion request to the user's laptop over a
+        ``model-run`` frame and await the gateway-shaped response. The laptop
+        forwards ``request_body`` to its LOCAL llm-gateway
+        (POST /v1/chat/completions) and returns the JSON unchanged.
+
+        ``request_body`` is the same body context-fabric would POST to the cloud
+        gateway (messages, tools, model_alias, …); the returned dict matches the
+        gateway's /v1/chat/completions response, so callers parse it with
+        ``ChatResponse.from_dict`` — identical shape to the cloud path.
+
+        Raises LaptopNotConnected when no laptop advertising ``model-run`` is
+        online (caller falls back to the cloud gateway), and the usual
+        LaptopSendFailed / LaptopInvokeTimeout / LaptopInvokeError on transport
+        or runner errors.
+        """
+        body, _conn = await self._send_frame_await_response(
+            user_id=user_id,
+            frame_type="model-run",
+            payload=request_body,
+            timeout=timeout,
+            request_label="model-run",
+            require_frame_type="model-run",
+        )
+        return body
+
     async def _send_frame_await_response(
         self,
         *,
@@ -174,6 +223,7 @@ class LaptopRegistry:
         payload: dict[str, Any],
         timeout: float,
         request_label: str,
+        require_frame_type: str | None = None,
     ) -> tuple[dict[str, Any], ActiveConnection]:
         """Common request/response plumbing shared by ``invoke`` and
         ``dispatch_tool_via_laptop``. Extracted so the per-frame logic
@@ -185,9 +235,16 @@ class LaptopRegistry:
         device_name without doing a second `any_for_user` lookup
         (which could race with reap_stale and pick a different
         connection). The legacy `invoke` caller discards it."""
-        conn = await self.any_for_user(user_id)
-        if conn is None:
-            raise LaptopNotConnected(f"no live laptop mcp-server for user {user_id}")
+        if require_frame_type:
+            conn = await self.any_for_user_serving(user_id, require_frame_type)
+            if conn is None:
+                raise LaptopNotConnected(
+                    f"no live laptop serving '{require_frame_type}' for user {user_id}"
+                )
+        else:
+            conn = await self.any_for_user(user_id)
+            if conn is None:
+                raise LaptopNotConnected(f"no live laptop mcp-server for user {user_id}")
 
         request_id = uuid4().hex
         loop = asyncio.get_running_loop()
