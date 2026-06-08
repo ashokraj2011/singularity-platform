@@ -7,6 +7,7 @@ import { StatusBadge } from '@/components/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { useCapabilities } from '@/hooks/useCapabilities'
 import { capabilityTypeColor, capabilityTypeLabel, formatDate } from '@/lib/format'
+import { agentStudioCapabilitiesHref } from '@/lib/links'
 import type { CapabilityType } from '@/types'
 
 const TYPES: CapabilityType[] = [
@@ -25,7 +26,7 @@ export function CapabilitiesListPage() {
         title="Capabilities"
         subtitle="Identity references for capabilities bootstrapped in Agent Studio"
         action={
-          <a href="/agent/capabilities" target="_blank" rel="noreferrer">
+          <a href={agentStudioCapabilitiesHref()} target="_blank" rel="noreferrer">
             <Button className="bg-[#00843D] hover:bg-[#006830]">
               <ExternalLink className="w-4 h-4 mr-1.5" /> Bootstrap in Agent Studio
             </Button>
