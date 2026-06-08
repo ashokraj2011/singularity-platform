@@ -10,15 +10,17 @@ import {
   parseConverse,
   parseCritic,
   priorityToWorkItem,
+  milestoneEffortDays,
+  totalEffortDays,
   aggregateUsage,
   type Milestone,
 } from '../src/modules/planner/planner.service'
 
-const milestone = (id: string, tasks: Array<{ title: string; description: string; capabilityId: string }>): Milestone => ({
+const milestone = (id: string, tasks: Array<{ title: string; description: string; capabilityId: string; effortDays?: number }>): Milestone => ({
   id,
   title: `Milestone ${id}`,
   summary: '',
-  tasks: tasks.map((t) => ({ ...t, category: '', priority: 'MEDIUM', aiSuggested: false })),
+  tasks: tasks.map((t) => ({ ...t, category: '', priority: 'MEDIUM', effortDays: t.effortDays ?? 1, aiSuggested: false })),
 })
 
 describe('extractJsonBlock', () => {
@@ -111,6 +113,7 @@ describe('parseConverse', () => {
     expect(out.ok).toBe(true)
     if (out.ok) {
       expect(out.value.milestones[0].tasks[0].priority).toBe('MEDIUM')
+      expect(out.value.milestones[0].tasks[0].effortDays).toBe(1)
       expect(out.value.milestones[0].tasks[0].aiSuggested).toBe(false)
     }
   })
@@ -129,6 +132,21 @@ describe('parseCritic', () => {
     const c = parseCritic('looks fine')
     expect(c.verdict).toBe('warn')
     expect(c.issues).toHaveLength(1)
+  })
+})
+
+describe('effort rollup', () => {
+  it('sums task effort per milestone and across the roadmap', () => {
+    const ms = [
+      milestone('M1', [
+        { title: 'A', description: 'aa', capabilityId: 'home', effortDays: 2 },
+        { title: 'B', description: 'bb', capabilityId: 'home', effortDays: 3 },
+      ]),
+      milestone('M2', [{ title: 'C', description: 'cc', capabilityId: 'home', effortDays: 1.5 }]),
+    ]
+    expect(milestoneEffortDays(ms[0])).toBe(5)
+    expect(milestoneEffortDays(ms[1])).toBe(1.5)
+    expect(totalEffortDays(ms)).toBe(6.5)
   })
 })
 

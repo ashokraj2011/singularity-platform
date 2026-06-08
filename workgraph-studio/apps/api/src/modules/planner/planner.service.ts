@@ -28,6 +28,8 @@ export const taskSchema = z.object({
   category: z.string().trim().max(40).catch('').default(''),
   capabilityId: z.string().trim().min(1),
   priority: z.enum(PRIORITIES).catch('MEDIUM').default('MEDIUM'),
+  // Estimated effort in person-days (e.g. 0.5, 2, 5). Rolled up to a milestone total.
+  effortDays: z.coerce.number().min(0).max(90).catch(1).default(1),
   aiSuggested: z.boolean().catch(false).default(false),
   rationale: z.string().trim().max(600).optional(),
 })
@@ -105,6 +107,15 @@ export function flattenTasks(milestones: Milestone[]): Array<PlannerTask & { mil
   const out: Array<PlannerTask & { milestone: string; milestoneId: string }> = []
   for (const m of milestones ?? []) for (const t of m.tasks ?? []) out.push({ ...t, milestone: m.title, milestoneId: m.id })
   return out
+}
+
+/** Estimated effort (person-days) for one milestone — the sum of its tasks. */
+export function milestoneEffortDays(m: Milestone): number {
+  return Number((m.tasks ?? []).reduce((s, t) => s + (Number(t.effortDays) || 0), 0).toFixed(2))
+}
+/** Estimated effort (person-days) for the whole roadmap. */
+export function totalEffortDays(milestones: Milestone[]): number {
+  return Number((milestones ?? []).reduce((s, m) => s + milestoneEffortDays(m), 0).toFixed(2))
 }
 
 export function findDuplicatePairs(
@@ -215,6 +226,7 @@ function plannerSystemPrompt(maxItems: number): string {
     '- category: ONE short UPPERCASE label (e.g. DATABASE, SECURITY, API, UI, INFRA, PAYMENTS),',
     '- capabilityId: the best-fit id from the list — NEVER invent an id; use HOME if unsure,',
     '- priority: HIGH | MEDIUM | LOW,',
+    '- effortDays: estimated effort in PERSON-DAYS as a number (e.g. 0.5, 1, 2, 5) — be realistic; a milestone\'s effort is the sum of its tasks,',
     '- aiSuggested: true if YOU proposed it without the user explicitly asking,',
     '- rationale: one sentence.',
     `Keep the whole roadmap to at most ${maxItems} tasks.`,
@@ -222,7 +234,7 @@ function plannerSystemPrompt(maxItems: number): string {
     'Always include a short "reply" (1–3 sentences): what you did, or your questions.',
     '',
     'Output STRICT JSON ONLY — no prose, no markdown fences:',
-    '{"reply":"…","needsClarification":false,"questions":[],"milestones":[{"id":"M1","title":"Foundation","summary":"…","tasks":[{"title":"…","description":"…","category":"DATABASE","capabilityId":"…","priority":"HIGH","aiSuggested":false,"rationale":"…"}]}]}',
+    '{"reply":"…","needsClarification":false,"questions":[],"milestones":[{"id":"M1","title":"Foundation","summary":"…","tasks":[{"title":"…","description":"…","category":"DATABASE","capabilityId":"…","priority":"HIGH","effortDays":2,"aiSuggested":false,"rationale":"…"}]}]}',
   ].join('\n')
 }
 
@@ -453,6 +465,7 @@ export async function commitRoadmap(input: CommitInput, actorId: string) {
             source: 'planner',
             milestone: t.milestone,
             category: t.category || null,
+            effortDays: t.effortDays ?? null,
             rationale: t.rationale ?? null,
             title: t.title,
             description: t.description,

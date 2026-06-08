@@ -20,7 +20,7 @@ import { useActiveContextStore } from '../../store/activeContext.store'
 const PRIORITIES = ['HIGH', 'MEDIUM', 'LOW'] as const
 type Priority = (typeof PRIORITIES)[number]
 
-interface Task { title: string; description: string; category: string; capabilityId: string; priority: Priority; aiSuggested: boolean; rationale?: string }
+interface Task { title: string; description: string; category: string; capabilityId: string; priority: Priority; effortDays: number; aiSuggested: boolean; rationale?: string }
 interface Milestone { id: string; title: string; summary: string; tasks: Task[] }
 interface ChatMessage { role: 'user' | 'assistant'; content: string }
 interface Cap { id: string; name: string }
@@ -46,6 +46,8 @@ const btn = (bg: string): CSSProperties => ({ background: bg, color: '#fff', bor
 const ghost: CSSProperties = { background: '#fff', color: '#334155', border: '1px solid #dbe4ec', borderRadius: 9, padding: '8px 13px', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }
 const chip: CSSProperties = { fontSize: 10.5, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', color: '#475569', background: '#eef2f6', padding: '3px 8px', borderRadius: 6 }
 const priorityColor: Record<Priority, string> = { HIGH: '#dc2626', MEDIUM: '#475569', LOW: '#94a3b8' }
+const fmtDays = (d: number) => `${Number.isInteger(d) ? d : Number(d.toFixed(1))}d`
+const effortOf = (m: { tasks: Array<{ effortDays: number }> }) => m.tasks.reduce((s, t) => s + (Number(t.effortDays) || 0), 0)
 const verdictStyle: Record<string, { bg: string; fg: string; Icon: typeof CheckCircle2 }> = {
   pass: { bg: '#ecfdf5', fg: '#047857', Icon: CheckCircle2 },
   warn: { bg: '#fffbeb', fg: '#b45309', Icon: AlertTriangle },
@@ -83,6 +85,7 @@ export function PlannerPage() {
   const capName = (id: string) => caps.find((c) => c.id === id)?.name ?? id
   const home = last?.homeCapabilityId ?? capabilityId
   const taskCount = plan.reduce((n, m) => n + m.tasks.length, 0)
+  const totalEffort = plan.reduce((s, m) => s + effortOf(m), 0)
   const started = messages.length > 0
 
   const send = () => {
@@ -207,6 +210,11 @@ export function PlannerPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6 }}>
           <h1 style={{ margin: 0, fontSize: 24, color: ink }}>Active Roadmap</h1>
           <span style={{ fontSize: 12.5, color: '#94a3b8' }}>{active?.capabilityName}</span>
+          {plan.length > 0 && (
+            <span style={{ fontSize: 12, fontWeight: 800, color: '#7c3aed', background: '#f3e8ff', padding: '3px 10px', borderRadius: 999 }}>
+              ~{fmtDays(totalEffort)} total
+            </span>
+          )}
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
             {plan.length > 0 && (
               <button
@@ -242,7 +250,7 @@ export function PlannerPage() {
               <section key={m.id}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 4 }}>
                   <h2 style={{ margin: 0, fontSize: 19, color: ink }}>Milestone {mi + 1}: {m.title}</h2>
-                  <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: '#94a3b8' }}>{m.tasks.length} task{m.tasks.length === 1 ? '' : 's'} · Planned</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: '#94a3b8' }}>~{fmtDays(effortOf(m))} · {m.tasks.length} task{m.tasks.length === 1 ? '' : 's'} · Planned</span>
                 </div>
                 {m.summary && <p style={{ margin: '0 0 6px', fontSize: 13, color: '#64748b' }}>{m.summary}</p>}
                 <div style={{ height: 6, background: '#e9eef4', borderRadius: 99, overflow: 'hidden', marginBottom: 14 }}>
@@ -296,10 +304,20 @@ function TaskCard({ task, caps, home, onChange, onRemove }: { task: Task; caps: 
           {caps.map((c) => <option key={c.id} value={c.id}>{c.name}{c.id === home ? '' : ' (child)'}</option>)}
         </select>
         {delegated && <span style={{ fontSize: 9.5, fontWeight: 800, color: '#7c3aed', background: '#f3e8ff', padding: '2px 6px', borderRadius: 99 }}>DELEGATED</span>}
-        <select value={task.priority} onChange={(e) => onChange({ priority: e.target.value as Priority })}
-          style={{ marginLeft: 'auto', border: 'none', background: 'none', fontSize: 11.5, fontWeight: 800, color: priorityColor[task.priority], cursor: 'pointer', outline: 'none' }}>
-          {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
-        </select>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11.5, color: '#64748b' }} title="Estimated effort (person-days)">
+            <input
+              type="number" min={0} step={0.5} value={task.effortDays}
+              onChange={(e) => onChange({ effortDays: Math.max(0, Number(e.target.value) || 0) })}
+              style={{ width: 44, border: '1px solid #e6ebf1', borderRadius: 6, padding: '2px 5px', fontSize: 11.5, textAlign: 'right', outline: 'none', color: ink }}
+            />
+            d
+          </span>
+          <select value={task.priority} onChange={(e) => onChange({ priority: e.target.value as Priority })}
+            style={{ border: 'none', background: 'none', fontSize: 11.5, fontWeight: 800, color: priorityColor[task.priority], cursor: 'pointer', outline: 'none' }}>
+            {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
       </div>
     </div>
   )
