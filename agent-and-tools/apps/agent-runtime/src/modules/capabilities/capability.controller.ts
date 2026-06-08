@@ -12,6 +12,7 @@ import { worldModelDriftService } from "./world-model-drift.service";
 // M61 Wire 1 — getWorldModel powers the new GET reader endpoint that
 // context-fabric calls at workflow start.
 import { upsertWorldModel, getWorldModel, getChildWorldModels } from "./world-model.service";
+import { distillAndUpsertWorldModel } from "./bootstrap-phase3-distill";
 // M61 Wire D — Verify-now command probe powering the wizard's per-row
 // "Verify" button. Spawns the cmd in an isolated tmp dir with a 10s
 // timeout; returns exit code + capped stdout/stderr.
@@ -209,6 +210,17 @@ export const capabilityController = {
     // parent. Empty for leaf capabilities.
     const childWorldModels = await getChildWorldModels(req.params.id);
     return ok(res, childWorldModels.length > 0 ? { ...view, childWorldModels } : view, 200);
+  },
+
+  // POST /capabilities/:id/world-model/redistill — refresh grounding on demand
+  // (re-run the LLM enrichment + architecture slice + upsert) without
+  // re-onboarding. Returns the distillation stats.
+  async redistillWorldModel(req: Request, res: Response) {
+    const stats = await distillAndUpsertWorldModel(req.params.id);
+    if (stats.skipped) {
+      return res.status(409).json({ error: "nothing to distill — no README candidate or indexed symbols for this capability" });
+    }
+    return ok(res, { capabilityId: req.params.id, ...stats }, 200);
   },
 
   async checkWorldModelFingerprint(req: Request, res: Response) {
