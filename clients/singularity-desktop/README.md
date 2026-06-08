@@ -17,6 +17,12 @@ tools **on your machine**. GUI alternative to the `singularity-mcp` CLI.
 - **Dashboard** — connection status + live runner log; **tray** quick toggle.
 - **Settings** — platform/bridge URL, device name, runner path, allowed folders,
   scope toggles. *(Allowed-paths sandbox + scope-gated mint land in P1.)*
+- **Local LLM (Copilot)** — toggle "Run LLM on this laptop via Copilot": the app
+  runs a translation **shim** (`src/gateway-shim.js`) that converts the
+  platform's gateway request to your Copilot bridge's OpenAI shape and back, then
+  points the runner's `LLM_GATEWAY_URL` at it. Start the bridge first
+  (`npx copilot-api@latest start --port 4141`). Now LLM-on-laptop is one click —
+  no separate `llm-gateway` to run. Translation is unit-tested: `npm test`.
 
 ## Run it
 ```bash

@@ -90,6 +90,19 @@
         <div class="row" style="margin-top:6px"><button id="addPath" class="ghost">Add folder…</button></div>
         <label>Scopes</label>
         <div id="scopes" class="chips"></div>
+
+        <label style="display:flex;align-items:center;gap:8px;margin-top:16px">
+          <input id="s_localLlm" type="checkbox" style="width:auto" /> Run LLM on this laptop via Copilot
+        </label>
+        <div class="muted" style="font-size:11.5px;margin:-2px 0 6px">
+          Runs a local shim that translates the platform's request to your Copilot bridge — so LLM-on-laptop is one click. Start the bridge first: <code>npx copilot-api@latest start --port 4141</code>.
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <label style="flex:1 1 220px">Copilot bridge URL<input id="s_copilot" placeholder="http://localhost:4141" /></label>
+          <label style="width:130px">Default model<input id="s_localModel" placeholder="gpt-4o" /></label>
+          <label style="width:90px">Shim port<input id="s_shimPort" type="number" /></label>
+        </div>
+
         <div class="row" style="margin-top:12px"><button id="saveBtn" class="act">Save settings</button><span id="saveMsg" class="muted"></span></div>
       </div>
     </section>
@@ -142,6 +155,10 @@
     $('s_deviceName').value = s.deviceName || ''
     $('s_runnerEntry').value = s.runnerEntry || ''
     renderPaths(s.allowedPaths); renderScopes(s.scopes)
+    $('s_localLlm').checked = !!s.localLlmEnabled
+    $('s_copilot').value = s.copilotBaseUrl || ''
+    $('s_localModel').value = s.localModel || ''
+    $('s_shimPort').value = s.shimPort || 4319
   }
 
   // actions
@@ -166,6 +183,10 @@
       deviceName: $('s_deviceName').value, runnerEntry: $('s_runnerEntry').value,
       allowedPaths: JSON.parse($('paths').dataset.val || '[]'),
       scopes: JSON.parse($('scopes').dataset.val || '[]'),
+      localLlmEnabled: $('s_localLlm').checked,
+      copilotBaseUrl: $('s_copilot').value,
+      localModel: $('s_localModel').value,
+      shimPort: Number($('s_shimPort').value) || 4319,
     })
     $('saveMsg').innerHTML = '<span class="ok">saved ✓</span>'; setTimeout(() => $('saveMsg').textContent='', 1500)
     refresh()
