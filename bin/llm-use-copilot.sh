@@ -99,8 +99,15 @@ case "$PRESET" in
 esac
 
 command -v python3 >/dev/null || die "python3 is required"
-[ -f "$PROVIDERS" ] || die "missing $PROVIDERS"
-[ -f "$CATALOG" ]   || die "missing $CATALOG"
+if [ ! -f "$PROVIDERS" ] || [ ! -f "$CATALOG" ]; then
+  die "gateway config not found ($PROVIDERS / $CATALOG).
+   These files are gitignored — generate them first, then bring a stack up:
+     ./singularity.sh config init --profile office-laptop
+     ./singularity.sh config mcp-catalog --default-alias mock
+     ./singularity.sh up                 # Docker   (bare-metal: bin/setup.sh)
+   Tip: on bare-metal, bin/setup.sh does all of this AND points the gateway at
+   your Copilot bridge in one step — you don't need to run this script yourself."
+fi
 
 recreate_and_verify() {
   # Bare-metal first: bin/bare-metal.sh writes .env.local + .pids in the repo
