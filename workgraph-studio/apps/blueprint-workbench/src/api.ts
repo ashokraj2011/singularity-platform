@@ -564,6 +564,10 @@ export type CreateSessionRequest = {
   // an editable milestone_plan and the run executes each milestone in sequence
   // on one branch before a single final certification.
   milestonesMode?: boolean
+  // Full-BYO-laptop placement: run this session's tools / LLM on the user's
+  // paired laptop (docs/deployment-topology.md). Stored on session.metadata.
+  preferLaptop?: boolean
+  preferLaptopLlm?: boolean
   intakeDefaults?: {
     goal?: string
     sourceType?: SourceType
