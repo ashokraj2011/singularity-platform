@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from . import call_log, events_store
 from .audit_gov_emit import emit_audit_event
 from .config import settings
+from .governed import placement as _placement
 from .iam_service_token import get_iam_service_token, invalidate_iam_service_token
 
 # M73 — refactor target modules. Helpers below are thin re-exports of the
@@ -700,7 +701,9 @@ async def execute(req: ExecuteRequest):
     # to write a FAILED call_log row (which is orchestrator state).
     use_laptop, laptop_device_id, laptop_device_name = await _laptop_mod.resolve_laptop_target(
         user_id=user_id,
-        prefer_laptop=req.prefer_laptop,
+        # Placement policy: enterprise mode forces the shared cloud mcp-server
+        # (never the laptop), even when prefer_laptop is set. See placement.py.
+        prefer_laptop=_placement.mcp_laptop_allowed(req.prefer_laptop),
     )
     if not use_laptop and req.prefer_laptop is True and user_id:
         _persist_failure(cf_call_id, started_at, trace_id, req, prompt_assembly_id,
