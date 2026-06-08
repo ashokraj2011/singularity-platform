@@ -473,7 +473,7 @@ JSON
   # silently auto-bumping to 3001 (which would dodge the SPA proxy rewrites).
   boot agent-web        "cd agent-and-tools/web        && PORT=3000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" npm run dev"
   boot workgraph-web    "cd workgraph-studio/apps/web  && VITE_API_BASE=http://localhost:8080 VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" VITE_IAM_LOGIN_URL=http://localhost:5175/login VITE_AUTO_LOGIN=0 npm run dev -- --host 0.0.0.0 --port 5174"
-  boot blueprint-workbench "cd workgraph-studio/apps/blueprint-workbench && npm run dev -- --host 0.0.0.0 --port 5176"
+  boot blueprint-workbench "cd workgraph-studio/apps/blueprint-workbench && VITE_PSEUDO_IAM_LOGIN_URL=http://localhost:8100/api/v1/auth/local/login npm run dev -- --host 0.0.0.0 --port 5176"
   # Vite reliably reads .env.local; the inline VITE_LINK_* on the boot lines do
   # not always reach import.meta.env. Ensure each SPA's .env.local carries the
   # cross-app link targets so the portal tiles, the AppSwitcher dropdown, and the
