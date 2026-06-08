@@ -1969,6 +1969,21 @@ export function renderCodeWorldModelLayer(wm: WorldModelInput): string | null {
     sections.push(["### Entrypoints", "", ...lines].join("\n"));
   }
 
+  const kids = wm.childWorldModels ?? [];
+  if (kids.length > 0) {
+    const blocks = kids.map((k) => {
+      const lines: string[] = [`#### ${k.name ?? k.capabilityId}${k.primaryLanguage ? ` (${k.primaryLanguage})` : ""}`];
+      const sum = (k.readmeSummary ?? "").trim();
+      if (sum) lines.push(sum.length > 400 ? `${sum.slice(0, 400).trimEnd()}…` : sum);
+      const conv = k.codeConventions ?? [];
+      if (conv.length > 0) lines.push(`Conventions: ${conv.map((c) => c.topic).join(", ")}`);
+      const ceps = k.entrypoints ?? [];
+      if (ceps.length > 0) lines.push(`Entrypoints: ${ceps.map((e) => `${e.kind}:${e.target}`).join(", ")}`);
+      return lines.join("\n");
+    });
+    sections.push(["### Child capability grounding", "", blocks.join("\n\n")].join("\n"));
+  }
+
   if (sections.length === 0) return null;
   return ["## Capability World Model", "", sections.join("\n\n")].join("\n");
 }
