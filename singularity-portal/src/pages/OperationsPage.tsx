@@ -8,6 +8,7 @@ import {
   Network, Power, RefreshCw, ServerCog, ShieldCheck, SlidersHorizontal, Terminal,
   WifiOff, Zap,
 } from 'lucide-react'
+import { AccessKeysPanel } from './ops/AccessKeysPanel'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { auditGovApi, runtimeApi, workgraphApi } from '@/lib/api'
 import { cn } from '@/lib/cn'
@@ -31,7 +32,7 @@ interface DoctorSummary {
   checks?: Array<{ status: 'OK' | 'WARN' | 'FAIL'; message: string; fix?: string }>
 }
 
-type OpsTab = 'setup' | 'readiness' | 'trust' | 'audit' | 'workitems' | 'architecture' | 'formal' | 'causality' | 'capabilities'
+type OpsTab = 'setup' | 'readiness' | 'trust' | 'audit' | 'workitems' | 'architecture' | 'formal' | 'causality' | 'capabilities' | 'accesskeys'
 
 interface WorkflowRunRow {
   id: string
@@ -220,6 +221,7 @@ const opsTabs: Array<{ key: OpsTab; label: string; icon: typeof SlidersHorizonta
   { key: 'formal', label: 'Governance Paths', icon: ShieldCheck, description: 'Formal analysis' },
   { key: 'causality', label: 'AI Causality Proof', icon: ShieldCheck, description: 'Incident evidence' },
   { key: 'capabilities', label: 'Capabilities', icon: Power, description: 'Feature flags & kill switches' },
+  { key: 'accesskeys', label: 'Connection Keys', icon: KeyRound, description: 'Device tokens for laptop MCP' },
 ]
 
 // M100 P3.2 — deep-linkable tabs: nav entries point at /operations?tab=<key>.
@@ -744,6 +746,8 @@ export function OperationsPage() {
         <FormalVerificationPanel />
       ) : activeTab === 'capabilities' ? (
         <CapabilitiesPanel />
+      ) : activeTab === 'accesskeys' ? (
+        <AccessKeysPanel />
       ) : (
         <CausalityPanel />
       )}

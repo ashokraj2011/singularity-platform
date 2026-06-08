@@ -125,10 +125,28 @@ async function cmdLogin(flags: Record<string, string>): Promise<void> {
 }
 
 // ─── start ──────────────────────────────────────────────────────────────────
+function decodeJwtClaims(token: string): Record<string, any> | null {
+  try { return JSON.parse(Buffer.from((token.split(".")[1] ?? ""), "base64url").toString("utf8")); }
+  catch { return null; }
+}
+
 function cmdStart(flags: Record<string, string>): void {
-  const tok = loadToken();
+  // --token <key>: a Connection Key from Operations (GitHub-PAT style) connects
+  // without a CLI login. Otherwise use the token saved by `singularity-mcp login`.
+  const inline = flags["token"];
+  const tok = inline
+    ? (() => {
+        const c = decodeJwtClaims(inline) ?? {};
+        return {
+          access_token: inline,
+          user_id:     String(c.sub ?? "(token)"),
+          device_id:   String(c.device_id ?? ""),
+          device_name: String(c.device_name ?? "connection-key"),
+        };
+      })()
+    : loadToken();
   if (!tok) {
-    console.error("✗ no saved token. Run `singularity-mcp login` first.");
+    console.error("✗ no token. Run `singularity-mcp login`, or pass --token <key> (generate one in Operations → Connection Keys).");
     process.exit(1);
   }
   const bridgeUrl = flags["bridge"] ?? DEFAULT_BRIDGE;
