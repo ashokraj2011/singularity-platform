@@ -17,6 +17,33 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-shot schema migrator. init.sql is applied via /docker-entrypoint-initdb.d
+  # ONLY on first volume init, and db/migrations/ was never applied at all — so
+  # columns like audit_events.risk_level (m63) were missing and the Audit search
+  # 500'd. This runs every `up`, applying all migrations idempotently
+  # (ADD COLUMN/CREATE INDEX IF NOT EXISTS), so fresh AND existing volumes stay
+  # current. The app waits for it via service_completed_successfully.
+  audit-migrate:
+    image: pgvector/pgvector:pg16
+    container_name: audit-governance-migrate
+    depends_on:
+      audit-postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: audit
+    volumes:
+      - ./db:/db:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for m in $$(ls /db/migrations/*.sql 2>/dev/null | sort); do
+          echo "applying migration $$m"
+          psql -h audit-postgres -U postgres -d audit_governance -v ON_ERROR_STOP=1 -f "$$m"
+        done
+        echo "audit_governance migrations up to date."
+    restart: "no"
+
   audit-governance:
     build:
       context: .
@@ -59,6 +86,8 @@ services:
     depends_on:
       audit-postgres:
         condition: service_healthy
+      audit-migrate:
+        condition: service_completed_successfully
     volumes:
       - ./src:/app/src
       - ./db:/app/db
