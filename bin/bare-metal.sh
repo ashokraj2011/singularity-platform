@@ -139,6 +139,14 @@ SQL
   PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d audit_governance \
     -f audit-governance-service/db/init.sql >/dev/null 2>&1 || \
     warn "audit_governance schema may already exist — continuing"
+  # init.sql is the base table set; the migrations/ add columns it doesn't include
+  # (e.g. m63 adds audit_events.risk_level + search_vector — without it the audit
+  # search 500s with "column risk_level does not exist"). All idempotent; ordered.
+  for _m in audit-governance-service/db/migrations/*.sql; do
+    [ -f "$_m" ] || continue
+    PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d audit_governance \
+      -f "$_m" >/dev/null 2>&1 || warn "audit-gov migration $(basename "$_m") may already be applied — continuing"
+  done
 
   # ── 2. Write env file ────────────────────────────────────────────────────
   cat > "$ENV_FILE" <<EOF
