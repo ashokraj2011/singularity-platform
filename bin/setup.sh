@@ -47,7 +47,7 @@ done
 PG_USER="${USER:-postgres}"; PG_PASS="postgres"; PG_HOST="localhost"; PG_PORT="5432"
 LLM_MODE="mock"                                  # mock | bridge
 LLM_URL="http://localhost:4141/v1"               # OpenAI-compatible base (ends in /v1)
-LLM_MODEL="claude-sonnet-4.6"
+LLM_MODEL="gpt-4o"                               # safe default; works on virtually all Copilot plans
 LLM_TOKEN="copilot-local"
 
 if [ -f "$CONF" ]; then info "loading saved answers from .singularity/setup.conf"; . "$CONF"; fi
@@ -77,7 +77,7 @@ if [ "$ASSUME_YES" != "1" ]; then
 fi
 if [ "$LLM_MODE" = "bridge" ]; then
   ask LLM_URL   "bridge base URL (must end in /v1)"
-  ask LLM_MODEL "model (must be one the bridge lists)"
+  ask LLM_MODEL "model (gpt-4o is safe; note: copilot-api LISTS claude-*/gpt-5/gemini but your plan may reject them with 'model_not_supported')"
   ask LLM_TOKEN "token (any value if the bridge ignores auth)"
 fi
 
