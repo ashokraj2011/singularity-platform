@@ -131,8 +131,8 @@ Fallbacks are always safe: laptop selected but not connected → cloud.
 | PAT mint/consume (web + CLI + Electron) | ✅ #143, #144 |
 | MCP-on-laptop (tool-run dispatch, per-user) | ✅ existing |
 | Enterprise full-cloud (shared mcp + central gateway) | ✅ default |
-| **LLM-on-laptop (`model-run` dispatch)** | ⛏ §5 — to build (P-c) |
-| **Placement policy + enterprise override** | ⛏ §6 — to build (P-b) |
+| **LLM-on-laptop (`model-run` dispatch)** | ✅ §5 — shipped (P-c) |
+| **Placement policy + enterprise override** | ✅ §6 — shipped (P-b) |
 | Multi-instance CF laptop registry (sticky/shared) | ⛏ scale follow-up |
 
 ## 9. Suggested build order

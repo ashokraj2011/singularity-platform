@@ -116,6 +116,7 @@ def _sanitize_captured_messages(messages: list[dict]) -> list[dict]:
     return out
 
 from .audit_emit import emit_governed_event
+from . import placement as _placement
 from .llm_client import ChatResponse, ChatToolCall, LLMGatewayError, call_gateway_chat
 from .code_context import (
     build_code_context_for_governed_turn,
@@ -913,6 +914,10 @@ async def run_turn(
         model_alias=effective_model_alias,
         bearer=bearer,
         thinking_budget=thinking_budget,
+        # Placement: when this run opted into laptop LLM (and a laptop is serving
+        # model-run), call_gateway_chat dispatches over the bridge; otherwise it
+        # uses the cloud gateway. None in the common case. See placement.py.
+        laptop_user_id=_placement.llm_laptop_target(run_context),
     )
 
     await emit_governed_event(

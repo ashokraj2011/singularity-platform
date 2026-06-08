@@ -133,7 +133,7 @@ export class LaptopRelayClient {
       // graduates to tool-run as the platform-side dispatch lands
       // (Slice 3). Old bridges that don't know about supported_frame_types
       // just ignore it and keep sending invoke — which still works.
-      supported_frame_types: ["invoke", "tool-run"],
+      supported_frame_types: ["invoke", "tool-run", "model-run"],
     };
     this.send(hello);
   }
@@ -276,7 +276,62 @@ export class LaptopRelayClient {
       }
       return;
     }
+
+    // LLM dispatch over the bridge (full-BYO-laptop placement; see
+    // docs/deployment-topology.md §5). Forward the gateway-shaped chat body to
+    // the laptop's LOCAL llm-gateway and return its response. Counted against
+    // the same inflight gate as tool-run.
+    if (frame.type === "model-run") {
+      if (this.inflight >= this.maxConcurrent) {
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: { code: "BUSY", message: `laptop at max ${this.maxConcurrent} concurrent dispatches` },
+        });
+        return;
+      }
+      this.inflight++;
+      try {
+        log.info({ request_id: frame.request_id }, "[laptop-relay] running model-run (local LLM)");
+        const out = await runModelViaLocalGateway(frame.payload);
+        this.send({ type: "response", request_id: frame.request_id, payload: out });
+      } catch (err) {
+        const e = err as { message?: string };
+        log.warn({ err: e.message, request_id: frame.request_id }, "[laptop-relay] model-run failed");
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: { code: "MODEL_RUN_FAILED", message: e.message ?? "local LLM call failed" },
+        });
+      } finally {
+        this.inflight--;
+      }
+      return;
+    }
   }
+}
+
+// Forward a gateway-shaped chat-completions body to the laptop's LOCAL
+// llm-gateway (LLM_GATEWAY_URL — e.g. a local gateway fronting Copilot/Ollama)
+// and return its JSON response unchanged. Lets the cloud governed loop run
+// inference on the user's own machine via the model-run frame.
+async function runModelViaLocalGateway(body: unknown): Promise<unknown> {
+  const base = (process.env.LLM_GATEWAY_URL ?? "http://localhost:8001").replace(/\/$/, "");
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const bearer = process.env.LLM_GATEWAY_BEARER;
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
+  const res = await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`local gateway ${res.status}: ${text.slice(0, 300)}`);
+  }
+  return res.json();
 }
 
 // Convenience: a stable device_id when none is configured. Real CLI mints

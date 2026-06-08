@@ -234,6 +234,11 @@ async def call_gateway_chat(
     # cache-write surcharge would not be recovered).
     prompt_cache: bool | None = None,
     prompt_cache_key: str | None = None,
+    # Full-BYO-laptop placement: when set to a user_id whose laptop advertises
+    # the `model-run` frame, serve this completion from that laptop's LOCAL
+    # gateway instead of the cloud one. None → cloud (default). Resolved by
+    # governed.placement.llm_laptop_target(). See docs/deployment-topology.md §5.
+    laptop_user_id: str | None = None,
 ) -> ChatResponse:
     """POST one chat completion to llm-gateway.
 
@@ -261,23 +266,25 @@ async def call_gateway_chat(
     if _GATEWAY_URL == "mock":
         return _mock_response(messages, tools)
 
-    body: dict[str, Any] = {"messages": messages}
-    if tools:
-        body["tools"] = tools
-    if model_alias:
-        body["model_alias"] = model_alias
-    if temperature is not None:
-        body["temperature"] = temperature
-    if max_output_tokens is not None:
-        body["max_output_tokens"] = max_output_tokens
-    if thinking_budget is not None and thinking_budget > 0:
-        body["thinking_budget"] = int(thinking_budget)
-    cache_on = _PROMPT_CACHE_ENABLED if prompt_cache is None else prompt_cache
-    if cache_on:
-        pc: dict[str, Any] = {"enabled": True, "strategy": "provider_auto"}
-        if prompt_cache_key:
-            pc["key"] = prompt_cache_key
-        body["prompt_cache"] = pc
+    body = _build_chat_body(
+        messages=messages,
+        tools=tools,
+        model_alias=model_alias,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        thinking_budget=thinking_budget,
+        prompt_cache=prompt_cache,
+        prompt_cache_key=prompt_cache_key,
+    )
+
+    # Full-BYO-laptop placement (docs/deployment-topology.md §5): when a laptop
+    # is opted in for LLM and one is serving `model-run`, dispatch the same body
+    # over the bridge. Falls back to the cloud gateway below when no laptop is
+    # connected, so this never hard-fails a run.
+    if laptop_user_id:
+        laptop_resp = await _try_laptop_chat(laptop_user_id, body)
+        if laptop_resp is not None:
+            return laptop_resp
 
     headers = {"content-type": "application/json"}
     token = bearer or _GATEWAY_BEARER
@@ -332,6 +339,83 @@ async def call_gateway_chat(
         ) from exc
 
     return ChatResponse.from_dict(payload)
+
+
+def _build_chat_body(
+    *,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    model_alias: str | None,
+    temperature: float | None,
+    max_output_tokens: int | None,
+    thinking_budget: int | None,
+    prompt_cache: bool | None,
+    prompt_cache_key: str | None,
+) -> dict[str, Any]:
+    """Build the /v1/chat/completions request body. Shared by the cloud-gateway
+    path and the laptop `model-run` path so both send byte-identical requests."""
+    body: dict[str, Any] = {"messages": messages}
+    if tools:
+        body["tools"] = tools
+    if model_alias:
+        body["model_alias"] = model_alias
+    if temperature is not None:
+        body["temperature"] = temperature
+    if max_output_tokens is not None:
+        body["max_output_tokens"] = max_output_tokens
+    if thinking_budget is not None and thinking_budget > 0:
+        body["thinking_budget"] = int(thinking_budget)
+    cache_on = _PROMPT_CACHE_ENABLED if prompt_cache is None else prompt_cache
+    if cache_on:
+        pc: dict[str, Any] = {"enabled": True, "strategy": "provider_auto"}
+        if prompt_cache_key:
+            pc["key"] = prompt_cache_key
+        body["prompt_cache"] = pc
+    return body
+
+
+async def _try_laptop_chat(user_id: str, body: dict[str, Any]) -> ChatResponse | None:
+    """Serve a chat completion from the user's laptop over the bridge.
+
+    Returns a ChatResponse on success, or None when no laptop is serving
+    `model-run` (caller falls back to the cloud gateway). Laptop transport /
+    runner errors surface as LLMGatewayError so the governed loop treats them
+    like any other gateway failure.
+    """
+    # Lazy import avoids a module-load cycle (laptop_registry imports app
+    # state; llm_client is imported very early in the governed package).
+    from ..laptop_registry import (
+        REGISTRY,
+        LaptopInvokeError,
+        LaptopInvokeTimeout,
+        LaptopNotConnected,
+        LaptopSendFailed,
+    )
+
+    try:
+        raw = await REGISTRY.dispatch_model_via_laptop(
+            user_id=user_id, request_body=body, timeout=_TIMEOUT
+        )
+    except LaptopNotConnected:
+        log.info(
+            "laptop LLM requested (user=%s) but no laptop serving model-run; "
+            "using cloud gateway",
+            user_id,
+        )
+        return None
+    except LaptopInvokeTimeout as exc:
+        raise LLMGatewayError(
+            "LLM_GATEWAY_TIMEOUT", f"laptop LLM did not respond in time: {exc}"
+        ) from exc
+    except (LaptopInvokeError, LaptopSendFailed) as exc:
+        raise LLMGatewayError(
+            "LLM_GATEWAY_UPSTREAM_ERROR", f"laptop LLM failed: {exc}"
+        ) from exc
+
+    if not isinstance(raw, dict):
+        log.warning("laptop LLM returned non-dict payload; using cloud gateway")
+        return None
+    return ChatResponse.from_dict(raw)
 
 
 def _mock_response(

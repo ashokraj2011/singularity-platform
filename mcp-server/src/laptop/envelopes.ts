@@ -35,7 +35,7 @@ import { z } from "zod";
 // Bridge inspects hello.supported_frame_types to choose between sending
 // legacy "invoke" frames and new "tool-run" frames. Old laptops omit
 // the field; .default(["invoke"]) maintains backward compat.
-export const SUPPORTED_FRAME_TYPES = ["invoke", "tool-run"] as const;
+export const SUPPORTED_FRAME_TYPES = ["invoke", "tool-run", "model-run"] as const;
 export type SupportedFrameType = (typeof SUPPORTED_FRAME_TYPES)[number];
 
 export const HelloFrame = z.object({
@@ -152,12 +152,27 @@ export const DisconnectFrame = z.object({
 });
 export type DisconnectFrame = z.infer<typeof DisconnectFrame>;
 
+// LLM dispatch over the bridge (full-BYO-laptop placement; see
+// docs/deployment-topology.md §5). The payload is the llm-gateway
+// /v1/chat/completions REQUEST body (messages, tools, model_alias, …) built by
+// context-fabric. The laptop forwards it to its LOCAL gateway and returns the
+// gateway RESPONSE as the ResponseFrame payload — the same shape the cloud path
+// returns, so context-fabric parses both with ChatResponse.from_dict.
+export const ModelRunFrame = z.object({
+  type:        z.literal("model-run"),
+  request_id:  z.string(),
+  payload:     z.record(z.unknown()),   // gateway chat-completions request body
+  deadline_ms: z.number().int().positive().optional(),
+});
+export type ModelRunFrame = z.infer<typeof ModelRunFrame>;
+
 // ── decoded inbound ─────────────────────────────────────────────────────────
 
 export type InboundFrame =
   | AuthAckFrame
   | InvokeFrame
   | ToolRunFrame      // M75 Slice 1
+  | ModelRunFrame     // LLM-on-laptop
   | PingFrame
   | DisconnectFrame;
 
@@ -168,6 +183,7 @@ export function decodeInbound(raw: unknown): InboundFrame | null {
   if (type === "auth.ack")   return AuthAckFrame.parse(raw);
   if (type === "invoke")     return InvokeFrame.parse(raw);
   if (type === "tool-run")   return ToolRunFrame.parse(raw);   // M75 Slice 1
+  if (type === "model-run")  return ModelRunFrame.parse(raw);  // LLM-on-laptop
   if (type === "ping")       return PingFrame.parse(raw);
   if (type === "disconnect") return DisconnectFrame.parse(raw);
   return null;
