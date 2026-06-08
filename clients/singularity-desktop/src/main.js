@@ -7,6 +7,7 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, safeStorage, dialog, nativeImag
 const { spawn } = require('node:child_process')
 const path = require('node:path')
 const fs = require('node:fs')
+const { createShimServer } = require('./gateway-shim')
 
 const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json')
 const TOKEN_FILE = () => path.join(app.getPath('userData'), 'token.enc')
@@ -19,13 +20,32 @@ const DEFAULTS = {
   runnerEntry: path.resolve(__dirname, '../../../mcp-server/dist/index.js'),
   allowedPaths: [],
   scopes: ['mcp:invoke', 'mcp:resume', 'tools:execute', 'fs:read'],
+  // Local LLM (Copilot): when enabled, the app runs a translation shim and
+  // points the runner's LLM_GATEWAY_URL at it, so model-run frames are served by
+  // your local Copilot bridge. See docs/deployment-topology.md §5.
+  localLlmEnabled: false,
+  copilotBaseUrl: 'http://localhost:4141',
+  localModel: 'gpt-4o',
+  shimPort: 4319,
 }
 
 let win = null
 let tray = null
 let child = null
+let shim = null
 let quitting = false
 const logs = []
+
+// ── local LLM shim lifecycle ───────────────────────────────────────────────
+function startShim(s) {
+  if (shim) return
+  shim = createShimServer({ copilotBase: s.copilotBaseUrl, defaultModel: s.localModel, log: pushLog })
+  shim.on('error', (e) => { pushLog(`✗ local LLM shim error: ${e.message}`); shim = null })
+  shim.listen(s.shimPort)
+}
+function stopShim() {
+  if (shim) { try { shim.close() } catch { /* */ } shim = null }
+}
 
 // ── persistence ──────────────────────────────────────────────────────────────
 function loadSettings() {
@@ -82,17 +102,27 @@ function startRunner() {
     return { ok: false, error: `runner not found at ${s.runnerEntry} — build it (cd mcp-server && npm run build) or set the path in Settings` }
   }
   const claims = decodeClaims(token) || {}
-  child = spawn(process.execPath, [s.runnerEntry], {
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: '1', // run the Electron binary as plain node
-      LAPTOP_MODE: 'true',
-      LAPTOP_BRIDGE_URL: s.bridge,
-      SINGULARITY_DEVICE_TOKEN: token,
-      SINGULARITY_DEVICE_ID: claims.device_id || '',
-      SINGULARITY_DEVICE_NAME: claims.device_name || s.deviceName,
-    },
-  })
+  const env = {
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: '1', // run the Electron binary as plain node
+    LAPTOP_MODE: 'true',
+    LAPTOP_BRIDGE_URL: s.bridge,
+    SINGULARITY_DEVICE_TOKEN: token,
+    SINGULARITY_DEVICE_ID: claims.device_id || '',
+    SINGULARITY_DEVICE_NAME: claims.device_name || s.deviceName,
+  }
+  // Local LLM (Copilot): run the translation shim and serve model-run frames
+  // from it by pointing the runner's LLM_GATEWAY_URL at the shim.
+  if (s.localLlmEnabled) {
+    try {
+      startShim(s)
+      env.LLM_GATEWAY_URL = `http://localhost:${s.shimPort}`
+      pushLog(`▸ local LLM shim on :${s.shimPort} → ${s.copilotBaseUrl} (model ${s.localModel})`)
+    } catch (e) {
+      pushLog(`✗ local LLM shim failed to start: ${e.message}`)
+    }
+  }
+  child = spawn(process.execPath, [s.runnerEntry], { env })
   pushLog(`▸ runner started (pid ${child.pid}) → ${s.bridge}`)
   const onData = (d) => String(d).split('\n').map((l) => l.trimEnd()).filter(Boolean).forEach(pushLog)
   child.stdout.on('data', onData)
@@ -102,7 +132,9 @@ function startRunner() {
   return { ok: true }
 }
 function stopRunner() {
-  if (child) { try { child.kill() } catch { /* */ } child = null; pushLog('▸ runner stopped'); updateTray(); pushState() }
+  if (child) { try { child.kill() } catch { /* */ } child = null; pushLog('▸ runner stopped') }
+  stopShim()
+  updateTray(); pushState()
   return { ok: true }
 }
 

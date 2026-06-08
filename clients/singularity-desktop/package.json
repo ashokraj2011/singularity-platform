@@ -6,6 +6,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
+    "test": "node test/gateway-shim.test.js",
     "dist": "electron-builder"
   },
   "devDependencies": {
