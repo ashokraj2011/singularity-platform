@@ -1,0 +1,15 @@
+{
+  "name": "singularity-desktop",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Singularity laptop companion — pairs your machine to Context Fabric and runs mcp-server in laptop mode.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  }
+}
