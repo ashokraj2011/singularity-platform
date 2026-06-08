@@ -169,3 +169,4 @@ echo "    http://localhost:5175   IAM admin + governance authoring"
 echo "    http://localhost:8100   IAM API  (admin@singularity.local / Admin1234!)"
 echo
 echo "${C_D}re-run anytime: bin/setup.sh (reuses your answers) · stop: bin/bare-metal.sh down · LLM status: curl :8001/llm/providers${C_E}"
+echo "${C_D}preflight check: bin/doctor.sh  (verifies services, cross-app env, seeds, auth — and prints fixes; --fix appends missing env keys)${C_E}"
