@@ -116,6 +116,19 @@ tok=$(curl -s --max-time 6 -X POST http://localhost:8100/api/v1/auth/local/login
 [ -n "$tok" ] && pass "IAM local login works (admin)" \
   || fail "IAM local login failed" "is IAM (:8100) up? admin@singularity.local / Admin1234! — check logs/iam-service.log"
 
+# ── 5. LLM (gateway → provider actually callable) ────────────────────────────
+section "5. LLM"
+llm=$(curl -s --max-time 30 http://localhost:8001/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model_alias":"mock","messages":[{"role":"user","content":"ping"}],"max_output_tokens":5}' 2>/dev/null)
+if echo "$llm" | grep -q 'model_not_supported\|not supported'; then
+  fail "gateway model not callable (model_not_supported)" \
+    "your Copilot plan lists but rejects the configured model — repoint to a working one (gpt-4o): sed -i '' 's/claude-sonnet-4.6/gpt-4o/g' .singularity/llm-models.json ; then restart the gateway (kill :8001 + bin/setup.sh --yes)"
+elif echo "$llm" | grep -qE '"content"'; then
+  pass "gateway completion works (model: $(printf '%s' "$llm" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("model","?"))' 2>/dev/null))"
+else
+  warn "gateway LLM check inconclusive" "$(printf '%s' "$llm" | head -c 140)"
+fi
+
 # ── summary ──────────────────────────────────────────────────────────────────
 printf "\n${C_B}Summary${C_E}  ${C_G}%d ok${C_E}  ${C_Y}%d warn${C_E}  ${C_R}%d fail${C_E}\n" "$PASS" "$WARN" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then
