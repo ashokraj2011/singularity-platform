@@ -441,6 +441,23 @@ JSON
   boot agent-web        "cd agent-and-tools/web        && PORT=3000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" npm run dev"
   boot workgraph-web    "cd workgraph-studio/apps/web  && VITE_API_BASE=http://localhost:8080 VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" VITE_IAM_LOGIN_URL=http://localhost:5175/login VITE_AUTO_LOGIN=0 npm run dev -- --host 0.0.0.0 --port 5174"
   boot blueprint-workbench "cd workgraph-studio/apps/blueprint-workbench && npm run dev -- --host 0.0.0.0 --port 5176"
+  # Vite reliably reads .env.local; the inline VITE_LINK_* on the boot lines do
+  # not always reach import.meta.env. Write the cross-app link targets so the
+  # portal tiles and the IAM-admin "Bootstrap in Agent Studio" button resolve to
+  # the per-port apps instead of single-origin /agent, /workflow, … paths (which
+  # only exist behind the Docker edge-gateway and otherwise bounce back).
+  cat > "$ROOT/singularity-portal/.env.local" <<EOF
+VITE_IAM_BASE_URL=$IAM_BASE_URL
+VITE_LINK_WORKGRAPH_DESIGNER=http://localhost:5174
+VITE_LINK_BLUEPRINT_WORKBENCH=http://localhost:5176
+VITE_LINK_AGENT_ADMIN=http://localhost:3000
+VITE_LINK_IAM_ADMIN=http://localhost:5175
+EOF
+  cat > "$ROOT/UserAndCapabillity/.env.local" <<EOF
+VITE_IAM_BASE_URL=$IAM_BASE_URL
+VITE_LINK_AGENT_ADMIN=http://localhost:3000
+EOF
+
   # IAM admin SPA — hosts the capability-governance authoring UI (G7–G9).
   boot user-and-capability "cd UserAndCapabillity && VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" npm run dev -- --host 0.0.0.0 --port 5175"
   # Unified operations/launcher portal (Vite; dev script binds 5180 itself).

@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { StatusBadge } from '@/components/StatusBadge'
 import { useCapability, useCapabilities, useCapabilityRelationships, useCapabilityMembers, useAddCapabilityRelationship, useAddCapabilityMember } from '@/hooks/useCapabilities'
 import { capabilityTypeColor, capabilityTypeLabel, formatDate } from '@/lib/format'
+import { agentStudioCapabilitiesHref } from '@/lib/links'
 import { GovernanceTab } from './GovernanceTab'
 import type { RelationshipType, InheritancePolicy } from '@/types'
 
@@ -55,8 +56,8 @@ export function CapabilityDetailPage() {
   if (isLoading) return <div className="p-8 text-sm text-gray-400">Loading…</div>
   if (!cap) return <div className="p-8 text-sm text-gray-500">Capability not found.</div>
   const agentToolsCapabilityHref = UUID_RE.test(cap.capability_id)
-    ? `/agent/capabilities/${cap.capability_id}`
-    : '/agent/capabilities'
+    ? agentStudioCapabilitiesHref(cap.capability_id)
+    : agentStudioCapabilitiesHref()
 
   async function handleAddRel() {
     if (!relTarget.trim()) return
