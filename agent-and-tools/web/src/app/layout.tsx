@@ -3,6 +3,7 @@ import "./globals.css";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { EventHorizonChat } from "@/components/EventHorizonChat";
 import { AppSwitcher } from "@/components/AppSwitcher";
+import { LogoutButton } from "@/components/LogoutButton";
 import { Bell, Settings } from "lucide-react";
 
 export const metadata: Metadata = {
@@ -92,6 +93,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 >
                   <Settings size={15} />
                 </button>
+                <LogoutButton />
               </div>
             </header>
 
