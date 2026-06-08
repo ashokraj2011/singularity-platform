@@ -274,6 +274,11 @@ const createSessionSchema = z.object({
   // Milestones (big-change mode): decompose the goal into an ordered milestone
   // series and run each as a chained sub-loop on the same branch.
   milestonesMode: z.boolean().optional(),
+  // Full-BYO-laptop placement (docs/deployment-topology.md). Operator opt-in to
+  // run this session's tools (preferLaptop) and/or LLM (preferLaptopLlm) on the
+  // user's paired laptop. Persisted on session.metadata, read into run_context.
+  preferLaptop: z.boolean().optional(),
+  preferLaptopLlm: z.boolean().optional(),
   intakeDefaults: intakeDefaultsSchema,
   intakeOverrides: intakeOverridesSchema,
 }).merge(executionSettingsSchema).transform(input => ({
@@ -355,6 +360,18 @@ function readPreferLaptopFlag(metadata: unknown): { prefer_laptop?: boolean } {
   if (!isRecord(metadata)) return {}
   const raw = metadata.preferLaptop
   if (raw === true || raw === false) return { prefer_laptop: raw }
+  return {}
+}
+
+// LLM-on-laptop (full-BYO placement). Same operator-toggle pattern as
+// readPreferLaptopFlag but for routing the GOVERNED LOOP'S LLM call to the
+// user's laptop. context-fabric's placement.llm_laptop_target() reads
+// run_context.prefer_laptop_llm; the key is omitted when unset so the cloud
+// path is untouched.
+function readPreferLaptopLlmFlag(metadata: unknown): { prefer_laptop_llm?: boolean } {
+  if (!isRecord(metadata)) return {}
+  const raw = metadata.preferLaptopLlm
+  if (raw === true || raw === false) return { prefer_laptop_llm: raw }
   return {}
 }
 
@@ -1096,7 +1113,12 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         qaAgentTemplateId: agentTemplateIds.qaAgentTemplateId,
         workflowInstanceId: resolvedWorkflowInstanceId,
         phaseId: body.phaseId ?? null,
-        metadata: initialLoopState as unknown as Prisma.InputJsonValue,
+        metadata: {
+          ...(initialLoopState as Record<string, unknown>),
+          // Operator placement toggles → read back via readPreferLaptop[Llm]Flag.
+          ...(body.preferLaptop !== undefined ? { preferLaptop: body.preferLaptop } : {}),
+          ...(body.preferLaptopLlm !== undefined ? { preferLaptopLlm: body.preferLaptopLlm } : {}),
+        } as unknown as Prisma.InputJsonValue,
         createdById: req.user!.userId,
       },
     })
@@ -5904,6 +5926,9 @@ async function runLoopStageExecute(
       // entirely when undefined so dispatch.py's `if prefer_laptop is True`
       // short-circuit stays tight.
       ...readPreferLaptopFlag(session.metadata),
+      // Full-BYO-laptop placement — route this run's LLM to the user's laptop
+      // when the operator opted in (metadata.preferLaptopLlm). See placement.py.
+      ...readPreferLaptopLlmFlag(session.metadata),
     },
     // Per-stage execution budget — workflow-declared limit wins, with
     // env-based role-class defaults as the fallback. See

@@ -611,6 +611,7 @@ function WorkbenchSetup({
   const [budgetAmount, setBudgetAmount] = useState<string>('')
   // Milestones — opt a big-change run into the sequential milestone outer loop.
   const [milestonesMode, setMilestonesMode] = useState(false)
+  const [preferLaptopLlm, setPreferLaptopLlm] = useState(false)
   const [capabilityId, setCapabilityId] = useState(workflowDefaults.capabilityId ?? '')
   const [architectAgentTemplateId, setArchitectAgentTemplateId] = useState(workflowDefaults.architectAgentTemplateId ?? '')
   const [developerAgentTemplateId, setDeveloperAgentTemplateId] = useState(workflowDefaults.developerAgentTemplateId ?? '')
@@ -968,6 +969,15 @@ function WorkbenchSetup({
         <span>Milestones mode <small>— decompose a big change into a sequential series on one branch</small></span>
       </label>
 
+      <label className="milestones-toggle" title="Route this run's LLM calls to your paired laptop's mcp-server (needs a connected laptop serving model-run — see Operations → Connection Keys or the Desktop app). Falls back to the cloud gateway if none is connected.">
+        <input
+          type="checkbox"
+          checked={preferLaptopLlm}
+          onChange={event => setPreferLaptopLlm(event.target.checked)}
+        />
+        <span>Run LLM on my laptop <small>— route this run's model calls to your paired laptop (full BYO)</small></span>
+      </label>
+
       <div className="two-col">
         <label>
           <span>Include globs</span>
@@ -1126,6 +1136,7 @@ function WorkbenchSetup({
           stageBudgetUnit: budgetUnit || undefined,
           stageBudgetAmount: budgetUnit && budgetAmount ? Number(budgetAmount) : undefined,
           milestonesMode: milestonesMode || undefined,
+          preferLaptopLlm: preferLaptopLlm || undefined,
           workflowInstanceId: workflowDefaults.workflowInstanceId,
           browserRunId: workflowDefaults.browserRunId,
           workflowNodeId: workflowDefaults.workflowNodeId,
