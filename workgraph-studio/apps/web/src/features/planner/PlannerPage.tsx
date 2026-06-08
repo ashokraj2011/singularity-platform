@@ -12,7 +12,7 @@ import { useState, useRef, useEffect, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation } from '@tanstack/react-query'
 import {
-  Lightbulb, Sparkles, Send, Trash2, AlertTriangle, CheckCircle2, XCircle, Loader2, HelpCircle, Rocket,
+  Lightbulb, Sparkles, Send, Trash2, AlertTriangle, CheckCircle2, XCircle, Loader2, HelpCircle, Rocket, Plus, Clock,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useActiveContextStore } from '../../store/activeContext.store'
@@ -48,6 +48,37 @@ const chip: CSSProperties = { fontSize: 10.5, fontWeight: 800, letterSpacing: 0.
 const priorityColor: Record<Priority, string> = { HIGH: '#dc2626', MEDIUM: '#475569', LOW: '#94a3b8' }
 const fmtDays = (d: number) => `${Number.isInteger(d) ? d : Number(d.toFixed(1))}d`
 const effortOf = (m: { tasks: Array<{ effortDays: number }> }) => m.tasks.reduce((s, t) => s + (Number(t.effortDays) || 0), 0)
+
+// ── persistence (per-browser, scoped by capability) ─────────────────────────
+interface StoredSession {
+  id: string
+  capabilityId: string
+  title: string
+  committed?: boolean
+  messages: ChatMessage[]
+  plan: Milestone[]
+  caps: Cap[]
+  home: string
+  critic: ConverseResult['critic']
+  usage?: ConverseResult['usage']
+  updatedAt: string
+}
+const LS_SESSIONS = 'workgraph-planner-sessions-v1'
+const activeKey = (cap: string) => `workgraph-planner-active:${cap}`
+function loadAllSessions(): StoredSession[] {
+  try { return JSON.parse(localStorage.getItem(LS_SESSIONS) || '[]') as StoredSession[] } catch { return [] }
+}
+function persistSessions(s: StoredSession[]) {
+  try { localStorage.setItem(LS_SESSIONS, JSON.stringify(s.slice(0, 50))) } catch { /* quota — ignore */ }
+}
+function deriveTitle(messages: ChatMessage[]): string {
+  const first = messages.find((m) => m.role === 'user')?.content?.trim() ?? ''
+  if (!first) return 'Untitled roadmap'
+  return first.length > 64 ? first.slice(0, 64) + '…' : first
+}
+function newSessionId(): string {
+  try { return crypto.randomUUID() } catch { return `ps_${Date.now()}_${Math.floor(Math.random() * 1e6)}` }
+}
 const verdictStyle: Record<string, { bg: string; fg: string; Icon: typeof CheckCircle2 }> = {
   pass: { bg: '#ecfdf5', fg: '#047857', Icon: CheckCircle2 },
   warn: { bg: '#fffbeb', fg: '#b45309', Icon: AlertTriangle },
@@ -64,6 +95,9 @@ export function PlannerPage() {
   const [last, setLast] = useState<ConverseResult | null>(null)
   const [input, setInput] = useState('')
   const [allowChildren, setAllowChildren] = useState(true)
+  const [sessions, setSessions] = useState<StoredSession[]>([])
+  const [currentId, setCurrentId] = useState<string | null>(null)
+  const [showHistory, setShowHistory] = useState(false)
   const threadRef = useRef<HTMLDivElement>(null)
 
   const converseMut = useMutation<ConverseResult, unknown, ChatMessage[]>({
@@ -77,9 +111,67 @@ export function PlannerPage() {
   })
   const commitMut = useMutation<CommitResult>({
     mutationFn: () => api.post('/planner/commit', { capabilityId, milestones: plan }).then((r) => r.data),
+    onSuccess: () => {
+      if (!currentId) return
+      const all = loadAllSessions().map((s) => (s.id === currentId ? { ...s, committed: true } : s))
+      persistSessions(all)
+      setSessions(all.filter((s) => s.capabilityId === capabilityId))
+    },
   })
 
   useEffect(() => { threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' }) }, [messages.length, converseMut.isPending])
+
+  const restoreSession = (s: StoredSession) => {
+    setCurrentId(s.id)
+    setMessages(s.messages)
+    setPlan(s.plan)
+    setLast({
+      reply: '', needsClarification: false, questions: [], milestones: s.plan,
+      assignableCapabilities: s.caps ?? [], homeCapabilityId: s.home ?? capabilityId,
+      deterministic: { repairedAssignments: 0, duplicatePairs: [], coverageGaps: [] },
+      critic: s.critic ?? null,
+      usage: s.usage ?? { inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0, calls: 0 },
+    })
+    if (capabilityId) localStorage.setItem(activeKey(capabilityId), s.id)
+    setShowHistory(false)
+    commitMut.reset()
+  }
+  const startNew = () => {
+    setCurrentId(null); setMessages([]); setPlan([]); setLast(null); setInput('')
+    converseMut.reset(); commitMut.reset(); setShowHistory(false)
+    if (capabilityId) localStorage.removeItem(activeKey(capabilityId))
+  }
+  const deleteSession = (id: string) => {
+    const all = loadAllSessions().filter((s) => s.id !== id)
+    persistSessions(all)
+    setSessions(all.filter((s) => s.capabilityId === capabilityId))
+    if (id === currentId) startNew()
+  }
+
+  // Load saved roadmaps + restore the last active one (survives refresh).
+  useEffect(() => {
+    if (!capabilityId) return
+    const mine = loadAllSessions().filter((s) => s.capabilityId === capabilityId)
+    setSessions(mine)
+    const activeId = localStorage.getItem(activeKey(capabilityId))
+    const s = activeId ? mine.find((x) => x.id === activeId) : undefined
+    if (s) restoreSession(s)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [capabilityId])
+
+  // Autosave the active roadmap on every change.
+  useEffect(() => {
+    if (!currentId || messages.length === 0 || !capabilityId) return
+    const entry: StoredSession = {
+      id: currentId, capabilityId, title: deriveTitle(messages), committed: commitMut.isSuccess,
+      messages, plan, caps: last?.assignableCapabilities ?? [], home: last?.homeCapabilityId ?? capabilityId,
+      critic: last?.critic ?? null, usage: last?.usage, updatedAt: new Date().toISOString(),
+    }
+    const all = [entry, ...loadAllSessions().filter((s) => s.id !== currentId)]
+    persistSessions(all)
+    setSessions(all.filter((s) => s.capabilityId === capabilityId))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, plan, last, currentId])
 
   const caps = last?.assignableCapabilities ?? []
   const capName = (id: string) => caps.find((c) => c.id === id)?.name ?? id
@@ -91,6 +183,11 @@ export function PlannerPage() {
   const send = () => {
     const text = input.trim()
     if (text.length < 3 || converseMut.isPending) return
+    if (!currentId) {
+      const id = newSessionId()
+      setCurrentId(id)
+      if (capabilityId) localStorage.setItem(activeKey(capabilityId), id)
+    }
     const next = [...messages, { role: 'user' as const, content: text }]
     setMessages(next)
     setInput('')
@@ -129,7 +226,7 @@ export function PlannerPage() {
           {failed.length > 0 && <div style={{ marginTop: 10, color: '#b91c1c', fontSize: 13 }}>{failed.length} failed: {failed.map((f) => f.title).join(', ')}</div>}
           <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
             <button style={btn('#2563eb')} onClick={() => navigate('/runtime')}>Go to Inbox</button>
-            <button style={ghost} onClick={() => { commitMut.reset(); converseMut.reset(); setMessages([]); setPlan([]); setLast(null) }}>Plan another</button>
+            <button style={ghost} onClick={startNew}>Plan another</button>
           </div>
         </div>
       </div>
@@ -146,6 +243,35 @@ export function PlannerPage() {
             <h2 style={{ margin: 0, fontSize: 16 }}>Idea Inbox</h2>
           </div>
           <p style={{ margin: '4px 0 0', fontSize: 12.5, color: '#64748b' }}>Describe a goal — the agent breaks it into milestones &amp; tasks. Keep chatting to tweak.</p>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+            <button style={{ ...ghost, fontSize: 12, padding: '6px 10px' }} onClick={startNew}><Plus size={13} /> New</button>
+            <button style={{ ...ghost, fontSize: 12, padding: '6px 10px' }} onClick={() => setShowHistory((v) => !v)}>
+              <Clock size={13} /> History ({sessions.length})
+            </button>
+          </div>
+          {showHistory && (
+            <div style={{ marginTop: 10, border: '1px solid #eef2f6', borderRadius: 10, maxHeight: 260, overflowY: 'auto' }}>
+              {sessions.length === 0 ? (
+                <div style={{ padding: 12, fontSize: 12, color: '#94a3b8' }}>No saved roadmaps yet.</div>
+              ) : (
+                [...sessions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((s) => {
+                  const tasks = s.plan.reduce((n, m) => n + m.tasks.length, 0)
+                  return (
+                    <div key={s.id} onClick={() => restoreSession(s)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: '1px solid #f3f6f9', cursor: 'pointer', background: s.id === currentId ? '#f5f3ff' : 'transparent' }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 600, color: ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {s.committed ? '✓ ' : ''}{s.title}
+                        </div>
+                        <div style={{ fontSize: 10.5, color: '#94a3b8' }}>{tasks} task{tasks === 1 ? '' : 's'} · {new Date(s.updatedAt).toLocaleString()}</div>
+                      </div>
+                      <button onClick={(e) => { e.stopPropagation(); deleteSession(s.id) }} title="Delete" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', padding: 2 }}><Trash2 size={13} /></button>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          )}
         </div>
 
         {/* thread */}
