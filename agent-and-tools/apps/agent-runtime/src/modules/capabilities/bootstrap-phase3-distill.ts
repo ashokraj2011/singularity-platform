@@ -296,10 +296,72 @@ export async function enrichWorldModelViaLLM(markdown: string): Promise<WorldMod
   }
 }
 
+export interface DistillStats {
+  readmeSummary: number;
+  distilledBy: "llm" | "heuristic" | "none";
+  codeConventions: number;
+  entrypoints: number;
+  rootPackages: number;
+  skipped: boolean;
+}
+
 /**
- * The actual Phase 3 entry point. Called from
- * runBootstrapDiscoveryPhase / the sync bootstrap path AFTER Phase 1
- * finishes. Wraps the two outputs in the phase-marker contract so
+ * Core distillation — README enrichment (LLM → heuristic fallback) + architecture
+ * slice → CapabilityWorldModel. Shared by the bootstrap Phase 3 worker and the
+ * on-demand redistill endpoint. Returns stats; does NOT touch phase markers.
+ */
+export async function distillAndUpsertWorldModel(capabilityId: string): Promise<DistillStats> {
+  // README-like learning candidate (bootstrap groups READMEs under "capability_overview").
+  const candidate = await prisma.capabilityLearningCandidate.findFirst({
+    where: { capabilityId, groupKey: "capability_overview" },
+    orderBy: [{ confidence: "desc" }, { createdAt: "asc" }],
+    select: { content: true },
+  });
+  // Prefer LLM enrichment (Copilot / configured provider) — richer grounding:
+  // readmeSummary + codeConventions + entrypoints. Heuristic README fallback.
+  let readmeSummary: string | null = null;
+  let codeConventions: CodeConvention[] = [];
+  let entrypoints: Entrypoint[] = [];
+  let distilledBy: "llm" | "heuristic" | "none" = "none";
+  if (candidate?.content) {
+    const enriched = await enrichWorldModelViaLLM(candidate.content);
+    if (enriched) {
+      readmeSummary = enriched.readmeSummary ?? distillReadme(candidate.content);
+      codeConventions = enriched.codeConventions;
+      entrypoints = enriched.entrypoints;
+      distilledBy = "llm";
+    } else {
+      readmeSummary = distillReadme(candidate.content);
+      if (readmeSummary) distilledBy = "heuristic";
+    }
+  }
+  const architectureSlice = await buildArchitectureSliceFromSymbols(capabilityId);
+
+  if (!readmeSummary && !architectureSlice && codeConventions.length === 0 && entrypoints.length === 0) {
+    return { readmeSummary: 0, distilledBy, codeConventions: 0, entrypoints: 0, rootPackages: 0, skipped: true };
+  }
+
+  await upsertWorldModel({
+    capabilityId,
+    ...(readmeSummary !== null ? { readmeSummary } : {}),
+    ...(architectureSlice ? { architectureSlice } : {}),
+    ...(codeConventions.length > 0 ? { codeConventions } : {}),
+    ...(entrypoints.length > 0 ? { entrypoints } : {}),
+  });
+
+  return {
+    readmeSummary: readmeSummary ? readmeSummary.length : 0,
+    distilledBy,
+    codeConventions: codeConventions.length,
+    entrypoints: entrypoints.length,
+    rootPackages: architectureSlice?.rootPackages?.length ?? 0,
+    skipped: false,
+  };
+}
+
+/**
+ * The actual Phase 3 entry point. Called from the bootstrap path AFTER Phase 1
+ * finishes. Wraps distillAndUpsertWorldModel in the phase-marker contract so
  * skipped + failed + completed all show up in phaseProgress.
  */
 export async function runBootstrapDistillationPhase(input: {
@@ -308,56 +370,18 @@ export async function runBootstrapDistillationPhase(input: {
 }): Promise<void> {
   const { capabilityId, runId } = input;
   await markPhaseStarted(runId, PHASE_KEYS.P3);
-
   try {
-    // Find the most-confident README-like learning candidate. Bootstrap
-    // groups discovered files by groupKey; READMEs land under
-    // "capability_overview" (see buildLearningCandidates).
-    const candidate = await prisma.capabilityLearningCandidate.findFirst({
-      where: { capabilityId, groupKey: "capability_overview" },
-      orderBy: [{ confidence: "desc" }, { createdAt: "asc" }],
-      select: { content: true },
-    });
-    // Prefer LLM enrichment (Copilot / configured provider) — richer grounding:
-    // readmeSummary + codeConventions + entrypoints. Fall back to the heuristic
-    // README summary so onboarding never blocks on the gateway.
-    let readmeSummary: string | null = null;
-    let codeConventions: CodeConvention[] = [];
-    let entrypoints: Entrypoint[] = [];
-    let distilledBy: "llm" | "heuristic" | "none" = "none";
-    if (candidate?.content) {
-      const enriched = await enrichWorldModelViaLLM(candidate.content);
-      if (enriched) {
-        readmeSummary = enriched.readmeSummary ?? distillReadme(candidate.content);
-        codeConventions = enriched.codeConventions;
-        entrypoints = enriched.entrypoints;
-        distilledBy = "llm";
-      } else {
-        readmeSummary = distillReadme(candidate.content);
-        if (readmeSummary) distilledBy = "heuristic";
-      }
-    }
-    const architectureSlice = await buildArchitectureSliceFromSymbols(capabilityId);
-
-    if (!readmeSummary && !architectureSlice && codeConventions.length === 0 && entrypoints.length === 0) {
+    const stats = await distillAndUpsertWorldModel(capabilityId);
+    if (stats.skipped) {
       await markPhaseSkipped(runId, PHASE_KEYS.P3, "no README candidate or indexed symbols available");
       return;
     }
-
-    await upsertWorldModel({
-      capabilityId,
-      ...(readmeSummary !== null ? { readmeSummary } : {}),
-      ...(architectureSlice ? { architectureSlice } : {}),
-      ...(codeConventions.length > 0 ? { codeConventions } : {}),
-      ...(entrypoints.length > 0 ? { entrypoints } : {}),
-    });
-
     await markPhaseCompleted(runId, PHASE_KEYS.P3, {
-      readmeSummary: readmeSummary ? readmeSummary.length : 0,
-      distilledBy,
-      codeConventions: codeConventions.length,
-      entrypoints: entrypoints.length,
-      rootPackages: architectureSlice?.rootPackages?.length ?? 0,
+      readmeSummary: stats.readmeSummary,
+      distilledBy: stats.distilledBy,
+      codeConventions: stats.codeConventions,
+      entrypoints: stats.entrypoints,
+      rootPackages: stats.rootPackages,
     });
   } catch (err) {
     await markPhaseFailed(runId, PHASE_KEYS.P3, err as Error);

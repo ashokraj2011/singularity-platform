@@ -103,6 +103,13 @@ capabilityRoutes.get(
   capabilityController.getWorldModel,
 );
 
+// On-demand re-distillation — refresh an existing capability's world-model
+// grounding (LLM enrichment + architecture slice) without re-onboarding.
+capabilityRoutes.post(
+  "/:id/world-model/redistill",
+  capabilityController.redistillWorldModel,
+);
+
 // M61 Slice E — repo fingerprint drift detector. Body:
 //   { fingerprint: string, hashedBuildFiles?: string[], topLevelEntries?: string[] }
 // Idempotent: callers may safely re-POST every workflow start.
