@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     mcp_default_bearer_token: str = ""
     mcp_default_server_id: str = "default-mcp"
 
+    # Deployment placement (see docs/deployment-topology.md). When true, an
+    # enterprise LLM gateway is mandated → MCP + LLM always run in the cloud
+    # (the laptop bridge is never dispatched to, even if a laptop is paired).
+    enterprise_llm_gateway: bool = False
+
     chat_respond_model_alias: str = ""
 
     # M61 Wire 2 — agent-runtime base URL. context-fabric fetches the
