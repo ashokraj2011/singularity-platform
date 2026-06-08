@@ -109,8 +109,9 @@ Resolution order (later overrides earlier):
    MCP and LLM are in cloud" rule — one flag; the laptop is never dispatched to,
    even if paired.
 3. **Per-user / per-capability** preference.
-4. **Per-run** `prefer_laptop` / `prefer_laptop_llm`, gated by an actually
-   connected laptop advertising the capability.
+4. **Per-run** `prefer_laptop` / `prefer_laptop_llm` (or the deployment-wide
+   `PREFER_LAPTOP_LLM=true` env, handy for testing / a homogeneous BYO fleet),
+   gated by an actually connected laptop advertising the capability.
 
 Fallbacks are always safe: laptop selected but not connected → cloud.
 
