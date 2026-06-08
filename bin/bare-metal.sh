@@ -359,6 +359,15 @@ JSON
     && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate >/dev/null 2>&1 ) \
     || warn "agent-runtime schema push had warnings"
 
+  # Seed the common platform-baseline agent templates (one ACTIVE template per
+  # role, capabilityId=NULL). Capability onboarding clones each role's agent from
+  # these; without them onboarding warns "No common <ROLE> base template found"
+  # and creates empty draft placeholders. Idempotent (prisma/seed.ts upserts).
+  info "seeding agent-runtime baseline templates…"
+  ( cd agent-and-tools/apps/agent-runtime \
+    && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npm run prisma:seed >/dev/null 2>&1 ) \
+    || warn "agent-runtime prisma:seed had warnings — run it manually: (cd agent-and-tools/apps/agent-runtime && DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" npm run prisma:seed)"
+
   # M30 — composer's OWNED tables live on `singularity_composer`. Push
   # composer's schema against that DB. The runtime-reader client only needs
   # `prisma generate` (no DDL on agent-runtime's DB).
