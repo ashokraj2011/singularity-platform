@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Singularity Desktop</title>
+<style>
+  :root { --p:#7c3aed; --bd:#e2e8f0; --mut:#64748b; --ink:#0f172a; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--ink); background:#f7f8fb; }
+  header { display:flex; align-items:center; gap:10px; padding:12px 16px; background:#fff; border-bottom:1px solid var(--bd); }
+  header h1 { font-size:15px; margin:0; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#cbd5e1; }
+  .dot.on { background:#16a34a; } .dot.run { background:#f59e0b; }
+  nav { display:flex; gap:4px; padding:8px 16px 0; background:#fff; border-bottom:1px solid var(--bd); }
+  nav button { border:none; background:none; padding:8px 12px; font:inherit; color:var(--mut); cursor:pointer; border-bottom:2px solid transparent; }
+  nav button.active { color:var(--p); border-bottom-color:var(--p); font-weight:600; }
+  main { padding:16px; }
+  .card { background:#fff; border:1px solid var(--bd); border-radius:10px; padding:16px; margin-bottom:14px; }
+  label { display:block; font-size:12px; font-weight:600; color:#42526a; margin:10px 0 4px; }
+  input, textarea { width:100%; padding:8px 10px; border:1px solid #dbe4ec; border-radius:8px; font:inherit; }
+  textarea { resize:vertical; min-height:54px; font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+  button.act { background:var(--p); color:#fff; border:none; border-radius:8px; padding:9px 15px; font-weight:600; cursor:pointer; }
+  button.ghost { background:none; border:1px solid var(--bd); border-radius:8px; padding:8px 13px; cursor:pointer; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--mut); font-size:12px; }
+  .chips span { display:inline-block; background:#f1f5f9; border-radius:999px; padding:2px 9px; margin:3px 3px 0 0; font-size:11px; }
+  pre#log { background:#0f172a; color:#e2e8f0; border-radius:8px; padding:10px; height:200px; overflow:auto; font-size:11.5px; white-space:pre-wrap; }
+  .ok { color:#16a34a; } .err { color:#b91c1c; }
+</style>
+</head>
+<body>
+  <header>
+    <span id="dot" class="dot"></span>
+    <h1>Singularity Desktop</h1>
+    <span id="who" class="muted" style="margin-left:auto"></span>
+  </header>
+  <nav>
+    <button data-tab="dash" class="active">Dashboard</button>
+    <button data-tab="pair">Pair</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+  <main>
+    <!-- Dashboard -->
+    <section id="dash">
+      <div class="card">
+        <div class="row">
+          <span id="status" class="muted">Loading…</span>
+          <span style="margin-left:auto"></span>
+          <button id="startBtn" class="act">Start runner</button>
+          <button id="stopBtn" class="ghost">Stop</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="muted" style="margin-bottom:6px">Runner log</div>
+        <pre id="log"></pre>
+      </div>
+    </section>
+
+    <!-- Pair -->
+    <section id="pair" hidden>
+      <div class="card">
+        <strong>Paste a Connection Key</strong>
+        <div class="muted">Generate one in the web app: Operations → Connection Keys.</div>
+        <label>Connection key</label>
+        <textarea id="key" placeholder="eyJhbGciOi…"></textarea>
+        <div class="row" style="margin-top:8px"><button id="pairKeyBtn" class="act">Pair with key</button></div>
+      </div>
+      <div class="card">
+        <strong>…or sign in</strong>
+        <label>Email</label><input id="email" placeholder="user1@singularity.local" />
+        <label>Password</label><input id="password" type="password" placeholder="Admin1234!" />
+        <div class="row" style="margin-top:8px">
+          <button id="pairLoginBtn" class="act">Sign in &amp; pair</button>
+          <span id="pairMsg" class="muted"></span>
+        </div>
+      </div>
+      <div class="card"><button id="clearBtn" class="ghost">Clear pairing</button></div>
+    </section>
+
+    <!-- Settings -->
+    <section id="settings" hidden>
+      <div class="card">
+        <label>Platform (IAM) base URL</label><input id="s_platform" />
+        <label>Bridge URL (context-fabric)</label><input id="s_bridge" />
+        <label>Device name</label><input id="s_deviceName" />
+        <label>Runner entry (mcp-server dist/index.js)</label><input id="s_runnerEntry" />
+        <label>Allowed folders <span class="muted">(fs scopes are sandboxed to these)</span></label>
+        <div id="paths" class="chips"></div>
+        <div class="row" style="margin-top:6px"><button id="addPath" class="ghost">Add folder…</button></div>
+        <label>Scopes</label>
+        <div id="scopes" class="chips"></div>
+        <div class="row" style="margin-top:12px"><button id="saveBtn" class="act">Save settings</button><span id="saveMsg" class="muted"></span></div>
+      </div>
+    </section>
+  </main>
+
+<script>
+  const $ = (id) => document.getElementById(id)
+  const ALL_SCOPES = ['mcp:invoke','mcp:resume','tools:execute','git:read','git:write','fs:read','fs:write']
+  let state = null
+
+  // tabs
+  document.querySelectorAll('nav button').forEach((b) => b.onclick = () => {
+    document.querySelectorAll('nav button').forEach((x) => x.classList.toggle('active', x === b))
+    ;['dash','pair','settings'].forEach((t) => $(t).hidden = (t !== b.dataset.tab))
+  })
+
+  function renderScopes(active) {
+    $('scopes').innerHTML = ''
+    ALL_SCOPES.forEach((sc) => {
+      const on = (active || []).includes(sc)
+      const el = document.createElement('span')
+      el.textContent = (on ? '✓ ' : '') + sc
+      el.style.cursor = 'pointer'
+      el.style.background = on ? '#ede9fe' : '#f1f5f9'
+      el.onclick = () => {
+        const next = on ? active.filter((x) => x !== sc) : [...active, sc]
+        renderScopes(next); $('scopes').dataset.val = JSON.stringify(next)
+      }
+      $('scopes').appendChild(el)
+    })
+    $('scopes').dataset.val = JSON.stringify(active || [])
+  }
+  function renderPaths(paths) {
+    $('paths').innerHTML = (paths || []).map((p) => `<span>${p}</span>`).join('') || '<span class="muted">none</span>'
+    $('paths').dataset.val = JSON.stringify(paths || [])
+  }
+
+  function applyState(st) {
+    state = st
+    $('dot').className = 'dot' + (st.running ? ' run' : st.paired ? ' on' : '')
+    $('who').textContent = st.user ? `${st.user.device_name} · ${String(st.user.user_id).slice(0,8)}…` : 'not paired'
+    $('status').innerHTML = st.running ? '<span class="ok">● runner connected</span>'
+      : st.paired ? 'paired — idle (click Start)' : '<span class="err">not paired</span> — go to Pair'
+    $('startBtn').disabled = st.running || !st.paired
+    $('stopBtn').disabled = !st.running
+    $('log').textContent = (st.logs || []).join('\n'); $('log').scrollTop = 1e9
+    const s = st.settings || {}
+    $('s_platform').value = s.platform || ''
+    $('s_bridge').value = s.bridge || ''
+    $('s_deviceName').value = s.deviceName || ''
+    $('s_runnerEntry').value = s.runnerEntry || ''
+    renderPaths(s.allowedPaths); renderScopes(s.scopes)
+  }
+
+  // actions
+  $('startBtn').onclick = async () => { const r = await window.api.startRunner(); if (!r.ok) alert(r.error); refresh() }
+  $('stopBtn').onclick = async () => { await window.api.stopRunner(); refresh() }
+  $('pairKeyBtn').onclick = async () => { await window.api.pairWithKey($('key').value); $('key').value=''; refresh() }
+  $('pairLoginBtn').onclick = async () => {
+    $('pairMsg').textContent = 'signing in…'
+    const r = await window.api.pairWithLogin({ email: $('email').value, password: $('password').value, platform: $('s_platform').value })
+    $('pairMsg').innerHTML = r.ok ? '<span class="ok">paired ✓</span>' : `<span class="err">${r.error}</span>`
+    refresh()
+  }
+  $('clearBtn').onclick = async () => { await window.api.clearPairing(); refresh() }
+  $('addPath').onclick = async () => {
+    const picked = await window.api.pickFolder()
+    const cur = JSON.parse($('paths').dataset.val || '[]')
+    renderPaths([...new Set([...cur, ...picked])])
+  }
+  $('saveBtn').onclick = async () => {
+    await window.api.saveSettings({
+      platform: $('s_platform').value, bridge: $('s_bridge').value,
+      deviceName: $('s_deviceName').value, runnerEntry: $('s_runnerEntry').value,
+      allowedPaths: JSON.parse($('paths').dataset.val || '[]'),
+      scopes: JSON.parse($('scopes').dataset.val || '[]'),
+    })
+    $('saveMsg').innerHTML = '<span class="ok">saved ✓</span>'; setTimeout(() => $('saveMsg').textContent='', 1500)
+    refresh()
+  }
+
+  async function refresh() { applyState(await window.api.getState()) }
+  window.api.onState(applyState)
+  window.api.onLog(() => { /* full state pushes carry logs; light no-op */ })
+  refresh()
+</script>
+</body>
+</html>
