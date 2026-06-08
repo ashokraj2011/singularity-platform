@@ -139,7 +139,9 @@ the `singularity-mcp` CLI remains for power users / CI.
 - **P2:** per-action approval prompts in the tray (`mcp:resume`).
 - **P3:** packaging (signing, notarize, auto-update) + bundled runner.
 - **P4:** "LLM half" — optional local LLM bridge (the user's Copilot) as a
-  second dispatch path, same device-key model (separate design).
+  second dispatch path, same device-key model. See
+  [`deployment-topology.md`](./deployment-topology.md) §5 (the `model-run` frame)
+  and §6 (placement policy / enterprise override).
 
 ## 10. Open questions
 
