@@ -260,11 +260,28 @@ for m in models:
         m["provider"] = "copilot"
         m["model"] = model
         n += 1
+# Add a clean, clearly-named alias for the model so the workbench's per-stage
+# model picker shows the real Copilot model (e.g. "gpt-4o (Copilot)") instead of
+# only the leftover "Mock …" labels — which confused operators into thinking the
+# stack was still in mock mode after switching to Copilot.
+alias_id = model.split("/")[-1]
+if not any(isinstance(m, dict) and m.get("id") == alias_id for m in models):
+    models.insert(0, {
+        "id": alias_id,
+        "label": f"{alias_id} (Copilot)",
+        "provider": "copilot",
+        "model": model,
+        "default": False,
+        "maxOutputTokens": 8000,
+        "supportsTools": True,
+        "costTier": "standard",
+    })
+    print(f"   added clean alias '{alias_id}' (Copilot)")
 json.dump(models, open(path, "w"), indent=2)
 open(path, "a").write("\n")
 print(f"   repointed {n} model aliases → copilot/{model}")
 PY
-ok "llm-models.json → all aliases route to copilot"
+ok "llm-models.json → all aliases route to copilot (+ a clean '$MODEL' alias for the picker)"
 
 # 3) secret: set COPILOT_TOKEN in the gitignored env_file the gateway reads.
 touch "$SECRETS"
