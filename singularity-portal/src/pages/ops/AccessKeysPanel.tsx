@@ -42,7 +42,16 @@ export function AccessKeysPanel() {
 
   const devices = useQuery<Device[]>({
     queryKey: ['my-devices'],
-    queryFn: () => iamApi.get('/me/devices').then((r) => (r.data?.devices ?? r.data ?? []) as Device[]),
+    // Be defensive: a split-origin/401 response can be HTML or an object, not an
+    // array. Only ever hand the UI an array so a bad response can't crash render.
+    queryFn: () => iamApi.get('/me/devices').then((r) => {
+      const raw = r?.data as unknown
+      if (Array.isArray(raw)) return raw as Device[]
+      if (raw && typeof raw === 'object' && Array.isArray((raw as { devices?: unknown }).devices)) {
+        return (raw as { devices: Device[] }).devices
+      }
+      return []
+    }),
   })
 
   const mint = useMutation<MintResponse>({
@@ -67,7 +76,7 @@ export function AccessKeysPanel() {
   }
 
   const fmt = (s: string | null) => (s ? new Date(s).toLocaleString() : '—')
-  const list = devices.data ?? []
+  const list = Array.isArray(devices.data) ? devices.data : []
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 880 }}>
@@ -121,6 +130,11 @@ export function AccessKeysPanel() {
         <h3 style={{ margin: '0 0 12px', fontSize: 15 }}>Your keys ({list.length})</h3>
         {devices.isLoading ? (
           <div style={{ color: '#94a3b8', fontSize: 13 }}>Loading…</div>
+        ) : devices.isError ? (
+          <div style={{ color: '#b91c1c', fontSize: 13 }}>
+            Couldn't load keys — make sure you're logged in and IAM is reachable from the portal
+            (check <code>VITE_IAM_BASE_URL</code>).
+          </div>
         ) : list.length === 0 ? (
           <div style={{ color: '#94a3b8', fontSize: 13 }}>No connection keys yet — generate one above.</div>
         ) : (
