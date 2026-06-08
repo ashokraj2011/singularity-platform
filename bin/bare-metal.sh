@@ -402,6 +402,22 @@ JSON
     && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npm run prisma:seed >/dev/null 2>&1 ) \
     || warn "workgraph prisma:seed had warnings — run it manually: (cd workgraph-studio/apps/api && DATABASE_URL=\"$DATABASE_URL_WORKGRAPH\" npm run prisma:seed)"
 
+  # The top-level "SDLC Delivery" workflow lives in separate self-running seeds
+  # (NOT prisma/seed.ts): seed-sdlc-workbench.ts creates the "SDLC implementation
+  # loop" (profile=workbench, M102 catalog artifacts), then seed-sdlc-main.ts
+  # wraps it as the Main entry (START → CALL_WORKFLOW(loop) → GIT_PUSH → END) plus
+  # a feature→SDLC routing policy. Seed both into the demo capability + Platform
+  # Team so they appear next to the demo workflows (the workbench seed's own
+  # defaults point at ids that don't exist on a fresh DB). Idempotent. Without
+  # this the Workflow Manager has the demo workflows but no SDLC Delivery entry.
+  info "seeding SDLC Delivery workflow…"
+  ( cd workgraph-studio/apps/api \
+    && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 \
+       DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts >/dev/null 2>&1 \
+    && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 \
+       DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx ts-node --transpile-only prisma/seed-sdlc-main.ts >/dev/null 2>&1 ) \
+    || warn "SDLC Delivery seed had warnings — run manually: (cd workgraph-studio/apps/api && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=\"\$DATABASE_URL_WORKGRAPH\" npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts && … seed-sdlc-main.ts)"
+
   # ── 5. Python deps ─────────────────────────────────────────────────────────
   # Installed into .venv above (PEP 668-safe). Verify the import surface is
   # present so a failure here is loud rather than a mid-boot crash.
