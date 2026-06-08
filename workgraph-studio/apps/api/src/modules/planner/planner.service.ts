@@ -1,40 +1,58 @@
 /**
- * Planner — describe a goal, an agent breaks it into work items (some assigned
- * to child capabilities), an independent critic reviews the breakdown, then the
- * user commits and the items land in the owning capability's inbox.
+ * Planner — a conversational, milestone-grouped roadmap planner.
  *
- * Two phases:
- *   breakdownGoal()  → preview only. Calls context-fabric (planner) → parse +
- *                      sanitize → deterministic checks → context-fabric (critic).
- *                      Creates NOTHING.
- *   commitBreakdown()→ loops createWorkItem for the (user-edited) items.
+ * The user describes a goal; an agent (context-fabric, single-turn) either ASKS
+ * clarifying questions (when the goal is vague) or produces/updates a
+ * milestone-grouped roadmap of work items. The user can keep chatting to tweak
+ * and regenerate. On commit, every task becomes a WorkItem in its capability's
+ * inbox (home or a child capability).
  *
- * The pure helpers (extractJsonBlock, parsePlannerPlan, sanitizeAssignments,
- * findDuplicatePairs, coverageGaps, parseCritic, aggregateUsage) are exported so
- * they unit-test without the LLM or the DB.
+ * Ephemeral: the roadmap lives in the client session; nothing is persisted until
+ * commit. Milestones are visual groupings (no cross-item dependencies yet).
+ *
+ * Pure helpers (extractJsonBlock, parseConverse, sanitizeMilestoneAssignments,
+ * findDuplicatePairs, coverageGaps, flattenTasks, priorityToWorkItem, parseCritic,
+ * aggregateUsage) are exported so they unit-test without the LLM or the DB.
  */
 import { z } from 'zod'
 import { contextFabricClient, type ExecuteResponse } from '../../lib/context-fabric/client'
 import { listCapabilityRelationships, getCapability } from '../../lib/iam/client'
 import { createWorkItem } from '../work-items/work-items.service'
 
-export const URGENCY = ['LOW', 'NORMAL', 'HIGH', 'CRITICAL'] as const
+export const PRIORITIES = ['HIGH', 'MEDIUM', 'LOW'] as const
+export type Priority = (typeof PRIORITIES)[number]
 
-export const plannerItemSchema = z.object({
+export const taskSchema = z.object({
   title: z.string().trim().min(3).max(200),
-  description: z.string().trim().min(8).max(4000),
+  description: z.string().trim().min(3).max(4000),
+  category: z.string().trim().max(40).catch('').default(''),
   capabilityId: z.string().trim().min(1),
-  priority: z.coerce.number().int().min(0).max(100).catch(50).default(50),
-  urgency: z.enum(URGENCY).catch('NORMAL').default('NORMAL'),
-  estimate: z.string().trim().max(80).optional(),
+  priority: z.enum(PRIORITIES).catch('MEDIUM').default('MEDIUM'),
+  aiSuggested: z.boolean().catch(false).default(false),
   rationale: z.string().trim().max(600).optional(),
 })
-export type PlannerItem = z.infer<typeof plannerItemSchema>
+export type PlannerTask = z.infer<typeof taskSchema>
 
-export const plannerPlanSchema = z.object({
-  version: z.literal(1).optional(),
-  items: z.array(plannerItemSchema).min(1).max(40),
+export const milestoneSchema = z.object({
+  id: z.string().trim().min(1).max(40),
+  title: z.string().trim().min(1).max(200),
+  summary: z.string().trim().max(2000).catch('').default(''),
+  tasks: z.array(taskSchema).default([]),
 })
+export type Milestone = z.infer<typeof milestoneSchema>
+
+export const converseResponseSchema = z.object({
+  reply: z.string().trim().catch('').default(''),
+  needsClarification: z.boolean().catch(false).default(false),
+  questions: z.array(z.string().trim().min(1)).catch([]).default([]),
+  milestones: z.array(milestoneSchema).catch([]).default([]),
+})
+
+export const chatMessageSchema = z.object({
+  role: z.enum(['user', 'assistant']),
+  content: z.string(),
+})
+export type ChatMessage = z.infer<typeof chatMessageSchema>
 
 export const criticIssueSchema = z.object({
   dimension: z.string().trim().min(1),
@@ -54,7 +72,6 @@ export interface AssignableCapability { id: string; name: string }
 // Pure helpers (unit-tested; no LLM, no DB)
 // ────────────────────────────────────────────────────────────────────────────
 
-/** Pull a JSON object out of an LLM response: ```json fences, or first { … last }. */
 export function extractJsonBlock(text: string): string {
   if (!text) return ''
   const t = text.trim()
@@ -72,8 +89,6 @@ const STOPWORDS = new Set(
     'when then than them they all any more most must not but also which while where what who how also include')
     .split(/\s+/),
 )
-
-/** Lowercased significant tokens (len ≥ 3, not stopwords). */
 export function significantWords(s: string): string[] {
   return (String(s ?? '').toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g) ?? []).filter((w) => !STOPWORDS.has(w))
 }
@@ -85,7 +100,13 @@ export function jaccard(a: Set<string>, b: Set<string>): number {
   return inter / (a.size + b.size - inter)
 }
 
-/** Pairs of items whose word-sets overlap ≥ threshold — a near-duplicate signal. */
+/** Flatten the roadmap to a single task list (with their milestone index/title). */
+export function flattenTasks(milestones: Milestone[]): Array<PlannerTask & { milestone: string; milestoneId: string }> {
+  const out: Array<PlannerTask & { milestone: string; milestoneId: string }> = []
+  for (const m of milestones ?? []) for (const t of m.tasks ?? []) out.push({ ...t, milestone: m.title, milestoneId: m.id })
+  return out
+}
+
 export function findDuplicatePairs(
   items: Array<{ title: string; description: string }>,
   threshold = 0.6,
@@ -101,17 +122,12 @@ export function findDuplicatePairs(
   return out
 }
 
-/** Significant words in the goal that appear in NO item — a cheap (noisy) completeness hint. */
-export function coverageGaps(
-  description: string,
-  items: Array<{ title: string; description: string }>,
-  max = 8,
-): string[] {
+export function coverageGaps(goal: string, items: Array<{ title: string; description: string }>, max = 8): string[] {
   const covered = new Set<string>()
   for (const it of items) for (const w of significantWords(`${it.title} ${it.description}`)) covered.add(w)
   const gaps: string[] = []
   const seen = new Set<string>()
-  for (const w of significantWords(description)) {
+  for (const w of significantWords(goal)) {
     if (!covered.has(w) && !seen.has(w)) {
       seen.add(w)
       gaps.push(w)
@@ -120,41 +136,48 @@ export function coverageGaps(
   return gaps.slice(0, max)
 }
 
-/** Clamp each item's capabilityId to the allowed set; anything else → home. */
-export function sanitizeAssignments(
-  items: PlannerItem[],
+/** Clamp every task's capabilityId across all milestones to the allowed set; else home. */
+export function sanitizeMilestoneAssignments(
+  milestones: Milestone[],
   allowedIds: Set<string>,
   homeId: string,
-): { items: PlannerItem[]; repaired: number } {
+): { milestones: Milestone[]; repaired: number } {
   let repaired = 0
-  const out = items.map((it) => {
-    if (allowedIds.has(it.capabilityId)) return it
-    repaired++
-    return { ...it, capabilityId: homeId }
-  })
-  return { items: out, repaired }
+  const out = milestones.map((m) => ({
+    ...m,
+    tasks: m.tasks.map((t) => {
+      if (allowedIds.has(t.capabilityId)) return t
+      repaired++
+      return { ...t, capabilityId: homeId }
+    }),
+  }))
+  return { milestones: out, repaired }
 }
 
-export function parsePlannerPlan(raw: string): { ok: true; items: PlannerItem[] } | { ok: false; error: string } {
+export function parseConverse(
+  raw: string,
+): { ok: true; value: z.infer<typeof converseResponseSchema> } | { ok: false; error: string } {
   try {
     const json = JSON.parse(extractJsonBlock(raw))
-    const parsed = plannerPlanSchema.parse(json)
-    return { ok: true, items: parsed.items }
+    return { ok: true, value: converseResponseSchema.parse(json) }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
   }
 }
 
-/** Parse the critic. Never throws — unparseable critique degrades to a manual-review warn. */
 export function parseCritic(raw: string): CriticResult {
   try {
     return criticSchema.parse(JSON.parse(extractJsonBlock(raw)))
   } catch {
-    return {
-      verdict: 'warn',
-      issues: [{ dimension: 'meta', itemRef: 'plan', message: 'Critic output could not be parsed; review the breakdown manually.' }],
-    }
+    return { verdict: 'warn', issues: [{ dimension: 'meta', itemRef: 'plan', message: 'Critic output could not be parsed; review manually.' }] }
   }
+}
+
+/** Map the display priority to WorkItem urgency + numeric priority. */
+export function priorityToWorkItem(p: Priority): { urgency: 'HIGH' | 'NORMAL' | 'LOW'; priority: number } {
+  if (p === 'HIGH') return { urgency: 'HIGH', priority: 80 }
+  if (p === 'LOW') return { urgency: 'LOW', priority: 30 }
+  return { urgency: 'NORMAL', priority: 50 }
 }
 
 export interface PlannerUsage { inputTokens: number; outputTokens: number; estimatedCostUsd: number; calls: number }
@@ -178,25 +201,28 @@ export function aggregateUsage(responses: Array<ExecuteResponse | null | undefin
 // Prompts
 // ────────────────────────────────────────────────────────────────────────────
 
-function plannerPrompt(maxItems: number): string {
+function plannerSystemPrompt(maxItems: number): string {
   return [
-    'You decompose a high-level GOAL into concrete, independently-actionable work items.',
-    'You are given a list of CAPABILITIES (id + name); the first is the HOME capability.',
+    'You are a product planning agent. You turn a goal into a MILESTONE-GROUPED roadmap of work items, and you converse to refine it.',
+    'You are given the CONVERSATION so far, the CURRENT ROADMAP (may be empty), and a list of CAPABILITIES (id + name; the first is HOME).',
     '',
-    'For each work item output:',
-    '- title: short imperative (3–200 chars).',
-    '- description: 2–5 sentences, acceptance-oriented (what "done" looks like).',
-    '- capabilityId: the SINGLE best-fit capability id, chosen ONLY from the provided list. Never invent an id. If unsure, use the HOME id.',
-    '- priority: integer 0–100 (50 = normal).',
-    '- urgency: one of LOW, NORMAL, HIGH, CRITICAL.',
-    '- estimate: optional short effort string (e.g. "2d").',
-    '- rationale: one sentence — why this item, and why that capability.',
+    'Decide each turn:',
+    '- If the goal is too vague to plan well, ASK 2–4 specific clarifying questions instead of guessing: set needsClarification=true, fill "questions", and leave "milestones" empty.',
+    '- Otherwise produce or UPDATE the roadmap. Apply the user\'s latest instruction (e.g. "split milestone 2", "add a fraud task", "reassign X to the data team"). PRESERVE the parts of the current roadmap the user did not ask to change.',
     '',
-    'Rules: items must be non-overlapping, right-sized (about half a day to 3 days each), and TOGETHER cover the whole goal.',
-    `Produce at most ${maxItems} items.`,
+    'Roadmap shape: 1–6 milestones, each 1–8 tasks. Each task has:',
+    '- title (imperative), description (acceptance-oriented),',
+    '- category: ONE short UPPERCASE label (e.g. DATABASE, SECURITY, API, UI, INFRA, PAYMENTS),',
+    '- capabilityId: the best-fit id from the list — NEVER invent an id; use HOME if unsure,',
+    '- priority: HIGH | MEDIUM | LOW,',
+    '- aiSuggested: true if YOU proposed it without the user explicitly asking,',
+    '- rationale: one sentence.',
+    `Keep the whole roadmap to at most ${maxItems} tasks.`,
+    '',
+    'Always include a short "reply" (1–3 sentences): what you did, or your questions.',
     '',
     'Output STRICT JSON ONLY — no prose, no markdown fences:',
-    '{"version":1,"items":[{"title":"…","description":"…","capabilityId":"…","priority":50,"urgency":"NORMAL","estimate":"2d","rationale":"…"}]}',
+    '{"reply":"…","needsClarification":false,"questions":[],"milestones":[{"id":"M1","title":"Foundation","summary":"…","tasks":[{"title":"…","description":"…","category":"DATABASE","capabilityId":"…","priority":"HIGH","aiSuggested":false,"rationale":"…"}]}]}',
   ].join('\n')
 }
 
@@ -204,49 +230,53 @@ function capabilityList(caps: AssignableCapability[]): string {
   return caps.map((c) => `- ${c.id}  ${c.name}`).join('\n')
 }
 
-function plannerTask(description: string, caps: AssignableCapability[], homeId: string): string {
+function transcript(messages: ChatMessage[]): string {
+  return messages.map((m) => `${m.role}: ${m.content}`).join('\n')
+}
+
+function converseTask(
+  messages: ChatMessage[],
+  plan: Milestone[],
+  caps: AssignableCapability[],
+  homeId: string,
+): string {
   return [
-    'GOAL:',
-    description.trim(),
-    '',
-    'CAPABILITIES (assign each item to one of these ids):',
+    'CAPABILITIES (assign tasks by id):',
     capabilityList(caps),
-    '',
     `HOME capability id: ${homeId}`,
+    '',
+    'CURRENT ROADMAP (JSON):',
+    plan.length ? JSON.stringify({ milestones: plan }, null, 2) : '(none yet)',
+    '',
+    'CONVERSATION:',
+    transcript(messages),
+    '',
+    'Respond with the JSON object only.',
   ].join('\n')
 }
 
 function criticPrompt(): string {
   return [
-    'You are an INDEPENDENT reviewer of a work-item breakdown. You did NOT create it.',
+    'You are an INDEPENDENT reviewer of a milestone-grouped work-item roadmap. You did NOT create it.',
     'Judge it against this rubric and report SPECIFIC issues (not a score):',
-    '- completeness: parts of the GOAL covered by NO item.',
-    '- faithfulness: items that introduce scope NOT in the GOAL (hallucinated work).',
-    '- overlap: pairs of items that substantially overlap / duplicate each other.',
-    '- sizing: items too large (should be split) or too trivial (should be merged).',
-    '- assignment: items assigned to a capability that is a poor fit given its name.',
+    '- completeness: parts of the GOAL covered by NO task.',
+    '- faithfulness: tasks that introduce scope NOT in the GOAL.',
+    '- overlap: tasks that substantially duplicate each other.',
+    '- sizing: tasks too large (split) or too trivial (merge); milestones poorly grouped.',
+    '- assignment: tasks assigned to a capability that is a poor fit.',
     '',
     'Output STRICT JSON ONLY:',
-    '{"verdict":"pass|warn|fail","issues":[{"dimension":"completeness|faithfulness|overlap|sizing|assignment","itemRef":"<item title or index, or \'plan\'>","message":"…","fix":"…"}]}',
-    'verdict: pass = no material issues; warn = minor; fail = misses major scope or is largely wrong.',
+    '{"verdict":"pass|warn|fail","issues":[{"dimension":"…","itemRef":"<task title or \'plan\'>","message":"…","fix":"…"}]}',
   ].join('\n')
 }
 
-function criticTask(description: string, items: PlannerItem[], caps: AssignableCapability[]): string {
+function criticTask(goal: string, milestones: Milestone[], caps: AssignableCapability[]): string {
   const capName = new Map(caps.map((c) => [c.id, c.name]))
-  const rows = items.map((it, i) => ({
-    i,
-    title: it.title,
-    description: it.description,
-    capability: capName.get(it.capabilityId) ?? it.capabilityId,
+  const rows = milestones.map((m) => ({
+    milestone: m.title,
+    tasks: m.tasks.map((t) => ({ title: t.title, description: t.description, capability: capName.get(t.capabilityId) ?? t.capabilityId })),
   }))
-  return [
-    'GOAL:',
-    description.trim(),
-    '',
-    'PROPOSED WORK ITEMS (JSON):',
-    JSON.stringify(rows, null, 2),
-  ].join('\n')
+  return ['GOAL:', goal.trim(), '', 'ROADMAP (JSON):', JSON.stringify(rows, null, 2)].join('\n')
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -255,11 +285,7 @@ function criticTask(description: string, items: PlannerItem[], caps: AssignableC
 
 const CHILD_RELATIONSHIP = 'decomposes_to'
 
-/** Home capability + (optionally) its non-governing `decomposes_to` children. */
-export async function resolveAssignableCapabilities(
-  homeId: string,
-  allowChildren: boolean,
-): Promise<AssignableCapability[]> {
+export async function resolveAssignableCapabilities(homeId: string, allowChildren: boolean): Promise<AssignableCapability[]> {
   const home = await getCapability(homeId).catch(() => null)
   const list: AssignableCapability[] = [{ id: homeId, name: home?.name ?? 'Home capability' }]
   if (!allowChildren) return list
@@ -268,7 +294,7 @@ export async function resolveAssignableCapabilities(
   for (const id of childIds) {
     if (id === homeId) continue
     const cap = await getCapability(id).catch(() => null)
-    if (cap?.isGoverning) continue // never delegate work into a governing capability
+    if (cap?.isGoverning) continue
     list.push({ id, name: cap?.name ?? id })
   }
   return list
@@ -278,102 +304,125 @@ export async function resolveAssignableCapabilities(
 // Orchestration
 // ────────────────────────────────────────────────────────────────────────────
 
-export interface BreakdownInput {
-  description: string
+export interface ConverseInput {
   capabilityId: string
+  messages: ChatMessage[]
+  plan?: Milestone[]
   allowChildren?: boolean
   maxItems?: number
 }
 
-export interface BreakdownResult {
-  items: PlannerItem[]
+export interface ConverseResult {
+  reply: string
+  needsClarification: boolean
+  questions: string[]
+  milestones: Milestone[]
   assignableCapabilities: AssignableCapability[]
   homeCapabilityId: string
-  deterministic: {
-    repairedAssignments: number
-    duplicatePairs: Array<{ a: number; b: number; score: number }>
-    coverageGaps: string[]
-  }
-  critic: CriticResult
+  deterministic: { repairedAssignments: number; duplicatePairs: Array<{ a: number; b: number; score: number }>; coverageGaps: string[] }
+  critic: CriticResult | null
   usage: PlannerUsage
   parseError?: string
   raw?: string
 }
 
-export async function breakdownGoal(input: BreakdownInput, actorId: string): Promise<BreakdownResult> {
-  const maxItems = Math.min(Math.max(input.maxItems ?? 12, 1), 40)
+export async function converse(input: ConverseInput, actorId: string): Promise<ConverseResult> {
+  const maxItems = Math.min(Math.max(input.maxItems ?? 16, 1), 40)
   const allowChildren = input.allowChildren !== false
   const caps = await resolveAssignableCapabilities(input.capabilityId, allowChildren)
   const allowed = new Set(caps.map((c) => c.id))
-  const runCtx = { capability_id: input.capabilityId, user_id: actorId, surface: 'planner' }
+  const home = input.capabilityId
+  const runCtx = { capability_id: home, user_id: actorId, surface: 'planner' }
+  const goal = input.messages.find((m) => m.role === 'user')?.content ?? ''
+  const currentPlan = input.plan ?? []
 
-  // 1) Planner — one re-ask on parse failure.
-  const r1 = await contextFabricClient.executeGovernedTurn({
-    trace_id: `planner:${input.capabilityId}`,
+  const base = {
+    trace_id: `planner:${home}`,
     run_context: runCtx,
-    system_prompt: plannerPrompt(maxItems),
-    task: plannerTask(input.description, caps, input.capabilityId),
-    model_overrides: { temperature: 0.2, maxOutputTokens: 3000 },
-    limits: { outputTokenBudget: 3000, timeoutSec: 120 },
-  })
+    system_prompt: plannerSystemPrompt(maxItems),
+    model_overrides: { temperature: 0.3, maxOutputTokens: 3500 },
+    limits: { outputTokenBudget: 3500, timeoutSec: 150 },
+  }
+
+  // 1) Planner / chat turn — one re-ask on parse failure.
+  const r1 = await contextFabricClient.executeGovernedTurn({ ...base, task: converseTask(input.messages, currentPlan, caps, home) })
   const responses: Array<ExecuteResponse | null> = [r1]
-  let parsed = parsePlannerPlan(r1.finalResponse)
+  let parsed = parseConverse(r1.finalResponse)
   if (!parsed.ok) {
     const r1b = await contextFabricClient.executeGovernedTurn({
-      trace_id: `planner:${input.capabilityId}:retry`,
-      run_context: runCtx,
-      system_prompt: plannerPrompt(maxItems),
-      task:
-        plannerTask(input.description, caps, input.capabilityId) +
-        `\n\nYour previous answer FAILED validation: ${parsed.error}\nReturn STRICT JSON only, matching the schema exactly.`,
-      model_overrides: { temperature: 0, maxOutputTokens: 3000 },
-      limits: { outputTokenBudget: 3000, timeoutSec: 120 },
+      ...base,
+      model_overrides: { temperature: 0, maxOutputTokens: 3500 },
+      task: converseTask(input.messages, currentPlan, caps, home) + `\n\nYour previous answer FAILED validation: ${parsed.error}\nReturn STRICT JSON only.`,
     })
     responses.push(r1b)
-    parsed = parsePlannerPlan(r1b.finalResponse)
+    parsed = parseConverse(r1b.finalResponse)
   }
 
   if (!parsed.ok) {
     return {
-      items: [],
+      reply: "I couldn't produce a valid plan — try rephrasing.",
+      needsClarification: false,
+      questions: [],
+      milestones: [],
       assignableCapabilities: caps,
-      homeCapabilityId: input.capabilityId,
+      homeCapabilityId: home,
       deterministic: { repairedAssignments: 0, duplicatePairs: [], coverageGaps: [] },
-      critic: { verdict: 'fail', issues: [{ dimension: 'meta', itemRef: 'plan', message: 'Planner did not return valid JSON.' }] },
+      critic: null,
       usage: aggregateUsage(responses),
       parseError: parsed.error,
       raw: (responses[responses.length - 1]?.finalResponse ?? '').slice(0, 4000),
     }
   }
 
+  const value = parsed.value
+
+  // Clarification turn — no plan, no critic.
+  if (value.needsClarification || value.milestones.length === 0) {
+    return {
+      reply: value.reply || (value.questions.length ? 'A few questions before I plan:' : 'Tell me a bit more.'),
+      needsClarification: value.questions.length > 0,
+      questions: value.questions,
+      milestones: [],
+      assignableCapabilities: caps,
+      homeCapabilityId: home,
+      deterministic: { repairedAssignments: 0, duplicatePairs: [], coverageGaps: [] },
+      critic: null,
+      usage: aggregateUsage(responses),
+    }
+  }
+
   // 2) Sanitize assignments (never trust model-supplied capability ids).
-  const sanitized = sanitizeAssignments(parsed.items, allowed, input.capabilityId)
+  const sanitized = sanitizeMilestoneAssignments(value.milestones, allowed, home)
+  const flat = flattenTasks(sanitized.milestones)
 
   // 3) Deterministic checks.
-  const duplicatePairs = findDuplicatePairs(sanitized.items)
-  const gaps = coverageGaps(input.description, sanitized.items)
+  const duplicatePairs = findDuplicatePairs(flat)
+  const gaps = coverageGaps(goal, flat)
 
-  // 4) Independent critic (separate call; never blocks).
-  let critic: CriticResult
+  // 4) Independent critic (separate call; best-effort).
+  let critic: CriticResult | null = null
   try {
     const rc = await contextFabricClient.executeGovernedTurn({
-      trace_id: `planner-critic:${input.capabilityId}`,
+      trace_id: `planner-critic:${home}`,
       run_context: runCtx,
       system_prompt: criticPrompt(),
-      task: criticTask(input.description, sanitized.items, caps),
+      task: criticTask(goal, sanitized.milestones, caps),
       model_overrides: { temperature: 0, maxOutputTokens: 1500 },
       limits: { outputTokenBudget: 1500, timeoutSec: 90 },
     })
     responses.push(rc)
     critic = parseCritic(rc.finalResponse)
   } catch {
-    critic = { verdict: 'warn', issues: [{ dimension: 'meta', itemRef: 'plan', message: 'Critic call failed; review the breakdown manually.' }] }
+    critic = { verdict: 'warn', issues: [{ dimension: 'meta', itemRef: 'plan', message: 'Critic call failed; review the roadmap manually.' }] }
   }
 
   return {
-    items: sanitized.items,
+    reply: value.reply || 'Here is the roadmap.',
+    needsClarification: false,
+    questions: [],
+    milestones: sanitized.milestones,
     assignableCapabilities: caps,
-    homeCapabilityId: input.capabilityId,
+    homeCapabilityId: home,
     deterministic: { repairedAssignments: sanitized.repaired, duplicatePairs, coverageGaps: gaps },
     critic,
     usage: aggregateUsage(responses),
@@ -382,37 +431,46 @@ export async function breakdownGoal(input: BreakdownInput, actorId: string): Pro
 
 export interface CommitInput {
   capabilityId: string
-  items: PlannerItem[]
+  milestones: Milestone[]
 }
 
-export async function commitBreakdown(input: CommitInput, actorId: string) {
+export async function commitRoadmap(input: CommitInput, actorId: string) {
   const home = input.capabilityId
+  const tasks = flattenTasks(input.milestones)
   const results = await Promise.allSettled(
-    input.items.map((it) =>
-      createWorkItem(
+    tasks.map((t) => {
+      const { urgency, priority } = priorityToWorkItem(t.priority)
+      return createWorkItem(
         {
-          title: it.title,
-          description: it.description,
+          title: t.title,
+          description: t.description,
           parentCapabilityId: home,
-          originType: it.capabilityId !== home ? 'PARENT_DELEGATED' : 'CAPABILITY_LOCAL',
+          originType: t.capabilityId !== home ? 'PARENT_DELEGATED' : 'CAPABILITY_LOCAL',
           routingMode: 'MANUAL',
-          urgency: it.urgency,
-          priority: it.priority,
-          details: { source: 'planner', title: it.title, description: it.description, rationale: it.rationale ?? null },
-          targets: [{ targetCapabilityId: it.capabilityId }],
+          urgency,
+          priority,
+          details: {
+            source: 'planner',
+            milestone: t.milestone,
+            category: t.category || null,
+            rationale: t.rationale ?? null,
+            title: t.title,
+            description: t.description,
+          },
+          targets: [{ targetCapabilityId: t.capabilityId }],
         },
         actorId,
-      ),
-    ),
+      )
+    }),
   )
 
-  const created: Array<{ id: string; workCode: string; capabilityId: string }> = []
+  const created: Array<{ id: string; workCode: string; capabilityId: string; milestone: string }> = []
   const failed: Array<{ title: string; error: string }> = []
   results.forEach((r, i) => {
     if (r.status === 'fulfilled') {
-      created.push({ id: r.value.id, workCode: r.value.workCode, capabilityId: input.items[i].capabilityId })
+      created.push({ id: r.value.id, workCode: r.value.workCode, capabilityId: tasks[i].capabilityId, milestone: tasks[i].milestone })
     } else {
-      failed.push({ title: input.items[i].title, error: r.reason instanceof Error ? r.reason.message : String(r.reason) })
+      failed.push({ title: tasks[i].title, error: r.reason instanceof Error ? r.reason.message : String(r.reason) })
     }
   })
   return { created, failed }

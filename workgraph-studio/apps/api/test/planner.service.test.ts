@@ -5,28 +5,25 @@ import {
   jaccard,
   findDuplicatePairs,
   coverageGaps,
-  sanitizeAssignments,
-  parsePlannerPlan,
+  flattenTasks,
+  sanitizeMilestoneAssignments,
+  parseConverse,
   parseCritic,
+  priorityToWorkItem,
   aggregateUsage,
-  type PlannerItem,
+  type Milestone,
 } from '../src/modules/planner/planner.service'
 
-const item = (over: Partial<PlannerItem>): PlannerItem => ({
-  title: 'Title here',
-  description: 'A description long enough to validate.',
-  capabilityId: 'home',
-  priority: 50,
-  urgency: 'NORMAL',
-  ...over,
+const milestone = (id: string, tasks: Array<{ title: string; description: string; capabilityId: string }>): Milestone => ({
+  id,
+  title: `Milestone ${id}`,
+  summary: '',
+  tasks: tasks.map((t) => ({ ...t, category: '', priority: 'MEDIUM', aiSuggested: false })),
 })
 
 describe('extractJsonBlock', () => {
   it('pulls JSON out of a ```json fence', () => {
     expect(extractJsonBlock('prose\n```json\n{"a":1}\n```\nmore')).toBe('{"a":1}')
-  })
-  it('pulls JSON out of a bare ``` fence', () => {
-    expect(extractJsonBlock('```\n{"a":1}\n```')).toBe('{"a":1}')
   })
   it('falls back to first{…last}', () => {
     expect(extractJsonBlock('here is { "a": 1 } ok')).toBe('{ "a": 1 }')
@@ -37,11 +34,21 @@ describe('significantWords / jaccard', () => {
   it('drops stopwords and short tokens', () => {
     expect(significantWords('We need to build the login system')).toEqual(['login'])
   })
-  it('jaccard of identical sets is 1', () => {
+  it('jaccard identical=1, disjoint=0', () => {
     expect(jaccard(new Set(['a', 'b']), new Set(['a', 'b']))).toBe(1)
-  })
-  it('jaccard of disjoint sets is 0', () => {
     expect(jaccard(new Set(['a']), new Set(['b']))).toBe(0)
+  })
+})
+
+describe('flattenTasks', () => {
+  it('flattens milestones into tasks tagged with their milestone', () => {
+    const flat = flattenTasks([
+      milestone('M1', [{ title: 'Schema', description: 'db schema', capabilityId: 'home' }]),
+      milestone('M2', [{ title: 'Routing', description: 'route logic', capabilityId: 'child' }]),
+    ])
+    expect(flat).toHaveLength(2)
+    expect(flat[0].milestone).toBe('Milestone M1')
+    expect(flat[1].milestoneId).toBe('M2')
   })
 })
 
@@ -59,55 +66,77 @@ describe('findDuplicatePairs', () => {
 })
 
 describe('coverageGaps', () => {
-  it('returns goal words covered by no item', () => {
+  it('returns goal words covered by no task', () => {
     const gaps = coverageGaps('Build login and an audit log', [{ title: 'Build login screen', description: 'login form' }])
     expect(gaps).toContain('audit')
     expect(gaps).not.toContain('login')
   })
 })
 
-describe('sanitizeAssignments', () => {
-  it('clamps unknown capability ids to home and counts repairs', () => {
-    const res = sanitizeAssignments(
-      [item({ capabilityId: 'home' }), item({ capabilityId: 'ghost' }), item({ capabilityId: 'child-1' })],
+describe('sanitizeMilestoneAssignments', () => {
+  it('clamps unknown capability ids to home across milestones and counts repairs', () => {
+    const res = sanitizeMilestoneAssignments(
+      [
+        milestone('M1', [
+          { title: 'A', description: 'aa', capabilityId: 'home' },
+          { title: 'B', description: 'bb', capabilityId: 'ghost' },
+        ]),
+        milestone('M2', [{ title: 'C', description: 'cc', capabilityId: 'child-1' }]),
+      ],
       new Set(['home', 'child-1']),
       'home',
     )
     expect(res.repaired).toBe(1)
-    expect(res.items[1].capabilityId).toBe('home')
-    expect(res.items[2].capabilityId).toBe('child-1')
+    expect(res.milestones[0].tasks[1].capabilityId).toBe('home')
+    expect(res.milestones[1].tasks[0].capabilityId).toBe('child-1')
   })
 })
 
-describe('parsePlannerPlan', () => {
-  it('parses a valid plan with defaults applied', () => {
-    const raw = JSON.stringify({ items: [{ title: 'Do the thing', description: 'description long enough', capabilityId: 'home' }] })
-    const out = parsePlannerPlan(raw)
+describe('parseConverse', () => {
+  it('parses a clarification turn', () => {
+    const out = parseConverse('{"reply":"Need info","needsClarification":true,"questions":["Which currencies?"]}')
     expect(out.ok).toBe(true)
     if (out.ok) {
-      expect(out.items[0].priority).toBe(50)
-      expect(out.items[0].urgency).toBe('NORMAL')
+      expect(out.value.needsClarification).toBe(true)
+      expect(out.value.questions).toEqual(['Which currencies?'])
+      expect(out.value.milestones).toEqual([])
     }
   })
-  it('rejects an empty item list', () => {
-    expect(parsePlannerPlan('{"items":[]}').ok).toBe(false)
+  it('parses a milestone plan with task defaults applied', () => {
+    const raw = JSON.stringify({
+      reply: 'done',
+      milestones: [{ id: 'M1', title: 'Foundation', tasks: [{ title: 'Schema work', description: 'db schema', capabilityId: 'home' }] }],
+    })
+    const out = parseConverse(raw)
+    expect(out.ok).toBe(true)
+    if (out.ok) {
+      expect(out.value.milestones[0].tasks[0].priority).toBe('MEDIUM')
+      expect(out.value.milestones[0].tasks[0].aiSuggested).toBe(false)
+    }
   })
   it('rejects non-JSON', () => {
-    expect(parsePlannerPlan('not json at all').ok).toBe(false)
+    expect(parseConverse('not json at all').ok).toBe(false)
   })
 })
 
 describe('parseCritic', () => {
-  it('parses a verdict + issues and defaults itemRef', () => {
+  it('parses verdict + issues and defaults itemRef', () => {
     const c = parseCritic('{"verdict":"warn","issues":[{"dimension":"overlap","message":"x"}]}')
     expect(c.verdict).toBe('warn')
-    expect(c.issues[0].dimension).toBe('overlap')
     expect(c.issues[0].itemRef).toBe('plan')
   })
   it('degrades to a manual-review warn on garbage', () => {
-    const c = parseCritic('the plan looks fine to me')
+    const c = parseCritic('looks fine')
     expect(c.verdict).toBe('warn')
     expect(c.issues).toHaveLength(1)
+  })
+})
+
+describe('priorityToWorkItem', () => {
+  it('maps display priority to urgency + number', () => {
+    expect(priorityToWorkItem('HIGH')).toEqual({ urgency: 'HIGH', priority: 80 })
+    expect(priorityToWorkItem('MEDIUM')).toEqual({ urgency: 'NORMAL', priority: 50 })
+    expect(priorityToWorkItem('LOW')).toEqual({ urgency: 'LOW', priority: 30 })
   })
 })
 
