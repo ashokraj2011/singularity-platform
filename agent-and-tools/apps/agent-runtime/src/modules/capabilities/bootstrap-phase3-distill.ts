@@ -183,6 +183,65 @@ export async function buildArchitectureSliceFromSymbols(capabilityId: string): P
   return { rootPackages };
 }
 
+// ── LLM-based distillation (opt-in via WORLD_MODEL_DISTILL_MODEL_ALIAS) ──────
+// When the alias is set, the README is distilled through the llm-gateway
+// (→ Copilot / the configured provider). On any failure — alias unset, gateway
+// down, timeout, bad response — we return null and the caller falls back to the
+// heuristic, so onboarding NEVER blocks on the LLM.
+const DISTILL_MODEL_ALIAS = (process.env.WORLD_MODEL_DISTILL_MODEL_ALIAS ?? "").trim();
+const LLM_GATEWAY_URL = (process.env.LLM_GATEWAY_URL ?? "http://localhost:8001").replace(/\/+$/, "");
+const DISTILL_INPUT_CAP = 12_000;
+const DISTILL_TIMEOUT_MS = 30_000;
+
+const DISTILL_SYSTEM_PROMPT =
+  "You distill a software project's README / AGENTS / CLAUDE docs into a concise grounding brief for an AI coding agent that will work in this repository. " +
+  "Capture, in tight prose (no markdown headings needed): what the project is, its tech stack, how to build/test/run it, and the key architecture or modules. " +
+  "Keep it under 1500 characters. If the input is sparse, summarize what is there — do not invent.";
+
+/** Build the gateway chat messages for README distillation (pure; unit-tested). */
+export function buildDistillMessages(markdown: string): Array<{ role: string; content: string }> {
+  const input = markdown.length > DISTILL_INPUT_CAP ? `${markdown.slice(0, DISTILL_INPUT_CAP)}\n…[truncated]` : markdown;
+  return [
+    { role: "system", content: DISTILL_SYSTEM_PROMPT },
+    { role: "user", content: `Project docs:\n\n${input}` },
+  ];
+}
+
+/** True when LLM distillation is configured (an alias is set). */
+export function llmDistillEnabled(): boolean {
+  return DISTILL_MODEL_ALIAS.length > 0;
+}
+
+/**
+ * LLM README distillation via the llm-gateway. Returns null when disabled or on
+ * any failure (gateway down, timeout, empty/parse error) — the caller falls back
+ * to distillReadme(). Never throws.
+ */
+export async function distillReadmeViaLLM(markdown: string): Promise<string | null> {
+  if (!DISTILL_MODEL_ALIAS) return null;
+  if (!markdown || !markdown.trim()) return null;
+  try {
+    const res = await fetch(`${LLM_GATEWAY_URL}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model_alias: DISTILL_MODEL_ALIAS,
+        messages: buildDistillMessages(markdown.trim()),
+        temperature: 0,
+        max_output_tokens: 700,
+      }),
+      signal: AbortSignal.timeout(DISTILL_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { content?: string };
+    const content = (body.content ?? "").trim();
+    if (!content) return null;
+    return content.length > README_SUMMARY_CAP ? `${content.slice(0, README_SUMMARY_CAP).trimEnd()}…` : content;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The actual Phase 3 entry point. Called from
  * runBootstrapDiscoveryPhase / the sync bootstrap path AFTER Phase 1
@@ -205,7 +264,19 @@ export async function runBootstrapDistillationPhase(input: {
       orderBy: [{ confidence: "desc" }, { createdAt: "asc" }],
       select: { content: true },
     });
-    const readmeSummary = candidate?.content ? distillReadme(candidate.content) : null;
+    // Prefer LLM distillation (Copilot / configured provider) when enabled;
+    // fall back to the heuristic so onboarding never blocks on the gateway.
+    let readmeSummary: string | null = null;
+    let distilledBy: "llm" | "heuristic" | "none" = "none";
+    if (candidate?.content) {
+      readmeSummary = await distillReadmeViaLLM(candidate.content);
+      if (readmeSummary) {
+        distilledBy = "llm";
+      } else {
+        readmeSummary = distillReadme(candidate.content);
+        if (readmeSummary) distilledBy = "heuristic";
+      }
+    }
     const architectureSlice = await buildArchitectureSliceFromSymbols(capabilityId);
 
     if (!readmeSummary && !architectureSlice) {
@@ -221,6 +292,7 @@ export async function runBootstrapDistillationPhase(input: {
 
     await markPhaseCompleted(runId, PHASE_KEYS.P3, {
       readmeSummary: readmeSummary ? readmeSummary.length : 0,
+      distilledBy,
       rootPackages: architectureSlice?.rootPackages?.length ?? 0,
     });
   } catch (err) {
