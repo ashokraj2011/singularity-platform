@@ -462,6 +462,15 @@ JSON
     _ensure_kv "$_f" "VITE_LINK_BLUEPRINT_WORKBENCH=http://localhost:5176"
     _ensure_kv "$_f" "VITE_LINK_IAM_ADMIN=http://localhost:5175"
   done
+  # Agent Studio (:3000) is Next.js (NEXT_PUBLIC_* prefix). Its AppSwitcher uses
+  # nativeHref only when it starts with http, else the same-origin /runs path —
+  # which 404s on the standalone :3000 build. Set NEXT_PUBLIC_LINK_* so nativeHref
+  # points at the per-port apps (e.g. http://localhost:5174/runs).
+  _AW="$ROOT/agent-and-tools/web/.env.local"
+  _ensure_kv "$_AW" "NEXT_PUBLIC_LINK_WORKGRAPH_DESIGNER=http://localhost:5174"
+  _ensure_kv "$_AW" "NEXT_PUBLIC_LINK_BLUEPRINT_WORKBENCH=http://localhost:5176"
+  _ensure_kv "$_AW" "NEXT_PUBLIC_LINK_IAM_ADMIN=http://localhost:5175"
+  _ensure_kv "$_AW" "NEXT_PUBLIC_LINK_OPERATIONS_PORTAL=http://localhost:5180/operations"
 
   # IAM admin SPA — hosts the capability-governance authoring UI (G7–G9).
   boot user-and-capability "cd UserAndCapabillity && VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" npm run dev -- --host 0.0.0.0 --port 5175"
