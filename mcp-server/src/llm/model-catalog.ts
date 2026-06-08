@@ -66,9 +66,27 @@ function fallbackCatalog(): LlmModelCatalogEntry[] {
 }
 
 let cachedCatalog: { entries: LlmModelCatalogEntry[]; warnings: string[]; source: string } | null = null;
+// Cache key = "env-json" / "none" / "<resolved path>:<mtimeMs>". Including the
+// file mtime means editing .singularity/llm-models.json (e.g. switching the
+// Copilot model via bin/llm-use-copilot.sh) is picked up WITHOUT restarting
+// mcp-server. Previously the catalog was cached for the process lifetime, so a
+// model switch silently kept serving the stale list to /llm/models — and thus
+// the workbench's per-stage model picker.
+let cachedKey = "";
+
+function currentCatalogCacheKey(): string {
+  if (config.MCP_LLM_MODEL_CATALOG_JSON?.trim()) return "env-json";
+  const raw = config.MCP_LLM_MODEL_CATALOG_PATH?.trim();
+  if (!raw) return "none";
+  const p = path.resolve(raw);
+  try { return `${p}:${fs.statSync(p).mtimeMs}`; }
+  catch { return `${p}:missing`; }
+}
 
 export function loadModelCatalog() {
-  if (cachedCatalog) return cachedCatalog;
+  const key = currentCatalogCacheKey();
+  if (cachedCatalog && key === cachedKey) return cachedCatalog;
+  cachedKey = key;
   const warnings: string[] = [];
   try {
     const raw = readCatalogSource();
