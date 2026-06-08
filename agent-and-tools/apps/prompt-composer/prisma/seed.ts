@@ -705,6 +705,8 @@ const loopDeveloperActTask = [
   "",
   "Prefer patches over full-file rewrites. Use write_file only when the file is brand-new OR you're replacing the entire contents intentionally (e.g. a generated file). Existing files: apply_patch or replace_range.",
   "",
+  "BRACE/PARSE CHECK (do this after EACH edit to a source file): re-read the changed region with read_file or get_ast_slice and confirm the file STILL PARSES — balanced braces/brackets/parens, no truncated or duplicated method, imports intact. Partial-range patches (replace_range/apply_patch) frequently drop or misplace a closing brace; a single missing brace fails the WHOLE compile/`mvn test` even when your logic is correct. Fix structural breakage before moving on — don't let it reach VERIFY.",
+  "",
   "DO NOT call run_test or finish_work_branch in this phase — that's VERIFY and FINALIZE. Tool gateway will refuse.",
   "",
   // (2026-05-25) Strong discipline on EditReceipt.edits[] vs

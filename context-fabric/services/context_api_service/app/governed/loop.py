@@ -1354,19 +1354,45 @@ async def governed_step(
                 if isinstance(verify_payload, dict)
                 else None
             )
-            if not allow_unverified and status != "passed":
+            # Trust-but-verify (auto-repair). The platform runs its OWN verifier
+            # (synthesize_verifier_run → run_test) against the agent's edits. If
+            # that real run actually executed and FAILED, the stage is NOT passed
+            # even when the agent self-reported status='passed' — this is exactly
+            # how a compile error from a half-applied patch (e.g. a dropped brace)
+            # surfaces. Force REPAIR instead of trusting a false 'passed' and
+            # dead-ending at the operator gate. REPAIR is capped by
+            # max_repair_attempts, so a genuinely unfixable failure still halts.
+            synth_dict = result.synthetic_verifier if isinstance(result.synthetic_verifier, dict) else {}
+            synth_failed = (
+                synth_dict.get("kind") == "ran"
+                and synth_dict.get("tool_success") is False
+            )
+            if not allow_unverified and (status != "passed" or synth_failed):
+                synth_cmd = synth_dict.get("command") if isinstance(synth_dict, dict) else None
+                reason = (
+                    (
+                        f"The platform verification run ({synth_cmd or 'run_test'}) FAILED "
+                        f"(non-zero exit). You reported status={status!r}, but the real run "
+                        "did not pass — most often a compile error from a partial edit (a "
+                        "dropped/misplaced brace) or a failing assertion. Advance to REPAIR: "
+                        "re-read the files you edited (confirm they still parse / have "
+                        "balanced braces), fix the break, and re-run the tests. Do NOT report "
+                        "passed or recommend approval over a failing run."
+                    )
+                    if synth_failed
+                    else (
+                        f"VerificationReceipt.status={status!r} cannot advance to "
+                        "SELF_REVIEW. Either: (a) advance to REPAIR and fix the verifier "
+                        "output, or (b) set risk_policy.allow_unverified=true on the stage "
+                        "policy if this stage legitimately has nothing to verify."
+                    )
+                )
                 err_payload = {
                     "error_code": "PHASE_VERIFY_NOT_PASSED",
                     "phase": "VERIFY",
-                    "reason": (
-                        f"VerificationReceipt.status={status!r} cannot "
-                        "advance to SELF_REVIEW. Either: (a) advance to "
-                        "REPAIR and fix the verifier output, or (b) set "
-                        "risk_policy.allow_unverified=true on the stage "
-                        "policy if this stage legitimately has nothing "
-                        "to verify."
-                    ),
+                    "reason": reason,
                     "status": status,
+                    "synth_failed": synth_failed,
                     "allow_unverified": allow_unverified,
                 }
                 result.validation_error = err_payload
