@@ -269,6 +269,45 @@ export async function getWorldModel(
   return row ? projectWorldModel(row) : null;
 }
 
+/** Condensed world model of a child capability — embedded by reference under a parent. */
+export type ChildWorldModelView = {
+  capabilityId: string;
+  name: string | null;
+  primaryLanguage: string | null;
+  readmeSummary: string | null;
+  codeConventions: CodeConvention[];
+  entrypoints: Entrypoint[];
+};
+
+/**
+ * On-demand: the DIRECT children's world models for a parent / delivery
+ * capability, condensed. Resolved live from the local Capability hierarchy
+ * (Capability.parentCapabilityId) — NOT stored on the parent, so the children's
+ * grounding stays current. One level deep (no recursion). Children with an empty
+ * world model are skipped.
+ */
+export async function getChildWorldModels(parentCapabilityId: string): Promise<ChildWorldModelView[]> {
+  const children = await prisma.capability.findMany({
+    where: { parentCapabilityId },
+    select: { id: true, name: true },
+  });
+  const out: ChildWorldModelView[] = [];
+  for (const child of children) {
+    const wm = await getWorldModel(child.id);
+    if (!wm) continue;
+    if (!wm.readmeSummary && !wm.primaryLanguage && wm.codeConventions.length === 0 && wm.entrypoints.length === 0) continue;
+    out.push({
+      capabilityId: child.id,
+      name: child.name ?? null,
+      primaryLanguage: wm.primaryLanguage ?? null,
+      readmeSummary: wm.readmeSummary ?? null,
+      codeConventions: wm.codeConventions,
+      entrypoints: wm.entrypoints,
+    });
+  }
+  return out;
+}
+
 // ---------- Write (upsert + targeted patch) ----------------------------------
 
 export type WorldModelUpsertInput = {

@@ -11,7 +11,7 @@ import { worldModelDriftService } from "./world-model-drift.service";
 // to the world-model row when mcp-server reports the index is built.
 // M61 Wire 1 — getWorldModel powers the new GET reader endpoint that
 // context-fabric calls at workflow start.
-import { upsertWorldModel, getWorldModel } from "./world-model.service";
+import { upsertWorldModel, getWorldModel, getChildWorldModels } from "./world-model.service";
 // M61 Wire D — Verify-now command probe powering the wizard's per-row
 // "Verify" button. Spawns the cmd in an isolated tmp dir with a 10s
 // timeout; returns exit code + capped stdout/stderr.
@@ -204,7 +204,11 @@ export const capabilityController = {
   async getWorldModel(req: Request, res: Response) {
     const view = await getWorldModel(req.params.id);
     if (!view) return res.status(404).json({ error: "world model not yet generated for this capability" });
-    return ok(res, view, 200);
+    // For a parent / delivery capability, embed its children's world models BY
+    // REFERENCE — fetched on demand from the local hierarchy, never stored on the
+    // parent. Empty for leaf capabilities.
+    const childWorldModels = await getChildWorldModels(req.params.id);
+    return ok(res, childWorldModels.length > 0 ? { ...view, childWorldModels } : view, 200);
   },
 
   async checkWorldModelFingerprint(req: Request, res: Response) {

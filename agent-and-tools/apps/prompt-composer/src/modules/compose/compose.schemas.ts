@@ -199,6 +199,16 @@ export const composeSchema = z.object({
       target: z.string(),
       command: z.string().optional(),
     })).default([]),
+    // Parent/delivery capabilities embed their children's world models BY
+    // REFERENCE (agent-runtime fetches them on-demand from the hierarchy).
+    childWorldModels: z.array(z.object({
+      capabilityId: z.string(),
+      name: z.string().nullable().optional(),
+      primaryLanguage: z.string().nullable().optional(),
+      readmeSummary: z.string().nullable().optional(),
+      codeConventions: z.array(z.object({ topic: z.string(), rule: z.string(), source: z.string().optional() })).default([]),
+      entrypoints: z.array(z.object({ kind: z.string(), target: z.string(), command: z.string().optional() })).default([]),
+    })).default([]),
   }).optional(),
   // M62 Slice D — LLMLingua-2 prompt compression. Opt-in per-layer.
   //
