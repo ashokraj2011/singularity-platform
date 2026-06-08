@@ -33,6 +33,7 @@ let win = null
 let tray = null
 let child = null
 let shim = null
+let runnerRegistered = false   // true once the runner logs "registered with bridge"
 let quitting = false
 const logs = []
 
@@ -85,6 +86,8 @@ function snapshot() {
   return {
     paired: !!token,
     running: !!child,
+    registered: runnerRegistered,
+    shimRunning: !!shim,
     user: claims ? { user_id: claims.sub, device_name: claims.device_name, exp: claims.exp } : null,
     settings: loadSettings(),
     logs: logs.slice(-80),
@@ -124,18 +127,51 @@ function startRunner() {
   }
   child = spawn(process.execPath, [s.runnerEntry], { env })
   pushLog(`▸ runner started (pid ${child.pid}) → ${s.bridge}`)
-  const onData = (d) => String(d).split('\n').map((l) => l.trimEnd()).filter(Boolean).forEach(pushLog)
+  const onData = (d) => String(d).split('\n').map((l) => l.trimEnd()).filter(Boolean).forEach((line) => {
+    // The relay-client logs this on auth.ack — i.e. the bridge accepted us and
+    // we're now registered (and advertising model-run).
+    if (line.includes('registered with bridge')) { runnerRegistered = true; pushState() }
+    else if (line.includes('requested disconnect') || line.includes('laptop disconnected')) { runnerRegistered = false; pushState() }
+    pushLog(line)
+  })
   child.stdout.on('data', onData)
   child.stderr.on('data', onData)
-  child.on('exit', (code) => { pushLog(`✗ runner exited (code ${code})`); child = null; updateTray(); pushState() })
+  child.on('exit', (code) => { pushLog(`✗ runner exited (code ${code})`); child = null; runnerRegistered = false; updateTray(); pushState() })
   updateTray(); pushState()
   return { ok: true }
 }
 function stopRunner() {
   if (child) { try { child.kill() } catch { /* */ } child = null; pushLog('▸ runner stopped') }
+  runnerRegistered = false
   stopShim()
   updateTray(); pushState()
   return { ok: true }
+}
+
+// ── health checks (preflight: is the path actually live?) ──────────────────
+async function pingOk(url, opts = {}) {
+  try {
+    const ctrl = new AbortController()
+    const t = setTimeout(() => ctrl.abort(), 2500)
+    const r = await fetch(url, { signal: ctrl.signal, ...opts })
+    clearTimeout(t)
+    return r.status < 500   // any non-5xx means it's listening
+  } catch { return false }
+}
+
+async function checkHealth() {
+  const s = loadSettings()
+  const copilotBase = (s.copilotBaseUrl || '').replace(/\/$/, '')
+  const [copilotReachable, shimUp] = await Promise.all([
+    copilotBase ? pingOk(`${copilotBase}/v1/models`) : Promise.resolve(false),
+    shim ? pingOk(`http://localhost:${s.shimPort}/healthz`) : Promise.resolve(false),
+  ])
+  return {
+    runnerRegistered,          // laptop accepted by the bridge (→ serving model-run)
+    localLlmEnabled: !!s.localLlmEnabled,
+    shimUp,                    // translation shim listening
+    copilotReachable,          // Copilot bridge responding
+  }
 }
 
 // ── pairing ────────────────────────────────────────────────────────────────────
@@ -201,6 +237,7 @@ ipcMain.handle('pair:login', async (_e, creds) => { try { return await pairWithL
 ipcMain.handle('pair:clear', () => { stopRunner(); clearToken(); pushLog('▸ pairing cleared'); return { ok: true } })
 ipcMain.handle('runner:start', () => startRunner())
 ipcMain.handle('runner:stop', () => stopRunner())
+ipcMain.handle('health:check', () => checkHealth())
 
 app.whenReady().then(() => { createWindow(); createTray() })
 app.on('activate', () => { if (win) win.show(); else createWindow() })

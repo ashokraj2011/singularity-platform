@@ -12,6 +12,8 @@
   header h1 { font-size:15px; margin:0; }
   .dot { width:9px; height:9px; border-radius:50%; background:#cbd5e1; }
   .dot.on { background:#16a34a; } .dot.run { background:#f59e0b; }
+  .hdot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#cbd5e1; margin-right:7px; vertical-align:middle; }
+  .hdot.ok { background:#16a34a; } .hdot.bad { background:#ef4444; } .hdot.off { background:#cbd5e1; }
   nav { display:flex; gap:4px; padding:8px 16px 0; background:#fff; border-bottom:1px solid var(--bd); }
   nav button { border:none; background:none; padding:8px 12px; font:inherit; color:var(--mut); cursor:pointer; border-bottom:2px solid transparent; }
   nav button.active { color:var(--p); border-bottom-color:var(--p); font-weight:600; }
@@ -49,6 +51,14 @@
           <span style="margin-left:auto"></span>
           <button id="startBtn" class="act">Start runner</button>
           <button id="stopBtn" class="ghost">Stop</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="muted" style="margin-bottom:8px">Connection health</div>
+        <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
+          <div><span class="hdot off" id="h_reg"></span> Laptop registered with bridge <small class="muted">— serving model-run</small></div>
+          <div><span class="hdot off" id="h_shim"></span> Local LLM shim listening</div>
+          <div><span class="hdot off" id="h_copilot"></span> Copilot bridge reachable</div>
         </div>
       </div>
       <div class="card">
@@ -192,9 +202,20 @@
     refresh()
   }
 
-  async function refresh() { applyState(await window.api.getState()) }
-  window.api.onState(applyState)
+  function setDot(id, cls) { $(id).className = 'hdot ' + cls }
+  async function refreshHealth() {
+    let h
+    try { h = await window.api.checkHealth() } catch { return }
+    const running = state && state.running
+    setDot('h_reg', running ? (h.runnerRegistered ? 'ok' : 'bad') : 'off')
+    setDot('h_shim', h.localLlmEnabled ? (h.shimUp ? 'ok' : 'bad') : 'off')
+    setDot('h_copilot', h.localLlmEnabled ? (h.copilotReachable ? 'ok' : 'bad') : 'off')
+  }
+
+  async function refresh() { applyState(await window.api.getState()); refreshHealth() }
+  window.api.onState((st) => { applyState(st); refreshHealth() })
   window.api.onLog(() => { /* full state pushes carry logs; light no-op */ })
+  setInterval(refreshHealth, 4000)
   refresh()
 </script>
 </body>

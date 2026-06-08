@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('api', {
   clearPairing: () => ipcRenderer.invoke('pair:clear'),
   startRunner: () => ipcRenderer.invoke('runner:start'),
   stopRunner: () => ipcRenderer.invoke('runner:stop'),
+  checkHealth: () => ipcRenderer.invoke('health:check'),
   onLog: (cb) => ipcRenderer.on('log', (_e, line) => cb(line)),
   onState: (cb) => ipcRenderer.on('state', (_e, st) => cb(st)),
 })
