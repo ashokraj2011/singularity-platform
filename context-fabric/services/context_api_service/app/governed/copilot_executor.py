@@ -17,6 +17,7 @@ Copilot auth already are.
 """
 from __future__ import annotations
 
+import dataclasses
 import re
 from typing import Any
 
@@ -99,12 +100,12 @@ async def run_stage_via_copilot(
 
     parsed = parse_copilot_result(disp.result)
 
-    # Synthesize the terminal state: the Copilot CLI did the whole phase, so we
-    # land directly in FINALIZE with the receipt as evidence.
-    state.current_phase = Phase.FINALIZE
-    if parsed["changed_paths"]:
-        state.produced_code_changes[Phase.FINALIZE.value] = parsed["changed_paths"]
-    state.receipts.setdefault(Phase.FINALIZE.value, []).append(
+    # PhaseState is a frozen dataclass, so we can't assign to its fields — build a
+    # new terminal state with dataclasses.replace, copying the mutable containers
+    # so the caller's state isn't touched. The Copilot CLI did the whole phase, so
+    # we land directly in FINALIZE with the receipt as evidence.
+    receipts = {k: list(v) for k, v in state.receipts.items()}
+    receipts.setdefault(Phase.FINALIZE.value, []).append(
         {
             "kind": "copilot_execution",
             "executor": "copilot-cli",
@@ -114,10 +115,20 @@ async def run_stage_via_copilot(
             "served_by": disp.served_by,
         }
     )
-    state.history.append({"role": "assistant", "content": parsed["summary"]})
+    produced = dict(state.produced_code_changes)
+    if parsed["changed_paths"]:
+        produced[Phase.FINALIZE.value] = parsed["changed_paths"]
+    history = list(state.history) + [{"role": "assistant", "content": parsed["summary"]}]
+    final_state = dataclasses.replace(
+        state,
+        current_phase=Phase.FINALIZE,
+        receipts=receipts,
+        produced_code_changes=produced,
+        history=history,
+    )
 
     return StageRunResult(
-        final_state=state,
+        final_state=final_state,
         stop_reason="FINALIZED",
         turns=[
             {
