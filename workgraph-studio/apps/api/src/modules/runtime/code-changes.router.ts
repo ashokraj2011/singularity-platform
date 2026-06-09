@@ -56,6 +56,10 @@ codeChangesRouter.get('/:runId/code-changes', async (req: Request, res: Response
   // (2026-05-26) Inline code-change records from the governed adapter, see
   // blueprint.router /sessions/:id/code-changes for the rationale.
   const inlineRecords = new Map<string, Record<string, unknown>>()
+  // §13.4 piece 2 — copilot_execute commits directly (no per-file codeChangeIds),
+  // so synthesize a code-change item from the captured changedPaths + commitSha
+  // so the same CodeChangesPanel surfaces each copilot stage's files.
+  const copilotItemsById = new Map<string, { id: string; tool_name: string; paths_touched: string[]; commit_sha?: string }>()
   const addLookup = (source: Record<string, unknown> | null | undefined) => {
     if (!source) return
     const cfCallId = source.cfCallId
@@ -77,6 +81,18 @@ codeChangesRouter.get('/:runId/code-changes', async (req: Request, res: Response
         const id = raw.id
         if (typeof id !== 'string' || !id) continue
         inlineRecords.set(id, raw)
+      }
+    }
+    const changedPaths = source.changedPaths
+    if (Array.isArray(changedPaths) && changedPaths.length > 0) {
+      const paths = changedPaths.filter((p): p is string => typeof p === 'string')
+      if (paths.length > 0) {
+        copilotItemsById.set(`copilot:${cfCallId}`, {
+          id: `copilot:${cfCallId}`,
+          tool_name: 'copilot_execute',
+          paths_touched: paths,
+          commit_sha: typeof source.workspaceCommitSha === 'string' ? source.workspaceCommitSha : undefined,
+        })
       }
     }
   }
@@ -148,7 +164,7 @@ codeChangesRouter.get('/:runId/code-changes', async (req: Request, res: Response
     for (const [id, inline] of inlineRecords) {
       itemsById.set(id, inline) // inline wins; it carries the diff body.
     }
-    const items = [...itemsById.values()] as Array<{ id: string; tool_name?: string; paths_touched?: string[]; commit_sha?: string }>
+    const items = [...itemsById.values(), ...copilotItemsById.values()] as Array<{ id: string; tool_name?: string; paths_touched?: string[]; commit_sha?: string }>
     const stale = settled.some(r => r.status === 'fulfilled' && r.value.stale)
     const errors = settled.flatMap(r => r.status === 'rejected' ? [(r.reason as Error).message] : [])
 

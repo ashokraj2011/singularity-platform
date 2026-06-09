@@ -54,6 +54,7 @@ def parse_copilot_result(result: Any) -> dict[str, Any]:
         "summary": str(data.get("summary") or ""),
         "diff": str(data.get("diff") or ""),
         "changed_paths": [str(p) for p in changed],
+        "commit_sha": data.get("commitSha") or data.get("commit_sha"),
         "duration_ms": data.get("duration_ms"),
     }
 
@@ -112,6 +113,7 @@ async def run_stage_via_copilot(
             "summary": parsed["summary"],
             "changed_paths": parsed["changed_paths"],
             "diff": parsed["diff"],
+            "commitSha": parsed["commit_sha"],
             "served_by": disp.served_by,
         }
     )
