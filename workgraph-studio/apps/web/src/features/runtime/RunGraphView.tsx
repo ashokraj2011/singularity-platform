@@ -22,9 +22,18 @@ import 'reactflow/dist/style.css'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft, List, CheckCircle2, Circle, Clock, AlertCircle, Pause,
-  RotateCw, FileText, MessageSquare, X, Check, Ban, Send,
+  RotateCw, FileText, MessageSquare, X, Check, Ban, Send, ExternalLink,
+  ShieldCheck, CornerUpLeft, Library,
 } from 'lucide-react'
 import { api } from '../../lib/api'
+
+// Non-agentic node types that need their own real handler (form-fill, approval
+// decision, workbench, etc.). The graph shows status/log/artifacts/restart for
+// them like any node, but for the actual interaction it routes to the Timeline
+// view, which already has the purpose-built panels.
+const INTERACTIVE_TYPES = new Set([
+  'HUMAN_TASK', 'APPROVAL', 'WORKBENCH_TASK', 'CONSUMABLE_CREATION', 'DECISION_GATE', 'WORK_ITEM',
+])
 
 export interface RunGraphNodeData {
   id: string
@@ -105,6 +114,7 @@ function RunGraphNode({ data }: NodeProps<CardData>) {
   const s = st(data.status)
   const active = ['ACTIVE', 'RUNNING'].includes((data.status ?? '').toUpperCase())
   const isAgent = data.nodeType === 'AGENT_TASK'
+  const isInteractive = INTERACTIVE_TYPES.has(data.nodeType)
   const btn = (label: string, Icon: typeof RotateCw, onClick: () => void, tone?: 'approve' | 'reject') => (
     <button
       onClick={(e) => { e.stopPropagation(); onClick() }}
@@ -150,9 +160,11 @@ function RunGraphNode({ data }: NodeProps<CardData>) {
             {btn('Reject', Ban, () => data.onSelect(data.id, 'chat'), 'reject')}
           </>
         )}
+        {isInteractive && active && btn('Open', ExternalLink, () => data.onSelect(data.id))}
         {btn(active ? 'Restart' : 'Restart stage', RotateCw, () => data.onRestart(data.id))}
         <div style={{ display: 'flex', gap: 5 }}>
-          <span style={{ flex: 1 }}>{btn('Chat', MessageSquare, () => data.onSelect(data.id, 'chat'))}</span>
+          {/* Chat = copilot refine — agent stages only. */}
+          {isAgent && <span style={{ flex: 1 }}>{btn('Chat', MessageSquare, () => data.onSelect(data.id, 'chat'))}</span>}
           <span style={{ flex: 1 }}>{btn('Artifacts', FileText, () => data.onSelect(data.id, 'artifacts'))}</span>
         </div>
       </div>
@@ -168,16 +180,26 @@ function LiveLogPeek({ instanceId, nodeId, active }: { instanceId: string; nodeI
   return <div style={{ fontSize: 10.5, color: '#475569', lineHeight: 1.35, maxHeight: 42, overflow: 'hidden' }}>{text.slice(0, 140)}{text.length > 140 ? '…' : ''}</div>
 }
 
-type Consumable = { id: string; name?: string; status?: string; formData?: { content?: string } }
+type Consumable = { id: string; name?: string; status?: string; nodeId?: string; formData?: { content?: string } }
+const unwrapList = (d: unknown): Consumable[] => Array.isArray(d) ? d as Consumable[] : ((d as { items?: Consumable[] })?.items ?? [])
 function useConsumables(instanceId: string, nodeId: string, live: boolean) {
   return useQuery<Consumable[]>({
     queryKey: ['run-graph-consumables', instanceId, nodeId],
     // /consumables may return a bare array OR a paginated { items: [...] } — handle both.
-    queryFn: () => api.get('/consumables', { params: { instanceId, nodeId } })
-      .then(r => (Array.isArray(r.data) ? r.data : (r.data?.items ?? []))),
+    queryFn: () => api.get('/consumables', { params: { instanceId, nodeId } }).then(r => unwrapList(r.data)),
     enabled: !!instanceId && !!nodeId,
     refetchInterval: live ? 5_000 : false,
     staleTime: 4_500,
+  })
+}
+// All artifacts across the run — for the phase-by-phase catalog.
+function useAllConsumables(instanceId: string, live: boolean) {
+  return useQuery<Consumable[]>({
+    queryKey: ['run-graph-all-consumables', instanceId],
+    queryFn: () => api.get('/consumables', { params: { instanceId } }).then(r => unwrapList(r.data)),
+    enabled: !!instanceId,
+    refetchInterval: live ? 6_000 : false,
+    staleTime: 5_000,
   })
 }
 
@@ -195,6 +217,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
   const qc = useQueryClient()
   const [selected, setSelected] = useState<string | null>(null)
   const [tab, setTab] = useState<PanelTab>('log')
+  const [showCatalog, setShowCatalog] = useState(false)
   const live = !['COMPLETED', 'CANCELLED', 'FAILED'].includes((instanceStatus ?? '').toUpperCase())
 
   const invalidate = useCallback(() => {
@@ -211,9 +234,17 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
     onSuccess: invalidate,
   })
 
-  const onSelect = useCallback((id: string, t?: PanelTab) => { setSelected(id); if (t) setTab(t) }, [])
+  const onSelect = useCallback((id: string, t?: PanelTab) => { setShowCatalog(false); setSelected(id); if (t) setTab(t) }, [])
 
   const positions = useMemo(() => layout(nodes, edges), [nodes, edges])
+  // phases in left→right (execution) order, for the catalog + send-back list
+  const orderedPhases = useMemo(() => nodes.slice().sort((a, b) => {
+    const pa = positions.get(a.id) ?? { x: 0, y: 0 }, pb = positions.get(b.id) ?? { x: 0, y: 0 }
+    return pa.x - pb.x || pa.y - pb.y
+  }).map(n => ({ id: n.id, label: n.label })), [nodes, positions])
+  const completedNodes = useMemo(
+    () => orderedPhases.filter(p => (nodes.find(x => x.id === p.id)?.status ?? '').toUpperCase() === 'COMPLETED'),
+    [orderedPhases, nodes])
   const busyId = restartMut.isPending ? restartMut.variables : approveMut.isPending ? approveMut.variables : null
 
   const rfNodes: Node<CardData>[] = useMemo(() => nodes.map(n => ({
@@ -246,6 +277,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
         <button onClick={onBack} style={topBtn}><ArrowLeft size={13} /> Back</button>
         <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{runName}</div>
         <span style={{ fontSize: 11, fontWeight: 700, color: st(instanceStatus).color, padding: '3px 9px', borderRadius: 20, background: st(instanceStatus).bg, border: `1px solid ${st(instanceStatus).ring}` }}>{instanceStatus}</span>
+        <button onClick={() => { setShowCatalog(c => !c); setSelected(null) }} style={{ ...topBtn, ...(showCatalog ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }}><Library size={13} /> Catalog</button>
         <button onClick={onTimeline} style={topBtn}><List size={13} /> Timeline</button>
       </div>
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
@@ -261,19 +293,24 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
             <Controls showInteractive={false} />
           </ReactFlow>
         </div>
-        {selectedNode && (
-          <NodePanel
-            key={selectedNode.id}
-            instanceId={instanceId}
-            node={selectedNode}
-            live={live}
-            tab={tab} setTab={setTab}
-            onClose={() => setSelected(null)}
-            onRestart={() => restartMut.mutate(selectedNode.id)}
-            onApprove={() => approveMut.mutate(selectedNode.id)}
-            busy={busyId === selectedNode.id}
-          />
-        )}
+        {showCatalog
+          ? <ArtifactCatalog instanceId={instanceId} live={live} phases={orderedPhases} onClose={() => setShowCatalog(false)} />
+          : selectedNode && (
+            <NodePanel
+              key={selectedNode.id}
+              instanceId={instanceId}
+              node={selectedNode}
+              live={live}
+              tab={tab} setTab={setTab}
+              completedNodes={completedNodes}
+              onClose={() => setSelected(null)}
+              onRestart={() => restartMut.mutate(selectedNode.id)}
+              onApprove={() => approveMut.mutate(selectedNode.id)}
+              onRestartNode={(nid) => restartMut.mutate(nid)}
+              onOpenTimeline={onTimeline}
+              busy={busyId === selectedNode.id}
+            />
+          )}
       </div>
     </div>
   )
@@ -284,21 +321,31 @@ const topBtn: CSSProperties = {
   border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', color: '#475569', fontSize: 12, fontWeight: 600,
 }
 
-function NodePanel({ instanceId, node, live, tab, setTab, onClose, onRestart, onApprove, busy }: {
+function NodePanel({ instanceId, node, live, tab, setTab, completedNodes, onClose, onRestart, onApprove, onRestartNode, onOpenTimeline, busy }: {
   instanceId: string
   node: RunGraphNodeData
   live: boolean
   tab: PanelTab
   setTab: (t: PanelTab) => void
+  completedNodes: { id: string; label: string }[]
   onClose: () => void
   onRestart: () => void
   onApprove: () => void
+  onRestartNode: (id: string) => void
+  onOpenTimeline: () => void
   busy: boolean
 }) {
   const s = st(node.status)
+  const [sendBackOpen, setSendBackOpen] = useState(false)
   const { data: consumables = [] } = useConsumables(instanceId, node.id, live)
   const active = ['ACTIVE', 'RUNNING'].includes((node.status ?? '').toUpperCase())
   const latest = consumables[consumables.length - 1]
+  const isAgent = node.nodeType === 'AGENT_TASK'
+  const sendBackTargets = completedNodes.filter(c => c.id !== node.id)
+  const isInteractive = INTERACTIVE_TYPES.has(node.nodeType)
+  // Chat (refine) is copilot-only; non-agent nodes get Log + Artifacts.
+  const tabs: PanelTab[] = isAgent ? ['log', 'artifacts', 'chat'] : ['log', 'artifacts']
+  const activeTab = tab === 'chat' && !isAgent ? 'log' : tab
 
   return (
     <div style={{ width: 380, flexShrink: 0, background: '#fff', borderLeft: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -311,21 +358,27 @@ function NodePanel({ instanceId, node, live, tab, setTab, onClose, onRestart, on
         <button onClick={onClose} style={{ ...topBtn, padding: 6 }}><X size={14} /></button>
       </div>
       <div style={{ display: 'flex', gap: 4, padding: '8px 10px', borderBottom: '1px solid #f1f5f9' }}>
-        {(['log', 'artifacts', 'chat'] as PanelTab[]).map(t => (
+        {tabs.map(t => (
           <button key={t} onClick={() => setTab(t)} style={{
             flex: 1, padding: '6px 8px', borderRadius: 7, fontSize: 11.5, fontWeight: 600, cursor: 'pointer', textTransform: 'capitalize',
-            border: '1px solid', borderColor: tab === t ? '#0ea5e9' : 'transparent',
-            background: tab === t ? '#f0f9ff' : 'transparent', color: tab === t ? '#0284c7' : '#64748b',
+            border: '1px solid', borderColor: activeTab === t ? '#0ea5e9' : 'transparent',
+            background: activeTab === t ? '#f0f9ff' : 'transparent', color: activeTab === t ? '#0284c7' : '#64748b',
           }}>{t}</button>
         ))}
       </div>
+      {active && isInteractive && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 14px 0', padding: '9px 11px', borderRadius: 9, background: '#fffbeb', border: '1px solid #fde68a' }}>
+          <AlertCircle size={14} color="#d97706" style={{ flexShrink: 0 }} />
+          <div style={{ flex: 1, fontSize: 11.5, color: '#92400e', lineHeight: 1.4 }}>This stage needs input ({node.nodeType.replace(/_/g, ' ').toLowerCase()}). Complete it in the Timeline view.</div>
+        </div>
+      )}
       <div style={{ flex: 1, overflow: 'auto', padding: 14, minHeight: 0 }}>
-        {tab === 'log' && (
+        {activeTab === 'log' && (
           <pre style={{ fontSize: 11.5, lineHeight: 1.5, color: '#334155', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'ui-monospace, monospace' }}>
             {latest?.formData?.content?.toString() ?? (active ? 'Working… (live output appears here as the stage produces it)' : 'No output yet.')}
           </pre>
         )}
-        {tab === 'artifacts' && (
+        {activeTab === 'artifacts' && (
           consumables.length === 0
             ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No artifacts produced yet.</div>
             : <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -341,17 +394,39 @@ function NodePanel({ instanceId, node, live, tab, setTab, onClose, onRestart, on
                 ))}
               </div>
         )}
-        {tab === 'chat' && <ChatRefine instanceId={instanceId} node={node} busy={busy} onRestart={onRestart} />}
+        {activeTab === 'chat' && <ChatRefine instanceId={instanceId} node={node} busy={busy} onRestart={onRestart} />}
       </div>
-      <div style={{ display: 'flex', gap: 8, padding: '10px 14px', borderTop: '1px solid #e2e8f0' }}>
-        {active && node.nodeType === 'AGENT_TASK' && (
+      {sendBackOpen && sendBackTargets.length > 0 && (
+        <div style={{ borderTop: '1px solid #e2e8f0', padding: '8px 8px', maxHeight: 170, overflow: 'auto', background: '#f8fafc' }}>
+          <div style={{ fontSize: 9.5, fontWeight: 800, color: '#64748b', letterSpacing: 0.4, padding: '2px 6px 6px' }}>SEND BACK TO A PREVIOUS STAGE</div>
+          {sendBackTargets.map(t => (
+            <button key={t.id} onClick={() => { onRestartNode(t.id); onClose() }}
+              style={{ display: 'flex', alignItems: 'center', gap: 7, width: '100%', padding: '7px 9px', borderRadius: 7, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: '#334155', textAlign: 'left' }}>
+              <CornerUpLeft size={12} color="#0ea5e9" /> {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, padding: '10px 14px', borderTop: '1px solid #e2e8f0', flexWrap: 'wrap' }}>
+        {active && isAgent && (
           <button onClick={onApprove} disabled={busy} style={{ ...footBtn, background: '#22c55e', borderColor: '#16a34a', color: '#fff', opacity: busy ? 0.6 : 1 }}>
             <Check size={13} /> Approve &amp; advance
+          </button>
+        )}
+        {active && isInteractive && (
+          <button onClick={onOpenTimeline} style={{ ...footBtn, background: '#0ea5e9', borderColor: '#0284c7', color: '#fff' }}>
+            <ExternalLink size={13} /> Open in Timeline
           </button>
         )}
         <button onClick={onRestart} disabled={busy} style={{ ...footBtn, opacity: busy ? 0.6 : 1 }}>
           <RotateCw size={13} /> {busy ? 'Working…' : active ? 'Cancel & restart' : 'Restart stage'}
         </button>
+        {sendBackTargets.length > 0 && (
+          <button onClick={() => setSendBackOpen(o => !o)}
+            style={{ ...footBtn, flex: 'none', padding: '8px 11px', ...(sendBackOpen ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }}>
+            <CornerUpLeft size={13} /> Send back
+          </button>
+        )}
       </div>
     </div>
   )
@@ -399,6 +474,81 @@ function ChatRefine({ instanceId, node, busy, onRestart }: {
         >
           <Send size={14} />
         </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Artifact catalog: every doc across the run, grouped by phase, by name ───
+const catBtn: CSSProperties = {
+  flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+  padding: '5px 8px', borderRadius: 6, fontSize: 10.5, fontWeight: 700, cursor: 'pointer',
+  border: '1px solid', background: '#fff',
+}
+function ArtifactCatalog({ instanceId, live, phases, onClose }: {
+  instanceId: string
+  live: boolean
+  phases: { id: string; label: string }[]
+  onClose: () => void
+}) {
+  const qc = useQueryClient()
+  const { data: all = [] } = useAllConsumables(instanceId, live)
+  const [verified, setVerified] = useState<Set<string>>(new Set())
+  const approveMut = useMutation({
+    mutationFn: (cid: string) => api.post(`/consumables/${cid}/approve`).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['run-graph-all-consumables', instanceId] }),
+  })
+  // Verify → send to the verify agent. Backend not wired yet; POST best-effort and
+  // mark the doc as verification-requested either way ("just give the button").
+  const verifyMut = useMutation({
+    mutationFn: (cid: string) => api.post(`/consumables/${cid}/verify`).then(r => r.data).catch(() => ({ queued: true })),
+    onSuccess: (_d, cid) => setVerified(s => new Set(s).add(cid)),
+  })
+  const groups = phases
+    .map(p => ({ phase: p, docs: all.filter(c => c.nodeId === p.id).slice().sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '')) }))
+    .filter(g => g.docs.length > 0)
+
+  return (
+    <div style={{ width: 400, flexShrink: 0, background: '#fff', borderLeft: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid #e2e8f0' }}>
+        <Library size={16} color="#0ea5e9" />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: '#0f172a' }}>Artifact Catalog</div>
+          <div style={{ fontSize: 10.5, color: '#94a3b8' }}>{all.length} document{all.length === 1 ? '' : 's'} · by phase</div>
+        </div>
+        <button onClick={onClose} style={{ ...topBtn, padding: 6 }}><X size={14} /></button>
+      </div>
+      <div style={{ flex: 1, overflow: 'auto', padding: 12, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        {groups.length === 0 && <div style={{ fontSize: 12, color: '#94a3b8' }}>No artifacts produced yet.</div>}
+        {groups.map(g => (
+          <section key={g.phase.id}>
+            <div style={{ fontSize: 10, fontWeight: 800, color: '#64748b', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 7 }}>{g.phase.label}</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              {g.docs.map(d => {
+                const approved = ['APPROVED', 'PUBLISHED'].some(k => (d.status ?? '').toUpperCase().includes(k))
+                return (
+                  <div key={d.id} style={{ border: '1px solid #e2e8f0', borderRadius: 9, padding: '8px 10px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7 }}>
+                      <FileText size={13} color="#475569" />
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 700, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name ?? 'Artifact'}</div>
+                      {d.status && <span style={{ fontSize: 9.5, fontWeight: 700, color: approved ? '#16a34a' : '#94a3b8' }}>{d.status}</span>}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button onClick={() => approveMut.mutate(d.id)} disabled={approved || approveMut.isPending}
+                        style={{ ...catBtn, color: '#16a34a', borderColor: '#bbf7d0', opacity: approved ? 0.5 : 1 }}>
+                        <Check size={11} /> {approved ? 'Approved' : 'Approve'}
+                      </button>
+                      <button onClick={() => verifyMut.mutate(d.id)} disabled={verified.has(d.id) || verifyMut.isPending}
+                        style={{ ...catBtn, color: '#7c3aed', borderColor: '#ddd6fe', opacity: verified.has(d.id) ? 0.6 : 1 }}>
+                        <ShieldCheck size={11} /> {verified.has(d.id) ? 'Verifying…' : 'Verify'}
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </section>
+        ))}
       </div>
     </div>
   )
