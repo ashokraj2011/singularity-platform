@@ -45,11 +45,17 @@ function ConnectionNode({ data }: NodeProps<Connection>) {
   )
 }
 
-function TouchPointNode({ data }: NodeProps<TouchPoint & { wired?: Connection; inherited?: boolean }>) {
-  const wired = data.wired
+type TouchPointData = TouchPoint & {
+  connections: Connection[]
+  currentAlias?: string
+  onWire: (touchPoint: string, alias: string) => void
+  onClear: (touchPoint: string) => void
+}
+function TouchPointNode({ data }: NodeProps<TouchPointData>) {
+  const wired = data.connections.find(c => c.alias === data.currentAlias)
   const color = wired ? (PROVIDER_COLOR[wired.provider] ?? '#0ea5e9') : '#94a3b8'
   return (
-    <div style={{ width: 240, borderRadius: 12, background: wired ? '#fff' : '#f8fafc', border: `1.5px solid ${color}`, boxShadow: '0 1px 3px rgba(15,23,42,0.08)', overflow: 'hidden' }}>
+    <div style={{ width: 260, borderRadius: 12, background: wired ? '#fff' : '#f8fafc', border: `1.5px solid ${color}`, boxShadow: '0 1px 3px rgba(15,23,42,0.08)', overflow: 'hidden' }}>
       <Handle type="target" position={Position.Left} style={{ background: color, border: 'none', width: 9, height: 9 }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 11px' }}>
         <span style={{ width: 24, height: 24, borderRadius: 7, background: 'rgba(14,165,233,0.10)', color: '#0ea5e9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Boxes size={14} /></span>
@@ -58,10 +64,17 @@ function TouchPointNode({ data }: NodeProps<TouchPoint & { wired?: Connection; i
           <div style={{ fontSize: 9.5, color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{data.description}</div>
         </div>
       </div>
-      <div style={{ padding: '6px 11px 9px' }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: wired ? color : '#94a3b8', display: 'flex', alignItems: 'center', gap: 5 }}>
-          <Sparkles size={11} /> {wired ? wired.label : 'Inherits default'}
-        </div>
+      <div style={{ padding: '4px 11px 11px' }}>
+        <div style={{ fontSize: 8.5, fontWeight: 700, color: '#94a3b8', letterSpacing: 0.4, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}><Sparkles size={9} /> CONNECTION</div>
+        <select
+          className="nodrag"
+          value={data.currentAlias ?? ''}
+          onChange={e => e.target.value ? data.onWire(data.key, e.target.value) : data.onClear(data.key)}
+          style={{ width: '100%', padding: '7px 8px', borderRadius: 8, border: `1.5px solid ${color}`, fontSize: 12, fontWeight: 700, color: wired ? color : '#64748b', background: '#fff', cursor: 'pointer' }}
+        >
+          <option value="">Inherits default</option>
+          {data.connections.map(c => <option key={c.alias} value={c.alias}>{c.label} ({c.provider})</option>)}
+        </select>
       </div>
     </div>
   )
@@ -107,15 +120,24 @@ export function LlmRoutingPage() {
     () => rules.filter(r => r.scopeType === scope && r.scopeId === effectiveScopeId),
     [rules, scope, effectiveScopeId])
 
+  // Dropdown-driven wiring (the easy path; the drag-to-connect still works too).
+  const onWire = useCallback((touchPoint: string, alias: string) => {
+    if (scope !== 'DEFAULT' && !effectiveScopeId) { alert(`Enter a ${scope === 'USER' ? 'user' : 'capability'} id first.`); return }
+    upsert.mutate({ touchPoint, scopeType: scope, scopeId: effectiveScopeId, modelAlias: alias, enabled: true })
+  }, [scope, effectiveScopeId, upsert])
+  const onClear = useCallback((touchPoint: string) => {
+    const rule = scopeRules.find(r => r.touchPoint === touchPoint)
+    if (rule) remove.mutate(rule.id)
+  }, [scopeRules, remove])
+
   const nodes: Node[] = useMemo(() => {
     const conn = connections.map((c, i) => ({ id: `c:${c.alias}`, type: 'conn', position: { x: 0, y: i * 78 }, data: c }))
     const tps = touchPoints.map((t, i) => {
       const rule = scopeRules.find(r => r.touchPoint === t.key)
-      const wired = rule ? connections.find(c => c.alias === rule.modelAlias) : undefined
-      return { id: `t:${t.key}`, type: 'tp', position: { x: 420, y: i * 108 }, data: { ...t, wired } }
+      return { id: `t:${t.key}`, type: 'tp', position: { x: 420, y: i * 124 }, data: { ...t, connections, currentAlias: rule?.modelAlias, onWire, onClear } }
     })
     return [...conn, ...tps]
-  }, [connections, touchPoints, scopeRules])
+  }, [connections, touchPoints, scopeRules, onWire, onClear])
 
   const edges: Edge[] = useMemo(() => scopeRules.map(r => ({
     id: r.id, source: `c:${r.modelAlias}`, target: `t:${r.touchPoint}`,
@@ -140,7 +162,7 @@ export function LlmRoutingPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 18px', background: '#fff', borderBottom: '1px solid #e2e8f0', flexShrink: 0 }}>
         <div>
           <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a' }}>LLM Gateway Routing</div>
-          <div style={{ fontSize: 11, color: '#94a3b8' }}>Drag a connection's handle onto a touch point to wire it. Delete the edge to unwire.</div>
+          <div style={{ fontSize: 11, color: '#94a3b8' }}>Pick a connection from each touch point's dropdown (or drag a connection's handle onto it).</div>
         </div>
         <div style={{ flex: 1 }} />
         <button onClick={() => setShowAdd(true)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '8px 13px', borderRadius: 8, border: '1px solid #0284c7', background: '#0ea5e9', color: '#fff', cursor: 'pointer', fontSize: 12.5, fontWeight: 700 }}>
