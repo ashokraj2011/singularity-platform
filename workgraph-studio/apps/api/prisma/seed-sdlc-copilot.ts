@@ -51,35 +51,35 @@ const eid = (n: number) => `3b300000-0000-0000-0000-0000000000${n.toString(16).p
 
 type Json = Record<string, unknown>
 
-interface Phase { key: string; label: string; agent: string; task: string }
+interface Phase { key: string; label: string; agent: string; role: string; task: string }
 const PHASES: Phase[] = [
   {
-    key: 'REQUIREMENTS', label: 'Requirements (Copilot)', agent: PRODUCT_OWNER_AGENT,
+    key: 'REQUIREMENTS', label: 'Requirements (Copilot)', agent: PRODUCT_OWNER_AGENT, role: 'PRODUCT_OWNER',
     task: 'Write a clear Requirements & Acceptance spec for this work item:\n\n{{instance.vars.story}}\n\n' +
       'List functional requirements, acceptance criteria, and edge cases. Save it as REQUIREMENTS.md at the repo root.',
   },
   {
-    key: 'DESIGN', label: 'Design (Copilot)', agent: ARCHITECT_AGENT,
+    key: 'DESIGN', label: 'Design (Copilot)', agent: ARCHITECT_AGENT, role: 'ARCHITECT',
     task: 'Produce a Design Document (and an ADR if a significant decision is involved) for:\n\n{{instance.vars.story}}\n\n' +
       'Cover components, data flow, and risks. Save it as DESIGN.md at the repo root.',
   },
   {
-    key: 'DEVELOP', label: 'Develop (Copilot)', agent: DEVELOPER_AGENT,
+    key: 'DEVELOP', label: 'Develop (Copilot)', agent: DEVELOPER_AGENT, role: 'DEVELOPER',
     task: 'Implement this change end-to-end in the repository:\n\n{{instance.vars.story}}\n\n' +
       'Make the actual code edits, ADD or EXTEND unit tests for the new behavior, and run the tests until they pass.',
   },
   {
-    key: 'QA', label: 'QA (Copilot)', agent: QA_AGENT,
+    key: 'QA', label: 'QA (Copilot)', agent: QA_AGENT, role: 'QA',
     task: 'Run the project test suite for the implemented change and write a concise Test Report ' +
       '(scope, results, coverage) as TEST_REPORT.md at the repo root.',
   },
   {
-    key: 'SECURITY', label: 'Security Review (Copilot)', agent: SECURITY_AGENT,
+    key: 'SECURITY', label: 'Security Review (Copilot)', agent: SECURITY_AGENT, role: 'SECURITY',
     task: 'Review the implemented change for security risks (input validation, authz, secrets, dependencies) ' +
       'and write a Risk Assessment as RISK_ASSESSMENT.md at the repo root.',
   },
   {
-    key: 'RELEASE', label: 'Release Readiness (Copilot)', agent: DEVOPS_AGENT,
+    key: 'RELEASE', label: 'Release Readiness (Copilot)', agent: DEVOPS_AGENT, role: 'DEVOPS',
     task: 'Write a Release & Rollback plan and a short Ops Runbook for this change as RELEASE.md at the repo root.',
   },
 ]
@@ -144,7 +144,9 @@ async function main(): Promise<void> {
       // Capability-independent: no capabilityId pinned → AgentTaskExecutor uses
       // the work item's capability at runtime, and resolves THAT capability's
       // repo. sourceUri is only set as an explicit env fallback.
-      config: { agentTemplateId: phase.agent, task: phase.task, executor: 'copilot', ...(DEFAULT_REPO ? { sourceType: 'github', sourceUri: DEFAULT_REPO } : {}) },
+      // governedStageKey/AgentRole flow to CF's run_context (stage_key / agent_role)
+      // so the copilot prompt names the role (e.g. "acting as the DEVELOPER").
+      config: { agentTemplateId: phase.agent, task: phase.task, executor: 'copilot', governedStageKey: phase.key, governedAgentRole: phase.role, ...(DEFAULT_REPO ? { sourceType: 'github', sourceUri: DEFAULT_REPO } : {}) },
     })
   }
   await upsertNode({
