@@ -1938,15 +1938,22 @@ async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
     # text, not tool_calls, so there is no loop to run. mcp-server runs
     # `copilot -p --allow-all` in the work-item workspace and we wrap the
     # {summary, diff, changedPaths} receipt as a FINALIZED stage result.
-    if (req.run_context.executor or "").strip().lower() == "copilot":
+    # NOTE: this route is /execute-governed-stage, whose run_context is a plain
+    # dict (not the RunContext model) and which has no top-level `task`. The
+    # workflow AGENT_TASK passes both `executor` and `task` THROUGH run_context
+    # (governed-execute-adapter copies run_context verbatim), so read them as
+    # dict keys here and interpolate {{instance.vars.*}} against req.vars.
+    _rc = req.run_context if isinstance(req.run_context, dict) else {}
+    if str(_rc.get("executor") or "").strip().lower() == "copilot":
         from .governed.copilot_executor import run_stage_via_copilot
 
         outcome = await run_stage_via_copilot(
             state,
-            task=req.task,
-            work_item_id=req.run_context.work_item_id,
-            run_context=req.run_context.model_dump(),
-            laptop_user_id=req.run_context.user_id,
+            task=str(_rc.get("task") or ""),
+            vars=req.vars,
+            work_item_id=_rc.get("work_item_id"),
+            run_context=_rc,
+            laptop_user_id=_rc.get("user_id"),
             bearer=req.bearer,
         )
         return {"success": True, "data": outcome.to_dict()}

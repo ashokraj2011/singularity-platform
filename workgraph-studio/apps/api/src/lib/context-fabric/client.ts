@@ -42,8 +42,10 @@ export interface ExecuteRunContext {
   source_uri?: string
   source_ref?: string
   // §13.4 — when 'copilot', CF dispatches the copilot_execute tool to mcp-server
-  // (laptop-routed) instead of running the function-calling loop.
+  // (laptop-routed) instead of running the function-calling loop. `task` rides
+  // here too so the governed-stage route (no top-level task) can read it.
   executor?: string
+  task?: string
 }
 
 export interface ExecuteRequest {
