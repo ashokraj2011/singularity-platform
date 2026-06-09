@@ -1,5 +1,6 @@
 import { Prisma, type WorkflowNode, type WorkflowInstance } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { listRuntimeCapabilities } from '../../../../lib/agent-and-tools/client'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import {
   contextFabricClient, type ExecuteRequest, ContextFabricError,
@@ -11,6 +12,26 @@ import { prepareLlmBudget, recordWorkflowLlmUsage } from '../budget'
 import {
   executeReqToGovernedStageReq, governedStageRespToExecuteResp,
 } from './governed-execute-adapter'
+
+/**
+ * §13.4 working-dir — resolve a capability's primary repo (from agent-runtime),
+ * so a copilot SDLC node clones the capability's LINKED repo when the work item
+ * gives no per-item repoUrl. Best-effort: undefined on any failure (the caller
+ * then falls back to the node's configured sourceUri).
+ */
+async function resolveCapabilityRepo(capabilityId: string): Promise<string | undefined> {
+  try {
+    const caps = await listRuntimeCapabilities()
+    const cap = caps.find((c) => String((c as Record<string, unknown>).id ?? '') === capabilityId) as Record<string, unknown> | undefined
+    const repos = Array.isArray(cap?.repositories) ? (cap!.repositories as Array<Record<string, unknown>>) : []
+    const primary = repos.find((r) => String(r?.status ?? '').toUpperCase() === 'ACTIVE') ?? repos[0]
+    const url = typeof primary?.repoUrl === 'string' ? primary.repoUrl
+      : typeof primary?.url === 'string' ? primary.url : undefined
+    return url && url.trim() ? url.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
 
 type GovernanceMode = NonNullable<ExecuteRequest['governance_mode']>
 
@@ -131,6 +152,18 @@ export async function activateAgentTask(
   const instanceCtx = (instance.context ?? {}) as Record<string, unknown>
   const vars = (instanceCtx._vars ?? instanceCtx.vars ?? {}) as Record<string, unknown>
   const globals = (instanceCtx._globals ?? instanceCtx.globals ?? {}) as Record<string, unknown>
+
+  // §13.4 working-dir — resolve the repo a copilot node clones into its sandbox.
+  // Precedence: work-item `repoUrl` var (per item) → the capability's LINKED repo
+  // (agent-runtime) → node.config.sourceUri (workflow default). Without one,
+  // Copilot runs in an empty dir.
+  let copilotRepo: string | undefined
+  if (configString('executor') === 'copilot') {
+    const fromVar = typeof vars.repoUrl === 'string' && vars.repoUrl.trim() ? vars.repoUrl.trim() : undefined
+    copilotRepo = fromVar
+      ?? (capabilityId ? await resolveCapabilityRepo(capabilityId) : undefined)
+      ?? configString('sourceUri')
+  }
 
   const traceId = `wf-${instance.id}-${node.id}-${run.id.slice(0, 8)}`
   await prisma.agentRunOutput.create({
@@ -265,16 +298,10 @@ export async function activateAgentTask(
       // receives run_context as a verbatim dict.
       executor: configString('executor'),
       ...(configString('executor') === 'copilot' ? { task } : {}),
-      // §13.4 working-dir: for a copilot node, surface the repo so mcp-server
-      // CLONES it into the work-item sandbox (idempotent across stages) and
-      // Copilot runs in the TARGET repo — from node.config.sourceUri or the
-      // work item's {{vars.repoUrl}}. Without it Copilot runs in an empty dir.
-      ...(configString('executor') === 'copilot'
-        ? (() => {
-            const repo = configString('sourceUri') ?? (typeof vars.repoUrl === 'string' ? vars.repoUrl.trim() : '')
-            return repo ? { source_type: configString('sourceType') ?? 'github', source_uri: repo } : {}
-          })()
-        : {}),
+      // §13.4 working-dir: clone the resolved repo (work-item var → capability's
+      // linked repo → node default) into the work-item sandbox so Copilot runs in
+      // the TARGET repo. Resolved above as `copilotRepo`.
+      ...(copilotRepo ? { source_type: configString('sourceType') ?? 'github', source_uri: copilotRepo } : {}),
     },
     task,
     vars,
