@@ -441,6 +441,7 @@ const footBtn: CSSProperties = {
 function ChatRefine({ instanceId, node, busy, onRestart }: {
   instanceId: string; node: RunGraphNodeData; busy: boolean; onRestart: () => void
 }) {
+  const qc = useQueryClient()
   const [msg, setMsg] = useState('')
   const [sent, setSent] = useState<string[]>([])
   const refineMut = useMutation({
@@ -448,7 +449,7 @@ function ChatRefine({ instanceId, node, busy, onRestart }: {
       api.post(`/workflow-instances/${instanceId}/nodes/${node.id}/refine`, { feedback })
         .then(r => r.data)
         .catch(() => { onRestart(); return { fallback: true } }),
-    onSuccess: (_d, feedback) => { setSent(s => [...s, feedback]); setMsg('') },
+    onSuccess: (_d, feedback) => { setSent(s => [...s, feedback]); setMsg(''); qc.invalidateQueries({ queryKey: ['run-instance', instanceId] }) },
   })
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, height: '100%' }}>

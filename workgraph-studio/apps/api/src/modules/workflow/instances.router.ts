@@ -472,6 +472,27 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/restart', async (req, res, next
   }
 })
 
+// Refine: record reviewer feedback on the node, then restart it so the re-run
+// addresses the note (AgentTaskExecutor appends _refineFeedback to the prompt).
+// Used by the run-graph Chat "Send feedback".
+workflowInstancesRouter.post('/:id/nodes/:nodeId/refine', async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    const nodeId = req.params.nodeId as string
+    const feedback = typeof req.body?.feedback === 'string' ? req.body.feedback.trim() : ''
+    if (!feedback) return res.status(400).json({ error: 'feedback is required' })
+    await assertInstancePermission(req.user!.userId, id, 'edit')
+    const node = await prisma.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } })
+    if (!node) return res.status(404).json({ error: 'node not found in this run' })
+    const config = { ...((node.config ?? {}) as Record<string, unknown>), _refineFeedback: feedback }
+    await prisma.workflowNode.update({ where: { id: nodeId }, data: { config: config as Prisma.InputJsonValue } })
+    const result = await restartNode(id, nodeId, req.user!.userId)
+    res.json({ ...result, refined: true })
+  } catch (err) {
+    next(err)
+  }
+})
+
 // M98 — Manually complete a stuck node with an operator comment and advance the
 // workflow. Unlike /restart (re-runs the node) this accepts the node as done
 // and moves downstream. Works on any non-COMPLETED node (FAILED, BLOCKED,

@@ -143,7 +143,14 @@ export async function activateAgentTask(
     ? _earlyVars.parentCapabilityId.trim()
     : undefined
   const capabilityId = configString('capabilityId') ?? workItemCapabilityId
-  const task = configString('task')
+  const baseTask = configString('task')
+  // Refine loop: the run-graph Chat "Send feedback" sets _refineFeedback on the
+  // node + restarts it; append the note so the re-run addresses it (copilot prompt
+  // or governed task alike).
+  const refineFeedback = configString('_refineFeedback')
+  const task = refineFeedback && baseTask
+    ? `${baseTask}\n\n## Reviewer feedback to address (refinement)\n${refineFeedback}`
+    : baseTask
 
   if (!agentTemplateId || !task || !capabilityId) {
     await failRun(
