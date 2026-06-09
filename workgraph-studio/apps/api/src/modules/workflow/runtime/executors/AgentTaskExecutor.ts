@@ -1,6 +1,7 @@
 import { Prisma, type WorkflowNode, type WorkflowInstance } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
 import { listRuntimeCapabilities } from '../../../../lib/agent-and-tools/client'
+import { resolveLlmRouting } from '../../../llm-routing/resolve'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import {
   contextFabricClient, type ExecuteRequest, ContextFabricError,
@@ -204,12 +205,21 @@ export async function activateAgentTask(
       : legacyModel
         ? 'legacy alias'
         : 'gateway default alias'
+  // LLM routing: the GOVERNED_AGENT touch point may be wired to a connection (per
+  // capability / user / default) in the routing canvas. Applies only when neither
+  // the node nor the workflow set an explicit alias. Precedence: node > workflow >
+  // routing > legacy > gateway default.
+  const _nodeAliasExplicit = !!nodeModelAlias && nodeModelAlias !== '__workflow_default__'
+  const routedModelAlias = (!_nodeAliasExplicit && !workflowDefaultModelAlias)
+    ? await resolveLlmRouting('GOVERNED_AGENT', { capabilityId, userId: instance.createdById })
+    : null
   const modelOverrides: Record<string, unknown> = {
     maxOutputTokens: 1200,
     ...((cfg.modelOverrides as Record<string, unknown> | undefined) ?? {}),
     ...(workflowDefaultModelAlias ? { modelAlias: workflowDefaultModelAlias } : {}),
     ...(nodeModelAlias && nodeModelAlias !== '__workflow_default__' ? { modelAlias: nodeModelAlias } : {}),
-    ...(legacyModel && !nodeModelAlias && !workflowDefaultModelAlias ? { modelAlias: legacyModel } : {}),
+    ...(routedModelAlias ? { modelAlias: routedModelAlias } : {}),
+    ...(legacyModel && !nodeModelAlias && !workflowDefaultModelAlias && !routedModelAlias ? { modelAlias: legacyModel } : {}),
   }
   delete modelOverrides.provider
   delete modelOverrides.model
