@@ -2388,3 +2388,23 @@ model LlmRouting {
   @@index([scopeType, scopeId])
   @@map("llm_routing")
 }
+
+/// LLM connections the admin adds in the routing UI — a named gateway + model the
+/// routing canvas wires to touch points. credentialEnv is the NAME of the env var
+/// holding the key (the secret itself never lives in the DB). alias is the
+/// model_alias used at runtime + referenced by LlmRouting.modelAlias.
+model LlmConnection {
+  id            String   @id @default(uuid())
+  name          String
+  provider      String
+  baseUrl       String?
+  model         String
+  alias         String   @unique
+  credentialEnv String?
+  enabled       Boolean  @default(true)
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("llm_connection")
+}
