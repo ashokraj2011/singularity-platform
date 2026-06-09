@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { Prisma, type WorkflowNode, type WorkflowInstance } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
@@ -45,6 +46,13 @@ type GovernanceMode = NonNullable<ExecuteRequest['governance_mode']>
  *     contextPolicy:     { optimizationMode, maxContextTokens, compareWithRaw },
  *     limits:            { maxSteps, timeoutSec },
  *     previewOnly:       boolean,
+ *
+ *     // Pure-agentic Copilot node (workflow-mode, no governed loop / no
+ *     // function-calling — the Copilot CLI is the agent for this phase):
+ *     executor:          'copilot',      // delegate the whole phase to `copilot -p --allow-all`
+ *     workspace:         string,         // optional repo path; when set, the git diff is captured as evidence
+ *     copilotBin:        string,         // optional (default 'copilot' / $COPILOT_BIN)
+ *     timeoutSec:        number,         // optional (default 900)
  *   }
  *
  * On context-fabric errors the AgentRun is FAILED with the error captured
@@ -122,6 +130,28 @@ export async function activateAgentTask(
         `capabilityId=${capabilityId ?? 'null'}, ` +
         `task=${task ? '<present>' : 'null'})`,
     )
+    return
+  }
+
+  // 2b. Pure-agentic Copilot node (workflow-mode). When node.config.executor ===
+  // 'copilot', delegate the WHOLE phase to the GitHub Copilot CLI
+  // (`copilot -p --allow-all`) instead of the context-fabric governed loop. The
+  // CLI does the agentic work and returns TEXT (+ a git diff when
+  // node.config.workspace points at a repo); we capture that as the node output
+  // and move the run to AWAITING_REVIEW — the same terminal state a CF agent run
+  // reaches, so review → advance and prior_outputs → next node are unchanged.
+  // No OpenAI tool_calls required, which is exactly what the CLI can't emit; the
+  // workflow handles orchestration, the CLI handles one phase agentically.
+  if (configString('executor') === 'copilot') {
+    await runCopilotAgenticNode({
+      run,
+      node,
+      instance,
+      task,
+      workspace: configString('workspace'),
+      copilotBin: configString('copilotBin') ?? process.env.COPILOT_BIN ?? 'copilot',
+      timeoutMs: (configNumber('timeoutSec') ?? 900) * 1000,
+    })
     return
   }
 
@@ -541,6 +571,117 @@ export async function activateAgentTask(
     runId: run.id,
     cfCallId: result.correlation.cfCallId,
     mcpInvocationId: result.correlation.mcpInvocationId,
+  })
+}
+
+// ── Pure-agentic Copilot node (workflow-mode) ────────────────────────────────
+// Runs `copilot -p "<prompt>" --allow-all` for one workflow phase, captures the
+// CLI's text (+ git diff when a workspace repo is set) as the node's output, and
+// lands the run at AWAITING_REVIEW. Bypasses context-fabric entirely — the CLI is
+// the agent for this phase; the workflow engine is the orchestrator.
+async function runCopilotAgenticNode(args: {
+  run: { id: string }
+  node: WorkflowNode
+  instance: WorkflowInstance
+  task: string
+  workspace?: string
+  copilotBin: string
+  timeoutMs: number
+}): Promise<void> {
+  const { run, node, instance, task, workspace, copilotBin, timeoutMs } = args
+  const priorOutputs = await collectPriorOutputs(instance.id, node.id)
+  const prompt = buildCopilotNodePrompt(task, instance, priorOutputs)
+  const startedAt = Date.now()
+
+  let cli: { stdout: string; stderr: string; code: number }
+  try {
+    cli = await runCopilotCli(copilotBin, prompt, workspace, timeoutMs)
+  } catch (err) {
+    await failRun(run.id, 'copilot-cli-error', (err as Error).message)
+    return
+  }
+
+  // Capture the code-change evidence when this phase ran against a repo.
+  let diff = ''
+  let changedPaths: string[] = []
+  if (workspace) {
+    diff = await gitInDir(workspace, ['diff']).catch(() => '')
+    const porcelain = await gitInDir(workspace, ['status', '--porcelain']).catch(() => '')
+    changedPaths = porcelain.split('\n').map(l => l.slice(3).trim()).filter(Boolean)
+  }
+
+  const summary = cli.stdout.trim()
+  const payload: Record<string, unknown> = {
+    executor: 'copilot-cli',
+    via: 'workflow-agent-task',
+    workspace: workspace ?? null,
+    changedPaths,
+    diffBytes: diff.length,
+    durationMs: Date.now() - startedAt,
+  }
+
+  await prisma.agentRunOutput.create({
+    data: {
+      runId: run.id,
+      outputType: 'LLM_RESPONSE',
+      rawContent: summary,
+      structuredPayload: { ...payload, diff: diff || undefined } as Prisma.InputJsonValue,
+    },
+  })
+  const artifactId = await createAgentOutputArtifact({
+    instance, node, runId: run.id, content: summary, payload,
+  })
+  await prisma.agentRun.update({
+    where: { id: run.id },
+    data: { status: 'AWAITING_REVIEW', completedAt: new Date() },
+  })
+  await logEvent('AgentRunCompleted', 'AgentRun', run.id, undefined, {
+    executor: 'copilot-cli', changedPaths, artifactId: artifactId ?? null,
+  })
+  await publishOutbox('AgentRun', run.id, 'AgentRunCompleted', { runId: run.id, executor: 'copilot-cli' })
+}
+
+// Compose the CLI prompt: the phase task + a best-effort {{instance.vars.x}}
+// substitution + the prior phases' outputs as context (so each phase builds on
+// the last, the way the governed loop receives prior_outputs).
+function buildCopilotNodePrompt(task: string, instance: WorkflowInstance, priorOutputs: unknown): string {
+  const ctx = isRecord(instance.context) ? instance.context : {}
+  const vars = isRecord(ctx.vars) ? ctx.vars : ctx
+  let prompt = task.replace(/\{\{\s*instance\.vars\.([\w.]+)\s*\}\}/g, (_m, path: string) => {
+    const v = String(path).split('.').reduce<unknown>((o, k) => (isRecord(o) ? o[k] : undefined), vars)
+    return v == null ? '' : String(v)
+  })
+  const priorJson = JSON.stringify(priorOutputs ?? {}, null, 2)
+  if (priorJson && priorJson !== '{}' && priorJson !== 'null') {
+    prompt += `\n\n## Context from previous phases\n\`\`\`json\n${priorJson}\n\`\`\``
+  }
+  return prompt
+}
+
+function runCopilotCli(bin: string, prompt: string, cwd: string | undefined, timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, ['-p', prompt, '--allow-all'], { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    const timer = setTimeout(() => { try { child.kill('SIGKILL') } catch { /* ignore */ } reject(new Error(`copilot CLI timed out after ${Math.round(timeoutMs / 1000)}s`)) }, timeoutMs)
+    child.stdout.on('data', (d) => { stdout += String(d) })
+    child.stderr.on('data', (d) => { stderr += String(d) })
+    child.on('error', (e) => { clearTimeout(timer); reject(new Error(`failed to spawn '${bin}': ${e.message}. Is the Copilot CLI installed and on PATH?`)) })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0 || stdout.trim()) resolve({ stdout, stderr, code: code ?? 0 })
+      else reject(new Error(`copilot CLI exited ${code}: ${(stderr || stdout).slice(0, 500)}`))
+    })
+  })
+}
+
+function gitInDir(cwd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    child.stdout.on('data', (d) => { out += String(d) })
+    child.on('error', reject)
+    child.on('close', () => resolve(out))
   })
 }
 

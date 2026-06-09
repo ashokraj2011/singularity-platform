@@ -16,7 +16,45 @@ laptop and captures the result as **auditable evidence**. This is the
 | Slice 1 | run CLI in a git workspace, capture a code-change **receipt** (diff + files + summary) | `bin/copilot-execute.js` | ✅ #164 (proven on RuleEngine) |
 | Slice 2 | attach to a WorkItem → **scoped session token** + platform-assembled prompt → run → `POST /complete` with the receipt | `bin/copilot-execute.js --work-item` | ✅ #165 (invocation `COMPLETED`) |
 | Slice 3 | **heartbeats** every 20s during the run (liveness) | `bin/copilot-execute.js` | ✅ this change |
-| Slice 4 | a **Develop-stage execution mode** so the SDLC workflow auto-dispatches to the laptop | platform (CF + workbench) | 🔵 designed below |
+| Slice 4 | a **Develop-stage execution mode** so the SDLC workflow auto-dispatches to the laptop | platform (CF + workbench) | 🔵 superseded — see workflow mode |
+| **Workflow mode** | a **pure-agentic Copilot node** (`AGENT_TASK` with `executor: 'copilot'`) — one per phase | `AgentTaskExecutor.ts` | ✅ built (typechecked) |
+
+## Workflow mode — pure-agentic Copilot node (recommended)
+
+Instead of fighting the **workbench** loop (gates + consumables + function-calling),
+model the SDLC as a **workflow** where each phase is an `AGENT_TASK` node, and add a
+node config that delegates the phase to the Copilot CLI:
+
+```jsonc
+// a workflow node's config
+{
+  "agentTemplateId": "…", "capabilityId": "…",
+  "task": "Implement {{instance.vars.feature}} with tests",
+  "executor": "copilot",            // ← bypass the governed loop
+  "workspace": "/path/to/repo",     // optional; when set, the git diff is captured as evidence
+  "copilotBin": "copilot",          // optional ($COPILOT_BIN)
+  "timeoutSec": 900                  // optional
+}
+```
+
+How it runs (`AgentTaskExecutor.activateAgentTask`): when `executor: 'copilot'`, the
+node runs `copilot -p "<task + prior-phase context>" --allow-all` (cwd = `workspace`),
+captures the CLI text + `git diff` as the `AgentRunOutput` + an output artifact, and
+lands the run at **`AWAITING_REVIEW`** — the *same* terminal state a context-fabric
+agent run reaches. So review → advance and `prior_outputs` → the next node are
+unchanged: **the workflow engine orchestrates, the CLI does each phase agentically.**
+No `tool_calls` needed — which is exactly what the CLI can't emit.
+
+Why this beats the workbench path: no gate/consumable machinery to satisfy, no
+6000-line stage-lifecycle change, and it reuses the existing `AGENT_TASK` node +
+review flow. Build the SDLC as a workflow of `executor: 'copilot'` nodes (Requirements
+→ Design → Develop → QA → …) and each phase runs on Copilot, output flowing forward.
+
+**Validate at runtime:** typechecks clean, but it spawns the CLI in the workflow
+runtime — run a one-node `executor: 'copilot'` workflow on your stack and confirm the
+`AgentRunOutput` + artifact land, before wiring a full SDLC loop.
+
+### Earlier design (slice 4, superseded)
 
 ## Slice 4 — platform-side auto-dispatch (design)
 
