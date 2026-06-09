@@ -128,6 +128,23 @@ async def create_capability(
     )
     db.add(cap)
     await db.flush()
+    # Source-of-truth fix: grant the creator a Capability Admin membership so the
+    # capability is immediately visible + manageable to its creator. The
+    # context-picker is membership-scoped — without this a freshly created
+    # capability has zero members and is invisible even to whoever made it (the
+    # bug behind "my new capability isn't in the picker"). Uses IAM's own Role +
+    # CapabilityMembership models + audit event, not a side-channel insert.
+    _cap_admin = (await db.execute(select(Role).where(Role.role_key == "capability_admin"))).scalar_one_or_none()
+    if _cap_admin is not None and getattr(current_user, "id", None):
+        db.add(CapabilityMembership(
+            capability_id=cap.capability_id, user_id=current_user.id,
+            role_id=_cap_admin.id, granted_by=current_user.id, status="active",
+        ))
+        await db.flush()
+        await record_event(db, actor_user_id=current_user.id, event_type="capability_member_added",
+                           capability_id=cap.capability_id,
+                           payload={"user_id": current_user.id, "role_key": "capability_admin",
+                                    "reason": "creator_auto_grant"})
     await record_event(db, actor_user_id=current_user.id, event_type="capability_created",
                        capability_id=cap.capability_id, target_type="capability", target_id=cap.capability_id,
                        payload={"name": cap.name, "capability_type": cap.capability_type})
