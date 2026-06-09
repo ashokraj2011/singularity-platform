@@ -271,7 +271,10 @@ export async function activateAgentTask(
       // work item's {{vars.repoUrl}}. Without it Copilot runs in an empty dir.
       ...(configString('executor') === 'copilot'
         ? (() => {
-            const repo = configString('sourceUri') ?? (typeof vars.repoUrl === 'string' ? vars.repoUrl.trim() : '')
+            // Work-item repoUrl wins (per-item target); node.config.sourceUri is
+            // the workflow default (the copilot SDLC seed sets it).
+            const fromVar = typeof vars.repoUrl === 'string' ? vars.repoUrl.trim() : ''
+            const repo = fromVar || (configString('sourceUri') ?? '')
             return repo ? { source_type: configString('sourceType') ?? 'github', source_uri: repo } : {}
           })()
         : {}),

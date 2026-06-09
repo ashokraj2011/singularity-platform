@@ -32,6 +32,10 @@ const DEVELOPER_AGENT = process.env.SEED_DEV_AGENT ?? 'aaa33b61-651c-4d1b-91ad-2
 const QA_AGENT = process.env.SEED_QA_AGENT ?? 'b2e283d0-4df0-49ff-8404-3d67b09779c5'
 const SECURITY_AGENT = process.env.SEED_SEC_AGENT ?? '0dc3d00f-6c7d-4f50-8d4b-2dae422a7d6f'
 const DEVOPS_AGENT = process.env.SEED_DEVOPS_AGENT ?? '056f0ad7-185b-455a-86be-2c6576c4c2d9'
+// Default repo every copilot phase clones into its sandbox. The board's create
+// form has no repoUrl field, so without a default Copilot runs in an empty dir.
+// A work item that DOES set a `repoUrl` var overrides this per item.
+const DEFAULT_REPO = process.env.SEED_COPILOT_REPO_URL ?? 'https://github.com/ashokraj2011/RuleEngine.git'
 
 const WF_NAME = 'SDLC (Copilot CLI)'
 const WF_ID = '3b000000-0000-0000-0000-0000000000c0'
@@ -132,7 +136,7 @@ async function main(): Promise<void> {
     await upsertNode({
       id: phaseNodeIds[i]!, nodeType: 'AGENT_TASK', label: phase.label, x: 80 + (i + 1) * 220,
       // executor:'copilot' → AgentTaskExecutor → run_context.executor → CF dispatches copilot_execute.
-      config: { agentTemplateId: phase.agent, capabilityId: CAPABILITY_ID, task: phase.task, executor: 'copilot' },
+      config: { agentTemplateId: phase.agent, capabilityId: CAPABILITY_ID, task: phase.task, executor: 'copilot', sourceType: 'github', sourceUri: DEFAULT_REPO },
     })
   }
   await upsertNode({
