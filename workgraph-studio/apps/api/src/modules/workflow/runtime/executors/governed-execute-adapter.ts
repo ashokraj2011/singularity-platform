@@ -144,6 +144,21 @@ export function governedStageRespToExecuteResp(
     : resp.stop_reason === 'APPROVAL_PENDING'
       ? 'WAITING_APPROVAL' as const
       : 'FAILED' as const
+  // §13.4 piece 2 — surface the copilot_execute receipt (changed files + commit)
+  // so the node artifact shows what the stage produced. It lives in
+  // final_state.receipts[<phase>] with kind 'copilot_execution'.
+  const copilotReceipt = (() => {
+    const byPhase = (resp.final_state.receipts ?? {}) as Record<string, Array<Record<string, unknown>>>
+    for (const list of Object.values(byPhase)) {
+      const r = Array.isArray(list) ? list.find((x) => x && x.kind === 'copilot_execution') : undefined
+      if (r) return r
+    }
+    return undefined
+  })()
+  const copilotChangedPaths = Array.isArray(copilotReceipt?.changed_paths)
+    ? (copilotReceipt!.changed_paths as unknown[]).map(String)
+    : []
+  const copilotCommitSha = typeof copilotReceipt?.commitSha === 'string' ? copilotReceipt.commitSha as string : null
   return {
     status,
     finalResponse: synthesiseFinalResponse(resp),
@@ -165,8 +180,8 @@ export function governedStageRespToExecuteResp(
       governanceMode: 'fail_open' as const,
       executionPosture: 'governed' as const,
       workspaceBranch: null,
-      workspaceCommitSha: null,
-      changedPaths: [],
+      workspaceCommitSha: copilotCommitSha,
+      changedPaths: copilotChangedPaths,
       astIndexStatus: null,
       astIndexedFiles: null,
       astIndexedSymbols: null,
@@ -186,7 +201,9 @@ export function governedStageRespToExecuteResp(
       total: resp.totals.input_tokens + resp.totals.output_tokens,
     },
     metrics: {},
-    workspace: null,
+    workspace: copilotReceipt
+      ? { workspaceCommitSha: copilotCommitSha ?? undefined, changedPaths: copilotChangedPaths }
+      : null,
     warnings: resp.error_message ? [resp.error_message] : [],
     pendingApproval: null,
     // Phase-level governed pause payload — the PhaseState the caller persists +
