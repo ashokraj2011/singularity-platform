@@ -6,6 +6,10 @@ const DEFAULT_IAM_BASE_URL = "http://localhost:8100";
 type SyncOptions = {
   authHeader?: string;
   metadata?: Record<string, unknown>;
+  // The user who created/owns this capability. Passed to IAM as owner_user_id so
+  // IAM grants them a Capability Admin membership — otherwise the federated
+  // capability lands with zero members and is invisible to its own creator.
+  ownerUserId?: string;
 };
 
 export async function syncIamCapabilityReference(
@@ -40,6 +44,7 @@ export async function syncIamCapabilityReference(
     capability_type: toIamCapabilityType(capability.capabilityType),
     status: toIamStatus(capability.status),
     visibility: "private",
+    owner_user_id: options.ownerUserId ?? undefined,
     tags: ["agent-and-tools"],
     metadata: {
       sourceService: "agent-runtime",

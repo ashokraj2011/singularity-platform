@@ -202,6 +202,30 @@ async def upsert_capability_reference(
         db.add(cap)
         await db.flush()
 
+    # Federation owner-passthrough: when the source service tells us who owns this
+    # capability, grant them a Capability Admin membership (idempotently) so the
+    # federated capability is visible to its owner — same source-of-truth grant as
+    # create_capability, without a side-channel DB insert. Re-federation backfills
+    # a missing membership too.
+    if body.owner_user_id:
+        _has_mem = (await db.execute(select(CapabilityMembership).where(
+            CapabilityMembership.capability_id == cap.capability_id,
+            CapabilityMembership.user_id == body.owner_user_id,
+        ))).scalar_one_or_none()
+        if _has_mem is None:
+            _cap_admin = (await db.execute(select(Role).where(Role.role_key == "capability_admin"))).scalar_one_or_none()
+            if _cap_admin is not None:
+                db.add(CapabilityMembership(
+                    capability_id=cap.capability_id, user_id=body.owner_user_id,
+                    role_id=_cap_admin.id, granted_by=_audit_actor_user_id(current_user), status="active",
+                ))
+                await db.flush()
+                await record_event(db, actor_user_id=_audit_actor_user_id(current_user),
+                                   event_type="capability_member_added",
+                                   capability_id=cap.capability_id,
+                                   payload={"user_id": body.owner_user_id, "role_key": "capability_admin",
+                                            "reason": "federation_owner_grant"})
+
     await record_event(
         db,
         actor_user_id=_audit_actor_user_id(current_user),
