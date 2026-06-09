@@ -258,6 +258,9 @@ export async function activateAgentTask(
       trace_id: traceId,
       branch_base: configString('branchBase'),
       branch_name: configString('branchName') ?? (workCode ? `work/${workCode}` : undefined),
+      // §13.4 — when node.config.executor === 'copilot', CF dispatches the
+      // copilot_execute tool to the laptop mcp-server instead of the LLM loop.
+      executor: configString('executor'),
     },
     task,
     vars,
