@@ -145,6 +145,10 @@ export const copilotExecuteTool: ToolHandler = {
       }
     }
 
+    log.info(
+      { durationMs: Date.now() - started, exitCode: res.code, timedOut: res.timedOut, changedPaths, commitSha },
+      "copilot_execute ← completed",
+    );
     return {
       success: true,
       output: {
