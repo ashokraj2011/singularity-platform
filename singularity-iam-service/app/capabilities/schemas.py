@@ -44,6 +44,10 @@ class CapabilityReferenceRequest(BaseModel):
     visibility: str = "private"
     metadata: Optional[dict] = None
     tags: Optional[list[str]] = None
+    # The user who owns/created this capability in the source service. When set,
+    # IAM grants them a Capability Admin membership so the federated capability is
+    # visible to its owner (otherwise it lands with zero members — invisible).
+    owner_user_id: Optional[str] = None
 
 
 class UpdateCapabilityRequest(BaseModel):

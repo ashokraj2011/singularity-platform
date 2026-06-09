@@ -288,6 +288,7 @@ export const capabilityService = {
     });
     const iamWarning = await syncIamCapabilityReference(capability, {
       authHeader,
+      ownerUserId: userId,
       metadata: {
         bootstrapRunPending: true,
         childCapabilityIds: requestedChildCapabilityIds,
