@@ -26,9 +26,21 @@ log = logging.getLogger(__name__)
 #   MCP_SERVER_URL          — compose-internal URL (defaults to demo)
 #   MCP_BEARER_TOKEN        — bearer the gateway authenticates against
 #   MCP_TOOL_RUN_TIMEOUT_SEC — per-call timeout, default 120s
+#   MCP_TOOL_RUN_LONG_TIMEOUT_SEC — timeout for slow agentic tools, default 960s
 _MCP_URL = os.environ.get("MCP_SERVER_URL", "http://mcp-server:7100").rstrip("/")
 _MCP_BEARER = os.environ.get("MCP_BEARER_TOKEN", "")
 _TIMEOUT = float(os.environ.get("MCP_TOOL_RUN_TIMEOUT_SEC", "120"))
+# Some tools run a whole agentic phase on the far side and legitimately take
+# minutes — copilot_execute shells out to `copilot -p --allow-all` (its own
+# timeout is 900s). The default 120s dispatch timeout aborts those mid-run with
+# an (empty-string) httpx timeout surfaced as "mcp-server unreachable". Give the
+# long-running set a much larger ceiling, just above the tool's own 900s.
+_LONG_TIMEOUT = float(os.environ.get("MCP_TOOL_RUN_LONG_TIMEOUT_SEC", "960"))
+_LONG_RUNNING_TOOLS = {"copilot_execute"}
+
+
+def _timeout_for(tool_name: str) -> float:
+    return _LONG_TIMEOUT if tool_name in _LONG_RUNNING_TOOLS else _TIMEOUT
 
 
 class ToolDispatchError(RuntimeError):
@@ -197,7 +209,7 @@ async def dispatch_tool(
 
     url = f"{_MCP_URL}/mcp/tool-run"
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=_timeout_for(tool_name)) as client:
             response = await client.post(url, headers=headers, json=payload)
     except httpx.HTTPError as exc:
         raise ToolDispatchError(f"mcp-server unreachable: {exc}") from exc
@@ -291,7 +303,7 @@ async def _dispatch_via_laptop(
             run_context=run_context or {},
             work_item_id=work_item_id,
             workspace_id=workspace_id,
-            timeout=_TIMEOUT,
+            timeout=_timeout_for(tool_name),
         )
     except LaptopNotConnected as exc:
         raise _LaptopUnavailable(str(exc)) from exc
