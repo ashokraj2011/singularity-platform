@@ -46,6 +46,7 @@ import { eventSubscriptionsRouter } from './modules/audit/event-subscriptions.ro
 import { incomingEventsRouter } from './modules/audit/incoming-events.router'
 import { blueprintRouter } from './modules/blueprint/blueprint.router'
 import { eventHorizonRouter } from './modules/event-horizon/event-horizon.router'
+import { llmRoutingRouter } from './modules/llm-routing/llm-routing.router'
 // M40 — ImmutableContract replay + lookup endpoints.
 import { contractsRouter } from './modules/contracts/contracts.router'
 import { workItemsRouter } from './modules/work-items/work-items.router'
@@ -152,6 +153,7 @@ export function createApp(): Express {
   app.use('/api/artifact-templates', authMiddleware, artifactTemplatesRouter)
   app.use('/api/blueprint', authMiddleware, blueprintRouter)
   app.use('/api/event-horizon', authMiddleware, eventHorizonRouter)
+  app.use('/api/llm-routing', authMiddleware, llmRoutingRouter)
   // M40 — ImmutableContract surface (proxy lookup + replay)
   app.use('/api/contracts', authMiddleware, contractsRouter)
   app.use('/api/documents', authMiddleware, documentsRouter)

@@ -2365,3 +2365,26 @@ model WorkbenchStageQuestion {
   @@index([stageId, ordinal])
   @@map("workbench_stage_questions")
 }
+
+/// LLM gateway routing — maps a "touch point" (Copilot SDLC, Workbench, Chat,
+/// Governed agents, Audit judge) to a connection (a model alias from the gateway
+/// catalog), optionally scoped to a specific user or capability. The drag-drop
+/// admin canvas writes these rows; surfaces resolve them at request time.
+/// Resolution precedence: USER > CAPABILITY > DEFAULT. scopeId is '' for DEFAULT.
+model LlmRouting {
+  id          String   @id @default(uuid())
+  touchPoint  String
+  scopeType   String   @default("DEFAULT")
+  scopeId     String   @default("")
+  modelAlias  String
+  enabled     Boolean  @default(true)
+  positionX   Float?
+  positionY   Float?
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([touchPoint, scopeType, scopeId])
+  @@index([scopeType, scopeId])
+  @@map("llm_routing")
+}
