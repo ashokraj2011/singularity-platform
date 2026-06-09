@@ -35,7 +35,12 @@ const DEVOPS_AGENT = process.env.SEED_DEVOPS_AGENT ?? '056f0ad7-185b-455a-86be-2
 // Default repo every copilot phase clones into its sandbox. The board's create
 // form has no repoUrl field, so without a default Copilot runs in an empty dir.
 // A work item that DOES set a `repoUrl` var overrides this per item.
-const DEFAULT_REPO = process.env.SEED_COPILOT_REPO_URL ?? 'https://github.com/ashokraj2011/RuleEngine.git'
+// Optional repo fallback. This workflow is capability-INDEPENDENT: each copilot
+// node resolves the repo from the WORK ITEM's capability at runtime (the
+// capability's CapabilityRepository in agent-runtime). Only set a node sourceUri
+// if SEED_COPILOT_REPO_URL is given, as a last-resort fallback for capabilities
+// that have no linked repo.
+const DEFAULT_REPO = process.env.SEED_COPILOT_REPO_URL
 
 const WF_NAME = 'SDLC (Copilot CLI)'
 const WF_ID = '3b000000-0000-0000-0000-0000000000c0'
@@ -136,7 +141,10 @@ async function main(): Promise<void> {
     await upsertNode({
       id: phaseNodeIds[i]!, nodeType: 'AGENT_TASK', label: phase.label, x: 80 + (i + 1) * 220,
       // executor:'copilot' → AgentTaskExecutor → run_context.executor → CF dispatches copilot_execute.
-      config: { agentTemplateId: phase.agent, capabilityId: CAPABILITY_ID, task: phase.task, executor: 'copilot', sourceType: 'github', sourceUri: DEFAULT_REPO },
+      // Capability-independent: no capabilityId pinned → AgentTaskExecutor uses
+      // the work item's capability at runtime, and resolves THAT capability's
+      // repo. sourceUri is only set as an explicit env fallback.
+      config: { agentTemplateId: phase.agent, task: phase.task, executor: 'copilot', ...(DEFAULT_REPO ? { sourceType: 'github', sourceUri: DEFAULT_REPO } : {}) },
     })
   }
   await upsertNode({
