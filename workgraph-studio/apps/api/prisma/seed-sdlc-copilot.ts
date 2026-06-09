@@ -36,6 +36,7 @@ const DEVOPS_AGENT = process.env.SEED_DEVOPS_AGENT ?? '056f0ad7-185b-455a-86be-2
 const WF_NAME = 'SDLC (Copilot CLI)'
 const WF_ID = '3b000000-0000-0000-0000-0000000000c0'
 const PHASE_ID = '3b100000-0000-0000-0000-0000000000c0'
+const ROUTE_ID = '3b400000-0000-0000-0000-0000000000c0'
 const id = (n: number) => `3b200000-0000-0000-0000-0000000000${n.toString(16).padStart(2, '0')}`
 const eid = (n: number) => `3b300000-0000-0000-0000-0000000000${n.toString(16).padStart(2, '0')}`
 
@@ -146,7 +147,23 @@ async function main(): Promise<void> {
 
   console.log(`✓ "${WF_NAME}" (${WF_ID}) — START → ${PHASES.map(p => p.key).join(' → ')} → GIT_PUSH → END`)
   console.log(`  every phase node: nodeType=AGENT_TASK, config.executor='copilot'`)
-  console.log('  launch it by name from the workflow list; set instance var {{story}} (and {{repoUrl}} on the work item).')
+
+  // feature → SDLC → this Copilot flow, priority 300. Routing precedence is
+  // `priority desc` (work-item-routing.service.ts), so 300 wins over the
+  // workbench "SDLC Delivery" route (priority 200) and the demo route (100)
+  // WITHOUT touching either — a newly created `feature` work item now resolves
+  // to the Copilot flow. Flip isActive=false here to fall back to the workbench
+  // SDLC.
+  await (prisma as any).workItemRoutingPolicy.upsert({
+    where: { id: ROUTE_ID },
+    update: { workflowId: WF_ID, priority: 300, isActive: true },
+    create: {
+      id: ROUTE_ID, capabilityId: CAPABILITY_ID, workItemTypeKey: 'feature', workflowTypeKey: 'SDLC',
+      workflowId: WF_ID, routingMode: 'MANUAL', priority: 300, isActive: true,
+    },
+  })
+  console.log(`✓ routing feature→SDLC → "${WF_NAME}" (priority 300, supersedes the workbench SDLC route)`)
+  console.log('  set {{story}} + the work item\'s {{repoUrl}}; run with a connected laptop where `copilot` is on PATH.')
 }
 
 main()
