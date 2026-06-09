@@ -265,6 +265,16 @@ export async function activateAgentTask(
       // receives run_context as a verbatim dict.
       executor: configString('executor'),
       ...(configString('executor') === 'copilot' ? { task } : {}),
+      // §13.4 working-dir: for a copilot node, surface the repo so mcp-server
+      // CLONES it into the work-item sandbox (idempotent across stages) and
+      // Copilot runs in the TARGET repo — from node.config.sourceUri or the
+      // work item's {{vars.repoUrl}}. Without it Copilot runs in an empty dir.
+      ...(configString('executor') === 'copilot'
+        ? (() => {
+            const repo = configString('sourceUri') ?? (typeof vars.repoUrl === 'string' ? vars.repoUrl.trim() : '')
+            return repo ? { source_type: configString('sourceType') ?? 'github', source_uri: repo } : {}
+          })()
+        : {}),
     },
     task,
     vars,

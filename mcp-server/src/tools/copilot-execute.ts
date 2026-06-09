@@ -65,6 +65,8 @@ export const copilotExecuteTool: ToolHandler = {
       properties: {
         task: { type: "string", description: "The implementation task / prompt for Copilot to execute in the workspace." },
         timeout_ms: { type: "number", description: "Max milliseconds for the CLI run (default 900000, max 1800000)." },
+        commit: { type: "boolean", description: "Commit the resulting changes onto the work-item branch (default true)." },
+        commit_message: { type: "string", description: "Commit message; defaults to 'copilot: <first line of task>'." },
       },
       required: ["task"],
     },
@@ -116,6 +118,29 @@ export const copilotExecuteTool: ToolHandler = {
       log.warn({ err: (err as Error).message }, "copilot_execute: git diff capture failed");
     }
 
+    // Check in: commit this phase's changes onto the work-item branch so the
+    // workflow's GIT_PUSH can push them and each stage has a discrete commit.
+    // (Default true; pass commit:false to leave the worktree dirty.)
+    let commitSha: string | undefined;
+    const shouldCommit = args.commit !== false && changedPaths.length > 0;
+    if (shouldCommit) {
+      try {
+        await spawnCapture("git", ["add", "-A"], cwd, 30_000);
+        const msg = (typeof args.commit_message === "string" && args.commit_message.trim())
+          ? args.commit_message.trim()
+          : `copilot: ${task.split("\n")[0].slice(0, 72)}`;
+        const c = await spawnCapture(
+          "git",
+          ["-c", "user.email=copilot@singularity.local", "-c", "user.name=Singularity Copilot", "commit", "-m", msg],
+          cwd, 30_000,
+        );
+        if (c.code === 0) commitSha = (await spawnCapture("git", ["rev-parse", "HEAD"], cwd, 10_000)).stdout.trim();
+        else log.warn({ stderr: c.stderr.slice(0, 200) }, "copilot_execute: git commit non-zero");
+      } catch (err) {
+        log.warn({ err: (err as Error).message }, "copilot_execute: commit failed");
+      }
+    }
+
     return {
       success: true,
       output: {
@@ -124,6 +149,7 @@ export const copilotExecuteTool: ToolHandler = {
         summary: truncate(res.stdout.trim(), MAX_SUMMARY_CHARS),
         changedPaths,
         diff: truncate(diff, MAX_DIFF_CHARS),
+        commitSha,
         timed_out: res.timedOut,
         exit_code: res.code,
         duration_ms: Date.now() - started,
