@@ -17,11 +17,26 @@ Copilot auth already are.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .dispatch import ToolDispatchError, dispatch_tool
 from .phase_state import Phase, PhaseState
 from .stage_driver import StageRunResult
+
+_VAR_RE = re.compile(r"\{\{\s*instance\.vars\.([\w]+)\s*\}\}")
+
+
+def interpolate_task(task: str, vars: dict[str, Any] | None) -> str:
+    """Substitute {{instance.vars.X}} in the phase task with req.vars[X].
+
+    The governed-stage route doesn't interpolate run_context.task (only the
+    legacy /execute path interpolates its top-level task), so the copilot phase
+    task arrives raw — do it here against the stage vars before handing it to
+    the CLI.
+    """
+    v = vars or {}
+    return _VAR_RE.sub(lambda m: str(v.get(m.group(1), "")), task or "")
 
 
 def parse_copilot_result(result: Any) -> dict[str, Any]:
@@ -46,6 +61,7 @@ async def run_stage_via_copilot(
     state: PhaseState,
     *,
     task: str,
+    vars: dict[str, Any] | None = None,
     work_item_id: str | None,
     run_context: dict[str, Any] | None,
     laptop_user_id: str | None = None,
@@ -55,10 +71,11 @@ async def run_stage_via_copilot(
     FINALIZED stage result. Failures surface as an ``LLM_ERROR`` stop_reason so
     the caller handles them like any other stage failure.
     """
+    resolved_task = interpolate_task(task, vars)
     try:
         disp = await dispatch_tool(
             "copilot_execute",
-            {"task": task},
+            {"task": resolved_task},
             work_item_id=work_item_id,
             run_context=run_context,
             bearer=bearer,

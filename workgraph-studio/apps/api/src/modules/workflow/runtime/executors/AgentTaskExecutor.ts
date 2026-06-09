@@ -260,7 +260,11 @@ export async function activateAgentTask(
       branch_name: configString('branchName') ?? (workCode ? `work/${workCode}` : undefined),
       // §13.4 — when node.config.executor === 'copilot', CF dispatches the
       // copilot_execute tool to the laptop mcp-server instead of the LLM loop.
+      // Both the flag and the task ride run_context because the governed-stage
+      // route (where CF's copilot branch lives) has no top-level `task` and
+      // receives run_context as a verbatim dict.
       executor: configString('executor'),
+      ...(configString('executor') === 'copilot' ? { task } : {}),
     },
     task,
     vars,
@@ -308,6 +312,10 @@ export async function activateAgentTask(
   const useGoverned = forceGoverned
     || cfg.useGovernedExecutor === true
     || config.CONTEXT_FABRIC_USE_GOVERNED_FOR_NON_BLUEPRINT === true
+    // §13.4 — copilot-executor nodes always take the governed route: CF's
+    // copilot branch lives in /execute-governed-stage and short-circuits the
+    // loop there. (executor + task ride run_context for that route to read.)
+    || configString('executor') === 'copilot'
 
   // 4. Call context-fabric — governed or legacy depending on the flag.
   let result: Awaited<ReturnType<typeof contextFabricClient.execute>>
