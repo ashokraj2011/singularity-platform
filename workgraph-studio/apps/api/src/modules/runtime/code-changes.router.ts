@@ -83,8 +83,12 @@ codeChangesRouter.get('/:runId/code-changes', async (req: Request, res: Response
         inlineRecords.set(id, raw)
       }
     }
+    // Only synthesize for copilot: changedPaths present but NO per-file
+    // codeChangeIds. The workbench/legacy governed paths carry codeChangeIds (with
+    // their own diffs), so don't duplicate or mislabel those as copilot_execute.
     const changedPaths = source.changedPaths
-    if (Array.isArray(changedPaths) && changedPaths.length > 0) {
+    const hasCodeChangeIds = Array.isArray(rawIds) && rawIds.length > 0
+    if (!hasCodeChangeIds && Array.isArray(changedPaths) && changedPaths.length > 0) {
       const paths = changedPaths.filter((p): p is string => typeof p === 'string')
       if (paths.length > 0) {
         copilotItemsById.set(`copilot:${cfCallId}`, {
