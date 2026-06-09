@@ -19,6 +19,7 @@ import 'reactflow/dist/style.css'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Cpu, Boxes, Sparkles, Plus, X } from 'lucide-react'
 import { api } from '../../lib/api'
+import { CapabilityPicker, UserPicker } from '../../components/lookup/EntityPickers'
 
 type Connection = { alias: string; label: string; provider: string; model: string; costTier?: string; default?: boolean }
 type TouchPoint = { key: string; label: string; description: string }
@@ -177,12 +178,15 @@ export function LlmRoutingPage() {
             }}>{s.toLowerCase()}</button>
           ))}
         </div>
-        {scope !== 'DEFAULT' && (
-          <input
-            value={scopeId} onChange={e => setScopeId(e.target.value)}
-            placeholder={scope === 'USER' ? 'User id…' : 'Capability id…'}
-            style={{ width: 280, padding: '7px 11px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }}
-          />
+        {scope === 'USER' && (
+          <div style={{ width: 280 }}>
+            <UserPicker value={scopeId} onChange={(v) => setScopeId((v as string) ?? '')} placeholder="Pick a user…" />
+          </div>
+        )}
+        {scope === 'CAPABILITY' && (
+          <div style={{ width: 280 }}>
+            <CapabilityPicker value={scopeId} onChange={(v) => setScopeId((v as string) ?? '')} placeholder="Pick a capability…" filterToMemberships={false} autoDefault={false} />
+          </div>
         )}
       </div>
       {scope !== 'DEFAULT' && !effectiveScopeId && (
