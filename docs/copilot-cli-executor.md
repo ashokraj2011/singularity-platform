@@ -17,7 +17,7 @@ laptop and captures the result as **auditable evidence**. This is the
 | Slice 2 | attach to a WorkItem → **scoped session token** + platform-assembled prompt → run → `POST /complete` with the receipt | `bin/copilot-execute.js --work-item` | ✅ #165 (invocation `COMPLETED`) |
 | Slice 3 | **heartbeats** every 20s during the run (liveness) | `bin/copilot-execute.js` | ✅ this change |
 | **MCP tool** | **`copilot_execute`** — mcp-server runs `copilot -p --allow-all` in the sandbox workspace, returns summary + git diff | `mcp-server/src/tools/copilot-execute.ts` | ✅ built (typechecked) |
-| CF dispatch | context-fabric dispatches `copilot_execute` to mcp (laptop-routed) for a copilot-mode phase | `context-fabric/.../governed/` | 🔵 next |
+| CF dispatch | context-fabric dispatches `copilot_execute` to mcp (laptop-routed) for a copilot-mode phase | `governed/copilot_executor.py` + `execute.py` | ✅ built (compiles) |
 
 ## Server-orchestrated: CF → MCP → Copilot (the model to build)
 
@@ -42,12 +42,16 @@ it's dispatched like any tool, the existing laptop routing sends it to the **use
 mcp-server** when `laptop_user_id` is set — i.e. **mcp invokes Copilot on the laptop**, no
 new transport.
 
-**CF dispatch (next).** For a phase marked copilot-mode, context-fabric dispatches
-`copilot_execute` **directly** (via `governed/dispatch.py`, the same path that calls
-`/mcp/tool-run`) instead of running the function-calling loop — the CLI returns text, not
-`tool_calls`, so there's no loop to run. The returned `{summary, diff}` becomes the phase
-output. Decision flag lives in `run_context` (e.g. `executor: 'copilot'`), set by the
-node/stage config.
+**CF dispatch (built).** For a phase marked `run_context.executor == 'copilot'`,
+`execute.py` short-circuits the governed STAGE loop and calls
+`governed/copilot_executor.run_stage_via_copilot()`, which `dispatch_tool('copilot_execute',
+{task}, work_item_id=…, run_context=…, laptop_user_id=run_context.user_id)` — the same path
+that calls `/mcp/tool-run`, so it routes to the user's laptop mcp-server. It wraps the
+returned `{summary, diff, changedPaths}` as a **FINALIZED `StageRunResult`** (Phase.FINALIZE,
+the receipt under `state.receipts['FINALIZE']`, the diff as `produced_code_changes`) — the
+identical shape `run_stage` returns, so workgraph/workbench consume it unchanged. No loop is
+run; the CLI returns text, not `tool_calls`. The `executor` flag rides in `run_context`, set
+by the node/stage config (workgraph `AGENT_TASK` `config.executor`).
 
 Why this over the workflow-runtime spawn (closed PR #167): Copilot runs **where the
 workspace + the user's Copilot auth already are** (the laptop mcp-server), governed +

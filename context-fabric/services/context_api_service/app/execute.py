@@ -103,6 +103,12 @@ class RunContext(BaseModel):
     source_type: Optional[str] = None
     source_uri: Optional[str] = None
     source_ref: Optional[str] = None
+    # §13.4 — when "copilot", CF does NOT run the function-calling loop; it
+    # dispatches the `copilot_execute` tool to mcp-server (laptop-routed) which
+    # runs `copilot -p --allow-all` in the work-item workspace, and wraps the
+    # {summary, diff, changedPaths} receipt as a FINALIZED stage result. Set by
+    # the node/stage config (workgraph AGENT_TASK config.executor).
+    executor: Optional[str] = None
 
 
 class ExecuteRequest(BaseModel):
@@ -1925,6 +1931,25 @@ async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
                     "details": details,
                 },
             )
+
+    # §13.4 — copilot-mode phase. CF dispatches the `copilot_execute` tool to
+    # mcp-server (laptop-routed when run_context.user_id has a live bridge)
+    # instead of running the function-calling loop: the Copilot CLI returns
+    # text, not tool_calls, so there is no loop to run. mcp-server runs
+    # `copilot -p --allow-all` in the work-item workspace and we wrap the
+    # {summary, diff, changedPaths} receipt as a FINALIZED stage result.
+    if (req.run_context.executor or "").strip().lower() == "copilot":
+        from .governed.copilot_executor import run_stage_via_copilot
+
+        outcome = await run_stage_via_copilot(
+            state,
+            task=req.task,
+            work_item_id=req.run_context.work_item_id,
+            run_context=req.run_context.model_dump(),
+            laptop_user_id=req.run_context.user_id,
+            bearer=req.bearer,
+        )
+        return {"success": True, "data": outcome.to_dict()}
 
     try:
         outcome: StageRunResult = await run_stage(
