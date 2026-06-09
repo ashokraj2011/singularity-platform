@@ -5,6 +5,7 @@ import { contextFabricClient, type ExecuteRequest } from '../../lib/context-fabr
 // M36.4 — system_prompt now resolved from prompt-composer SystemPrompt table
 import { promptComposerClient } from '../../lib/prompt-composer/client'
 import { prisma } from '../../lib/prisma'
+import { resolveLlmRouting } from '../llm-routing/resolve'
 
 export const eventHorizonRouter: ExpressRouter = Router()
 
@@ -109,6 +110,9 @@ eventHorizonRouter.post('/chat', async (req, res) => {
   const capabilityId = nonBlank(body.capabilityId) || defaultCapabilityId()
   // M37.3 — load PLATFORM_CONTEXT + snapshot in parallel.
   const [snapshot, platformContext] = await Promise.all([platformSnapshot(), loadPlatformContext()])
+  // LLM routing: the CHAT touch point may be wired to a specific connection (per
+  // user / capability / default) in the routing canvas; fall back to the env default.
+  const routedAlias = await resolveLlmRouting('CHAT', { userId: req.user?.userId, capabilityId })
   const executeReq: ExecuteRequest = {
     trace_id: `event-horizon:${body.sessionId}:${Date.now()}`,
     idempotency_key: `event-horizon:${body.sessionId}:${Date.now()}`,
@@ -134,7 +138,7 @@ eventHorizonRouter.post('/chat', async (req, res) => {
       `Live platform summary JSON: ${JSON.stringify(snapshot).slice(0, 2000)}`,
     ].join('\n\n'),
     model_overrides: {
-      modelAlias: eventHorizonModelAlias(),
+      modelAlias: routedAlias ?? eventHorizonModelAlias(),
       temperature: 0.2,
       maxOutputTokens: 700,
     },
