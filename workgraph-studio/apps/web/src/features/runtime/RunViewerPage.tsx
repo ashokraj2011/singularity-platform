@@ -241,7 +241,7 @@ function StepCard({
       queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId, 'edges'] })
     },
   })
-  const canRestart = node.status === 'COMPLETED' || node.status === 'FAILED' || node.status === 'BLOCKED'
+  const canRestart = node.status === 'COMPLETED' || node.status === 'FAILED' || node.status === 'BLOCKED' || node.status === 'ACTIVE'
 
   // M98 — Operator escape hatch: mark any non-completed node done with a
   // comment and advance the workflow. Unblocks runs stuck on a failed/blocked
@@ -263,10 +263,14 @@ function StepCard({
 
   const restartLabel = node.nodeType === 'GIT_PUSH' && blockDetails?.retryable
     ? (restartMut.isPending ? 'Retrying push...' : 'Retry push')
-    : (restartMut.isPending ? 'Restarting...' : 'Restart stage')
+    : node.status === 'ACTIVE'
+      ? (restartMut.isPending ? 'Cancelling...' : 'Cancel & restart')
+      : (restartMut.isPending ? 'Restarting...' : 'Restart stage')
   const restartTitle = node.nodeType === 'GIT_PUSH' && blockDetails?.retryable
     ? 'Retry only this Git Push node after fixing credentials or remote access'
-    : 'Reset this stage and downstream stages, then run this stage again'
+    : node.status === 'ACTIVE'
+      ? 'Cancel the in-flight run for this stage and send it again'
+      : 'Reset this stage and downstream stages, then run this stage again'
 
   // The inline form-fill panel is only useful for HUMAN_TASK / APPROVAL /
   // CONSUMABLE_CREATION nodes that have a defined widget form. WORK_ITEM

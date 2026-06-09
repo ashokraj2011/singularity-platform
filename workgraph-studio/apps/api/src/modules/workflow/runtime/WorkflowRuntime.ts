@@ -31,7 +31,9 @@ import { activateSetContext } from './executors/SetContextExecutor'
 import { activateErrorCatch } from './executors/ErrorCatchExecutor'
 
 type PendingAdvance = { nodeId: string }
-const RESTARTABLE_NODE_STATUSES = new Set(['COMPLETED', 'FAILED', 'BLOCKED'])
+// ACTIVE included so an in-flight node can be cancelled + re-sent (the in-flight
+// agent run is superseded; the restart dispatches a fresh one).
+const RESTARTABLE_NODE_STATUSES = new Set(['COMPLETED', 'FAILED', 'BLOCKED', 'ACTIVE'])
 
 type ArtifactBinding = {
   id?: string
@@ -624,7 +626,7 @@ export async function restartNode(
   const node = await prisma.workflowNode.findFirst({ where: { id: nodeId, instanceId } })
   if (!node) throw new ValidationError('Workflow node was not found in this run')
   if (!RESTARTABLE_NODE_STATUSES.has(node.status)) {
-    throw new ValidationError('Only completed, failed, or blocked workflow nodes can be restarted')
+    throw new ValidationError('Only active, completed, failed, or blocked workflow nodes can be restarted')
   }
 
   const edges = await prisma.workflowEdge.findMany({
@@ -647,6 +649,14 @@ export async function restartNode(
     prisma.workflowNode.update({
       where: { id: nodeId },
       data: { status: 'ACTIVE', startedAt: new Date(), completedAt: null },
+    }),
+    // Cancel any in-flight / completed agent run for this node so the restart's
+    // fresh run supersedes it. (Restart from ACTIVE = cancel + re-send: the old
+    // copilot subprocess finishes in the background, but its run is FAILED so the
+    // node flow ignores it and uses the new run.)
+    prisma.agentRun.updateMany({
+      where: { instanceId, nodeId, status: { in: ['RUNNING', 'AWAITING_REVIEW', 'PAUSED'] } },
+      data: { status: 'FAILED', completedAt: new Date() },
     }),
     prisma.workflowInstance.update({
       where: { id: instanceId },
