@@ -595,8 +595,9 @@ function StepCard({
           {isActive && node.nodeType !== 'WORK_ITEM' && node.nodeType !== 'WORKBENCH_TASK' && node.nodeType !== 'CALL_WORKFLOW' && node.nodeType !== 'APPROVAL' && (!fillKind || !hasFormWidgets) && (
             <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.20)' }}>
               <p style={{ fontSize: 11, color: '#0c4a6e' }}>
-                Waiting for the runtime to advance.  HUMAN_TASK / APPROVAL nodes show a form-fill here when they're claimable;
-                automated nodes complete on their own.
+                {node.nodeType === 'AGENT_TASK'
+                  ? 'This agent stage runs on its own (e.g. Copilot does the work in the repo), then waits HERE for your review — it does not auto-advance. Click “Artifacts” to see what it produced, then “Complete & advance” to move to the next stage, or “Restart stage” to rework it.'
+                  : 'Waiting for the runtime to advance. HUMAN_TASK / APPROVAL nodes show a form-fill here when they’re claimable; automated nodes complete on their own.'}
               </p>
             </div>
           )}
