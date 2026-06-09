@@ -91,6 +91,10 @@ export const copilotExecuteTool: ToolHandler = {
     const cwd = resolveSandboxedPath(".");
     const started = Date.now();
 
+    // Observability: log the exact prompt handed to the Copilot CLI so operators
+    // can see what was sent (tail logs/mcp-server.log). Echoed in the output too.
+    log.info({ cwd, promptChars: task.length, prompt: task.slice(0, 2000) }, "copilot_execute → copilot -p (prompt sent)");
+
     let res: SpawnResult;
     try {
       res = await spawnCapture(COPILOT_BIN, ["-p", task, "--allow-all"], cwd, timeoutMs);
@@ -146,6 +150,7 @@ export const copilotExecuteTool: ToolHandler = {
       output: {
         kind: "copilot_execution",
         executor: "copilot-cli",
+        prompt: truncate(task, MAX_SUMMARY_CHARS),
         summary: truncate(res.stdout.trim(), MAX_SUMMARY_CHARS),
         changedPaths,
         diff: truncate(diff, MAX_DIFF_CHARS),

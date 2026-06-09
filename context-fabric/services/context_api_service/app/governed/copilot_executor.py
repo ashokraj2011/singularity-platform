@@ -110,6 +110,7 @@ async def run_stage_via_copilot(
         {
             "kind": "copilot_execution",
             "executor": "copilot-cli",
+            "prompt": resolved_task,
             "summary": parsed["summary"],
             "changed_paths": parsed["changed_paths"],
             "diff": parsed["diff"],
