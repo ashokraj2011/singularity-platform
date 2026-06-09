@@ -160,6 +160,27 @@ consumablesRouter.post('/:id/reject', async (req, res, next) => {
   }
 })
 
+// Verify a document — v1 runs deterministic structural checks and stores a verdict
+// on the consumable (formData._verification). An LLM verify agent can replace the
+// checks later. Used by the run-graph artifact catalog "Verify" button.
+consumablesRouter.post('/:id/verify', async (req, res, next) => {
+  try {
+    const c = await prisma.consumable.findUnique({ where: { id: req.params.id } })
+    if (!c) return res.status(404).json({ error: 'consumable not found' })
+    const content = String((c.formData as Record<string, unknown> | null)?.content ?? '')
+    const findings: string[] = []
+    if (content.trim().length < 50) findings.push('Very short (<50 chars) — likely incomplete.')
+    if (!/#{1,6}\s|(^|\n)\s*[-*]\s/.test(content)) findings.push('No headings or bullet lists — add structure.')
+    if (/\b(TODO|TBD|FIXME|XXX)\b/i.test(content)) findings.push('Contains TODO/TBD/FIXME placeholders.')
+    const verdict = { method: 'structural-v1', passed: findings.length === 0, findings, verifiedById: req.user!.userId }
+    const formData = { ...((c.formData ?? {}) as Record<string, unknown>), _verification: verdict }
+    await prisma.consumable.update({ where: { id: c.id }, data: { formData: formData as Prisma.InputJsonValue } })
+    res.json({ id: c.id, ...verdict })
+  } catch (err) {
+    next(err)
+  }
+})
+
 consumablesRouter.post('/:id/publish', async (req, res, next) => {
   try {
     await transitionStatus(req.params.id, 'PUBLISHED', req.user!.userId)

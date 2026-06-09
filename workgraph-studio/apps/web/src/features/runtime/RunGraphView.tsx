@@ -494,16 +494,16 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
 }) {
   const qc = useQueryClient()
   const { data: all = [] } = useAllConsumables(instanceId, live)
-  const [verified, setVerified] = useState<Set<string>>(new Set())
+  const [verdicts, setVerdicts] = useState<Record<string, { passed: boolean; findings: string[] }>>({})
   const approveMut = useMutation({
     mutationFn: (cid: string) => api.post(`/consumables/${cid}/approve`).then(r => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['run-graph-all-consumables', instanceId] }),
   })
-  // Verify → send to the verify agent. Backend not wired yet; POST best-effort and
-  // mark the doc as verification-requested either way ("just give the button").
+  // Verify → runs the verify endpoint (structural checks v1) + shows the verdict.
   const verifyMut = useMutation({
-    mutationFn: (cid: string) => api.post(`/consumables/${cid}/verify`).then(r => r.data).catch(() => ({ queued: true })),
-    onSuccess: (_d, cid) => setVerified(s => new Set(s).add(cid)),
+    mutationFn: (cid: string) => api.post(`/consumables/${cid}/verify`).then(r => r.data),
+    onSuccess: (d: { passed?: boolean; findings?: string[] }, cid) =>
+      setVerdicts(v => ({ ...v, [cid]: { passed: !!d?.passed, findings: d?.findings ?? [] } })),
   })
   const groups = phases
     .map(p => ({ phase: p, docs: all.filter(c => c.nodeId === p.id).slice().sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '')) }))
@@ -539,10 +539,21 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
                         style={{ ...catBtn, color: '#16a34a', borderColor: '#bbf7d0', opacity: approved ? 0.5 : 1 }}>
                         <Check size={11} /> {approved ? 'Approved' : 'Approve'}
                       </button>
-                      <button onClick={() => verifyMut.mutate(d.id)} disabled={verified.has(d.id) || verifyMut.isPending}
-                        style={{ ...catBtn, color: '#7c3aed', borderColor: '#ddd6fe', opacity: verified.has(d.id) ? 0.6 : 1 }}>
-                        <ShieldCheck size={11} /> {verified.has(d.id) ? 'Verifying…' : 'Verify'}
-                      </button>
+                      {(() => {
+                        const v = verdicts[d.id]
+                        const color = v ? (v.passed ? '#16a34a' : '#d97706') : '#7c3aed'
+                        const border = v ? (v.passed ? '#bbf7d0' : '#fde68a') : '#ddd6fe'
+                        const label = verifyMut.isPending && verifyMut.variables === d.id ? 'Verifying…'
+                          : v ? (v.passed ? 'Verified ✓' : `${v.findings.length} issue${v.findings.length === 1 ? '' : 's'}`)
+                          : 'Verify'
+                        return (
+                          <button onClick={() => verifyMut.mutate(d.id)} disabled={verifyMut.isPending}
+                            title={v && !v.passed ? v.findings.join('\n') : undefined}
+                            style={{ ...catBtn, color, borderColor: border }}>
+                            <ShieldCheck size={11} /> {label}
+                          </button>
+                        )
+                      })()}
                     </div>
                   </div>
                 )
