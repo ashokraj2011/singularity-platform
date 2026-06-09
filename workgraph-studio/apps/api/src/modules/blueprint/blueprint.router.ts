@@ -9,6 +9,7 @@ import { precheckTargetUrl, isBlockedAddress } from '../../lib/ssrf-guard'
 import { BlueprintStage, BlueprintSessionStatus, BlueprintStageStatus, BlueprintSourceType, Prisma, type ConsumableStatus, type InstanceStatus } from '@prisma/client'
 import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
+import { resolveLlmRouting } from '../llm-routing/resolve'
 import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError, ForbiddenError } from '../../lib/errors'
 import { classifyFailures, type FailureClassification } from './inherited-failure-analyzer'
@@ -1065,6 +1066,9 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         } as Record<string, unknown>,
       })
     }
+    // LLM routing: the WORKBENCH touch point may be wired to a connection (per user
+    // / default) in the routing canvas; falls back to the env default below.
+    const routedWorkbenchAlias = await resolveLlmRouting('WORKBENCH', { userId: req.user?.userId })
     const initialLoopState: LoopState = {
       workflowNodeId: resolvedWorkflowNodeId,
       browserRunId: resolvedBrowserRunId,
@@ -1081,7 +1085,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         excerptBudgetChars: body.excerptBudgetChars ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.excerptBudgetChars,
         reuseUnchangedAttempt: body.reuseUnchangedAttempt,
         governanceMode,
-        modelAlias: body.modelAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS,
+        modelAlias: body.modelAlias ?? routedWorkbenchAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS,
         stageModelAliases: sanitizeStageModelAliases(body.stageModelAliases)
           ?? sanitizeStageModelAliases(WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES),
         stagePhaseModelAliases: sanitizeStagePhaseModelAliases(body.stagePhaseModelAliases),
