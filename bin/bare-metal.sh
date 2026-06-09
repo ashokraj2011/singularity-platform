@@ -461,8 +461,12 @@ JSON
   # MCP_SANDBOX_ROOT defaults to /workspace (the Docker mount path); on bare
   # metal that dir can't be created at the FS root, so every workspace tool
   # (apply_patch, run_command, copilot_execute, …) fails with
-  # "ENOENT: mkdir '/workspace'". Point it at a real local, writable dir.
-  local MCP_WS="$ROOT/.singularity/workspace"
+  # "ENOENT: mkdir '/workspace'". Point it at a real local, writable dir —
+  # OUTSIDE the platform repo. copilot_execute runs `copilot -p --allow-all`,
+  # which with an empty/un-materialized sandbox will wander UP the tree; if the
+  # sandbox sat under $ROOT it would escape into the platform repo and edit it.
+  # $HOME/.singularity/mcp-workspace has no parent repo to escape into.
+  local MCP_WS="${SINGULARITY_MCP_WORKSPACE:-$HOME/.singularity/mcp-workspace}"
   mkdir -p "$MCP_WS"
   boot mcp-server       "cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_SANDBOX_ROOT=\"$MCP_WS\" MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
   # context-api / context-memory import `context_fabric_shared` (in
