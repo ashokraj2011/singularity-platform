@@ -170,8 +170,15 @@ async function runForWorkItem(workItemId) {
   if (!taskToRun) throw new Error('no --task given and the platform did not assemble a prompt for this work-item')
   if (!arg('task')) console.error(`  using platform-assembled prompt (assembly ${started.prompt && started.prompt.assemblyId})`)
 
-  // 3. Run the Copilot CLI executor in the workspace.
+  // 3. Run the Copilot CLI executor in the workspace, heart-beating to the
+  //    platform every 20s so it sees liveness during the (slow) CLI run.
   let receipt
+  const startedAt = Date.now()
+  const heartbeat = setInterval(() => {
+    platformFetch(platform, `/laptop-invocations/${encodeURIComponent(invocationId)}/heartbeat`, token, {
+      method: 'POST', body: JSON.stringify({ data: { phase: 'executing', executor: 'copilot-cli', elapsedMs: Date.now() - startedAt } }),
+    }).catch(() => {}) // best-effort — never fail the run on a missed heartbeat
+  }, 20_000)
   try {
     receipt = await executeTask({
       task: taskToRun,
@@ -181,11 +188,13 @@ async function runForWorkItem(workItemId) {
       timeoutMs: Number(arg('timeout-sec', 900)) * 1000,
     })
   } catch (e) {
+    clearInterval(heartbeat)
     await platformFetch(platform, `/laptop-invocations/${encodeURIComponent(invocationId)}/complete`, token, {
       method: 'POST', body: JSON.stringify({ status: 'FAILED', payload: { error: e.message, executor: 'copilot-cli' } }),
     }).catch(() => {})
     throw e
   }
+  clearInterval(heartbeat)
 
   // 4. Stamp + complete the invocation with the receipt.
   receipt.workItemId = workItemId
