@@ -95,11 +95,16 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req)
       const prompt = buildPrompt(body.messages)
       if (!prompt) return send(400, { error: { message: 'no messages', type: 'invalid_request_error' } })
-      const model = body.model || MODEL || undefined
+      // Only pin --model when the SERVER was launched with one. The request's
+      // model (from the gateway catalog) is echoed in the response but NOT passed
+      // to the CLI by default, so a CLI that doesn't accept --model in -p mode
+      // still works out of the box (it uses its own configured/default model).
+      const cliModel = MODEL || undefined
+      const echoModel = body.model || MODEL || 'copilot-cli'
       const startedAt = Date.now()
-      const out = await runCopilot(prompt, model)
+      const out = await runCopilot(prompt, cliModel)
       console.log(`[copilot-cli] ${prompt.length}c → ${out.length}c in ${Date.now() - startedAt}ms`)
-      return send(200, toOpenAIResponse(out, model, prompt.length))
+      return send(200, toOpenAIResponse(out, echoModel, prompt.length))
     } catch (e) {
       console.error('[copilot-cli] error:', e.message)
       return send(502, { error: { message: e.message, type: 'copilot_cli_error' } })
