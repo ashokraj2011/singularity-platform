@@ -53,7 +53,7 @@ function loadConnections(): Connection[] {
           model: String(m.model ?? ''),
           costTier: m.costTier ? String(m.costTier) : undefined,
           default: Boolean(m.default),
-        })).filter(c => c.alias)
+        })).filter(c => c.alias && c.provider !== 'mock' && !/mock|chaos/i.test(`${c.alias} ${c.label}`))
       }
     } catch { /* try next */ }
   }

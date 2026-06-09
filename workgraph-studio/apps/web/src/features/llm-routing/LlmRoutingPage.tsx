@@ -136,7 +136,7 @@ export function LlmRoutingPage() {
   const onEdgesDelete = useCallback((eds: Edge[]) => { eds.forEach(e => remove.mutate(e.id)) }, [remove])
 
   return (
-    <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: '#f8fafc', zIndex: 5 }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#f8fafc' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 18px', background: '#fff', borderBottom: '1px solid #e2e8f0', flexShrink: 0 }}>
         <div>
           <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a' }}>LLM Gateway Routing</div>
