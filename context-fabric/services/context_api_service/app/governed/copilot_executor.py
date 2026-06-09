@@ -25,7 +25,6 @@ from typing import Any
 from .code_context import build_code_context_for_governed_turn, package_markdown
 from .dispatch import ToolDispatchError, dispatch_tool
 from .phase_state import Phase, PhaseState
-from .prompt_resolver import resolve_phase_prompt
 from .stage_driver import StageRunResult
 
 _VAR_RE = re.compile(r"\{\{\s*instance\.vars\.([\w]+)\s*\}\}")
@@ -62,6 +61,19 @@ def parse_copilot_result(result: Any) -> dict[str, Any]:
     }
 
 
+def _work_item_description(vars: dict[str, Any] | None) -> str:
+    """Best-effort: the work item's description from the run vars."""
+    v = vars or {}
+    for key in ("workItemDetails", "_workItem", "workItem"):
+        wi = v.get(key)
+        if isinstance(wi, dict):
+            desc = wi.get("description") or wi.get("title")
+            if isinstance(desc, str) and desc.strip():
+                return desc.strip()
+    desc = v.get("description")
+    return desc.strip() if isinstance(desc, str) else ""
+
+
 async def compose_copilot_prompt(
     *,
     stage_key: str | None,
@@ -72,14 +84,15 @@ async def compose_copilot_prompt(
     run_context: dict[str, Any] | None,
     bearer: str | None,
 ) -> str:
-    """Compose the FULL prompt for Copilot the SAME way the governed loop does:
-    the agent-role / stage prompt (prompt-composer) + the repo world model (the
-    code-context package) + the task. Best-effort — falls back to the raw task on
-    any failure so a missing prompt binding never blocks the stage.
+    """Compose a COPILOT-appropriate prompt.
+
+    Copilot is the CLI agent — it works DIRECTLY on files. So this is NOT the
+    workbench/governed-loop prompt (which tells the agent to use MCP AST tools and
+    emit governed consumables / gate recommendations). We give Copilot: the role,
+    the work item description, the task, and the repo world model, with plain
+    "edit the files yourself" instructions. Best-effort: the world model is
+    optional (mcp/index may be unavailable).
     """
-    if not stage_key:
-        return resolved_task
-    # 1. Repo world model — the same code-context package the governed loop builds.
     code_md = ""
     try:
         pkg, _reason = await build_code_context_for_governed_turn(
@@ -93,34 +106,23 @@ async def compose_copilot_prompt(
             code_md = package_markdown(pkg) or ""
     except Exception:
         code_md = ""
-    # 2. Resolve the agent-role / stage prompt via prompt-composer, with the world
-    #    model available to its {{code_context_package}} template var.
-    compose_vars: dict[str, Any] = {**(vars or {}), "goal": resolved_task, "task": resolved_task}
-    if code_md:
-        compose_vars["code_context_package"] = code_md
-    try:
-        resolved = await resolve_phase_prompt(
-            stage_key=stage_key,
-            agent_role=agent_role,
-            phase=None,
-            vars=compose_vars,
-            bearer=bearer,
-        )
-    except Exception:
-        # No binding / composer down → raw task, plus the world model if we have it.
-        return f"{resolved_task}\n\n## Repository context\n{code_md}".strip() if code_md else resolved_task
 
-    parts: list[str] = []
-    if resolved.system_prompt_append.strip():
-        parts.append(resolved.system_prompt_append.strip())
-    body = resolved.task
-    if resolved.extra_context.strip():
-        body = f"{body}\n\n{resolved.extra_context}"
-    parts.append(body)
-    # If the resolved prompt didn't already embed the world model (template lacked
-    # {{code_context_package}}), append it so Copilot always has the repo context.
-    if code_md and code_md[:80] not in (resolved.system_prompt_append + resolved.task):
-        parts.append(f"## Repository context\n{code_md}")
+    description = _work_item_description(vars)
+    role = (agent_role or "").strip()
+
+    parts: list[str] = [
+        "You are working DIRECTLY in a Git repository already cloned to your current working "
+        "directory. Read and edit the files yourself, run commands as needed, and SAVE any "
+        "documents you produce (e.g. REQUIREMENTS.md, DESIGN.md) as real files in the repo. Make "
+        "the actual changes — do not just describe them. Be concise.",
+    ]
+    if role:
+        parts.append(f"You are acting as the **{role}** for this stage of the SDLC.")
+    if description and description != resolved_task.strip():
+        parts.append(f"## Work item\n{description}")
+    parts.append(f"## Your task\n{resolved_task.strip()}")
+    if code_md.strip():
+        parts.append(f"## Repository world model (code context)\n{code_md.strip()}")
     return "\n\n".join(p for p in parts if p.strip()).strip() or resolved_task
 
 
