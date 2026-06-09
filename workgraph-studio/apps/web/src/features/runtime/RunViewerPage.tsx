@@ -13,6 +13,7 @@ import { LiveEventsPanel } from './LiveEventsPanel'
 import { CodeChangesPanel } from './CodeChangesPanel'
 import { CapabilityPicker } from '../../components/lookup/EntityPickers'
 import { useCapabilityLabels } from './useCapabilityLabels'
+import { RunGraphView } from './RunGraphView'
 
 const BLUEPRINT_WORKBENCH_URL = import.meta.env.VITE_BLUEPRINT_WORKBENCH_URL
   // M100 P3 — same-origin under the edge gateway (was :5176).
@@ -39,6 +40,8 @@ function isTerminalRunStatus(status: string | undefined | null): boolean {
 export function RunViewerPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  // Default to the designer-style graph view; 'timeline' is the classic vertical list.
+  const [viewMode, setViewMode] = useState<'graph' | 'timeline'>('graph')
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
@@ -96,6 +99,22 @@ export function RunViewerPage() {
   if (isLoading) return <p style={{ padding: 24, color: 'var(--color-outline)' }}>Loading run…</p>
   if (!instance)  return <p style={{ padding: 24, color: '#ef4444' }}>Run not found.</p>
 
+  // Designer-style graph view (default). Reuses the same nodes/edges/instance
+  // queries above; the classic vertical timeline lives below as the fallback.
+  if (viewMode === 'graph') {
+    return (
+      <RunGraphView
+        instanceId={id}
+        instanceStatus={instance.status}
+        runName={instance.name}
+        nodes={nodes}
+        edges={edges}
+        onTimeline={() => setViewMode('timeline')}
+        onBack={() => navigate(-1)}
+      />
+    )
+  }
+
   const counts = {
     total:     ordered.length,
     completed: ordered.filter(n => n.status === 'COMPLETED').length,
@@ -106,16 +125,28 @@ export function RunViewerPage() {
 
   return (
     <div style={{ padding: 24, maxWidth: 880, margin: '0 auto' }}>
-      <button
-        onClick={() => navigate(-1)}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 7,
-          border: '1px solid var(--color-outline-variant)', background: 'transparent',
-          cursor: 'pointer', color: 'var(--color-outline)', fontSize: 12, fontWeight: 600, marginBottom: 14,
-        }}
-      >
-        <ArrowLeft size={12} /> Back
-      </button>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+        <button
+          onClick={() => navigate(-1)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 7,
+            border: '1px solid var(--color-outline-variant)', background: 'transparent',
+            cursor: 'pointer', color: 'var(--color-outline)', fontSize: 12, fontWeight: 600,
+          }}
+        >
+          <ArrowLeft size={12} /> Back
+        </button>
+        <button
+          onClick={() => setViewMode('graph')}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px', borderRadius: 7,
+            border: '1px solid var(--color-outline-variant)', background: 'transparent',
+            cursor: 'pointer', color: 'var(--color-outline)', fontSize: 12, fontWeight: 600,
+          }}
+        >
+          <Network size={12} /> Graph view
+        </button>
+      </div>
 
       {/* Run header */}
       <div style={{
