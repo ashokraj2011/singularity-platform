@@ -17,7 +17,7 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Cpu, Boxes, Sparkles } from 'lucide-react'
+import { Cpu, Boxes, Sparkles, Plus, X } from 'lucide-react'
 import { api } from '../../lib/api'
 
 type Connection = { alias: string; label: string; provider: string; model: string; costTier?: string; default?: boolean }
@@ -93,6 +93,15 @@ export function LlmRoutingPage() {
     onSuccess: invalidate,
   })
 
+  // Add a connection (gateway + model) — persisted in the llm_connection table.
+  const blankForm = { name: '', provider: 'openai', model: '', alias: '', baseUrl: '', credentialEnv: '' }
+  const [showAdd, setShowAdd] = useState(false)
+  const [form, setForm] = useState(blankForm)
+  const addConn = useMutation({
+    mutationFn: (body: typeof form) => api.post('/llm-routing/connections', body).then(r => r.data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['llm-connections'] }); setShowAdd(false); setForm(blankForm) },
+  })
+
   // rules for the current scope only
   const scopeRules = useMemo(
     () => rules.filter(r => r.scopeType === scope && r.scopeId === effectiveScopeId),
@@ -134,6 +143,9 @@ export function LlmRoutingPage() {
           <div style={{ fontSize: 11, color: '#94a3b8' }}>Drag a connection's handle onto a touch point to wire it. Delete the edge to unwire.</div>
         </div>
         <div style={{ flex: 1 }} />
+        <button onClick={() => setShowAdd(true)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '8px 13px', borderRadius: 8, border: '1px solid #0284c7', background: '#0ea5e9', color: '#fff', cursor: 'pointer', fontSize: 12.5, fontWeight: 700 }}>
+          <Plus size={14} /> Add connection
+        </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#f1f5f9', borderRadius: 9, padding: 3 }}>
           {(['DEFAULT', 'CAPABILITY', 'USER'] as Scope[]).map(s => (
             <button key={s} onClick={() => setScope(s)} style={{
@@ -170,6 +182,43 @@ export function LlmRoutingPage() {
           <div style={{ position: 'absolute', top: 10, left: '50%', fontSize: 9.5, fontWeight: 800, color: '#94a3b8', letterSpacing: 0.5 }}>TOUCH POINTS</div>
         </ReactFlow>
       </div>
+      {showAdd && (
+        <div onClick={() => setShowAdd(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
+          <div onClick={e => e.stopPropagation()} style={{ width: 430, maxHeight: '90vh', overflow: 'auto', background: '#fff', borderRadius: 14, padding: 20, boxShadow: '0 10px 40px rgba(0,0,0,0.25)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 14 }}>
+              <div style={{ flex: 1, fontSize: 15, fontWeight: 800, color: '#0f172a' }}>Add connection</div>
+              <button onClick={() => setShowAdd(false)} style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: '#94a3b8' }}><X size={18} /></button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#475569' }}>Provider / gateway</span>
+                <select value={form.provider} onChange={e => setForm(f => ({ ...f, provider: e.target.value }))} style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12.5 }}>
+                  {['openai', 'anthropic', 'copilot', 'openrouter', 'custom'].map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </label>
+              {([
+                ['name', 'Display name', 'e.g. GPT-4o (prod)'],
+                ['model', 'Model id', 'e.g. gpt-4o'],
+                ['alias', 'Alias (used at runtime + in routing)', 'e.g. gpt-4o-prod'],
+                ['baseUrl', 'Base URL (optional — provider default if blank)', 'https://api.openai.com'],
+                ['credentialEnv', 'API key env var (on the gateway)', 'OPENAI_API_KEY'],
+              ] as const).map(([key, label, ph]) => (
+                <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#475569' }}>{label}</span>
+                  <input value={(form as Record<string, string>)[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))} placeholder={ph}
+                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12.5 }} />
+                </label>
+              ))}
+              <div style={{ fontSize: 10.5, color: '#94a3b8', lineHeight: 1.45 }}>The API key is read from the env var on the gateway — the secret is never stored here. The connection is saved to the database (<code>llm_connection</code>) and appears in the palette to wire.</div>
+              <button onClick={() => (form.name && form.model && form.alias) && addConn.mutate(form)} disabled={!form.name || !form.model || !form.alias || addConn.isPending}
+                style={{ marginTop: 4, padding: '9px 12px', borderRadius: 8, border: 'none', background: '#0ea5e9', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', opacity: (!form.name || !form.model || !form.alias || addConn.isPending) ? 0.5 : 1 }}>
+                {addConn.isPending ? 'Saving…' : 'Save connection'}
+              </button>
+              {addConn.isError && <div style={{ fontSize: 11, color: '#dc2626' }}>{(addConn.error as Error).message}</div>}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

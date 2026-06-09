@@ -65,7 +65,49 @@ function loadConnections(): Connection[] {
   ]
 }
 
-llmRoutingRouter.get('/connections', (_req, res) => { res.json({ items: loadConnections() }) })
+// Connections come from the DB (admin-added). If none have been added yet, fall
+// back to the gateway catalog so the palette isn't empty on first use.
+llmRoutingRouter.get('/connections', async (_req, res, next) => {
+  try {
+    const rows = await prisma.llmConnection.findMany({ where: { enabled: true }, orderBy: { name: 'asc' } })
+    if (rows.length > 0) {
+      return res.json({
+        source: 'db',
+        items: rows.map(r => ({ id: r.id, alias: r.alias, label: r.name, provider: r.provider, model: r.model, baseUrl: r.baseUrl, credentialEnv: r.credentialEnv })),
+      })
+    }
+    res.json({ source: 'catalog', items: loadConnections() })
+  } catch (e) { next(e) }
+})
+
+const connSchema = z.object({
+  name: z.string().min(1).max(120),
+  provider: z.string().min(1).max(60),
+  model: z.string().min(1).max(120),
+  alias: z.string().min(1).max(120),
+  baseUrl: z.string().max(300).optional(),
+  credentialEnv: z.string().max(120).optional(),
+  enabled: z.boolean().default(true),
+})
+
+llmRoutingRouter.post('/connections', async (req, res, next) => {
+  try {
+    const b = connSchema.parse(req.body)
+    const createdById = (req as { user?: { userId?: string } }).user?.userId
+    const row = await prisma.llmConnection.upsert({
+      where: { alias: b.alias },
+      create: { ...b, createdById },
+      update: { name: b.name, provider: b.provider, model: b.model, baseUrl: b.baseUrl, credentialEnv: b.credentialEnv, enabled: b.enabled },
+    })
+    res.status(201).json(row)
+  } catch (e) { next(e) }
+})
+
+llmRoutingRouter.delete('/connections/:id', async (req, res, next) => {
+  try { await prisma.llmConnection.delete({ where: { id: req.params.id } }); res.status(204).end() }
+  catch (e) { next(e) }
+})
+
 llmRoutingRouter.get('/touch-points', (_req, res) => { res.json({ items: TOUCH_POINTS }) })
 
 llmRoutingRouter.get('/rules', async (_req, res, next) => {
