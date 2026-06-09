@@ -172,7 +172,9 @@ type Consumable = { id: string; name?: string; status?: string; formData?: { con
 function useConsumables(instanceId: string, nodeId: string, live: boolean) {
   return useQuery<Consumable[]>({
     queryKey: ['run-graph-consumables', instanceId, nodeId],
-    queryFn: () => api.get(`/consumables?instanceId=${instanceId}&nodeId=${nodeId}`).then(r => r.data),
+    // /consumables may return a bare array OR a paginated { items: [...] } — handle both.
+    queryFn: () => api.get('/consumables', { params: { instanceId, nodeId } })
+      .then(r => (Array.isArray(r.data) ? r.data : (r.data?.items ?? []))),
     enabled: !!instanceId && !!nodeId,
     refetchInterval: live ? 5_000 : false,
     staleTime: 4_500,
