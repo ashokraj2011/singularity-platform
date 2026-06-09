@@ -415,7 +415,9 @@ JSON
     && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 \
        DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts >/dev/null 2>&1 \
     && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 \
-       DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx ts-node --transpile-only prisma/seed-sdlc-main.ts >/dev/null 2>&1 ) \
+       DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx ts-node --transpile-only prisma/seed-sdlc-main.ts >/dev/null 2>&1 \
+    && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 \
+       DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx ts-node --transpile-only prisma/seed-sdlc-copilot.ts >/dev/null 2>&1 ) \
     || warn "SDLC Delivery seed had warnings — run manually: (cd workgraph-studio/apps/api && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=\"\$DATABASE_URL_WORKGRAPH\" npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts && … seed-sdlc-main.ts)"
 
   # ── 5. Python deps ─────────────────────────────────────────────────────────

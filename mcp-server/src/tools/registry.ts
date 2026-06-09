@@ -210,6 +210,8 @@ import {
 // M26 — gh copilot headless wrappers (only meaningful in laptop mode where the
 // user has run `gh auth login` and `gh extension install github/gh-copilot`).
 import { copilotSuggestTool, copilotExplainTool } from "./copilot-headless";
+// §13.4 — mcp invokes the Copilot CLI to run a whole coding phase agentically.
+import { copilotExecuteTool } from "./copilot-execute";
 import {
   indexWorkspaceTool, listIndexedFilesTool, findSymbolTool, getSymbolTool, getAstSliceTool,
   getDependenciesTool, prepareWorkBranchTool, finishWorkBranchTool,
@@ -249,6 +251,7 @@ const REGISTRY = new Map<string, ToolHandler>([
   [webFetchTool.descriptor.name, webFetchTool],
   [copilotSuggestTool.descriptor.name, copilotSuggestTool],
   [copilotExplainTool.descriptor.name, copilotExplainTool],
+  [copilotExecuteTool.descriptor.name, copilotExecuteTool],
   [indexWorkspaceTool.descriptor.name, indexWorkspaceTool],
   [listIndexedFilesTool.descriptor.name, listIndexedFilesTool],
   [findSymbolTool.descriptor.name, findSymbolTool],
