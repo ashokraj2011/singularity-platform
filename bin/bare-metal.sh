@@ -458,7 +458,13 @@ JSON
   boot agent-runtime    "cd agent-and-tools/apps/agent-runtime   && PORT=3003 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" LLM_GATEWAY_URL=http://localhost:8001 WORLD_MODEL_DISTILL_MODEL_ALIAS=\"${WORLD_MODEL_DISTILL_MODEL_ALIAS:-claude-haiku-4-5-20251001}\" npm run dev"
   boot prompt-composer  "cd agent-and-tools/apps/prompt-composer && PORT=3004 DATABASE_URL=\"$DATABASE_URL_COMPOSER\" DATABASE_URL_RUNTIME_READ=\"$DATABASE_URL_RUNTIME_READ\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" CAPSULE_COMPILE_MODEL_ALIAS=mock JWT_SECRET=\"$JWT_SECRET\" npm run dev"
 
-  boot mcp-server       "cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
+  # MCP_SANDBOX_ROOT defaults to /workspace (the Docker mount path); on bare
+  # metal that dir can't be created at the FS root, so every workspace tool
+  # (apply_patch, run_command, copilot_execute, …) fails with
+  # "ENOENT: mkdir '/workspace'". Point it at a real local, writable dir.
+  local MCP_WS="$ROOT/.singularity/workspace"
+  mkdir -p "$MCP_WS"
+  boot mcp-server       "cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_SANDBOX_ROOT=\"$MCP_WS\" MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
   # context-api / context-memory import `context_fabric_shared` (in
   # context-fabric/shared/) and the `services.` namespace — so run them from the
   # context-fabric root with shared on PYTHONPATH and a fully-qualified module
