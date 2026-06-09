@@ -131,7 +131,17 @@ export async function activateAgentTask(
 
   // 2. Validate the M8 wire prerequisites.
   const agentTemplateId = cfgAgentTemplate
-  const capabilityId = configString('capabilityId')
+  // A workflow can be capability-INDEPENDENT: if the node doesn't pin a
+  // capabilityId, use the work item's capability (parentCapabilityId — the same
+  // source WorkbenchTaskExecutor reads). So one workflow runs for ANY
+  // capability's work items and resolves THAT capability's repo. A node that DOES
+  // set capabilityId stays tied to it.
+  const _earlyCtx = (instance.context ?? {}) as Record<string, unknown>
+  const _earlyVars = (_earlyCtx._vars ?? _earlyCtx.vars ?? {}) as Record<string, unknown>
+  const workItemCapabilityId = typeof _earlyVars.parentCapabilityId === 'string' && _earlyVars.parentCapabilityId.trim()
+    ? _earlyVars.parentCapabilityId.trim()
+    : undefined
+  const capabilityId = configString('capabilityId') ?? workItemCapabilityId
   const task = configString('task')
 
   if (!agentTemplateId || !task || !capabilityId) {
