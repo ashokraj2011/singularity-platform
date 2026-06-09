@@ -282,6 +282,17 @@ function StepCard({
   const formWidgets = (node.config?.formWidgets ?? null) as FormWidget[] | null
   const hasFormWidgets = Boolean(formWidgets && formWidgets.length > 0)
 
+  // §13.4 piece B2 — per-node artifacts: what this stage produced (the agent
+  // output doc + any code changes). Fetched on demand from the node's consumables.
+  const [showArtifacts, setShowArtifacts] = useState(false)
+  const { data: nodeArtifacts = [] } = useQuery<Array<{ id: string; name: string; status?: string; formData?: { content?: string } | null }>>({
+    queryKey: ['run-instance', instanceId, 'node-artifacts', node.id],
+    queryFn: () => api.get('/consumables', { params: { instanceId, nodeId: node.id } })
+      .then(r => (Array.isArray(r.data) ? r.data : (r.data?.items ?? []))),
+    enabled: showArtifacts,
+  })
+  const mayHaveArtifacts = node.status !== 'PENDING' && node.status !== 'SKIPPED'
+
   return (
     <div style={{ position: 'relative' }}>
       {/* Vertical connector line */}
@@ -359,8 +370,53 @@ function StepCard({
                   {restartLabel}
                 </button>
               )}
+              {mayHaveArtifacts && (
+                <button
+                  type="button"
+                  style={{ ...smallSecondaryButton, padding: '5px 8px', fontSize: 10 }}
+                  onClick={() => setShowArtifacts(v => !v)}
+                  title="Show the artifacts this stage produced (documents + code changes)"
+                >
+                  {showArtifacts ? 'Hide artifacts' : 'Artifacts'}
+                </button>
+              )}
             </div>
           </div>
+
+          {showArtifacts && (
+            <div style={{
+              marginTop: 10, padding: 10, borderRadius: 8,
+              background: 'rgba(99,102,241,0.05)',
+              border: '1px solid rgba(99,102,241,0.25)',
+              display: 'grid', gap: 8,
+            }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-on-surface)' }}>
+                Artifacts produced by this stage
+              </span>
+              {nodeArtifacts.length === 0 && (
+                <span style={{ fontSize: 11, color: 'var(--color-outline)' }}>
+                  No artifacts recorded for this stage yet.
+                </span>
+              )}
+              {nodeArtifacts.map((a) => (
+                <details key={a.id} style={{ fontSize: 11 }}>
+                  <summary style={{ cursor: 'pointer', fontWeight: 600, color: 'var(--color-on-surface)' }}>
+                    {a.name}{a.status ? ` · ${a.status}` : ''}
+                  </summary>
+                  <pre style={{
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: 6,
+                    maxHeight: 340, overflow: 'auto', fontSize: 11, fontFamily: 'inherit',
+                    padding: 8, borderRadius: 6, background: 'var(--color-surface)',
+                  }}>
+                    {a.formData?.content ?? '(no inline content — open the run Artifacts page)'}
+                  </pre>
+                </details>
+              ))}
+              <span style={{ fontSize: 10, color: 'var(--color-outline)' }}>
+                Code changes (files + commit) for this run are in the Code Changes panel below.
+              </span>
+            </div>
+          )}
 
           {/* M98 — Inline operator comment box for manual completion */}
           {showComplete && canForceComplete && (
