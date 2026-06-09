@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react'
 import {
   LayoutDashboard, FileText, GitBranch, ScrollText, Globe, Inbox,
   LogOut, Bell, Settings, ChevronLeft, ChevronRight, Puzzle, Link2, Activity, Play, Network,
-  Building2, Database, ClipboardCheck, Package, Sparkles,
+  Building2, Database, ClipboardCheck, Package, Sparkles, Cpu,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth.store'
 import { useActiveContextStore } from '../store/activeContext.store'
@@ -31,6 +31,7 @@ const adminItems: { to: string; label: string; icon: typeof LayoutDashboard }[] 
   { to: '/node-types',        label: 'Node Types',        icon: Puzzle },
   { to: '/global-variables',  label: 'Variables',         icon: Globe },
   { to: '/connectors',        label: 'Connectors',        icon: Link2 },
+  { to: '/llm-routing',       label: 'LLM Routing',       icon: Cpu },
   { to: '/audit',             label: 'Audit',             icon: FileText },
   // Operator curation gate (task #111): list-and-approve queue for
   // dataset examples the eval engine has flagged as "needs review."
