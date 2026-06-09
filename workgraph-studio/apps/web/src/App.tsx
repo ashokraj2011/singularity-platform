@@ -16,6 +16,7 @@ import { CustomNodeTypesPage } from './features/workflow/CustomNodeTypesPage'
 import { AuditPage } from './features/audit/AuditPage'
 import { CurationPage } from './features/audit/CurationPage'
 import { ConnectorsPage } from './features/connectors/ConnectorsPage'
+import { LlmRoutingPage } from './features/llm-routing/LlmRoutingPage'
 import { ArtifactDesignerPage } from './features/artifact/ArtifactDesignerPage'
 import { ArtifactEditorPage } from './features/artifact/ArtifactEditorPage'
 import { MetadataRegistryPage } from './features/metadata/MetadataRegistryPage'
@@ -95,6 +96,7 @@ export default function App() {
           <Route path="play/new"             element={<RunPlayerEntry />} />
           <Route path="play/:runId"          element={<RunPlayerPage />} />
           <Route path="connectors"         element={<ConnectorsPage />} />
+          <Route path="llm-routing"        element={<LlmRoutingPage />} />
           <Route path="audit"              element={<AuditPage />} />
           <Route path="curation"           element={<CurationPage />} />
           <Route path="artifacts"          element={<ArtifactDesignerPage />} />
