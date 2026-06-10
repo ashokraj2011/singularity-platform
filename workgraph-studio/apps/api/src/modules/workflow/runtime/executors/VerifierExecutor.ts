@@ -71,24 +71,29 @@ async function blockNode(instance: WorkflowInstance, node: WorkflowNode, output:
   await publishOutbox('WorkflowNode', node.id, 'VerifierBlocked', { instanceId: instance.id, nodeId: node.id, output })
 }
 
-// The documents produced by the node(s) immediately upstream of this one.
-async function priorDocuments(
-  instanceId: string,
-  nodeId: string,
-  nameFilter: string[],
-): Promise<Array<{ id: string; name: string; instanceId: string | null; formData: unknown }>> {
-  const edges = await prisma.workflowEdge.findMany({ where: { targetNodeId: nodeId }, select: { sourceNodeId: true } })
-  const sourceIds = edges.map(e => e.sourceNodeId).filter((id): id is string => Boolean(id))
-  if (sourceIds.length === 0) return []
-  const docs = await prisma.consumable.findMany({
-    where: { instanceId, nodeId: { in: sourceIds } },
-    select: { id: true, name: true, instanceId: true, formData: true },
-  })
+type Doc = { id: string; name: string; instanceId: string | null; formData: unknown }
+const SELECT = { id: true, name: true, instanceId: true, formData: true } as const
+
+function applyFilter(docs: Doc[], nameFilter: string[]): Doc[] {
   // Skip internal markers (e.g. _copilot_questions); apply an optional name filter.
   return docs.filter(d =>
     !d.name.startsWith('_') &&
     (nameFilter.length === 0 || nameFilter.some(n => d.name.toLowerCase().includes(n.toLowerCase()))),
   )
+}
+
+// scope PRIOR (default): documents produced by the node(s) immediately upstream.
+async function priorDocuments(instanceId: string, nodeId: string, nameFilter: string[]): Promise<Doc[]> {
+  const edges = await prisma.workflowEdge.findMany({ where: { targetNodeId: nodeId }, select: { sourceNodeId: true } })
+  const sourceIds = edges.map(e => e.sourceNodeId).filter((id): id is string => Boolean(id))
+  if (sourceIds.length === 0) return []
+  return applyFilter(await prisma.consumable.findMany({ where: { instanceId, nodeId: { in: sourceIds } }, select: SELECT }), nameFilter)
+}
+
+// scope ALL: every document produced anywhere in the run (for a single gate that
+// verifies the whole SDLC's output before, e.g., GIT_PUSH).
+async function allDocuments(instanceId: string, nameFilter: string[]): Promise<Doc[]> {
+  return applyFilter(await prisma.consumable.findMany({ where: { instanceId }, select: SELECT }), nameFilter)
 }
 
 export async function activateVerifier(
@@ -99,9 +104,12 @@ export async function activateVerifier(
   const criteria = cfgString(node, 'criteria') ?? cfgString(node, 'verificationPolicy')
   const nameFilter = cfgStringArray(node, 'documentNames')
   const requireDocuments = cfgBool(node, 'requireDocuments', false)
+  const scope = (cfgString(node, 'scope') ?? 'PRIOR').toUpperCase()
   const userId = actorId ?? 'verifier-node'
 
-  const docs = await priorDocuments(instance.id, node.id, nameFilter)
+  const docs = scope === 'ALL'
+    ? await allDocuments(instance.id, nameFilter)
+    : await priorDocuments(instance.id, node.id, nameFilter)
 
   if (docs.length === 0) {
     const passed = !requireDocuments
