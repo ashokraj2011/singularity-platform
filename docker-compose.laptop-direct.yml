@@ -46,12 +46,14 @@ services:
     environment:
       MCP_UPSTREAM: http://host.docker.internal:7100
       LLM_UPSTREAM: http://host.docker.internal:8001
-      # Standalone (:5180) nav — point the menu at the per-app published ports so it
-      # doesn't bounce on the portal's own origin. agent-web/foundry aren't published
-      # standalone, so route those through the edge-gateway (:8085).
-      PORTAL_LINK_WORKGRAPH_DESIGNER: http://localhost:5174
-      PORTAL_LINK_BLUEPRINT_WORKBENCH: http://localhost:5176
-      PORTAL_LINK_IAM_ADMIN: http://localhost:5175
+      # Nav targets → the edge-gateway single origin (:8085). The UI images are
+      # BUILT with base paths (BASE_PATH=/workflow/, /workbench/, /iam/), so their
+      # assets only resolve under the gateway — the per-app ports (:5174/:5176/:5175)
+      # serve a blank app standalone. So the portal menu (even on :5180) jumps to
+      # :8085 where the apps actually work.
+      PORTAL_LINK_WORKGRAPH_DESIGNER: http://localhost:8085/workflow
+      PORTAL_LINK_BLUEPRINT_WORKBENCH: http://localhost:8085/workbench
+      PORTAL_LINK_IAM_ADMIN: http://localhost:8085/iam
       PORTAL_LINK_AGENT_ADMIN: http://localhost:8085/agent
       PORTAL_LINK_CODE_FOUNDRY: http://localhost:8085/foundry
     extra_hosts:
