@@ -40,3 +40,11 @@ services:
     environment:
       MCP_SERVER_URL: http://host.docker.internal:7100
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+  # Operations portal /ops-health + /api/mcp proxies → the HOST mcp/gateway, so
+  # the readiness dots aren't red just because those two run outside Docker.
+  portal:
+    environment:
+      MCP_UPSTREAM: http://host.docker.internal:7100
+      LLM_UPSTREAM: http://host.docker.internal:8001
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

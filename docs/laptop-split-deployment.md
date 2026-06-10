@@ -189,6 +189,7 @@ The standards the verifier checks come from the run's `acceptanceCriteria` / `de
   ```
   Then bring the box up again. Don't run a full bare-metal stack **and** the Docker box — they double-bind every port.
 - **Web changes not showing** — the UI lives in the `workgraph-web` image. After a `git pull`, **rebuild** (`bin/laptop-bridge.sh rebuild`) and hard-refresh (Cmd-Shift-R); a running container serves the old bundle.
+- **Operations portal shows LLM / MCP "offline" (split)** — the portal's nginx proxies `/ops-health/{mcp-server,llm-gateway}` to those *container* names, which don't exist when they run on the laptop. The direct overlay re-points them at `host.docker.internal` via `MCP_UPSTREAM`/`LLM_UPSTREAM`; **rebuild + recreate the portal** after pulling (`docker compose … build portal && … up -d portal`). The dots still require the host gateway + mcp to actually be running. (Your CF→mcp run path is unaffected either way.)
 - **`invalid input value for enum NodeType: VERIFIER`** — run the §6 enum migration before the seed.
 - **Agent phase fails immediately under `fail_closed`** — audit-governance isn't reachable; re-seed with `SEED_GOVERNANCE_MODE=fail_open`.
 - **Bridge shows no laptop** — check `GET https://<box>:8000/api/laptop-bridge/status`; the device token must be signed with the box's `JWT_SECRET` and carry `kind=device`, `sub`, `device_id`.
