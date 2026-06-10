@@ -181,7 +181,12 @@ function LiveLogPeek({ instanceId, nodeId, active }: { instanceId: string; nodeI
 }
 
 type Consumable = { id: string; name?: string; status?: string; nodeId?: string; formData?: { content?: string } }
-const unwrapList = (d: unknown): Consumable[] => Array.isArray(d) ? d as Consumable[] : ((d as { items?: Consumable[] })?.items ?? [])
+// /consumables paginates as { content: [...] } (toPageResponse); tolerate content
+// (real key), items (legacy), or a bare array.
+const unwrapList = (d: unknown): Consumable[] => Array.isArray(d)
+  ? d as Consumable[]
+  : ((d as { content?: Consumable[]; items?: Consumable[] })?.content
+     ?? (d as { items?: Consumable[] })?.items ?? [])
 function useConsumables(instanceId: string, nodeId: string, live: boolean) {
   return useQuery<Consumable[]>({
     queryKey: ['run-graph-consumables', instanceId, nodeId],
