@@ -79,6 +79,20 @@ docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d <same se
 
 ## 4. The LAPTOP (host apps)
 
+### Recommended pairing: Access Key (PAT) → device token (no hand-rolled tokens)
+
+The real auth path goes through IAM, not a hand-minted secret:
+
+1. **Generate an Access Key** (the GitHub-like PAT) in the portal: **Operations → Access Keys**.
+2. **Pair** the laptop with it, either way:
+   - **Singularity Desktop** (`clients/singularity-desktop`) — paste the Access Key (or sign in), and it exchanges it at IAM `POST /api/v1/auth/device-token` for a 90-day device token, stores it in the OS keychain, spawns `mcp-server` in `LAPTOP_MODE`, and (one toggle) runs a **Copilot LLM shim** so you don't run a separate `llm-gateway`.
+   - **CLI** — `singularity-mcp login --email you@org --platform http://<box>:8100/api/v1`, then `singularity-mcp start --bridge wss://<box>:8000/api/laptop-bridge/connect`.
+
+The device token's `sub` is your IAM user id; CF routes runs with that `user_id` to this laptop. The manual `export SINGULARITY_DEVICE_TOKEN=…` / `bin/laptop-bridge.sh mint-token` below is a **dev shortcut** for the one-Mac test only — prefer the Access Key + desktop app / CLI for real deployments.
+
+### Manual (dev / single-machine)
+
+
 **LLM gateway** (Python 3.11):
 ```bash
 cd context-fabric && python -m venv .venv && . .venv/bin/activate
