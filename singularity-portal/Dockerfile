@@ -15,7 +15,15 @@ COPY . .
 RUN npm run build
 
 FROM nginx:1.27-alpine AS runner
-RUN cat > /etc/nginx/conf.d/default.conf <<'EOF'
+# MCP + LLM-gateway upstreams are env-overridable so a laptop-split deployment can
+# point the /ops-health (+ /api/mcp) proxies at the HOST apps
+# (host.docker.internal) when those two services run outside Docker. Defaults are
+# the in-compose container names (all-in-Docker). Rendered by nginx envsubst at
+# container start; the FILTER keeps envsubst from touching nginx's own $vars.
+ENV MCP_UPSTREAM=http://mcp-server:7100 \
+    LLM_UPSTREAM=http://llm-gateway:8001 \
+    NGINX_ENVSUBST_FILTER="^(MCP_UPSTREAM|LLM_UPSTREAM)$"
+RUN mkdir -p /etc/nginx/templates && cat > /etc/nginx/templates/default.conf.template <<'EOF'
 server {
   listen 80;
   root /usr/share/nginx/html;
@@ -55,7 +63,7 @@ server {
   }
 
   location /api/mcp/ {
-    set $upstream http://mcp-server:7100;
+    set $upstream ${MCP_UPSTREAM};
     rewrite ^/api/mcp/(.*)$ /$1 break;
     proxy_pass $upstream;
   }
@@ -91,7 +99,7 @@ server {
   }
 
   location /ops-health/llm-gateway {
-    set $upstream http://llm-gateway:8001;
+    set $upstream ${LLM_UPSTREAM};
     rewrite ^/ops-health/llm-gateway$ /health break;
     proxy_pass $upstream;
   }
@@ -137,7 +145,7 @@ server {
   }
 
   location /ops-health/mcp-server {
-    set $upstream http://mcp-server:7100;
+    set $upstream ${MCP_UPSTREAM};
     rewrite ^/ops-health/mcp-server$ /health break;
     proxy_pass $upstream;
   }
