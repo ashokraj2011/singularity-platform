@@ -154,4 +154,21 @@ server {
 }
 EOF
 COPY --from=build /app/dist /usr/share/nginx/html
+# Render the runtime nav-link config at container START from PORTAL_LINK_* env
+# (unset → empty → the app falls back to the edge-gateway path defaults). Lets a
+# standalone/split deployment re-point the menu without rebuilding the image.
+RUN cat > /docker-entrypoint.d/40-portal-env.sh <<'SH' && chmod +x /docker-entrypoint.d/40-portal-env.sh
+#!/bin/sh
+set -e
+cat > /usr/share/nginx/html/env.js <<EOF
+window.__ENV__ = {
+  LINK_OPERATIONS_PORTAL: "${PORTAL_LINK_OPERATIONS_PORTAL}",
+  LINK_AGENT_ADMIN: "${PORTAL_LINK_AGENT_ADMIN}",
+  LINK_IAM_ADMIN: "${PORTAL_LINK_IAM_ADMIN}",
+  LINK_WORKGRAPH_DESIGNER: "${PORTAL_LINK_WORKGRAPH_DESIGNER}",
+  LINK_BLUEPRINT_WORKBENCH: "${PORTAL_LINK_BLUEPRINT_WORKBENCH}",
+  LINK_CODE_FOUNDRY: "${PORTAL_LINK_CODE_FOUNDRY}",
+};
+EOF
+SH
 EXPOSE 80
