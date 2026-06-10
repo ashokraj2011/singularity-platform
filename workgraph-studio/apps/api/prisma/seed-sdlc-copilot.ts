@@ -41,6 +41,11 @@ const DEVOPS_AGENT = process.env.SEED_DEVOPS_AGENT ?? '056f0ad7-185b-455a-86be-2
 // if SEED_COPILOT_REPO_URL is given, as a last-resort fallback for capabilities
 // that have no linked repo.
 const DEFAULT_REPO = process.env.SEED_COPILOT_REPO_URL
+// Governance mode for every agentic (AGENT_TASK) node — the copilot phases run the
+// governed loop with this enforcement posture. fail_closed = governance strictly
+// enforced (audit-governance must be reachable). Set SEED_GOVERNANCE_MODE=fail_open
+// to attempt governance but proceed if audit-gov is briefly unavailable.
+const GOVERNANCE_MODE = process.env.SEED_GOVERNANCE_MODE ?? 'fail_closed'
 
 const WF_NAME = 'SDLC (Copilot CLI)'
 const WF_ID = '3b000000-0000-0000-0000-0000000000c0'
@@ -110,9 +115,10 @@ async function main(): Promise<void> {
   // Build the node id sequence: START, 6 phases, GIT_PUSH, END.
   const N_START = id(0)
   const phaseNodeIds = PHASES.map((_, i) => id(i + 1))
-  const N_PUSH = id(PHASES.length + 1)
-  const N_END = id(PHASES.length + 2)
-  const order = [N_START, ...phaseNodeIds, N_PUSH, N_END]
+  const N_VERIFY = id(PHASES.length + 1)
+  const N_PUSH = id(PHASES.length + 2)
+  const N_END = id(PHASES.length + 3)
+  const order = [N_START, ...phaseNodeIds, N_VERIFY, N_PUSH, N_END]
 
   await (prisma as any).workflow.upsert({
     where: { id: WF_ID },
@@ -146,21 +152,34 @@ async function main(): Promise<void> {
       // repo. sourceUri is only set as an explicit env fallback.
       // governedStageKey/AgentRole flow to CF's run_context (stage_key / agent_role)
       // so the copilot prompt names the role (e.g. "acting as the DEVELOPER").
-      config: { agentTemplateId: phase.agent, task: phase.task, executor: 'copilot', governedStageKey: phase.key, governedAgentRole: phase.role, ...(DEFAULT_REPO ? { sourceType: 'github', sourceUri: DEFAULT_REPO } : {}) },
+      // governanceMode + useGovernedExecutor → the node runs the GOVERNED loop
+      // (governance overlay + audit), connected to its role agent template.
+      config: { agentTemplateId: phase.agent, task: phase.task, executor: 'copilot', governanceMode: GOVERNANCE_MODE, useGovernedExecutor: true, governedStageKey: phase.key, governedAgentRole: phase.role, ...(DEFAULT_REPO ? { sourceType: 'github', sourceUri: DEFAULT_REPO } : {}) },
     })
   }
+  // Verifier gate before the push: run the verifier agent on EVERY document the
+  // run produced (scope:'ALL') and pause the run (BLOCKED, findings in
+  // _blockedByVerifier) if any fails the standards. Nothing is pushed unverified.
   await upsertNode({
-    id: N_PUSH, nodeType: 'GIT_PUSH', label: 'Push to remote', x: 80 + (PHASES.length + 1) * 220,
+    id: N_VERIFY, nodeType: 'VERIFIER', label: 'Verify documents', x: 80 + (PHASES.length + 1) * 220,
+    config: {
+      scope: 'ALL', requireDocuments: false,
+      criteria: 'The SDLC documents (requirements, design, test report, risk assessment, release/rollback) must be complete, internally consistent with each other, and satisfy the work item\'s acceptance criteria.',
+      standard: { scope: 'ALL', requireDocuments: 'false' },
+    },
+  })
+  await upsertNode({
+    id: N_PUSH, nodeType: 'GIT_PUSH', label: 'Push to remote', x: 80 + (PHASES.length + 2) * 220,
     config: { requireApproval: false, remote: 'origin', standard: { requireApproval: 'false', remote: 'origin' } },
   })
-  await upsertNode({ id: N_END, nodeType: 'END', label: 'Done', x: 80 + (PHASES.length + 2) * 220 })
+  await upsertNode({ id: N_END, nodeType: 'END', label: 'Done', x: 80 + (PHASES.length + 3) * 220 })
 
   for (let i = 0; i < order.length - 1; i++) {
     await upsertEdge({ id: eid(i), from: order[i]!, to: order[i + 1]! })
   }
 
-  console.log(`✓ "${WF_NAME}" (${WF_ID}) — START → ${PHASES.map(p => p.key).join(' → ')} → GIT_PUSH → END`)
-  console.log(`  every phase node: nodeType=AGENT_TASK, config.executor='copilot'`)
+  console.log(`✓ "${WF_NAME}" (${WF_ID}) — START → ${PHASES.map(p => p.key).join(' → ')} → VERIFY → GIT_PUSH → END`)
+  console.log(`  every phase node: AGENT_TASK, executor='copilot', governanceMode='${GOVERNANCE_MODE}'; + a VERIFIER gate before push`)
 
   // feature → SDLC → this Copilot flow, priority 300. Routing precedence is
   // `priority desc` (work-item-routing.service.ts), so 300 wins over the
