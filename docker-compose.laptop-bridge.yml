@@ -1,0 +1,34 @@
+# docker-compose.laptop-bridge.yml — LOCALHOST bridge-mode split test.
+#
+# The BOX runs in Docker; mcp-server + llm-gateway run as HOST apps. The host
+# mcp-server dials OUT to the Dockerized context-api over the laptop bridge
+# (LAPTOP_MODE), so the governed loop dispatches everything to the host runtime:
+#   • tools        → `tool-run`     bridge frame
+#   • CF's own LLM → `model-run`    bridge frame   (PREFER_LAPTOP_LLM below)
+#   • world model  → `code-context` bridge frame
+#
+# This file is layered over the base compose by bin/laptop-bridge.sh, which
+# brings up the box with `--no-deps` + an explicit service list so the profiled
+# mcp-server / llm-gateway are NEVER started here (they run on the host).
+#
+# See docs/laptop-bridge-localhost-test.md.
+
+services:
+  context-api:
+    environment:
+      # Shared secret used to (a) verify the laptop device JWT on the bridge and
+      # (b) sign service tokens. MUST equal the secret the device token is minted
+      # with — bin/laptop-bridge.sh exports the same JWT_SECRET for mint + box.
+      JWT_SECRET: ${JWT_SECRET:-dev-laptop-bridge-secret-min-32-chars!!}
+      # Route CF's OWN chat (governed turn / summarizer / composer / single-turn)
+      # to the laptop gateway over the model-run bridge frame. This is what
+      # exercises the LLM-on-laptop path added this session.
+      PREFER_LAPTOP_LLM: "true"
+      # Fallback when no laptop is serving model-run: reach the HOST gateway
+      # (Docker → host on macOS/Win) instead of the absent box llm-gateway.
+      LLM_GATEWAY_URL: http://host.docker.internal:8001
+  agent-runtime:
+    environment:
+      # agent-runtime makes its own gateway calls (world-model distill); point it
+      # at the host gateway since the box llm-gateway container isn't running.
+      LLM_GATEWAY_URL: http://host.docker.internal:8001
