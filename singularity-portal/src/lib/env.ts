@@ -3,6 +3,11 @@
 
 const mode = (import.meta.env.VITE_API_MODE ?? 'proxy') as 'proxy' | 'direct'
 
+// Runtime config injected by /env.js (window.__ENV__), overwritten per deployment
+// by the container at start. Empty in dev → links fall back to VITE_LINK_* / paths.
+const rt: Record<string, string> =
+  (typeof window !== 'undefined' && (window as unknown as { __ENV__?: Record<string, string> }).__ENV__) || {}
+
 function pick(proxyPath: string, directUrl: string | undefined): string {
   if (mode === 'proxy') return proxyPath
   if (!directUrl) {
@@ -23,16 +28,18 @@ export const env = {
   mcpBase:           pick('/api/mcp',      import.meta.env.VITE_MCP_BASE_URL),
   auditGovBase:      pick('/api/gov',      import.meta.env.VITE_AUDIT_GOV_BASE_URL),
 
-  // M100 P3 — nav targets. Under the edge gateway every UI shares the portal's
-  // origin, so these default to same-origin PATH PREFIXES (not localhost URLs).
-  // The VITE_LINK_* overrides remain for deployments that still split origins.
-  // operationsPortal is '' because Operations is a route of THIS app (/operations).
+  // M100 P3 — nav targets. Resolution order per link: RUNTIME config (window.__ENV__
+  // from /env.js, written per deployment by the container at start — no rebuild) →
+  // build-time VITE_LINK_* → same-origin PATH PREFIX default (correct behind the
+  // edge gateway single origin). Standalone deployments set the runtime values to
+  // absolute per-app / gateway URLs so the menu doesn't bounce on the portal's own
+  // port. operationsPortal is '' because Operations is a route of THIS app.
   links: {
-    operationsPortal:   import.meta.env.VITE_LINK_OPERATIONS_PORTAL   ?? '',
-    agentAdmin:         import.meta.env.VITE_LINK_AGENT_ADMIN         ?? '/agent',
-    iamAdmin:           import.meta.env.VITE_LINK_IAM_ADMIN           ?? '/iam',
-    workgraphDesigner:  import.meta.env.VITE_LINK_WORKGRAPH_DESIGNER  ?? '/workflow',
-    blueprintWorkbench: import.meta.env.VITE_LINK_BLUEPRINT_WORKBENCH ?? '/workbench',
-    codeFoundry:        import.meta.env.VITE_LINK_CODE_FOUNDRY        ?? '/foundry',
+    operationsPortal:   rt.LINK_OPERATIONS_PORTAL   || import.meta.env.VITE_LINK_OPERATIONS_PORTAL   || '',
+    agentAdmin:         rt.LINK_AGENT_ADMIN          || import.meta.env.VITE_LINK_AGENT_ADMIN         || '/agent',
+    iamAdmin:           rt.LINK_IAM_ADMIN            || import.meta.env.VITE_LINK_IAM_ADMIN           || '/iam',
+    workgraphDesigner:  rt.LINK_WORKGRAPH_DESIGNER   || import.meta.env.VITE_LINK_WORKGRAPH_DESIGNER  || '/workflow',
+    blueprintWorkbench: rt.LINK_BLUEPRINT_WORKBENCH  || import.meta.env.VITE_LINK_BLUEPRINT_WORKBENCH || '/workbench',
+    codeFoundry:        rt.LINK_CODE_FOUNDRY         || import.meta.env.VITE_LINK_CODE_FOUNDRY        || '/foundry',
   },
 }
