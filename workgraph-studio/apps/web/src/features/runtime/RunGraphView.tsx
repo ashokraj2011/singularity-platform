@@ -183,7 +183,8 @@ function LiveLogPeek({ instanceId, nodeId, active }: { instanceId: string; nodeI
   return <div style={{ fontSize: 10.5, color: '#475569', lineHeight: 1.35, maxHeight: 42, overflow: 'hidden' }}>{text.slice(0, 140)}{text.length > 140 ? '…' : ''}</div>
 }
 
-type Consumable = { id: string; name?: string; status?: string; nodeId?: string; createdAt?: string; updatedAt?: string; formData?: { content?: string } }
+type Verdict = { passed: boolean; findings: string[]; rationale?: string; method?: string }
+type Consumable = { id: string; name?: string; status?: string; nodeId?: string; createdAt?: string; updatedAt?: string; formData?: { content?: string; _verification?: Verdict } }
 // Render markdown for everything except source-code files (which stay as code).
 const isCodeArtifact = (name?: string) => /\.(java|ts|tsx|js|jsx|py|json|xml|ya?ml|sql|sh|go|rs|c|cpp|h|html|css|toml|gradle)$/i.test(name ?? '')
 // /consumables paginates as { content: [...] } (toPageResponse); tolerate content
@@ -714,17 +715,27 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
 }) {
   const qc = useQueryClient()
   const { data: all = [] } = useAllConsumables(instanceId, live)
-  const [verdicts, setVerdicts] = useState<Record<string, { passed: boolean; findings: string[] }>>({})
+  const [verdicts, setVerdicts] = useState<Record<string, Verdict>>({})
+  const [forceConfirm, setForceConfirm] = useState<string | null>(null)
   const [openDoc, setOpenDoc] = useState<Consumable | null>(null)
   const approveMut = useMutation({
-    mutationFn: (cid: string) => api.post(`/consumables/${cid}/approve`).then(r => r.data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['run-graph-all-consumables', instanceId] }),
+    mutationFn: ({ cid, force }: { cid: string; force?: boolean }) =>
+      api.post(`/consumables/${cid}/approve${force ? '?force=true' : ''}`).then(r => r.data),
+    onSuccess: () => { setForceConfirm(null); qc.invalidateQueries({ queryKey: ['run-graph-all-consumables', instanceId] }) },
+    onError: (err: unknown, vars) => {
+      // Verify-before-approve gate fired (409) — surface the findings + offer override.
+      const data = (err as { response?: { data?: { error?: string; verification?: Verdict } } })?.response?.data
+      if (data?.error === 'verification_failed') {
+        if (data.verification) setVerdicts(s => ({ ...s, [vars.cid]: { passed: false, findings: data.verification!.findings ?? [], rationale: data.verification!.rationale } }))
+        setForceConfirm(vars.cid)
+      }
+    },
   })
-  // Verify → runs the verify endpoint (structural checks v1) + shows the verdict.
+  // Verify → runs the verifier agent (reads the run's standards/policies + LLM-judges).
   const verifyMut = useMutation({
     mutationFn: (cid: string) => api.post(`/consumables/${cid}/verify`).then(r => r.data),
-    onSuccess: (d: { passed?: boolean; findings?: string[] }, cid) =>
-      setVerdicts(v => ({ ...v, [cid]: { passed: !!d?.passed, findings: d?.findings ?? [] } })),
+    onSuccess: (d: { passed?: boolean; findings?: string[]; rationale?: string }, cid) =>
+      setVerdicts(v => ({ ...v, [cid]: { passed: !!d?.passed, findings: d?.findings ?? [], rationale: d?.rationale } })),
   })
   const groups = phases
     .map(p => ({ phase: p, docs: all.filter(c => c.nodeId === p.id).slice().sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '')) }))
@@ -748,6 +759,9 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
               {g.docs.map(d => {
                 const approved = ['APPROVED', 'PUBLISHED'].some(k => (d.status ?? '').toUpperCase().includes(k))
+                // Effective verdict: the one just clicked, else the persisted one.
+                const v: Verdict | undefined = verdicts[d.id] ?? d.formData?._verification
+                const needsForce = forceConfirm === d.id
                 return (
                   <div key={d.id} style={{ border: '1px solid #e2e8f0', borderRadius: 9, padding: '8px 10px' }}>
                     <div onClick={() => setOpenDoc(d)} title="Open" style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7, cursor: 'pointer' }}>
@@ -757,12 +771,12 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
                       {d.status && <span style={{ fontSize: 9.5, fontWeight: 700, color: approved ? '#16a34a' : '#94a3b8' }}>{d.status}</span>}
                     </div>
                     <div style={{ display: 'flex', gap: 6 }}>
-                      <button onClick={() => approveMut.mutate(d.id)} disabled={approved || approveMut.isPending}
-                        style={{ ...catBtn, color: '#16a34a', borderColor: '#bbf7d0', opacity: approved ? 0.5 : 1 }}>
-                        <Check size={11} /> {approved ? 'Approved' : 'Approve'}
+                      <button onClick={() => approveMut.mutate({ cid: d.id, force: needsForce })} disabled={approved || approveMut.isPending}
+                        title={needsForce ? 'This document failed verification — approve anyway?' : undefined}
+                        style={{ ...catBtn, color: needsForce ? '#b45309' : '#16a34a', borderColor: needsForce ? '#fde68a' : '#bbf7d0', opacity: approved ? 0.5 : 1 }}>
+                        <Check size={11} /> {approved ? 'Approved' : needsForce ? 'Approve anyway' : 'Approve'}
                       </button>
                       {(() => {
-                        const v = verdicts[d.id]
                         const color = v ? (v.passed ? '#16a34a' : '#d97706') : '#7c3aed'
                         const border = v ? (v.passed ? '#bbf7d0' : '#fde68a') : '#ddd6fe'
                         const label = verifyMut.isPending && verifyMut.variables === d.id ? 'Verifying…'
@@ -770,13 +784,22 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
                           : 'Verify'
                         return (
                           <button onClick={() => verifyMut.mutate(d.id)} disabled={verifyMut.isPending}
-                            title={v && !v.passed ? v.findings.join('\n') : undefined}
+                            title={v && !v.passed ? v.findings.join('\n') : v?.rationale}
                             style={{ ...catBtn, color, borderColor: border }}>
                             <ShieldCheck size={11} /> {label}
                           </button>
                         )
                       })()}
                     </div>
+                    {v && (!v.passed || v.rationale) && (
+                      <div style={{ marginTop: 7, padding: '6px 8px', borderRadius: 7, fontSize: 10.5, lineHeight: 1.4,
+                        background: v.passed ? '#f0fdf4' : '#fffbeb', border: `1px solid ${v.passed ? '#bbf7d0' : '#fde68a'}`, color: v.passed ? '#15803d' : '#92400e' }}>
+                        {v.rationale && <div style={{ marginBottom: !v.passed && v.findings.length ? 4 : 0 }}>{v.rationale}</div>}
+                        {!v.passed && v.findings.length > 0 && (
+                          <ul style={{ margin: 0, paddingLeft: 16 }}>{v.findings.slice(0, 6).map((f, i) => <li key={i}>{f}</li>)}</ul>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -794,6 +817,20 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
               <button onClick={() => setOpenDoc(null)} style={{ ...topBtn, padding: 6 }}><X size={15} /></button>
             </div>
             <div style={{ flex: 1, overflow: 'auto', padding: '18px 22px', minHeight: 0 }}>
+              {(() => {
+                const dv: Verdict | undefined = verdicts[openDoc.id] ?? openDoc.formData?._verification
+                if (!dv) return null
+                return (
+                  <div style={{ marginBottom: 14, padding: '10px 12px', borderRadius: 9, fontSize: 12, lineHeight: 1.45,
+                    background: dv.passed ? '#f0fdf4' : '#fffbeb', border: `1px solid ${dv.passed ? '#bbf7d0' : '#fde68a'}`, color: dv.passed ? '#15803d' : '#92400e' }}>
+                    <div style={{ fontWeight: 700, marginBottom: dv.rationale || (!dv.passed && dv.findings.length) ? 5 : 0 }}>
+                      {dv.passed ? '✓ Verified — meets the standards' : `⚠ ${dv.findings.length} issue${dv.findings.length === 1 ? '' : 's'} against the standards`}
+                    </div>
+                    {dv.rationale && <div style={{ marginBottom: !dv.passed && dv.findings.length ? 5 : 0 }}>{dv.rationale}</div>}
+                    {!dv.passed && dv.findings.length > 0 && <ul style={{ margin: 0, paddingLeft: 18 }}>{dv.findings.map((f, i) => <li key={i}>{f}</li>)}</ul>}
+                  </div>
+                )
+              })()}
               {isCodeArtifact(openDoc.name)
                 ? <pre style={{ margin: 0, fontSize: 12.5, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#334155', fontFamily: 'ui-monospace, monospace' }}>{openDoc.formData?.content ?? '(empty)'}</pre>
                 : <MarkdownView source={openDoc.formData?.content ?? '(empty)'} />}
