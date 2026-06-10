@@ -271,16 +271,24 @@ consumablesRouter.post('/:id/approve', async (req, res, next) => {
     const force = req.query.force === 'true' || (req.body as { force?: unknown } | null)?.force === true
     const existing = await prisma.consumable.findUnique({ where: { id: req.params.id } })
     if (!existing) return res.status(404).json({ error: 'consumable not found' })
-    // Verify-before-approve gate: refuse to approve a document that FAILED
-    // verification (a recorded passed===false verdict). Un-verified docs still
-    // approve (backward compatible). ?force=true overrides.
-    const v = (existing.formData as Record<string, unknown> | null)?._verification as Verdict | undefined
-    if (!force && v && v.passed === false) {
-      return res.status(409).json({
-        error: 'verification_failed',
-        message: 'This document failed verification against the standards. Resolve the findings and re-verify, or approve with force=true.',
-        verification: v,
-      })
+    // Verify-before-approve gate. Auto-verify: if this document was never
+    // verified, run the verifier agent now (and persist the verdict) so every
+    // approval has a standards check behind it; then refuse to approve a
+    // document that FAILED. ?force=true skips verification + the gate.
+    if (!force) {
+      let v = (existing.formData as Record<string, unknown> | null)?._verification as Verdict | undefined
+      if (!v) {
+        v = await runVerification(existing, req.user!.userId)
+        const formData = { ...((existing.formData ?? {}) as Record<string, unknown>), _verification: v }
+        await prisma.consumable.update({ where: { id: existing.id }, data: { formData: formData as Prisma.InputJsonValue } })
+      }
+      if (v.passed === false) {
+        return res.status(409).json({
+          error: 'verification_failed',
+          message: 'This document failed verification against the standards. Resolve the findings and re-verify, or approve with force=true.',
+          verification: v,
+        })
+      }
     }
     await transitionStatus(req.params.id, 'APPROVED', req.user!.userId, 'CONSUMABLE_APPROVAL')
     const c = await prisma.consumable.findUnique({ where: { id: req.params.id } })

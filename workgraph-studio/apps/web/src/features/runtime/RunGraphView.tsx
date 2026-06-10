@@ -737,6 +737,22 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
     onSuccess: (d: { passed?: boolean; findings?: string[]; rationale?: string }, cid) =>
       setVerdicts(v => ({ ...v, [cid]: { passed: !!d?.passed, findings: d?.findings ?? [], rationale: d?.rationale } })),
   })
+  // Verify all → run the agent across every document, sequentially (each is an LLM
+  // call), updating verdicts as they land.
+  const [verifyAll, setVerifyAll] = useState<{ done: number; total: number } | null>(null)
+  const runVerifyAll = async () => {
+    if (verifyAll || all.length === 0) return
+    setVerifyAll({ done: 0, total: all.length })
+    for (let i = 0; i < all.length; i++) {
+      try {
+        const d = await api.post(`/consumables/${all[i].id}/verify`).then(r => r.data)
+        setVerdicts(v => ({ ...v, [all[i].id]: { passed: !!d?.passed, findings: d?.findings ?? [], rationale: d?.rationale } }))
+      } catch { /* skip this doc, keep going */ }
+      setVerifyAll({ done: i + 1, total: all.length })
+    }
+    setVerifyAll(null)
+    qc.invalidateQueries({ queryKey: ['run-graph-all-consumables', instanceId] })
+  }
   const groups = phases
     .map(p => ({ phase: p, docs: all.filter(c => c.nodeId === p.id).slice().sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '')) }))
     .filter(g => g.docs.length > 0)
@@ -749,6 +765,11 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
           <div style={{ fontSize: 13.5, fontWeight: 700, color: '#0f172a' }}>Artifact Catalog</div>
           <div style={{ fontSize: 10.5, color: '#94a3b8' }}>{all.length} document{all.length === 1 ? '' : 's'} · by phase</div>
         </div>
+        <button onClick={runVerifyAll} disabled={!!verifyAll || all.length === 0}
+          title="Run the verifier agent on every document"
+          style={{ ...topBtn, padding: '5px 9px', fontSize: 11, color: '#7c3aed', borderColor: '#ddd6fe', opacity: (!!verifyAll || all.length === 0) ? 0.6 : 1 }}>
+          <ShieldCheck size={12} /> {verifyAll ? `Verifying ${verifyAll.done}/${verifyAll.total}…` : 'Verify all'}
+        </button>
         <button onClick={onClose} style={{ ...topBtn, padding: 6 }}><X size={14} /></button>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: 12, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
