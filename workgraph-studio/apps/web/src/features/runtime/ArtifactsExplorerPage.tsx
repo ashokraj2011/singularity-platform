@@ -114,6 +114,16 @@ export function ArtifactsExplorerPage() {
       }))
     return [...blueprint, ...(workflow as unknown as typeof blueprint)]
   }, [data, wfData, workflowInstanceId])
+
+  // Run filter options: facets (blueprint) + every run that has a workflow artifact,
+  // so the dropdown populates even with no workbench data.
+  const runOptions = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const i of (facets?.instances ?? [])) m.set(i.id, `${i.name} · ${i.status}`)
+    const raw = Array.isArray(wfData) ? wfData : (wfData?.content ?? [])
+    for (const c of raw) { if (c.instanceId && !m.has(c.instanceId)) m.set(c.instanceId, `Run ${c.instanceId.slice(0, 8)}`) }
+    return Array.from(m, ([id, label]) => ({ id, label }))
+  }, [facets, wfData])
   const kinds = useMemo(() => Array.from(new Set(items.map(i => i.kind))).sort(), [items])
   const statusOptions = facets?.statuses ?? WORKFLOW_STATUSES
   const inputStyle: React.CSSProperties = { fontSize: 12, padding: '5px 8px', borderRadius: 7, border: '1px solid var(--color-outline-variant)', background: '#fff', color: 'var(--color-on-surface)', maxWidth: 260 }
@@ -149,8 +159,8 @@ export function ArtifactsExplorerPage() {
         </select>
         <select value={workflowInstanceId} onChange={e => setWorkflowInstanceId(e.target.value)} style={inputStyle} title="Filter by workflow run">
           <option value="">All workflow runs</option>
-          {(facets?.instances ?? []).map(i => (
-            <option key={i.id} value={i.id}>{i.name} · {i.status}</option>
+          {runOptions.map(r => (
+            <option key={r.id} value={r.id}>{r.label}</option>
           ))}
         </select>
         <select value={workflowStatus} onChange={e => setWorkflowStatus(e.target.value)} style={inputStyle}>
