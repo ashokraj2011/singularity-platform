@@ -47,6 +47,7 @@ enum NodeType {
   ERROR_CATCH
   RUN_PYTHON
   EVENT_EMIT
+  VERIFIER
 }
 
 enum ExecutionLocation {

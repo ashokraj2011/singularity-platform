@@ -27,6 +27,7 @@ import { activateParallelFork } from './executors/ParallelForkExecutor'
 import { activateParallelJoin } from './executors/ParallelJoinExecutor'
 import { activateSignalEmit } from './executors/SignalEmitExecutor'
 import { activateEventEmit } from './executors/EventEmitExecutor'
+import { activateVerifier } from './executors/VerifierExecutor'
 import { activateSetContext } from './executors/SetContextExecutor'
 import { activateErrorCatch } from './executors/ErrorCatchExecutor'
 
@@ -513,6 +514,14 @@ async function executeServerNode(
     case 'EVAL_GATE': {
       const result = await activateEvalGate(node, instance, actorId)
       if (result.passed) await advance(instance.id, node.id, result.output, actorId)
+      break
+    }
+    case 'VERIFIER': {
+      // Verifier agent gate: runs the verifier on the prior stage's documents and
+      // advances only when they meet the standards. On a fail the executor already
+      // set the node BLOCKED + instance PAUSED (reason in _blockedByVerifier).
+      const result = await activateVerifier(node, instance, actorId)
+      if (result.passed) await advance(instance.id, node.id, { ...context, ...result.output }, actorId)
       break
     }
     case 'RUN_PYTHON': {
