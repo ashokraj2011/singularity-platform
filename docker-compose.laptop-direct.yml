@@ -1,0 +1,42 @@
+# docker-compose.laptop-direct.yml — LOCALHOST Direct-HTTP split test.
+#
+# The BOX runs in Docker; mcp-server + llm-gateway run as HOST apps. Unlike the
+# bridge overlay, the box reaches the host apps DIRECTLY over HTTP at
+# host.docker.internal — no WebSocket bridge, no device token, no prefer_laptop.
+# The box always uses the host runtime. This is the simplest way to test a
+# Copilot SDLC run (incl. clarifying questions) with mcp + gateway bare-metal.
+#
+# Driven by bin/laptop-bridge.sh box-up-direct (then `gateway` + `mcp-direct`).
+# Run the host mcp as a NORMAL HTTP server (NOT LAPTOP_MODE) so :7100 is reachable.
+
+services:
+  context-api:
+    environment:
+      MCP_SERVER_URL: http://host.docker.internal:7100
+      MCP_DEFAULT_BASE_URL: http://host.docker.internal:7100
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      MCP_DEFAULT_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      # CF's own LLM (summarizer / composer / governed turn) → host gateway.
+      LLM_GATEWAY_URL: http://host.docker.internal:8001
+  workgraph-api:
+    environment:
+      MCP_SERVER_URL: http://host.docker.internal:7100
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+  agent-service:
+    environment:
+      MCP_SERVER_URL: http://host.docker.internal:7100
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+  tool-service:
+    environment:
+      MCP_SERVER_URL: http://host.docker.internal:7100
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+  agent-runtime:
+    environment:
+      MCP_SERVER_URL: http://host.docker.internal:7100
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      # agent-runtime makes its own gateway calls → host gateway.
+      LLM_GATEWAY_URL: http://host.docker.internal:8001
+  prompt-composer:
+    environment:
+      MCP_SERVER_URL: http://host.docker.internal:7100
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}

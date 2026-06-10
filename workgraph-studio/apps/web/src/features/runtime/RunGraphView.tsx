@@ -13,7 +13,9 @@
  *   POST /workflow-instances/:id/nodes/:nodeId/restart
  *   POST /workflow-instances/:id/nodes/:nodeId/force-complete   (approve/advance)
  */
-import { useMemo, useState, useCallback, type CSSProperties } from 'react'
+import { useMemo, useState, useCallback, useEffect, type CSSProperties } from 'react'
+import { RuntimeWidgetForm } from '../forms/widgets/RuntimeWidgetForm'
+import type { FormWidget } from '../forms/widgets/types'
 import ReactFlow, {
   Background, BackgroundVariant, Controls, Handle, Position,
   type Node, type Edge, type NodeProps,
@@ -211,10 +213,17 @@ function useAllConsumables(instanceId: string, live: boolean) {
   })
 }
 
-type PanelTab = 'log' | 'questions' | 'artifacts' | 'chat'
+type PanelTab = 'form' | 'log' | 'questions' | 'artifacts' | 'chat'
 // Consumable name AgentTaskExecutor stores parsed Copilot clarifying questions under.
 const COPILOT_QUESTIONS_NAME = '_copilot_questions'
 type CopilotQuestion = { id: string; question: string; options?: string[] }
+// Interactive node types that collect a widget form from the user at runtime.
+type FillKind = 'task' | 'approval' | 'consumable'
+const fillKindFor = (nodeType: string): FillKind | null =>
+  nodeType === 'HUMAN_TASK' ? 'task'
+  : nodeType === 'APPROVAL' ? 'approval'
+  : nodeType === 'CONSUMABLE_CREATION' ? 'consumable'
+  : null
 
 export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges, onTimeline, onBack }: {
   instanceId: string
@@ -256,7 +265,17 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
     URL.revokeObjectURL(url)
   }, [instanceId])
 
-  const onSelect = useCallback((id: string, t?: PanelTab) => { setShowCatalog(false); setSelected(id); if (t) setTab(t) }, [])
+  const onSelect = useCallback((id: string, t?: PanelTab) => {
+    setShowCatalog(false); setSelected(id)
+    if (t) { setTab(t); return }
+    // Open straight to the form for an active human-task / approval / data-collection node.
+    const n = nodes.find(x => x.id === id)
+    const w = n?.config?.formWidgets
+    const isFormNode = !!n && fillKindFor(n.nodeType) !== null
+      && ['ACTIVE', 'RUNNING'].includes((n.status ?? '').toUpperCase())
+      && Array.isArray(w) && w.length > 0
+    setTab(isFormNode ? 'form' : 'log')
+  }, [nodes])
 
   const positions = useMemo(() => layout(nodes, edges), [nodes, edges])
   // phases in left→right (execution) order, for the catalog + send-back list
@@ -322,6 +341,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
             <NodePanel
               key={selectedNode.id}
               instanceId={instanceId}
+              runName={runName}
               node={selectedNode}
               live={live}
               tab={tab} setTab={setTab}
@@ -344,8 +364,9 @@ const topBtn: CSSProperties = {
   border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', color: '#475569', fontSize: 12, fontWeight: 600,
 }
 
-function NodePanel({ instanceId, node, live, tab, setTab, completedNodes, onClose, onRestart, onApprove, onRestartNode, onOpenTimeline, busy }: {
+function NodePanel({ instanceId, runName, node, live, tab, setTab, completedNodes, onClose, onRestart, onApprove, onRestartNode, onOpenTimeline, busy }: {
   instanceId: string
+  runName: string
   node: RunGraphNodeData
   live: boolean
   tab: PanelTab
@@ -374,12 +395,22 @@ function NodePanel({ instanceId, node, live, tab, setTab, completedNodes, onClos
   const isAgent = node.nodeType === 'AGENT_TASK'
   const sendBackTargets = completedNodes.filter(c => c.id !== node.id)
   const isInteractive = INTERACTIVE_TYPES.has(node.nodeType)
+  // Human-task / approval / data-collection: render the widget form inline when
+  // the node is active and has a form, instead of pointing at the Timeline view.
+  const fillKind = fillKindFor(node.nodeType)
+  const formWidgets = (node.config?.formWidgets as FormWidget[] | undefined) ?? []
+  const showForm = active && !!fillKind && formWidgets.length > 0
   // Chat (refine) is copilot-only; non-agent nodes get Log + Artifacts. Questions
-  // appears only when Copilot asked some.
-  const tabs: PanelTab[] = isAgent
+  // appears only when Copilot asked some; Form leads when input is needed.
+  const baseTabs: PanelTab[] = isAgent
     ? (questions.length ? ['log', 'questions', 'artifacts', 'chat'] : ['log', 'artifacts', 'chat'])
     : ['log', 'artifacts']
-  const activeTab: PanelTab = (tab === 'chat' && !isAgent) || (tab === 'questions' && questions.length === 0) ? 'log' : tab
+  const tabs: PanelTab[] = showForm ? ['form', ...baseTabs] : baseTabs
+  const activeTab: PanelTab =
+    (tab === 'form' && !showForm) ? 'log'
+    : (tab === 'chat' && !isAgent) ? 'log'
+    : (tab === 'questions' && questions.length === 0) ? 'log'
+    : tab
 
   return (
     <div style={{ width: 380, flexShrink: 0, background: '#fff', borderLeft: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -405,13 +436,16 @@ function NodePanel({ instanceId, node, live, tab, setTab, completedNodes, onClos
           )
         })}
       </div>
-      {active && isInteractive && (
+      {active && isInteractive && !showForm && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 14px 0', padding: '9px 11px', borderRadius: 9, background: '#fffbeb', border: '1px solid #fde68a' }}>
           <AlertCircle size={14} color="#d97706" style={{ flexShrink: 0 }} />
           <div style={{ flex: 1, fontSize: 11.5, color: '#92400e', lineHeight: 1.4 }}>This stage needs input ({node.nodeType.replace(/_/g, ' ').toLowerCase()}). Complete it in the Timeline view.</div>
         </div>
       )}
       <div style={{ flex: 1, overflow: 'auto', padding: 14, minHeight: 0 }}>
+        {activeTab === 'form' && fillKind && (
+          <NodeFormFill instanceId={instanceId} nodeId={node.id} runName={runName} kind={fillKind} widgets={formWidgets} />
+        )}
         {activeTab === 'log' && (
           <pre style={{ fontSize: 11.5, lineHeight: 1.5, color: '#334155', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'ui-monospace, monospace' }}>
             {latest?.formData?.content?.toString() ?? (active ? 'Working… (live output appears here as the stage produces it)' : 'No output yet.')}
@@ -582,6 +616,86 @@ function CopilotQuestions({ instanceId, node, questions, busy, onRestart }: {
         style={{ ...footBtn, opacity: (busy || mut.isPending || payload.length === 0) ? 0.5 : 1 }}>
         <Send size={14} /> Save answers &amp; re-run ({payload.length}/{questions.length})
       </button>
+    </div>
+  )
+}
+
+// Inline runtime form for an active human-task / approval / data-collection node.
+// Fetches the task/approval/consumable record for this node and renders the SAME
+// RuntimeWidgetForm the Timeline uses, so clicking the node shows the form here.
+function unwrapEntity(d: unknown): { id: string; formData?: Record<string, unknown>; attachments?: any[] } | null {
+  const arr = Array.isArray(d)
+    ? d
+    : ((d as { content?: unknown[]; items?: unknown[] })?.content ?? (d as { items?: unknown[] })?.items ?? [])
+  return (Array.isArray(arr) ? arr[0] : null) as { id: string; formData?: Record<string, unknown>; attachments?: any[] } | null
+}
+function NodeFormFill({ instanceId, nodeId, runName, kind, widgets }: {
+  instanceId: string; nodeId: string; runName: string; kind: FillKind; widgets: FormWidget[]
+}) {
+  const qc = useQueryClient()
+  const path = kind === 'task' ? '/tasks' : kind === 'approval' ? '/approvals' : '/consumables'
+  const entityQuery = useQuery({
+    queryKey: ['rg-fill-entity', kind, nodeId, instanceId],
+    queryFn: () => api.get(path, { params: { nodeId, instanceId } }).then(r => r.data),
+    enabled: !!nodeId && !!instanceId,
+  })
+  const entity = unwrapEntity(entityQuery.data)
+  const [snapshot, setSnapshot] = useState<{ data: Record<string, unknown>; attachmentIds: string[] }>({ data: {}, attachmentIds: [] })
+
+  // Approval nodes may not have a pending record yet — create one on demand.
+  const ensureMut = useMutation({
+    mutationFn: () => api.post(`/approvals/workflow-node/${nodeId}/ensure`).then(r => r.data),
+    onSuccess: () => entityQuery.refetch(),
+  })
+  useEffect(() => {
+    if (kind === 'approval' && entityQuery.isFetched && !entity
+        && !ensureMut.isPending && !ensureMut.isSuccess && !ensureMut.isError) {
+      ensureMut.mutate()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, entityQuery.isFetched, !!entity])
+
+  const decisionMut = useMutation({
+    mutationFn: async (decision: 'APPROVED' | 'REJECTED') => {
+      if (!entity) return
+      await api.post(`/approvals/${entity.id}/form-submission`, { data: snapshot.data, attachmentIds: snapshot.attachmentIds })
+      return api.post(`/approvals/${entity.id}/decision`, {
+        decision, notes: `${decision === 'APPROVED' ? 'Approved' : 'Rejected'} from run graph`,
+      }).then(r => r.data)
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['run-instance', instanceId] }); entityQuery.refetch() },
+  })
+
+  if (entityQuery.isLoading) return <div style={{ fontSize: 12, color: '#94a3b8' }}>Loading form…</div>
+  if (!entity) return <div style={{ fontSize: 12, color: '#94a3b8' }}>Waiting for the {kind} record to be created…</div>
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ fontSize: 11, color: '#0c4a6e', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: '7px 10px', lineHeight: 1.45 }}>
+        Fill this form to complete the step — Run <strong>{runName}</strong>.
+      </div>
+      <RuntimeWidgetForm
+        widgets={widgets}
+        submitTo={{ kind, id: entity.id }}
+        link={{ taskId: kind === 'task' ? entity.id : undefined, nodeId, instanceId }}
+        initialData={entity.formData ?? {}}
+        initialAttachments={Array.isArray(entity.attachments) ? entity.attachments : []}
+        canComplete
+        onSubmitted={() => { qc.invalidateQueries({ queryKey: ['run-instance', instanceId] }); entityQuery.refetch() }}
+        onValuesChange={kind === 'approval' ? setSnapshot : undefined}
+        hideActions={kind === 'approval'}
+        primaryLabel={kind === 'approval' ? 'Save sign-off form' : undefined}
+      />
+      {kind === 'approval' && (
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '1px solid #e2e8f0', paddingTop: 10 }}>
+          <button onClick={() => decisionMut.mutate('REJECTED')} disabled={decisionMut.isPending}
+            style={{ ...footBtn, flex: 'none', width: 'auto', padding: '7px 12px', color: '#991b1b' }}>Reject</button>
+          <button onClick={() => decisionMut.mutate('APPROVED')} disabled={decisionMut.isPending}
+            style={{ ...footBtn, flex: 'none', width: 'auto', padding: '7px 12px', background: '#16a34a', color: '#fff', borderColor: '#16a34a' }}>
+            {decisionMut.isPending ? 'Saving…' : 'Approve & advance'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }
