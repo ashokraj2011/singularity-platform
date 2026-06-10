@@ -493,6 +493,51 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/refine', async (req, res, next)
   }
 })
 
+// Export the run's copilot SDLC as a portable YAML the user can run directly on
+// the Copilot client (clone the repo, then `copilot -p "<prompt>"` per stage).
+workflowInstancesRouter.get('/:id/export/copilot-yaml', async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    await assertInstancePermission(req.user!.userId, id, 'view')
+    const instance = await prisma.workflowInstance.findUnique({ where: { id } })
+    if (!instance) return res.status(404).json({ error: 'run not found' })
+    const nodes = await prisma.workflowNode.findMany({ where: { instanceId: id }, orderBy: { createdAt: 'asc' } })
+    const vars = (((instance.context ?? {}) as Record<string, unknown>)._vars ?? {}) as Record<string, unknown>
+    const cfgOf = (n: { config: unknown }) => (n.config ?? {}) as Record<string, unknown>
+    const interpolate = (s: string) => s.replace(/\{\{\s*instance\.vars\.(\w+)\s*\}\}/g, (_m, k) => String(vars[k] ?? ''))
+    const block = (text: string, spaces: number) => text.split('\n').map(l => ' '.repeat(spaces) + l).join('\n')
+    const repo = String(vars.repoUrl ?? nodes.map(cfgOf).find(c => c.sourceUri)?.sourceUri ?? '')
+    const story = String(vars.story ?? vars.workItemDescription ?? '')
+    const workCode = String(vars.workCode ?? '')
+    const stages = nodes.filter(n => cfgOf(n).executor === 'copilot' && cfgOf(n).task)
+
+    const L: string[] = [
+      '# Singularity → Copilot SDLC workflow export',
+      '# Run: clone the repo, then inside it run each stage in order:',
+      '#   copilot -p "<stage prompt>" --allow-all',
+      `name: ${JSON.stringify(instance.name)}`,
+      `repo: ${repo ? JSON.stringify(repo) : '""  # resolved from the capability at runtime'}`,
+    ]
+    if (workCode) L.push(`workItem: ${JSON.stringify(workCode)}`)
+    if (story) { L.push('story: |'); L.push(block(story, 2)) }
+    L.push('stages:')
+    for (const n of stages) {
+      const c = cfgOf(n)
+      const key = String(c.governedStageKey ?? n.label ?? '')
+      const role = String(c.governedAgentRole ?? '')
+      L.push(`  - key: ${JSON.stringify(key)}`)
+      if (role) L.push(`    role: ${JSON.stringify(role)}`)
+      L.push('    prompt: |')
+      L.push(block(interpolate(String(c.task ?? '')), 6))
+    }
+    res.setHeader('Content-Type', 'application/x-yaml')
+    res.setHeader('Content-Disposition', `attachment; filename="copilot-sdlc-${workCode || id.slice(0, 8)}.yaml"`)
+    res.send(L.join('\n') + '\n')
+  } catch (err) {
+    next(err)
+  }
+})
+
 // M98 — Manually complete a stuck node with an operator comment and advance the
 // workflow. Unlike /restart (re-runs the node) this accepts the node as done
 // and moves downstream. Works on any non-COMPLETED node (FAILED, BLOCKED,
