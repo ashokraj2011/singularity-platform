@@ -23,7 +23,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft, List, CheckCircle2, Circle, Clock, AlertCircle, Pause,
   RotateCw, FileText, MessageSquare, X, Check, Ban, Send, ExternalLink,
-  ShieldCheck, CornerUpLeft, Library,
+  ShieldCheck, CornerUpLeft, Library, Download,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 
@@ -234,6 +234,17 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
     onSuccess: invalidate,
   })
 
+  // Export the run as a portable Copilot SDLC YAML (run it on the Copilot client).
+  const downloadYaml = useCallback(async () => {
+    const res = await api.get(`/workflow-instances/${instanceId}/export/copilot-yaml`, { responseType: 'blob' })
+    const url = URL.createObjectURL(res.data as Blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `copilot-sdlc-${instanceId.slice(0, 8)}.yaml`
+    document.body.appendChild(a); a.click(); a.remove()
+    URL.revokeObjectURL(url)
+  }, [instanceId])
+
   const onSelect = useCallback((id: string, t?: PanelTab) => { setShowCatalog(false); setSelected(id); if (t) setTab(t) }, [])
 
   const positions = useMemo(() => layout(nodes, edges), [nodes, edges])
@@ -277,6 +288,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
         <button onClick={onBack} style={topBtn}><ArrowLeft size={13} /> Back</button>
         <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{runName}</div>
         <span style={{ fontSize: 11, fontWeight: 700, color: st(instanceStatus).color, padding: '3px 9px', borderRadius: 20, background: st(instanceStatus).bg, border: `1px solid ${st(instanceStatus).ring}` }}>{instanceStatus}</span>
+        <button onClick={downloadYaml} style={topBtn} title="Download this SDLC as a Copilot workflow YAML to run on the Copilot client"><Download size={13} /> YAML</button>
         <button onClick={() => { setShowCatalog(c => !c); setSelected(null) }} style={{ ...topBtn, ...(showCatalog ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }}><Library size={13} /> Catalog</button>
         <button onClick={onTimeline} style={topBtn}><List size={13} /> Timeline</button>
       </div>
