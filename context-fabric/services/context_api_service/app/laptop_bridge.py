@@ -72,7 +72,9 @@ log = logging.getLogger("laptop-bridge")
 
 router = APIRouter()
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-in-prod-min-32-chars!!")
+# Dev fallback aligned with docker-compose + IAM so an IAM-signed device token
+# verifies here when JWT_SECRET is unset. ALWAYS override in any real deployment.
+JWT_SECRET = os.environ.get("JWT_SECRET", "changeme_dev_only_min_32_chars_long!!")
 JWT_ALGORITHM = "HS256"
 HEARTBEAT_SWEEP_SEC = 30
 

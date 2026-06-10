@@ -30,8 +30,9 @@ cd "$ROOT"
 
 # ── shared config (override via env) ─────────────────────────────────────────
 # JWT_SECRET MUST be identical for the box (verifies the device JWT) and the
-# mint step (signs it). Default is a dev value; export your own to change both.
-JWT_SECRET="${JWT_SECRET:-dev-laptop-bridge-secret-min-32-chars!!}"
+# mint step (signs it). Default matches docker-compose + IAM + the bridge so the
+# one-Mac test works without exporting anything; export your own to change all.
+JWT_SECRET="${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}"
 MCP_BEARER_TOKEN="${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}"
 DEVICE_TOKEN_FILE="${DEVICE_TOKEN_FILE:-$ROOT/.singularity/laptop-device-token}"
 MCP_WS="${MCP_SANDBOX_ROOT:-$HOME/sg-laptop-workspace}"
