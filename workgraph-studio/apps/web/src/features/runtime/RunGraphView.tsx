@@ -26,6 +26,7 @@ import {
   ShieldCheck, CornerUpLeft, Library, Download,
 } from 'lucide-react'
 import { api } from '../../lib/api'
+import { MarkdownView } from './MarkdownView'
 
 // Non-agentic node types that need their own real handler (form-fill, approval
 // decision, workbench, etc.). The graph shows status/log/artifacts/restart for
@@ -180,7 +181,7 @@ function LiveLogPeek({ instanceId, nodeId, active }: { instanceId: string; nodeI
   return <div style={{ fontSize: 10.5, color: '#475569', lineHeight: 1.35, maxHeight: 42, overflow: 'hidden' }}>{text.slice(0, 140)}{text.length > 140 ? '…' : ''}</div>
 }
 
-type Consumable = { id: string; name?: string; status?: string; nodeId?: string; formData?: { content?: string } }
+type Consumable = { id: string; name?: string; status?: string; nodeId?: string; createdAt?: string; updatedAt?: string; formData?: { content?: string } }
 // /consumables paginates as { content: [...] } (toPageResponse); tolerate content
 // (real key), items (legacy), or a bare array.
 const unwrapList = (d: unknown): Consumable[] => Array.isArray(d)
@@ -512,6 +513,7 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
   const qc = useQueryClient()
   const { data: all = [] } = useAllConsumables(instanceId, live)
   const [verdicts, setVerdicts] = useState<Record<string, { passed: boolean; findings: string[] }>>({})
+  const [openDoc, setOpenDoc] = useState<Consumable | null>(null)
   const approveMut = useMutation({
     mutationFn: (cid: string) => api.post(`/consumables/${cid}/approve`).then(r => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['run-graph-all-consumables', instanceId] }),
@@ -546,9 +548,10 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
                 const approved = ['APPROVED', 'PUBLISHED'].some(k => (d.status ?? '').toUpperCase().includes(k))
                 return (
                   <div key={d.id} style={{ border: '1px solid #e2e8f0', borderRadius: 9, padding: '8px 10px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7 }}>
-                      <FileText size={13} color="#475569" />
-                      <div style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 700, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name ?? 'Artifact'}</div>
+                    <div onClick={() => setOpenDoc(d)} title="Open" style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7, cursor: 'pointer' }}>
+                      <FileText size={13} color="#0ea5e9" />
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 700, color: '#0284c7', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name ?? 'Artifact'}</div>
+                      {(d.updatedAt || d.createdAt) && <span style={{ fontSize: 9, color: '#94a3b8', whiteSpace: 'nowrap' }}>{new Date(d.updatedAt ?? d.createdAt!).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>}
                       {d.status && <span style={{ fontSize: 9.5, fontWeight: 700, color: approved ? '#16a34a' : '#94a3b8' }}>{d.status}</span>}
                     </div>
                     <div style={{ display: 'flex', gap: 6 }}>
@@ -579,6 +582,23 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
           </section>
         ))}
       </div>
+      {openDoc && (
+        <div onClick={() => setOpenDoc(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 24 }}>
+          <div onClick={e => e.stopPropagation()} style={{ width: 'min(840px, 92vw)', maxHeight: '88vh', background: '#fff', borderRadius: 14, display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 12px 48px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '13px 16px', borderBottom: '1px solid #e2e8f0' }}>
+              <FileText size={15} color="#0ea5e9" />
+              <div style={{ flex: 1, fontSize: 14, fontWeight: 700, color: '#0f172a' }}>{openDoc.name ?? 'Artifact'}</div>
+              {(openDoc.updatedAt || openDoc.createdAt) && <span style={{ fontSize: 10.5, color: '#94a3b8' }}>{new Date(openDoc.updatedAt ?? openDoc.createdAt!).toLocaleString()}</span>}
+              <button onClick={() => setOpenDoc(null)} style={{ ...topBtn, padding: 6 }}><X size={15} /></button>
+            </div>
+            <div style={{ flex: 1, overflow: 'auto', padding: '18px 22px', minHeight: 0 }}>
+              {/\.md$/i.test(openDoc.name ?? '')
+                ? <MarkdownView source={openDoc.formData?.content ?? '(empty)'} />
+                : <pre style={{ margin: 0, fontSize: 12.5, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#334155', fontFamily: 'ui-monospace, monospace' }}>{openDoc.formData?.content ?? '(empty)'}</pre>}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
