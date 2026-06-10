@@ -146,23 +146,27 @@ export function EventHorizonChat() {
   // ALL subsequent move/up events to the header even when the widget floats over
   // something that would otherwise grab them (e.g. the React Flow run-graph pane).
   // This is why the previous window-mousemove version felt undraggable there.
-  const dragRef = useRef<{ sx: number; sy: number; bx: number; by: number; pid: number } | null>(null)
-  const onDragDown = (e: React.PointerEvent) => {
-    // Don't start a drag from the header buttons (clear / close).
-    if ((e.target as HTMLElement).closest('button')) return
+  const dragRef = useRef<{ sx: number; sy: number; bx: number; by: number; pid: number; moved: boolean } | null>(null)
+  const wasDragRef = useRef(false) // set on pointerup so a drag doesn't also fire onClick
+  // guardButtons=true (open header) skips drags that start on the clear/close
+  // buttons; false (collapsed bubble) lets the whole bubble be a drag handle.
+  const startDrag = (e: React.PointerEvent, guardButtons: boolean) => {
+    if (guardButtons && (e.target as HTMLElement).closest('button')) return
     e.preventDefault()
-    dragRef.current = { sx: e.clientX, sy: e.clientY, bx: drag.x, by: drag.y, pid: e.pointerId }
+    dragRef.current = { sx: e.clientX, sy: e.clientY, bx: drag.x, by: drag.y, pid: e.pointerId, moved: false }
     try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* ignore */ }
   }
   const onDragMove = (e: React.PointerEvent) => {
     const d = dragRef.current
     if (!d || d.pid !== e.pointerId) return
+    if (Math.abs(e.clientX - d.sx) > 3 || Math.abs(e.clientY - d.sy) > 3) d.moved = true
     setDrag({ x: d.bx + (e.clientX - d.sx), y: d.by + (e.clientY - d.sy) })
   }
   const onDragUp = (e: React.PointerEvent) => {
     const d = dragRef.current
     if (!d || d.pid !== e.pointerId) return
     dragRef.current = null
+    wasDragRef.current = d.moved
     try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
     setDrag(p => { try { localStorage.setItem('eh-chat-pos', JSON.stringify(p)) } catch { /* ignore */ } return p })
   }
@@ -339,7 +343,7 @@ export function EventHorizonChat() {
     <div className="fixed bottom-5 right-5 z-[80]" style={{ transform: `translate(${drag.x}px, ${drag.y}px)` }}>
       {open ? (
         <div className="w-[380px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border border-emerald-200 bg-white shadow-2xl">
-          <div onPointerDown={onDragDown} onPointerMove={onDragMove} onPointerUp={onDragUp} onPointerCancel={onDragUp} style={{ touchAction: 'none' }} className="cursor-move select-none bg-[linear-gradient(135deg,#082821,#0E3B2D)] p-4 text-white" title="Drag to move">
+          <div onPointerDown={e => startDrag(e, true)} onPointerMove={onDragMove} onPointerUp={onDragUp} onPointerCancel={onDragUp} style={{ touchAction: 'none' }} className="cursor-move select-none bg-[linear-gradient(135deg,#082821,#0E3B2D)] p-4 text-white" title="Drag to move">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2 text-sm font-bold"><Sparkles size={16} /> Event Horizon</div>
@@ -388,7 +392,12 @@ export function EventHorizonChat() {
           </div>
         </div>
       ) : (
-        <button onClick={() => setOpen(true)} className="group flex items-center gap-2 rounded-full border border-emerald-200 bg-[linear-gradient(135deg,#082821,#0E3B2D)] px-4 py-3 text-sm font-bold text-white shadow-xl transition hover:scale-[1.02]">
+        <button
+          onPointerDown={e => startDrag(e, false)} onPointerMove={onDragMove} onPointerUp={onDragUp} onPointerCancel={onDragUp}
+          onClick={() => { if (wasDragRef.current) { wasDragRef.current = false; return } setOpen(true) }}
+          style={{ touchAction: 'none' }}
+          title="Click to open · drag to move"
+          className="group flex cursor-move items-center gap-2 rounded-full border border-emerald-200 bg-[linear-gradient(135deg,#082821,#0E3B2D)] px-4 py-3 text-sm font-bold text-white shadow-xl transition hover:scale-[1.02]">
           <Bot size={18} className="text-emerald-200" /> Event Horizon
         </button>
       )}
