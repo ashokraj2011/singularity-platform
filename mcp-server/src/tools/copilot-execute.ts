@@ -145,8 +145,16 @@ export const copilotExecuteTool: ToolHandler = {
       }
     }
 
+    // Log Copilot's actual stdout (its summary / any error like
+    // "transient_bad_request") + stderr so failures are visible in the log, not
+    // just the result metadata. Especially important when exitCode!=0 or no files
+    // changed but the run still "completed".
     log.info(
-      { durationMs: Date.now() - started, exitCode: res.code, timedOut: res.timedOut, changedPaths, commitSha },
+      {
+        durationMs: Date.now() - started, exitCode: res.code, timedOut: res.timedOut, changedPaths, commitSha,
+        output: res.stdout.slice(0, 2000),
+        ...(res.stderr.trim() ? { stderr: res.stderr.slice(0, 800) } : {}),
+      },
       "copilot_execute ← completed",
     );
     return {
