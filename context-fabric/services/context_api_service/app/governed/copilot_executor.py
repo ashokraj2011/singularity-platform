@@ -18,7 +18,6 @@ Copilot auth already are.
 from __future__ import annotations
 
 import dataclasses
-import os
 import re
 from typing import Any
 
@@ -95,12 +94,14 @@ async def compose_copilot_prompt(
     """
     code_md = ""
     try:
+        # Mirror the governed loop (turn.py): do NOT pass mcp_base_url — the builder
+        # resolves the mcp-server from CF's registry (mcp + LLM register with CF;
+        # there is no static MCP_SERVER_URL). Forcing the env var here is what left
+        # the world model empty.
         pkg, _reason = await build_code_context_for_governed_turn(
             task_text=resolved_task,
             capability_id=capability_id,
             run_context=run_context,
-            mcp_base_url=os.environ.get("MCP_SERVER_URL"),
-            mcp_bearer=os.environ.get("MCP_BEARER_TOKEN"),
         )
         if pkg:
             code_md = package_markdown(pkg) or ""
