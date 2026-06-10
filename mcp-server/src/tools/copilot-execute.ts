@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import type { ToolHandler } from "./registry";
 import { resolveSandboxedPath } from "../workspace/sandbox";
 import { log } from "../shared/log";
@@ -122,6 +123,17 @@ export const copilotExecuteTool: ToolHandler = {
       log.warn({ err: (err as Error).message }, "copilot_execute: git diff capture failed");
     }
 
+    // Capture produced file CONTENT (the actual artifacts — REQUIREMENTS.md etc.)
+    // so the platform can store + show each doc per phase, not just the summary.
+    const artifacts: Array<{ path: string; content: string }> = [];
+    for (const p of changedPaths.slice(0, 25)) {
+      if (!p || p.endsWith("/")) continue;
+      try {
+        const content = readFileSync(resolveSandboxedPath(p), "utf8");
+        if (content.length <= 200_000) artifacts.push({ path: p, content });
+      } catch { /* deleted, binary, or a directory — skip */ }
+    }
+
     // Check in: commit this phase's changes onto the work-item branch so the
     // workflow's GIT_PUSH can push them and each stage has a discrete commit.
     // (Default true; pass commit:false to leave the worktree dirty.)
@@ -165,6 +177,7 @@ export const copilotExecuteTool: ToolHandler = {
         prompt: truncate(task, MAX_SUMMARY_CHARS),
         summary: truncate(res.stdout.trim(), MAX_SUMMARY_CHARS),
         changedPaths,
+        artifacts,
         diff: truncate(diff, MAX_DIFF_CHARS),
         commitSha,
         timed_out: res.timedOut,
