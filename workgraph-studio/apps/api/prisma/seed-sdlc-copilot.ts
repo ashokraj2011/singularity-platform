@@ -46,6 +46,12 @@ const DEFAULT_REPO = process.env.SEED_COPILOT_REPO_URL
 // enforced (audit-governance must be reachable). Set SEED_GOVERNANCE_MODE=fail_open
 // to attempt governance but proceed if audit-gov is briefly unavailable.
 const GOVERNANCE_MODE = process.env.SEED_GOVERNANCE_MODE ?? 'fail_closed'
+// Bridge model (default): each copilot phase routes to the LAUNCHING USER'S laptop
+// mcp-server over the outbound WS bridge (run_context.prefer_laptop=true). The box
+// holds NO laptop address — the laptop dials IN to Context Fabric. CF requires a
+// connected laptop and fails fast (MCP_NOT_CONNECTED) if none is paired.
+// Set SEED_PREFER_LAPTOP=false to use a Direct HTTP mcp (MCP_SERVER_URL) instead.
+const PREFER_LAPTOP = (process.env.SEED_PREFER_LAPTOP ?? 'true').toLowerCase() === 'true'
 
 const WF_NAME = 'SDLC (Copilot CLI)'
 const WF_ID = '3b000000-0000-0000-0000-0000000000c0'
@@ -154,7 +160,7 @@ async function main(): Promise<void> {
       // so the copilot prompt names the role (e.g. "acting as the DEVELOPER").
       // governanceMode + useGovernedExecutor → the node runs the GOVERNED loop
       // (governance overlay + audit), connected to its role agent template.
-      config: { agentTemplateId: phase.agent, task: phase.task, executor: 'copilot', governanceMode: GOVERNANCE_MODE, useGovernedExecutor: true, governedStageKey: phase.key, governedAgentRole: phase.role, ...(DEFAULT_REPO ? { sourceType: 'github', sourceUri: DEFAULT_REPO } : {}) },
+      config: { agentTemplateId: phase.agent, task: phase.task, executor: 'copilot', governanceMode: GOVERNANCE_MODE, useGovernedExecutor: true, ...(PREFER_LAPTOP ? { preferLaptop: true } : {}), governedStageKey: phase.key, governedAgentRole: phase.role, ...(DEFAULT_REPO ? { sourceType: 'github', sourceUri: DEFAULT_REPO } : {}) },
     })
   }
   // Verifier gate before the push: run the verifier agent on EVERY document the
@@ -179,7 +185,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`✓ "${WF_NAME}" (${WF_ID}) — START → ${PHASES.map(p => p.key).join(' → ')} → VERIFY → GIT_PUSH → END`)
-  console.log(`  every phase node: AGENT_TASK, executor='copilot', governanceMode='${GOVERNANCE_MODE}'; + a VERIFIER gate before push`)
+  console.log(`  every phase node: AGENT_TASK, executor='copilot', governanceMode='${GOVERNANCE_MODE}', preferLaptop=${PREFER_LAPTOP} (bridge: laptop dials into CF); + a VERIFIER gate before push`)
 
   // feature → SDLC → this Copilot flow, priority 300. Routing precedence is
   // `priority desc` (work-item-routing.service.ts), so 300 wins over the
