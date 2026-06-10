@@ -142,19 +142,29 @@ export function EventHorizonChat() {
   const [drag, setDrag] = useState<{ x: number; y: number }>(() => {
     try { const s = localStorage.getItem('eh-chat-pos'); return s ? JSON.parse(s) : { x: 0, y: 0 } } catch { return { x: 0, y: 0 } }
   })
-  const dragRef = useRef<{ sx: number; sy: number; bx: number; by: number } | null>(null)
-  const onDragStart = (e: React.MouseEvent) => {
-    dragRef.current = { sx: e.clientX, sy: e.clientY, bx: drag.x, by: drag.y }
-    const move = (ev: MouseEvent) => {
-      const d = dragRef.current; if (!d) return
-      setDrag({ x: d.bx + (ev.clientX - d.sx), y: d.by + (ev.clientY - d.sy) })
-    }
-    const up = () => {
-      dragRef.current = null
-      setDrag(p => { try { localStorage.setItem('eh-chat-pos', JSON.stringify(p)) } catch { /* ignore */ } return p })
-      window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
-    }
-    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  // Pointer Events + pointer capture: capturing the pointer on mousedown routes
+  // ALL subsequent move/up events to the header even when the widget floats over
+  // something that would otherwise grab them (e.g. the React Flow run-graph pane).
+  // This is why the previous window-mousemove version felt undraggable there.
+  const dragRef = useRef<{ sx: number; sy: number; bx: number; by: number; pid: number } | null>(null)
+  const onDragDown = (e: React.PointerEvent) => {
+    // Don't start a drag from the header buttons (clear / close).
+    if ((e.target as HTMLElement).closest('button')) return
+    e.preventDefault()
+    dragRef.current = { sx: e.clientX, sy: e.clientY, bx: drag.x, by: drag.y, pid: e.pointerId }
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* ignore */ }
+  }
+  const onDragMove = (e: React.PointerEvent) => {
+    const d = dragRef.current
+    if (!d || d.pid !== e.pointerId) return
+    setDrag({ x: d.bx + (e.clientX - d.sx), y: d.by + (e.clientY - d.sy) })
+  }
+  const onDragUp = (e: React.PointerEvent) => {
+    const d = dragRef.current
+    if (!d || d.pid !== e.pointerId) return
+    dragRef.current = null
+    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
+    setDrag(p => { try { localStorage.setItem('eh-chat-pos', JSON.stringify(p)) } catch { /* ignore */ } return p })
   }
 
   function activeSessionId() {
@@ -329,7 +339,7 @@ export function EventHorizonChat() {
     <div className="fixed bottom-5 right-5 z-[80]" style={{ transform: `translate(${drag.x}px, ${drag.y}px)` }}>
       {open ? (
         <div className="w-[380px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border border-emerald-200 bg-white shadow-2xl">
-          <div onMouseDown={onDragStart} className="cursor-move select-none bg-[linear-gradient(135deg,#082821,#0E3B2D)] p-4 text-white" title="Drag to move">
+          <div onPointerDown={onDragDown} onPointerMove={onDragMove} onPointerUp={onDragUp} onPointerCancel={onDragUp} style={{ touchAction: 'none' }} className="cursor-move select-none bg-[linear-gradient(135deg,#082821,#0E3B2D)] p-4 text-white" title="Drag to move">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2 text-sm font-bold"><Sparkles size={16} /> Event Horizon</div>
