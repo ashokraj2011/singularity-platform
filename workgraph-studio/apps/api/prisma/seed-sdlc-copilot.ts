@@ -24,14 +24,17 @@ const prisma = new PrismaClient()
 
 const CAPABILITY_ID = process.env.SEED_CAPABILITY_ID ?? '11111111-2222-3333-4444-555555555555'
 const TEAM_ID = process.env.SEED_TEAM_ID ?? '50000000-0000-0000-0000-000000000001'
-// Reuse the same role agent templates the workbench SDLC seed uses, so this
-// flow drops into the same environment (override via env per deployment).
-const PRODUCT_OWNER_AGENT = process.env.SEED_PO_AGENT ?? '885ae4d8-7e5a-4f8c-81c1-1672889ac776'
-const ARCHITECT_AGENT = process.env.SEED_ARCH_AGENT ?? '19f65cc6-f2f2-4c42-a0ac-27d180da07e9'
-const DEVELOPER_AGENT = process.env.SEED_DEV_AGENT ?? 'aaa33b61-651c-4d1b-91ad-266febccdcb6'
-const QA_AGENT = process.env.SEED_QA_AGENT ?? 'b2e283d0-4df0-49ff-8404-3d67b09779c5'
-const SECURITY_AGENT = process.env.SEED_SEC_AGENT ?? '0dc3d00f-6c7d-4f50-8d4b-2dae422a7d6f'
-const DEVOPS_AGENT = process.env.SEED_DEVOPS_AGENT ?? '056f0ad7-185b-455a-86be-2c6576c4c2d9'
+// Role agent templates — defaults are the REAL AgentTemplate ids that
+// agent-runtime/prisma/seed.ts creates (00000000-…d1..d8), so the nodes bind to
+// existing agents out of the box. (The old 885ae4d8-family defaults referenced
+// templates that NO seed created → placeholder agents.) Override via env if your
+// deployment uses different template ids.
+const PRODUCT_OWNER_AGENT = process.env.SEED_PO_AGENT ?? '00000000-0000-0000-0000-0000000000d7'
+const ARCHITECT_AGENT = process.env.SEED_ARCH_AGENT ?? '00000000-0000-0000-0000-0000000000d1'
+const DEVELOPER_AGENT = process.env.SEED_DEV_AGENT ?? '00000000-0000-0000-0000-0000000000d2'
+const QA_AGENT = process.env.SEED_QA_AGENT ?? '00000000-0000-0000-0000-0000000000d3'
+const SECURITY_AGENT = process.env.SEED_SEC_AGENT ?? '00000000-0000-0000-0000-0000000000d5'
+const DEVOPS_AGENT = process.env.SEED_DEVOPS_AGENT ?? '00000000-0000-0000-0000-0000000000d6'
 // Default repo every copilot phase clones into its sandbox. The board's create
 // form has no repoUrl field, so without a default Copilot runs in an empty dir.
 // A work item that DOES set a `repoUrl` var overrides this per item.

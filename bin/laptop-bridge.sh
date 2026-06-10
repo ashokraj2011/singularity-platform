@@ -117,6 +117,15 @@ cmd_rebuild() {
   echo "[rebuild] done — recreate with: $0 box-up-direct"
 }
 
+# Fully seed the box (users, capability, prompts, SDLC workflows). Uses the direct
+# overlay; prefer_laptop=false to match box-up-direct (mcp-direct/HTTP). Override
+# SEED_PREFER_LAPTOP=true if you brought the box up in BRIDGE mode (box-up + mcp).
+cmd_seed() {
+  COMPOSE_FILES="-f docker-compose.yml -f docker-compose.laptop-direct.yml" \
+    SEED_PREFER_LAPTOP="${SEED_PREFER_LAPTOP:-false}" \
+    "$(dirname "$0")/seed-docker.sh"
+}
+
 # Direct-HTTP box: same services as box-up, but the box calls the HOST mcp +
 # gateway at host.docker.internal (docker-compose.laptop-direct.yml). No bridge,
 # no device token, no prefer_laptop. --build picks up new feature code.
@@ -198,11 +207,12 @@ case "${1:-}" in
   box-up-direct) cmd_box_up_direct ;;   # direct mode: box → host mcp via HTTP
   box-down)      cmd_box_down ;;
   rebuild)       cmd_rebuild ;;         # rebuild the 3 feature-code images after a pull
+  seed)          cmd_seed ;;            # seed users + capability + prompts + SDLC workflows
   gateway)       cmd_gateway ;;         # host llm-gateway :8001 (both modes)
   mcp)           cmd_mcp ;;             # host mcp-server, BRIDGE (dials out)
   mcp-direct)    cmd_mcp_direct ;;      # host mcp-server, DIRECT (HTTP :7100)
   status)        cmd_status ;;
-  *) echo "usage: $0 {mint-token <iam-user-id>|rebuild|box-up|box-up-direct|gateway|mcp|mcp-direct|status|box-down}
+  *) echo "usage: $0 {mint-token <iam-user-id>|rebuild|box-up|box-up-direct|seed|gateway|mcp|mcp-direct|status|box-down}
   bridge mode:  mint-token → box-up        → gateway + mcp
   direct mode:  rebuild    → box-up-direct  → gateway + mcp-direct   (simplest; tests the Copilot-questions feature)" >&2; exit 1 ;;
 esac

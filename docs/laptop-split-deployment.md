@@ -151,12 +151,22 @@ docker compose -f docker-compose.yml -f docker-compose.laptop-direct.yml \
 ```
 > The DB is `db push`-managed, so `prisma migrate deploy` errors with **P3005** — apply migration `.sql` directly via `psql` as above.
 
-**Seed the Copilot SDLC workflow** (idempotent; run inside the workgraph-api container so deps + `DATABASE_URL` are correct):
+**Seed everything (one command).** A default `up` only auto-seeds DBs, the IAM
+super-admin, agent-runtime role templates, and workgraph artifact/demo data — it
+does **not** create demo users, prompt-composer prompts, or the SDLC workflows.
+`bin/seed-docker.sh` runs all the manual seeds in dependency order (IAM users +
+capability → agent bindings → composer prompts → workgraph artifact templates →
+SDLC workflows incl. Copilot):
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.laptop-direct.yml \
-  exec workgraph-api npx tsx prisma/seed-sdlc-copilot.ts
-# add SEED_GOVERNANCE_MODE=fail_open if you do NOT run audit-governance (see §7)
+# direct-mode box: matches box-up-direct (mcp-direct/HTTP)
+bin/laptop-bridge.sh seed
+# or directly, choosing the knobs:
+SEED_PREFER_LAPTOP=false SEED_GOVERNANCE_MODE=fail_open bin/seed-docker.sh
 ```
+Logins after seeding: `admin@singularity.local` / `Admin1234!` (super admin) and
+`user1@singularity.local … user10@…` / `Admin1234!` (demo users). The Copilot
+SDLC seed's agent-template defaults are the real `00000000-…d#` ids that
+agent-runtime seeds, so its nodes bind to existing agents.
 
 ---
 
