@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useParams, useLocation } from 'react-router-dom'
 import { useAuthStore } from './store/auth.store'
 import { sharedAuthToken, redirectToPortalLogin } from './lib/sharedAuth'
 
@@ -107,7 +107,15 @@ export default function App() {
           <Route path="*"                  element={<Navigate to="/dashboard" replace />} />
         </Route>
       </Routes>
-      <EventHorizonChat />
+      <EventHorizonGate />
     </BrowserRouter>
   )
+}
+
+// Event Horizon shows on every page EXCEPT the run viewer (/runs/:id …), where it
+// overlaps the run-graph node-panel controls.
+function EventHorizonGate() {
+  const { pathname } = useLocation()
+  if (/^\/runs\/[^/]+/.test(pathname)) return null
+  return <EventHorizonChat />
 }
