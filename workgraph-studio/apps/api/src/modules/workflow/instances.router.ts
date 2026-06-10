@@ -493,6 +493,36 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/refine', async (req, res, next)
   }
 })
 
+// Answer Copilot's clarifying questions, then re-run the node with the answers
+// injected. AgentTaskExecutor appends config._copilotAnswers to the prompt as
+// confirmed decisions. Used by the run-graph "Questions" tab.
+workflowInstancesRouter.post('/:id/nodes/:nodeId/answer-questions', async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    const nodeId = req.params.nodeId as string
+    const rawAnswers = Array.isArray(req.body?.answers) ? req.body.answers : []
+    const formatted = rawAnswers
+      .map((a: { question?: unknown; answer?: unknown }) => {
+        const answer = typeof a?.answer === 'string' ? a.answer.trim() : ''
+        if (!answer) return ''
+        const q = typeof a?.question === 'string' && a.question.trim() ? a.question.trim() : 'Question'
+        return `- ${q}: ${answer}`
+      })
+      .filter(Boolean)
+      .join('\n')
+    if (!formatted) return res.status(400).json({ error: 'at least one answer is required' })
+    await assertInstancePermission(req.user!.userId, id, 'edit')
+    const node = await prisma.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } })
+    if (!node) return res.status(404).json({ error: 'node not found in this run' })
+    const config = { ...((node.config ?? {}) as Record<string, unknown>), _copilotAnswers: formatted }
+    await prisma.workflowNode.update({ where: { id: nodeId }, data: { config: config as Prisma.InputJsonValue } })
+    const result = await restartNode(id, nodeId, req.user!.userId)
+    res.json({ ...result, answered: true })
+  } catch (err) {
+    next(err)
+  }
+})
+
 // Export the run's copilot SDLC as a portable YAML the user can run directly on
 // the Copilot client (clone the repo, then `copilot -p "<prompt>"` per stage).
 workflowInstancesRouter.get('/:id/export/copilot-yaml', async (req, res, next) => {

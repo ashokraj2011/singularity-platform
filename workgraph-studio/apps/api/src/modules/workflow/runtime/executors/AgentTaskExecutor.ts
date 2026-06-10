@@ -148,9 +148,18 @@ export async function activateAgentTask(
   // node + restarts it; append the note so the re-run addresses it (copilot prompt
   // or governed task alike).
   const refineFeedback = configString('_refineFeedback')
-  const task = refineFeedback && baseTask
-    ? `${baseTask}\n\n## Reviewer feedback to address (refinement)\n${refineFeedback}`
-    : baseTask
+  // Clarifying-question answers: the run-graph Questions tab POSTs answers to
+  // /answer-questions, which sets _copilotAnswers + restarts the node. Inject
+  // them as decisions so the re-run uses the operator's choices, not guesses.
+  const copilotAnswers = configString('_copilotAnswers')
+  let task = baseTask
+  if (task && refineFeedback) {
+    task = `${task}\n\n## Reviewer feedback to address (refinement)\n${refineFeedback}`
+  }
+  if (task && copilotAnswers) {
+    task = `${task}\n\n## Answers to your clarifying questions\n${copilotAnswers}\n` +
+      `Treat these as confirmed decisions — apply them and do not ask them again.`
+  }
 
   if (!agentTemplateId || !task || !capabilityId) {
     await failRun(
@@ -526,6 +535,21 @@ export async function activateAgentTask(
     }
   }
 
+  // Copilot clarifying questions — parse the "## Questions" block Copilot was
+  // asked to emit (copilot_executor.compose_copilot_prompt) out of its reply,
+  // and store it as a dedicated consumable so the run-graph "Questions" tab can
+  // render it and re-run the stage with the operator's answers. Copilot-only.
+  if (configString('executor') === 'copilot') {
+    const questions = parseCopilotQuestions(result.finalResponse ?? '')
+    if (questions.length > 0) {
+      await createAgentOutputArtifact({
+        instance, node, runId: run.id, name: COPILOT_QUESTIONS_ARTIFACT,
+        content: JSON.stringify(questions),
+        payload: { artifactKind: 'copilot_questions' },
+      }).catch(() => undefined)
+    }
+  }
+
   try {
     await recordWorkflowLlmUsage(instance.id, {
       nodeId: node.id,
@@ -693,6 +717,46 @@ async function collectPriorOutputs(
         finishReason: structured.finishReason,
       } : null,
     }
+  }
+  return out
+}
+
+// Consumable name under which a node's parsed Copilot clarifying questions are
+// stored (JSON in formData.content). The run-graph panel reads this back.
+const COPILOT_QUESTIONS_ARTIFACT = '_copilot_questions'
+
+type CopilotQuestion = { id: string; question: string; options?: string[] }
+
+// Parse a "## Questions" (a.k.a. Open Questions / Clarifications) markdown block
+// out of a Copilot reply into structured questions. Mirrors how the blueprint
+// workbench parses LLM open-questions: heading scan → bullet split → inline
+// `|`-delimited options.
+function isCopilotQuestionsHeading(line: string): boolean {
+  const t = line.trim()
+  if (!t.startsWith('#') && !t.startsWith('**')) return false
+  const h = t.replace(/^#+\s*/, '').replace(/^\*\*|\*\*$/g, '').replace(/[:：]\s*$/, '').trim().toLowerCase()
+  return ['questions', 'open questions', 'clarification', 'clarifications', 'clarifying questions',
+    'questions for user', 'questions for the user'].includes(h)
+}
+function parseCopilotQuestions(text: string): CopilotQuestion[] {
+  if (!text) return []
+  const lines = text.split(/\r?\n/)
+  const start = lines.findIndex(isCopilotQuestionsHeading)
+  if (start < 0) return []
+  const out: CopilotQuestion[] = []
+  for (let i = start + 1; i < lines.length && out.length < 20; i++) {
+    if (lines[i].trim().startsWith('#')) break // next heading ends the block
+    const m = lines[i].match(/^\s*(?:[-*]|\d+[.)])\s+(.*\S)\s*$/)
+    if (!m) continue
+    let body = m[1].trim()
+    let options: string[] | undefined
+    if (body.includes('|')) {
+      const segs = body.split('|').map((s) => s.trim()).filter(Boolean)
+      body = segs.shift() ?? body
+      options = segs.length ? segs.slice(0, 8) : undefined
+    }
+    body = body.replace(/^\*\*(.+?)\*\*/, '$1').trim() // drop leading bold a model may add
+    if (body) out.push({ id: `q${out.length + 1}`, question: body, options })
   }
   return out
 }

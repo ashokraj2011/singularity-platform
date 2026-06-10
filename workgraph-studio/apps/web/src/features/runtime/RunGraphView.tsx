@@ -211,7 +211,10 @@ function useAllConsumables(instanceId: string, live: boolean) {
   })
 }
 
-type PanelTab = 'log' | 'artifacts' | 'chat'
+type PanelTab = 'log' | 'questions' | 'artifacts' | 'chat'
+// Consumable name AgentTaskExecutor stores parsed Copilot clarifying questions under.
+const COPILOT_QUESTIONS_NAME = '_copilot_questions'
+type CopilotQuestion = { id: string; question: string; options?: string[] }
 
 export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges, onTimeline, onBack }: {
   instanceId: string
@@ -359,13 +362,24 @@ function NodePanel({ instanceId, node, live, tab, setTab, completedNodes, onClos
   const [sendBackOpen, setSendBackOpen] = useState(false)
   const { data: consumables = [] } = useConsumables(instanceId, node.id, live)
   const active = ['ACTIVE', 'RUNNING'].includes((node.status ?? '').toUpperCase())
-  const latest = consumables[consumables.length - 1]
+  // The parsed Copilot questions ride in a hidden `_copilot_questions` consumable;
+  // keep it out of the Log + Artifacts views and surface it in its own tab.
+  const questions = useMemo<CopilotQuestion[]>(() => {
+    const raw = consumables.find(c => c.name === COPILOT_QUESTIONS_NAME)?.formData?.content
+    if (!raw) return []
+    try { const q = JSON.parse(raw.toString()); return Array.isArray(q) ? q as CopilotQuestion[] : [] } catch { return [] }
+  }, [consumables])
+  const visibleConsumables = consumables.filter(c => c.name !== COPILOT_QUESTIONS_NAME)
+  const latest = visibleConsumables[visibleConsumables.length - 1]
   const isAgent = node.nodeType === 'AGENT_TASK'
   const sendBackTargets = completedNodes.filter(c => c.id !== node.id)
   const isInteractive = INTERACTIVE_TYPES.has(node.nodeType)
-  // Chat (refine) is copilot-only; non-agent nodes get Log + Artifacts.
-  const tabs: PanelTab[] = isAgent ? ['log', 'artifacts', 'chat'] : ['log', 'artifacts']
-  const activeTab = tab === 'chat' && !isAgent ? 'log' : tab
+  // Chat (refine) is copilot-only; non-agent nodes get Log + Artifacts. Questions
+  // appears only when Copilot asked some.
+  const tabs: PanelTab[] = isAgent
+    ? (questions.length ? ['log', 'questions', 'artifacts', 'chat'] : ['log', 'artifacts', 'chat'])
+    : ['log', 'artifacts']
+  const activeTab: PanelTab = (tab === 'chat' && !isAgent) || (tab === 'questions' && questions.length === 0) ? 'log' : tab
 
   return (
     <div style={{ width: 380, flexShrink: 0, background: '#fff', borderLeft: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -378,13 +392,18 @@ function NodePanel({ instanceId, node, live, tab, setTab, completedNodes, onClos
         <button onClick={onClose} style={{ ...topBtn, padding: 6 }}><X size={14} /></button>
       </div>
       <div style={{ display: 'flex', gap: 4, padding: '8px 10px', borderBottom: '1px solid #f1f5f9' }}>
-        {tabs.map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{
-            flex: 1, padding: '6px 8px', borderRadius: 7, fontSize: 11.5, fontWeight: 600, cursor: 'pointer', textTransform: 'capitalize',
-            border: '1px solid', borderColor: activeTab === t ? '#0ea5e9' : 'transparent',
-            background: activeTab === t ? '#f0f9ff' : 'transparent', color: activeTab === t ? '#0284c7' : '#64748b',
-          }}>{t}</button>
-        ))}
+        {tabs.map(t => {
+          const isQ = t === 'questions'
+          return (
+            <button key={t} onClick={() => setTab(t)} style={{
+              flex: 1, padding: '6px 8px', borderRadius: 7, fontSize: 11.5, fontWeight: 600, cursor: 'pointer', textTransform: 'capitalize',
+              border: '1px solid',
+              borderColor: activeTab === t ? (isQ ? '#f59e0b' : '#0ea5e9') : 'transparent',
+              background: activeTab === t ? (isQ ? '#fffbeb' : '#f0f9ff') : 'transparent',
+              color: activeTab === t ? (isQ ? '#b45309' : '#0284c7') : (isQ ? '#b45309' : '#64748b'),
+            }}>{isQ ? `Questions (${questions.length})` : t}</button>
+          )
+        })}
       </div>
       {active && isInteractive && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 14px 0', padding: '9px 11px', borderRadius: 9, background: '#fffbeb', border: '1px solid #fde68a' }}>
@@ -398,11 +417,12 @@ function NodePanel({ instanceId, node, live, tab, setTab, completedNodes, onClos
             {latest?.formData?.content?.toString() ?? (active ? 'Working… (live output appears here as the stage produces it)' : 'No output yet.')}
           </pre>
         )}
+        {activeTab === 'questions' && <CopilotQuestions instanceId={instanceId} node={node} questions={questions} busy={busy} onRestart={onRestart} />}
         {activeTab === 'artifacts' && (
-          consumables.length === 0
+          visibleConsumables.length === 0
             ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No artifacts produced yet.</div>
             : <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {consumables.map(c => (
+                {visibleConsumables.map(c => (
                   <div key={c.id} style={{ border: '1px solid #e2e8f0', borderRadius: 9, overflow: 'hidden' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 10px', background: '#f8fafc', fontSize: 11.5, fontWeight: 700, color: '#334155' }}>
                       <FileText size={12} /> {c.name ?? 'Artifact'} {c.status ? <span style={{ fontWeight: 600, color: '#94a3b8' }}>· {c.status}</span> : null}
@@ -500,6 +520,68 @@ function ChatRefine({ instanceId, node, busy, onRestart }: {
           <Send size={14} />
         </button>
       </div>
+    </div>
+  )
+}
+
+// Copilot clarifying questions — rendered like the workbench's question cards
+// (option chips + free-text), answered, then the stage re-runs with the answers
+// injected as decisions (POST /answer-questions → restartNode).
+function CopilotQuestions({ instanceId, node, questions, busy, onRestart }: {
+  instanceId: string; node: RunGraphNodeData; questions: CopilotQuestion[]; busy: boolean; onRestart: () => void
+}) {
+  const qc = useQueryClient()
+  const [answers, setAnswers] = useState<Record<string, { option?: string; text?: string }>>({})
+  const answerText = (q: CopilotQuestion): string => {
+    const a = answers[q.id]; if (!a) return ''
+    const opt = a.option ?? ''; const txt = (a.text ?? '').trim()
+    return opt && txt ? `${opt} — ${txt}` : (txt || opt)
+  }
+  const payload = questions
+    .map(q => ({ questionId: q.id, question: q.question, answer: answerText(q) }))
+    .filter(a => a.answer)
+  const mut = useMutation({
+    mutationFn: () =>
+      api.post(`/workflow-instances/${instanceId}/nodes/${node.id}/answer-questions`, { answers: payload })
+        .then(r => r.data)
+        .catch(() => { onRestart(); return { fallback: true } }),
+    onSuccess: () => { setAnswers({}); qc.invalidateQueries({ queryKey: ['run-instance', instanceId] }) },
+  })
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, height: '100%' }}>
+      <div style={{ fontSize: 11.5, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 10px', lineHeight: 1.45 }}>
+        Copilot asked {questions.length} question{questions.length > 1 ? 's' : ''} for this stage. Answer and re-run — your answers are injected as confirmed decisions so it won't guess.
+      </div>
+      <div style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {questions.map(q => (
+          <div key={q.id} style={{ border: '1px solid #e2e8f0', borderRadius: 9, padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0f172a', lineHeight: 1.4 }}>{q.question}</div>
+            {q.options && q.options.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {q.options.map(opt => {
+                  const sel = answers[q.id]?.option === opt
+                  return (
+                    <button key={opt} type="button"
+                      onClick={() => setAnswers(s => ({ ...s, [q.id]: { ...s[q.id], option: sel ? undefined : opt } }))}
+                      style={{
+                        padding: '5px 10px', borderRadius: 7, fontSize: 11.5, fontWeight: 600, cursor: 'pointer', border: '1px solid',
+                        borderColor: sel ? '#0ea5e9' : '#e2e8f0', background: sel ? '#f0f9ff' : '#fff', color: sel ? '#0284c7' : '#475569',
+                      }}>{opt}</button>
+                  )
+                })}
+              </div>
+            )}
+            <textarea rows={2} value={answers[q.id]?.text ?? ''}
+              onChange={e => setAnswers(s => ({ ...s, [q.id]: { ...s[q.id], text: e.target.value } }))}
+              placeholder={q.options?.length ? 'Add detail (optional)…' : 'Your answer…'}
+              style={{ resize: 'none', padding: '7px 9px', borderRadius: 7, border: '1px solid #e2e8f0', fontSize: 11.5, fontFamily: 'inherit' }} />
+          </div>
+        ))}
+      </div>
+      <button onClick={() => payload.length && mut.mutate()} disabled={busy || mut.isPending || payload.length === 0}
+        style={{ ...footBtn, opacity: (busy || mut.isPending || payload.length === 0) ? 0.5 : 1 }}>
+        <Send size={14} /> Save answers &amp; re-run ({payload.length}/{questions.length})
+      </button>
     </div>
   )
 }
