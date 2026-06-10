@@ -92,7 +92,28 @@ export function ArtifactsExplorerPage() {
     queryFn: () => api.get('/blueprint/artifacts', { params }).then(r => r.data),
   })
 
-  const items = useMemo(() => data?.items ?? [], [data])
+  // Workflow-run artifacts (the per-file consumables) — merged in so the explorer
+  // shows BOTH workbench (blueprint) and workflow artifacts. /consumables paginates
+  // under `content`.
+  type WfConsumable = { id: string; name?: string; status?: string; instanceId?: string; createdAt?: string; formData?: { content?: string } }
+  const { data: wfData } = useQuery<{ content?: WfConsumable[] } | WfConsumable[]>({
+    queryKey: ['artifacts-workflow-consumables'],
+    queryFn: () => api.get('/consumables', { params: { size: 200 } }).then(r => r.data),
+  })
+
+  const items = useMemo(() => {
+    const blueprint = data?.items ?? []
+    const raw = Array.isArray(wfData) ? wfData : (wfData?.content ?? [])
+    const workflow = raw
+      .filter(c => typeof c.formData?.content === 'string' && (c.formData!.content as string).length > 0)
+      .filter(c => !workflowInstanceId || c.instanceId === workflowInstanceId)
+      .map(c => ({
+        id: c.id, title: c.name ?? 'Artifact', kind: 'WORKFLOW',
+        createdAt: c.createdAt ?? '', workflowInstanceId: c.instanceId,
+        workflowStatus: c.status, content: c.formData?.content ?? '',
+      }))
+    return [...blueprint, ...(workflow as unknown as typeof blueprint)]
+  }, [data, wfData, workflowInstanceId])
   const kinds = useMemo(() => Array.from(new Set(items.map(i => i.kind))).sort(), [items])
   const statusOptions = facets?.statuses ?? WORKFLOW_STATUSES
   const inputStyle: React.CSSProperties = { fontSize: 12, padding: '5px 8px', borderRadius: 7, border: '1px solid var(--color-outline-variant)', background: '#fff', color: 'var(--color-on-surface)', maxWidth: 260 }
@@ -112,7 +133,7 @@ export function ArtifactsExplorerPage() {
             Artifacts
           </h1>
           <p style={{ fontSize: 11, color: 'var(--color-outline)', marginTop: 2 }}>
-            {isLoading ? 'Loading…' : `${data?.count ?? 0} artifact${(data?.count ?? 0) === 1 ? '' : 's'} across your runs`}
+            {isLoading ? 'Loading…' : `${items.length} artifact${items.length === 1 ? '' : 's'} across your workbench + workflow runs`}
           </p>
         </div>
       </div>
