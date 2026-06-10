@@ -323,7 +323,7 @@ function StepCard({
   const { data: nodeArtifacts = [] } = useQuery<Array<{ id: string; name: string; status?: string; formData?: { content?: string } | null }>>({
     queryKey: ['run-instance', instanceId, 'node-artifacts', node.id],
     queryFn: () => api.get('/consumables', { params: { instanceId, nodeId: node.id } })
-      .then(r => (Array.isArray(r.data) ? r.data : (r.data?.items ?? []))),
+      .then(r => (Array.isArray(r.data) ? r.data : (r.data?.content ?? r.data?.items ?? []))),
     enabled: showArtifacts,
   })
   const mayHaveArtifacts = node.status !== 'PENDING' && node.status !== 'SKIPPED'
