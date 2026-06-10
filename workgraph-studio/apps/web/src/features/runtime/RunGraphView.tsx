@@ -182,6 +182,8 @@ function LiveLogPeek({ instanceId, nodeId, active }: { instanceId: string; nodeI
 }
 
 type Consumable = { id: string; name?: string; status?: string; nodeId?: string; createdAt?: string; updatedAt?: string; formData?: { content?: string } }
+// Render markdown for everything except source-code files (which stay as code).
+const isCodeArtifact = (name?: string) => /\.(java|ts|tsx|js|jsx|py|json|xml|ya?ml|sql|sh|go|rs|c|cpp|h|html|css|toml|gradle)$/i.test(name ?? '')
 // /consumables paginates as { content: [...] } (toPageResponse); tolerate content
 // (real key), items (legacy), or a bare array.
 const unwrapList = (d: unknown): Consumable[] => Array.isArray(d)
@@ -406,7 +408,11 @@ function NodePanel({ instanceId, node, live, tab, setTab, completedNodes, onClos
                       <FileText size={12} /> {c.name ?? 'Artifact'} {c.status ? <span style={{ fontWeight: 600, color: '#94a3b8' }}>· {c.status}</span> : null}
                     </div>
                     {c.formData?.content && (
-                      <pre style={{ margin: 0, padding: 10, fontSize: 11, lineHeight: 1.5, color: '#475569', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 260, overflow: 'auto', fontFamily: 'ui-monospace, monospace' }}>{c.formData.content.toString()}</pre>
+                      <div style={{ margin: 0, padding: 10, fontSize: 11.5, lineHeight: 1.5, color: '#334155', maxHeight: 320, overflow: 'auto' }}>
+                        {isCodeArtifact(c.name)
+                          ? <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'ui-monospace, monospace' }}>{c.formData.content.toString()}</pre>
+                          : <MarkdownView source={c.formData.content.toString()} />}
+                      </div>
                     )}
                   </div>
                 ))}
@@ -592,9 +598,9 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
               <button onClick={() => setOpenDoc(null)} style={{ ...topBtn, padding: 6 }}><X size={15} /></button>
             </div>
             <div style={{ flex: 1, overflow: 'auto', padding: '18px 22px', minHeight: 0 }}>
-              {/\.md$/i.test(openDoc.name ?? '')
-                ? <MarkdownView source={openDoc.formData?.content ?? '(empty)'} />
-                : <pre style={{ margin: 0, fontSize: 12.5, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#334155', fontFamily: 'ui-monospace, monospace' }}>{openDoc.formData?.content ?? '(empty)'}</pre>}
+              {isCodeArtifact(openDoc.name)
+                ? <pre style={{ margin: 0, fontSize: 12.5, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#334155', fontFamily: 'ui-monospace, monospace' }}>{openDoc.formData?.content ?? '(empty)'}</pre>
+                : <MarkdownView source={openDoc.formData?.content ?? '(empty)'} />}
             </div>
           </div>
         </div>
