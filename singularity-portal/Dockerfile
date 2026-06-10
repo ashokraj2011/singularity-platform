@@ -150,7 +150,21 @@ server {
     proxy_pass $upstream;
   }
 
-  location / { try_files $uri $uri/ /index.html; }
+  # Content-hashed build assets — safe to cache forever. A MISSING asset returns
+  # a real 404 (not the SPA index.html fallback) so a stale browser fails loudly
+  # instead of getting text/html for a module script.
+  location /assets/ {
+    add_header Cache-Control "public, max-age=31536000, immutable";
+    try_files $uri =404;
+  }
+
+  # index.html / env.js / SPA routes — NEVER cache the HTML or runtime config, so
+  # a rebuild (new asset hashes) is picked up on the next load without a manual
+  # hard-refresh. This is the permanent fix for "blank page after rebuild".
+  location / {
+    add_header Cache-Control "no-cache";
+    try_files $uri $uri/ /index.html;
+  }
 }
 EOF
 COPY --from=build /app/dist /usr/share/nginx/html
