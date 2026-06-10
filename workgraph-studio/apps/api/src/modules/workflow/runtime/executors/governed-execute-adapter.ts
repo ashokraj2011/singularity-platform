@@ -159,6 +159,13 @@ export function governedStageRespToExecuteResp(
     ? (copilotReceipt!.changed_paths as unknown[]).map(String)
     : []
   const copilotCommitSha = typeof copilotReceipt?.commitSha === 'string' ? copilotReceipt.commitSha as string : null
+  // §13.4 — the actual produced files (REQUIREMENTS.md etc.) so the executor can
+  // store each as a per-phase artifact, not just the summary.
+  const copilotArtifacts = Array.isArray(copilotReceipt?.artifacts)
+    ? (copilotReceipt!.artifacts as Array<Record<string, unknown>>)
+        .map(a => ({ path: String(a.path ?? ''), content: String(a.content ?? '') }))
+        .filter(a => a.path)
+    : []
   return {
     status,
     finalResponse: synthesiseFinalResponse(resp),
@@ -202,7 +209,7 @@ export function governedStageRespToExecuteResp(
     },
     metrics: {},
     workspace: copilotReceipt
-      ? { workspaceCommitSha: copilotCommitSha ?? undefined, changedPaths: copilotChangedPaths }
+      ? { workspaceCommitSha: copilotCommitSha ?? undefined, changedPaths: copilotChangedPaths, artifacts: copilotArtifacts }
       : null,
     warnings: resp.error_message ? [resp.error_message] : [],
     pendingApproval: null,

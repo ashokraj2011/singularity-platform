@@ -51,10 +51,16 @@ def parse_copilot_result(result: Any) -> dict[str, Any]:
     if not data.get("summary") and isinstance(data.get("output"), dict):
         data = data["output"]
     changed = data.get("changedPaths") or data.get("changed_paths") or []
+    raw_artifacts = data.get("artifacts") or []
+    artifacts = [
+        {"path": str(a.get("path") or ""), "content": str(a.get("content") or "")}
+        for a in raw_artifacts if isinstance(a, dict) and a.get("path")
+    ]
     return {
         "summary": str(data.get("summary") or ""),
         "diff": str(data.get("diff") or ""),
         "changed_paths": [str(p) for p in changed],
+        "artifacts": artifacts,
         "commit_sha": data.get("commitSha") or data.get("commit_sha"),
         "duration_ms": data.get("duration_ms"),
     }
@@ -195,6 +201,7 @@ async def run_stage_via_copilot(
             "prompt": prompt_for_copilot,
             "summary": parsed["summary"],
             "changed_paths": parsed["changed_paths"],
+            "artifacts": parsed["artifacts"],
             "diff": parsed["diff"],
             "commitSha": parsed["commit_sha"],
             "served_by": disp.served_by,

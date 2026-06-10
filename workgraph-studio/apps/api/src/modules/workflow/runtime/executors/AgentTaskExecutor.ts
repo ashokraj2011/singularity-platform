@@ -513,6 +513,19 @@ export async function activateAgentTask(
     })
   }
 
+  // §13.4 — store each produced file (REQUIREMENTS.md, DESIGN.md…) as its own
+  // per-phase artifact with the FULL content, so the UI shows the doc itself —
+  // not just the agent summary. Keyed by name (the path) + node (= workId/phase).
+  const producedFiles = (result.workspace as { artifacts?: Array<{ path: string; content: string }> } | null | undefined)?.artifacts ?? []
+  for (const art of producedFiles.slice(0, 25)) {
+    if (art?.path && art?.content?.trim()) {
+      await createAgentOutputArtifact({
+        instance, node, runId: run.id, content: art.content, name: art.path,
+        payload: { artifactKind: 'produced_file', path: art.path },
+      }).catch(() => undefined)
+    }
+  }
+
   try {
     await recordWorkflowLlmUsage(instance.id, {
       nodeId: node.id,
@@ -690,6 +703,7 @@ async function createAgentOutputArtifact(args: {
   runId: string
   content: string
   payload: Record<string, unknown>
+  name?: string
 }): Promise<string | undefined> {
   const content = args.content.trim()
   if (!content) return undefined
@@ -705,7 +719,7 @@ async function createAgentOutputArtifact(args: {
       schemaDef: {},
     },
   })
-  const name = `${args.node.label || args.node.id} output`
+  const name = args.name ?? `${args.node.label || args.node.id} output`
   const existing = await prisma.consumable.findFirst({
     where: {
       typeId: type.id,
