@@ -4,6 +4,32 @@
 
 > Two related guides: [`hybrid-laptop-deployment.md`](./hybrid-laptop-deployment.md) is the deep env-var reference; [`laptop-bridge-localhost-test.md`](./laptop-bridge-localhost-test.md) is the one-Mac test harness (`bin/laptop-bridge.sh`). **This file is the operator runbook** that ties them together.
 
+## 0. Quickstart — the two scripts
+
+Everything below is driven by exactly two scripts:
+
+```bash
+# ── once: laptop secrets (Copilot BYOK key, GitHub token) ────────────────────
+cp .env.laptop.example .env.laptop   # then fill it in — loaded on every run
+
+# ── terminal 1: the Docker BOX (everything except mcp + llm-gateway) ─────────
+bin/box.sh up           # add --build after a git pull (or: bin/box.sh rebuild)
+bin/box.sh seed         # first time: users, capability, prompts, SDLC workflows
+
+# ── terminal 2 + 3: the LAPTOP apps ──────────────────────────────────────────
+bin/laptop.sh gateway   # llm-gateway :8001
+bin/laptop.sh mcp       # mcp-server  :7100 (checks `copilot` CLI, frees stale port)
+
+# ── verify, then open http://localhost:8085 ──────────────────────────────────
+bin/box.sh status
+```
+
+Logins: `admin@singularity.local` / `Admin1234!` (or `user1@singularity.local` …).
+`bin/laptop.sh mcp` preflights the two classic failures: a stale process holding
+:7100 (EADDRINUSE) is freed automatically, and a missing `copilot` CLI aborts
+with the install command (`npm install -g @github/copilot`) instead of failing
+later inside a run with `spawn copilot ENOENT`.
+
 ---
 
 ## 1. Topology
