@@ -484,6 +484,15 @@ const NODE_META: Record<string, {
       { key: 'blockOnMissingEvidence', label: 'Block on missing evidence', placeholder: 'true' },
     ],
   },
+  VERIFIER: {
+    label: 'Verifier', color: '#7c3aed', Icon: Shield,
+    description: 'Runs the verifier agent on the documents produced by the preceding stage, judging them against the run’s standards/policies (acceptance criteria, definition-of-done, + the criteria below). Advances on pass; BLOCKS the run with findings on a fail. Booleans are entered as the text "true"/"false".',
+    standardFields: [
+      { key: 'criteria', label: 'Verification criteria', placeholder: 'extra standards this stage’s docs must meet (optional)', multiline: true },
+      { key: 'documentNames', label: 'Document name filter', placeholder: 'e.g. REQUIREMENTS, DESIGN — comma-separated, optional (all if blank)' },
+      { key: 'requireDocuments', label: 'Block if no documents', placeholder: 'false' },
+    ],
+  },
   RUN_PYTHON: {
     label: 'Run Python', color: '#3776ab', Icon: Terminal,
     description: 'Runs an inline Python program in an isolated, hardened sandbox container (read-only root, dropped capabilities). Captures stdout/stderr/exit code into the workflow context. Network is OFF unless explicitly opted in. Booleans are entered as the text "true"/"false".',

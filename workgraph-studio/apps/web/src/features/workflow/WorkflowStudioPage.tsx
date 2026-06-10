@@ -44,6 +44,7 @@ const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType }> = 
   GIT_PUSH:            { color: '#22c55e', Icon: GitBranch },
   POLICY_CHECK:        { color: '#94a3b8', Icon: Shield },
   EVAL_GATE:           { color: '#c0c1ff', Icon: Activity },
+  VERIFIER:            { color: '#7c3aed', Icon: Shield },
   TIMER:               { color: '#facc15', Icon: Clock },
   SIGNAL_WAIT:         { color: '#06b6d4', Icon: Radio },
   SIGNAL_EMIT:         { color: '#0891b2', Icon: RadioTower },
@@ -68,7 +69,7 @@ const NODE_LABELS: Record<string, string> = {
   START: 'Start', END: 'End',
   HUMAN_TASK: 'Human Task', AGENT_TASK: 'Agent Task', WORKBENCH_TASK: 'Workbench Task', APPROVAL: 'Approval',
   DECISION_GATE: 'Decision Gate', CONSUMABLE_CREATION: 'Create Artifact',
-  TOOL_REQUEST: 'Tool Request', GIT_PUSH: 'Git Push', POLICY_CHECK: 'Policy Check', EVAL_GATE: 'Eval Gate',
+  TOOL_REQUEST: 'Tool Request', GIT_PUSH: 'Git Push', POLICY_CHECK: 'Policy Check', EVAL_GATE: 'Eval Gate', VERIFIER: 'Verifier',
   TIMER: 'Timer', SIGNAL_WAIT: 'Signal Wait', SIGNAL_EMIT: 'Signal Emit',
   CALL_WORKFLOW: 'Sub-workflow', WORK_ITEM: 'Work Item',
   FOREACH: 'For Each', PARALLEL_FORK: 'Parallel Fork', PARALLEL_JOIN: 'Parallel Join',
@@ -210,6 +211,12 @@ const EVAL_GATE_NODE_CONFIG = {
   blockOnMissingEvidence: true,
 }
 
+const VERIFIER_NODE_CONFIG = {
+  criteria: '',
+  documentNames: '',
+  requireDocuments: false,
+}
+
 const GIT_PUSH_NODE_CONFIG = {
   remote: 'origin',
   requireApproval: true,
@@ -253,7 +260,7 @@ const NODE_GROUPS: Array<{ label: string; types: string[] }> = [
   { label: 'Human Review', types: ['HUMAN_TASK', 'APPROVAL'] },
   { label: 'Decisions', types: ['DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'FOREACH'] },
   { label: 'Data & Integration', types: ['WORK_ITEM', 'CONSUMABLE_CREATION', 'SET_CONTEXT', 'DATA_SINK', 'EVENT_EMIT'] },
-  { label: 'Reliability', types: ['TIMER', 'POLICY_CHECK', 'EVAL_GATE', 'ERROR_CATCH'] },
+  { label: 'Reliability', types: ['TIMER', 'POLICY_CHECK', 'EVAL_GATE', 'VERIFIER', 'ERROR_CATCH'] },
   { label: 'Advanced', types: ['TOOL_REQUEST', 'RUN_PYTHON', 'GIT_PUSH', 'CALL_WORKFLOW', 'SIGNAL_WAIT', 'SIGNAL_EMIT'] },
 ]
 
@@ -526,6 +533,7 @@ const NODE_DESCRIPTIONS: Record<string, string> = {
   GIT_PUSH: 'Push an approved WorkItem branch and record commit evidence.',
   POLICY_CHECK: 'Check a governance policy before the workflow continues.',
   EVAL_GATE: 'Run deterministic evaluators and continue only when criteria pass.',
+  VERIFIER: 'Run the verifier agent on the prior stage’s documents; continue only when they meet the standards.',
   TIMER: 'Wait until a duration or scheduled instant has passed.',
   SIGNAL_WAIT: 'Wait for an external event or signal.',
   SIGNAL_EMIT: 'Publish a signal for other waits or workflows.',
@@ -1098,7 +1106,7 @@ const NODE_HELP_SECTIONS = [
   },
   {
     title: 'Task & Execution',
-    types: ['FOREACH', 'WORK_ITEM', 'CALL_WORKFLOW', 'TOOL_REQUEST', 'RUN_PYTHON', 'GIT_PUSH', 'POLICY_CHECK', 'EVAL_GATE', 'CREATE_ARTIFACT'],
+    types: ['FOREACH', 'WORK_ITEM', 'CALL_WORKFLOW', 'TOOL_REQUEST', 'RUN_PYTHON', 'GIT_PUSH', 'POLICY_CHECK', 'EVAL_GATE', 'VERIFIER', 'CREATE_ARTIFACT'],
   },
 ]
 
@@ -1126,6 +1134,7 @@ const NODE_USAGE_TIPS: Record<string, string> = {
   GIT_PUSH:          'Place after an Approval node. It pushes the WorkItem branch through the agent runtime and records branch/commit evidence.',
   POLICY_CHECK:      'Use WARN mode during testing — it logs failures without blocking the workflow.',
   EVAL_GATE:         'Default is strict: current run traces must pass all selected evaluators.',
+  VERIFIER:          'Place AFTER a stage that produces documents. It verifies them against the standards and pauses the run (BLOCKED) if any fail.',
   CREATE_ARTIFACT:   'If Requires Approval is true, workflow pauses until a human reviews and approves.',
 }
 
@@ -3634,6 +3643,8 @@ export function WorkflowStudioPage() {
                             ? { label: 'Workbench Task', config: WORKBENCH_TASK_NODE_CONFIG }
                             : type === 'EVAL_GATE'
                               ? { label: 'Eval Gate', config: EVAL_GATE_NODE_CONFIG }
+                              : type === 'VERIFIER'
+                                ? { label: 'Verifier', config: VERIFIER_NODE_CONFIG }
                               : type === 'GIT_PUSH'
                                 ? { label: 'Git Push', config: GIT_PUSH_NODE_CONFIG }
                                 : null

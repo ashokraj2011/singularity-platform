@@ -41,7 +41,7 @@ const createInstanceSchema = z.object({
 
 const createNodeSchema = z.object({
   phaseId: z.string().uuid().optional(),
-  nodeType: z.enum(['HUMAN_TASK', 'AGENT_TASK', 'WORKBENCH_TASK', 'APPROVAL', 'DECISION_GATE', 'CONSUMABLE_CREATION', 'TOOL_REQUEST', 'GIT_PUSH', 'POLICY_CHECK', 'EVAL_GATE', 'TIMER', 'SIGNAL_WAIT', 'CALL_WORKFLOW', 'WORK_ITEM', 'FOREACH', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'CUSTOM']),
+  nodeType: z.enum(['HUMAN_TASK', 'AGENT_TASK', 'WORKBENCH_TASK', 'APPROVAL', 'DECISION_GATE', 'CONSUMABLE_CREATION', 'TOOL_REQUEST', 'GIT_PUSH', 'POLICY_CHECK', 'EVAL_GATE', 'VERIFIER', 'TIMER', 'SIGNAL_WAIT', 'CALL_WORKFLOW', 'WORK_ITEM', 'FOREACH', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'CUSTOM']),
   label: z.string().min(1),
   config: z.record(z.unknown()).default({}),
   positionX: z.number().default(0),
