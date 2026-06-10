@@ -90,10 +90,21 @@ cmd_box_up() {
   echo "[box] seed (at-postgres-bootstrap)…";         dc up -d $BOOTSTRAP
   echo "[box] apps — --no-deps so mcp-server/llm-gateway are NOT started…"
   dc up -d --no-deps $APPS
-  echo
-  echo "[box] up:  context-api http://localhost:8000   portal http://localhost:5180"
-  echo "           workflow   http://localhost:5174    edge   http://localhost:8085"
+  entry_banner
   echo "Next:  $0 gateway   (terminal 2)   and   $0 mcp   (terminal 3)"
+}
+
+# The UI images are built with base paths for the edge-gateway single origin, so
+# :8085 is the ONLY entry that renders working apps — the per-app ports
+# (:5174/:5176/:5180) serve a blank app standalone in Docker.
+entry_banner() {
+  echo
+  echo "════════════════════════════════════════════════════════════════════"
+  echo "  ▶  OPEN THE PLATFORM AT:   http://localhost:8085"
+  echo "        portal /   ·   /operations   ·   /workflow   ·   /workbench   ·   /iam"
+  echo "  Do NOT use :5174/:5176/:5180 directly — those are built for the"
+  echo "  gateway and render blank standalone."
+  echo "════════════════════════════════════════════════════════════════════"
 }
 
 cmd_box_down() { dc stop $APPS $BOOTSTRAP $INFRA; echo "[box] stopped (data kept; 'dc down -v' to wipe)."; }
@@ -114,8 +125,8 @@ cmd_box_up_direct() {
   echo "[box:direct] seed…";  dcd up -d $BOOTSTRAP
   echo "[box:direct] apps — --build (new code) + --no-deps (no mcp/gateway containers)…"
   dcd up -d --build --no-deps $APPS
-  echo
-  echo "[box:direct] up. The box calls your host mcp at http://host.docker.internal:7100."
+  entry_banner
+  echo "The box calls your host mcp at http://host.docker.internal:7100."
   echo "Next:  $0 gateway   (terminal 2)   and   $0 mcp-direct   (terminal 3)"
 }
 
