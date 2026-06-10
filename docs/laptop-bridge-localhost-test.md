@@ -75,6 +75,43 @@ success. `gateway` and `mcp` stay in the foreground — Ctrl-C to stop.
 
 ---
 
+## Alternative: Direct mode (simplest — best for testing a Copilot SDLC run)
+
+Bridge mode tests the *routing* (it requires a node with `preferLaptop:true`).
+If you just want to run a Copilot SDLC stage on the bare-metal mcp — e.g. to test
+the **clarifying-questions** feature — use **Direct mode**: the box calls the host
+mcp/gateway over plain HTTP at `host.docker.internal`. No device token, no
+`prefer_laptop`, no bridge.
+
+```bash
+# T1 — rebuild the feature-code images (after a git pull), then the box
+bin/laptop-bridge.sh rebuild          # context-api, workgraph-api, workgraph-web
+bin/laptop-bridge.sh box-up-direct    # box → host mcp via host.docker.internal:7100
+
+# T2 — host llm-gateway
+bin/laptop-bridge.sh gateway
+
+# T3 — host mcp-server as a normal HTTP server (NOT laptop mode).
+#      Export Copilot BYOK + git creds first so the SDLC + push work:
+export COPILOT_PROVIDER_TYPE=anthropic COPILOT_PROVIDER_BASE_URL=https://api.anthropic.com \
+       COPILOT_PROVIDER_API_KEY=sk-ant-... COPILOT_MODEL=claude-sonnet-4-6 \
+       MCP_GIT_PUSH_ENABLED=true MCP_GIT_AUTH_MODE=token GITHUB_TOKEN=ghp_...
+bin/laptop-bridge.sh mcp-direct
+```
+
+`bin/laptop-bridge.sh status` should show **mcp-server (:7100) UP**. Then launch a
+Copilot SDLC run with a deliberately **vague requirements task** (e.g. *"Add a
+caching layer"* — no datastore/TTL), so Copilot emits a `## Questions` block.
+Open the run → the node's right panel shows an amber **Questions (N)** tab →
+answer the cards → **Save answers & re-run** (you'll see the next `copilot -p`
+include an `## Answers to your clarifying questions` block).
+
+> **Rebuild matters:** the Copilot-questions feature lives in the *Docker* images
+> (`context-api`, `workgraph-api`, `workgraph-web`), not in mcp. After a `git
+> pull`, run `rebuild` or the box will serve stale code.
+
+---
+
 ## Verify
 
 ```bash

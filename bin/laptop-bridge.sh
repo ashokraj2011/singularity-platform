@@ -41,7 +41,12 @@ LAPTOP_BRIDGE_URL="${LAPTOP_BRIDGE_URL:-ws://localhost:8000/api/laptop-bridge/co
 LLM_GATEWAY_URL="${LLM_GATEWAY_URL:-http://localhost:8001}"
 export JWT_SECRET MCP_BEARER_TOKEN
 
-dc() { docker compose -f docker-compose.yml -f docker-compose.laptop-bridge.yml "$@"; }
+dc()  { docker compose -f docker-compose.yml -f docker-compose.laptop-bridge.yml "$@"; }
+# Direct-HTTP overlay (box calls the host mcp/gateway at host.docker.internal).
+dcd() { docker compose -f docker-compose.yml -f docker-compose.laptop-direct.yml "$@"; }
+# The three services that carry the Copilot-questions feature code (rebuild these
+# after a git pull so the box runs your new code, not a stale image).
+FEATURE_SVCS="context-api workgraph-api workgraph-web"
 
 # Box services — everything EXCEPT the two host apps (mcp-server, llm-gateway)
 # and the laptop-side sandbox runner. --no-deps stops context-api's depends_on
@@ -92,6 +97,43 @@ cmd_box_up() {
 
 cmd_box_down() { dc stop $APPS $BOOTSTRAP $INFRA; echo "[box] stopped (data kept; 'dc down -v' to wipe)."; }
 
+# Rebuild ONLY the services whose images carry your new code. Run after a git
+# pull, then box-up-direct (or box-up) to recreate them.
+cmd_rebuild() {
+  echo "[rebuild] building $FEATURE_SVCS …"
+  dcd build $FEATURE_SVCS
+  echo "[rebuild] done — recreate with: $0 box-up-direct"
+}
+
+# Direct-HTTP box: same services as box-up, but the box calls the HOST mcp +
+# gateway at host.docker.internal (docker-compose.laptop-direct.yml). No bridge,
+# no device token, no prefer_laptop. --build picks up new feature code.
+cmd_box_up_direct() {
+  echo "[box:direct] infra…"; dcd up -d $INFRA
+  echo "[box:direct] seed…";  dcd up -d $BOOTSTRAP
+  echo "[box:direct] apps — --build (new code) + --no-deps (no mcp/gateway containers)…"
+  dcd up -d --build --no-deps $APPS
+  echo
+  echo "[box:direct] up. The box calls your host mcp at http://host.docker.internal:7100."
+  echo "Next:  $0 gateway   (terminal 2)   and   $0 mcp-direct   (terminal 3)"
+}
+
+# Host mcp-server as a NORMAL HTTP server (NOT laptop mode) on :7100 — the box
+# reaches it directly. Copilot BYOK (COPILOT_PROVIDER_*) + git creds (GITHUB_TOKEN,
+# MCP_GIT_*) inherit from your shell; export them once before running this.
+cmd_mcp_direct() {
+  mkdir -p "$MCP_WS"
+  echo "[mcp-direct] HTTP :7100 (no bridge)   gateway $LLM_GATEWAY_URL   sandbox $MCP_WS"
+  echo "[mcp-direct] Copilot provider: ${COPILOT_PROVIDER_TYPE:-<unset — export COPILOT_PROVIDER_* for the SDLC>}"
+  cd mcp-server
+  export PORT=7100 MCP_BEARER_TOKEN LLM_GATEWAY_URL
+  export MCP_COMMAND_EXECUTION_MODE=process
+  export MCP_SANDBOX_ROOT="$MCP_WS"
+  export MCP_LLM_PROVIDER_CONFIG_PATH="$LLM_PROVIDER_CONFIG_PATH"
+  export MCP_LLM_MODEL_CATALOG_PATH="$LLM_MODEL_CATALOG_PATH"
+  exec npm run dev
+}
+
 cmd_gateway() {
   # Provider keys (ANTHROPIC_API_KEY / COPILOT_TOKEN / …) come from
   # .env.llm-secrets or your shell — never hard-coded here.
@@ -128,19 +170,27 @@ cmd_mcp() {
 cmd_status() {
   printf '── llm-gateway (:8001) … '
   curl -fsS http://localhost:8001/health >/dev/null 2>&1 && echo "UP" || echo "DOWN"
+  printf '── mcp-server (:7100, direct HTTP) … '
+  curl -fsS -H "authorization: Bearer $MCP_BEARER_TOKEN" http://localhost:7100/healthz/strict >/dev/null 2>&1 \
+    && echo "UP" || echo "DOWN (expected in BRIDGE mode — it runs no HTTP server)"
   printf '── context-api (:8000) … '
   curl -fsS http://localhost:8000/health >/dev/null 2>&1 && echo "UP" || echo "DOWN"
-  echo  "── laptop bridge — does the box see the laptop?"
-  curl -fsS http://localhost:8000/api/laptop-bridge/status 2>/dev/null || echo "   (context-api down, or no laptop connected yet)"
+  echo  "── laptop bridge — does the box see the laptop? (BRIDGE mode only)"
+  curl -fsS http://localhost:8000/api/laptop-bridge/status 2>/dev/null || echo "   (context-api down, or direct mode / no laptop connected)"
   echo
 }
 
 case "${1:-}" in
-  mint-token) shift; cmd_mint_token "$@" ;;
-  box-up)     cmd_box_up ;;
-  box-down)   cmd_box_down ;;
-  gateway)    cmd_gateway ;;
-  mcp)        cmd_mcp ;;
-  status)     cmd_status ;;
-  *) echo "usage: $0 {mint-token <iam-user-id>|box-up|gateway|mcp|status|box-down}" >&2; exit 1 ;;
+  mint-token)    shift; cmd_mint_token "$@" ;;
+  box-up)        cmd_box_up ;;          # bridge mode: box (no mcp/gateway)
+  box-up-direct) cmd_box_up_direct ;;   # direct mode: box → host mcp via HTTP
+  box-down)      cmd_box_down ;;
+  rebuild)       cmd_rebuild ;;         # rebuild the 3 feature-code images after a pull
+  gateway)       cmd_gateway ;;         # host llm-gateway :8001 (both modes)
+  mcp)           cmd_mcp ;;             # host mcp-server, BRIDGE (dials out)
+  mcp-direct)    cmd_mcp_direct ;;      # host mcp-server, DIRECT (HTTP :7100)
+  status)        cmd_status ;;
+  *) echo "usage: $0 {mint-token <iam-user-id>|rebuild|box-up|box-up-direct|gateway|mcp|mcp-direct|status|box-down}
+  bridge mode:  mint-token → box-up        → gateway + mcp
+  direct mode:  rebuild    → box-up-direct  → gateway + mcp-direct   (simplest; tests the Copilot-questions feature)" >&2; exit 1 ;;
 esac
