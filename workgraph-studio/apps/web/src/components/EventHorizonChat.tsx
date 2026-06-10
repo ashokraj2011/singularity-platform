@@ -138,6 +138,25 @@ export function EventHorizonChat() {
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const runId = useMemo(() => extractRunId(path), [path])
 
+  // Draggable: offset the floating widget; grab it by the header bar.
+  const [drag, setDrag] = useState<{ x: number; y: number }>(() => {
+    try { const s = localStorage.getItem('eh-chat-pos'); return s ? JSON.parse(s) : { x: 0, y: 0 } } catch { return { x: 0, y: 0 } }
+  })
+  const dragRef = useRef<{ sx: number; sy: number; bx: number; by: number } | null>(null)
+  const onDragStart = (e: React.MouseEvent) => {
+    dragRef.current = { sx: e.clientX, sy: e.clientY, bx: drag.x, by: drag.y }
+    const move = (ev: MouseEvent) => {
+      const d = dragRef.current; if (!d) return
+      setDrag({ x: d.bx + (ev.clientX - d.sx), y: d.by + (ev.clientY - d.sy) })
+    }
+    const up = () => {
+      dragRef.current = null
+      setDrag(p => { try { localStorage.setItem('eh-chat-pos', JSON.stringify(p)) } catch { /* ignore */ } return p })
+      window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
+    }
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  }
+
   function activeSessionId() {
     if (sessionId) return sessionId
     const fresh = newId()
@@ -307,10 +326,10 @@ export function EventHorizonChat() {
   }
 
   return (
-    <div className="fixed bottom-5 right-5 z-[80]">
+    <div className="fixed bottom-5 right-5 z-[80]" style={{ transform: `translate(${drag.x}px, ${drag.y}px)` }}>
       {open ? (
         <div className="w-[380px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border border-emerald-200 bg-white shadow-2xl">
-          <div className="bg-[linear-gradient(135deg,#082821,#0E3B2D)] p-4 text-white">
+          <div onMouseDown={onDragStart} className="cursor-move select-none bg-[linear-gradient(135deg,#082821,#0E3B2D)] p-4 text-white" title="Drag to move">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2 text-sm font-bold"><Sparkles size={16} /> Event Horizon</div>
