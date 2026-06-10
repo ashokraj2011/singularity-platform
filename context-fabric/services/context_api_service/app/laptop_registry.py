@@ -215,6 +215,39 @@ class LaptopRegistry:
         )
         return body
 
+    # ── code-context build over the bridge (laptop world model) ────────────
+    async def dispatch_code_context_via_laptop(
+        self,
+        *,
+        user_id: str,
+        request_body: dict[str, Any],
+        timeout: float = INVOKE_TIMEOUT_SEC,
+    ) -> dict[str, Any]:
+        """Send a code-context build request to the user's laptop over a
+        ``code-context`` frame and await the response. The laptop runs
+        ``buildCodeContextPackage`` against its LOCAL per-workitem worktree and
+        returns the SAME ``{success, data}`` envelope mcp-server's HTTP
+        ``/mcp/code-context/build`` route returns — so the caller
+        (``governed.code_context``) parses both transports identically.
+
+        ``request_body`` is the same body context-fabric would POST to the
+        cloud mcp-server (task_text, max_token_budget, run_context, …).
+
+        Raises LaptopNotConnected when no laptop advertising ``code-context``
+        is online (caller falls back to the static MCP_SERVER_URL HTTP path),
+        and the usual LaptopSendFailed / LaptopInvokeTimeout / LaptopInvokeError
+        on transport or runner errors.
+        """
+        body, _conn = await self._send_frame_await_response(
+            user_id=user_id,
+            frame_type="code-context",
+            payload=request_body,
+            timeout=timeout,
+            request_label="code-context",
+            require_frame_type="code-context",
+        )
+        return body
+
     async def _send_frame_await_response(
         self,
         *,

@@ -24,6 +24,7 @@ from typing import Any
 from .code_context import build_code_context_for_governed_turn, package_markdown
 from .dispatch import ToolDispatchError, dispatch_tool
 from .phase_state import Phase, PhaseState
+from .placement import mcp_laptop_target
 from .stage_driver import StageRunResult
 
 _VAR_RE = re.compile(r"\{\{\s*instance\.vars\.([\w]+)\s*\}\}")
@@ -100,14 +101,16 @@ async def compose_copilot_prompt(
     """
     code_md = ""
     try:
-        # Mirror the governed loop (turn.py): do NOT pass mcp_base_url — the builder
-        # resolves the mcp-server from CF's registry (mcp + LLM register with CF;
-        # there is no static MCP_SERVER_URL). Forcing the env var here is what left
-        # the world model empty.
+        # Mirror the governed loop (turn.py): do NOT pass mcp_base_url. Transport
+        # is placement-driven — when this run is on the user's laptop the builder
+        # dispatches over the code-context bridge frame (the repo/worktree is on
+        # the laptop); otherwise it POSTs the static MCP_SERVER_URL. Forcing the
+        # env var here is what previously left the world model empty.
         pkg, _reason = await build_code_context_for_governed_turn(
             task_text=resolved_task,
             capability_id=capability_id,
             run_context=run_context,
+            laptop_user_id=mcp_laptop_target(run_context),
         )
         if pkg:
             code_md = package_markdown(pkg) or ""

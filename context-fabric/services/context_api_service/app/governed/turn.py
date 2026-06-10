@@ -776,6 +776,11 @@ async def run_turn(
                 run_context=run_context,
                 max_token_budget=budget,
                 context_policy=context_policy_mode,
+                # Placement: when this run is on a laptop, build the world model
+                # against that laptop's worktree (over the code-context bridge
+                # frame) instead of the box's shared sandbox. None → cloud HTTP.
+                # Mirrors tool dispatch (loop.py). See placement.py.
+                laptop_user_id=_placement.mcp_laptop_target(run_context),
             )
             if pkg is not None:
                 md = package_markdown(pkg)

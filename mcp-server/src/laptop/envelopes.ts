@@ -35,7 +35,7 @@ import { z } from "zod";
 // Bridge inspects hello.supported_frame_types to choose between sending
 // legacy "invoke" frames and new "tool-run" frames. Old laptops omit
 // the field; .default(["invoke"]) maintains backward compat.
-export const SUPPORTED_FRAME_TYPES = ["invoke", "tool-run", "model-run"] as const;
+export const SUPPORTED_FRAME_TYPES = ["invoke", "tool-run", "model-run", "code-context"] as const;
 export type SupportedFrameType = (typeof SUPPORTED_FRAME_TYPES)[number];
 
 export const HelloFrame = z.object({
@@ -166,6 +166,20 @@ export const ModelRunFrame = z.object({
 });
 export type ModelRunFrame = z.infer<typeof ModelRunFrame>;
 
+// Code-context build over the bridge (laptop world model). The payload is the
+// /mcp/code-context/build REQUEST body (task_text, max_token_budget,
+// run_context, …) built by context-fabric. The laptop runs
+// buildCodeContextPackage against its LOCAL per-workitem worktree and returns
+// the { success, data } envelope as the ResponseFrame payload — the same shape
+// the HTTP route returns, so context-fabric parses both transports identically.
+export const CodeContextFrame = z.object({
+  type:        z.literal("code-context"),
+  request_id:  z.string(),
+  payload:     z.record(z.unknown()),   // code-context/build request body
+  deadline_ms: z.number().int().positive().optional(),
+});
+export type CodeContextFrame = z.infer<typeof CodeContextFrame>;
+
 // ── decoded inbound ─────────────────────────────────────────────────────────
 
 export type InboundFrame =
@@ -173,6 +187,7 @@ export type InboundFrame =
   | InvokeFrame
   | ToolRunFrame      // M75 Slice 1
   | ModelRunFrame     // LLM-on-laptop
+  | CodeContextFrame  // world-model-on-laptop
   | PingFrame
   | DisconnectFrame;
 
@@ -180,11 +195,12 @@ export function decodeInbound(raw: unknown): InboundFrame | null {
   if (typeof raw !== "object" || raw === null) return null;
   const type = (raw as { type?: unknown }).type;
   if (typeof type !== "string") return null;
-  if (type === "auth.ack")   return AuthAckFrame.parse(raw);
-  if (type === "invoke")     return InvokeFrame.parse(raw);
-  if (type === "tool-run")   return ToolRunFrame.parse(raw);   // M75 Slice 1
-  if (type === "model-run")  return ModelRunFrame.parse(raw);  // LLM-on-laptop
-  if (type === "ping")       return PingFrame.parse(raw);
-  if (type === "disconnect") return DisconnectFrame.parse(raw);
+  if (type === "auth.ack")     return AuthAckFrame.parse(raw);
+  if (type === "invoke")       return InvokeFrame.parse(raw);
+  if (type === "tool-run")     return ToolRunFrame.parse(raw);     // M75 Slice 1
+  if (type === "model-run")    return ModelRunFrame.parse(raw);    // LLM-on-laptop
+  if (type === "code-context") return CodeContextFrame.parse(raw); // world-model-on-laptop
+  if (type === "ping")         return PingFrame.parse(raw);
+  if (type === "disconnect")   return DisconnectFrame.parse(raw);
   return null;
 }

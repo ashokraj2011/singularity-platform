@@ -72,3 +72,27 @@ def llm_laptop_target(run_context: dict[str, Any] | None) -> str | None:
         return None
     uid = rc.get("user_id") or rc.get("userId")
     return str(uid) if uid else None
+
+
+def mcp_laptop_target(run_context: dict[str, Any] | None) -> str | None:
+    """Return the user_id whose laptop should serve MCP operations (tools +
+    code-context build) for this run, else None.
+
+    Mirrors the tool-dispatch placement in governed.loop — ``prefer_laptop``
+    is True and a user_id is present — with the enterprise override forcing
+    cloud. Used by the code-context builder so the repo world model is indexed
+    against the SAME laptop worktree the run's tools dispatch to, instead of
+    the box's shared mcp-server sandbox.
+
+    Whether that laptop is actually connected and advertises the
+    'code-context' frame is verified at dispatch time (the builder falls back
+    to the static MCP_SERVER_URL HTTP path if not), so this never hard-fails a
+    run.
+    """
+    if enterprise_mode():
+        return None
+    rc = run_context or {}
+    if rc.get("prefer_laptop") is not True:
+        return None
+    uid = rc.get("user_id") or rc.get("userId")
+    return str(uid) if uid else None
