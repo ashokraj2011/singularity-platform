@@ -133,6 +133,21 @@ async def compose_copilot_prompt(
     parts.append(f"## Your task\n{resolved_task.strip()}")
     if code_md.strip():
         parts.append(f"## Repository world model (code context)\n{code_md.strip()}")
+    # Clarifying-questions protocol. When Copilot has to assume something to
+    # proceed (most common in the requirements stage), it lists the open
+    # questions in a `## Questions` block at the END of its reply. mcp-server's
+    # summary carries that block back; the run view parses it, renders the
+    # questions, and re-runs this stage with the operator's answers injected.
+    parts.append(
+        "## If you need clarification\n"
+        "If anything is ambiguous, or you had to assume something to proceed, add a "
+        "section titled `## Questions` at the VERY END of your reply — one `-` bullet "
+        "per question. For a multiple-choice question, list the options after pipes, e.g. "
+        "`Which datastore should we use? | Postgres | DynamoDB | not sure`. "
+        "Still do your best on the deliverable now; the questions just let a human "
+        "confirm your assumptions and re-run this stage with their answers. "
+        "Omit the section entirely if you have no questions."
+    )
     return "\n\n".join(p for p in parts if p.strip()).strip() or resolved_task
 
 
