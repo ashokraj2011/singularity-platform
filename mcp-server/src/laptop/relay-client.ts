@@ -23,6 +23,10 @@ import { executeInvokePayload } from "../mcp/invoke";
 // to the legacy full-loop invoke frame. runToolByName is the same code
 // path the platform's HTTP /mcp/tool-run route uses.
 import { runToolByName } from "../mcp/tool-run";
+// Code-context build over the bridge — the same buildCodeContextPackage the
+// platform's HTTP /mcp/code-context/build route calls, run against the laptop's
+// LOCAL worktree so the world model reflects the repo that lives here.
+import { buildCodeContextPackage, type BuildCodeContextRequest } from "../mcp/code-context";
 import {
   decodeInbound,
   type HelloFrame, type HeartbeatFrame, type ResponseFrame,
@@ -133,7 +137,7 @@ export class LaptopRelayClient {
       // graduates to tool-run as the platform-side dispatch lands
       // (Slice 3). Old bridges that don't know about supported_frame_types
       // just ignore it and keep sending invoke — which still works.
-      supported_frame_types: ["invoke", "tool-run", "model-run"],
+      supported_frame_types: ["invoke", "tool-run", "model-run", "code-context"],
     };
     this.send(hello);
   }
@@ -304,6 +308,54 @@ export class LaptopRelayClient {
           request_id: frame.request_id,
           payload: null,
           error: { code: "MODEL_RUN_FAILED", message: e.message ?? "local LLM call failed" },
+        });
+      } finally {
+        this.inflight--;
+      }
+      return;
+    }
+
+    // Code-context build over the bridge (laptop world model; see
+    // docs/deployment-topology.md). Run buildCodeContextPackage against the
+    // laptop's LOCAL per-workitem worktree and return the { success, data }
+    // envelope — the SAME shape the HTTP /mcp/code-context/build route returns,
+    // so context-fabric parses both transports identically. Counted against the
+    // same inflight gate as tool-run.
+    if (frame.type === "code-context") {
+      if (this.inflight >= this.maxConcurrent) {
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: { code: "BUSY", message: `laptop at max ${this.maxConcurrent} concurrent dispatches` },
+        });
+        return;
+      }
+      this.inflight++;
+      try {
+        log.info(
+          { request_id: frame.request_id },
+          "[laptop-relay] running code-context build (local world model)",
+        );
+        const pkg = await buildCodeContextPackage(
+          frame.payload as unknown as BuildCodeContextRequest,
+        );
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: { success: true, data: pkg },
+        });
+      } catch (err) {
+        const e = err as { message?: string };
+        log.warn(
+          { err: e.message, request_id: frame.request_id },
+          "[laptop-relay] code-context build failed",
+        );
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: { code: "CODE_CONTEXT_FAILED", message: e.message ?? "code-context build failed" },
         });
       } finally {
         this.inflight--;

@@ -2029,6 +2029,7 @@ class GovernedSingleTurnRequest(BaseModel):
 @router.post("/api/v1/execute-governed-single-turn")
 async def execute_governed_single_turn(req: GovernedSingleTurnRequest) -> dict[str, Any]:
     from .governed.llm_client import call_gateway_chat
+    from .governed.placement import llm_laptop_target
 
     rc = req.run_context or {}
     trace_id = req.trace_id or rc.get("trace_id")
@@ -2053,6 +2054,10 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest) -> dict[s
                 or mo.get("max_output_tokens")
                 or limits.get("outputTokenBudget")
             ),
+            # Placement: route this single turn to the launching user's laptop
+            # when the run opted into laptop LLM and a laptop is serving model-run;
+            # otherwise the cloud gateway. Mirrors turn.py:920. See placement.py.
+            laptop_user_id=llm_laptop_target(rc),
         )
     except LLMGatewayError as exc:
         emit_audit_event(

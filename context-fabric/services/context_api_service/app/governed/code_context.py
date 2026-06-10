@@ -46,10 +46,19 @@ async def build_code_context_for_governed_turn(
     timeout_sec: float = _DEFAULT_TIMEOUT_SEC,
     max_token_budget: int = _DEFAULT_TOKEN_BUDGET,
     context_policy: Optional[str] = None,  # stage MODE (CODE_EDIT/VERIFY_ONLY/…)
+    laptop_user_id: Optional[str] = None,  # placement: build on this user's laptop
     _http_post: Any = None,  # injection seam for tests
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-    """POST to mcp-server's /mcp/code-context/build and return the
-    package dict. Returns (None, reason) on any failure.
+    """Build a code-context package and return the package dict, or
+    (None, reason) on any failure.
+
+    Transport: when ``laptop_user_id`` is set the run is placed on that
+    user's laptop, so the repo/worktree lives THERE — the build is dispatched
+    over the ``code-context`` bridge frame to the laptop's mcp-server. When no
+    laptop is connected/serving the frame (or it isn't placed on a laptop at
+    all) it falls back to POSTing the static ``MCP_SERVER_URL``
+    ``/mcp/code-context/build`` route. Both transports return the same
+    ``{success, data}`` envelope, parsed by ``_parse_code_context_body``.
 
     Reason strings stay informative + auditable — they end up in
     governed.code_context_skipped payloads where operators read them
@@ -58,11 +67,6 @@ async def build_code_context_for_governed_turn(
     """
     if not task_text or not task_text.strip():
         return None, "code_context.skipped: empty task_text"
-
-    base = (mcp_base_url or os.environ.get("MCP_SERVER_URL", "")).rstrip("/")
-    if not base:
-        return None, "code_context.skipped: MCP_SERVER_URL not configured"
-    token = mcp_bearer or os.environ.get("MCP_BEARER_TOKEN", "")
 
     trace_id = None
     if isinstance(run_context, dict):
@@ -96,6 +100,23 @@ async def build_code_context_for_governed_turn(
         if work_item_id:
             payload["work_item_id"] = work_item_id
 
+    # Laptop bridge first: when the run is placed on the user's laptop the
+    # repo/worktree lives THERE, not in the box's shared mcp-server sandbox.
+    # Dispatch the build over the `code-context` frame so the world model is
+    # indexed against the same laptop worktree the run's tools use. Falls
+    # through to the static HTTP path below when no laptop is connected/serving
+    # the frame (best-effort — never raises). Mirrors the tool-dispatch
+    # (governed.dispatch) and model-run (governed.llm_client) bridge paths.
+    if laptop_user_id:
+        body = await _try_laptop_code_context(laptop_user_id, payload, timeout_sec)
+        if body is not None:
+            return _parse_code_context_body(body)
+
+    base = (mcp_base_url or os.environ.get("MCP_SERVER_URL", "")).rstrip("/")
+    if not base:
+        return None, "code_context.skipped: MCP_SERVER_URL not configured"
+    token = mcp_bearer or os.environ.get("MCP_BEARER_TOKEN", "")
+
     url = f"{base}/mcp/code-context/build"
     headers = {"content-type": "application/json"}
     if token:
@@ -107,6 +128,16 @@ async def build_code_context_for_governed_turn(
     except Exception as exc:  # noqa: BLE001 — best-effort telemetry
         return None, f"code_context.skipped: transport error {exc!s}"
 
+    return _parse_code_context_body(body)
+
+
+def _parse_code_context_body(
+    body: Any,
+) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Validate a /mcp/code-context/build response envelope (same
+    ``{success, data}`` shape over both HTTP and the laptop bridge) and pull
+    out the package dict. Returns (pkg, None) on success, (None, reason)
+    otherwise."""
     if not isinstance(body, dict):
         return None, f"code_context.skipped: non-dict response ({type(body).__name__})"
     if not body.get("success"):
@@ -118,6 +149,41 @@ async def build_code_context_for_governed_turn(
     if not pkg.get("context_package_id"):
         return None, "code_context.skipped: malformed response (no context_package_id)"
     return pkg, None
+
+
+async def _try_laptop_code_context(
+    user_id: str,
+    payload: dict[str, Any],
+    timeout_sec: float,
+) -> Optional[dict[str, Any]]:
+    """Dispatch the code-context build over the laptop bridge. Returns the
+    response envelope dict on success, or None to signal the caller should
+    fall back to the static HTTP mcp-server path (no laptop connected /
+    serving the frame, or any transport error — code-context is best-effort
+    and must never raise out of the governed turn).
+    """
+    # Lazy import — keep the WebSocket registry stack out of this module's
+    # import graph (mirrors governed.dispatch._dispatch_via_laptop).
+    try:
+        from ..laptop_registry import (
+            REGISTRY,
+            LaptopInvokeError,
+            LaptopInvokeTimeout,
+            LaptopNotConnected,
+            LaptopSendFailed,
+        )
+    except Exception:  # pragma: no cover — registry is always importable in-app
+        return None
+    try:
+        return await REGISTRY.dispatch_code_context_via_laptop(
+            user_id=user_id,
+            request_body=payload,
+            timeout=timeout_sec,
+        )
+    except (LaptopNotConnected, LaptopSendFailed, LaptopInvokeTimeout, LaptopInvokeError):
+        return None
+    except Exception:  # noqa: BLE001 — best-effort: any bridge error → HTTP path
+        return None
 
 
 def package_markdown(pkg: dict[str, Any]) -> str:
