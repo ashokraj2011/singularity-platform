@@ -139,7 +139,9 @@ export function EventHorizonChat() {
   const runId = useMemo(() => extractRunId(path), [path])
 
   // Draggable: offset the floating widget; grab it by the header bar.
-  const [drag, setDrag] = useState({ x: 0, y: 0 })
+  const [drag, setDrag] = useState<{ x: number; y: number }>(() => {
+    try { const s = localStorage.getItem('eh-chat-pos'); return s ? JSON.parse(s) : { x: 0, y: 0 } } catch { return { x: 0, y: 0 } }
+  })
   const dragRef = useRef<{ sx: number; sy: number; bx: number; by: number } | null>(null)
   const onDragStart = (e: React.MouseEvent) => {
     dragRef.current = { sx: e.clientX, sy: e.clientY, bx: drag.x, by: drag.y }
@@ -147,7 +149,11 @@ export function EventHorizonChat() {
       const d = dragRef.current; if (!d) return
       setDrag({ x: d.bx + (ev.clientX - d.sx), y: d.by + (ev.clientY - d.sy) })
     }
-    const up = () => { dragRef.current = null; window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+    const up = () => {
+      dragRef.current = null
+      setDrag(p => { try { localStorage.setItem('eh-chat-pos', JSON.stringify(p)) } catch { /* ignore */ } return p })
+      window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
+    }
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
   }
 
