@@ -134,6 +134,15 @@ function startRunner() {
       pushLog(`✗ local LLM shim failed to start: ${e.message}`)
     }
   }
+  // Loud preflight for the classic copilot-stage failure: a missing/placeholder
+  // provider key only surfaces later as an Anthropic 401 inside a run.
+  const ck = env.COPILOT_PROVIDER_API_KEY || ''
+  if (env.COPILOT_PROVIDER_TYPE === 'anthropic' && (!ck || ck.includes('REPLACE_ME'))) {
+    pushLog('⚠ COPILOT_PROVIDER_API_KEY is missing or still the .env.laptop placeholder — copilot stages will fail 401. Fix .env.laptop and restart the app.')
+  }
+  if ((env.GITHUB_TOKEN || '').includes('REPLACE_ME')) {
+    pushLog('⚠ GITHUB_TOKEN is still the placeholder — the GIT_PUSH stage will fail.')
+  }
   child = spawn(process.execPath, [s.runnerEntry], { env })
   pushLog(`▸ runner started (pid ${child.pid}) → ${s.bridge}`)
   const onData = (d) => String(d).split('\n').map((l) => l.trimEnd()).filter(Boolean).forEach((line) => {
