@@ -11,6 +11,10 @@ const { createShimServer } = require('./gateway-shim')
 
 const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json')
 const TOKEN_FILE = () => path.join(app.getPath('userData'), 'token.enc')
+// Provider/git credentials entered in Settings — encrypted at rest (safeStorage)
+// and injected into the runner + gateway at spawn. The app is the source of
+// truth for these; .env files are only a fallback.
+const SECRETS_FILE = () => path.join(app.getPath('userData'), 'secrets.enc')
 
 const DEFAULTS = {
   platform: 'http://localhost:8100/api/v1',
@@ -30,6 +34,7 @@ const DEFAULTS = {
   // The app also starts the llm-gateway (uvicorn) from this monorepo checkout.
   repoRoot: path.resolve(__dirname, '../../..'),
   gatewayEnabled: true,
+  copilotModel: 'claude-sonnet-4-6',
 }
 
 let win = null
@@ -74,6 +79,25 @@ function loadToken() {
 }
 function clearToken() { try { fs.unlinkSync(TOKEN_FILE()) } catch { /* none */ } }
 
+function loadSecrets() {
+  try {
+    const buf = fs.readFileSync(SECRETS_FILE())
+    const raw = safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(buf) : buf.toString('utf8')
+    return JSON.parse(raw)
+  } catch { return {} }
+}
+function saveSecretsStore(patch) {
+  const merged = { ...loadSecrets() }
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (typeof v === 'string' && v.trim()) merged[k] = v.trim()
+    else if (v === null || v === '') delete merged[k]
+  }
+  const raw = JSON.stringify(merged)
+  const buf = safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(raw) : Buffer.from(raw, 'utf8')
+  fs.writeFileSync(SECRETS_FILE(), buf)
+  return merged
+}
+
 function decodeClaims(token) {
   try { return JSON.parse(Buffer.from(token.split('.')[1] || '', 'base64url').toString('utf8')) }
   catch { return null }
@@ -87,12 +111,18 @@ function pushLog(line) {
 function snapshot() {
   const token = loadToken()
   const claims = token ? decodeClaims(token) : null
+  const sec = loadSecrets()
   return {
     paired: !!token,
     running: !!child,
     registered: runnerRegistered,
     shimRunning: !!shim,
     gatewayRunning: !!gatewayChild,
+    secrets: {
+      anthropicKeySet: !!sec.anthropicKey,
+      anthropicKeyHint: sec.anthropicKey ? sec.anthropicKey.slice(-4) : '',
+      githubTokenSet: !!sec.githubToken,
+    },
     user: claims ? { user_id: claims.sub, device_name: claims.device_name, exp: claims.exp } : null,
     settings: loadSettings(),
     logs: logs.slice(-80),
@@ -125,7 +155,7 @@ function laptopFileEnv(s) {
 }
 
 // ── llm-gateway lifecycle (the app owns the laptop's LLM side too) ───────────
-async function startGateway(s, fileEnv) {
+async function startGateway(s, fileEnv, sec) {
   if (gatewayChild) return { ok: true, already: true }
   if (await pingOk('http://localhost:8001/health')) {
     pushLog('▸ llm-gateway already running on :8001 — reusing it')
@@ -137,6 +167,9 @@ async function startGateway(s, fileEnv) {
   const env = {
     ...process.env,
     ...fileEnv,
+    // App-stored credentials win — the gateway's anthropic provider uses the
+    // same key the Copilot stages use.
+    ...(sec?.anthropicKey ? { ANTHROPIC_API_KEY: sec.anthropicKey } : {}),
     PYTHONUNBUFFERED: '1',
     LLM_PROVIDER_CONFIG_PATH: path.join(root, '.singularity', 'llm-providers.json'),
     LLM_MODEL_CATALOG_PATH: path.join(root, '.singularity', 'llm-models.json'),
@@ -165,11 +198,13 @@ async function startRunner() {
   if (!fs.existsSync(s.runnerEntry)) {
     return { ok: false, error: `runner not found at ${s.runnerEntry} — build it (cd mcp-server && npm run build) or set the path in Settings` }
   }
-  // Secrets/config from the repo's .env files — loaded by the APP, not the shell.
+  // Secrets/config: app-stored credentials (keychain) are the source of truth;
+  // the repo's .env files are only a fallback.
   const fileEnv = laptopFileEnv(s)
+  const sec = loadSecrets()
   // One button = the whole laptop side: bring the llm-gateway up first (unless
   // the local-Copilot shim replaces it below).
-  if (!s.localLlmEnabled && s.gatewayEnabled !== false) await startGateway(s, fileEnv)
+  if (!s.localLlmEnabled && s.gatewayEnabled !== false) await startGateway(s, fileEnv, sec)
   const claims = decodeClaims(token) || {}
   // The runner's required env beyond the bridge vars. Shell/.env values win;
   // defaults match the local deployment (gateway :8001, dev bearer, process
@@ -189,6 +224,18 @@ async function startRunner() {
     LLM_GATEWAY_URL: process.env.LLM_GATEWAY_URL || fileEnv.LLM_GATEWAY_URL || 'http://localhost:8001',
     MCP_COMMAND_EXECUTION_MODE: process.env.MCP_COMMAND_EXECUTION_MODE || fileEnv.MCP_COMMAND_EXECUTION_MODE || 'process',
     MCP_SANDBOX_ROOT: sandboxRoot,
+    // ── credentials from Settings → Credentials (keychain) — these WIN ──────
+    ...(sec.anthropicKey ? {
+      COPILOT_PROVIDER_TYPE: 'anthropic',
+      COPILOT_PROVIDER_BASE_URL: 'https://api.anthropic.com',
+      COPILOT_PROVIDER_API_KEY: sec.anthropicKey,
+    } : {}),
+    ...(s.copilotModel ? { COPILOT_MODEL: s.copilotModel } : {}),
+    ...(sec.githubToken ? {
+      GITHUB_TOKEN: sec.githubToken,
+      MCP_GIT_PUSH_ENABLED: 'true',
+      MCP_GIT_AUTH_MODE: 'token',
+    } : {}),
   }
   // Local LLM (Copilot): run the translation shim and serve model-run frames
   // from it by pointing the runner's LLM_GATEWAY_URL at the shim.
@@ -205,10 +252,10 @@ async function startRunner() {
   // provider key only surfaces later as an Anthropic 401 inside a run.
   const ck = env.COPILOT_PROVIDER_API_KEY || ''
   if (env.COPILOT_PROVIDER_TYPE === 'anthropic' && (!ck || ck.includes('REPLACE_ME'))) {
-    pushLog('⚠ COPILOT_PROVIDER_API_KEY is missing or still the .env.laptop placeholder — copilot stages will fail 401. Fix .env.laptop and restart the app.')
+    pushLog('⚠ Anthropic key missing/placeholder — copilot stages will fail 401. Set it in Settings → Credentials.')
   }
   if ((env.GITHUB_TOKEN || '').includes('REPLACE_ME')) {
-    pushLog('⚠ GITHUB_TOKEN is still the placeholder — the GIT_PUSH stage will fail.')
+    pushLog('⚠ GitHub token is still a placeholder — the GIT_PUSH stage will fail. Set it in Settings → Credentials.')
   }
   child = spawn(process.execPath, [s.runnerEntry], { env })
   pushLog(`▸ runner started (pid ${child.pid}) → ${s.bridge}`)
@@ -344,6 +391,12 @@ ipcMain.handle('pair:key', async (_e, token) => {
 })
 ipcMain.handle('pair:login', async (_e, creds) => { try { return await pairWithLogin(creds) } catch (err) { return { ok: false, error: String(err.message || err) } } })
 ipcMain.handle('pair:clear', () => { stopRunner(); clearToken(); pushLog('▸ pairing cleared'); return { ok: true } })
+ipcMain.handle('secrets:save', (_e, patch) => {
+  saveSecretsStore(patch)
+  pushLog('✓ credentials updated (stored encrypted) — restart the runner to apply')
+  pushState()
+  return { ok: true }
+})
 ipcMain.handle('runner:start', () => startRunner())
 ipcMain.handle('runner:stop', () => stopRunner())
 ipcMain.handle('health:check', () => checkHealth())

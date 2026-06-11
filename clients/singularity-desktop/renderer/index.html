@@ -110,6 +110,13 @@
         <label>Scopes</label>
         <div id="scopes" class="chips"></div>
 
+        <label style="margin-top:16px"><strong>Credentials</strong> <span class="muted">— stored encrypted (OS keychain), injected into the runner + gateway; override .env files</span></label>
+        <label>Anthropic API key (Copilot BYOK) <span class="muted" id="s_keyState"></span></label>
+        <input id="s_anthropicKey" type="password" placeholder="sk-ant-…  (leave blank to keep current)" />
+        <label>Copilot model</label><input id="s_copilotModel" placeholder="claude-sonnet-4-6" />
+        <label>GitHub token (git push) <span class="muted" id="s_ghState"></span></label>
+        <input id="s_githubToken" type="password" placeholder="ghp_…  (leave blank to keep current)" />
+
         <label style="display:flex;align-items:center;gap:8px;margin-top:16px">
           <input id="s_localLlm" type="checkbox" style="width:auto" /> Run LLM on this laptop via Copilot
         </label>
@@ -175,6 +182,10 @@
     $('s_runnerEntry').value = s.runnerEntry || ''
     renderPaths(s.allowedPaths); renderScopes(s.scopes)
     $('s_localLlm').checked = !!s.localLlmEnabled
+    $('s_copilotModel').value = s.copilotModel || ''
+    const sec = st.secrets || {}
+    $('s_keyState').textContent = sec.anthropicKeySet ? `(saved · …${sec.anthropicKeyHint})` : '(not set)'
+    $('s_ghState').textContent = sec.githubTokenSet ? '(saved)' : '(not set)'
     $('s_copilot').value = s.copilotBaseUrl || ''
     $('s_localModel').value = s.localModel || ''
     $('s_shimPort').value = s.shimPort || 4319
@@ -218,7 +229,15 @@
       copilotBaseUrl: $('s_copilot').value,
       localModel: $('s_localModel').value,
       shimPort: Number($('s_shimPort').value) || 4319,
+      copilotModel: $('s_copilotModel').value.trim(),
     })
+    // Secrets: only send what was typed (blank = keep current), then clear inputs.
+    const sk = $('s_anthropicKey').value.trim()
+    const gt = $('s_githubToken').value.trim()
+    if (sk || gt) {
+      await window.api.saveSecrets({ ...(sk ? { anthropicKey: sk } : {}), ...(gt ? { githubToken: gt } : {}) })
+      $('s_anthropicKey').value = ''; $('s_githubToken').value = ''
+    }
     $('saveMsg').innerHTML = '<span class="ok">saved ✓</span>'; setTimeout(() => $('saveMsg').textContent='', 1500)
     refresh()
   }

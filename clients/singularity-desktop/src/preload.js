@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('api', {
   getState: () => ipcRenderer.invoke('state:get'),
   saveSettings: (s) => ipcRenderer.invoke('settings:save', s),
+  saveSecrets: (s) => ipcRenderer.invoke('secrets:save', s),
   pickFolder: () => ipcRenderer.invoke('settings:pick-folder'),
   pairWithKey: (token) => ipcRenderer.invoke('pair:key', token),
   pairWithLogin: (creds) => ipcRenderer.invoke('pair:login', creds),
