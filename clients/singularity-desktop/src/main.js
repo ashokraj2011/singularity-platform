@@ -191,8 +191,13 @@ async function pairWithLogin({ email, password, platform }) {
   if (!r2.ok) throw new Error(`device-token failed: ${r2.status}`)
   const dt = await r2.json()
   saveToken(dt.access_token)
-  pushLog(`✓ paired as ${dt.email} (device ${dt.device_name})`)
-  return { ok: true }
+  pushLog(`✓ Connection Key generated for ${dt.email} (device ${dt.device_name}) — stored in keychain`)
+  // Generate → connect is ONE motion: start the runner immediately so the
+  // laptop registers with Context Fabric without a separate click.
+  const started = startRunner()
+  pushLog(started.ok ? '▸ connecting to the bridge…' : `⚠ runner not started: ${started.error}`)
+  // Return the key so the UI can reveal it once (PAT-style) for CLI/other-device use.
+  return { ok: true, key: dt.access_token, email: dt.email, device: dt.device_name, runner: started }
 }
 
 // ── tray + window ────────────────────────────────────────────────────────────
@@ -232,7 +237,23 @@ ipcMain.handle('settings:pick-folder', async () => {
   const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'multiSelections'] })
   return r.canceled ? [] : r.filePaths
 })
-ipcMain.handle('pair:key', (_e, token) => { saveToken(String(token || '').trim()); pushLog('✓ paired with Connection Key'); return { ok: true } })
+ipcMain.handle('pair:key', (_e, token) => {
+  // Validate BEFORE storing so a bad paste fails here, not later as a silent
+  // bridge 4401. Then connect immediately — pairing IS establishing the link.
+  const t = String(token || '').trim()
+  const claims = decodeClaims(t)
+  if (!claims || claims.kind !== 'device' || !claims.sub || !claims.device_id) {
+    return { ok: false, error: 'not a device Connection Key (generate one in Operations → Connection Keys, or use Sign in)' }
+  }
+  if (typeof claims.exp === 'number' && Date.now() / 1000 > claims.exp) {
+    return { ok: false, error: 'this Connection Key is expired — generate a new one' }
+  }
+  saveToken(t)
+  pushLog(`✓ paired with Connection Key (user ${claims.sub})`)
+  const started = startRunner()
+  pushLog(started.ok ? '▸ connecting to the bridge…' : `⚠ runner not started: ${started.error}`)
+  return { ok: true, runner: started }
+})
 ipcMain.handle('pair:login', async (_e, creds) => { try { return await pairWithLogin(creds) } catch (err) { return { ok: false, error: String(err.message || err) } } })
 ipcMain.handle('pair:clear', () => { stopRunner(); clearToken(); pushLog('▸ pairing cleared'); return { ok: true } })
 ipcMain.handle('runner:start', () => startRunner())
