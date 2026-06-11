@@ -391,9 +391,18 @@ ipcMain.handle('pair:key', async (_e, token) => {
 })
 ipcMain.handle('pair:login', async (_e, creds) => { try { return await pairWithLogin(creds) } catch (err) { return { ok: false, error: String(err.message || err) } } })
 ipcMain.handle('pair:clear', () => { stopRunner(); clearToken(); pushLog('▸ pairing cleared'); return { ok: true } })
-ipcMain.handle('secrets:save', (_e, patch) => {
+ipcMain.handle('secrets:save', async (_e, patch) => {
   saveSecretsStore(patch)
-  pushLog('✓ credentials updated (stored encrypted) — restart the runner to apply')
+  // Apply immediately: a saved key that only takes effect on the NEXT manual
+  // restart kept surfacing as a mid-run Anthropic 401. Restart the children.
+  if (child) {
+    pushLog('✓ credentials updated — restarting runner + gateway to apply them')
+    stopRunner()
+    const started = await startRunner()
+    if (!started.ok) pushLog(`⚠ runner restart failed: ${started.error}`)
+  } else {
+    pushLog('✓ credentials updated (stored encrypted)')
+  }
   pushState()
   return { ok: true }
 })
