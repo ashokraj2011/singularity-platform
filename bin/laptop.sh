@@ -64,6 +64,9 @@ case "${1:-}" in
     fi
     free_port 7100
     mkdir -p "$MCP_WS"
+    # /healthz/strict requires the sandbox root to be a git working tree
+    # (work-item clones nest inside it; nested repos are independent).
+    [ -d "$MCP_WS/.git" ] || git -C "$MCP_WS" init -q
     echo "[mcp] HTTP :7100   gateway $LLM_GATEWAY_URL   sandbox $MCP_WS"
     echo "[mcp] copilot: $COPILOT_BIN   provider: ${COPILOT_PROVIDER_TYPE:-<gateway only>}   model: ${COPILOT_MODEL:-default}"
     cd mcp-server
@@ -79,7 +82,13 @@ case "${1:-}" in
 
   status)
     printf 'llm-gateway :8001 … '; curl -fsS -o /dev/null http://localhost:8001/health && echo OK || echo DOWN
-    printf 'mcp-server  :7100 … '; curl -fsS -o /dev/null -H "authorization: Bearer $MCP_BEARER_TOKEN" http://localhost:7100/healthz/strict && echo OK || echo DOWN
+    printf 'mcp-server  :7100 … '
+    if curl -fsS -o /dev/null http://localhost:7100/health 2>/dev/null; then
+      curl -fsS -o /dev/null -H "authorization: Bearer $MCP_BEARER_TOKEN" http://localhost:7100/healthz/strict 2>/dev/null \
+        && echo OK || echo "UP, but strict invariants failing — curl :7100/healthz/strict for which check"
+    else
+      echo DOWN
+    fi
     printf 'copilot CLI       … '; command -v copilot || echo "NOT FOUND (npm install -g @github/copilot)"
     ;;
 
