@@ -26,8 +26,17 @@ export function ReadinessStrip() {
       queryKey: ['readiness', p.id],
       queryFn: async () => {
         const res = await fetch(p.endpoint, { headers: { accept: 'application/json' } })
-        if (!res.ok) throw new Error(String(res.status))
-        return true
+        if (res.ok) return true
+        // Bridge mode: the laptop mcp serves no HTTP — a device registered on
+        // the laptop bridge counts as MCP online.
+        if (p.id === 'mcp-server') {
+          const b = await fetch('/api/cf/api/laptop-bridge/status', { headers: { accept: 'application/json' } }).catch(() => null)
+          if (b?.ok) {
+            const j = await b.json().catch(() => null) as { count?: number } | null
+            if ((j?.count ?? 0) > 0) return true
+          }
+        }
+        throw new Error(String(res.status))
       },
       refetchInterval: 15000,
       staleTime: 10000,
