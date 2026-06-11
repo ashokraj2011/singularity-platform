@@ -46,6 +46,32 @@ COMPOSE_FILES="-f docker-compose.yml -f docker-compose.cloud.yml" \
 - Logins after seeding: `admin@singularity.local` / `Admin1234!` (+ `user1…10`).
 - `docker-compose.cloud.yml` sets `PREFER_LAPTOP_LLM=true` on context-api: the platform's **own** LLM calls (verifier agent, event-horizon chat, summaries) ride the bridge to your laptop's Copilot shim — there is no llm-gateway container in this topology.
 
+## A-alt — Cloud box WITHOUT Docker (bare-metal)
+
+No Docker/compose on the box? `bin/bare-metal.sh` boots the whole platform as
+host processes; **`BOX_ONLY=1`** skips the two laptop apps (mcp-server,
+llm-gateway) and sets `PREFER_LAPTOP_LLM=true` on context-api so the platform's
+own LLM calls ride the bridge to your laptop.
+
+Prereqs on the box: Node 20 + 22, Python 3.11 + 3.12, pnpm, and a **Postgres +
+MinIO you run yourself** (the script connects to them; it never manages them).
+
+```bash
+git clone https://github.com/ashokraj2011/singularity-platform.git && cd singularity-platform
+export JWT_SECRET='<ONE strong 32+ char secret>'     # the script respects it (and passes it to IAM + context-api)
+BOX_ONLY=1 bin/bare-metal.sh up
+```
+
+- `up` installs deps, migrates the DBs, and **seeds the SDLC workflows itself**
+  (the copilot seed defaults to `preferLaptop:true` — bridge routing on).
+- Demo users beyond the super-admin: `seed/apply.sh` (runs the IAM SQL seeds).
+- **Entry point on bare-metal is the portal at `http://<box-host>:5180`** (Vite
+  apps are served at root base — the `:8085` edge-gateway is a Docker-only
+  concern; per-app ports `:5174/:5176` work directly here).
+- Laptop settings (§B) are identical — point Platform/Bridge at
+  `http://<box-host>:8100/api/v1` and `ws://<box-host>:8000/api/laptop-bridge/connect`.
+- Stop with `bin/bare-metal.sh down`; status with `bin/bare-metal.sh status`.
+
 ## B — Office laptop (once)
 
 ```bash
