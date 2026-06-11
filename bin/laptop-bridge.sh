@@ -28,6 +28,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Laptop secrets (Copilot BYOK key, GITHUB_TOKEN, model) — same file bin/laptop.sh
+# uses, so bridge-mode mcp gets them too without per-terminal exports.
+if [ -f .env.laptop ]; then set -a; . ./.env.laptop; set +a; fi
+
 # ── shared config (override via env) ─────────────────────────────────────────
 # JWT_SECRET MUST be identical for the box (verifies the device JWT) and the
 # mint step (signs it). Default matches docker-compose + IAM + the bridge so the
