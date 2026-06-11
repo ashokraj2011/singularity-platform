@@ -3,6 +3,8 @@
 **Goal:** run the **MCP server** and the **LLM gateway** on your **laptop**, and run **everything else on a different machine** (a server / VM / "box") in Docker. All AI inference (provider keys), the GitHub Copilot CLI, git credentials, and the code sandbox stay on the laptop; the platform (workflow state, IAM, audit, databases, UIs) lives on the box.
 
 > Two related guides: [`hybrid-laptop-deployment.md`](./hybrid-laptop-deployment.md) is the deep env-var reference; [`laptop-bridge-localhost-test.md`](./laptop-bridge-localhost-test.md) is the one-Mac test harness (`bin/laptop-bridge.sh`). **This file is the operator runbook** that ties them together.
+>
+> **Office variant (cloud box + laptop with Copilot, desktop-app managed):** [`office-cloud-deployment.md`](./office-cloud-deployment.md).
 
 ## 0. Quickstart — the two scripts
 
