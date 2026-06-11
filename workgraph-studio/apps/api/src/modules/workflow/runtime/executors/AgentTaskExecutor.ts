@@ -143,6 +143,19 @@ export async function activateAgentTask(
     ? _earlyVars.parentCapabilityId.trim()
     : undefined
   const capabilityId = configString('capabilityId') ?? workItemCapabilityId
+  // Laptop routing identity — the bridge registers devices by IAM user id (the
+  // device JWT's sub), but run.initiatedById / instance.createdById are
+  // workgraph-LOCAL user ids, so user-keyed routing silently never matched and
+  // every dispatch fell back to the HTTP mcp URL. Resolve the launcher's
+  // iamUserId; auto-advanced nodes (no initiator) inherit the instance creator.
+  const launcherLocalId = run.initiatedById ?? instance.createdById ?? undefined
+  let launcherIamId: string | undefined = launcherLocalId ?? undefined
+  if (launcherLocalId) {
+    const launcher = await prisma.user
+      .findUnique({ where: { id: launcherLocalId }, select: { iamUserId: true } })
+      .catch(() => null)
+    if (launcher?.iamUserId) launcherIamId = launcher.iamUserId
+  }
   const baseTask = configString('task')
   // Refine loop: the run-graph Chat "Send feedback" sets _refineFeedback on the
   // node + restarts it; append the note so the re-run addresses it (copilot prompt
@@ -321,9 +334,11 @@ export async function activateAgentTask(
       capability_id: capabilityId,
       tenant_id: configString('tenantId'),
       agent_template_id: agentTemplateId,
-      // M26 — the calling user's IAM sub. context-fabric uses this to route
-      // /mcp/invoke to the user's laptop mcp-server via the WS bridge.
-      user_id: run.initiatedById ?? undefined,
+      // M26 — the calling user's IAM sub (resolved from users.iamUserId; falls
+      // back to the instance creator for auto-advanced nodes). context-fabric
+      // routes laptop-bridge dispatch by this id — it must equal the device
+      // JWT's sub or the bridge is silently skipped.
+      user_id: launcherIamId,
       trace_id: traceId,
       branch_base: configString('branchBase'),
       branch_name: configString('branchName') ?? (workCode ? `work/${workCode}` : undefined),
