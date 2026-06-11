@@ -105,6 +105,11 @@ function startRunner() {
     return { ok: false, error: `runner not found at ${s.runnerEntry} — build it (cd mcp-server && npm run build) or set the path in Settings` }
   }
   const claims = decodeClaims(token) || {}
+  // The runner's required env beyond the bridge vars. Shell/.env values win;
+  // defaults match the local deployment (gateway :8001, dev bearer, process
+  // execution, ~/sg-laptop-workspace sandbox) so the app works out of the box.
+  const sandboxRoot = process.env.MCP_SANDBOX_ROOT || path.join(app.getPath('home'), 'sg-laptop-workspace')
+  try { fs.mkdirSync(sandboxRoot, { recursive: true }) } catch { /* best-effort */ }
   const env = {
     ...process.env,
     ELECTRON_RUN_AS_NODE: '1', // run the Electron binary as plain node
@@ -113,6 +118,10 @@ function startRunner() {
     SINGULARITY_DEVICE_TOKEN: token,
     SINGULARITY_DEVICE_ID: claims.device_id || '',
     SINGULARITY_DEVICE_NAME: claims.device_name || s.deviceName,
+    MCP_BEARER_TOKEN: process.env.MCP_BEARER_TOKEN || 'demo-bearer-token-must-be-min-16-chars',
+    LLM_GATEWAY_URL: process.env.LLM_GATEWAY_URL || 'http://localhost:8001',
+    MCP_COMMAND_EXECUTION_MODE: process.env.MCP_COMMAND_EXECUTION_MODE || 'process',
+    MCP_SANDBOX_ROOT: sandboxRoot,
   }
   // Local LLM (Copilot): run the translation shim and serve model-run frames
   // from it by pointing the runner's LLM_GATEWAY_URL at the shim.
