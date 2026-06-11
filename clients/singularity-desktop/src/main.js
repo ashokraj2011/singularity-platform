@@ -27,12 +27,16 @@ const DEFAULTS = {
   copilotBaseUrl: 'http://localhost:4141',
   localModel: 'gpt-4o',
   shimPort: 4319,
+  // The app also starts the llm-gateway (uvicorn) from this monorepo checkout.
+  repoRoot: path.resolve(__dirname, '../../..'),
+  gatewayEnabled: true,
 }
 
 let win = null
 let tray = null
 let child = null
 let shim = null
+let gatewayChild = null   // the llm-gateway uvicorn the app now owns too
 let runnerRegistered = false   // true once the runner logs "registered with bridge"
 let quitting = false
 const logs = []
@@ -88,6 +92,7 @@ function snapshot() {
     running: !!child,
     registered: runnerRegistered,
     shimRunning: !!shim,
+    gatewayRunning: !!gatewayChild,
     user: claims ? { user_id: claims.sub, device_name: claims.device_name, exp: claims.exp } : null,
     settings: loadSettings(),
     logs: logs.slice(-80),
@@ -95,8 +100,64 @@ function snapshot() {
 }
 function pushState() { if (win && !win.isDestroyed()) win.webContents.send('state', snapshot()) }
 
+// ── laptop env files (.env.laptop / .env.llm-secrets at the repo root) ───────
+// The app loads these ITSELF at spawn time, so it no longer matters which shell
+// launched Electron — no more `set -a; source .env.laptop` dance.
+function parseEnvFile(file) {
+  try {
+    const out = {}
+    for (const raw of fs.readFileSync(file, 'utf8').split('\n')) {
+      const line = raw.trim()
+      if (!line || line.startsWith('#')) continue
+      const i = line.indexOf('=')
+      if (i <= 0) continue
+      const k = line.slice(0, i).trim()
+      let v = line.slice(i + 1).trim()
+      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1)
+      out[k] = v
+    }
+    return out
+  } catch { return {} }
+}
+function laptopFileEnv(s) {
+  const root = s.repoRoot || DEFAULTS.repoRoot
+  return { ...parseEnvFile(path.join(root, '.env.llm-secrets')), ...parseEnvFile(path.join(root, '.env.laptop')) }
+}
+
+// ── llm-gateway lifecycle (the app owns the laptop's LLM side too) ───────────
+async function startGateway(s, fileEnv) {
+  if (gatewayChild) return { ok: true, already: true }
+  if (await pingOk('http://localhost:8001/health')) {
+    pushLog('▸ llm-gateway already running on :8001 — reusing it')
+    return { ok: true, external: true }
+  }
+  const root = s.repoRoot || DEFAULTS.repoRoot
+  const venvPy = path.join(root, 'context-fabric', '.venv', 'bin', 'python')
+  const py = fs.existsSync(venvPy) ? venvPy : 'python3'
+  const env = {
+    ...process.env,
+    ...fileEnv,
+    PYTHONUNBUFFERED: '1',
+    LLM_PROVIDER_CONFIG_PATH: path.join(root, '.singularity', 'llm-providers.json'),
+    LLM_MODEL_CATALOG_PATH: path.join(root, '.singularity', 'llm-models.json'),
+    ALLOW_CALLER_PROVIDER_OVERRIDE: 'false',
+  }
+  gatewayChild = spawn(py, ['-m', 'uvicorn', 'services.llm_gateway_service.app.main:app', '--host', '0.0.0.0', '--port', '8001'], {
+    cwd: path.join(root, 'context-fabric'), env,
+  })
+  pushLog(`▸ llm-gateway starting (pid ${gatewayChild.pid}) on :8001 (${py === venvPy ? '.venv python' : 'system python3'})`)
+  const onGw = (d) => String(d).split('\n').map((l) => l.trimEnd()).filter(Boolean).forEach((l) => pushLog(`[gateway] ${l}`))
+  gatewayChild.stdout.on('data', onGw)
+  gatewayChild.stderr.on('data', onGw)
+  gatewayChild.on('exit', (code) => { pushLog(`✗ llm-gateway exited (code ${code})`); gatewayChild = null; pushState() })
+  return { ok: true }
+}
+function stopGateway() {
+  if (gatewayChild) { try { gatewayChild.kill() } catch { /* */ } gatewayChild = null; pushLog('▸ llm-gateway stopped') }
+}
+
 // ── runner lifecycle ───────────────────────────────────────────────────────────
-function startRunner() {
+async function startRunner() {
   if (child) return { ok: true, already: true }
   const token = loadToken()
   if (!token) return { ok: false, error: 'not paired — pair a Connection Key or sign in first' }
@@ -104,6 +165,11 @@ function startRunner() {
   if (!fs.existsSync(s.runnerEntry)) {
     return { ok: false, error: `runner not found at ${s.runnerEntry} — build it (cd mcp-server && npm run build) or set the path in Settings` }
   }
+  // Secrets/config from the repo's .env files — loaded by the APP, not the shell.
+  const fileEnv = laptopFileEnv(s)
+  // One button = the whole laptop side: bring the llm-gateway up first (unless
+  // the local-Copilot shim replaces it below).
+  if (!s.localLlmEnabled && s.gatewayEnabled !== false) await startGateway(s, fileEnv)
   const claims = decodeClaims(token) || {}
   // The runner's required env beyond the bridge vars. Shell/.env values win;
   // defaults match the local deployment (gateway :8001, dev bearer, process
@@ -112,15 +178,16 @@ function startRunner() {
   try { fs.mkdirSync(sandboxRoot, { recursive: true }) } catch { /* best-effort */ }
   const env = {
     ...process.env,
+    ...fileEnv,
     ELECTRON_RUN_AS_NODE: '1', // run the Electron binary as plain node
     LAPTOP_MODE: 'true',
     LAPTOP_BRIDGE_URL: s.bridge,
     SINGULARITY_DEVICE_TOKEN: token,
     SINGULARITY_DEVICE_ID: claims.device_id || '',
     SINGULARITY_DEVICE_NAME: claims.device_name || s.deviceName,
-    MCP_BEARER_TOKEN: process.env.MCP_BEARER_TOKEN || 'demo-bearer-token-must-be-min-16-chars',
-    LLM_GATEWAY_URL: process.env.LLM_GATEWAY_URL || 'http://localhost:8001',
-    MCP_COMMAND_EXECUTION_MODE: process.env.MCP_COMMAND_EXECUTION_MODE || 'process',
+    MCP_BEARER_TOKEN: process.env.MCP_BEARER_TOKEN || fileEnv.MCP_BEARER_TOKEN || 'demo-bearer-token-must-be-min-16-chars',
+    LLM_GATEWAY_URL: process.env.LLM_GATEWAY_URL || fileEnv.LLM_GATEWAY_URL || 'http://localhost:8001',
+    MCP_COMMAND_EXECUTION_MODE: process.env.MCP_COMMAND_EXECUTION_MODE || fileEnv.MCP_COMMAND_EXECUTION_MODE || 'process',
     MCP_SANDBOX_ROOT: sandboxRoot,
   }
   // Local LLM (Copilot): run the translation shim and serve model-run frames
@@ -162,6 +229,7 @@ function stopRunner() {
   if (child) { try { child.kill() } catch { /* */ } child = null; pushLog('▸ runner stopped') }
   runnerRegistered = false
   stopShim()
+  stopGateway()
   updateTray(); pushState()
   return { ok: true }
 }
@@ -180,15 +248,17 @@ async function pingOk(url, opts = {}) {
 async function checkHealth() {
   const s = loadSettings()
   const copilotBase = (s.copilotBaseUrl || '').replace(/\/$/, '')
-  const [copilotReachable, shimUp] = await Promise.all([
+  const [copilotReachable, shimUp, gatewayUp] = await Promise.all([
     copilotBase ? pingOk(`${copilotBase}/v1/models`) : Promise.resolve(false),
     shim ? pingOk(`http://localhost:${s.shimPort}/healthz`) : Promise.resolve(false),
+    pingOk('http://localhost:8001/health'),
   ])
   return {
     runnerRegistered,          // laptop accepted by the bridge (→ serving model-run)
     localLlmEnabled: !!s.localLlmEnabled,
     shimUp,                    // translation shim listening
     copilotReachable,          // Copilot bridge responding
+    gatewayUp,                 // llm-gateway answering on :8001 (app-owned or external)
   }
 }
 
@@ -212,7 +282,7 @@ async function pairWithLogin({ email, password, platform }) {
   pushLog(`✓ Connection Key generated for ${dt.email} (device ${dt.device_name}) — stored in keychain`)
   // Generate → connect is ONE motion: start the runner immediately so the
   // laptop registers with Context Fabric without a separate click.
-  const started = startRunner()
+  const started = await startRunner()
   pushLog(started.ok ? '▸ connecting to the bridge…' : `⚠ runner not started: ${started.error}`)
   // Return the key so the UI can reveal it once (PAT-style) for CLI/other-device use.
   return { ok: true, key: dt.access_token, email: dt.email, device: dt.device_name, runner: started }
@@ -255,7 +325,7 @@ ipcMain.handle('settings:pick-folder', async () => {
   const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'multiSelections'] })
   return r.canceled ? [] : r.filePaths
 })
-ipcMain.handle('pair:key', (_e, token) => {
+ipcMain.handle('pair:key', async (_e, token) => {
   // Validate BEFORE storing so a bad paste fails here, not later as a silent
   // bridge 4401. Then connect immediately — pairing IS establishing the link.
   const t = String(token || '').trim()
@@ -268,7 +338,7 @@ ipcMain.handle('pair:key', (_e, token) => {
   }
   saveToken(t)
   pushLog(`✓ paired with Connection Key (user ${claims.sub})`)
-  const started = startRunner()
+  const started = await startRunner()
   pushLog(started.ok ? '▸ connecting to the bridge…' : `⚠ runner not started: ${started.error}`)
   return { ok: true, runner: started }
 })
