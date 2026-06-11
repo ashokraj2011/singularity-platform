@@ -296,7 +296,21 @@ export function OperationsPage() {
       queryKey: ['ops-health', svc.id],
       queryFn: async () => {
         const res = await fetch(svc.endpoint, { headers: { accept: 'application/json' } })
-        if (!res.ok) throw new Error(`${svc.name} returned ${res.status}`)
+        if (!res.ok) {
+          // Bridge mode: the laptop mcp-server runs NO HTTP server — it dials
+          // INTO Context Fabric and registers. A connected device on the laptop
+          // bridge means MCP is online even though :7100 answers nothing.
+          if (svc.id === 'mcp-server') {
+            const b = await fetch('/api/cf/api/laptop-bridge/status', { headers: { accept: 'application/json' } }).catch(() => null)
+            if (b?.ok) {
+              const j = await b.json().catch(() => null) as { count?: number; connected?: unknown[] } | null
+              if ((j?.count ?? 0) > 0) {
+                return { status: 'ok', service: svc.id, mode: 'laptop-bridge', note: `laptop registered via bridge (${j!.count} device${j!.count === 1 ? '' : 's'})` }
+              }
+            }
+          }
+          throw new Error(`${svc.name} returned ${res.status}`)
+        }
         const contentType = res.headers.get('content-type') ?? ''
         if (contentType.includes('application/json')) return res.json()
         const body = await res.text()
