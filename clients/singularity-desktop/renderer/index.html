@@ -57,6 +57,7 @@
         <div class="muted" style="margin-bottom:8px">Connection health</div>
         <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
           <div><span class="hdot off" id="h_reg"></span> Laptop registered with bridge <small class="muted">— serving model-run</small></div>
+          <div><span class="hdot off" id="h_gw"></span> LLM gateway listening <small class="muted">— :8001, app-managed</small></div>
           <div><span class="hdot off" id="h_shim"></span> Local LLM shim listening</div>
           <div><span class="hdot off" id="h_copilot"></span> Copilot bridge reachable</div>
         </div>
@@ -228,6 +229,7 @@
     try { h = await window.api.checkHealth() } catch { return }
     const running = state && state.running
     setDot('h_reg', running ? (h.runnerRegistered ? 'ok' : 'bad') : 'off')
+    setDot('h_gw', h.gatewayUp ? 'ok' : (running ? 'bad' : 'off'))
     setDot('h_shim', h.localLlmEnabled ? (h.shimUp ? 'ok' : 'bad') : 'off')
     setDot('h_copilot', h.localLlmEnabled ? (h.copilotReachable ? 'ok' : 'bad') : 'off')
   }
