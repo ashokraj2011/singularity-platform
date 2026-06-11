@@ -177,7 +177,13 @@ export EVENTS_STORE_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
 export CONTEXT_MEMORY_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
 export METRICS_LEDGER_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
 
-export JWT_SECRET="dev-secret-change-in-prod-min-32-chars!!"
+# Respect an operator-provided secret (office/cloud!); dev default matches
+# docker-compose + IAM + the laptop bridge so dev pairing verifies everywhere.
+export JWT_SECRET="${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}"
+# BOX_ONLY=1 → office/cloud box: skip the two laptop apps (llm-gateway,
+# mcp-server) and route the platform's own LLM over the bridge. Normalize so
+# only exactly "1" activates it.
+[ "${BOX_ONLY:-}" = "1" ] || BOX_ONLY=""
 export AUTH_PROVIDER="iam"
 export IAM_BASE_URL="http://localhost:8100/api/v1"
 export IAM_SERVICE_URL="http://localhost:8100"
@@ -450,7 +456,12 @@ JSON
 
   boot audit-gov        "cd audit-governance-service  && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8500 MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" npm run dev"
   sleep 2
+  # BOX_ONLY=1 — office/cloud box: skip the two LAPTOP apps (llm-gateway +
+  # mcp-server run on the operator's laptop via the desktop app; LLM rides the
+  # bridge to the laptop's Copilot shim).
+  if [ "${BOX_ONLY:-0}" != "1" ]; then
   boot llm-gateway      "cd context-fabric && LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" ALLOW_CALLER_PROVIDER_OVERRIDE=false python3 -m uvicorn services.llm_gateway_service.app.main:app --host 0.0.0.0 --port 8001"
+  fi
   sleep 1
 
   boot agent-service    "cd agent-and-tools/apps/agent-service   && PORT=3001 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
@@ -472,13 +483,18 @@ JSON
   # Copilot CLI that copilot_execute spawns uses your own provider (e.g. Anthropic)
   # instead of the GitHub Copilot quota. Export COPILOT_PROVIDER_TYPE=anthropic,
   # COPILOT_PROVIDER_BASE_URL, COPILOT_PROVIDER_API_KEY, COPILOT_MODEL then re-run up.
+  if [ "${BOX_ONLY:-0}" != "1" ]; then
   boot mcp-server       "cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_SANDBOX_ROOT=\"$MCP_WS\" MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" ${COPILOT_PROVIDER_TYPE:+COPILOT_PROVIDER_TYPE=\"$COPILOT_PROVIDER_TYPE\" }${COPILOT_PROVIDER_BASE_URL:+COPILOT_PROVIDER_BASE_URL=\"$COPILOT_PROVIDER_BASE_URL\" }${COPILOT_PROVIDER_API_KEY:+COPILOT_PROVIDER_API_KEY=\"$COPILOT_PROVIDER_API_KEY\" }${COPILOT_MODEL:+COPILOT_MODEL=\"$COPILOT_MODEL\" }${MCP_GIT_PUSH_ENABLED:+MCP_GIT_PUSH_ENABLED=\"$MCP_GIT_PUSH_ENABLED\" }${MCP_GIT_AUTH_MODE:+MCP_GIT_AUTH_MODE=\"$MCP_GIT_AUTH_MODE\" }${GITHUB_TOKEN:+GITHUB_TOKEN=\"$GITHUB_TOKEN\" }${GH_TOKEN:+GH_TOKEN=\"$GH_TOKEN\" }npm run dev"
+  fi
   # context-api / context-memory import `context_fabric_shared` (in
   # context-fabric/shared/) and the `services.` namespace — so run them from the
   # context-fabric root with shared on PYTHONPATH and a fully-qualified module
   # path, exactly like llm-gateway. (Booting from the service subdir is why they
   # were crashing with ModuleNotFoundError.)
-  boot context-api      "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" python3 -m uvicorn services.context_api_service.app.main:app --host 0.0.0.0 --port 8000"
+  # JWT_SECRET: context-api verifies the laptop-bridge device tokens IAM signs —
+  # must receive the same secret. BOX_ONLY: no local gateway → the platform's own
+  # LLM calls ride the bridge to the laptop (PREFER_LAPTOP_LLM).
+  boot context-api      "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" ${BOX_ONLY:+PREFER_LAPTOP_LLM=true }python3 -m uvicorn services.context_api_service.app.main:app --host 0.0.0.0 --port 8000"
   boot context-memory   "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8002 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn services.context_memory_service.app.main:app --host 0.0.0.0 --port 8002"
   boot formal-verifier  "cd context-fabric/services/formal_verifier_service && PORT=8010 CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8010"
   sleep 3
