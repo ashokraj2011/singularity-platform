@@ -59,8 +59,12 @@ case "${1:-}" in
       echo "         (or set COPILOT_BIN=/abs/path/to/copilot in .env.laptop)" >&2
       exit 1
     fi
-    if [ -z "${COPILOT_PROVIDER_API_KEY:-}" ] && [ "${COPILOT_PROVIDER_TYPE:-}" = "anthropic" ]; then
-      echo "[laptop] ⚠ COPILOT_PROVIDER_TYPE=anthropic but COPILOT_PROVIDER_API_KEY is empty (set it in .env.laptop)" >&2
+    if [ "${COPILOT_PROVIDER_TYPE:-}" = "anthropic" ]; then
+      case "${COPILOT_PROVIDER_API_KEY:-}" in
+        "")           echo "[laptop] ✗ COPILOT_PROVIDER_TYPE=anthropic but COPILOT_PROVIDER_API_KEY is empty — set it in .env.laptop" >&2; exit 1 ;;
+        *REPLACE_ME*) echo "[laptop] ✗ COPILOT_PROVIDER_API_KEY is still the .env.laptop.example placeholder — paste your real sk-ant-… key" >&2; exit 1 ;;
+        \"*|\'*)      echo "[laptop] ✗ COPILOT_PROVIDER_API_KEY is quoted — remove the quotes (they leak into the auth header → 401)" >&2; exit 1 ;;
+      esac
     fi
     free_port 7100
     mkdir -p "$MCP_WS"
