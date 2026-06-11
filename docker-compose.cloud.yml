@@ -1,0 +1,20 @@
+# docker-compose.cloud.yml — CLOUD BOX overlay for the office/bridge topology.
+#
+# All platform apps run here in Docker; mcp-server + the LLM live on the
+# operator's LAPTOP (desktop app: runner in LAPTOP_MODE + the Copilot shim).
+# The laptop dials IN over the bridge — this box holds NO laptop address.
+#
+#   export JWT_SECRET=<one strong secret>     # signs+verifies device tokens
+#   docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d --no-deps <apps…>
+#
+# Do NOT use docker-compose.laptop-direct.yml here — host.docker.internal means
+# "this box", not the operator's laptop.
+
+services:
+  context-api:
+    environment:
+      # There is no llm-gateway container in this topology. Route the platform's
+      # OWN LLM calls (verifier agent, event-horizon chat, summarizer) to the
+      # launching user's laptop over the bridge (model-run frames → the laptop's
+      # gateway/Copilot shim). Requires the laptop to be connected.
+      PREFER_LAPTOP_LLM: "true"
