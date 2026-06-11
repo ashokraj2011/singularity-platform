@@ -35,6 +35,17 @@ LOG_DIR="$ROOT/logs"
 PID_FILE="$ROOT/.pids"
 ENV_FILE="$ROOT/.env.local"
 
+# Laptop secrets (.env.laptop — Copilot BYOK key/model, GITHUB_TOKEN, git push
+# flags). Same file bin/laptop.sh and the desktop app read, so a bare-metal `up`
+# needs no per-shell exports. Shell-exported values still win (file only fills
+# in what's unset).
+if [ -f "$ROOT/.env.laptop" ]; then
+  while IFS='=' read -r _k _v; do
+    case "$_k" in ''|\#*) continue ;; esac
+    [ -z "${!_k:-}" ] && export "$_k=$_v"
+  done < "$ROOT/.env.laptop"
+fi
+
 # ── Colours + helpers ──────────────────────────────────────────────────────
 C_BLUE=$'\033[1;34m'; C_GREEN=$'\033[1;32m'; C_YELLOW=$'\033[1;33m'
 C_RED=$'\033[1;31m';  C_DIM=$'\033[2m';      C_END=$'\033[0m'
@@ -417,12 +428,16 @@ JSON
   # defaults point at ids that don't exist on a fresh DB). Idempotent. Without
   # this the Workflow Manager has the demo workflows but no SDLC Delivery entry.
   info "seeding SDLC Delivery workflow…"
+  # Routing for the copilot nodes: full-local bare-metal talks to the LOCAL mcp
+  # over HTTP (prefer_laptop=false); BOX_ONLY boxes route over the bridge (true).
+  SEED_PL="${SEED_PREFER_LAPTOP:-$([ -n "$BOX_ONLY" ] && echo true || echo false)}"
   ( cd workgraph-studio/apps/api \
     && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 \
        DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts >/dev/null 2>&1 \
     && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 \
        DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx ts-node --transpile-only prisma/seed-sdlc-main.ts >/dev/null 2>&1 \
     && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 \
+       SEED_PREFER_LAPTOP="$SEED_PL" SEED_GOVERNANCE_MODE="${SEED_GOVERNANCE_MODE:-fail_open}" \
        DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx ts-node --transpile-only prisma/seed-sdlc-copilot.ts >/dev/null 2>&1 ) \
     || warn "SDLC Delivery seed had warnings — run manually: (cd workgraph-studio/apps/api && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=\"\$DATABASE_URL_WORKGRAPH\" npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts && … seed-sdlc-main.ts)"
 
