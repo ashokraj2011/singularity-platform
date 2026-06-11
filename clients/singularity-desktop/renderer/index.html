@@ -74,15 +74,23 @@
         <div class="muted">Generate one in the web app: Operations → Connection Keys.</div>
         <label>Connection key</label>
         <textarea id="key" placeholder="eyJhbGciOi…"></textarea>
-        <div class="row" style="margin-top:8px"><button id="pairKeyBtn" class="act">Pair with key</button></div>
+        <div class="row" style="margin-top:8px"><button id="pairKeyBtn" class="act">Connect with key</button></div>
       </div>
       <div class="card">
-        <strong>…or sign in</strong>
+        <strong>…or generate a key here</strong>
+        <div class="muted">Sign in once — the app mints your Connection Key, stores it in the keychain, and connects.</div>
         <label>Email</label><input id="email" placeholder="user1@singularity.local" />
         <label>Password</label><input id="password" type="password" placeholder="Admin1234!" />
         <div class="row" style="margin-top:8px">
-          <button id="pairLoginBtn" class="act">Sign in &amp; pair</button>
+          <button id="pairLoginBtn" class="act">Generate key &amp; connect</button>
           <span id="pairMsg" class="muted"></span>
+        </div>
+        <div id="mintedBox" hidden style="margin-top:10px;border:1px solid #fecaca;background:#fef2f2;border-radius:8px;padding:10px">
+          <div style="color:#b91c1c;font-weight:600;font-size:12px">Your Connection Key — shown once. It is already stored in the keychain; copy it only if you need it for the CLI or another device.</div>
+          <div class="row" style="margin-top:6px">
+            <textarea id="mintedKey" readonly style="flex:1;font-family:monospace;font-size:11px;height:54px"></textarea>
+            <button id="copyKeyBtn" class="ghost">Copy</button>
+          </div>
         </div>
       </div>
       <div class="card"><button id="clearBtn" class="ghost">Clear pairing</button></div>
@@ -174,13 +182,25 @@
   // actions
   $('startBtn').onclick = async () => { const r = await window.api.startRunner(); if (!r.ok) alert(r.error); refresh() }
   $('stopBtn').onclick = async () => { await window.api.stopRunner(); refresh() }
-  $('pairKeyBtn').onclick = async () => { await window.api.pairWithKey($('key').value); $('key').value=''; refresh() }
-  $('pairLoginBtn').onclick = async () => {
-    $('pairMsg').textContent = 'signing in…'
-    const r = await window.api.pairWithLogin({ email: $('email').value, password: $('password').value, platform: $('s_platform').value })
-    $('pairMsg').innerHTML = r.ok ? '<span class="ok">paired ✓</span>' : `<span class="err">${r.error}</span>`
+  $('pairKeyBtn').onclick = async () => {
+    const r = await window.api.pairWithKey($('key').value)
+    if (!r.ok) { alert(r.error); return }
+    $('key').value = ''
     refresh()
   }
+  $('pairLoginBtn').onclick = async () => {
+    $('pairMsg').textContent = 'generating key…'
+    const r = await window.api.pairWithLogin({ email: $('email').value, password: $('password').value, platform: $('s_platform').value })
+    if (r.ok) {
+      $('pairMsg').innerHTML = '<span class="ok">key generated ✓ — connecting…</span>'
+      $('mintedKey').value = r.key || ''
+      $('mintedBox').hidden = !r.key
+    } else {
+      $('pairMsg').innerHTML = `<span class="err">${r.error}</span>`
+    }
+    refresh()
+  }
+  $('copyKeyBtn').onclick = () => { navigator.clipboard.writeText($('mintedKey').value) }
   $('clearBtn').onclick = async () => { await window.api.clearPairing(); refresh() }
   $('addPath').onclick = async () => {
     const picked = await window.api.pickFolder()
