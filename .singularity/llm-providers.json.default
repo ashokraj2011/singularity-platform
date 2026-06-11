@@ -1,0 +1,28 @@
+{
+  "defaultProvider": "anthropic",
+  "defaultModel": "claude-haiku-4-5-20251001",
+  "allowedProviders": [
+    "anthropic",
+    "mock"
+  ],
+  "providers": {
+    "anthropic": {
+      "enabled": true,
+      "baseUrl": "https://api.anthropic.com",
+      "credentialEnv": "ANTHROPIC_API_KEY",
+      "defaultModel": "claude-haiku-4-5-20251001",
+      "supportsTools": true,
+      "costTier": "medium",
+      "description": "Anthropic Messages API provider for Singularity LLM Gateway."
+    },
+    "mock": {
+      "enabled": true,
+      "baseUrl": "",
+      "credentialEnv": "",
+      "defaultModel": "mock-fast",
+      "supportsTools": true,
+      "costTier": "free",
+      "description": "Deterministic mock provider. M65 Slice 3A added fault-injection aliases (mock-fail-{429,503,529}, mock-fail-{status}-N, mock-timeout) for the chaos smoke harness."
+    }
+  }
+}
