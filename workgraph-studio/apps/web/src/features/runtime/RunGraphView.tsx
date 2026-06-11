@@ -22,8 +22,11 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast, errText } from '../../components/Toast'
+import { runStatusVisual } from './runStatus'
+import { unwrapList } from '../../lib/unwrap'
 import {
-  ArrowLeft, List, CheckCircle2, Circle, Clock, AlertCircle, Pause,
+  ArrowLeft, List, AlertCircle,
   RotateCw, FileText, MessageSquare, X, Check, Ban, Send, ExternalLink,
   ShieldCheck, CornerUpLeft, Library, Download,
 } from 'lucide-react'
@@ -53,17 +56,9 @@ export interface RunGraphEdgeData {
   edgeType: string
 }
 
-const STATUS: Record<string, { ring: string; bg: string; color: string; Icon: typeof Circle; label: string }> = {
-  PENDING:   { ring: '#cbd5e1', bg: '#f8fafc', color: '#64748b', Icon: Circle,       label: 'Pending' },
-  ACTIVE:    { ring: '#0ea5e9', bg: '#f0f9ff', color: '#0284c7', Icon: Clock,        label: 'Active' },
-  RUNNING:   { ring: '#0ea5e9', bg: '#f0f9ff', color: '#0284c7', Icon: Clock,        label: 'Running' },
-  COMPLETED: { ring: '#22c55e', bg: '#f0fdf4', color: '#16a34a', Icon: CheckCircle2, label: 'Done' },
-  FAILED:    { ring: '#ef4444', bg: '#fef2f2', color: '#dc2626', Icon: AlertCircle,  label: 'Failed' },
-  BLOCKED:   { ring: '#f59e0b', bg: '#fffbeb', color: '#d97706', Icon: AlertCircle,  label: 'Blocked' },
-  PAUSED:    { ring: '#f59e0b', bg: '#fffbeb', color: '#d97706', Icon: Pause,        label: 'Paused' },
-  SKIPPED:   { ring: '#94a3b8', bg: '#f8fafc', color: '#94a3b8', Icon: Circle,       label: 'Skipped' },
-}
-const st = (s: string) => STATUS[(s ?? '').toUpperCase()] ?? STATUS.PENDING
+// Status visuals come from the shared runtime palette (one source of truth for
+// graph / timeline / dashboard).
+const st = runStatusVisual
 
 // ─── Layout: layered columns by topological depth (horizontal flow) ──────────
 function layout(nodes: RunGraphNodeData[], edges: RunGraphEdgeData[]): Map<string, { x: number; y: number }> {
@@ -189,15 +184,12 @@ type Consumable = { id: string; name?: string; status?: string; nodeId?: string;
 const isCodeArtifact = (name?: string) => /\.(java|ts|tsx|js|jsx|py|json|xml|ya?ml|sql|sh|go|rs|c|cpp|h|html|css|toml|gradle)$/i.test(name ?? '')
 // /consumables paginates as { content: [...] } (toPageResponse); tolerate content
 // (real key), items (legacy), or a bare array.
-const unwrapList = (d: unknown): Consumable[] => Array.isArray(d)
-  ? d as Consumable[]
-  : ((d as { content?: Consumable[]; items?: Consumable[] })?.content
-     ?? (d as { items?: Consumable[] })?.items ?? [])
+// List unwrapping lives in lib/unwrap (one shared helper for every API shape).
 function useConsumables(instanceId: string, nodeId: string, live: boolean) {
   return useQuery<Consumable[]>({
     queryKey: ['run-graph-consumables', instanceId, nodeId],
     // /consumables may return a bare array OR a paginated { items: [...] } — handle both.
-    queryFn: () => api.get('/consumables', { params: { instanceId, nodeId } }).then(r => unwrapList(r.data)),
+    queryFn: () => api.get('/consumables', { params: { instanceId, nodeId } }).then(r => unwrapList<Consumable>(r.data)),
     enabled: !!instanceId && !!nodeId,
     refetchInterval: live ? 5_000 : false,
     staleTime: 4_500,
@@ -207,7 +199,7 @@ function useConsumables(instanceId: string, nodeId: string, live: boolean) {
 function useAllConsumables(instanceId: string, live: boolean) {
   return useQuery<Consumable[]>({
     queryKey: ['run-graph-all-consumables', instanceId],
-    queryFn: () => api.get('/consumables', { params: { instanceId } }).then(r => unwrapList(r.data)),
+    queryFn: () => api.get('/consumables', { params: { instanceId } }).then(r => unwrapList<Consumable>(r.data)),
     enabled: !!instanceId,
     refetchInterval: live ? 6_000 : false,
     staleTime: 5_000,
@@ -226,12 +218,13 @@ const fillKindFor = (nodeType: string): FillKind | null =>
   : nodeType === 'CONSUMABLE_CREATION' ? 'consumable'
   : null
 
-export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges, onTimeline, onBack }: {
+export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges, runContext, onTimeline, onBack }: {
   instanceId: string
   instanceStatus: string
   runName: string
   nodes: RunGraphNodeData[]
   edges: RunGraphEdgeData[]
+  runContext?: Record<string, unknown>
   onTimeline: () => void
   onBack: () => void
 }) {
@@ -247,12 +240,14 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
 
   const restartMut = useMutation({
     mutationFn: (nodeId: string) => api.post(`/workflow-instances/${instanceId}/nodes/${nodeId}/restart`).then(r => r.data),
-    onSuccess: invalidate,
+    onSuccess: () => { toast.success('Stage restarted'); invalidate() },
+    onError: (e) => toast.error(errText(e, 'Restart failed')),
   })
   const approveMut = useMutation({
     mutationFn: (nodeId: string) =>
       api.post(`/workflow-instances/${instanceId}/nodes/${nodeId}/force-complete`, { comment: 'Approved from run graph' }).then(r => r.data),
-    onSuccess: invalidate,
+    onSuccess: () => { toast.success('Stage completed — workflow advancing'); invalidate() },
+    onError: (e) => toast.error(errText(e, 'Complete & advance failed')),
   })
 
   // Export the run as a portable Copilot SDLC YAML (run it on the Copilot client).
@@ -272,9 +267,10 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
     // Open straight to the form for an active human-task / approval / data-collection node.
     const n = nodes.find(x => x.id === id)
     const w = n?.config?.formWidgets
-    const isFormNode = !!n && fillKindFor(n.nodeType) !== null
+    const kind = n ? fillKindFor(n.nodeType) : null
+    const isFormNode = !!n && kind !== null
       && ['ACTIVE', 'RUNNING'].includes((n.status ?? '').toUpperCase())
-      && Array.isArray(w) && w.length > 0
+      && ((Array.isArray(w) && w.length > 0) || kind === 'approval')
     setTab(isFormNode ? 'form' : 'log')
   }, [nodes])
 
@@ -344,6 +340,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
               instanceId={instanceId}
               runName={runName}
               node={selectedNode}
+              runContext={runContext}
               live={live}
               tab={tab} setTab={setTab}
               completedNodes={completedNodes}
@@ -365,10 +362,11 @@ const topBtn: CSSProperties = {
   border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', color: '#475569', fontSize: 12, fontWeight: 600,
 }
 
-function NodePanel({ instanceId, runName, node, live, tab, setTab, completedNodes, onClose, onRestart, onApprove, onRestartNode, onOpenTimeline, busy }: {
+function NodePanel({ instanceId, runName, node, runContext, live, tab, setTab, completedNodes, onClose, onRestart, onApprove, onRestartNode, onOpenTimeline, busy }: {
   instanceId: string
   runName: string
   node: RunGraphNodeData
+  runContext?: Record<string, unknown>
   live: boolean
   tab: PanelTab
   setTab: (t: PanelTab) => void
@@ -400,7 +398,14 @@ function NodePanel({ instanceId, runName, node, live, tab, setTab, completedNode
   // the node is active and has a form, instead of pointing at the Timeline view.
   const fillKind = fillKindFor(node.nodeType)
   const formWidgets = (node.config?.formWidgets as FormWidget[] | undefined) ?? []
-  const showForm = active && !!fillKind && formWidgets.length > 0
+  // Approvals render their decision controls even with no widget form, so an
+  // operator approves/rejects HERE instead of being bounced to the Timeline.
+  const showForm = active && !!fillKind && (formWidgets.length > 0 || fillKind === 'approval')
+  // Gate executors record WHY they paused the run in the instance context —
+  // surface that on the blocked node instead of leaving it buried in JSON.
+  const blockInfo = runContext
+    ? (runContext._blockedByVerifier ?? runContext._blockedByEvalGate ?? runContext._blockedByGitPush ?? null)
+    : null
   // Chat (refine) is copilot-only; non-agent nodes get Log + Artifacts. Questions
   // appears only when Copilot asked some; Form leads when input is needed.
   const baseTabs: PanelTab[] = isAgent
@@ -441,6 +446,12 @@ function NodePanel({ instanceId, runName, node, live, tab, setTab, completedNode
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 14px 0', padding: '9px 11px', borderRadius: 9, background: '#fffbeb', border: '1px solid #fde68a' }}>
           <AlertCircle size={14} color="#d97706" style={{ flexShrink: 0 }} />
           <div style={{ flex: 1, fontSize: 11.5, color: '#92400e', lineHeight: 1.4 }}>This stage needs input ({node.nodeType.replace(/_/g, ' ').toLowerCase()}). Complete it in the Timeline view.</div>
+        </div>
+      )}
+      {(node.status ?? '').toUpperCase() === 'BLOCKED' && blockInfo != null && (
+        <div style={{ margin: '10px 14px 0', padding: '9px 11px', borderRadius: 9, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 11.5, color: '#991b1b', lineHeight: 1.45, maxHeight: 190, overflow: 'auto' }}>
+          <div style={{ fontWeight: 800, marginBottom: 4 }}>Why this stage is blocked</div>
+          <BlockReasonBody info={blockInfo} />
         </div>
       )}
       <div style={{ flex: 1, overflow: 'auto', padding: 14, minHeight: 0 }}>
@@ -528,7 +539,8 @@ function ChatRefine({ instanceId, node, busy, onRestart }: {
       api.post(`/workflow-instances/${instanceId}/nodes/${node.id}/refine`, { feedback })
         .then(r => r.data)
         .catch(() => { onRestart(); return { fallback: true } }),
-    onSuccess: (_d, feedback) => { setSent(s => [...s, feedback]); setMsg(''); qc.invalidateQueries({ queryKey: ['run-instance', instanceId] }) },
+    onSuccess: (_d, feedback) => { toast.success('Feedback sent — stage re-running'); setSent(s => [...s, feedback]); setMsg(''); qc.invalidateQueries({ queryKey: ['run-instance', instanceId] }) },
+    onError: (e) => toast.error(errText(e, 'Failed to send feedback')),
   })
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, height: '100%' }}>
@@ -580,7 +592,8 @@ function CopilotQuestions({ instanceId, node, questions, busy, onRestart }: {
       api.post(`/workflow-instances/${instanceId}/nodes/${node.id}/answer-questions`, { answers: payload })
         .then(r => r.data)
         .catch(() => { onRestart(); return { fallback: true } }),
-    onSuccess: () => { setAnswers({}); qc.invalidateQueries({ queryKey: ['run-instance', instanceId] }) },
+    onSuccess: () => { toast.success('Answers saved — stage re-running with your decisions'); setAnswers({}); qc.invalidateQueries({ queryKey: ['run-instance', instanceId] }) },
+    onError: (e) => toast.error(errText(e, 'Failed to save answers')),
   })
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, height: '100%' }}>
@@ -621,14 +634,40 @@ function CopilotQuestions({ instanceId, node, questions, busy, onRestart }: {
   )
 }
 
+// Renders a gate executor's block payload (verifier docs+findings, eval-gate
+// missing evidence, git-push error) as readable text; JSON fallback for shapes
+// we don't recognize.
+function BlockReasonBody({ info }: { info: unknown }) {
+  const o = info as Record<string, unknown>
+  if (Array.isArray(o?.documents)) { // VERIFIER: per-document findings
+    const docs = o.documents as Array<{ name?: string; passed?: boolean; findings?: string[]; rationale?: string }>
+    const failed = docs.filter(d => !d.passed)
+    if (failed.length === 0) return <div>{String(o.note ?? 'Verification blocked this stage.')}</div>
+    return (
+      <div>
+        {failed.map((d, i) => (
+          <div key={i} style={{ marginBottom: 5 }}>
+            <strong>{d.name ?? 'document'}</strong>{d.rationale ? ` — ${d.rationale}` : null}
+            {(d.findings?.length ?? 0) > 0 && (
+              <ul style={{ margin: '2px 0 0', paddingLeft: 16 }}>{d.findings!.slice(0, 5).map((f, j) => <li key={j}>{f}</li>)}</ul>
+            )}
+          </div>
+        ))}
+      </div>
+    )
+  }
+  if (typeof o?.pushError === 'string') return <div>{o.pushError}</div> // GIT_PUSH
+  if (Array.isArray(o?.missingEvidence) && o.missingEvidence.length > 0) { // EVAL_GATE
+    return <ul style={{ margin: 0, paddingLeft: 16 }}>{(o.missingEvidence as string[]).map((m, i) => <li key={i}>{m}</li>)}</ul>
+  }
+  return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit' }}>{JSON.stringify(info, null, 1).slice(0, 600)}</pre>
+}
+
 // Inline runtime form for an active human-task / approval / data-collection node.
 // Fetches the task/approval/consumable record for this node and renders the SAME
 // RuntimeWidgetForm the Timeline uses, so clicking the node shows the form here.
 function unwrapEntity(d: unknown): { id: string; formData?: Record<string, unknown>; attachments?: any[] } | null {
-  const arr = Array.isArray(d)
-    ? d
-    : ((d as { content?: unknown[]; items?: unknown[] })?.content ?? (d as { items?: unknown[] })?.items ?? [])
-  return (Array.isArray(arr) ? arr[0] : null) as { id: string; formData?: Record<string, unknown>; attachments?: any[] } | null
+  return unwrapList<{ id: string; formData?: Record<string, unknown>; attachments?: any[] }>(d)[0] ?? null
 }
 function NodeFormFill({ instanceId, nodeId, runName, kind, widgets }: {
   instanceId: string; nodeId: string; runName: string; kind: FillKind; widgets: FormWidget[]
@@ -664,7 +703,11 @@ function NodeFormFill({ instanceId, nodeId, runName, kind, widgets }: {
         decision, notes: `${decision === 'APPROVED' ? 'Approved' : 'Rejected'} from run graph`,
       }).then(r => r.data)
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['run-instance', instanceId] }); entityQuery.refetch() },
+    onSuccess: (_d, decision) => {
+      toast.success(decision === 'APPROVED' ? 'Approved — workflow advancing' : 'Rejected — recorded')
+      qc.invalidateQueries({ queryKey: ['run-instance', instanceId] }); entityQuery.refetch()
+    },
+    onError: (e) => toast.error(errText(e, 'Decision failed')),
   })
 
   if (entityQuery.isLoading) return <div style={{ fontSize: 12, color: '#94a3b8' }}>Loading form…</div>
@@ -721,21 +764,28 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
   const approveMut = useMutation({
     mutationFn: ({ cid, force }: { cid: string; force?: boolean }) =>
       api.post(`/consumables/${cid}/approve${force ? '?force=true' : ''}`).then(r => r.data),
-    onSuccess: () => { setForceConfirm(null); qc.invalidateQueries({ queryKey: ['run-graph-all-consumables', instanceId] }) },
+    onSuccess: () => { toast.success('Document approved'); setForceConfirm(null); qc.invalidateQueries({ queryKey: ['run-graph-all-consumables', instanceId] }) },
     onError: (err: unknown, vars) => {
       // Verify-before-approve gate fired (409) — surface the findings + offer override.
       const data = (err as { response?: { data?: { error?: string; verification?: Verdict } } })?.response?.data
       if (data?.error === 'verification_failed') {
         if (data.verification) setVerdicts(s => ({ ...s, [vars.cid]: { passed: false, findings: data.verification!.findings ?? [], rationale: data.verification!.rationale } }))
         setForceConfirm(vars.cid)
+        toast.error('Verification failed — review the findings, or click "Approve anyway"')
+      } else {
+        toast.error(errText(err, 'Approve failed'))
       }
     },
   })
   // Verify → runs the verifier agent (reads the run's standards/policies + LLM-judges).
   const verifyMut = useMutation({
     mutationFn: (cid: string) => api.post(`/consumables/${cid}/verify`).then(r => r.data),
-    onSuccess: (d: { passed?: boolean; findings?: string[]; rationale?: string }, cid) =>
-      setVerdicts(v => ({ ...v, [cid]: { passed: !!d?.passed, findings: d?.findings ?? [], rationale: d?.rationale } })),
+    onSuccess: (d: { passed?: boolean; findings?: string[]; rationale?: string }, cid) => {
+      setVerdicts(v => ({ ...v, [cid]: { passed: !!d?.passed, findings: d?.findings ?? [], rationale: d?.rationale } }))
+      if (d?.passed) toast.success('Verified — meets the standards')
+      else toast.info(`${d?.findings?.length ?? 0} issue${(d?.findings?.length ?? 0) === 1 ? '' : 's'} found against the standards`)
+    },
+    onError: (e) => toast.error(errText(e, 'Verification failed to run')),
   })
   // Verify all → run the agent across every document, sequentially (each is an LLM
   // call), updating verdicts as they land.

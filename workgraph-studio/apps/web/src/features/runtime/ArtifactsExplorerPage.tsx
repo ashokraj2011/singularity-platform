@@ -9,6 +9,7 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { FileText, Download, Package, ExternalLink } from 'lucide-react'
 import { api } from '../../lib/api'
+import { unwrapList } from '../../lib/unwrap'
 import { MarkdownView } from './MarkdownView'
 
 type GlobalArtifact = {
@@ -103,7 +104,7 @@ export function ArtifactsExplorerPage() {
 
   const items = useMemo(() => {
     const blueprint = data?.items ?? []
-    const raw = Array.isArray(wfData) ? wfData : (wfData?.content ?? [])
+    const raw = unwrapList<WfConsumable>(wfData)
     const workflow = raw
       .filter(c => typeof c.formData?.content === 'string' && (c.formData!.content as string).length > 0)
       .filter(c => !workflowInstanceId || c.instanceId === workflowInstanceId)
@@ -120,7 +121,7 @@ export function ArtifactsExplorerPage() {
   const runOptions = useMemo(() => {
     const m = new Map<string, string>()
     for (const i of (facets?.instances ?? [])) m.set(i.id, `${i.name} · ${i.status}`)
-    const raw = Array.isArray(wfData) ? wfData : (wfData?.content ?? [])
+    const raw = unwrapList<WfConsumable>(wfData)
     for (const c of raw) { if (c.instanceId && !m.has(c.instanceId)) m.set(c.instanceId, `Run ${c.instanceId.slice(0, 8)}`) }
     return Array.from(m, ([id, label]) => ({ id, label }))
   }, [facets, wfData])

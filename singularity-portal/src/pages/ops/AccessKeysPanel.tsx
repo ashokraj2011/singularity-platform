@@ -106,9 +106,9 @@ export function AccessKeysPanel() {
 
         {/* the key, shown once */}
         {minted && (
-          <div style={{ marginTop: 14, border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 10, padding: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: '#b45309', fontWeight: 700, fontSize: 12.5 }}>
-              <AlertTriangle size={15} /> Copy this key now — it will not be shown again.
+          <div style={{ marginTop: 14, border: '1px solid #fecaca', background: '#fef2f2', borderRadius: 10, padding: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: '#b91c1c', fontWeight: 700, fontSize: 12.5 }}>
+              <AlertTriangle size={15} /> Copy this key NOW — it is shown only once. Store it in a password manager.
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
               <code style={{ ...mono, flex: 1, background: '#fff', border: '1px solid #e6ebf1', borderRadius: 8, padding: '8px 10px', overflowX: 'auto', whiteSpace: 'nowrap' }}>{minted.access_token}</code>
