@@ -63,7 +63,13 @@ case "${1:-}" in
     dc ps --format 'table {{.Name}}\t{{.Status}}' | sed 's/^/  /'
     printf '  edge-gateway :8085 … '; curl -fsS -o /dev/null http://localhost:8085/ && echo OK || echo DOWN
     printf '  context-api  :8000 … '; curl -fsS -o /dev/null http://localhost:8000/health && echo OK || echo DOWN
-    printf '  laptop mcp   :7100 … '; curl -fsS -o /dev/null -H "authorization: Bearer ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}" http://localhost:7100/healthz/strict && echo OK || echo "DOWN (start: bin/laptop.sh mcp)"
+    printf '  laptop mcp   :7100 … '
+    if curl -fsS -o /dev/null http://localhost:7100/health 2>/dev/null; then
+      curl -fsS -o /dev/null -H "authorization: Bearer ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}" http://localhost:7100/healthz/strict 2>/dev/null \
+        && echo OK || echo "UP, but strict invariants failing — curl :7100/healthz/strict for which check"
+    else
+      echo "DOWN (start: bin/laptop.sh mcp)"
+    fi
     printf '  laptop llm   :8001 … '; curl -fsS -o /dev/null http://localhost:8001/health && echo OK || echo "DOWN (start: bin/laptop.sh gateway)"
     ;;
   logs)
