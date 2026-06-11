@@ -614,6 +614,11 @@ services:
       IAM_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
       IAM_BOOTSTRAP_USERNAME: ${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
       IAM_BOOTSTRAP_PASSWORD: ${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
+      # Laptop-bridge device tokens are SIGNED by iam-service and VERIFIED here
+      # (laptop_bridge.py). Must be the same value as iam-service's JWT_SECRET or
+      # every laptop connect is rejected 403 "signature mismatch". Was missing —
+      # context-api was the one service compose didn't give the shared secret.
+      JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
       MCP_DEFAULT_BASE_URL: ${MCP_DEFAULT_BASE_URL:-http://mcp-server:7100}
       MCP_DEFAULT_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       MCP_SERVER_URL: http://mcp-server:7100
