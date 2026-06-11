@@ -34,6 +34,7 @@ import { RunsDashboardPage } from './features/runtime/RunsDashboardPage'
 import { RunPlayerPage, RunPlayerEntry } from './features/runtime/RunPlayerPage'
 import { RunWorkflowPage } from './features/runtime/RunWorkflowPage'
 import { EventHorizonChat } from './components/EventHorizonChat'
+import { Toaster } from './components/Toast'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   // M100 P2 — prefer the canonical portal session (shared localStorage under
@@ -108,6 +109,7 @@ export default function App() {
         </Route>
       </Routes>
       <EventHorizonGate />
+      <Toaster />
     </BrowserRouter>
   )
 }

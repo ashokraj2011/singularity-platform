@@ -3,10 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { motion } from 'motion/react'
 import {
-  GitFork, Search, Filter, Workflow as WorkflowIcon,
-  ChevronRight, Activity, CheckCircle2, AlertCircle, Pause, Clock,
+  GitFork, Search, Filter, Workflow as WorkflowIcon, ChevronRight,
 } from 'lucide-react'
 import { api } from '../../lib/api'
+import { RUN_STATUS } from './runStatus'
 
 /**
  * Cross-workflow Runs dashboard.
@@ -37,14 +37,8 @@ type Workflow = {
   capabilityId?: string | null
 }
 
-const STATUS_VISUAL: Record<string, { fg: string; bg: string; border: string; Icon: React.ElementType }> = {
-  DRAFT:     { fg: '#64748b', bg: 'rgba(100,116,139,0.10)', border: 'rgba(100,116,139,0.25)', Icon: Clock },
-  ACTIVE:    { fg: '#22c55e', bg: 'rgba(34,197,94,0.10)',   border: 'rgba(34,197,94,0.30)',   Icon: Activity },
-  PAUSED:    { fg: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.25)',  Icon: Pause },
-  COMPLETED: { fg: '#0ea5e9', bg: 'rgba(14,165,233,0.10)',  border: 'rgba(14,165,233,0.25)',  Icon: CheckCircle2 },
-  FAILED:    { fg: '#ef4444', bg: 'rgba(239,68,68,0.10)',   border: 'rgba(239,68,68,0.25)',   Icon: AlertCircle },
-  CANCELLED: { fg: '#94a3b8', bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.25)', Icon: Pause },
-}
+// Shared runtime status palette (one source of truth across run surfaces).
+const STATUS_VISUAL = RUN_STATUS
 
 export function RunsDashboardPage() {
   const navigate = useNavigate()
@@ -55,10 +49,17 @@ export function RunsDashboardPage() {
   // Pull every server-side instance the API lets us see.  The endpoint already
   // filters out design instances by virtue of the schema refactor, so what we
   // get back is real runs.
+  // Poll fast only while something is actually running; a list of finished runs
+  // doesn't need a 5s heartbeat forever.
+  const liveInterval = (rows: Array<{ status?: string }>) =>
+    rows.some(r => !['COMPLETED', 'CANCELLED', 'FAILED'].includes(String(r?.status ?? '').toUpperCase())) ? 5_000 : 60_000
   const { data: instancesData, isLoading: serverLoading } = useQuery({
     queryKey: ['runs-dashboard', 'instances'],
     queryFn:  () => api.get('/workflow-instances').then(r => r.data),
-    refetchInterval: 5_000,
+    refetchInterval: (query) => {
+      const d = query.state.data as { content?: Array<{ status?: string }> } | Array<{ status?: string }> | undefined
+      return liveInterval(Array.isArray(d) ? d : (d?.content ?? []))
+    },
   })
   const serverRuns: RunRow[] = (Array.isArray(instancesData)
     ? instancesData
@@ -69,7 +70,10 @@ export function RunsDashboardPage() {
   const { data: snapshotsData, isLoading: snapsLoading } = useQuery({
     queryKey: ['runs-dashboard', 'snapshots'],
     queryFn:  () => api.get('/runs', { params: { mine: 'true' } }).then(r => r.data),
-    refetchInterval: 5_000,
+    refetchInterval: (query) => {
+      const d = query.state.data as Array<{ status?: string }> | undefined
+      return liveInterval(Array.isArray(d) ? d : [])
+    },
   })
   const browserRuns: RunRow[] = Array.isArray(snapshotsData)
     ? snapshotsData.map((s: any) => ({

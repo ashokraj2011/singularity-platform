@@ -3,10 +3,13 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'motion/react'
 import {
-  ArrowLeft, CheckCircle2, Circle, Clock, AlertCircle, Workflow as WorkflowIcon,
-  Pause, Play as PlayIcon, RotateCw, GitFork, Network, ExternalLink,
+  ArrowLeft, CheckCircle2, Clock, AlertCircle, Workflow as WorkflowIcon,
+  RotateCw, GitFork, Network, ExternalLink,
 } from 'lucide-react'
 import { api } from '../../lib/api'
+import { toast, errText } from '../../components/Toast'
+import { RUN_STATUS } from './runStatus'
+import { unwrapList } from '../../lib/unwrap'
 import { RuntimeWidgetForm, type RuntimeFormSubmitTarget } from '../forms/widgets/RuntimeWidgetForm'
 import { widgetHasValue, type FormWidget } from '../forms/widgets/types'
 import { LiveEventsPanel } from './LiveEventsPanel'
@@ -40,8 +43,15 @@ function isTerminalRunStatus(status: string | undefined | null): boolean {
 export function RunViewerPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  // Default to the designer-style graph view; 'timeline' is the classic vertical list.
-  const [viewMode, setViewMode] = useState<'graph' | 'timeline'>('graph')
+  // Default to the designer-style graph view; 'timeline' is the classic vertical
+  // list. The choice persists across refreshes/runs (localStorage).
+  const [viewMode, setViewModeState] = useState<'graph' | 'timeline'>(() => {
+    try { return localStorage.getItem('run-view-mode') === 'timeline' ? 'timeline' : 'graph' } catch { return 'graph' }
+  })
+  const setViewMode = (m: 'graph' | 'timeline') => {
+    setViewModeState(m)
+    try { localStorage.setItem('run-view-mode', m) } catch { /* ignore */ }
+  }
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
@@ -109,6 +119,7 @@ export function RunViewerPage() {
         runName={instance.name}
         nodes={nodes}
         edges={edges}
+        runContext={(instance.context ?? {}) as Record<string, unknown>}
         onTimeline={() => setViewMode('timeline')}
         onBack={() => navigate(-1)}
       />
@@ -267,10 +278,12 @@ function StepCard({
   const restartMut = useMutation({
     mutationFn: () => api.post(`/workflow-instances/${instanceId}/nodes/${node.id}/restart`).then(r => r.data),
     onSuccess: () => {
+      toast.success('Stage restarted')
       queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId] })
       queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId, 'nodes'] })
       queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId, 'edges'] })
     },
+    onError: (e) => toast.error(errText(e, 'Restart failed')),
   })
   const canRestart = node.status === 'COMPLETED' || node.status === 'FAILED' || node.status === 'BLOCKED' || node.status === 'ACTIVE'
 
@@ -283,12 +296,14 @@ function StepCard({
     mutationFn: (comment: string) =>
       api.post(`/workflow-instances/${instanceId}/nodes/${node.id}/force-complete`, { comment }).then(r => r.data),
     onSuccess: () => {
+      toast.success('Stage completed — workflow advancing')
       setShowComplete(false)
       setCompleteComment('')
       queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId] })
       queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId, 'nodes'] })
       queryClient.invalidateQueries({ queryKey: ['run-instance', instanceId, 'edges'] })
     },
+    onError: (e) => toast.error(errText(e, 'Complete & advance failed')),
   })
   const canForceComplete = node.status !== 'COMPLETED' && node.status !== 'SKIPPED'
 
@@ -323,7 +338,7 @@ function StepCard({
   const { data: nodeArtifacts = [] } = useQuery<Array<{ id: string; name: string; status?: string; formData?: { content?: string } | null }>>({
     queryKey: ['run-instance', instanceId, 'node-artifacts', node.id],
     queryFn: () => api.get('/consumables', { params: { instanceId, nodeId: node.id } })
-      .then(r => (Array.isArray(r.data) ? r.data : (r.data?.content ?? r.data?.items ?? []))),
+      .then(r => unwrapList<{ id: string; name: string; status?: string; formData?: { content?: string } | null }>(r.data)),
     enabled: showArtifacts,
   })
   const mayHaveArtifacts = node.status !== 'PENDING' && node.status !== 'SKIPPED'
@@ -1550,14 +1565,8 @@ function FragmentRow({ label, value }: { label: string; value: string }) {
 }
 
 function unwrapItems<T>(data: unknown): T[] {
-  if (Array.isArray(data)) return data as T[]
-  if (data && typeof data === 'object') {
-    const obj = data as Record<string, unknown>
-    if (Array.isArray(obj.content)) return obj.content as T[]
-    if (Array.isArray(obj.items)) return obj.items as T[]
-    if (Array.isArray(obj.data)) return obj.data as T[]
-  }
-  return []
+  // Delegates to the shared lib/unwrap helper (one unwrap for every API shape).
+  return unwrapList<T>(data)
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -1876,26 +1885,8 @@ function StatusChip({ status }: { status: string }) {
   )
 }
 
-const STATUS_VISUAL: Record<string, {
-  bg: string; border: string; color: string; tagBg: string; Icon: React.ElementType
-}> = {
-  PENDING:    { bg: '#f1f5f9', border: 'var(--color-outline-variant)', color: '#64748b',
-                tagBg: 'rgba(100,116,139,0.10)', Icon: Circle },
-  ACTIVE:     { bg: 'rgba(14,165,233,0.12)', border: 'rgba(14,165,233,0.30)', color: '#0ea5e9',
-                tagBg: 'rgba(14,165,233,0.10)', Icon: Clock },
-  COMPLETED:  { bg: 'rgba(34,197,94,0.12)',  border: 'rgba(34,197,94,0.30)',  color: '#22c55e',
-                tagBg: 'rgba(34,197,94,0.10)',  Icon: CheckCircle2 },
-  FAILED:     { bg: 'rgba(239,68,68,0.10)',  border: 'rgba(239,68,68,0.25)',  color: '#ef4444',
-                tagBg: 'rgba(239,68,68,0.10)',  Icon: AlertCircle },
-  BLOCKED:    { bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.28)', color: '#d97706',
-                tagBg: 'rgba(245,158,11,0.10)', Icon: AlertCircle },
-  PAUSED:     { bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.25)', color: '#f59e0b',
-                tagBg: 'rgba(245,158,11,0.10)', Icon: Pause },
-  CANCELLED:  { bg: 'rgba(100,116,139,0.10)', border: 'rgba(100,116,139,0.25)', color: '#64748b',
-                tagBg: 'rgba(100,116,139,0.10)', Icon: PlayIcon },
-  RETRYING:   { bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.25)', color: '#f59e0b',
-                tagBg: 'rgba(245,158,11,0.10)', Icon: RotateCw },
-}
+// Shared runtime status palette (one source of truth across run surfaces).
+const STATUS_VISUAL = RUN_STATUS
 
 // Topological order with stable fallback to createdAt.
 type RunNode = {
