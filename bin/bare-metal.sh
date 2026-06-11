@@ -215,6 +215,12 @@ export LLM_PROVIDER_CONFIG_PATH="$ROOT/.singularity/llm-providers.json"
 export LLM_MODEL_CATALOG_PATH="$ROOT/.singularity/llm-models.json"
 export WORKBENCH_DEFAULT_MODEL_ALIAS="mock"
 EOF
+
+# Fresh-clone restore: the LIVE provider/model configs are gitignored (operator-
+# owned) — recreate them from the tracked .default templates so the gateway can
+# boot on a brand-new checkout instead of failing with a missing config file.
+[ -f "$ROOT/.singularity/llm-providers.json" ] || cp "$ROOT/.singularity/llm-providers.json.default" "$ROOT/.singularity/llm-providers.json" 2>/dev/null || true
+[ -f "$ROOT/.singularity/llm-models.json" ]    || cp "$ROOT/.singularity/llm-models.json.default"    "$ROOT/.singularity/llm-models.json"    2>/dev/null || true
   ok "wrote env to ${ENV_FILE}"
   # shellcheck source=/dev/null
   . "$ENV_FILE"

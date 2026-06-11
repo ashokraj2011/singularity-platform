@@ -164,6 +164,12 @@ async function startGateway(s, fileEnv, sec) {
   const root = s.repoRoot || DEFAULTS.repoRoot
   const venvPy = path.join(root, 'context-fabric', '.venv', 'bin', 'python')
   const py = fs.existsSync(venvPy) ? venvPy : 'python3'
+  // Fresh clone: the live provider/model configs are gitignored — restore them
+  // from the tracked .default templates so the gateway can boot.
+  for (const f of ['llm-providers.json', 'llm-models.json']) {
+    const live = path.join(root, '.singularity', f)
+    try { if (!fs.existsSync(live) && fs.existsSync(`${live}.default`)) fs.copyFileSync(`${live}.default`, live) } catch { /* best-effort */ }
+  }
   const env = {
     ...process.env,
     ...fileEnv,

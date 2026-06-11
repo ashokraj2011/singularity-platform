@@ -42,6 +42,10 @@ case "${1:-}" in
     # Provider keys come from .env.laptop / .env.llm-secrets / your shell.
     if [ -f .env.llm-secrets ]; then set -a; . ./.env.llm-secrets; set +a; fi
     if [ -f context-fabric/.venv/bin/activate ]; then . context-fabric/.venv/bin/activate; fi
+    # Fresh clone: live provider/model configs are gitignored — restore from the
+    # tracked .default templates.
+    [ -f .singularity/llm-providers.json ] || cp .singularity/llm-providers.json.default .singularity/llm-providers.json 2>/dev/null || true
+    [ -f .singularity/llm-models.json ]    || cp .singularity/llm-models.json.default    .singularity/llm-models.json    2>/dev/null || true
     free_port 8001
     echo "[gateway] uvicorn :8001 (providers: $LLM_PROVIDER_CONFIG_PATH)"
     cd context-fabric
