@@ -24,7 +24,7 @@ from typing import Any
 from .code_context import build_code_context_for_governed_turn, package_markdown
 from .dispatch import ToolDispatchError, dispatch_tool
 from .phase_state import Phase, PhaseState
-from .placement import mcp_laptop_target
+from .placement import mcp_laptop_target, runtime_capability_tags, runtime_tenant_target
 from .stage_driver import StageRunResult
 
 _VAR_RE = re.compile(r"\{\{\s*instance\.vars\.([\w]+)\s*\}\}")
@@ -111,6 +111,8 @@ async def compose_copilot_prompt(
             capability_id=capability_id,
             run_context=run_context,
             laptop_user_id=mcp_laptop_target(run_context),
+            runtime_tenant_id=runtime_tenant_target(run_context),
+            runtime_capability_tags=runtime_capability_tags(run_context),
         )
         if pkg:
             code_md = package_markdown(pkg) or ""

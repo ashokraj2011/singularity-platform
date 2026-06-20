@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -10,10 +10,17 @@ class DeviceTokenRequest(BaseModel):
     device_name: Optional[str] = Field(default=None, max_length=200)
     scopes:      Optional[list[str]] = None
     ttl_days:    int = Field(default=90, ge=1, le=365)
+    token_kind:  Literal["device", "runtime"] = "device"
+    tenant_id:   Optional[str] = Field(default=None, max_length=128)
+    runtime_type: Optional[str] = Field(default="mcp", max_length=64)
+    runtime_scope: Optional[Literal["user", "tenant", "shared"]] = "user"
+    allowed_frame_types: Optional[list[str]] = None
+    capability_tags: Optional[list[str]] = None
 
 
 class DeviceTokenResponse(BaseModel):
     access_token:     str
+    token_kind:       str = "device"
     device_id:        str
     user_id:          str
     email:            str

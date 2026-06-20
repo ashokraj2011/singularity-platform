@@ -34,6 +34,11 @@ import httpx
 
 _DEFAULT_TIMEOUT_SEC = 45.0  # AST indexing of medium repos lands under this
 _DEFAULT_TOKEN_BUDGET = 7000  # matches the legacy default
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _http_fallback_enabled() -> bool:
+    return os.environ.get("RUNTIME_HTTP_FALLBACK_ENABLED", "false").strip().lower() in _TRUTHY
 
 
 async def build_code_context_for_governed_turn(
@@ -47,6 +52,8 @@ async def build_code_context_for_governed_turn(
     max_token_budget: int = _DEFAULT_TOKEN_BUDGET,
     context_policy: Optional[str] = None,  # stage MODE (CODE_EDIT/VERIFY_ONLY/…)
     laptop_user_id: Optional[str] = None,  # placement: build on this user's laptop
+    runtime_tenant_id: Optional[str] = None,
+    runtime_capability_tags: Optional[list[str]] = None,
     _http_post: Any = None,  # injection seam for tests
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """Build a code-context package and return the package dict, or
@@ -107,10 +114,21 @@ async def build_code_context_for_governed_turn(
     # through to the static HTTP path below when no laptop is connected/serving
     # the frame (best-effort — never raises). Mirrors the tool-dispatch
     # (governed.dispatch) and model-run (governed.llm_client) bridge paths.
-    if laptop_user_id:
-        body = await _try_laptop_code_context(laptop_user_id, payload, timeout_sec)
+    runtime_requested = bool(laptop_user_id or runtime_tenant_id)
+    if runtime_requested:
+        body = await _try_laptop_code_context(
+            laptop_user_id or "",
+            payload,
+            timeout_sec,
+            tenant_id=runtime_tenant_id,
+            capability_tags=runtime_capability_tags,
+        )
         if body is not None:
             return _parse_code_context_body(body)
+        if not _http_fallback_enabled():
+            return None, "RUNTIME_NOT_CONNECTED: no runtime bridge connected for code-context"
+    elif not _http_fallback_enabled():
+        return None, "RUNTIME_NOT_CONNECTED: no runtime identity for code-context"
 
     base = (mcp_base_url or os.environ.get("MCP_SERVER_URL", "")).rstrip("/")
     if not base:
@@ -155,6 +173,9 @@ async def _try_laptop_code_context(
     user_id: str,
     payload: dict[str, Any],
     timeout_sec: float,
+    *,
+    tenant_id: str | None = None,
+    capability_tags: list[str] | None = None,
 ) -> Optional[dict[str, Any]]:
     """Dispatch the code-context build over the laptop bridge. Returns the
     response envelope dict on success, or None to signal the caller should
@@ -177,6 +198,8 @@ async def _try_laptop_code_context(
     try:
         return await REGISTRY.dispatch_code_context_via_laptop(
             user_id=user_id,
+            tenant_id=tenant_id,
+            capability_tags=capability_tags,
             request_body=payload,
             timeout=timeout_sec,
         )

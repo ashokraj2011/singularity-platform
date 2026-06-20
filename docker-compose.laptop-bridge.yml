@@ -1,8 +1,8 @@
 # docker-compose.laptop-bridge.yml — LOCALHOST bridge-mode split test.
 #
 # The BOX runs in Docker; mcp-server + llm-gateway run as HOST apps. The host
-# mcp-server dials OUT to the Dockerized context-api over the laptop bridge
-# (LAPTOP_MODE), so the governed loop dispatches everything to the host runtime:
+# mcp-server dials OUT to the Dockerized context-api over the Runtime Bridge
+# (RUNTIME_DIAL_IN_MODE/LAPTOP_MODE), so the governed loop dispatches everything to the host runtime:
 #   • tools        → `tool-run`     bridge frame
 #   • CF's own LLM → `model-run`    bridge frame   (PREFER_LAPTOP_LLM below)
 #   • world model  → `code-context` bridge frame
@@ -20,6 +20,7 @@ services:
       # (b) sign service tokens. MUST equal the secret the device token is minted
       # with — bin/laptop-bridge.sh exports the same JWT_SECRET for mint + box.
       JWT_SECRET: ${JWT_SECRET:-dev-laptop-bridge-secret-min-32-chars!!}
+      RUNTIME_HTTP_FALLBACK_ENABLED: "false"
       # Route CF's OWN chat (governed turn / summarizer / composer / single-turn)
       # to the laptop gateway over the model-run bridge frame. This is what
       # exercises the LLM-on-laptop path added this session.

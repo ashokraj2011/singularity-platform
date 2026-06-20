@@ -52,8 +52,8 @@ for port in 3001 3002 3003 3004 5180 7100 8000 8080 8100 8101 8500; do
 done
 [ $STUCK -eq 0 ] && ok "all demo ports clear"
 
-# Try to remove the stale .pids file (created by bare-metal.sh)
-rm -f "$ROOT/.pids" 2>/dev/null || true
+# Try to remove stale bare-metal PID files.
+rm -f "$ROOT/.pids" "$ROOT/.pids.runtime" 2>/dev/null || true
 
 echo
 ok "Demo stack stopped."

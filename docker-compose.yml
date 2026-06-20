@@ -699,6 +699,9 @@ services:
       MCP_DEFAULT_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
       MCP_SERVER_URL: ${MCP_SERVER_INTERNAL_URL:-http://mcp-server:7100}
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
+      # Normal execution uses /api/runtime-bridge/connect. MCP_SERVER_URL and
+      # LLM_GATEWAY_URL are diagnostics/debug fallback only when this is true.
+      RUNTIME_HTTP_FALLBACK_ENABLED: ${RUNTIME_HTTP_FALLBACK_ENABLED:-false}
       MCP_DEFAULT_SERVER_ID: ${MCP_DEFAULT_SERVER_ID:-local-default-mcp}
       # ── ToolInvocationGrant (defence-in-depth) ──────────────────────────
       # The governed loop signs a per-call grant binding (tool, args,

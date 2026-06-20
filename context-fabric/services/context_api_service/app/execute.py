@@ -854,6 +854,17 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
             "message": "Your laptop mcp-server is not connected. Run `singularity-mcp start` and retry.",
             "user_id": user_id,
         })
+    if not use_laptop and os.getenv("RUNTIME_HTTP_FALLBACK_ENABLED", "false").strip().lower() not in {"1", "true", "yes", "on"}:
+        _persist_failure(
+            cf_call_id, started_at, trace_id, req, prompt_assembly_id,
+            "RUNTIME_NOT_CONNECTED: MCP runtime bridge is not connected",
+            session_id, mcp_server_id=mcp_server_id,
+        )
+        raise HTTPException(status_code=503, detail={
+            "code": "RUNTIME_NOT_CONNECTED",
+            "message": "No MCP runtime is connected through the Runtime Bridge. Start the MCP runtime dial-in or enable RUNTIME_HTTP_FALLBACK_ENABLED for debug HTTP.",
+            "user_id": user_id,
+        })
 
     # M26 — emit a per-invoke event tying this run to the specific laptop
     # device. Workgraph Run Insights buckets these by trace_id to render the
@@ -2232,7 +2243,7 @@ class GovernedSingleTurnRequest(BaseModel):
 async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")) -> dict[str, Any]:
     check_execute_service_token(x_service_token)
     from .governed.llm_client import call_gateway_chat
-    from .governed.placement import llm_laptop_target
+    from .governed.placement import llm_laptop_target, runtime_capability_tags, runtime_tenant_target
 
     rc = req.run_context or {}
     trace_id = req.trace_id or rc.get("trace_id")
@@ -2270,6 +2281,8 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
             # when the run opted into laptop LLM and a laptop is serving model-run;
             # otherwise the cloud gateway. Mirrors turn.py:920. See placement.py.
             laptop_user_id=llm_laptop_target(rc),
+            runtime_tenant_id=runtime_tenant_target(rc),
+            runtime_capability_tags=runtime_capability_tags(rc),
         )
     except LLMGatewayError as exc:
         emit_audit_event(

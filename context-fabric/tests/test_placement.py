@@ -39,11 +39,16 @@ def test_mcp_laptop_allowed_enterprise_forces_cloud(monkeypatch):
     assert p.mcp_laptop_allowed(False) is False
 
 
-def test_llm_laptop_target_defaults_to_cloud():
+def test_llm_laptop_target_defaults_to_runtime_bridge():
     assert p.llm_laptop_target(None) is None
     assert p.llm_laptop_target({}) is None
-    assert p.llm_laptop_target({"user_id": "u1"}) is None            # no prefer flag
+    assert p.llm_laptop_target({"user_id": "u1"}) == "u1"
     assert p.llm_laptop_target({"prefer_laptop_llm": True}) is None  # no user_id
+
+
+def test_llm_laptop_target_can_opt_out_to_debug_http():
+    assert p.llm_laptop_target({"prefer_laptop_llm": False, "user_id": "u1"}) is None
+    assert p.llm_laptop_target({"prefer_laptop": False, "user_id": "u1"}) is None
 
 
 def test_llm_laptop_target_returns_user_when_opted_in():

@@ -809,6 +809,8 @@ async def run_turn(
                 # frame) instead of the box's shared sandbox. None → cloud HTTP.
                 # Mirrors tool dispatch (loop.py). See placement.py.
                 laptop_user_id=_placement.mcp_laptop_target(run_context),
+                runtime_tenant_id=_placement.runtime_tenant_target(run_context),
+                runtime_capability_tags=_placement.runtime_capability_tags(run_context),
             )
             if pkg is not None:
                 md = package_markdown(pkg)
@@ -958,6 +960,8 @@ async def run_turn(
         # model-run), call_gateway_chat dispatches over the bridge; otherwise it
         # uses the cloud gateway. None in the common case. See placement.py.
         laptop_user_id=_placement.llm_laptop_target(run_context),
+        runtime_tenant_id=_placement.runtime_tenant_target(run_context),
+        runtime_capability_tags=_placement.runtime_capability_tags(run_context),
     )
 
     await emit_governed_event(

@@ -14,10 +14,13 @@
 #   db_host     : 'localhost'
 #   db_port     : '5432'
 #
-# Boots: iam, audit-gov, agent/tool/runtime/composer, context-api,
-# workgraph-api, and the unified platform-web Next app on :5180. By default it
-# also starts local llm-gateway and mcp-server; set BOX_ONLY=1 when those
-# runtime services are deployed elsewhere. Deprecated/optional sidecars such as
+# Compatibility launcher. Prefer bin/bare-metal-apps.sh for platform apps
+# without MCP/LLM, and bin/bare-metal-runtime.sh for local llm-gateway +
+# mcp-server. This script still supports the older all-in-one path: it boots
+# iam, audit-gov, agent/tool/runtime/composer, context-api, workgraph-api, the
+# unified platform-web Next app on :5180, and, unless SKIP_LOCAL_RUNTIME=1,
+# local llm-gateway + mcp-server. BOX_ONLY=1 remains a legacy alias for
+# office/laptop-bridge installs. Deprecated/optional sidecars such as
 # context-memory and formal-verifier are opt-in (BARE_METAL_FULL=1, or
 # FORMAL_VERIFICATION_ENABLED=true for the verifier).
 # Set BARE_METAL_TRACE_SPINE=1 with `smoke` to run the Docker/split-DB trace
@@ -62,6 +65,18 @@ dim()   { echo -e "${C_DIM}$*${C_END}"; }
 
 require() {
   command -v "$1" >/dev/null 2>&1 || { err "missing binary: $1"; exit 1; }
+}
+
+normalize_runtime_mode() {
+  # SKIP_LOCAL_RUNTIME=1 skips only the local llm-gateway + mcp-server. BOX_ONLY
+  # is the legacy office/cloud alias. Runtime traffic now goes through the
+  # Runtime Bridge by default; direct HTTP fallback must be enabled explicitly.
+  [ "${BOX_ONLY:-}" = "1" ] || BOX_ONLY=""
+  [ "${SKIP_LOCAL_RUNTIME:-}" = "1" ] || SKIP_LOCAL_RUNTIME=""
+  if [ -n "$BOX_ONLY" ]; then
+    SKIP_LOCAL_RUNTIME=1
+  fi
+  export BOX_ONLY SKIP_LOCAL_RUNTIME
 }
 
 validate_sql_ident() {
@@ -120,6 +135,7 @@ cmd_up() {
   local db_pass="${2:-${PGPASSWORD:-postgres}}"
   local db_host="${3:-localhost}"
   local db_port="${4:-5432}"
+  normalize_runtime_mode
 
   require psql
   require node
@@ -135,7 +151,7 @@ cmd_up() {
   # purpose: those are your Postgres/MinIO, not ours to kill.
   info "freeing our service ports…"
   local _ports_to_free=(3001 3002 3003 3004 5174 5175 5176 5180 5181 5182 8000 8002 8003 8010 8080 8085 8100 8101 8500)
-  if [ "${BOX_ONLY:-}" != "1" ]; then
+  if [ "${SKIP_LOCAL_RUNTIME:-}" != "1" ]; then
     _ports_to_free+=(7100 8001)
   fi
   for _p in "${_ports_to_free[@]}"; do
@@ -308,10 +324,6 @@ export WORKGRAPH_FORCE_GOVERNED_CODING="${WORKGRAPH_FORCE_GOVERNED_CODING:-$(con
 export CONTEXT_FABRIC_GOVERN_SIDE_CALLERS="${CONTEXT_FABRIC_GOVERN_SIDE_CALLERS:-$(config_value workgraph.governSideCallers true)}"
 export CF_TOOL_GRANT_ENABLED="${CF_TOOL_GRANT_ENABLED:-$(config_value contextFabric.toolGrantEnabled false)}"
 export TOOL_SERVER_ENDPOINT_ALLOWLIST="${TOOL_SERVER_ENDPOINT_ALLOWLIST:-$(config_value toolService.serverEndpointAllowlist "")}"
-# BOX_ONLY=1 → office/cloud box: skip the two laptop apps (llm-gateway,
-# mcp-server) and route the platform's own LLM over the bridge. Normalize so
-# only exactly "1" activates it.
-[ "${BOX_ONLY:-}" = "1" ] || BOX_ONLY=""
 [ "${BARE_METAL_FULL:-}" = "1" ] || BARE_METAL_FULL=""
 export AUTH_PROVIDER="iam"
 export IAM_BASE_URL="http://localhost:8100/api/v1"
@@ -325,6 +337,9 @@ export AGENT_SERVICE_URL="http://localhost:3001"
 export CONTEXT_FABRIC_URL="http://localhost:8000"
 export CONTEXT_MEMORY_URL="http://localhost:8002"
 export FORMAL_VERIFIER_URL="http://localhost:8010"
+export RUNTIME_BRIDGE_URL="${RUNTIME_BRIDGE_URL:-${LAPTOP_BRIDGE_URL:-ws://localhost:8000/api/runtime-bridge/connect}}"
+export LAPTOP_BRIDGE_URL="$RUNTIME_BRIDGE_URL"
+export RUNTIME_HTTP_FALLBACK_ENABLED="${RUNTIME_HTTP_FALLBACK_ENABLED:-false}"
 export MCP_SERVER_URL="${MCP_SERVER_URL:-http://localhost:7100}"
 export MCP_BEARER_TOKEN="${MCP_BEARER_TOKEN:-$(config_value mcpRuntime.bearerToken demo-bearer-token-must-be-min-16-chars)}"
 export MCP_DEFAULT_GOVERNANCE_MODE="${MCP_DEFAULT_GOVERNANCE_MODE:-$(config_value mcpRuntime.defaultGovernanceMode fail_open)}"
@@ -482,7 +497,7 @@ JSON
   ensure_install agent-and-tools/web      npm
   ensure_install workgraph-studio         pnpm
   ensure_install audit-governance-service npm
-  if [ -z "$BOX_ONLY" ]; then
+  if [ -z "$SKIP_LOCAL_RUNTIME" ]; then
     ensure_install mcp-server             npm
   fi
 
@@ -581,9 +596,9 @@ SQL
   # defaults point at ids that don't exist on a fresh DB). Idempotent. Without
   # this the Workflow Manager has the demo workflows but no SDLC Delivery entry.
   info "seeding SDLC Delivery workflow…"
-  # Routing for the copilot nodes: full-local bare-metal talks to the LOCAL mcp
-  # over HTTP (prefer_laptop=false); BOX_ONLY boxes route over the bridge (true).
-  SEED_PL="${SEED_PREFER_LAPTOP:-$([ -n "$BOX_ONLY" ] && echo true || echo false)}"
+  # Routing for the copilot nodes: default bare-metal talks to the configured MCP
+  # over HTTP (prefer_laptop=false); office/laptop-bridge installs opt in.
+  SEED_PL="${SEED_PREFER_LAPTOP:-$([ "${PREFER_LAPTOP_LLM:-}" = "true" ] && echo true || echo false)}"
   ( cd workgraph-studio/apps/api \
     && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 \
        DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts >/dev/null 2>&1 \
@@ -624,10 +639,9 @@ SQL
 
   boot audit-gov        "cd audit-governance-service  && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8500 AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" npm run dev"
   sleep 2
-  # BOX_ONLY=1 — office/cloud box: skip the two LAPTOP apps (llm-gateway +
-  # mcp-server run on the operator's laptop via the desktop app; LLM rides the
-  # bridge to the laptop's Copilot shim).
-  if [ "${BOX_ONLY:-0}" != "1" ]; then
+  # SKIP_LOCAL_RUNTIME=1 — runtime infra is external, remote, or started by
+  # bin/bare-metal-runtime.sh.
+  if [ "${SKIP_LOCAL_RUNTIME:-0}" != "1" ]; then
   boot llm-gateway      "cd context-fabric && LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" ALLOW_CALLER_PROVIDER_OVERRIDE=false python3 -m uvicorn services.llm_gateway_service.app.main:app --host 0.0.0.0 --port 8001"
   fi
   sleep 1
@@ -651,18 +665,29 @@ SQL
   # Copilot CLI that copilot_execute spawns uses your own provider (e.g. Anthropic)
   # instead of the GitHub Copilot quota. Export COPILOT_PROVIDER_TYPE=anthropic,
   # COPILOT_PROVIDER_BASE_URL, COPILOT_PROVIDER_API_KEY, COPILOT_MODEL then re-run up.
-  if [ "${BOX_ONLY:-0}" != "1" ]; then
-  boot mcp-server       "cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" MCP_DEFAULT_GOVERNANCE_MODE=\"$MCP_DEFAULT_GOVERNANCE_MODE\" MCP_TOOL_GRANT_MODE=\"$MCP_TOOL_GRANT_MODE\" MCP_REQUIRE_EFFECTIVE_CAPABILITIES=\"$MCP_REQUIRE_EFFECTIVE_CAPABILITIES\" TOOL_GRANT_SIGNING_SECRET=\"$TOOL_GRANT_SIGNING_SECRET\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_SANDBOX_ROOT=\"$MCP_WS\" MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" LEARNING_SERVICE_TOKEN=\"$LEARNING_SERVICE_TOKEN\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" ${COPILOT_PROVIDER_TYPE:+COPILOT_PROVIDER_TYPE=\"$COPILOT_PROVIDER_TYPE\" }${COPILOT_PROVIDER_BASE_URL:+COPILOT_PROVIDER_BASE_URL=\"$COPILOT_PROVIDER_BASE_URL\" }${COPILOT_PROVIDER_API_KEY:+COPILOT_PROVIDER_API_KEY=\"$COPILOT_PROVIDER_API_KEY\" }${COPILOT_MODEL:+COPILOT_MODEL=\"$COPILOT_MODEL\" }${MCP_GIT_PUSH_ENABLED:+MCP_GIT_PUSH_ENABLED=\"$MCP_GIT_PUSH_ENABLED\" }${MCP_GIT_AUTH_MODE:+MCP_GIT_AUTH_MODE=\"$MCP_GIT_AUTH_MODE\" }${GITHUB_TOKEN:+GITHUB_TOKEN=\"$GITHUB_TOKEN\" }${GH_TOKEN:+GH_TOKEN=\"$GH_TOKEN\" }npm run dev"
+  if [ "${SKIP_LOCAL_RUNTIME:-0}" != "1" ]; then
+    if [ -z "${SINGULARITY_RUNTIME_TOKEN:-}" ] && [ -n "${SINGULARITY_DEVICE_TOKEN:-}" ]; then
+      export SINGULARITY_RUNTIME_TOKEN="$SINGULARITY_DEVICE_TOKEN"
+    fi
+    if [ -z "${SINGULARITY_RUNTIME_TOKEN:-}" ] && [ -f "$ROOT/.singularity/laptop-device-token" ]; then
+      export SINGULARITY_RUNTIME_TOKEN="$(cat "$ROOT/.singularity/laptop-device-token")"
+    fi
+    MCP_COMMON="cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" MCP_DEFAULT_GOVERNANCE_MODE=\"$MCP_DEFAULT_GOVERNANCE_MODE\" MCP_TOOL_GRANT_MODE=\"$MCP_TOOL_GRANT_MODE\" MCP_REQUIRE_EFFECTIVE_CAPABILITIES=\"$MCP_REQUIRE_EFFECTIVE_CAPABILITIES\" TOOL_GRANT_SIGNING_SECRET=\"$TOOL_GRANT_SIGNING_SECRET\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_SANDBOX_ROOT=\"$MCP_WS\" MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" LEARNING_SERVICE_TOKEN=\"$LEARNING_SERVICE_TOKEN\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" ${COPILOT_PROVIDER_TYPE:+COPILOT_PROVIDER_TYPE=\"$COPILOT_PROVIDER_TYPE\" }${COPILOT_PROVIDER_BASE_URL:+COPILOT_PROVIDER_BASE_URL=\"$COPILOT_PROVIDER_BASE_URL\" }${COPILOT_PROVIDER_API_KEY:+COPILOT_PROVIDER_API_KEY=\"$COPILOT_PROVIDER_API_KEY\" }${COPILOT_MODEL:+COPILOT_MODEL=\"$COPILOT_MODEL\" }${MCP_GIT_PUSH_ENABLED:+MCP_GIT_PUSH_ENABLED=\"$MCP_GIT_PUSH_ENABLED\" }${MCP_GIT_AUTH_MODE:+MCP_GIT_AUTH_MODE=\"$MCP_GIT_AUTH_MODE\" }${GITHUB_TOKEN:+GITHUB_TOKEN=\"$GITHUB_TOKEN\" }${GH_TOKEN:+GH_TOKEN=\"$GH_TOKEN\" }"
+    if [ -n "${SINGULARITY_RUNTIME_TOKEN:-}" ]; then
+      boot mcp-server "$MCP_COMMON RUNTIME_DIAL_IN_MODE=true LAPTOP_MODE=true RUNTIME_BRIDGE_URL=\"$RUNTIME_BRIDGE_URL\" LAPTOP_BRIDGE_URL=\"$RUNTIME_BRIDGE_URL\" SINGULARITY_RUNTIME_TOKEN=\"$SINGULARITY_RUNTIME_TOKEN\" SINGULARITY_DEVICE_TOKEN=\"$SINGULARITY_RUNTIME_TOKEN\" SINGULARITY_RUNTIME_ID=\"${SINGULARITY_RUNTIME_ID:-baremetal-mcp-runtime}\" SINGULARITY_DEVICE_ID=\"${SINGULARITY_RUNTIME_ID:-baremetal-mcp-runtime}\" SINGULARITY_RUNTIME_NAME=\"${SINGULARITY_RUNTIME_NAME:-bare-metal-mcp-runtime}\" SINGULARITY_DEVICE_NAME=\"${SINGULARITY_RUNTIME_NAME:-bare-metal-mcp-runtime}\" SINGULARITY_RUNTIME_TYPE=mcp SINGULARITY_TENANT_ID=\"${SINGULARITY_TENANT_ID:-}\" SINGULARITY_USER_ID=\"${SINGULARITY_USER_ID:-}\" SINGULARITY_RUNTIME_CAPABILITY_TAGS=\"${SINGULARITY_RUNTIME_CAPABILITY_TAGS:-mcp,tools,llm}\" npm run dev"
+    else
+      warn "SINGULARITY_RUNTIME_TOKEN is not set; MCP starts in direct HTTP debug mode. Enable RUNTIME_HTTP_FALLBACK_ENABLED=true for Context Fabric to use it."
+      boot mcp-server "$MCP_COMMON npm run dev"
+    fi
   fi
   # context-api / context-memory import `context_fabric_shared` (in
   # context-fabric/shared/) and the `services.` namespace — so run them from the
   # context-fabric root with shared on PYTHONPATH and a fully-qualified module
   # path, exactly like llm-gateway. (Booting from the service subdir is why they
   # were crashing with ModuleNotFoundError.)
-  # JWT_SECRET: context-api verifies the laptop-bridge device tokens IAM signs —
-  # must receive the same secret. BOX_ONLY: no local gateway → the platform's own
-  # LLM calls ride the bridge to the laptop (PREFER_LAPTOP_LLM).
-  boot context-api      "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" DEFAULT_GOVERNANCE_MODE=\"$DEFAULT_GOVERNANCE_MODE\" CF_TOOL_GRANT_ENABLED=\"$CF_TOOL_GRANT_ENABLED\" TOOL_GRANT_SIGNING_SECRET=\"$TOOL_GRANT_SIGNING_SECRET\" ${BOX_ONLY:+PREFER_LAPTOP_LLM=true }python3 -m uvicorn services.context_api_service.app.main:app --host 0.0.0.0 --port 8000"
+  # JWT_SECRET: context-api verifies Runtime Bridge tokens IAM signs. Direct
+  # MCP/LLM HTTP fallback is disabled unless RUNTIME_HTTP_FALLBACK_ENABLED=true.
+  boot context-api      "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" RUNTIME_HTTP_FALLBACK_ENABLED=\"$RUNTIME_HTTP_FALLBACK_ENABLED\" JWT_SECRET=\"$JWT_SECRET\" DEFAULT_GOVERNANCE_MODE=\"$DEFAULT_GOVERNANCE_MODE\" CF_TOOL_GRANT_ENABLED=\"$CF_TOOL_GRANT_ENABLED\" TOOL_GRANT_SIGNING_SECRET=\"$TOOL_GRANT_SIGNING_SECRET\" ${PREFER_LAPTOP_LLM:+PREFER_LAPTOP_LLM=\"$PREFER_LAPTOP_LLM\" }python3 -m uvicorn services.context_api_service.app.main:app --host 0.0.0.0 --port 8000"
   if [ -n "$BARE_METAL_FULL" ]; then
     boot context-memory "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8002 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn services.context_memory_service.app.main:app --host 0.0.0.0 --port 8002"
   fi
@@ -732,6 +757,7 @@ SQL
 }
 
 cmd_down() {
+  normalize_runtime_mode
   if [ ! -f "$PID_FILE" ]; then
     warn "no $PID_FILE found — nothing to stop"
     return 0
@@ -743,10 +769,10 @@ cmd_down() {
       kill "$pid" 2>/dev/null && dim "  killed $pid"
     fi
   done < "$PID_FILE"
-  # Hard sweep — anything still hogging our ports gets terminated. In BOX_ONLY
-  # mode leave laptop-owned runtime ports alone.
+  # Hard sweep — anything still hogging our ports gets terminated. When runtime
+  # infra is split/remote, leave those ports alone.
   local ports=(3001 3002 3003 3004 5174 5175 5176 5180 5181 5182 8000 8002 8010 8080 8085 8100 8101 8500)
-  if [ -z "$BOX_ONLY" ]; then ports+=(7100 8001); fi
+  if [ -z "$SKIP_LOCAL_RUNTIME" ]; then ports+=(7100 8001); fi
   for p in "${ports[@]}"; do
     pids=$(lsof -ti :"$p" 2>/dev/null || true)
     for pid in $pids; do
@@ -765,6 +791,7 @@ cmd_down() {
 }
 
 cmd_smoke() {
+  normalize_runtime_mode
   local fail=0
   if [ -f "$ENV_FILE" ]; then
     # shellcheck disable=SC1090
@@ -783,7 +810,7 @@ cmd_smoke() {
     "http://localhost:5180/foundry" \
     "http://localhost:5180/identity"
   )
-  if [ -z "$BOX_ONLY" ]; then
+  if [ -z "$SKIP_LOCAL_RUNTIME" ]; then
     urls+=("http://localhost:8001/health" "http://localhost:7100/health")
   fi
   if [ -n "$BARE_METAL_FULL" ]; then
@@ -905,11 +932,19 @@ case "$cmd" in
     cat <<USAGE
 Singularity bare-metal launcher.
 
+Preferred split:
+  bin/bare-metal-apps.sh up <db_user> [db_password] [db_host] [db_port]
+                            start all platform apps except MCP and LLM Gateway.
+  bin/bare-metal-runtime.sh up
+                            start only local llm-gateway and mcp-server.
+
+Compatibility all-in-one:
   $0 up <db_user> [db_password] [db_host] [db_port]
                             create DBs, install deps, push schemas, seed,
                             boot platform services. Idempotent.
-                            Set BOX_ONLY=1 to skip local llm-gateway and
-                            mcp-server and use remote/laptop runtime services.
+                            Set SKIP_LOCAL_RUNTIME=1 to skip local
+                            llm-gateway and mcp-server. Legacy BOX_ONLY=1
+                            also defaults PREFER_LAPTOP_LLM=true.
 
   $0 reset-db <db_user> [db_password] [db_host] [db_port]
                             DROP all platform databases (clean slate). DESTRUCTIVE.

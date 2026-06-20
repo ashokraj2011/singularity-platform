@@ -12,12 +12,14 @@ import { configuredDefaultModel, configuredDefaultProvider } from "./llm/provide
 // Operations Portal page-load after restart shows accurate readiness.
 import { refreshGatewayProviderStatus } from "./llm/client";
 
-// M26 — laptop mode. When LAPTOP_MODE=true, skip the inbound HTTP server
-// (laptops can't open ports behind NAT) and open an outbound WSS to the
-// platform bridge. Otherwise boot the standard server with Express + WS.
+// Runtime dial-in mode. When LAPTOP_MODE/RUNTIME_DIAL_IN_MODE=true, skip the
+// inbound HTTP server and open an outbound WS to Context Fabric's runtime
+// bridge. Otherwise boot the standard server with Express + WS for explicit
+// debug compatibility.
 const LAPTOP_MODE = String(process.env.LAPTOP_MODE ?? "false").toLowerCase() === "true";
+const RUNTIME_DIAL_IN_MODE = String(process.env.RUNTIME_DIAL_IN_MODE ?? "false").toLowerCase() === "true";
 
-if (LAPTOP_MODE) {
+if (LAPTOP_MODE || RUNTIME_DIAL_IN_MODE) {
   bootLaptopMode();
 } else {
   bootServerMode();
@@ -25,25 +27,39 @@ if (LAPTOP_MODE) {
 
 function bootLaptopMode(): void {
   warmAstIndex();
-  const bridgeUrl   = process.env.LAPTOP_BRIDGE_URL ?? "ws://localhost:8000/api/laptop-bridge/connect";
-  const deviceToken = process.env.SINGULARITY_DEVICE_TOKEN;
+  const bridgeUrl   = process.env.RUNTIME_BRIDGE_URL
+    ?? process.env.LAPTOP_BRIDGE_URL
+    ?? "ws://localhost:8000/api/runtime-bridge/connect";
+  const deviceToken = process.env.SINGULARITY_RUNTIME_TOKEN ?? process.env.SINGULARITY_DEVICE_TOKEN;
   if (!deviceToken) {
-    log.error({}, "[laptop-mode] SINGULARITY_DEVICE_TOKEN unset — run `singularity-mcp login` first or set the env. Exiting.");
+    log.error({}, "[runtime-dial-in] SINGULARITY_RUNTIME_TOKEN/SINGULARITY_DEVICE_TOKEN unset — mint a runtime token and set the env. Exiting.");
     process.exit(1);
   }
-  const deviceName = process.env.SINGULARITY_DEVICE_NAME ?? `mcp-laptop-${process.platform}`;
+  const deviceName = process.env.SINGULARITY_RUNTIME_NAME
+    ?? process.env.SINGULARITY_DEVICE_NAME
+    ?? `mcp-runtime-${process.platform}`;
   const client = new LaptopRelayClient({
     bridgeUrl,
     deviceToken,
     deviceId:     ensureDeviceId(),
     deviceName,
     agentVersion: "0.1.0",
+    runtimeId:    process.env.SINGULARITY_RUNTIME_ID ?? ensureDeviceId(),
+    runtimeType:  process.env.SINGULARITY_RUNTIME_TYPE ?? "mcp",
+    tenantId:     process.env.SINGULARITY_TENANT_ID,
+    userId:       process.env.SINGULARITY_USER_ID,
+    shared:       String(process.env.SINGULARITY_RUNTIME_SHARED ?? "false").toLowerCase() === "true",
+    runtimeScope: process.env.SINGULARITY_RUNTIME_SCOPE,
+    capabilityTags: (process.env.SINGULARITY_RUNTIME_CAPABILITY_TAGS ?? "mcp,tools,llm")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
   });
   client.start();
-  log.info({ bridgeUrl, deviceId: ensureDeviceId(), deviceName }, "[laptop-mode] relay client started");
+  log.info({ bridgeUrl, runtimeId: ensureDeviceId(), deviceName }, "[runtime-dial-in] relay client started");
   // M101 — redacted git-auth boot diagnostic (laptop runs the loop locally and
   // may push). Token value never logged — only source/length/class.
-  log.info(gitAuthDiagnostic(), "[laptop-mode] git-auth (redacted — token value never logged)");
+  log.info(gitAuthDiagnostic(), "[runtime-dial-in] git-auth (redacted — token value never logged)");
 
   // Keep node alive (the relay-client uses internal timers + WS, but if the
   // WS fails permanently and backoff exits, we still want the process to

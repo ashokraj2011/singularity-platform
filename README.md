@@ -78,7 +78,7 @@ bin/seed-docker.sh
 
 Seeds the full Docker demo in dependency order: IAM teams/users/capabilities, common agent baselines and capability bindings, prompt-composer profiles, Workgraph artifacts/demo workflows, and SDLC workflows. Re-running is safe.
 
-For direct database maintenance without Docker, use `seed/apply.sh <db_user> [db_password] [db_host] [db_port]` to apply the SQL seed bundle, then run the app-specific Prisma/TypeScript seeds documented in `bin/seed-docker.sh` or `bin/bare-metal.sh`.
+For direct database maintenance without Docker, use `seed/apply.sh <db_user> [db_password] [db_host] [db_port]` to apply the SQL seed bundle, then run the app-specific Prisma/TypeScript seeds documented in `bin/seed-docker.sh` or the bare-metal app launcher path.
 
 ### 4. One-line smoke check
 ```bash
@@ -221,7 +221,7 @@ Operators wanting reproducible deployments author a
 
 ## Bare-metal alternative — single Postgres, no Docker
 
-For dev machines that already have Postgres and do not want Docker. Runs real IAM, agent-and-tools services, Workgraph API, audit-governance, context-api, and the unified Platform Web app on `:5180`. By default it also runs local `llm-gateway` and `mcp-server`; set `BOX_ONLY=1` to skip those deployable runtime services and use remote/laptop endpoints instead. Context Fabric stores run on Postgres (DB `singularity_context_fabric`), matching the Docker stack. It skips metrics-ledger (sunset; savings moved to audit-gov), MinIO, and legacy split frontend apps.
+For dev machines that already have Postgres and do not want Docker. The bare-metal path is split into two launchers: `bin/bare-metal-apps.sh` starts the platform apps, and `bin/bare-metal-runtime.sh` starts only local `llm-gateway` plus `mcp-server` when you want those deployable runtime services on the same machine. The apps launcher runs real IAM, agent-and-tools services, Workgraph API, audit-governance, context-api, and the unified Platform Web app on `:5180`; it expects MCP/LLM to be remote, laptop-hosted, or started separately. Context Fabric stores run on Postgres (DB `singularity_context_fabric`), matching the Docker stack. It skips metrics-ledger (sunset; savings moved to audit-gov), MinIO, and legacy split frontend apps.
 
 ### Simplest — the interactive wizard
 
@@ -232,19 +232,23 @@ bin/setup.sh --yes  # non-interactive: reuse saved answers (.singularity/setup.c
 
 It wraps everything below — collects a few answers once, runs the stack, optionally points the LLM gateway at an OpenAI-compatible bridge (Copilot etc.), and remembers your answers for next time.
 
-### Or run the stack script directly
+### Or run the split stack scripts directly
 
 ```bash
-bin/bare-metal.sh up <db_user> [db_password] [db_host] [db_port]
-bin/bare-metal.sh smoke      # check every /health endpoint
-BARE_METAL_DEEP_SMOKE=1 bin/bare-metal.sh smoke  # route/API/browser parity + audit/Workbench/workflow/Foundry/Agent Studio lifecycle checks
-BARE_METAL_TRACE_SPINE=1 bin/bare-metal.sh smoke  # also verify trace_id evidence across runtime stores
-bin/bare-metal.sh status     # list running PIDs
-bin/bare-metal.sh logs workgraph-api    # tail one service
-bin/bare-metal.sh down       # stop everything + free ports
+bin/bare-metal-apps.sh up <db_user> [db_password] [db_host] [db_port]
+bin/bare-metal-apps.sh smoke      # check platform app /health and pages
+BARE_METAL_DEEP_SMOKE=1 bin/bare-metal-apps.sh smoke  # route/API/browser parity + audit/Workbench/workflow/Foundry/Agent Studio lifecycle checks
+BARE_METAL_TRACE_SPINE=1 bin/bare-metal-apps.sh smoke  # also verify trace_id evidence across runtime stores
+bin/bare-metal-apps.sh status     # list platform app PIDs
+bin/bare-metal-apps.sh logs workgraph-api    # tail one platform app service
+bin/bare-metal-apps.sh down       # stop platform apps + free platform ports
+
+bin/bare-metal-runtime.sh up      # optional local llm-gateway + mcp-server
+bin/bare-metal-runtime.sh smoke   # check :8001 and :7100
+bin/bare-metal-runtime.sh down    # stop only local runtime infra
 ```
 
-Idempotent — re-runs of `up` skip installs and DB creation if they already happened, just re-boots. Defaults: `db_password` from `$PGPASSWORD` env or `postgres`, `db_host=localhost`, `db_port=5432`.
+Idempotent — re-runs of `up` skip installs and DB creation if they already happened, just re-boots. `bin/bare-metal.sh` remains as a compatibility all-in-one launcher; prefer the split scripts for normal work. Defaults: `db_password` from `$PGPASSWORD` env or `postgres`, `db_host=localhost`, `db_port=5432`.
 
 The bare-metal path applies the same full seed bundle as Docker: SQL seeds, agent-runtime baseline templates, prompt-composer profiles, Workgraph demo artifacts/workflows, and SDLC workflows. Use `seed/apply.sh` only when you deliberately want the SQL-only portion.
 
@@ -312,10 +316,12 @@ export AGENT_RUNTIME_URL="http://localhost:3003"
 export TOOL_SERVICE_URL="http://localhost:3002"
 export AGENT_SERVICE_URL="http://localhost:3001"
 export CONTEXT_FABRIC_URL="http://localhost:8000"
+# Normal execution uses the Runtime Bridge. Direct MCP HTTP is debug fallback.
+export RUNTIME_HTTP_FALLBACK_ENABLED="false"
 export MCP_SERVER_URL="http://localhost:7100"
 export MCP_BEARER_TOKEN="demo-bearer-token-must-be-min-16-chars"
 
-# LLM gateway mock by default — no API keys required
+# LLM gateway runs beside MCP; MCP serves model-run frames through it.
 export LLM_GATEWAY_URL="http://localhost:8001"
 export WORKBENCH_DEFAULT_MODEL_ALIAS="mock"
 EOF
@@ -380,9 +386,9 @@ SQL
 Use the launcher unless you specifically need to debug one command at a time. It pushes schemas, runs the app-level seeds, starts real IAM, waits for `/api/v1/health`, applies the SQL seed bundle, then starts the rest of the demo services.
 
 ```bash
-bin/bare-metal.sh up postgres postgres localhost 5432
-# Runtime infra elsewhere:
-BOX_ONLY=1 bin/bare-metal.sh up postgres postgres localhost 5432
+bin/bare-metal-apps.sh up postgres postgres localhost 5432
+# Optional local runtime infra on this same machine:
+bin/bare-metal-runtime.sh up
 ```
 
 ### 5. Smoke check
@@ -406,7 +412,7 @@ All entries should return `200`. Open `http://localhost:5180` for Platform Web, 
 
 Upgrading from the retired standalone Code Foundry API: run `bin/migrate-code-foundry-to-workgraph.sh` once after `./singularity.sh up`. It copies old `singularity_codegen` runs, artifacts, gaps, patch tasks, verification rows, and receipts into Workgraph, hydrates artifact file content when the old workspace files still exist, and skips duplicates on rerun.
 
-If you did not use `BOX_ONLY=1`, local runtime endpoints should also respond:
+If you started local runtime infra, those endpoints should also respond:
 
 ```bash
 curl -s -o /dev/null -w 'llm-gateway %{http_code}\n' http://localhost:8001/health
@@ -415,7 +421,8 @@ curl -s -o /dev/null -w 'mcp-server  %{http_code}\n' http://localhost:7100/healt
 
 ### Tear down
 ```bash
-bin/bare-metal.sh down
+bin/bare-metal-runtime.sh down
+bin/bare-metal-apps.sh down
 # Optional — wipe data:
 psql postgres -c "DROP DATABASE IF EXISTS singularity; DROP DATABASE IF EXISTS singularity_composer; DROP DATABASE IF EXISTS workgraph; DROP DATABASE IF EXISTS audit_governance; DROP DATABASE IF EXISTS singularity_iam; DROP DATABASE IF EXISTS singularity_context_fabric; DROP DATABASE IF EXISTS singularity_codegen;"
 ```
@@ -424,7 +431,7 @@ psql postgres -c "DROP DATABASE IF EXISTS singularity; DROP DATABASE IF EXISTS s
 
 | Skipped | Impact |
 |---|---|
-| `llm-gateway`, `mcp-server` with `BOX_ONLY=1` | Platform remains available, but model/tool execution is expected to use remote or laptop runtime endpoints |
+| `llm-gateway`, `mcp-server` unless `bin/bare-metal-runtime.sh up` is used | Platform remains available, but model/tool execution is expected to use remote or laptop runtime endpoints |
 | context-memory, metrics-ledger | None — context-api owns the current routes; metrics savings moved to audit-gov |
 | MinIO | File uploads return 5xx; insights, Agent Studio, audit, cost all still work |
 | legacy split UIs (`:5182`, `:5174`, `:5175`, `:5176`, `:5181`, `:8085`) | Not started by default; Platform Web on `:5180` covers the normal path |
@@ -503,8 +510,8 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
 |-----|------|-------|-------|
 | **singularity-iam-service** | Identity, orgs, teams, roles, capabilities, skills, JWT, Agent Execution Runtime registry, service-token mint, event bus | Python · FastAPI · Postgres | `8100`, shared postgres `5432` (`singularity_iam`) |
 | **agent-and-tools** | Agent definitions, tool registry, prompt assembly, unified Platform Web UI; per-service event bus + OTel | TypeScript monorepo · Express · Next.js · Prisma · Postgres+pgvector | `3001–3004`, `5180` web, postgres `5432` |
-| **context-fabric** | Context Fabric execution API, context optimization, laptop bridge, receipts, and governed orchestration | Python · FastAPI · Postgres | `8000`; optional sidecars use `8001`, `8010`, `8011` |
-| **mcp-server** | Agent Execution Runtime implementation and WS bridge. Customer-deployed, owns local tools/AST/branches, and calls the central LLM gateway by model alias. Ships with an opt-in [Phased Agent Reasoning Model](#phased-agent-reasoning-model-v4) (6-phase state machine with path-coverage gate) behind `MCP_AGENT_PHASES_ENABLED`. The service/package name is legacy. | TypeScript · Express · WebSocket | `7100` |
+| **context-fabric** | Context Fabric execution API, context optimization, runtime bridge, receipts, and governed orchestration | Python · FastAPI · Postgres | `8000`; optional sidecars use `8001`, `8010`, `8011` |
+| **mcp-server** | MCP runtime relay. Customer-deployed, owns local tools/AST/branches, dials into Context Fabric at `/api/runtime-bridge/connect`, and forwards `model-run` frames to its local/colocated LLM gateway. Direct HTTP `7100` is debug fallback. Ships with an opt-in [Phased Agent Reasoning Model](#phased-agent-reasoning-model-v4) behind `MCP_AGENT_PHASES_ENABLED`. | TypeScript · Express · WebSocket | `7100` debug; outbound runtime bridge |
 | **workgraph-studio** | Visual DAG designer + workflow runtime, Blueprint Workbench stage loop, federated `/api/lookup/*`, snapshot layer, unified `/api/receipts`, event bus + receiver, OTel | React + ReactFlow + Zustand · Express + Prisma · MinIO | `8080` API, postgres `5434`, minio `9000-9001`; UI routes live under Platform Web |
 | **platform-registry** | Service + Contract Registry: every service self-registers on startup with capabilities + OpenAPI/event/node contracts | TypeScript · Express · Postgres | `8090`, postgres `5435` |
 | **UserAndCapabillity** | Legacy/debug visual admin SPA for IAM | React 19 · Vite · Tailwind · Radix · Zustand | `5175` only with legacy/debug profile |
@@ -657,7 +664,7 @@ Common commands:
 ```
 
 `show` masks secrets. `doctor` checks the canonical config, env drift, common ports, reachable service URLs, provider key presence, runtime token length, model-catalog readiness, Git push readiness, and secret guardrails. `doctor git` focuses on workspace writability, remote, Git identity, and auth presence. `doctor secrets` scans tracked files for local-only config, credentialed remotes, provider keys, GitHub tokens, bearer tokens, JWT-like tokens, and private-key blocks. It also checks ignored local env files for duplicate keys, production-class deployments using development defaults, and credentials placed in broad root env files instead of narrower runtime-specific secret files. Use `config prepare-production --tenant-id <tenant>` before shared/staging/production deployment to apply strict tenant guardrails and rotate deploy secrets with signed provider manifests; start with `--dry-run` to print the exact sequence without changing files. Because secret rotation changes `JWT_SECRET`, the command intentionally defers `WORKGRAPH_PROXY_SERVICE_TOKEN` minting until IAM is restarted with the generated env; after that, rerun `config prepare-production --tenant-id <tenant> --skip-rotate-secrets` to mint the tenant-scoped `platform-web` service JWT and run deploy preflight. Use `config rotate-secrets` when you only need to replace development JWT, service, runtime, MCP bearer/runner, and MCP tool-grant signing defaults in `.singularity/config.local.json` and generated env files; add `--provider-manifest-key-id <id>` to create a trusted provider-manifest HMAC key and require signed external manifests. Provider manifests and URL document sources are SSRF-guarded by default; keep `AGENT_SOURCE_ALLOW_PRIVATE_URLS=false` outside deliberate local development. Production guardrails set Workgraph, Context Fabric, and direct MCP governance defaults to `fail_closed`, enable Context Fabric tool-grant minting, require MCP grant verification with `MCP_TOOL_GRANT_MODE=enforce`, and require MCP effective capability snapshots with `MCP_REQUIRE_EFFECTIVE_CAPABILITIES=true`; deploy preflight also requires `AUDIT_GOV_URL` and verifies audit-governance `/health` because fail-closed governance must not start without a reachable ledger. Keep `TOOL_GRANT_SIGNING_SECRET` identical anywhere Context Fabric and MCP are deployed separately. `WORKGRAPH_PROXY_SERVICE_TOKEN` is intentionally not generated by `rotate-secrets`; mint it with `config mint-workgraph-proxy-token` as a `platform-web` IAM service JWT before production deploy because Platform Web uses it as a Bearer token for Workgraph API routes. Use `config production-guardrails --tenant-id <tenant>` for the guardrail-only lower-level step. Bootstrap admin password rotation is opt-in with `--include-bootstrap-password`; for an existing IAM database, recreate `iam-service` with the new env and then run `./singularity.sh config reset-bootstrap-password` to update the stored local credential hash. Doctor writes the masked operations report consumed by Platform Web `/operations`. For bare-metal runs, use `config export` to print shell exports without editing files.
-`doctor` also runs `bin/check-compose-profiles.sh`, which validates every supported compose profile and the laptop/remote overlays so install paths like `backend-split`, `composer-only`, and `deprecated` cannot silently drift. The machine-readable topology source is `docs/platform-topology.json`; `bin/check-platform-topology-contract.py` validates that contract against Docker Compose and the operator docs before `bin/check-platform-topology.py` uses the same contract to verify the live Docker shape: one `platform-web`, one `platform-core` for the agent/tools APIs, the required product APIs/storage, the completed Postgres bootstrap one-shots, no running legacy frontend containers, and no mixed split/consolidated agent-tools plane. It also runs `bin/check-agent-tools-topology.sh` to ensure the agent/tools plane is either the consolidated `platform-core` container or the complete split debug set, never a mixed or partial topology. `bin/check-workgraph-tenant-guards.py` verifies strict tenant guard coverage for Workgraph runtime/admin/internal surfaces, tenant-scoped service-token contracts, and an explicit tenant-policy classification for every mounted Workgraph API route. `bin/check-workgraph-db-tenant-isolation.py` verifies the Workgraph tenant database posture: the workflow/run-snapshot tenant spine, tenant-index presence, runtime child-row connectivity, tenant RLS policy scaffold, app-role RLS-bypass posture, and, when production preflight requires it, non-null tenant data plus forced RLS on tenant-sensitive tables. `bin/check-workgraph-forced-rls-cutover.py` verifies the guarded cutover script remains non-mutating in dry-run mode, refuses apply without strict-runtime confirmation, and runs both preflight and postflight RLS checks. `bin/check-workgraph-forced-rls-enforcement.py` is enabled by `SINGULARITY_DOCTOR_DEEP_SMOKE=1` or `SINGULARITY_DOCTOR_RLS_ENFORCEMENT_SMOKE=1`; it creates a throwaway DB and non-bypass role, applies the real cutover, and proves cross-tenant reads/writes are blocked. `bin/check-m25-benchmarks.sh` verifies the DB-free M25 retrieval benchmark contract for hybrid ranking, FTS/vector fallback retention, citation markers, excerpt bounds, confidence clamping, recency boost, and capsule task-signature stability. Platform Web has two default guards: `bin/check-platform-web-routes.py` verifies canonical pages, legacy redirects, and sidebar surfaces, while `bin/check-platform-api-parity.py` verifies canonical and legacy API proxy families return parseable JSON instead of raw upstream HTML/text errors. For the stronger install audit, run `SINGULARITY_DOCTOR_DEEP_SMOKE=1 ./singularity.sh doctor`; it enables the headless Chrome UI parity check plus workflow, Workbench, Foundry, Agent Studio source-backed profile lifecycle checks. The bare-metal equivalent is `BARE_METAL_DEEP_SMOKE=1 bin/bare-metal.sh smoke`; it runs the same route/API proxy/browser hydration parity checks before the mutating lifecycle smokes. You can still run individual checks: `SINGULARITY_DOCTOR_UI_SMOKE=1` verifies Workgraph templates/designer/Planner/Inbox/runs, Eval Curation, Workbench, Operations readiness, Agent Studio source-backed skill creation, Prompt Workbench, Foundry, Singularity Engine, Identity, and Variables hydrate in Chrome. `SINGULARITY_DOCTOR_LIFECYCLE_SMOKE=1` creates a temporary workflow through Platform Web, patches it, writes a tiny START -> END design graph, starts it from a WorkItem, verifies child run completion and WorkItem submission, verifies run delete/archive compatibility, approves and archives the WorkItem, then archives the workflow. `SINGULARITY_DOCTOR_WORKBENCH_SMOKE=1` creates a temporary Workbench session through Platform Web, patches runtime settings, writes and reads stage chat, then abandons the session. `SINGULARITY_DOCTOR_FOUNDRY_SMOKE=1` validates a service spec, generates a temporary run through Platform Web, reads artifacts/file content, and fetches the receipt without calling LLM patching. For local audit-governance side-stack parity, run `python3 bin/check-audit-governance-lifecycle.py`, or set `SINGULARITY_DOCTOR_AUDIT_SMOKE=1` after `./singularity.sh up --profile audit`; it verifies strict DB/schema health, ingests an event through Platform Web, queries it back, and confirms persistence. `SINGULARITY_DOCTOR_AGENT_PROFILE_SMOKE=1` logs in through IAM, creates a temporary DRAFT profile through Platform Web with local, URL-document, and provider-manifest bindings, verifies stored source-governance summary, read-only defaults/provider-lock clamping, and failed-closed provider resolution, then archives the profile. `SINGULARITY_DOCTOR_TRACE_SPINE=1` runs `bin/test-trace-spine.sh` to prove one `trace_id` reaches Context Fabric, prompt composer, MCP resource views, and audit-governance; it expects local/host-reachable MCP and the split Postgres container.
+`doctor` also runs `bin/check-compose-profiles.sh`, which validates every supported compose profile and the laptop/remote overlays so install paths like `backend-split`, `composer-only`, and `deprecated` cannot silently drift. The machine-readable topology source is `docs/platform-topology.json`; `bin/check-platform-topology-contract.py` validates that contract against Docker Compose and the operator docs before `bin/check-platform-topology.py` uses the same contract to verify the live Docker shape: one `platform-web`, one `platform-core` for the agent/tools APIs, the required product APIs/storage, the completed Postgres bootstrap one-shots, no running legacy frontend containers, and no mixed split/consolidated agent-tools plane. It also runs `bin/check-agent-tools-topology.sh` to ensure the agent/tools plane is either the consolidated `platform-core` container or the complete split debug set, never a mixed or partial topology. `bin/check-workgraph-tenant-guards.py` verifies strict tenant guard coverage for Workgraph runtime/admin/internal surfaces, tenant-scoped service-token contracts, and an explicit tenant-policy classification for every mounted Workgraph API route. `bin/check-workgraph-db-tenant-isolation.py` verifies the Workgraph tenant database posture: the workflow/run-snapshot tenant spine, tenant-index presence, runtime child-row connectivity, tenant RLS policy scaffold, app-role RLS-bypass posture, and, when production preflight requires it, non-null tenant data plus forced RLS on tenant-sensitive tables. `bin/check-workgraph-forced-rls-cutover.py` verifies the guarded cutover script remains non-mutating in dry-run mode, refuses apply without strict-runtime confirmation, and runs both preflight and postflight RLS checks. `bin/check-workgraph-forced-rls-enforcement.py` is enabled by `SINGULARITY_DOCTOR_DEEP_SMOKE=1` or `SINGULARITY_DOCTOR_RLS_ENFORCEMENT_SMOKE=1`; it creates a throwaway DB and non-bypass role, applies the real cutover, and proves cross-tenant reads/writes are blocked. `bin/check-m25-benchmarks.sh` verifies the DB-free M25 retrieval benchmark contract for hybrid ranking, FTS/vector fallback retention, citation markers, excerpt bounds, confidence clamping, recency boost, and capsule task-signature stability. Platform Web has two default guards: `bin/check-platform-web-routes.py` verifies canonical pages, legacy redirects, and sidebar surfaces, while `bin/check-platform-api-parity.py` verifies canonical and legacy API proxy families return parseable JSON instead of raw upstream HTML/text errors. For the stronger install audit, run `SINGULARITY_DOCTOR_DEEP_SMOKE=1 ./singularity.sh doctor`; it enables the headless Chrome UI parity check plus workflow, Workbench, Foundry, Agent Studio source-backed profile lifecycle checks. The bare-metal equivalent is `BARE_METAL_DEEP_SMOKE=1 bin/bare-metal-apps.sh smoke`; it runs the same route/API proxy/browser hydration parity checks before the mutating lifecycle smokes. You can still run individual checks: `SINGULARITY_DOCTOR_UI_SMOKE=1` verifies Workgraph templates/designer/Planner/Inbox/runs, Eval Curation, Workbench, Operations readiness, Agent Studio source-backed skill creation, Prompt Workbench, Foundry, Singularity Engine, Identity, and Variables hydrate in Chrome. `SINGULARITY_DOCTOR_LIFECYCLE_SMOKE=1` creates a temporary workflow through Platform Web, patches it, writes a tiny START -> END design graph, starts it from a WorkItem, verifies child run completion and WorkItem submission, verifies run delete/archive compatibility, approves and archives the WorkItem, then archives the workflow. `SINGULARITY_DOCTOR_WORKBENCH_SMOKE=1` creates a temporary Workbench session through Platform Web, patches runtime settings, writes and reads stage chat, then abandons the session. `SINGULARITY_DOCTOR_FOUNDRY_SMOKE=1` validates a service spec, generates a temporary run through Platform Web, reads artifacts/file content, and fetches the receipt without calling LLM patching. For local audit-governance side-stack parity, run `python3 bin/check-audit-governance-lifecycle.py`, or set `SINGULARITY_DOCTOR_AUDIT_SMOKE=1` after `./singularity.sh up --profile audit`; it verifies strict DB/schema health, ingests an event through Platform Web, queries it back, and confirms persistence. `SINGULARITY_DOCTOR_AGENT_PROFILE_SMOKE=1` logs in through IAM, creates a temporary DRAFT profile through Platform Web with local, URL-document, and provider-manifest bindings, verifies stored source-governance summary, read-only defaults/provider-lock clamping, and failed-closed provider resolution, then archives the profile. `SINGULARITY_DOCTOR_TRACE_SPINE=1` runs `bin/test-trace-spine.sh` to prove one `trace_id` reaches Context Fabric, prompt composer, MCP resource views, and audit-governance; it expects local/host-reachable MCP and the split Postgres container.
 
 After Workgraph and Context Fabric are configured for strict tenant runtime
 (`TENANT_ISOLATION_MODE=strict` and `REQUIRE_TENANT_ID=true`), run the guarded
@@ -718,9 +725,13 @@ cd mcp-server && npm run build && npx singularity-mcp doctor
 
 This mode is intentionally strict: generated env files leave `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`, and `OLLAMA_BASE_URL` blank. Workflows still choose model aliases, but the gateway exposes only the `copilot` alias.
 
-### Single LLM gateway configuration
+### Runtime Bridge and LLM gateway configuration
 
-`context-fabric/services/llm_gateway_service` owns provider/model routing for workflow execution. Workgraph, Context Fabric, Prompt Composer, Context Memory, Agent Runtime, and Agent Execution Runtime pass a model alias to `LLM_GATEWAY_URL`; only the gateway can hold provider credentials or open provider URLs. Raw provider/model caller overrides are disabled by default with `ALLOW_CALLER_PROVIDER_OVERRIDE=false`.
+Normal workflow execution is WebSocket-first. MCP runtimes dial into Context Fabric at `/api/runtime-bridge/connect`; Context Fabric sends `tool-run`, `model-run`, and `code-context` frames to the selected runtime. LLM Gateway stays behind MCP in v1: MCP receives `model-run` and forwards it to its local or colocated `LLM_GATEWAY_URL`.
+
+Direct `MCP_SERVER_URL` and direct `LLM_GATEWAY_URL` from Context Fabric are diagnostics/debug compatibility only. Enable them with `RUNTIME_HTTP_FALLBACK_ENABLED=true`. See [Runtime Dial-In Fabric](docs/runtime-dial-in-fabric.md).
+
+`context-fabric/services/llm_gateway_service` owns provider/model routing. MCP passes model aliases to its local/colocated gateway; only the gateway can hold provider credentials or open provider URLs. Raw provider/model caller overrides are disabled by default with `ALLOW_CALLER_PROVIDER_OVERRIDE=false`.
 
 The gateway reads two local JSON files:
 
@@ -801,7 +812,7 @@ In office Copilot-only mode, `/llm/providers` should report `copilot` as allowed
 
 #### Route the gateway through GitHub Copilot — `bin/llm-use-copilot.sh`
 
-`bin/llm-use-copilot.sh` flips **every** model alias through Copilot via the gateway, and back. It edits `llm-providers.json` (adds + enables a `copilot` provider, makes it the default), repoints **all** aliases in `llm-models.json` to `copilot/<model>` (so `claude-*`/`gpt-4o` aliases route to Copilot too), writes `COPILOT_TOKEN` to `.env.llm-secrets`, then restarts the gateway and verifies. It auto-detects deployment and works for **both** — bare-metal (restarts the `uvicorn` process on `:8001` via the repo-root `.env.local`/`.pids` that `bin/bare-metal.sh` writes) and Docker (recreates the `singularity-llm-gateway` container). Originals are backed up to `*.copilot-bak`; `--restore` reverts.
+`bin/llm-use-copilot.sh` flips **every** model alias through Copilot via the gateway, and back. It edits `llm-providers.json` (adds + enables a `copilot` provider, makes it the default), repoints **all** aliases in `llm-models.json` to `copilot/<model>` (so `claude-*`/`gpt-4o` aliases route to Copilot too), writes `COPILOT_TOKEN` to `.env.llm-secrets`, then restarts the gateway and verifies. It auto-detects deployment and works for **both** — bare-metal (restarts the `uvicorn` process on `:8001` via the repo-root `.env.local` plus `.pids.runtime` from `bin/bare-metal-runtime.sh`, with legacy `.pids` fallback) and Docker (recreates the `singularity-llm-gateway` container). Originals are backed up to `*.copilot-bak`; `--restore` reverts.
 
 > **Prerequisite (fresh clone):** `.singularity/llm-providers.json` + `llm-models.json` are gitignored, so generate them and bring a stack up *before* running this — `./singularity.sh config init --profile office-laptop && ./singularity.sh config mcp-catalog --default-alias mock && ./singularity.sh up` (Docker). For bare-metal, just run `bin/setup.sh`: it generates config, brings the stack up, **and** points the gateway at your Copilot bridge in one step (you don't call this script yourself).
 

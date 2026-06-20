@@ -114,7 +114,7 @@ services=(
 )
 for s in "${services[@]}"; do
   name="${s%%|*}"; url="${s##*|}"; code=$(http_code "$url")
-  if [ "$code" = "000" ]; then fail "$name down ($url)" "start: bin/setup.sh --yes   ·   logs: bin/bare-metal.sh logs $name"
+  if [ "$code" = "000" ]; then fail "$name down ($url)" "start: bin/setup.sh --yes   ·   logs: bin/bare-metal-apps.sh logs $name"
   else pass "$name up ($code)"; fi
 done
 runtime_services=(
@@ -126,13 +126,7 @@ if [ -n "$BOX_ONLY" ]; then
 else
   for s in "${runtime_services[@]}"; do
     name="${s%%|*}"; url="${s##*|}"; code=$(http_code "$url")
-    case "$name" in
-      llm-gateway) profile_hint="llm-gateway" ;;
-      mcp-server) profile_hint="mcp" ;;
-      audit-gov) profile_hint="audit" ;;
-      *) profile_hint="$name" ;;
-    esac
-    if [ "$code" = "000" ]; then warn "$name not running locally" "optional/remote-capable runtime; start locally with ./singularity.sh up --profile $profile_hint"
+    if [ "$code" = "000" ]; then warn "$name not running locally" "optional/remote-capable runtime; start locally with bin/bare-metal-runtime.sh up"
     else pass "$name up ($code)"; fi
   done
 fi
@@ -177,7 +171,7 @@ ensure_kv "agent-and-tools/web/.env.local" "NEXT_PUBLIC_LINK_BLUEPRINT_WORKBENCH
 ensure_kv "agent-and-tools/web/.env.local" "NEXT_PUBLIC_LINK_IAM_ADMIN=/identity"
 ensure_kv "agent-and-tools/web/.env.local" "NEXT_PUBLIC_LINK_OPERATIONS_PORTAL=/operations"
 ensure_kv "agent-and-tools/web/.env.local" "NEXT_PUBLIC_WORKGRAPH_WEB_URL=/workflows"
-[ "$FIX" = "1" ] && warn "env keys were appended" "restart Platform Web: bin/bare-metal.sh down && bin/setup.sh --yes"
+[ "$FIX" = "1" ] && warn "env keys were appended" "restart Platform Web: bin/bare-metal-apps.sh down && bin/setup.sh --yes"
 
 # ── 3. Seeds ─────────────────────────────────────────────────────────────────
 section "3. Seeds"

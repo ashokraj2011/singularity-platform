@@ -75,10 +75,11 @@ def _patch_registry(behavior):
 # ── HTTP path unchanged when no laptop_user_id ─────────────────────────────
 
 
-def test_dispatch_without_laptop_user_id_uses_http():
+def test_dispatch_without_laptop_user_id_uses_http(monkeypatch):
     """No laptop_user_id → never touches the registry. The HTTP path
     runs (and may fail since we don't mock httpx — that's fine, we're
     asserting the routing decision, not the HTTP call)."""
+    monkeypatch.setenv("RUNTIME_HTTP_FALLBACK_ENABLED", "true")
     # Patch the registry call to raise if it's ever invoked; if the
     # routing is wrong we'll see that error instead of the expected
     # HTTP-path error.
@@ -235,6 +236,55 @@ def test_registry_tool_run_frame_includes_tool_grant():
     assert seen_frame["payload"]["run_context"] == {"traceId": "t3"}
 
 
+def test_registry_selects_user_runtime_before_tenant_shared_runtime():
+    from context_api_service.app.laptop_registry import ActiveConnection, LaptopRegistry
+
+    registry = LaptopRegistry()
+    now = 1.0
+
+    _run(registry.register(ActiveConnection(
+        user_id="shared",
+        device_id="shared-runtime",
+        device_name="tenant runtime",
+        ws=object(),  # type: ignore[arg-type]
+        connected_at=now,
+        last_seen_at=now,
+        supported_frame_types=["tool-run", "model-run"],
+        runtime_id="shared-runtime",
+        runtime_type="mcp",
+        tenant_id="tenant-a",
+        shared=True,
+    )))
+    _run(registry.register(ActiveConnection(
+        user_id="user-a",
+        device_id="user-runtime",
+        device_name="user runtime",
+        ws=object(),  # type: ignore[arg-type]
+        connected_at=now,
+        last_seen_at=now,
+        supported_frame_types=["tool-run", "model-run"],
+        runtime_id="user-runtime",
+        runtime_type="mcp",
+        tenant_id="tenant-a",
+    )))
+
+    selected_user = _run(registry.select_runtime(
+        user_id="user-a",
+        tenant_id="tenant-a",
+        frame_type="tool-run",
+    ))
+    selected_shared = _run(registry.select_runtime(
+        user_id="user-b",
+        tenant_id="tenant-a",
+        frame_type="tool-run",
+    ))
+
+    assert selected_user is not None
+    assert selected_user.runtime_id == "user-runtime"
+    assert selected_shared is not None
+    assert selected_shared.runtime_id == "shared-runtime"
+
+
 def test_dispatch_bridge_tool_soft_failure_passes_through():
     """A tool that ran on the laptop but reported success=false
     surfaces as tool_success=False on the result, NOT as a throw —
@@ -270,10 +320,11 @@ def test_dispatch_bridge_tool_soft_failure_passes_through():
 # ── Fallback path: no bridge connected → HTTP ──────────────────────────────
 
 
-def test_dispatch_falls_back_to_http_when_laptop_not_connected():
+def test_dispatch_falls_back_to_http_when_laptop_not_connected(monkeypatch):
     """LaptopNotConnected → _LaptopUnavailable internally → HTTP path
     runs. Tested by raising the not-connected error from the registry
     and asserting the HTTP mock was hit."""
+    monkeypatch.setenv("RUNTIME_HTTP_FALLBACK_ENABLED", "true")
     http_called: dict[str, Any] = {"hit": False}
 
     async def bridge_not_connected(_kwargs):
@@ -312,6 +363,22 @@ def test_dispatch_falls_back_to_http_when_laptop_not_connected():
             ))
     assert http_called["hit"], "HTTP path should have run after laptop fallback"
     assert outcome.tool_invocation_id == "ti-fallback"
+
+
+def test_dispatch_runtime_not_connected_fails_closed_without_http_fallback(monkeypatch):
+    monkeypatch.delenv("RUNTIME_HTTP_FALLBACK_ENABLED", raising=False)
+
+    async def bridge_not_connected(_kwargs):
+        raise _FakeLaptopErrors.LaptopNotConnected("no live runtime for user")
+
+    with _patch_registry(bridge_not_connected):
+        with pytest.raises(ToolDispatchError, match="RUNTIME_NOT_CONNECTED"):
+            _run(dispatch_tool(
+                "read_file",
+                {"path": "x.py"},
+                laptop_user_id="user-no-bridge",
+                bearer="tok",
+            ))
 
 
 # ── Bridge error mapping ───────────────────────────────────────────────────

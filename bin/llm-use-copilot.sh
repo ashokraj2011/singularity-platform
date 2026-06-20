@@ -20,7 +20,8 @@
 #   4. restart the llm-gateway and verify it's serving Copilot. Works in BOTH
 #      Docker (recreates the singularity-llm-gateway container) and BARE-METAL
 #      (restarts the uvicorn process on :8001 with COPILOT_TOKEN; detected via
-#      the repo-root .env.local + .pids that bin/bare-metal.sh writes).
+#      the repo-root .env.local + .pids.runtime that bin/bare-metal-runtime.sh
+#      writes; the legacy .pids file is still recognized).
 #
 # Idempotent. Originals are backed up to *.copilot-bak on first run; re-run with
 # --restore to flip everything back to the previous (Anthropic) config.
@@ -125,10 +126,10 @@ if [ ! -f "$PROVIDERS" ] || [ ! -f "$CATALOG" ]; then
 fi
 
 recreate_and_verify() {
-  # Bare-metal first: bin/bare-metal.sh writes .env.local + .pids in the repo
-  # root, so detect that BEFORE Docker — otherwise a Docker stack running
-  # elsewhere on the same machine would steal the restart.
-  if [ -f "$ROOT/.env.local" ] && [ -f "$ROOT/.pids" ]; then
+  # Bare-metal first: the split runtime launcher writes .pids.runtime, while the
+  # legacy all-in-one launcher writes .pids. Detect these BEFORE Docker so a
+  # Docker stack elsewhere on the same machine cannot steal the restart.
+  if [ -f "$ROOT/.env.local" ] && { [ -f "$ROOT/.pids.runtime" ] || [ -f "$ROOT/.pids" ]; }; then
     info "bare-metal mode: restarting the llm-gateway process on :${GATEWAY_PORT}…"
     local pybin="$ROOT/.venv/bin/python"; [ -x "$pybin" ] || pybin="python3"
     # shellcheck source=/dev/null
@@ -144,7 +145,7 @@ recreate_and_verify() {
     info "recreating the llm-gateway container…"
     ( cd "$ROOT" && docker compose --profile llm-gateway up -d --force-recreate --no-deps llm-gateway >/dev/null )
   else
-    warn "no bare-metal (.env.local/.pids) state and no Docker llm-gateway container found."
+    warn "no bare-metal (.env.local/.pids.runtime) state and no Docker llm-gateway container found."
     warn "config is written — restart your llm-gateway manually to apply it, then: curl :${GATEWAY_PORT}/llm/providers"
     return 0
   fi

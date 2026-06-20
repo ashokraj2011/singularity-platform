@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Cpu, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cpu, RadioTower, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
 import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 
 type GatewayResult = {
@@ -25,6 +25,7 @@ type LlmSettings = {
     hub: string;
     llmGateway: string;
     mcpRuntime: string;
+    httpFallback?: string;
   };
   configuredPaths: {
     providerConfigPath: string;
@@ -35,6 +36,7 @@ type LlmSettings = {
   gatewayHealth?: GatewayResult;
   mcpHealth?: GatewayResult;
   contextFabricHealth?: GatewayResult;
+  runtimeBridgeStatus?: GatewayResult;
   providers: GatewayResult;
   models: GatewayResult;
   workspaceStats?: GatewayResult;
@@ -105,6 +107,11 @@ function formatPercent(value: unknown): string {
   return pct == null ? "No quota" : `${pct.toFixed(1)}%`;
 }
 
+function formatTimestamp(value: unknown): string {
+  if (typeof value !== "number") return "-";
+  return new Date(value * 1000).toLocaleString();
+}
+
 export default function LlmSettingsPage() {
   const [settings, setSettings] = useState<LlmSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -136,6 +143,11 @@ export default function LlmSettingsPage() {
   const workspaceEnvelope = asRecord(settings?.workspaceStats?.data);
   const workspaceData = asRecord(workspaceEnvelope.data ?? settings?.workspaceStats?.data);
   const workspaceGc = asRecord(workspaceData.gc);
+  const runtimeBridgeEnvelope = asRecord(settings?.runtimeBridgeStatus?.data);
+  const connectedRuntimes = Array.isArray(runtimeBridgeEnvelope.connected)
+    ? runtimeBridgeEnvelope.connected as Record<string, unknown>[]
+    : [];
+  const runtimeConnected = connectedRuntimes.length > 0;
   const gatewayConfig = asRecord(providerData.config);
   const providers = Array.isArray(providerData.providers) ? providerData.providers as ProviderRow[] : [];
   const models = Array.isArray(modelData.models) ? modelData.models as ModelRow[] : [];
@@ -144,13 +156,15 @@ export default function LlmSettingsPage() {
   const warnings = useMemo(() => [
     ...asStringArray(providerData.warnings),
     ...asStringArray(modelData.warnings),
-    ...(settings?.gatewayHealth?.ok ?? settings?.health.ok ? [] : [`LLM Gateway health failed: ${settings?.gatewayHealth?.error ?? settings?.health.error ?? settings?.gatewayHealth?.status ?? settings?.health.status ?? "unknown"}`]),
-    ...(settings?.mcpHealth?.ok ? [] : [`MCP runtime health failed: ${settings?.mcpHealth?.error ?? settings?.mcpHealth?.status ?? "unknown"}`]),
     ...(settings?.contextFabricHealth?.ok ? [] : [`Context Fabric health failed: ${settings?.contextFabricHealth?.error ?? settings?.contextFabricHealth?.status ?? "unknown"}`]),
+    ...(settings?.runtimeBridgeStatus?.ok ? [] : [`Runtime Bridge status failed: ${settings?.runtimeBridgeStatus?.error ?? settings?.runtimeBridgeStatus?.status ?? "unknown"}`]),
+    ...(runtimeConnected ? [] : ["No MCP runtime is currently connected through the Runtime Bridge."]),
+    ...(settings?.topology?.httpFallback === "enabled" && !(settings?.mcpHealth?.ok) ? [`MCP HTTP debug probe failed: ${settings?.mcpHealth?.error ?? settings?.mcpHealth?.status ?? "unknown"}`] : []),
+    ...(settings?.topology?.httpFallback === "enabled" && !(settings?.gatewayHealth?.ok ?? settings?.health.ok) ? [`LLM Gateway debug probe failed: ${settings?.gatewayHealth?.error ?? settings?.health.error ?? settings?.gatewayHealth?.status ?? settings?.health.status ?? "unknown"}`] : []),
     ...(settings?.providers.ok ? [] : [`Provider status failed: ${settings?.providers.error ?? settings?.providers.status ?? "unknown"}`]),
     ...(settings?.models.ok ? [] : [`Model catalog failed: ${settings?.models.error ?? settings?.models.status ?? "unknown"}`]),
     ...(settings?.workspaceStats?.ok === false ? [`Workspace stats failed: ${settings.workspaceStats.error ?? settings.workspaceStats.status ?? "unknown"}`] : []),
-  ], [modelData, providerData, settings]);
+  ], [modelData, providerData, runtimeConnected, settings]);
 
   const readyModels = models.filter(model => model.ready).length;
   const readyProviders = providers.filter(provider => provider.ready).length;
@@ -161,7 +175,7 @@ export default function LlmSettingsPage() {
         <div>
           <h1 className="page-header">Active LLM Settings</h1>
           <p className="text-sm text-slate-500 mt-1">
-            LLM Gateway and MCP are independent runtime containers or remote services. Context Fabric is the governed hub that routes model calls through the gateway and tool/workspace calls through MCP.
+            MCP runtimes dial into Context Fabric over the Runtime Bridge. Model calls run as `model-run` frames through MCP, which forwards to its local or colocated LLM Gateway.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -184,29 +198,80 @@ export default function LlmSettingsPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-6">
         <SummaryTile icon={settings?.contextFabricHealth?.ok ? CheckCircle2 : XCircle} label="Context Fabric" value={settings?.contextFabricHealth?.ok ? "Online" : "Check"} tone={settings?.contextFabricHealth?.ok ? "ok" : "bad"} />
-        <SummaryTile icon={(settings?.gatewayHealth?.ok ?? settings?.health.ok) ? CheckCircle2 : XCircle} label="LLM Gateway" value={(settings?.gatewayHealth?.ok ?? settings?.health.ok) ? "Online" : "Offline"} tone={(settings?.gatewayHealth?.ok ?? settings?.health.ok) ? "ok" : "bad"} />
-        <SummaryTile icon={settings?.mcpHealth?.ok ? CheckCircle2 : XCircle} label="MCP Runtime" value={settings?.mcpHealth?.ok ? "Online" : "Offline"} tone={settings?.mcpHealth?.ok ? "ok" : "bad"} />
+        <SummaryTile icon={runtimeConnected ? RadioTower : XCircle} label="Runtime Bridge" value={runtimeConnected ? `${connectedRuntimes.length} connected` : "No runtime"} tone={runtimeConnected ? "ok" : "bad"} />
+        <SummaryTile icon={Cpu} label="LLM path" value="MCP model-run" />
+        <SummaryTile icon={ShieldCheck} label="HTTP fallback" value={settings?.topology?.httpFallback ?? "disabled"} tone={settings?.topology?.httpFallback === "enabled" ? "warn" : "ok"} />
         <SummaryTile icon={Cpu} label="Default provider" value={defaultProvider} />
         <SummaryTile icon={ShieldCheck} label="Default alias" value={defaultModelAlias} />
         <SummaryTile icon={Cpu} label="Ready models" value={`${readyModels}/${models.length || 0}`} />
       </div>
 
+      <section className="card overflow-hidden mb-6">
+        <div className="p-4 border-b border-slate-200 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Runtime Bridge</h2>
+            <p className="text-sm text-slate-500">Connected MCP runtimes and the frames Context Fabric can dispatch to them.</p>
+          </div>
+          <span className={`badge ${statusClass(runtimeConnected)}`}>{runtimeConnected ? "connected" : "waiting"}</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 border-b border-slate-200">
+              <tr>
+                <th className="px-4 py-2 text-left">Runtime</th>
+                <th className="px-4 py-2 text-left">Owner</th>
+                <th className="px-4 py-2 text-left">Frames</th>
+                <th className="px-4 py-2 text-left">LLM</th>
+                <th className="px-4 py-2 text-left">Last heartbeat</th>
+              </tr>
+            </thead>
+            <tbody>
+              {connectedRuntimes.map((runtime, index) => {
+                const health = asRecord(runtime.health);
+                const frames = Array.isArray(runtime.supported_frame_types) ? runtime.supported_frame_types.map(String).join(", ") : "-";
+                return (
+                  <tr key={`${runtime.runtime_id ?? runtime.device_id ?? index}`} className="border-b border-slate-100 last:border-b-0">
+                    <td className="px-4 py-2">
+                      <div className="font-mono text-xs text-slate-900">{String(runtime.runtime_id ?? runtime.device_id ?? "-")}</div>
+                      <div className="text-xs text-slate-500">{String(runtime.runtime_type ?? "mcp")} · {String(runtime.device_name ?? "-")}</div>
+                    </td>
+                    <td className="px-4 py-2 text-xs">
+                      <div>tenant: <span className="font-mono">{String(runtime.tenant_id ?? "-")}</span></div>
+                      <div>user: <span className="font-mono">{String(runtime.user_id ?? "-")}</span></div>
+                    </td>
+                    <td className="px-4 py-2 text-xs font-mono">{frames}</td>
+                    <td className="px-4 py-2 text-xs">
+                      {health.llm_gateway_url_configured ? "local gateway configured" : "gateway not reported"}
+                    </td>
+                    <td className="px-4 py-2 text-xs">{formatTimestamp(runtime.last_seen_at)}</td>
+                  </tr>
+                );
+              })}
+              {connectedRuntimes.length === 0 && (
+                <tr><td className="px-4 py-4 text-slate-400" colSpan={5}>No MCP runtime has dialed in yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section className="card p-5 mb-6">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
             <h2 className="text-lg font-semibold text-slate-900">Dial-in Runtime Topology</h2>
-            <p className="text-sm text-slate-500">Provider calls, workspace tools, and governed orchestration stay on separate runtime boundaries.</p>
+            <p className="text-sm text-slate-500">Context Fabric routes governed execution through connected MCP runtimes. Direct URLs below are diagnostic/debug fallback surfaces.</p>
           </div>
-          <span className={`badge ${statusClass(Boolean(settings?.contextFabricHealth?.ok && (settings?.gatewayHealth?.ok ?? settings?.health.ok) && settings?.mcpHealth?.ok))}`}>
+          <span className={`badge ${statusClass(Boolean(settings?.contextFabricHealth?.ok && runtimeConnected))}`}>
             {settings?.topology?.mode ?? "dial-in-runtime"}
           </span>
         </div>
         <div className="grid md:grid-cols-3 gap-3 text-sm mb-4">
           <Field label="Context Fabric hub" value={settings?.contextFabricUrl ?? "loading"} mono />
-          <Field label="LLM_GATEWAY_URL" value={settings?.llmGatewayUrl ?? settings?.gatewayUrl ?? "loading"} mono />
-          <Field label="MCP_SERVER_URL" value={settings?.mcpUrl ?? "loading"} mono />
-          <Field label="LLM Gateway auth" value={settings?.authMode ?? "unknown"} />
-          <Field label="MCP auth" value={settings?.mcpAuthMode ?? "unknown"} />
+          <Field label="Runtime bridge" value="/api/runtime-bridge/connect" mono />
+          <Field label="LLM serving" value={settings?.topology?.llmGateway ?? "served-through-mcp-runtime"} />
+          <Field label="LLM debug URL" value={settings?.llmGatewayUrl ?? settings?.gatewayUrl ?? "loading"} mono />
+          <Field label="MCP debug URL" value={settings?.mcpUrl ?? "loading"} mono />
+          <Field label="Debug auth" value={`LLM ${settings?.authMode ?? "unknown"} · MCP ${settings?.mcpAuthMode ?? "unknown"}`} />
           <Field label="Runtime mode" value={settings?.topology?.mode ?? "dial-in-runtime"} />
         </div>
         <div className="grid md:grid-cols-2 gap-3 text-sm">
@@ -334,8 +399,8 @@ export default function LlmSettingsPage() {
         <h2 className="text-lg font-semibold text-slate-900 mb-3">Consumers</h2>
         <div className="grid md:grid-cols-3 gap-3 text-sm mb-4">
           <Field label="Hub" value="Context Fabric governs calls" />
-          <Field label="Model path" value="Context Fabric -> LLM Gateway" />
-          <Field label="Tool path" value="Context Fabric -> MCP Runtime" />
+          <Field label="Model path" value="Context Fabric -> Runtime Bridge -> MCP -> LLM Gateway" />
+          <Field label="Tool path" value="Context Fabric -> Runtime Bridge -> MCP Runtime" />
         </div>
         <div className="grid md:grid-cols-2 gap-3 text-sm">
           {Object.entries(settings?.consumers ?? {}).map(([key, value]) => (
@@ -352,8 +417,8 @@ export default function LlmSettingsPage() {
   );
 }
 
-function SummaryTile({ icon: Icon, label, value, tone = "neutral" }: { icon: React.ElementType; label: string; value: string; tone?: "ok" | "bad" | "neutral" }) {
-  const color = tone === "ok" ? "text-emerald-700" : tone === "bad" ? "text-red-700" : "text-slate-900";
+function SummaryTile({ icon: Icon, label, value, tone = "neutral" }: { icon: React.ElementType; label: string; value: string; tone?: "ok" | "bad" | "warn" | "neutral" }) {
+  const color = tone === "ok" ? "text-emerald-700" : tone === "bad" ? "text-red-700" : tone === "warn" ? "text-amber-700" : "text-slate-900";
   return (
     <div className="card p-4">
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-slate-500">

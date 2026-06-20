@@ -1,13 +1,12 @@
 """
-Placement policy — cloud vs laptop for MCP (tools) and LLM (model), per run.
+Placement policy — runtime bridge vs debug HTTP for MCP (tools) and LLM.
 
 The control plane is always cloud. Only MCP and LLM have variable placement:
-  • Enterprise override: ENTERPRISE_LLM_GATEWAY=true forces BOTH to cloud — the
-    laptop is never dispatched to, even if the user has a paired laptop.
-  • Otherwise per-run flags select laptop: prefer_laptop (MCP) and
-    prefer_laptop_llm (LLM, carried in run_context). Whether the user's laptop
-    is actually connected (and, for LLM, advertises the `model-run` frame) is
-    checked at dispatch time — these helpers only decide *intent*.
+  • Enterprise override: ENTERPRISE_LLM_GATEWAY=true forces BOTH to debug HTTP.
+  • Otherwise per-run flags can force HTTP with prefer_laptop=false or
+    prefer_laptop_llm=false. The normal path is the Context Fabric runtime
+    bridge. Whether a user or tenant runtime is actually connected is checked at
+    dispatch time.
 
 See docs/deployment-topology.md.
 """
@@ -53,46 +52,60 @@ def _env_prefer_laptop_llm() -> bool:
 
 
 def llm_laptop_target(run_context: dict[str, Any] | None) -> str | None:
-    """Return the user_id whose laptop should serve LLM for this run, else None.
+    """Return the user_id whose runtime should serve LLM for this run, else None.
 
     None (→ cloud gateway) unless ALL hold:
       • not enterprise_mode()
-      • run opted in — either run_context["prefer_laptop_llm"] is truthy OR the
-        deployment-wide PREFER_LAPTOP_LLM env is set
+      • run did not explicitly opt out with prefer_laptop_llm=false
       • run_context carries a user_id
 
-    Whether that user's laptop is actually connected and advertises the
-    'model-run' frame is verified at dispatch time (call_gateway_chat falls
-    back to the cloud gateway if not), so this never hard-fails a run.
+    Whether that runtime is connected and advertises 'model-run' is verified at
+    dispatch time. HTTP fallback is controlled by RUNTIME_HTTP_FALLBACK_ENABLED.
     """
     if enterprise_mode():
         return None
     rc = run_context or {}
-    if not (rc.get("prefer_laptop_llm") or _env_prefer_laptop_llm()):
+    if rc.get("prefer_laptop_llm") is False:
+        return None
+    if not _env_prefer_laptop_llm() and rc.get("prefer_laptop") is False:
         return None
     uid = rc.get("user_id") or rc.get("userId")
     return str(uid) if uid else None
 
 
 def mcp_laptop_target(run_context: dict[str, Any] | None) -> str | None:
-    """Return the user_id whose laptop should serve MCP operations (tools +
-    code-context build) for this run, else None.
+    """Return the user_id whose runtime should serve MCP operations, else None.
 
-    Mirrors the tool-dispatch placement in governed.loop — ``prefer_laptop``
-    is True and a user_id is present — with the enterprise override forcing
-    cloud. Used by the code-context builder so the repo world model is indexed
-    against the SAME laptop worktree the run's tools dispatch to, instead of
-    the box's shared mcp-server sandbox.
+    ``prefer_laptop`` is now a compatibility knob:
+      • False → force HTTP/debug path
+      • True/None → prefer runtime bridge
 
-    Whether that laptop is actually connected and advertises the
-    'code-context' frame is verified at dispatch time (the builder falls back
-    to the static MCP_SERVER_URL HTTP path if not), so this never hard-fails a
-    run.
+    Whether the runtime is connected and advertises the required frame is
+    verified at dispatch time.
     """
     if enterprise_mode():
         return None
     rc = run_context or {}
-    if rc.get("prefer_laptop") is not True:
+    if rc.get("prefer_laptop") is False:
         return None
     uid = rc.get("user_id") or rc.get("userId")
     return str(uid) if uid else None
+
+
+def runtime_tenant_target(run_context: dict[str, Any] | None) -> str | None:
+    """Return the tenant id used for shared runtime fallback."""
+    rc = run_context or {}
+    if enterprise_mode() or rc.get("prefer_laptop") is False:
+        return None
+    tenant_id = rc.get("tenant_id") or rc.get("tenantId") or rc.get("org_id") or rc.get("orgId")
+    return str(tenant_id) if tenant_id else None
+
+
+def runtime_capability_tags(run_context: dict[str, Any] | None) -> list[str]:
+    rc = run_context or {}
+    raw = rc.get("capability_tags") or rc.get("capabilityTags")
+    tags = [str(tag) for tag in raw] if isinstance(raw, list) else []
+    cap = rc.get("capability_id") or rc.get("capabilityId")
+    if cap:
+        tags.append(str(cap))
+    return tags

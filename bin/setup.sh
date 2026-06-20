@@ -3,8 +3,10 @@
 # setup.sh — interactive one-shot Singularity (bare-metal) setup.
 #
 # Asks a handful of questions (Postgres + LLM), then does everything:
-#   • brings the bare-metal stack up via bin/bare-metal.sh (DBs, deps, schema, seed,
-#     boot — incl. the demo workflows/artifacts),
+#   • brings the bare-metal platform apps up via bin/bare-metal-apps.sh
+#     (DBs, deps, schema, seed, boot — incl. demo workflows/artifacts),
+#   • optionally starts local runtime infra via bin/bare-metal-runtime.sh
+#     (llm-gateway + mcp-server),
 #   • optionally points the LLM gateway at an OpenAI-compatible bridge
 #     (Copilot/openai-compat) and restarts it,
 #   • smoke-checks and prints the URLs.
@@ -17,7 +19,7 @@
 #   bin/setup.sh            # interactive
 #   bin/setup.sh --yes      # non-interactive (saved answers or defaults)
 #   bin/setup.sh --reset    # DROP existing databases first, then set up fresh
-#   bin/setup.sh --box-only # skip local llm-gateway + mcp-server
+#   bin/setup.sh --box-only # only start platform apps; skip local runtime infra
 #
 set -uo pipefail
 
@@ -32,21 +34,6 @@ info() { echo "${C_B}▸${C_E} $*"; }
 ok()   { echo "${C_G}✓${C_E} $*"; }
 warn() { echo "${C_Y}!${C_E} $*"; }
 err()  { echo "${C_R}✗${C_E} $*" >&2; }
-
-kill_non_docker_port() {
-  local port="$1" pids pid cmd
-  pids=$(lsof -ti :"$port" 2>/dev/null || true)
-  for pid in $pids; do
-    cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
-    case "$cmd" in
-      *docker*|*Docker*|*vpnkit*)
-        warn "port $port is Docker-owned (pid $pid); leaving it alone"
-        continue
-        ;;
-    esac
-    kill -9 "$pid" 2>/dev/null || true
-  done
-}
 
 ASSUME_YES=0; RESET_DB=0; BOX_ONLY_MODE="${BOX_ONLY:-}"
 for arg in "$@"; do
@@ -128,44 +115,55 @@ if [ "$RESET_DB" != "1" ] && [ "$ASSUME_YES" != "1" ]; then
 fi
 if [ "$RESET_DB" = "1" ]; then
   warn "clean start: stopping services + dropping all platform databases…"
-  bin/bare-metal.sh down >/dev/null 2>&1 || true
+  bin/bare-metal-runtime.sh down >/dev/null 2>&1 || true
+  bin/bare-metal-apps.sh down >/dev/null 2>&1 || true
   if ! bin/bare-metal.sh reset-db "$PG_USER" "$PG_PASS" "$PG_HOST" "$PG_PORT"; then
     err "reset-db failed — see output above"; exit 1
   fi
 fi
 
-# ── 1. bring up the platform stack ───────────────────────────────────────────
+# ── 1. bring up the platform apps ────────────────────────────────────────────
 echo
 if [ "$BOX_ONLY_MODE" = "1" ]; then
-  info "bringing up the platform box — local llm-gateway and MCP are skipped…"
+  info "bringing up platform apps — local llm-gateway and MCP are skipped…"
 else
-  info "bringing up the stack — this installs deps, pushes schema, seeds, and boots local runtime services…"
+  info "bringing up platform apps — this installs deps, pushes schema, seeds, and boots app services…"
 fi
-if ! BOX_ONLY="$BOX_ONLY_MODE" bin/bare-metal.sh up "$PG_USER" "$PG_PASS" "$PG_HOST" "$PG_PORT"; then
-  err "bin/bare-metal.sh up failed — see the output above + logs/"
+if [ "$BOX_ONLY_MODE" = "1" ]; then
+  bin/bare-metal-apps.sh up "$PG_USER" "$PG_PASS" "$PG_HOST" "$PG_PORT"
+  app_up_status=$?
+else
+  bin/bare-metal-apps.sh up "$PG_USER" "$PG_PASS" "$PG_HOST" "$PG_PORT"
+  app_up_status=$?
+fi
+if [ "$app_up_status" != "0" ]; then
+  err "bin/bare-metal-apps.sh up failed — see the output above + logs/"
   exit 1
 fi
 
-# ── 2. point the LLM gateway at the bridge (optional) ────────────────────────
+# ── 2. bring up local runtime infra unless this is a box-only install ────────
+if [ "$BOX_ONLY_MODE" != "1" ]; then
+  echo
+  info "bringing up local runtime infrastructure — llm-gateway + MCP…"
+  if ! bin/bare-metal-runtime.sh up; then
+    err "bin/bare-metal-runtime.sh up failed — see the output above + logs/"
+    exit 1
+  fi
+fi
+
+# ── 3. point the LLM gateway at the bridge (optional) ────────────────────────
 if [ "$LLM_MODE" = "bridge" ] && [ "$BOX_ONLY_MODE" != "1" ]; then
   echo
   info "pointing the LLM gateway at ${LLM_URL} (${LLM_MODEL})…"
-  # llm-use-copilot.sh flips providers + every alias to the bridge. Its built-in
-  # restart is Docker-aware; on bare-metal it may report a non-fatal Docker
-  # error AFTER writing the config — we restart the gateway ourselves below so
-  # this works regardless of which version of that script is present.
-  bin/llm-use-copilot.sh --base-url "$LLM_URL" --model "$LLM_MODEL" --token "$LLM_TOKEN" \
-    || warn "llm-use-copilot reported a non-fatal error (likely the Docker step) — restarting the gateway directly"
-  # shellcheck source=/dev/null
-  set -a; [ -f "$ROOT/.env.local" ] && . "$ROOT/.env.local"; [ -f "$ROOT/.env.llm-secrets" ] && . "$ROOT/.env.llm-secrets"; set +a
-  PYBIN="$ROOT/.venv/bin/python"; [ -x "$PYBIN" ] || PYBIN=python3
-  kill_non_docker_port 8001
-  ( cd "$ROOT/context-fabric" && \
-      LLM_PROVIDER_CONFIG_PATH="${LLM_PROVIDER_CONFIG_PATH:-$ROOT/.singularity/llm-providers.json}" \
-      LLM_MODEL_CATALOG_PATH="${LLM_MODEL_CATALOG_PATH:-$ROOT/.singularity/llm-models.json}" \
-      COPILOT_TOKEN="${COPILOT_TOKEN:-$LLM_TOKEN}" ALLOW_CALLER_PROVIDER_OVERRIDE=false \
-      nohup "$PYBIN" -m uvicorn services.llm_gateway_service.app.main:app --host 0.0.0.0 --port 8001 \
-      > "$ROOT/logs/llm-gateway.log" 2>&1 & )
+  # llm-use-copilot.sh flips providers + aliases to the bridge and restarts the
+  # gateway through Docker or the split bare-metal runtime PID file. If an older
+  # or partially configured environment reports a non-fatal restart issue, fall
+  # back to a clean runtime restart.
+  if ! bin/llm-use-copilot.sh --base-url "$LLM_URL" --model "$LLM_MODEL" --token "$LLM_TOKEN"; then
+    warn "llm-use-copilot reported an error after writing config — restarting runtime directly"
+    bin/bare-metal-runtime.sh down >/dev/null 2>&1 || true
+    bin/bare-metal-runtime.sh up || warn "runtime restart failed — check logs/llm-gateway.log"
+  fi
   sleep 4
   if curl -s -m 4 localhost:8001/llm/providers 2>/dev/null | grep -q '"default_provider": *"copilot"'; then
     ok "LLM gateway now serving copilot/${LLM_MODEL}"
@@ -177,10 +175,14 @@ if [ "$LLM_MODE" = "bridge" ] && [ "$BOX_ONLY_MODE" = "1" ]; then
   warn "LLM bridge config saved, but --box-only leaves the local gateway/MCP to the laptop or remote runtime."
 fi
 
-# ── 3. smoke + URLs ──────────────────────────────────────────────────────────
+# ── 4. smoke + URLs ──────────────────────────────────────────────────────────
 echo
-info "smoke check…"
-BOX_ONLY="$BOX_ONLY_MODE" bin/bare-metal.sh smoke || warn "some services aren't healthy yet — give them a few seconds, then re-run 'BOX_ONLY=$BOX_ONLY_MODE bin/bare-metal.sh smoke'"
+info "platform app smoke check…"
+bin/bare-metal-apps.sh smoke || warn "some platform services aren't healthy yet — give them a few seconds, then re-run 'bin/bare-metal-apps.sh smoke'"
+if [ "$BOX_ONLY_MODE" != "1" ]; then
+  info "runtime infra smoke check…"
+  bin/bare-metal-runtime.sh smoke || warn "runtime infra is not healthy yet — give it a few seconds, then re-run 'bin/bare-metal-runtime.sh smoke'"
+fi
 
 echo
 ok "setup complete. Open:"
@@ -193,6 +195,7 @@ echo "    http://localhost:5180/foundry        Code Foundry"
 echo "    http://localhost:5180/identity       IAM admin + governance authoring"
 echo "    http://localhost:8100   IAM API  (bootstrap login from ./singularity.sh config show)"
 echo
-echo "${C_D}re-run anytime: bin/setup.sh (reuses your answers) · stop: bin/bare-metal.sh down · LLM status: curl :8001/llm/providers${C_E}"
-echo "${C_D}deep UI/API parity: BARE_METAL_DEEP_SMOKE=1 BOX_ONLY=$BOX_ONLY_MODE bin/bare-metal.sh smoke  # routes + APIs + browser hydration + audit/Workbench/workflow/Foundry/Agent Studio${C_E}"
+echo "${C_D}re-run anytime: bin/setup.sh (reuses your answers) · stop apps: bin/bare-metal-apps.sh down · stop runtime: bin/bare-metal-runtime.sh down${C_E}"
+echo "${C_D}LLM status: curl :8001/llm/providers  # when local runtime is running${C_E}"
+echo "${C_D}deep UI/API parity: BARE_METAL_DEEP_SMOKE=1 bin/bare-metal-apps.sh smoke  # routes + APIs + browser hydration + audit/Workbench/workflow/Foundry/Agent Studio${C_E}"
 echo "${C_D}preflight check: bin/doctor.sh  (verifies services, cross-app env, seeds, auth — and prints fixes; --fix appends missing env keys)${C_E}"

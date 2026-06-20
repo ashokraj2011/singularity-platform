@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Demo launcher — brings up the FULL stack ready for the demo.
 #
-# Wraps bin/bare-metal.sh (core stack) + pseudo-iam (8101) for the
-# `singularity-mcp login` demo. Platform Web (:5180) is started by bare-metal.
+# Wraps bin/bare-metal-apps.sh + bin/bare-metal-runtime.sh + pseudo-iam (8101)
+# for the `singularity-mcp login` demo. Platform Web (:5180) is started by the
+# apps launcher.
 #
-# Also fixes the things bare-metal.sh doesn't do by default:
+# Also fixes the things the standard bare-metal launchers don't do by default:
 #   - mcp-server pointed at /tmp/todoapp-demo with real OpenAI (gpt-4.1)
 #   - context-api re-launched with IAM bootstrap creds + writable SQLite paths
 #   - audit-gov schema applied (idempotent)
@@ -105,11 +106,13 @@ fi
   git branch | grep -vE '^\* main$|^  main$' | xargs -I{} git branch -D {} >/dev/null 2>&1 || true )
 ok "todoapp sandbox ready at $SANDBOX (on main)"
 
-# ── 3. Bring up the core stack (bare-metal.sh) ─────────────────────────────
-info "booting core stack via bin/bare-metal.sh up …"
-"$SCRIPT_DIR/bare-metal.sh" up ashokraj postgres localhost 5432 2>&1 | tail -20
+# ── 3. Bring up platform apps + local runtime infra ────────────────────────
+info "booting platform apps via bin/bare-metal-apps.sh up …"
+"$SCRIPT_DIR/bare-metal-apps.sh" up ashokraj postgres localhost 5432 2>&1 | tail -20
+info "booting runtime infra via bin/bare-metal-runtime.sh up …"
+"$SCRIPT_DIR/bare-metal-runtime.sh" up 2>&1 | tail -20
 
-# .env.local was just written by bare-metal.sh; source it so we get DATABASE_URLs etc.
+# .env.local was just written by the apps launcher; source it so we get DATABASE_URLs etc.
 . "$ROOT/.env.local"
 
 # ── 4. Apply audit-gov schema (bare-metal sometimes skips this on a fresh DB) ──

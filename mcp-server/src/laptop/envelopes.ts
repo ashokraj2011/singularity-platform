@@ -41,9 +41,17 @@ export type SupportedFrameType = (typeof SUPPORTED_FRAME_TYPES)[number];
 export const HelloFrame = z.object({
   type:        z.literal("hello"),
   device_id:   z.string(),
+  runtime_id:  z.string().optional(),
+  runtime_type: z.string().default("mcp"),
+  tenant_id:   z.string().optional(),
+  user_id:     z.string().optional(),
   device_name: z.string(),
   agent_version: z.string(),
   capabilities:  z.array(z.string()).default([]),
+  capability_tags: z.array(z.string()).default([]),
+  shared: z.boolean().optional(),
+  runtime_scope: z.string().optional(),
+  health: z.record(z.unknown()).optional(),
   // M75 Slice 1 — which bridge → laptop frame types this binary can
   // handle. Defaults to legacy-only so pre-M75 laptops that don't
   // emit the field still get correctly classified.
@@ -74,8 +82,12 @@ export type ResponseFrame = z.infer<typeof ResponseFrame>;
 export const AuthAckFrame = z.object({
   type:        z.literal("auth.ack"),
   user_id:     z.string(),
+  tenant_id:   z.string().optional(),
+  runtime_id:  z.string().optional(),
+  runtime_type: z.string().optional(),
   device_id:   z.string(),
   registered_at: z.string(),
+  accepted_frame_types: z.array(z.string()).optional(),
   // Optional payload limits / config the bridge wants the laptop to respect.
   max_concurrent_invokes: z.number().int().positive().optional(),
 });

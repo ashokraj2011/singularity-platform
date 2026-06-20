@@ -67,16 +67,16 @@ later inside a run with `spawn copilot ENOENT`.
 
 ## 2. Connectivity: Bridge vs Direct
 
-Pick one. **Bridge is recommended** — it needs no inbound port on the laptop.
+Pick one. **Runtime Bridge is recommended** — it needs no inbound port on the laptop.
 
-### Bridge mode (recommended, NAT-safe)
-The laptop opens an **outbound WebSocket** to the box's Context Fabric; the box sends `tool-run` / `model-run` / `code-context` frames back over the same socket. The box never dials into the laptop.
+### Runtime Bridge mode (recommended, NAT-safe)
+The laptop is one runtime location. MCP opens an **outbound WebSocket** to the box's Context Fabric; the box sends `tool-run` / `model-run` / `code-context` frames back over the same socket. The box never dials into the laptop.
 
-- Laptop sets `LAPTOP_MODE=true` + `LAPTOP_BRIDGE_URL=wss://<box-host>:8000/api/laptop-bridge/connect` + a device JWT.
-- Box and laptop share one **`JWT_SECRET`** (the device token is signed with it).
-- A run routes to the laptop when `run_context.prefer_laptop=true` (MCP) / `PREFER_LAPTOP_LLM=true` (LLM).
+- Runtime sets `RUNTIME_DIAL_IN_MODE=true` + `RUNTIME_BRIDGE_URL=wss://<box-host>:8000/api/runtime-bridge/connect` + an IAM runtime/device JWT.
+- Box and runtime share one **`JWT_SECRET`** for dev/local JWT verification.
+- A run routes to the user runtime by default, then tenant/shared runtime. Set `RUNTIME_HTTP_FALLBACK_ENABLED=true` only for direct HTTP debug fallback.
 
-### Direct-HTTP mode (fallback)
+### Direct-HTTP mode (debug fallback)
 The box calls the laptop's mcp/gateway over HTTP at `http://<laptop-host>:7100` / `:8001`. Requires a **private path** box→laptop (Tailscale, corporate VPN, Cloudflare Tunnel). Expose only 7100 (+ 8001 if the box's own LLM calls go to the laptop). Always TLS + strong bearer tokens.
 
 ---
@@ -144,13 +144,15 @@ export PORT=7100 MCP_BEARER_TOKEN=<shared> LLM_GATEWAY_URL=http://localhost:8001
   COPILOT_PROVIDER_API_KEY=sk-ant-... COPILOT_MODEL=claude-sonnet-4-6 \
   MCP_GIT_PUSH_ENABLED=true MCP_GIT_AUTH_MODE=token GITHUB_TOKEN=ghp_...
 
-# Bridge mode: dial out to the box
-export JWT_SECRET=<shared> LAPTOP_MODE=true \
-  LAPTOP_BRIDGE_URL=wss://<box-host>:8000/api/laptop-bridge/connect \
-  SINGULARITY_DEVICE_TOKEN=<HS256 device JWT: kind=device, sub=<user_id>, device_id=...>
+# Runtime Bridge mode: dial out to the box
+export JWT_SECRET=<shared> RUNTIME_DIAL_IN_MODE=true \
+  RUNTIME_BRIDGE_URL=wss://<box-host>:8000/api/runtime-bridge/connect \
+  SINGULARITY_RUNTIME_TOKEN=<IAM runtime/device JWT> \
+  SINGULARITY_RUNTIME_ID=<stable-runtime-id> \
+  SINGULARITY_RUNTIME_TYPE=mcp
 npm run dev
 
-# Direct-HTTP mode instead: run a normal server and expose :7100 via your tunnel
+# Direct-HTTP debug mode instead: run a normal server and expose :7100 via your tunnel
 npm run dev   # (without LAPTOP_MODE)
 ```
 
@@ -227,9 +229,9 @@ The standards the verifier checks come from the run's `acceptanceCriteria` / `de
 |---|---|---|---|
 | `JWT_SECRET` | ✓ | ✓ | one shared value (bridge device token is signed with it) |
 | `MCP_BEARER_TOKEN` | ✓ | ✓ | shared; ≥16 chars (≥32 in prod) |
-| `LAPTOP_MODE` / `LAPTOP_BRIDGE_URL` / `SINGULARITY_DEVICE_TOKEN` | — | ✓ | bridge mode |
-| `MCP_SERVER_URL` (=`http://<laptop>:7100`) | ✓ | — | **direct mode only** |
-| `PREFER_LAPTOP_LLM` | ✓ (context-api) | — | route the box's own LLM calls to the laptop |
+| `RUNTIME_DIAL_IN_MODE` / `RUNTIME_BRIDGE_URL` / `SINGULARITY_RUNTIME_TOKEN` | — | ✓ | runtime bridge mode; `LAPTOP_*` names still work as aliases |
+| `MCP_SERVER_URL` (=`http://<laptop>:7100`) | ✓ | — | **debug fallback only** with `RUNTIME_HTTP_FALLBACK_ENABLED=true` |
+| `LLM_GATEWAY_URL` | — | ✓ | local/colocated gateway used by MCP when it receives `model-run` |
 | `COPILOT_PROVIDER_*` / `COPILOT_MODEL` | — | ✓ | Copilot BYOK |
 | `MCP_GIT_PUSH_ENABLED` / `MCP_GIT_AUTH_MODE` / `GITHUB_TOKEN` | — | ✓ | git push from the laptop |
 | provider keys (`ANTHROPIC_API_KEY`, …) | — | ✓ | **only** next to the laptop gateway, never in compose |
@@ -241,7 +243,8 @@ The standards the verifier checks come from the run's `acceptanceCriteria` / `de
 - **`bind: address already in use` (3003, 8080, …)** — a leftover **bare-metal stack** or a half-started box holds the ports. Clean slate:
   ```bash
   docker compose -f docker-compose.yml -f docker-compose.laptop-direct.yml down --remove-orphans
-  bin/bare-metal.sh down
+  bin/bare-metal-runtime.sh down
+  bin/bare-metal-apps.sh down
   kill -9 $(lsof -ti :8080) 2>/dev/null; kill -9 $(lsof -ti :3003) 2>/dev/null
   ```
   Then bring the box up again. Don't run a full bare-metal stack **and** the Docker box — they double-bind every port.

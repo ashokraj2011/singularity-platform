@@ -1,11 +1,12 @@
 """
-M26 — in-memory registry of connected laptop mcp-server instances.
+In-memory registry of connected MCP runtime bridge instances.
 
-Holds (user_id, device_id) → ActiveConnection. Routes invokes from
-execute.py to the right WebSocket. Open futures keyed by request_id wait
-for the matching response frame.
+Historically this module was the "laptop bridge". V1 runtime dial-in keeps the
+old names as compatibility aliases, but the registry now tracks generic MCP
+runtimes keyed by user/tenant/runtime identity. Open futures keyed by
+request_id wait for the matching response frame.
 
-Stateless across process restarts (R4) — laptops auto-reconnect.
+Stateless across process restarts (R4) — runtimes auto-reconnect.
 """
 
 from __future__ import annotations
@@ -39,6 +40,18 @@ class ActiveConnection:
     # "tool-run", "model-run"]). Used to route model-run frames only to
     # laptops that can serve LLM. Defaults to the legacy ["invoke"].
     supported_frame_types: list[str] = field(default_factory=lambda: ["invoke"])
+    runtime_id:     str = ""
+    runtime_type:   str = "mcp"
+    tenant_id:      str = ""
+    shared:         bool = False
+    capability_tags: list[str] = field(default_factory=list)
+    health:         dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.runtime_id:
+            self.runtime_id = self.device_id
+        if not self.device_id:
+            self.device_id = self.runtime_id
 
 
 class LaptopRegistry:
@@ -55,7 +68,7 @@ class LaptopRegistry:
             existing = by_device.get(conn.device_id)
             if existing is not None and existing.ws is not conn.ws:
                 log.info(
-                    "laptop replacing prior connection user=%s device=%s",
+                    "runtime replacing prior connection user=%s runtime=%s",
                     conn.user_id, conn.device_id,
                 )
                 try:
@@ -102,6 +115,98 @@ class LaptopRegistry:
                     return conn
             return None
 
+    async def select_runtime(
+        self,
+        *,
+        user_id: str | None,
+        tenant_id: str | None = None,
+        frame_type: str | None = None,
+        capability_tags: list[str] | None = None,
+    ) -> Optional[ActiveConnection]:
+        """Select the runtime for a frame.
+
+        Routing order:
+          1. user-owned connected runtime for the run user
+          2. tenant/shared connected runtime
+
+        Capability tags narrow eligibility, but never override user/tenant
+        placement. The method deliberately does not fall back to arbitrary
+        runtimes from other users.
+        """
+        async with self._lock:
+            if user_id:
+                for conn in (self._by_user.get(user_id) or {}).values():
+                    if self._matches(conn, frame_type, tenant_id, capability_tags):
+                        return conn
+
+            if tenant_id:
+                for by_device in self._by_user.values():
+                    for conn in by_device.values():
+                        if not self._is_shared_runtime(conn):
+                            continue
+                        if self._matches(conn, frame_type, tenant_id, capability_tags):
+                            return conn
+            return None
+
+    def _matches(
+        self,
+        conn: ActiveConnection,
+        frame_type: str | None,
+        tenant_id: str | None,
+        capability_tags: list[str] | None,
+    ) -> bool:
+        if tenant_id and conn.tenant_id and conn.tenant_id != tenant_id:
+            return False
+        if frame_type and frame_type not in (conn.supported_frame_types or []):
+            return False
+        requested = {str(tag) for tag in (capability_tags or []) if str(tag)}
+        if requested:
+            advertised = {str(tag) for tag in (conn.capability_tags or []) if str(tag)}
+            if not requested.issubset(advertised):
+                return False
+        return True
+
+    def _is_shared_runtime(self, conn: ActiveConnection) -> bool:
+        marker_users = {"", "*", "shared", "__shared__"}
+        return bool(conn.shared or conn.user_id in marker_users or conn.user_id == conn.tenant_id)
+
+    async def status_snapshot(self) -> dict[str, Any]:
+        async with self._lock:
+            connected: list[dict[str, Any]] = []
+            grouped: dict[str, dict[str, Any]] = {}
+            for user_id, by_device in self._by_user.items():
+                for device_id, conn in by_device.items():
+                    row = {
+                        "user_id": user_id,
+                        "tenant_id": conn.tenant_id,
+                        "runtime_id": conn.runtime_id or device_id,
+                        "runtime_type": conn.runtime_type,
+                        "device_id": device_id,
+                        "device_name": conn.device_name,
+                        "shared": conn.shared,
+                        "supported_frame_types": list(conn.supported_frame_types or []),
+                        "capability_tags": list(conn.capability_tags or []),
+                        "health": conn.health or {},
+                        "connected_at": conn.connected_at,
+                        "last_seen_at": conn.last_seen_at,
+                    }
+                    connected.append(row)
+                    tenant_key = conn.tenant_id or "unknown"
+                    user_key = user_id or "__shared__"
+                    type_key = conn.runtime_type or "unknown"
+                    tenant_group = grouped.setdefault(tenant_key, {"users": {}, "runtimes": []})
+                    user_group = tenant_group["users"].setdefault(user_key, {"runtime_types": {}, "runtimes": []})
+                    type_group = user_group["runtime_types"].setdefault(type_key, [])
+                    type_group.append(row)
+                    user_group["runtimes"].append(row)
+                    tenant_group["runtimes"].append(row)
+            return {
+                "status": "ok",
+                "connected": connected,
+                "count": len(connected),
+                "tenants": grouped,
+            }
+
     # ── invoke routing ─────────────────────────────────────────────────────
     async def invoke(self, user_id: str, payload: dict[str, Any], timeout: float = INVOKE_TIMEOUT_SEC) -> dict[str, Any]:
         """Forward an /mcp/invoke payload to the user's laptop. Returns the
@@ -132,6 +237,8 @@ class LaptopRegistry:
         self,
         *,
         user_id: str,
+        tenant_id: str | None = None,
+        capability_tags: list[str] | None = None,
         tool_name: str,
         args: dict[str, Any],
         run_context: dict[str, Any] | None = None,
@@ -178,10 +285,13 @@ class LaptopRegistry:
             payload["tool_grant"] = grant
         body, conn = await self._send_frame_await_response(
             user_id=user_id,
+            tenant_id=tenant_id,
+            capability_tags=capability_tags,
             frame_type="tool-run",
             payload=payload,
             timeout=timeout,
             request_label=f"tool-run({tool_name})",
+            require_frame_type="tool-run",
         )
         return body, {"device_id": conn.device_id, "device_name": conn.device_name}
 
@@ -190,6 +300,8 @@ class LaptopRegistry:
         self,
         *,
         user_id: str,
+        tenant_id: str | None = None,
+        capability_tags: list[str] | None = None,
         request_body: dict[str, Any],
         timeout: float = INVOKE_TIMEOUT_SEC,
     ) -> dict[str, Any]:
@@ -210,6 +322,8 @@ class LaptopRegistry:
         """
         body, _conn = await self._send_frame_await_response(
             user_id=user_id,
+            tenant_id=tenant_id,
+            capability_tags=capability_tags,
             frame_type="model-run",
             payload=request_body,
             timeout=timeout,
@@ -223,6 +337,8 @@ class LaptopRegistry:
         self,
         *,
         user_id: str,
+        tenant_id: str | None = None,
+        capability_tags: list[str] | None = None,
         request_body: dict[str, Any],
         timeout: float = INVOKE_TIMEOUT_SEC,
     ) -> dict[str, Any]:
@@ -243,6 +359,8 @@ class LaptopRegistry:
         """
         body, _conn = await self._send_frame_await_response(
             user_id=user_id,
+            tenant_id=tenant_id,
+            capability_tags=capability_tags,
             frame_type="code-context",
             payload=request_body,
             timeout=timeout,
@@ -255,6 +373,8 @@ class LaptopRegistry:
         self,
         *,
         user_id: str,
+        tenant_id: str | None = None,
+        capability_tags: list[str] | None = None,
         frame_type: str,
         payload: dict[str, Any],
         timeout: float,
@@ -271,16 +391,16 @@ class LaptopRegistry:
         device_name without doing a second `any_for_user` lookup
         (which could race with reap_stale and pick a different
         connection). The legacy `invoke` caller discards it."""
-        if require_frame_type:
-            conn = await self.any_for_user_serving(user_id, require_frame_type)
-            if conn is None:
-                raise LaptopNotConnected(
-                    f"no live laptop serving '{require_frame_type}' for user {user_id}"
-                )
-        else:
-            conn = await self.any_for_user(user_id)
-            if conn is None:
-                raise LaptopNotConnected(f"no live laptop mcp-server for user {user_id}")
+        required = require_frame_type or frame_type
+        conn = await self.select_runtime(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            frame_type=required,
+            capability_tags=capability_tags,
+        )
+        if conn is None:
+            scope = f"user {user_id}" if not tenant_id else f"user {user_id} tenant {tenant_id}"
+            raise LaptopNotConnected(f"no live runtime serving '{required}' for {scope}")
 
         request_id = uuid4().hex
         loop = asyncio.get_running_loop()
