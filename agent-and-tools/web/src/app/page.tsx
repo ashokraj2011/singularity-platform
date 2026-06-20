@@ -160,14 +160,13 @@ export default async function SdlcCommandCenterPage() {
   const toolBase = process.env.TOOL_SERVICE_URL ?? "http://platform-core:3002";
   const runtimeBase = process.env.AGENT_RUNTIME_URL ?? "http://platform-core:3003";
   const workgraphBase = process.env.WORKGRAPH_API_URL ?? "http://workgraph-api:8080";
-  const foundryBase = process.env.CODE_FOUNDRY_API_URL ?? "http://code-foundry-api:3005";
 
   const [agents, tools, templates, runs, foundryRuns, receipts] = await Promise.all([
     fetchCount(`${agentBase}/api/v1/agents`, ["agents", "items"]),
     fetchCount(`${toolBase}/api/v1/tools`, ["tools", "items"]),
     fetchCount(`${workgraphBase}/api/workflow-templates?size=1`, ["items", "content"]),
     fetchCount(`${workgraphBase}/api/workflow-instances?size=1`, ["items", "content"]),
-    fetchCount(`${foundryBase}/api/codegen/runs?take=1`, ["items"]),
+    fetchCount(`${workgraphBase}/health`, ["status"]),
     fetchCount(`${runtimeBase}/api/v1/executions?size=1`, ["items", "content", "executions"]),
   ]);
 

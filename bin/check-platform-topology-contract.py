@@ -73,9 +73,9 @@ def main() -> int:
         fail(f"default compose unexpectedly includes split/legacy service(s): {', '.join(unexpected_default)}")
     ok("default compose excludes split agent/tools and legacy frontend services")
 
-    if len(required_running) != 9:
-        fail(f"default core requiredRunning count is {len(required_running)}; expected 9")
-    ok("default core count is 9")
+    if len(required_running) != 8:
+        fail(f"default core requiredRunning count is {len(required_running)}; expected 8")
+    ok("default core count is 8")
 
     for profile, rules in contract.get("profiles", {}).items():
         services = compose_services(profile)

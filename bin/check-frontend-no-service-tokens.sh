@@ -89,9 +89,9 @@ else
 fi
 
 if [ -f "$codegen_proxy" ]; then
-  if ! grep -F 'process.env.CODEGEN_SERVICE_TOKEN?.trim()' "$codegen_proxy" >/dev/null || \
-     ! grep -F 'headers.set("authorization", `Bearer ${token}`)' "$codegen_proxy" >/dev/null; then
-    echo "FAIL: Code Foundry proxy must inject FOUNDRY_TOKEN/CODEGEN_SERVICE_TOKEN server-side." >&2
+  if ! grep -F 'WORKGRAPH_API_URL' "$codegen_proxy" >/dev/null || \
+     grep -E 'FOUNDRY_TOKEN|CODEGEN_SERVICE_TOKEN|CODE_FOUNDRY_API_URL' "$codegen_proxy" >/dev/null; then
+    echo "FAIL: Code generation proxy must route to Workgraph and must not require Foundry/codegen service tokens." >&2
     proxy_guard_failures=$((proxy_guard_failures + 1))
   fi
 else
@@ -114,9 +114,9 @@ fi
 if [ "$proxy_guard_failures" -gt 0 ]; then
   cat >&2 <<'EOF'
 
-Privileged backend hops must not forward browser Authorization to service-token
-gated APIs. Same-origin proxies should replace it with the server-held service
-credential or omit it when no service credential is configured.
+Privileged backend hops must not leak shared credentials into browser bundles.
+Service-token-gated APIs should use server-held credentials; Workgraph-owned
+user routes such as /api/codegen should keep the verified user Authorization.
 EOF
   exit 1
 fi

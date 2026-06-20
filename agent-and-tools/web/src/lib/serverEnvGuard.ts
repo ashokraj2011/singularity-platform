@@ -16,6 +16,16 @@ const KNOWN_DEV_DEFAULTS = new Set([
   "test-secret",
 ]);
 
+export function platformWebDevelopmentSecretReason(value: string | null | undefined): string | null {
+  const current = value?.trim() ?? "";
+  if (!current) return null;
+  if (KNOWN_DEV_DEFAULTS.has(current)) return "known development default";
+  if (/^(change-me|changeme|dev-|test-)/i.test(current)) return "development placeholder";
+  if (/REPLACE_ME/i.test(current)) return "replacement placeholder";
+  if (/^copilot-local$/i.test(current)) return "local Copilot placeholder";
+  return null;
+}
+
 export function platformWebProductionEnv(): string | null {
   for (const key of ["APP_ENV", "ENVIRONMENT", "SINGULARITY_ENV"]) {
     const value = process.env[key]?.trim().toLowerCase();
@@ -34,7 +44,6 @@ export function platformWebCredentialError(name: string, value: string | null | 
   const current = value?.trim() ?? "";
   if (!current) return `${name} is required when ${prod}`;
   if (current.length < minLength) return `${name} must be at least ${minLength} characters when ${prod}`;
-  if (KNOWN_DEV_DEFAULTS.has(current)) return `${name} still uses a development default while ${prod}`;
-  if (/^(change-me|changeme|dev-|test-)/i.test(current)) return `${name} still looks like a development placeholder while ${prod}`;
+  if (platformWebDevelopmentSecretReason(current)) return `${name} still uses a development default while ${prod}`;
   return null;
 }

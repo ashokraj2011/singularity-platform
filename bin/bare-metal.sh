@@ -134,7 +134,7 @@ cmd_up() {
   # touch the databases. Storage ports (5432/5434/9000/9001) are EXCLUDED on
   # purpose: those are your Postgres/MinIO, not ours to kill.
   info "freeing our service ports…"
-  local _ports_to_free=(3001 3002 3003 3004 3005 5174 5175 5176 5180 5181 5182 8000 8002 8003 8010 8080 8085 8100 8101 8500)
+  local _ports_to_free=(3001 3002 3003 3004 5174 5175 5176 5180 5181 5182 8000 8002 8003 8010 8080 8085 8100 8101 8500)
   if [ "${BOX_ONLY:-}" != "1" ]; then
     _ports_to_free+=(7100 8001)
   fi
@@ -175,7 +175,6 @@ SELECT 'CREATE DATABASE workgraph'            WHERE NOT EXISTS (SELECT FROM pg_d
 SELECT 'CREATE DATABASE audit_governance'     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='audit_governance')\gexec
 SELECT 'CREATE DATABASE singularity_iam'      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_iam')\gexec
 SELECT 'CREATE DATABASE singularity_context_fabric' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_context_fabric')\gexec
-SELECT 'CREATE DATABASE singularity_codegen'  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_codegen')\gexec
 SQL
 
   info "enabling pgvector + pgcrypto in 'singularity' (agent-runtime + tool-service)…"
@@ -209,10 +208,6 @@ SQL
   PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d audit_governance \
     -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>&1 | grep -vE "NOTICE" || true
 
-  info "enabling pgcrypto in 'singularity_codegen' (Code Foundry)…"
-  PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d singularity_codegen \
-    -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>&1 | grep -vE "NOTICE" || true
-
   info "applying audit-governance schema…"
   PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d audit_governance \
     -f audit-governance-service/db/init.sql >/dev/null 2>&1 || \
@@ -242,7 +237,6 @@ export DATABASE_URL_WORKGRAPH_ADMIN="postgresql://${db_user}:${db_pass}@${db_hos
 export DATABASE_URL_WORKGRAPH_RUNTIME="postgresql://${WORKGRAPH_APP_DB_USER}:${WORKGRAPH_APP_DB_PASSWORD}@${db_host}:${db_port}/workgraph"
 export DATABASE_URL_WORKGRAPH="$DATABASE_URL_WORKGRAPH_RUNTIME"
 export DATABASE_URL_AUDIT_GOV="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/audit_governance"
-export DATABASE_URL_CODE_FOUNDRY="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_codegen"
 # Context Fabric stores (call_log, events_store, context_memory) — Postgres,
 # matching the Docker stack. The CF services read CONTEXT_FABRIC_DATABASE_URL.
 export DATABASE_URL_CONTEXT_FABRIC="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_context_fabric"
@@ -299,8 +293,6 @@ export WORKGRAPH_PROXY_SERVICE_TOKEN="${WORKGRAPH_PROXY_SERVICE_TOKEN:-$(config_
 export PROMPT_COMPOSER_SERVICE_TOKEN="${PROMPT_COMPOSER_SERVICE_TOKEN:-$WORKGRAPH_PROXY_SERVICE_TOKEN}"
 export AUDIT_GOV_SERVICE_TOKEN="${AUDIT_GOV_SERVICE_TOKEN:-$(config_value tokens.auditGovServiceToken dev-audit-gov-service-token)}"
 export LEARNING_SERVICE_TOKEN="${LEARNING_SERVICE_TOKEN:-$AUDIT_GOV_SERVICE_TOKEN}"
-export CODEGEN_SERVICE_TOKEN="${CODEGEN_SERVICE_TOKEN:-$(config_value tokens.codegenServiceToken dev-codegen-service-token)}"
-export FOUNDRY_TOKEN="${FOUNDRY_TOKEN:-$CODEGEN_SERVICE_TOKEN}"
 export APP_ENV="${APP_ENV:-${SINGULARITY_ENV:-development}}"
 export ENVIRONMENT="${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}"
 export SINGULARITY_ENV="${SINGULARITY_ENV:-${APP_ENV:-development}}"
@@ -333,7 +325,6 @@ export AGENT_SERVICE_URL="http://localhost:3001"
 export CONTEXT_FABRIC_URL="http://localhost:8000"
 export CONTEXT_MEMORY_URL="http://localhost:8002"
 export FORMAL_VERIFIER_URL="http://localhost:8010"
-export CODE_FOUNDRY_API_URL="http://localhost:3005"
 export MCP_SERVER_URL="${MCP_SERVER_URL:-http://localhost:7100}"
 export MCP_BEARER_TOKEN="${MCP_BEARER_TOKEN:-$(config_value mcpRuntime.bearerToken demo-bearer-token-must-be-min-16-chars)}"
 export MCP_DEFAULT_GOVERNANCE_MODE="${MCP_DEFAULT_GOVERNANCE_MODE:-$(config_value mcpRuntime.defaultGovernanceMode fail_open)}"
@@ -491,7 +482,6 @@ JSON
   ensure_install agent-and-tools/web      npm
   ensure_install workgraph-studio         pnpm
   ensure_install audit-governance-service npm
-  ensure_install singularity-code-foundry npm
   if [ -z "$BOX_ONLY" ]; then
     ensure_install mcp-server             npm
   fi
@@ -572,12 +562,6 @@ ALTER DEFAULT PRIVILEGES FOR ROLE ${db_user} IN SCHEMA public
 ALTER DEFAULT PRIVILEGES FOR ROLE ${db_user} IN SCHEMA public
   GRANT EXECUTE ON FUNCTIONS TO ${WORKGRAPH_APP_DB_USER};
 SQL
-
-  info "applying Code Foundry schema…"
-  ( cd singularity-code-foundry/apps/code-foundry-api \
-    && DATABASE_URL="$DATABASE_URL_CODE_FOUNDRY" npx prisma db push --skip-generate >/dev/null 2>&1 \
-    && DATABASE_URL="$DATABASE_URL_CODE_FOUNDRY" npx prisma generate >/dev/null 2>&1 ) \
-    || warn "Code Foundry schema push had warnings"
 
   # Seed workgraph demo data — agents, the SDLC + bug-fix workbench workflows,
   # sample workflows, routing policies, and a completed blueprint session with
@@ -688,13 +672,11 @@ SQL
   sleep 3
 
   boot workgraph-api    "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH_RUNTIME\" WORKGRAPH_RUNTIME_DATABASE_URL=\"$DATABASE_URL_WORKGRAPH_RUNTIME\" WORKGRAPH_DATABASE_URL_ADMIN=\"$DATABASE_URL_WORKGRAPH_ADMIN\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" FORMAL_VERIFIER_URL=\"$FORMAL_VERIFIER_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" MCP_TOOL_GRANT_MODE=\"$MCP_TOOL_GRANT_MODE\" DEFAULT_GOVERNANCE_MODE=\"$DEFAULT_GOVERNANCE_MODE\" WORKGRAPH_FORCE_GOVERNED_CODING=\"$WORKGRAPH_FORCE_GOVERNED_CODING\" CONTEXT_FABRIC_GOVERN_SIDE_CALLERS=\"$CONTEXT_FABRIC_GOVERN_SIDE_CALLERS\" WORKGRAPH_INTERNAL_TOKEN=\"$WORKGRAPH_INTERNAL_TOKEN\" WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS=\"$WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS\" WORKGRAPH_INCOMING_EVENT_SECRETS=\"$WORKGRAPH_INCOMING_EVENT_SECRETS\" WORKBENCH_DEFAULT_MODEL_ALIAS=mock AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
-  boot code-foundry-api "cd singularity-code-foundry/apps/code-foundry-api && HOST=127.0.0.1 PORT=3005 DATABASE_URL=\"$DATABASE_URL_CODE_FOUNDRY\" WORKGRAPH_API_URL=\"http://localhost:8080\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" WORKGRAPH_INTERNAL_TOKEN=\"$WORKGRAPH_INTERNAL_TOKEN\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" CODEGEN_SERVICE_TOKEN=\"${CODEGEN_SERVICE_TOKEN:-dev-codegen-service-token}\" FOUNDRY_WEB_ORIGIN=\"http://localhost:5180\" GENERATOR_VERSION=code-foundry-0.2.0 TEMPLATE_VERSION=spec-only-0.1.0 WORKSPACE_ROOT=\"$ROOT/singularity-code-foundry/.workspace\" npm run dev"
-
   # The unified platform web app owns every UI route on :5180. It proxies backend
   # calls through Next rewrites and keeps users in one shell:
   # /operations, /agents, /agents/studio, /workflows, /workbench, /foundry,
   # and /identity. The old split Vite apps are legacy/debug-only now.
-  boot platform-web     "cd agent-and-tools/web        && PORT=5180 IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_HEALTH_URL=\"http://localhost:8100/api/v1/health\" IAM_BOOTSTRAP_USERNAME=\"$LOCAL_SUPER_ADMIN_EMAIL\" IAM_BOOTSTRAP_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" TENANT_ISOLATION_MODE=\"$TENANT_ISOLATION_MODE\" REQUIRE_TENANT_ID=\"$REQUIRE_TENANT_ID\" IAM_SERVICE_TOKEN_TENANT_IDS=\"$IAM_SERVICE_TOKEN_TENANT_IDS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" WORKGRAPH_API_URL=\"http://localhost:8080\" WORKGRAPH_PROXY_SERVICE_AUTH=true WORKGRAPH_PROXY_SERVICE_TOKEN=\"$WORKGRAPH_PROXY_SERVICE_TOKEN\" CODE_FOUNDRY_API_URL=\"$CODE_FOUNDRY_API_URL\" CODEGEN_SERVICE_TOKEN=\"$CODEGEN_SERVICE_TOKEN\" FOUNDRY_TOKEN=\"$CODEGEN_SERVICE_TOKEN\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" NEXT_PUBLIC_WORKGRAPH_WEB_URL=\"/workflows\" npm run dev"
+  boot platform-web     "cd agent-and-tools/web        && PORT=5180 IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_HEALTH_URL=\"http://localhost:8100/api/v1/health\" IAM_BOOTSTRAP_USERNAME=\"$LOCAL_SUPER_ADMIN_EMAIL\" IAM_BOOTSTRAP_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" TENANT_ISOLATION_MODE=\"$TENANT_ISOLATION_MODE\" REQUIRE_TENANT_ID=\"$REQUIRE_TENANT_ID\" IAM_SERVICE_TOKEN_TENANT_IDS=\"$IAM_SERVICE_TOKEN_TENANT_IDS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" WORKGRAPH_API_URL=\"http://localhost:8080\" WORKGRAPH_PROXY_SERVICE_AUTH=true WORKGRAPH_PROXY_SERVICE_TOKEN=\"$WORKGRAPH_PROXY_SERVICE_TOKEN\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" NEXT_PUBLIC_WORKGRAPH_WEB_URL=\"/workflows\" npm run dev"
 
   # Append-only helper for anyone who starts the legacy/debug UIs manually.
   _ensure_kv() { # $1=file  $2=KEY=VALUE
@@ -763,7 +745,7 @@ cmd_down() {
   done < "$PID_FILE"
   # Hard sweep — anything still hogging our ports gets terminated. In BOX_ONLY
   # mode leave laptop-owned runtime ports alone.
-  local ports=(3001 3002 3003 3004 3005 5174 5175 5176 5180 5181 5182 8000 8002 8010 8080 8085 8100 8101 8500)
+  local ports=(3001 3002 3003 3004 5174 5175 5176 5180 5181 5182 8000 8002 8010 8080 8085 8100 8101 8500)
   if [ -z "$BOX_ONLY" ]; then ports+=(7100 8001); fi
   for p in "${ports[@]}"; do
     pids=$(lsof -ti :"$p" 2>/dev/null || true)
@@ -792,7 +774,6 @@ cmd_smoke() {
     "http://localhost:8100/api/v1/health" \
     "http://localhost:8500/health" \
     "http://localhost:8000/health" \
-    "http://localhost:3005/health" \
     "http://localhost:8080/health" \
     "http://localhost:5180/api/runtime/agents/templates?scope=common&limit=3" \
     "http://localhost:5180/" \

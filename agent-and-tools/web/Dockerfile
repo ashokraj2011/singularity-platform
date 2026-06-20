@@ -53,12 +53,10 @@ ARG AGENT_SERVICE_URL=http://agent-service:3001
 ARG TOOL_SERVICE_URL=http://tool-service:3002
 ARG AGENT_RUNTIME_URL=http://agent-runtime:3003
 ARG PROMPT_COMPOSER_URL=http://prompt-composer:3004
-ARG CODE_FOUNDRY_API_URL=http://code-foundry-api:3005
 ENV AGENT_SERVICE_URL=$AGENT_SERVICE_URL
 ENV TOOL_SERVICE_URL=$TOOL_SERVICE_URL
 ENV AGENT_RUNTIME_URL=$AGENT_RUNTIME_URL
 ENV PROMPT_COMPOSER_URL=$PROMPT_COMPOSER_URL
-ENV CODE_FOUNDRY_API_URL=$CODE_FOUNDRY_API_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=next-deps /app/agent-and-tools/web/node_modules ./node_modules
 COPY agent-and-tools/web ./
@@ -100,7 +98,6 @@ esac
 if [ "$production_class" = "1" ]; then
     for pair in \
       "AUDIT_GOV_SERVICE_TOKEN:${AUDIT_GOV_SERVICE_TOKEN:-}" \
-      "FOUNDRY_TOKEN:${FOUNDRY_TOKEN:-${CODEGEN_SERVICE_TOKEN:-}}" \
       "WORKGRAPH_PROXY_SERVICE_TOKEN:${WORKGRAPH_PROXY_SERVICE_TOKEN:-}"
     do
       name="${pair%%:*}"

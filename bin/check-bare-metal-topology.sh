@@ -64,14 +64,15 @@ checks["bare-metal platform-web receives tenant-scope env"] = (
     and 'REQUIRE_TENANT_ID=\\"$REQUIRE_TENANT_ID\\"' in bare
     and 'IAM_SERVICE_TOKEN_TENANT_IDS=\\"$IAM_SERVICE_TOKEN_TENANT_IDS\\"' in bare
 )
-checks["bare-metal platform-web receives server-side proxy service tokens"] = (
+checks["bare-metal platform-web receives remaining server-side proxy service tokens"] = (
     'AUDIT_GOV_SERVICE_TOKEN=\\"$AUDIT_GOV_SERVICE_TOKEN\\"' in bare
-    and 'CODEGEN_SERVICE_TOKEN=\\"$CODEGEN_SERVICE_TOKEN\\"' in bare
-    and 'FOUNDRY_TOKEN=\\"$CODEGEN_SERVICE_TOKEN\\"' in bare
+    and 'WORKGRAPH_PROXY_SERVICE_TOKEN=\\"$WORKGRAPH_PROXY_SERVICE_TOKEN\\"' in bare
 )
-checks["bare-metal code-foundry-api stays localhost-bound"] = (
-    'boot code-foundry-api' in bare
-    and 'HOST=127.0.0.1 PORT=3005' in bare
+checks["bare-metal code generation is Workgraph-owned"] = (
+    'boot code-foundry-api' not in bare
+    and 'PORT=3005' not in bare
+    and 'CODE_FOUNDRY_API_URL' not in bare
+    and 'CREATE DATABASE singularity_codegen' not in bare
 )
 checks["bare-metal prompt/workgraph receive Context Fabric service token"] = (
     'export CONTEXT_FABRIC_SERVICE_TOKEN="${CONTEXT_FABRIC_SERVICE_TOKEN:-$(config_value tokens.contextFabricServiceToken dev-context-fabric-service-token)}"' in bare

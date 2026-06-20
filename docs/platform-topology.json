@@ -6,10 +6,9 @@
       "platform-web": "unified Next.js/nginx frontend for every UI surface",
       "platform-core": "agent-service, tool-service, agent-runtime, prompt-composer",
       "iam-service": "identity, users, teams, roles, capabilities",
-      "workgraph-api": "workflow templates, designer, runs, WorkItems, Workbench APIs",
+      "workgraph-api": "workflow templates, designer, runs, WorkItems, Workbench APIs, and code generation",
       "context-api": "Context Fabric orchestration/context API",
-      "code-foundry-api": "Code Foundry backend for /foundry",
-      "at-postgres": "shared app/IAM/agent/tools/prompt/foundry Postgres",
+      "at-postgres": "shared app/IAM/agent/tools/prompt Postgres",
       "wg-postgres": "Workgraph Postgres",
       "wg-minio": "Workgraph artifact object storage"
     },

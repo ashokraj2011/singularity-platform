@@ -44,8 +44,8 @@ def request_json(
         "user-agent": "singularity-foundry-lifecycle-smoke",
     }
     if token:
-        # The Platform Web proxy verifies this caller IAM token, then replaces
-        # it with its server-held Code Foundry service token before upstream.
+        # The Platform Web proxy verifies this caller IAM token, then forwards
+        # the user identity to Workgraph's code generation routes.
         req_headers["authorization"] = f"Bearer {token}"
     if headers:
         req_headers.update(headers)

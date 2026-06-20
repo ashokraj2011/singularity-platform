@@ -145,18 +145,6 @@ export async function GET(request: NextRequest) {
       authToken: null,
     },
     {
-      id: "code-foundry-api",
-      label: "Code Foundry API",
-      description: "Repository analysis, change plans, generation history, and verification runs.",
-      category: "runtime",
-      envKey: "CODE_FOUNDRY_API_URL",
-      url: cleanUrl(process.env.CODE_FOUNDRY_API_URL),
-      healthPath: "/health",
-      required: false,
-      remoteCapable: false,
-      authToken: process.env.FOUNDRY_TOKEN ?? process.env.CODEGEN_SERVICE_TOKEN ?? null,
-    },
-    {
       id: "audit-governance",
       label: "Audit Governance",
       description: "Governance ledger and audit evidence collection.",

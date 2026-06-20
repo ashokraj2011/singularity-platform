@@ -27,7 +27,7 @@ INFRA="at-postgres wg-postgres wg-minio"
 BOOTSTRAP="at-postgres-bootstrap"
 # Everything except mcp-server / llm-gateway / mcp-sandbox-runner. --no-deps keeps
 # context-api's depends_on from pulling the profiled mcp/gateway containers in.
-CORE_APPS="iam-service platform-core context-api workgraph-api code-foundry-api platform-web"
+CORE_APPS="iam-service platform-core context-api workgraph-api platform-web"
 FEATURE_SVCS="platform-core context-api workgraph-api platform-web"
 
 build_app_list() {
@@ -36,7 +36,7 @@ build_app_list() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --build) BUILD="--build" ;;
-      --with-foundry|--foundry) ;; # retained for compatibility; Code Foundry API is core now.
+      --with-foundry|--foundry) ;; # retained for compatibility; Code Generation is Workgraph-owned now.
       --with-verifier|--verification) APPS="$APPS formal-verifier" ;;
       --with-compression|--compression) APPS="$APPS prompt-compressor" ;;
       --with-legacy-ui|--legacy-ui) APPS="$APPS workgraph-web blueprint-workbench user-and-capability code-foundry-web portal edge-gateway" ;;

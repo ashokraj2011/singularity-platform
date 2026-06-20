@@ -2413,3 +2413,220 @@ model LlmConnection {
 
   @@map("llm_connection")
 }
+
+// ─── CODE GENERATION / FOUNDRY ──────────────────────────────────────────────
+//
+// Workgraph owns SDLC execution evidence, so the former standalone Foundry
+// run spine is represented here as first-class Workgraph data.
+// The external API contract intentionally keeps the old /api/codegen response
+// shape while storing runs, artifacts, receipts, gaps, and patch tasks beside
+// workflow execution records.
+
+model CodegenSpec {
+  id              String   @id @default(uuid())
+  specName        String
+  version         String   @default("1.0.0")
+  kind            String
+  state           String   @default("DRAFT")
+  yaml            String
+  canonicalJson   Json
+  specHash        String
+  irJson          Json?
+  irHash          String?
+  workItemId      String?
+  createdById     String?
+  tenantId        String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  lifecycleEvents CodegenSpecLifecycleEvent[]
+  runs            CodegenRun[]
+
+  @@unique([specName, version])
+  @@index([state, createdAt])
+  @@index([specHash])
+  @@index([tenantId])
+  @@map("codegen_specs")
+}
+
+model CodegenSpecLifecycleEvent {
+  id          String   @id @default(uuid())
+  specId      String
+  fromState   String?
+  toState     String
+  actorId     String?
+  reason      String?
+  payload     Json?
+  occurredAt  DateTime @default(now())
+
+  spec        CodegenSpec @relation(fields: [specId], references: [id], onDelete: Cascade)
+
+  @@index([specId, occurredAt])
+  @@map("codegen_spec_lifecycle_events")
+}
+
+model CodegenRun {
+  id                String   @id @default(uuid())
+  specId            String
+  irHash            String
+  templateVersion   String
+  generatorVersion  String
+  status            String   @default("STARTED")
+  mode              String   @default("GREENFIELD")
+  brownfieldPlanId  String?
+  outputPath        String?
+  workflowInstanceId String?
+  tenantId          String?
+  startedAt         DateTime @default(now())
+  completedAt       DateTime?
+
+  spec              CodegenSpec        @relation(fields: [specId], references: [id], onDelete: Cascade)
+  receipt           CodegenReceipt?
+  artifacts         CodegenArtifact[]
+  gaps              CodegenGap[]
+  verifications     CodegenVerification[]
+  llmTasks          CodegenLlmPatchTask[]
+  changePlan        CodegenChangePlan? @relation(fields: [brownfieldPlanId], references: [id])
+
+  @@index([specId, startedAt])
+  @@index([status])
+  @@index([mode])
+  @@index([workflowInstanceId])
+  @@index([tenantId])
+  @@map("codegen_runs")
+}
+
+model CodegenRepoModel {
+  id            String   @id @default(uuid())
+  repoPath      String
+  language      String
+  framework     String
+  modelJson     Json
+  modelHash     String
+  scannedById   String?
+  tenantId      String?
+  scannedAt     DateTime @default(now())
+  changePlans   CodegenChangePlan[]
+
+  @@index([repoPath, scannedAt])
+  @@index([modelHash])
+  @@index([tenantId])
+  @@map("codegen_repo_models")
+}
+
+model CodegenChangePlan {
+  id                  String   @id @default(uuid())
+  repoModelId         String
+  enhancementSpecJson Json
+  enhancementSpecHash String
+  planJson            Json
+  planHash            String
+  status              String   @default("PROPOSED")
+  tenantId            String?
+  createdAt           DateTime @default(now())
+  appliedAt           DateTime?
+
+  repoModel           CodegenRepoModel @relation(fields: [repoModelId], references: [id])
+  runs                CodegenRun[]
+
+  @@index([repoModelId])
+  @@index([status])
+  @@index([tenantId])
+  @@map("codegen_change_plans")
+}
+
+model CodegenArtifact {
+  id            String   @id @default(uuid())
+  runId         String
+  path          String
+  contentHash   String
+  fileType      String
+  generatedBy   String
+  protected     Boolean  @default(false)
+  content       String?
+  sizeBytes     Int?
+  createdAt     DateTime @default(now())
+
+  run           CodegenRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, path])
+  @@index([runId])
+  @@map("codegen_artifacts")
+}
+
+model CodegenGap {
+  id                    String   @id @default(uuid())
+  runId                 String
+  gapType               String
+  severity              String   @default("medium")
+  filePath              String?
+  className             String?
+  methodName            String?
+  regionId              String?
+  description           String
+  recommendedResolution String?
+  llmEligible           Boolean  @default(false)
+  resolved              Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  resolvedAt            DateTime?
+
+  run                   CodegenRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, resolved])
+  @@index([gapType])
+  @@map("codegen_gaps")
+}
+
+model CodegenLlmPatchTask {
+  id               String   @id @default(uuid())
+  runId            String
+  gapId            String?
+  taskType         String
+  status           String   @default("PENDING")
+  targetFile       String
+  targetClass      String?
+  targetMethod     String?
+  regionId         String
+  allowedChanges   Json
+  forbiddenChanges Json
+  promptHash       String?
+  responseHash     String?
+  cfCallId         String?
+  bundleHash       String?
+  metadata         Json?
+  createdAt        DateTime @default(now())
+  dispatchedAt     DateTime?
+  completedAt      DateTime?
+
+  run              CodegenRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, status])
+  @@index([gapId])
+  @@map("codegen_llm_patch_tasks")
+}
+
+model CodegenVerification {
+  id            String   @id @default(uuid())
+  runId         String
+  status        String
+  result        Json
+  createdAt     DateTime @default(now())
+
+  run           CodegenRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, createdAt])
+  @@map("codegen_verifications")
+}
+
+model CodegenReceipt {
+  id            String   @id @default(uuid())
+  runId         String   @unique
+  receiptJson   Json
+  receiptHash   String
+  createdAt     DateTime @default(now())
+
+  run           CodegenRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([receiptHash])
+  @@map("codegen_receipts")
+}

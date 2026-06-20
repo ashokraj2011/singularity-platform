@@ -168,9 +168,14 @@ const checks = [
     expression: `
       (() => {
         const text = document.body?.innerText || "";
+        const hasRuns = !/No runs match these filters/i.test(text);
         return {
-          ok: /Runs/i.test(text) && /Start a run|Workflow|server/i.test(text) && !/Could not load|Unexpected token/i.test(text),
-          detail: text.slice(0, 240)
+          ok: /Runs/i.test(text)
+            && /Start a run|Workflow|server/i.test(text)
+            && !/Could not load|Unexpected token/i.test(text)
+            && !/Event Horizon/i.test(text)
+            && (!hasRuns || (/Copilot YAML/i.test(text) && /Runner/i.test(text))),
+          detail: text.slice(0, 360)
         };
       })()
     `,
@@ -329,6 +334,19 @@ const checks = [
     `,
   },
   {
+    name: "operations access keys",
+    path: "/operations/access-keys",
+    expression: `
+      (() => {
+        const text = document.body?.innerText || "";
+        return {
+          ok: /Access Keys and Tokens/i.test(text) && /Raw secret values are never sent/i.test(text) && /Operator Commands/i.test(text) && /WORKGRAPH_PROXY_SERVICE_TOKEN|MCP_BEARER_TOKEN|Sign in through Identity/i.test(text) && !/Could not load this surface|Unexpected token|Internal Server Error/i.test(text),
+          detail: text.slice(0, 360)
+        };
+      })()
+    `,
+  },
+  {
     name: "audit curation",
     path: "/audit/curation",
     expression: `
@@ -411,6 +429,19 @@ const checks = [
         return {
           ok: /Code Foundry/i.test(text) && /Run History/i.test(text) && /Generation History/i.test(text) && /Spec Lifecycle/i.test(text) && !/Unexpected token|Internal Server Error|--profile foundry/i.test(text),
           detail: text.slice(0, 320)
+        };
+      })()
+    `,
+  },
+  {
+    name: "code foundry repository inventory",
+    path: "/foundry/repos",
+    expression: `
+      (() => {
+        const text = document.body?.innerText || "";
+        return {
+          ok: /Code Generation/i.test(text) && /Repository Inventory/i.test(text) && /This is setup context, not a single run detail/i.test(text) && /SETUP|Setup/i.test(text) && /RUN REVIEW|Run Review/i.test(text) && !/Select generation run/i.test(text) && !/Unexpected token|Internal Server Error|--profile foundry/i.test(text),
+          detail: text.slice(0, 360)
         };
       })()
     `,

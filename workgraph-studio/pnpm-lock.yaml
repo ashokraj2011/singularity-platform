@@ -85,13 +85,16 @@ importers:
       undici:
         specifier: ^6.26.0
         version: 6.26.0
+      yaml:
+        specifier: ^2.8.4
+        version: 2.8.4
       zod:
         specifier: ^3.24.1
         version: 3.25.76
     devDependencies:
       '@mermaid-js/mermaid-cli':
         specifier: ^11.15.0
-        version: 11.15.0(@types/react@19.2.14)(puppeteer@24.43.1(typescript@5.9.3))
+        version: 11.15.0(@types/react@19.2.14)(puppeteer@24.43.1(typescript@5.9.3))(yaml@2.8.4)
       '@types/bcryptjs':
         specifier: ^2.4.6
         version: 2.4.6
@@ -118,7 +121,7 @@ importers:
         version: 5.22.0
       prisma-erd-generator:
         specifier: 2.4.2
-        version: 2.4.2(@prisma/client@5.22.0(prisma@5.22.0))(@types/react@19.2.14)(puppeteer@24.43.1(typescript@5.9.3))
+        version: 2.4.2(@prisma/client@5.22.0(prisma@5.22.0))(@types/react@19.2.14)(puppeteer@24.43.1(typescript@5.9.3))(yaml@2.8.4)
       ts-node:
         specifier: ^10.9.2
         version: 10.9.2(@types/node@22.19.17)(typescript@5.9.3)
@@ -5275,7 +5278,7 @@ snapshots:
       react-dom: 19.2.5(react@19.2.5)
       use-sync-external-store: 1.6.0(react@19.2.5)
 
-  '@headlessui/tailwindcss@0.2.2(tailwindcss@3.4.19)':
+  '@headlessui/tailwindcss@0.2.2(tailwindcss@3.4.19(yaml@2.8.4))':
     dependencies:
       tailwindcss: 3.4.19(yaml@2.8.4)
 
@@ -5343,11 +5346,11 @@ snapshots:
       mermaid: 11.15.0
     optional: true
 
-  '@mermaid-js/mermaid-cli@11.15.0(@types/react@19.2.14)(puppeteer@24.43.1(typescript@5.9.3))':
+  '@mermaid-js/mermaid-cli@11.15.0(@types/react@19.2.14)(puppeteer@24.43.1(typescript@5.9.3))(yaml@2.8.4)':
     dependencies:
       '@fortawesome/fontawesome-free': 7.2.0
       '@mermaid-js/layout-elk': 0.2.1(mermaid@11.15.0)
-      '@mermaid-js/mermaid-zenuml': 0.2.3(@types/react@19.2.14)(mermaid@11.15.0)
+      '@mermaid-js/mermaid-zenuml': 0.2.3(@types/react@19.2.14)(mermaid@11.15.0)(yaml@2.8.4)
       chalk: 5.6.2
       commander: 13.1.0
       import-meta-resolve: 4.2.0
@@ -5365,9 +5368,9 @@ snapshots:
       - tsx
       - yaml
 
-  '@mermaid-js/mermaid-zenuml@0.2.3(@types/react@19.2.14)(mermaid@11.15.0)':
+  '@mermaid-js/mermaid-zenuml@0.2.3(@types/react@19.2.14)(mermaid@11.15.0)(yaml@2.8.4)':
     dependencies:
-      '@zenuml/core': 3.48.3(@types/react@19.2.14)
+      '@zenuml/core': 3.48.3(@types/react@19.2.14)(yaml@2.8.4)
       mermaid: 11.15.0
     transitivePeerDependencies:
       - '@babel/core'
@@ -7252,11 +7255,11 @@ snapshots:
       loupe: 3.2.1
       tinyrainbow: 1.2.0
 
-  '@zenuml/core@3.48.3(@types/react@19.2.14)':
+  '@zenuml/core@3.48.3(@types/react@19.2.14)(yaml@2.8.4)':
     dependencies:
       '@floating-ui/react': 0.27.19(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@headlessui/react': 2.2.10(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
-      '@headlessui/tailwindcss': 0.2.2(tailwindcss@3.4.19)
+      '@headlessui/tailwindcss': 0.2.2(tailwindcss@3.4.19(yaml@2.8.4))
       antlr4: 4.11.0
       class-variance-authority: 0.7.1
       clsx: 2.1.1
@@ -9297,9 +9300,9 @@ snapshots:
     dependencies:
       xtend: 4.0.2
 
-  prisma-erd-generator@2.4.2(@prisma/client@5.22.0(prisma@5.22.0))(@types/react@19.2.14)(puppeteer@24.43.1(typescript@5.9.3)):
+  prisma-erd-generator@2.4.2(@prisma/client@5.22.0(prisma@5.22.0))(@types/react@19.2.14)(puppeteer@24.43.1(typescript@5.9.3))(yaml@2.8.4):
     dependencies:
-      '@mermaid-js/mermaid-cli': 11.15.0(@types/react@19.2.14)(puppeteer@24.43.1(typescript@5.9.3))
+      '@mermaid-js/mermaid-cli': 11.15.0(@types/react@19.2.14)(puppeteer@24.43.1(typescript@5.9.3))(yaml@2.8.4)
       '@prisma/client': 5.22.0(prisma@5.22.0)
       '@prisma/generator-helper': 7.8.0
       dotenv: 16.6.1

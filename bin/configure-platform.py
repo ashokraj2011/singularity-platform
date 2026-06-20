@@ -120,7 +120,6 @@ CONFIG_KEY_MAP = {
     "tokens.workgraphIncomingEventSecrets": "WORKGRAPH_INCOMING_EVENT_SECRETS",
     "tokens.iamServiceTokenTenantIds": "IAM_SERVICE_TOKEN_TENANT_IDS",
     "tokens.workgraphInternalTokenTenantIds": "WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS",
-    "tokens.codegenServiceToken": "CODEGEN_SERVICE_TOKEN",
     "mcpRuntime.serverUrl": "MCP_SERVER_URL",
     "mcpRuntime.publicBaseUrl": "MCP_PUBLIC_BASE_URL",
     "mcpRuntime.bearerToken": "MCP_BEARER_TOKEN",
@@ -392,7 +391,6 @@ def config_template(profile: str, args: argparse.Namespace | None = None) -> dic
             ),
             "iamServiceTokenTenantIds": os.getenv("IAM_SERVICE_TOKEN_TENANT_IDS", ""),
             "workgraphInternalTokenTenantIds": os.getenv("WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS", ""),
-            "codegenServiceToken": os.getenv("CODEGEN_SERVICE_TOKEN", "dev-codegen-service-token"),
         },
         "mcpRuntime": {
             "serverUrl": "http://localhost:7100",
@@ -601,7 +599,6 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
             "iam": "dev-workgraph-incoming-event-secret-min-32-chars",
         }, separators=(",", ":")),
     )
-    codegen_service_token = pick("CODEGEN_SERVICE_TOKEN", "codegen_service_token", "CODEGEN_SERVICE_TOKEN", "dev-codegen-service-token")
     sandbox_root = pick("MCP_SANDBOX_ROOT", "mcp_sandbox_root", "MCP_SANDBOX_ROOT", str(ROOT))
     runner_host_workspace_default = absolute_local_path(os.getenv("MCP_SANDBOX_HOST_PATH", sandbox_root))
     runner_host_workspace = pick(
@@ -666,8 +663,6 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
         "IAM_SERVICE_TOKEN_TENANT_IDS": pick("IAM_SERVICE_TOKEN_TENANT_IDS", None, "IAM_SERVICE_TOKEN_TENANT_IDS", ""),
         "WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS": pick("WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS", None, "WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS", ""),
         "WORKGRAPH_PROXY_SERVICE_TOKEN": pick("WORKGRAPH_PROXY_SERVICE_TOKEN", "workgraph_proxy_service_token", "WORKGRAPH_PROXY_SERVICE_TOKEN", ""),
-        "CODEGEN_SERVICE_TOKEN": codegen_service_token,
-        "FOUNDRY_TOKEN": pick("FOUNDRY_TOKEN", "codegen_service_token", "FOUNDRY_TOKEN", codegen_service_token),
         "WORKGRAPH_ARTIFACT_FETCH_URL": pick("WORKGRAPH_ARTIFACT_FETCH_URL", None, "WORKGRAPH_ARTIFACT_FETCH_URL", "http://localhost:8080/api/internal/artifacts/fetch"),
         "WORKGRAPH_ARTIFACT_FETCH_TOKEN": workgraph_internal_token,
         "PROMPT_COMPOSER_URL": pick("PROMPT_COMPOSER_URL", "prompt_composer_url", "PROMPT_COMPOSER_URL", "http://localhost:3004"),
@@ -785,8 +780,6 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
                 "IAM_SERVICE_TOKEN_TENANT_IDS",
                 "WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS",
                 "WORKGRAPH_PROXY_SERVICE_TOKEN",
-                "CODEGEN_SERVICE_TOKEN",
-                "FOUNDRY_TOKEN",
                 "WORKGRAPH_ARTIFACT_FETCH_URL",
                 "WORKGRAPH_ARTIFACT_FETCH_TOKEN",
                 "PROMPT_COMPOSER_URL",
@@ -1029,8 +1022,6 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
             "WORKGRAPH_ARTIFACT_FETCH_URL": values["WORKGRAPH_ARTIFACT_FETCH_URL"],
             "WORKGRAPH_ARTIFACT_FETCH_TOKEN": values["WORKGRAPH_ARTIFACT_FETCH_TOKEN"],
             "WORKGRAPH_PROXY_SERVICE_TOKEN": values["WORKGRAPH_PROXY_SERVICE_TOKEN"],
-            "CODEGEN_SERVICE_TOKEN": values["CODEGEN_SERVICE_TOKEN"],
-            "FOUNDRY_TOKEN": values["FOUNDRY_TOKEN"],
             "PROVIDER_MANIFEST_SIGNATURE_MODE": values["PROVIDER_MANIFEST_SIGNATURE_MODE"],
             "PROVIDER_MANIFEST_TRUSTED_KEYS": values["PROVIDER_MANIFEST_TRUSTED_KEYS"],
             "PROVIDER_MANIFEST_MAX_TTL_SECONDS": values["PROVIDER_MANIFEST_MAX_TTL_SECONDS"],
@@ -1134,7 +1125,6 @@ def command_rotate_secrets(args: argparse.Namespace) -> None:
     }
     set_path(data, "tokens.workgraphIncomingEventSecrets", json.dumps(incoming_event_secrets, separators=(",", ":")))
     rotated.append(("tokens.workgraphIncomingEventSecrets", "<rotated JSON map>"))
-    rotate("tokens.codegenServiceToken", "codegensvc")
     rotate("mcpRuntime.bearerToken", "mcp")
     rotate("mcpRuntime.runnerToken", "mcprunner")
     rotate("mcpRuntime.toolGrantSigningSecret", "toolgrant")
@@ -1163,7 +1153,6 @@ def command_rotate_secrets(args: argparse.Namespace) -> None:
     print("  ./singularity.sh restart context-api")
     print("  Mint WORKGRAPH_PROXY_SERVICE_TOKEN through IAM before production deploy; it must be an IAM service JWT, not a random secret.")
     print("  ./singularity.sh restart workgraph-api")
-    print("  ./singularity.sh restart code-foundry-api")
     print("  ./singularity.sh restart platform-web")
     print("  ./singularity.sh doctor secrets")
     if not getattr(args, "include_bootstrap_password", False):
@@ -2148,7 +2137,6 @@ def run_production_mode_doctor(record, merged: dict[str, str]) -> None:
     tenant_mode = live_value("TENANT_ISOLATION_MODE", "off").strip().lower()
     require_tenant_id = live_value("REQUIRE_TENANT_ID", "false").strip().lower()
     iam_service_token_tenant_ids = sorted({item.strip() for item in live_value("IAM_SERVICE_TOKEN_TENANT_IDS").split(",") if item.strip()})
-    codegen_token = os.getenv("CODEGEN_SERVICE_TOKEN") or os.getenv("FOUNDRY_TOKEN") or merged.get("CODEGEN_SERVICE_TOKEN") or merged.get("FOUNDRY_TOKEN") or ""
     audit_token = live_value("AUDIT_GOV_SERVICE_TOKEN")
     learning_token = live_value("LEARNING_SERVICE_TOKEN", audit_token)
     workgraph_incoming_event_secrets = live_value("WORKGRAPH_INCOMING_EVENT_SECRETS")
@@ -2262,7 +2250,6 @@ def run_production_mode_doctor(record, merged: dict[str, str]) -> None:
     token_checks = [
         ("AUDIT_GOV_SERVICE_TOKEN", audit_token),
         ("LEARNING_SERVICE_TOKEN", learning_token),
-        ("CODEGEN_SERVICE_TOKEN/FOUNDRY_TOKEN", codegen_token),
     ]
     for name, value in token_checks:
         if len(value.strip()) < 32 or value.strip().startswith(("dev-", "test-", "change-me", "changeme")):
@@ -2401,7 +2388,6 @@ def command_doctor(args: argparse.Namespace) -> None:
         ("tool service", "http://localhost:3002/health", True),
         ("agent runtime", "http://localhost:3003/health", True),
         ("prompt composer", "http://localhost:3004/health", True),
-        ("code foundry api", "http://localhost:3005/health", True),
     ]
     for name, url, required in urls:
         status, msg = http_check(name, url, required=required)
@@ -3017,7 +3003,6 @@ def service_name_for_url(name: str) -> str:
         "tool service": "platform-core",
         "agent runtime": "platform-core",
         "prompt composer": "platform-core",
-        "code foundry api": "code-foundry-api",
     }.get(name, name)
 
 

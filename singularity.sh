@@ -84,7 +84,7 @@ compose_orphan_args() {
 #
 # Keep remote/pluggable runtime ports out of the default cleanup path. The user
 # may be running llm-gateway or MCP outside this compose stack.
-SINGULARITY_CORE_APP_PORTS=(3000 3001 3002 3003 3004 3005 5180 8000 8080 8100)
+SINGULARITY_CORE_APP_PORTS=(3000 3001 3002 3003 3004 5180 8000 8080 8100)
 SINGULARITY_RUNTIME_APP_PORTS=(7100 8001)
 SINGULARITY_OPTIONAL_APP_PORTS=(5174 5175 5176 5181 5182 8002 8003 8010 8011 8101 8500)
 SINGULARITY_OPTIONAL_SERVICES=(
@@ -226,9 +226,6 @@ case "$cmd" in
       fi
       if profile_active mcp; then
         ports_to_free+=(7100)
-      fi
-      if profile_active foundry || profile_active code-foundry; then
-        ports_to_free+=(3005)
       fi
       if profile_active verification; then
         ports_to_free+=(8010)
@@ -396,7 +393,7 @@ ${C_BLUE}Singularity Platform URLs${C_END}
     tool-service        http://localhost:3002/api/v1 (served by platform-core in Docker)
     agent-service       http://localhost:3001/api/v1 (served by platform-core in Docker)
     context-api         http://localhost:8000      (core orchestration/context API)
-    code-foundry-api    http://localhost:3005      (core backend for /foundry)
+    code generation     http://localhost:8080/api/codegen (served by workgraph-api for /foundry)
 
   ${C_GREEN}Optional Runtime Infrastructure${C_END}
     llm-gateway         http://localhost:8001      (--profile llm-gateway, or remote)

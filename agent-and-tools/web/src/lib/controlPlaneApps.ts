@@ -65,11 +65,11 @@ export function controlPlaneApps(): ControlPlaneApp[] {
     },
     {
       id: "foundry",
-      label: "Foundry",
+      label: "Code Generation",
       group: "Delivery",
       href: "/foundry",
       nativeHref: "/foundry",
-      summary: "Code generation runs, repositories, gaps, guarded LLM tasks, and receipts.",
+      summary: "Repository-aware generation runs, gaps, guarded patch tasks, verification, and receipts.",
       icon: Hammer,
     },
     {

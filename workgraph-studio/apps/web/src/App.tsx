@@ -118,10 +118,10 @@ export default function App() {
   )
 }
 
-// Event Horizon shows on every page EXCEPT the run viewer (/runs/:id …), where it
-// overlaps the run-graph node-panel controls.
+// Event Horizon shows on every page EXCEPT run surfaces, where it overlaps
+// execution controls and Copilot export actions.
 function EventHorizonGate() {
   const { pathname } = useLocation()
-  if (/^\/runs\/[^/]+/.test(pathname)) return null
+  if (pathname === '/runs' || pathname.startsWith('/runs/')) return null
   return <EventHorizonChat />
 }

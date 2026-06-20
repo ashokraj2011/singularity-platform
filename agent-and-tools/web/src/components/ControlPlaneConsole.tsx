@@ -4,7 +4,7 @@ import Link from "next/link";
 import useSWR from "swr";
 import { ArrowRight, Compass, RefreshCw, ServerCog } from "lucide-react";
 import { controlPlaneApps } from "@/lib/controlPlaneApps";
-import { readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 import { valueText } from "@/lib/workgraph";
 
 type RuntimeInfrastructure = {
@@ -13,7 +13,7 @@ type RuntimeInfrastructure = {
 };
 
 async function runtimeInfrastructure(): Promise<RuntimeInfrastructure> {
-  const res = await fetch("/api/runtime-infrastructure", { cache: "no-store" });
+  const res = await fetch(apiPath("/api/runtime-infrastructure"), { cache: "no-store", headers: authHeaders() });
   const { raw, parsed } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
   return parsed as RuntimeInfrastructure;

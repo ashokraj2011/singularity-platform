@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { motion } from 'motion/react'
 import {
   GitFork, Search, Filter, Workflow as WorkflowIcon, ChevronRight,
+  Download, TerminalSquare,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { RUN_STATUS } from './runStatus'
@@ -259,6 +260,31 @@ function RunRowCard({
   const startedAt   = run.startedAt   ? new Date(run.startedAt).toLocaleString()   : null
   const completedAt = run.completedAt ? new Date(run.completedAt).toLocaleString() : null
   const createdAt   = new Date(run.createdAt).toLocaleString()
+  const [downloading, setDownloading] = useState<'yaml' | 'runner' | null>(null)
+
+  async function downloadCopilotExport(kind: 'yaml' | 'runner') {
+    if (run.source === 'browser') return
+    const path = kind === 'yaml' ? 'copilot-yaml' : 'copilot-runner.sh'
+    const ext = kind === 'yaml' ? 'yaml' : 'sh'
+    const mime = kind === 'yaml' ? 'application/x-yaml;charset=utf-8' : 'text/x-shellscript;charset=utf-8'
+    setDownloading(kind)
+    try {
+      const res = await api.get(`/workflow-instances/${run.id}/export/${path}`, { responseType: 'blob' })
+      const blob = res.data instanceof Blob ? res.data : new Blob([res.data], { type: mime })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `copilot-sdlc-${run.id.slice(0, 8)}.${ext}`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      alert(`Could not download Copilot ${kind === 'yaml' ? 'YAML' : 'runner'}: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setDownloading(null)
+    }
+  }
 
   return (
     <motion.div
@@ -322,7 +348,27 @@ function RunRowCard({
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+      <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        {run.source !== 'browser' && (
+          <>
+            <button
+              onClick={() => void downloadCopilotExport('yaml')}
+              title="Download this run as a Copilot workflow YAML"
+              disabled={downloading !== null}
+              style={btnSecondary()}
+            >
+              <Download size={11} /> {downloading === 'yaml' ? 'YAML...' : 'Copilot YAML'}
+            </button>
+            <button
+              onClick={() => void downloadCopilotExport('runner')}
+              title="Download a shell runner that executes the Copilot YAML and pushes artifacts/metrics back to the platform"
+              disabled={downloading !== null}
+              style={btnSecondary()}
+            >
+              <TerminalSquare size={11} /> {downloading === 'runner' ? 'Runner...' : 'Runner'}
+            </button>
+          </>
+        )}
         <button
           onClick={onOpen}
           title="Open the step-by-step run viewer"
@@ -350,6 +396,16 @@ function EmptyState() {
       </p>
     </div>
   )
+}
+
+function btnSecondary(): React.CSSProperties {
+  return {
+    display: 'flex', alignItems: 'center', gap: 4,
+    padding: '6px 10px', borderRadius: 8,
+    border: '1px solid var(--color-outline-variant)',
+    background: '#fff', color: 'var(--color-on-surface)',
+    fontSize: 12, fontWeight: 700, cursor: 'pointer',
+  }
 }
 
 function btnPrimary(): React.CSSProperties {

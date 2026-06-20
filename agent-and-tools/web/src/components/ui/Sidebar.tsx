@@ -10,95 +10,149 @@ import {
   Database, FileText, Globe, Link2, Package, Puzzle, ClipboardCheck,
 } from "lucide-react";
 
-const domains = [
-  { label: "Home",       href: "/",           icon: LayoutDashboard },
-  { label: "Operations", href: "/operations", icon: Network },
-  { label: "Agents",     href: "/agents",     icon: Bot },
-  { label: "Workflows",  href: "/workflows",  icon: Workflow },
-  { label: "Workbench",  href: "/workbench",  icon: Wrench },
-  { label: "Foundry",    href: "/foundry",    icon: Hammer },
-  { label: "Identity",   href: "/identity",   icon: Users },
-];
-
-const agentRuntime = [
-  { label: "Agent Studio",        href: "/agents/studio",       icon: Bot },
-  { label: "Capabilities",        href: "/capabilities",        icon: GitBranch },
-  { label: "Tools",               href: "/tools",               icon: Wrench },
-  { label: "Executions",          href: "/executions",          icon: Play },
-  { label: "Behavior Profiles",   href: "/prompt-profiles",     icon: Layers },
-  { label: "Prompt Workbench",    href: "/prompt-workbench",    icon: WandSparkles },
-  { label: "Instruction Blocks",  href: "/prompt-layers",       icon: ScrollText },
-  { label: "Tool Grants",         href: "/tool-grants",         icon: ShieldCheck },
-  { label: "Runtime Receipts",    href: "/runtime-executions",  icon: Activity },
-  { label: "Memory",              href: "/memory",              icon: Brain },
-];
-
-const workflowOperate = [
-  { label: "Planner", href: "/workflows/planner", icon: Route },
-  { label: "Inbox", href: "/workflows/inbox", icon: Inbox },
-  { label: "Work Hub", href: "/work-items", icon: Network },
-  { label: "Start Workflow", href: "/workflows/run", icon: Play },
-  { label: "Runs", href: "/runs", icon: Activity },
-  { label: "Run History", href: "/workflows/history", icon: FileText },
-  { label: "Runtime", href: "/workflows/runtime", icon: Zap },
-  { label: "Artifacts", href: "/workflows/artifacts/explorer", icon: Package },
-];
-
-const workflowAuthoring = [
-  { label: "Workflow Manager", href: "/workflows/templates", icon: Workflow },
-  { label: "Metadata", href: "/workflows/metadata", icon: Database },
-  { label: "Artifact Studio", href: "/workflows/artifacts", icon: ScrollText },
-  { label: "Node Types", href: "/workflows/node-types", icon: Puzzle },
-  { label: "Variables", href: "/identity/variables", icon: Globe },
-  { label: "Connectors", href: "/workflows/connectors", icon: Link2 },
-  { label: "LLM Routing", href: "/llm-settings", icon: Cpu },
-];
-
-const workbenchRuntime = [
-  { label: "Cockpit",       href: "/workbench/cockpit",      icon: Wrench },
-  { label: "Loop Theater",  href: "/workbench/loop-theater", icon: Play },
-  { label: "Governance",    href: "/workbench/governance",   icon: ShieldCheck },
-  { label: "Artifacts",     href: "/workbench/artifacts",    icon: ScrollText },
-];
-
-const foundryRuntime = [
-  { label: "Generation Cockpit", href: "/foundry", icon: Hammer },
-  { label: "Run History", href: "/foundry/history", icon: Activity },
-  { label: "Artifacts", href: "/foundry/artifacts", icon: Package },
-  { label: "Gaps", href: "/foundry/gaps", icon: ShieldCheck },
-  { label: "LLM Tasks", href: "/foundry/llm-tasks", icon: Cpu },
-  { label: "Receipts", href: "/foundry/receipts", icon: FileText },
-  { label: "Repos", href: "/foundry/repos", icon: GitBranch },
-  { label: "Change Plans", href: "/foundry/change-plans", icon: Route },
-  { label: "Verification", href: "/foundry/verification", icon: ClipboardCheck },
-];
-
-const identityAdmin = [
-  { label: "Dashboard", href: "/identity/dashboard", icon: LayoutDashboard },
-  { label: "Users", href: "/identity/users", icon: Users },
-  { label: "Teams", href: "/identity/teams", icon: Network },
-  { label: "Roles", href: "/identity/roles", icon: ShieldCheck },
-  { label: "Capabilities", href: "/identity/capabilities", icon: GitBranch },
-  { label: "Permissions", href: "/identity/permissions", icon: ShieldCheck },
-  { label: "Variables", href: "/identity/variables", icon: Globe },
-];
-
-const governance = [
-  { label: "Engine",       href: "/engine",       icon: Zap },
-  { label: "LLM Settings", href: "/llm-settings", icon: Cpu },
-  { label: "Audit",        href: "/audit",         icon: ShieldCheck },
-  { label: "Eval Curation", href: "/audit/curation", icon: ClipboardCheck },
-  { label: "Cost",         href: "/cost",          icon: DollarSign },
-];
-
 type ItemDef = { label: string; href: string; icon: typeof LayoutDashboard };
-type NavSection = { label: string; items: ItemDef[] };
+type NavSection = { label: string; description: string; items: ItemDef[] };
+
+const menuSections: NavSection[] = [
+  {
+    label: "Start Here",
+    description: "Overview and app catalog",
+    items: [
+      { label: "Command Center", href: "/", icon: LayoutDashboard },
+      { label: "App Catalog", href: "/control-plane", icon: Network },
+    ],
+  },
+  {
+    label: "Operations Center",
+    description: "Health, topology, setup, and trust",
+    items: [
+      { label: "Readiness", href: "/operations/readiness", icon: Activity },
+      { label: "Live App Map", href: "/operations/architecture", icon: Network },
+      { label: "Access Keys", href: "/operations/access-keys", icon: ShieldCheck },
+      { label: "Setup Center", href: "/operations/setup", icon: Wrench },
+      { label: "Trust Evidence", href: "/operations/trust", icon: ClipboardCheck },
+    ],
+  },
+  {
+    label: "Agent Studio",
+    description: "Create, govern, and run agents",
+    items: [
+      { label: "Create Agents", href: "/agents/studio", icon: Bot },
+      { label: "Agent Profiles", href: "/agents", icon: Layers },
+      { label: "Capabilities", href: "/capabilities", icon: GitBranch },
+      { label: "Tools", href: "/tools", icon: Wrench },
+      { label: "Tool Grants", href: "/tool-grants", icon: ShieldCheck },
+      { label: "Executions", href: "/executions", icon: Play },
+    ],
+  },
+  {
+    label: "Prompts and Knowledge",
+    description: "Behavior, prompts, learning, and memory",
+    items: [
+      { label: "Prompt Workbench", href: "/prompt-workbench", icon: WandSparkles },
+      { label: "Behavior Profiles", href: "/prompt-profiles", icon: Layers },
+      { label: "Instruction Blocks", href: "/prompt-layers", icon: ScrollText },
+      { label: "Runtime Receipts", href: "/runtime-executions", icon: Activity },
+      { label: "Learning", href: "/learning", icon: Brain },
+      { label: "Memory", href: "/memory", icon: Database },
+    ],
+  },
+  {
+    label: "Workflow Operations",
+    description: "Plan, route, start, and monitor work",
+    items: [
+      { label: "Workflow Home", href: "/workflows", icon: Workflow },
+      { label: "Planner", href: "/workflows/planner", icon: Route },
+      { label: "Inbox", href: "/workflows/inbox", icon: Inbox },
+      { label: "Work Hub", href: "/work-items", icon: Network },
+      { label: "Start Workflow", href: "/workflows/run", icon: Play },
+      { label: "Runs", href: "/runs", icon: Activity },
+      { label: "Run History", href: "/workflows/history", icon: FileText },
+      { label: "Runtime", href: "/workflows/runtime", icon: Zap },
+    ],
+  },
+  {
+    label: "Workflow Authoring",
+    description: "Design workflow assets and integrations",
+    items: [
+      { label: "Workflow Manager", href: "/workflows/templates", icon: Workflow },
+      { label: "Metadata", href: "/workflows/metadata", icon: Database },
+      { label: "Artifact Studio", href: "/workflows/artifacts", icon: ScrollText },
+      { label: "Artifact Explorer", href: "/workflows/artifacts/explorer", icon: Package },
+      { label: "Node Types", href: "/workflows/node-types", icon: Puzzle },
+      { label: "Connectors", href: "/workflows/connectors", icon: Link2 },
+    ],
+  },
+  {
+    label: "Workbench Neo",
+    description: "Story-to-delivery workspace",
+    items: [
+      { label: "Workbench Home", href: "/workbench", icon: Wrench },
+      { label: "Cockpit", href: "/workbench/cockpit", icon: Wrench },
+      { label: "Stage Chat", href: "/workbench/stage-chat", icon: Brain },
+      { label: "Loop Theater", href: "/workbench/loop-theater", icon: Play },
+      { label: "Governance", href: "/workbench/governance", icon: ShieldCheck },
+      { label: "Code Review", href: "/workbench/code-review", icon: ClipboardCheck },
+      { label: "Milestones", href: "/workbench/milestones", icon: Route },
+      { label: "Artifacts", href: "/workbench/artifacts", icon: ScrollText },
+      { label: "Audit", href: "/workbench/audit", icon: FileText },
+      { label: "Export", href: "/workbench/export", icon: Package },
+    ],
+  },
+  {
+    label: "Code Generation",
+    description: "Repos to patches and verification",
+    items: [
+      { label: "Run Cockpit", href: "/foundry", icon: Hammer },
+      { label: "Repositories", href: "/foundry/repos", icon: GitBranch },
+      { label: "Generation Runs", href: "/foundry/runs", icon: Play },
+      { label: "Run History", href: "/foundry/history", icon: Activity },
+      { label: "Generated Files", href: "/foundry/artifacts", icon: Package },
+      { label: "Gaps to Fix", href: "/foundry/gaps", icon: ShieldCheck },
+      { label: "Patch Tasks", href: "/foundry/llm-tasks", icon: Cpu },
+      { label: "Change Plans", href: "/foundry/change-plans", icon: Route },
+      { label: "Verify Output", href: "/foundry/verification", icon: ClipboardCheck },
+      { label: "Receipts", href: "/foundry/receipts", icon: FileText },
+    ],
+  },
+  {
+    label: "Identity and Access",
+    description: "Users, teams, roles, and capability access",
+    items: [
+      { label: "Identity Dashboard", href: "/identity/dashboard", icon: LayoutDashboard },
+      { label: "Users", href: "/identity/users", icon: Users },
+      { label: "Teams", href: "/identity/teams", icon: Network },
+      { label: "Business Units", href: "/identity/business-units", icon: Layers },
+      { label: "Roles", href: "/identity/roles", icon: ShieldCheck },
+      { label: "Permissions", href: "/identity/permissions", icon: ShieldCheck },
+      { label: "Capabilities", href: "/identity/capabilities", icon: GitBranch },
+      { label: "Capability Graph", href: "/identity/capability-graph", icon: Route },
+      { label: "Variables", href: "/identity/variables", icon: Globe },
+      { label: "Authz Check", href: "/identity/authz-check", icon: ClipboardCheck },
+      { label: "Sharing Grants", href: "/identity/sharing-grants", icon: Link2 },
+      { label: "Identity Audit", href: "/identity/audit", icon: FileText },
+    ],
+  },
+  {
+    label: "Governance and FinOps",
+    description: "Policies, evidence, model routing, and cost",
+    items: [
+      { label: "Engine", href: "/engine", icon: Zap },
+      { label: "LLM Routing", href: "/llm-settings", icon: Cpu },
+      { label: "Audit", href: "/audit", icon: ShieldCheck },
+      { label: "Eval Curation", href: "/audit/curation", icon: ClipboardCheck },
+      { label: "Cost", href: "/cost", icon: DollarSign },
+    ],
+  },
+];
+
+const allMenuItems = menuSections.flatMap((section) => section.items);
 
 function NavItem({
   label, href, icon: Icon, active, collapsed,
 }: ItemDef & { active: boolean; collapsed: boolean }) {
   return (
-    <Link href={href} className="block">
+    <Link href={href} className="block" aria-current={active ? "page" : undefined}>
       <div
         className={`nav-item${active ? " active" : ""}`}
         title={collapsed ? label : undefined}
@@ -156,38 +210,57 @@ export function Sidebar() {
     });
   }
 
-  const isActive = (href: string) =>
-    href === "/" ? path === "/" : path.startsWith(href);
+  const matchesHref = (href: string) =>
+    href === "/" ? path === "/" : path === href || path.startsWith(`${href}/`);
+  const activeHref = allMenuItems
+    .filter((item) => matchesHref(item.href))
+    .sort((a, b) => b.href.length - a.href.length)[0]?.href;
+  const isActive = (href: string) => href === activeHref;
   const canvasRoute = path.startsWith("/prompt-workbench");
   const effectiveCollapsed = collapsed || canvasRoute || narrowViewport;
 
   const sidebarWidth = effectiveCollapsed ? 64 : 246;
-  const sections: NavSection[] = [
-    { label: "Agent Runtime", items: agentRuntime },
-    { label: "Workflow Operations", items: workflowOperate },
-    { label: "Workflow Authoring", items: workflowAuthoring },
-    { label: "Workbench Neo", items: workbenchRuntime },
-    { label: "Code Foundry", items: foundryRuntime },
-    { label: "Identity", items: identityAdmin },
-    { label: "Governance", items: governance },
-  ];
 
-  function renderSection(section: NavSection) {
+  function renderSection(section: NavSection, index: number) {
     return !effectiveCollapsed ? (
-      <div key={section.label} style={{ marginTop: 16 }}>
-        <p className="label-xs" style={{ padding: "0 12px", marginBottom: 6 }}>{section.label}</p>
+      <section key={section.label} style={{ marginTop: index === 0 ? 0 : 16 }}>
+        <div style={{ padding: "0 12px", marginBottom: 6 }}>
+          <p className="label-xs" style={{ marginBottom: 2 }}>{section.label}</p>
+          <p
+            style={{
+              margin: 0,
+              color: "var(--color-outline)",
+              fontSize: "0.625rem",
+              lineHeight: 1.25,
+              fontWeight: 600,
+            }}
+          >
+            {section.description}
+          </p>
+        </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           {section.items.map(item => (
             <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={false} />
           ))}
         </div>
-      </div>
+      </section>
     ) : (
-      <div key={section.label} style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
+      <section
+        key={section.label}
+        title={section.label}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 2,
+          marginTop: index === 0 ? 0 : 8,
+          paddingTop: index === 0 ? 0 : 8,
+          borderTop: index === 0 ? "none" : "1px solid rgba(106,116,134,0.22)",
+        }}
+      >
         {section.items.map(item => (
           <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={true} />
         ))}
-      </div>
+      </section>
     );
   }
 
@@ -304,22 +377,7 @@ export function Sidebar() {
       {/* ── Navigation ── */}
       <nav style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "12px 8px" }}>
 
-        {/* Domains section */}
-        {!effectiveCollapsed && (
-          <p className="label-xs" style={{ padding: "0 12px", marginBottom: 6 }}>Platform</p>
-        )}
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {domains.map(item => {
-            const active = isActive(item.href);
-            return (
-              <div key={item.href}>
-                <NavItem {...item} active={active} collapsed={effectiveCollapsed} />
-              </div>
-            );
-          })}
-        </div>
-
-        {sections.map(renderSection)}
+        {menuSections.map(renderSection)}
       </nav>
 
       {/* ── Footer ── */}

@@ -77,6 +77,7 @@ ROUTE_TENANT_POLICIES: dict[str, str] = {
     "/api/blueprint blueprintRouter": "capability_scoped_authz: Blueprint Workbench sessions are capability/workflow scoped through authenticated APIs",
     "/api/event-horizon eventHorizonRouter": "capability_scoped_authz: Event Horizon chat is governed by selected capability and user auth",
     "/api/llm-routing llmRoutingRouter": "admin_global: LLM routing policy is platform-level configuration",
+    "/api/codegen codegenRouter": "tenant_scoped_runtime: code generation specs, runs, artifacts, gaps, patch tasks, and receipts carry tenantId and strict mode requires tenant context",
     "/api/contracts contractsRouter": "external_proxy_authenticated: immutable contract replay/lookup is authenticated and evidence-keyed",
     "/api/documents documentsRouter": "tenant_scoped_runtime: documents link to workflow instances and strict mode asserts tenant",
     "/api/runtime runtimeRouter": "tenant_scoped_runtime: runtime inbox aggregates tenant-sensitive work rows under tenant-scoped DB context",
@@ -180,6 +181,13 @@ REQUIRED_MARKERS: dict[str, list[str]] = {
         "prisma.consumable.findMany",
         "prisma.workflowInstance.findMany",
         "prisma.workflowNode.findMany",
+    ],
+    "workgraph-studio/apps/api/src/modules/codegen/codegen.router.ts": [
+        "requireTenantFromRequest(req, 'code generation')",
+        "resolveTenantFromRequest(req)",
+        "tenantWhere(req)",
+        "tenantId: args.tenantId ?? null",
+        "where: { id: req.params.runId, ...tenantWhere(req) }",
     ],
     "workgraph-studio/apps/api/src/modules/agent/agent-runs.router.ts": [
         "assertAgentRunTenant",

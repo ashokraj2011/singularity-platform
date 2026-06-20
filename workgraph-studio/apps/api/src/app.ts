@@ -48,6 +48,7 @@ import { incomingEventsRouter } from './modules/audit/incoming-events.router'
 import { blueprintRouter } from './modules/blueprint/blueprint.router'
 import { eventHorizonRouter } from './modules/event-horizon/event-horizon.router'
 import { llmRoutingRouter } from './modules/llm-routing/llm-routing.router'
+import { codegenRouter } from './modules/codegen/codegen.router'
 // M40 — ImmutableContract replay + lookup endpoints.
 import { contractsRouter } from './modules/contracts/contracts.router'
 import { workItemsRouter } from './modules/work-items/work-items.router'
@@ -59,7 +60,7 @@ import { laptopInvocationsRouter, laptopQuestionsRouter, workItemLaptopRouter } 
 import { internalArtifactFetchRouter } from './modules/internal/artifact-fetch.router'
 // M42.0 — admin feature-flag toggles (kill switches for major capabilities).
 // M42.1 — internalFeatureFlagsRouter is the service-token-gated read-only
-// surface used by code-foundry-api's gate library.
+// feature-flag mirror for trusted internal workers.
 import { featureFlagsRouter, internalFeatureFlagsRouter } from './modules/admin/feature-flags.router'
 
 export function createApp(): Express {
@@ -156,6 +157,10 @@ export function createApp(): Express {
   app.use('/api/blueprint', authMiddleware, blueprintRouter)
   app.use('/api/event-horizon', authMiddleware, eventHorizonRouter)
   app.use('/api/llm-routing', authMiddleware, llmRoutingRouter)
+  // Workgraph-owned Code Generation / Foundry compatibility surface.
+  // Platform Web still calls /api/codegen/*; the backing data now lives in
+  // Workgraph instead of a standalone Foundry API container.
+  app.use('/api/codegen', authMiddleware, codegenRouter)
   // M40 — ImmutableContract surface (proxy lookup + replay)
   app.use('/api/contracts', authMiddleware, contractsRouter)
   app.use('/api/documents', authMiddleware, documentsRouter)
@@ -182,8 +187,8 @@ export function createApp(): Express {
   // ADMIN-only inside the router; GET is read-only for any authenticated
   // user so the Foundry's CLI/REST/web entry points can check the gate.
   app.use('/api/admin/feature-flags', authMiddleware, featureFlagsRouter)
-  // M42.1 — service-token-gated read-only mirror used by code-foundry-api's
-  // gate library. Same data, different auth path (no user JWT required).
+  // M42.1 — service-token-gated read-only mirror for trusted workers.
+  // Same data, different auth path (no user JWT required).
   app.use('/api/internal/feature-flags', internalFeatureFlagsRouter)
 
   app.use(errorHandler)

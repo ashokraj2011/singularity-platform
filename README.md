@@ -17,7 +17,7 @@ For the full architecture, capability, component, connection, installation, conf
 ### Prerequisites
 - Docker Desktop (Compose v2)
 - `git`, `psql`; `curl` is useful for ad-hoc inspection, but the bundled doctor/smoke scripts fall back to Python HTTP checks when it is unavailable.
-- Ports free for the default Docker stack: `3005, 5180, 8000, 8080, 8100, 5432, 5434, 9000-9001`. Optional local runtime profiles add `7100` for MCP, `8001` for llm-gateway, `8010` for formal verification, `8011` for compression, and `8500` for audit-governance.
+- Ports free for the default Docker stack: `5180, 8000, 8080, 8100, 5432, 5434, 9000-9001`. Optional local runtime profiles add `7100` for MCP, `8001` for llm-gateway, `8010` for formal verification, `8011` for compression, and `8500` for audit-governance.
 - ~6 GB free RAM for the core stack; more if you enable local runtime/verification profiles
 
 ### 1. Clone
@@ -36,7 +36,7 @@ cd singularity-platform
 ./singularity.sh topology
 ```
 
-This brings up the **core stack**: IAM + consolidated `platform-core` agent/tools APIs + context-api + Workgraph + `code-foundry-api` + unified `platform-web`.
+This brings up the **core stack**: IAM + consolidated `platform-core` agent/tools APIs + context-api + Workgraph-owned code generation + unified `platform-web`.
 
 Runtime infrastructure is intentionally pluggable:
 
@@ -49,7 +49,7 @@ Runtime infrastructure is intentionally pluggable:
 ```
 
 In production or hybrid development, point services at remote `llm-gateway` and MCP endpoints instead of starting those profiles locally.
-Operations readiness in `platform-web` separates required core services from optional runtime infrastructure. Open `/operations/readiness` to see core backend health, and the MCP/LLM Gateway/Formal Verifier/audit endpoints as local, remote, unavailable, or not configured without treating every optional runtime as a platform outage. Code Foundry API is part of the core stack because `/foundry` is a first-class platform route.
+Operations readiness in `platform-web` separates required core services from optional runtime infrastructure. Open `/operations/readiness` to see core backend health, and the MCP/LLM Gateway/Formal Verifier/audit endpoints as local, remote, unavailable, or not configured without treating every optional runtime as a platform outage. `/foundry` is a first-class route backed by Workgraph, not a separate Code Foundry API container.
 
 Production/staging boots are intentionally fail-closed. Use `APP_ENV=production` or `SINGULARITY_ENV=production` to activate guardrails even when dev containers keep `NODE_ENV=development`; then set `AUTH_OPTIONAL=false`, `TENANT_ISOLATION_MODE=strict`, `REQUIRE_TENANT_ID=true`, and rotate all development secrets before starting services.
 
@@ -261,7 +261,6 @@ CREATE DATABASE workgraph;
 CREATE DATABASE audit_governance;
 CREATE DATABASE singularity_iam;
 CREATE DATABASE singularity_context_fabric;
-CREATE DATABASE singularity_codegen;
 \c singularity
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -272,8 +271,6 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 \c audit_governance
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-\c singularity_codegen
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 SQL
 
@@ -298,7 +295,6 @@ export DATABASE_URL_WORKGRAPH_ADMIN="postgresql://${PG_USER}:${PG_PASS}@${PG_HOS
 export DATABASE_URL_WORKGRAPH_RUNTIME="postgresql://${WORKGRAPH_APP_DB_USER}:${WORKGRAPH_APP_DB_PASSWORD}@${PG_HOST}:${PG_PORT}/workgraph"
 export DATABASE_URL_WORKGRAPH="$DATABASE_URL_WORKGRAPH_RUNTIME"
 export DATABASE_URL_AUDIT_GOV="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/audit_governance"
-export DATABASE_URL_CODE_FOUNDRY="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/singularity_codegen"
 export DATABASE_URL_CONTEXT_FABRIC="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/singularity_context_fabric"
 export CONTEXT_FABRIC_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
 
@@ -316,7 +312,6 @@ export AGENT_RUNTIME_URL="http://localhost:3003"
 export TOOL_SERVICE_URL="http://localhost:3002"
 export AGENT_SERVICE_URL="http://localhost:3001"
 export CONTEXT_FABRIC_URL="http://localhost:8000"
-export CODE_FOUNDRY_API_URL="http://localhost:3005"
 export MCP_SERVER_URL="http://localhost:7100"
 export MCP_BEARER_TOKEN="demo-bearer-token-must-be-min-16-chars"
 
@@ -396,7 +391,6 @@ for url in \
   http://localhost:8100/api/v1/health \
   http://localhost:8500/health \
   http://localhost:8000/health \
-  http://localhost:3005/health \
   http://localhost:8080/health \
   "http://localhost:5180/api/runtime/agents/templates?scope=common&limit=3" \
   http://localhost:5180/ \
@@ -410,6 +404,8 @@ done
 
 All entries should return `200`. Open `http://localhost:5180` for Platform Web, `http://localhost:5180/agents/studio` for Agent Studio, `http://localhost:5180/workflows` for workflows, `http://localhost:5180/workbench` for Blueprint Workbench, and `http://localhost:5180/foundry` for Code Foundry. IAM login uses the bootstrap account shown by `./singularity.sh config show`; `./singularity.sh login` verifies it without printing the password.
 
+Upgrading from the retired standalone Code Foundry API: run `bin/migrate-code-foundry-to-workgraph.sh` once after `./singularity.sh up`. It copies old `singularity_codegen` runs, artifacts, gaps, patch tasks, verification rows, and receipts into Workgraph, hydrates artifact file content when the old workspace files still exist, and skips duplicates on rerun.
+
 If you did not use `BOX_ONLY=1`, local runtime endpoints should also respond:
 
 ```bash
@@ -421,7 +417,7 @@ curl -s -o /dev/null -w 'mcp-server  %{http_code}\n' http://localhost:7100/healt
 ```bash
 bin/bare-metal.sh down
 # Optional — wipe data:
-psql postgres -c "DROP DATABASE singularity; DROP DATABASE singularity_composer; DROP DATABASE workgraph; DROP DATABASE audit_governance; DROP DATABASE singularity_iam; DROP DATABASE singularity_context_fabric; DROP DATABASE singularity_codegen;"
+psql postgres -c "DROP DATABASE IF EXISTS singularity; DROP DATABASE IF EXISTS singularity_composer; DROP DATABASE IF EXISTS workgraph; DROP DATABASE IF EXISTS audit_governance; DROP DATABASE IF EXISTS singularity_iam; DROP DATABASE IF EXISTS singularity_context_fabric; DROP DATABASE IF EXISTS singularity_codegen;"
 ```
 
 ### What's intentionally skipped
@@ -559,7 +555,7 @@ A useful mental model when deciding "which app should this feature live in?" —
 
 - Docker Desktop (or Docker Engine + the Compose v2 plugin)
 - 8 GB+ RAM available to Docker
-- Free host ports: `3001–3005`, `5180`, `5432`, `5434`, `8000`, `8080`, `8100`, `9000–9001`. Optional local runtime profiles add `7100`, `8001`, `8010`, `8011`, and `8500`. Ports `5182`, `5174–5176`, `5181`, and `8085` are only needed for local/legacy frontend debugging.
+- Free host ports: `3001–3004`, `5180`, `5432`, `5434`, `8000`, `8080`, `8100`, `9000–9001`. Optional local runtime profiles add `7100`, `8001`, `8010`, `8011`, and `8500`. Ports `5182`, `5174–5176`, `5181`, and `8085` are only needed for local/legacy frontend debugging.
 - Optional: explicit central LLM gateway provider config. Fresh local setup is mock-only; office setup is Copilot-only.
 
 ### Option A — master compose (one shot)
@@ -660,7 +656,7 @@ Common commands:
 ./singularity.sh config export
 ```
 
-`show` masks secrets. `doctor` checks the canonical config, env drift, common ports, reachable service URLs, provider key presence, runtime token length, model-catalog readiness, Git push readiness, and secret guardrails. `doctor git` focuses on workspace writability, remote, Git identity, and auth presence. `doctor secrets` scans tracked files for local-only config, credentialed remotes, provider keys, GitHub tokens, bearer tokens, JWT-like tokens, and private-key blocks. It also checks ignored local env files for duplicate keys, production-class deployments using development defaults, and credentials placed in broad root env files instead of narrower runtime-specific secret files. Use `config prepare-production --tenant-id <tenant>` before shared/staging/production deployment to apply strict tenant guardrails and rotate deploy secrets with signed provider manifests; start with `--dry-run` to print the exact sequence without changing files. Because secret rotation changes `JWT_SECRET`, the command intentionally defers `WORKGRAPH_PROXY_SERVICE_TOKEN` minting until IAM is restarted with the generated env; after that, rerun `config prepare-production --tenant-id <tenant> --skip-rotate-secrets` to mint the tenant-scoped `platform-web` service JWT and run deploy preflight. Use `config rotate-secrets` when you only need to replace development JWT, service, runtime, Code Foundry, MCP bearer/runner, and MCP tool-grant signing defaults in `.singularity/config.local.json` and generated env files; add `--provider-manifest-key-id <id>` to create a trusted provider-manifest HMAC key and require signed external manifests. Provider manifests and URL document sources are SSRF-guarded by default; keep `AGENT_SOURCE_ALLOW_PRIVATE_URLS=false` outside deliberate local development. Production guardrails set Workgraph, Context Fabric, and direct MCP governance defaults to `fail_closed`, enable Context Fabric tool-grant minting, require MCP grant verification with `MCP_TOOL_GRANT_MODE=enforce`, and require MCP effective capability snapshots with `MCP_REQUIRE_EFFECTIVE_CAPABILITIES=true`; deploy preflight also requires `AUDIT_GOV_URL` and verifies audit-governance `/health` because fail-closed governance must not start without a reachable ledger. Keep `TOOL_GRANT_SIGNING_SECRET` identical anywhere Context Fabric and MCP are deployed separately. `WORKGRAPH_PROXY_SERVICE_TOKEN` is intentionally not generated by `rotate-secrets`; mint it with `config mint-workgraph-proxy-token` as a `platform-web` IAM service JWT before production deploy because Platform Web uses it as a Bearer token for Workgraph API routes. Use `config production-guardrails --tenant-id <tenant>` for the guardrail-only lower-level step. Bootstrap admin password rotation is opt-in with `--include-bootstrap-password`; for an existing IAM database, recreate `iam-service` with the new env and then run `./singularity.sh config reset-bootstrap-password` to update the stored local credential hash. Doctor writes the masked operations report consumed by Platform Web `/operations`. For bare-metal runs, use `config export` to print shell exports without editing files.
+`show` masks secrets. `doctor` checks the canonical config, env drift, common ports, reachable service URLs, provider key presence, runtime token length, model-catalog readiness, Git push readiness, and secret guardrails. `doctor git` focuses on workspace writability, remote, Git identity, and auth presence. `doctor secrets` scans tracked files for local-only config, credentialed remotes, provider keys, GitHub tokens, bearer tokens, JWT-like tokens, and private-key blocks. It also checks ignored local env files for duplicate keys, production-class deployments using development defaults, and credentials placed in broad root env files instead of narrower runtime-specific secret files. Use `config prepare-production --tenant-id <tenant>` before shared/staging/production deployment to apply strict tenant guardrails and rotate deploy secrets with signed provider manifests; start with `--dry-run` to print the exact sequence without changing files. Because secret rotation changes `JWT_SECRET`, the command intentionally defers `WORKGRAPH_PROXY_SERVICE_TOKEN` minting until IAM is restarted with the generated env; after that, rerun `config prepare-production --tenant-id <tenant> --skip-rotate-secrets` to mint the tenant-scoped `platform-web` service JWT and run deploy preflight. Use `config rotate-secrets` when you only need to replace development JWT, service, runtime, MCP bearer/runner, and MCP tool-grant signing defaults in `.singularity/config.local.json` and generated env files; add `--provider-manifest-key-id <id>` to create a trusted provider-manifest HMAC key and require signed external manifests. Provider manifests and URL document sources are SSRF-guarded by default; keep `AGENT_SOURCE_ALLOW_PRIVATE_URLS=false` outside deliberate local development. Production guardrails set Workgraph, Context Fabric, and direct MCP governance defaults to `fail_closed`, enable Context Fabric tool-grant minting, require MCP grant verification with `MCP_TOOL_GRANT_MODE=enforce`, and require MCP effective capability snapshots with `MCP_REQUIRE_EFFECTIVE_CAPABILITIES=true`; deploy preflight also requires `AUDIT_GOV_URL` and verifies audit-governance `/health` because fail-closed governance must not start without a reachable ledger. Keep `TOOL_GRANT_SIGNING_SECRET` identical anywhere Context Fabric and MCP are deployed separately. `WORKGRAPH_PROXY_SERVICE_TOKEN` is intentionally not generated by `rotate-secrets`; mint it with `config mint-workgraph-proxy-token` as a `platform-web` IAM service JWT before production deploy because Platform Web uses it as a Bearer token for Workgraph API routes. Use `config production-guardrails --tenant-id <tenant>` for the guardrail-only lower-level step. Bootstrap admin password rotation is opt-in with `--include-bootstrap-password`; for an existing IAM database, recreate `iam-service` with the new env and then run `./singularity.sh config reset-bootstrap-password` to update the stored local credential hash. Doctor writes the masked operations report consumed by Platform Web `/operations`. For bare-metal runs, use `config export` to print shell exports without editing files.
 `doctor` also runs `bin/check-compose-profiles.sh`, which validates every supported compose profile and the laptop/remote overlays so install paths like `backend-split`, `composer-only`, and `deprecated` cannot silently drift. The machine-readable topology source is `docs/platform-topology.json`; `bin/check-platform-topology-contract.py` validates that contract against Docker Compose and the operator docs before `bin/check-platform-topology.py` uses the same contract to verify the live Docker shape: one `platform-web`, one `platform-core` for the agent/tools APIs, the required product APIs/storage, the completed Postgres bootstrap one-shots, no running legacy frontend containers, and no mixed split/consolidated agent-tools plane. It also runs `bin/check-agent-tools-topology.sh` to ensure the agent/tools plane is either the consolidated `platform-core` container or the complete split debug set, never a mixed or partial topology. `bin/check-workgraph-tenant-guards.py` verifies strict tenant guard coverage for Workgraph runtime/admin/internal surfaces, tenant-scoped service-token contracts, and an explicit tenant-policy classification for every mounted Workgraph API route. `bin/check-workgraph-db-tenant-isolation.py` verifies the Workgraph tenant database posture: the workflow/run-snapshot tenant spine, tenant-index presence, runtime child-row connectivity, tenant RLS policy scaffold, app-role RLS-bypass posture, and, when production preflight requires it, non-null tenant data plus forced RLS on tenant-sensitive tables. `bin/check-workgraph-forced-rls-cutover.py` verifies the guarded cutover script remains non-mutating in dry-run mode, refuses apply without strict-runtime confirmation, and runs both preflight and postflight RLS checks. `bin/check-workgraph-forced-rls-enforcement.py` is enabled by `SINGULARITY_DOCTOR_DEEP_SMOKE=1` or `SINGULARITY_DOCTOR_RLS_ENFORCEMENT_SMOKE=1`; it creates a throwaway DB and non-bypass role, applies the real cutover, and proves cross-tenant reads/writes are blocked. `bin/check-m25-benchmarks.sh` verifies the DB-free M25 retrieval benchmark contract for hybrid ranking, FTS/vector fallback retention, citation markers, excerpt bounds, confidence clamping, recency boost, and capsule task-signature stability. Platform Web has two default guards: `bin/check-platform-web-routes.py` verifies canonical pages, legacy redirects, and sidebar surfaces, while `bin/check-platform-api-parity.py` verifies canonical and legacy API proxy families return parseable JSON instead of raw upstream HTML/text errors. For the stronger install audit, run `SINGULARITY_DOCTOR_DEEP_SMOKE=1 ./singularity.sh doctor`; it enables the headless Chrome UI parity check plus workflow, Workbench, Foundry, Agent Studio source-backed profile lifecycle checks. The bare-metal equivalent is `BARE_METAL_DEEP_SMOKE=1 bin/bare-metal.sh smoke`; it runs the same route/API proxy/browser hydration parity checks before the mutating lifecycle smokes. You can still run individual checks: `SINGULARITY_DOCTOR_UI_SMOKE=1` verifies Workgraph templates/designer/Planner/Inbox/runs, Eval Curation, Workbench, Operations readiness, Agent Studio source-backed skill creation, Prompt Workbench, Foundry, Singularity Engine, Identity, and Variables hydrate in Chrome. `SINGULARITY_DOCTOR_LIFECYCLE_SMOKE=1` creates a temporary workflow through Platform Web, patches it, writes a tiny START -> END design graph, starts it from a WorkItem, verifies child run completion and WorkItem submission, verifies run delete/archive compatibility, approves and archives the WorkItem, then archives the workflow. `SINGULARITY_DOCTOR_WORKBENCH_SMOKE=1` creates a temporary Workbench session through Platform Web, patches runtime settings, writes and reads stage chat, then abandons the session. `SINGULARITY_DOCTOR_FOUNDRY_SMOKE=1` validates a service spec, generates a temporary run through Platform Web, reads artifacts/file content, and fetches the receipt without calling LLM patching. For local audit-governance side-stack parity, run `python3 bin/check-audit-governance-lifecycle.py`, or set `SINGULARITY_DOCTOR_AUDIT_SMOKE=1` after `./singularity.sh up --profile audit`; it verifies strict DB/schema health, ingests an event through Platform Web, queries it back, and confirms persistence. `SINGULARITY_DOCTOR_AGENT_PROFILE_SMOKE=1` logs in through IAM, creates a temporary DRAFT profile through Platform Web with local, URL-document, and provider-manifest bindings, verifies stored source-governance summary, read-only defaults/provider-lock clamping, and failed-closed provider resolution, then archives the profile. `SINGULARITY_DOCTOR_TRACE_SPINE=1` runs `bin/test-trace-spine.sh` to prove one `trace_id` reaches Context Fabric, prompt composer, MCP resource views, and audit-governance; it expects local/host-reachable MCP and the split Postgres container.
 
 After Workgraph and Context Fabric are configured for strict tenant runtime
@@ -917,7 +913,7 @@ cd agent-and-tools/web            && npm install && PORT=5180 npm run dev
 | **platform-web** | http://localhost:5180 | IAM JWT | unified UI for operations, agents, workflows, workbench, foundry, and identity |
 | **platform-core** | http://localhost:3001-3004 | optional JWT | one Docker container hosting agent-service, tool-service, agent-runtime, and prompt-composer |
 | **iam-service** | http://localhost:8100/api/v1 | bearer (login) | OpenAPI: `/docs` |
-| **workgraph-api** | http://localhost:8080/api | workgraph token | DAG runtime |
+| **workgraph-api** | http://localhost:8080/api | workgraph token | DAG runtime, Workbench, WorkItems, and `/api/codegen` |
 | **prompt-composer** | http://localhost:3004/api/v1 | optional JWT | `/compose-and-respond`, served by `platform-core` |
 | **agent-runtime** | http://localhost:3003/api/v1 | optional JWT | agent templates, memory, served by `platform-core` |
 | **tool-service** | http://localhost:3002/api/v1 | optional JWT | tool registry, `/tools/discover`, `/tools/invoke`, served by `platform-core` |
@@ -926,9 +922,9 @@ cd agent-and-tools/web            && npm install && PORT=5180 npm run dev
 | **llm-gateway** | http://localhost:8001 | none | `/llm/respond`, `/llm/models`, `/docs` |
 | **context-memory** | http://localhost:8002 | none | `/memory/messages`, `/context/compile` |
 | **metrics-ledger** | http://localhost:8003 | none | `/metrics/dashboard` |
-| **at-postgres** | localhost:5432 | `postgres / singularity` | `singularity`, `singularity_iam`, `singularity_composer`, `singularity_codegen`, `singularity_context_fabric` DBs |
+| **at-postgres** | localhost:5432 | `postgres / singularity` | `singularity`, `singularity_iam`, `singularity_composer`, `singularity_context_fabric`; legacy `singularity_codegen` only for old Foundry imports |
 | **iam-postgres** | localhost:5433 | `singularity / singularity` | deprecated profile only; do not seed this for the default stack |
-| **wg-postgres** | localhost:5434 | `workgraph / workgraph_secret` | `workgraph` DB |
+| **wg-postgres** | localhost:5434 | `workgraph / workgraph_secret` | `workgraph` DB, including workflow and Foundry code-generation evidence |
 | **wg-minio** | http://localhost:9000 (console :9001) | `workgraph / workgraph_secret` | artifact storage |
 
 ---
@@ -1097,7 +1093,7 @@ closed unless production-class deployments have `APP_ENV` or `SINGULARITY_ENV`
 set to `production`, `staging`, or `perf`, `AUTH_OPTIONAL=false`,
 `TENANT_ISOLATION_MODE=strict`, `REQUIRE_TENANT_ID=true`, signed provider
 manifests, and rotated 32+ character service tokens for Platform Web, Workgraph,
-Context Fabric, Code Foundry, MCP, and audit-governance. Use `--config-only`
+Context Fabric, MCP, and audit-governance. Use `--config-only`
 for CI checks that only validate the deploy config contract, and reserve
 `--allow-dev` for throwaway remote Docker hosts.
 

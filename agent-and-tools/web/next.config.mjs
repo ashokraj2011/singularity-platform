@@ -164,10 +164,6 @@ const nextConfig = {
         source: "/ops-health/agent-service",
         destination: `${process.env.AGENT_SERVICE_URL ?? "http://agent-service:3001"}/health`,
       },
-      {
-        source: "/ops-health/code-foundry-api",
-        destination: `${process.env.CODE_FOUNDRY_API_URL ?? "http://code-foundry-api:3005"}/health`,
-      },
     ];
   },
 };

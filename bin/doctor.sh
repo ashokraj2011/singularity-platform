@@ -103,7 +103,6 @@ services=(
   "tool-service|http://localhost:3002/health" \
   "agent-runtime|http://localhost:3003/health" \
   "prompt-composer|http://localhost:3004/health" \
-  "code-foundry-api|http://localhost:3005/health" \
   "audit-gov|http://localhost:8500/health" \
   "context-fabric|http://localhost:8000/health" \
   "platform-web|http://localhost:5180/" \

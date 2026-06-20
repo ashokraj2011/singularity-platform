@@ -23,50 +23,50 @@ import { formatDate, shortId, valueText } from "@/lib/workgraph";
 type FoundryView = "runs" | "artifacts" | "gaps" | "tasks" | "receipts" | "repos" | "plans" | "verification" | "history";
 type DetailTab = "overview" | "files" | "gaps" | "tasks" | "receipt";
 
-const foundryViews: Array<{ view: FoundryView; href: string; label: string }> = [
-  { view: "runs", href: "/foundry/runs", label: "Runs" },
-  { view: "artifacts", href: "/foundry/artifacts", label: "Artifacts" },
-  { view: "gaps", href: "/foundry/gaps", label: "Gaps" },
-  { view: "tasks", href: "/foundry/llm-tasks", label: "LLM Tasks" },
-  { view: "receipts", href: "/foundry/receipts", label: "Receipts" },
-  { view: "repos", href: "/foundry/repos", label: "Repos" },
-  { view: "plans", href: "/foundry/change-plans", label: "Change Plans" },
-  { view: "verification", href: "/foundry/verification", label: "Verification" },
-  { view: "history", href: "/foundry/history", label: "History" },
+const foundryViews: Array<{ view: FoundryView; href: string; label: string; summary: string; scope: "setup" | "run" }> = [
+  { view: "repos", href: "/foundry/repos", label: "Repositories", summary: "Scanned source context", scope: "setup" },
+  { view: "plans", href: "/foundry/change-plans", label: "Change Plans", summary: "Brownfield patch plans", scope: "setup" },
+  { view: "runs", href: "/foundry/runs", label: "Run Cockpit", summary: "Pick a generation run", scope: "run" },
+  { view: "artifacts", href: "/foundry/artifacts", label: "Generated Files", summary: "Output file preview", scope: "run" },
+  { view: "gaps", href: "/foundry/gaps", label: "Gaps to Fix", summary: "Unresolved work", scope: "run" },
+  { view: "tasks", href: "/foundry/llm-tasks", label: "Patch Tasks", summary: "Guarded LLM fixes", scope: "run" },
+  { view: "verification", href: "/foundry/verification", label: "Verify Output", summary: "Accept readiness", scope: "run" },
+  { view: "receipts", href: "/foundry/receipts", label: "Receipts", summary: "Evidence hashes", scope: "run" },
+  { view: "history", href: "/foundry/history", label: "Run History", summary: "Past runs and lifecycle", scope: "run" },
 ];
 
 const viewCopy: Record<FoundryView, { title: string; description: string }> = {
   runs: {
     title: "Generation Cockpit",
-    description: "Inspect greenfield and brownfield generation runs, protected files, detected gaps, LLM patch tasks, receipts, repositories, and change plans through the unified server-side proxy.",
+    description: "Start with a greenfield or brownfield run, then inspect files, gaps, patch tasks, verification, and receipts from one place.",
   },
   artifacts: {
-    title: "Generated Artifacts",
-    description: "Browse generated files, protected regions, artifact hashes, and read-only file previews for the selected Code Foundry run.",
+    title: "Generated Files",
+    description: "Browse output files, protected regions, artifact hashes, and read-only previews for the selected generation run.",
   },
   gaps: {
-    title: "Detected Gaps",
-    description: "Review unresolved generation gaps, severity, editable regions, and LLM eligibility for the selected run.",
+    title: "Gaps to Fix",
+    description: "Review unresolved generation gaps, severity, editable regions, and patch-task eligibility for the selected run.",
   },
   tasks: {
-    title: "LLM Patch Tasks",
-    description: "Dispatch guarded patch tasks, review proposed diffs, and apply accepted changes through Code Foundry.",
+    title: "Guarded Patch Tasks",
+    description: "Dispatch guarded LLM patch tasks, review proposed diffs, and apply accepted changes through the Foundry API.",
   },
   receipts: {
-    title: "Receipts",
-    description: "Inspect receipt hashes and immutable generation receipts for audit and reproducibility.",
+    title: "Run Receipts",
+    description: "Inspect immutable generation receipts and hashes used for audit, reproducibility, and acceptance evidence.",
   },
   repos: {
-    title: "Repository Models",
-    description: "Inspect scanned repositories and model hashes used by brownfield generation and change planning.",
+    title: "Repository Inventory",
+    description: "Inspect scanned source repositories and model hashes used by brownfield generation and change planning. This is setup context, not a single run detail.",
   },
   plans: {
-    title: "Change Plans",
-    description: "Review brownfield change plans, repo model links, plan hashes, and execution status.",
+    title: "Brownfield Change Plans",
+    description: "Review patch plans created from repository scans, including repo model links, plan hashes, and execution status.",
   },
   verification: {
-    title: "Verification",
-    description: "Focus on run verification status, open gaps, LLM tasks, and receipt evidence before accepting output.",
+    title: "Verify Output",
+    description: "Check run status, open gaps, patch tasks, and receipt evidence before accepting generated or patched code.",
   },
   history: {
     title: "Run History",
@@ -100,6 +100,7 @@ export function FoundryConsole({ view = "runs" }: { view?: FoundryView }) {
   const router = useRouter();
   const search = useSearchParams();
   const copy = viewCopy[view];
+  const globalView = view === "repos" || view === "plans";
   const [filter, setFilter] = useState<FoundryMode>((search.get("mode") as FoundryMode | null) ?? "ALL");
   const selectedRunId = search.get("runId") ?? undefined;
   const [tab, setTab] = useState<DetailTab>(tabForView(view));
@@ -147,7 +148,7 @@ export function FoundryConsole({ view = "runs" }: { view?: FoundryView }) {
           <div>
             <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--color-primary)", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 10 }}>
               <Sparkles size={15} />
-              Code Foundry
+              Code Foundry · SDLC Code Generation
             </div>
             <h1 className="page-header" style={{ margin: 0 }}>{copy.title}</h1>
             <p style={{ margin: "10px 0 0", maxWidth: 780, color: "var(--color-outline)", fontSize: 14, lineHeight: 1.55 }}>
@@ -164,10 +165,22 @@ export function FoundryConsole({ view = "runs" }: { view?: FoundryView }) {
 
       {error ? <ErrorBanner error={error} /> : null}
 
+      <FoundryFlow activeView={view} />
       <FoundryNav activeView={view} />
 
+      {globalView ? (
+        <main style={{ display: "grid", gap: 16, minWidth: 0 }}>
+          {view === "repos" ? <ReposPanel /> : <ChangePlansPanel />}
+        </main>
+      ) : (
       <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 340px) minmax(0, 1fr)", gap: 16, alignItems: "start" }}>
         <aside className="card" style={{ padding: 14 }}>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontWeight: 850, fontSize: 13 }}>Select generation run</div>
+            <p style={{ color: "var(--color-outline)", fontSize: 12, lineHeight: 1.45, margin: "4px 0 0" }}>
+              Run-scoped views use this selected run for files, gaps, patch tasks, verification, and receipts.
+            </p>
+          </div>
           <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
             {(["ALL", "GREENFIELD", "BROWNFIELD"] as const).map((item) => (
               <button
@@ -219,7 +232,7 @@ export function FoundryConsole({ view = "runs" }: { view?: FoundryView }) {
         </aside>
 
         <main style={{ display: "grid", gap: 16, minWidth: 0 }}>
-          {view === "repos" ? <ReposPanel /> : view === "plans" ? <ChangePlansPanel /> : view === "history" ? <HistoryPanel runs={runs} selectedRun={run ?? runs.find((item) => item.id === activeId)} selectedId={activeId} onSelect={selectRun} loading={loadingRuns} /> : loadingRun && !run ? <EmptyPanel label="Loading run..." /> : run ? (
+          {view === "history" ? <HistoryPanel runs={runs} selectedRun={run ?? runs.find((item) => item.id === activeId)} selectedId={activeId} onSelect={selectRun} loading={loadingRuns} /> : loadingRun && !run ? <EmptyPanel label="Loading run..." /> : run ? (
             <>
               <RunHeader run={run} />
               {view === "verification" ? (
@@ -240,35 +253,135 @@ export function FoundryConsole({ view = "runs" }: { view?: FoundryView }) {
           )}
         </main>
       </div>
+      )}
     </div>
   );
 }
 
-function FoundryNav({ activeView }: { activeView: FoundryView }) {
+function FoundryFlow({ activeView }: { activeView: FoundryView }) {
+  const steps = [
+    {
+      href: "/foundry/repos",
+      views: ["repos"] as FoundryView[],
+      icon: GitBranch,
+      label: "1. Source context",
+      title: "Scan repositories",
+      body: "Repository models feed brownfield change planning.",
+    },
+    {
+      href: "/foundry/runs",
+      views: ["runs", "history"] as FoundryView[],
+      icon: Sparkles,
+      label: "2. Generate",
+      title: "Run greenfield or brownfield",
+      body: "Each run produces files, gaps, tasks, and evidence.",
+    },
+    {
+      href: "/foundry/gaps",
+      views: ["artifacts", "gaps", "tasks", "plans"] as FoundryView[],
+      icon: FileCode2,
+      label: "3. Fix",
+      title: "Review gaps and patches",
+      body: "Use guarded patch tasks or change plans to resolve work.",
+    },
+    {
+      href: "/foundry/verification",
+      views: ["verification", "receipts"] as FoundryView[],
+      icon: CheckCircle2,
+      label: "4. Accept",
+      title: "Verify and capture receipts",
+      body: "Accept only when gaps, tasks, and evidence are clean.",
+    },
+  ];
+
   return (
-    <nav className="card" style={{ padding: 8, marginBottom: 18, display: "flex", gap: 6, flexWrap: "wrap" }} aria-label="Foundry sections">
-      {foundryViews.map((item) => {
+    <section className="card" style={{ padding: 14, marginBottom: 18 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10 }}>
+        {steps.map((step) => {
+          const active = step.views.includes(activeView);
+          const Icon = step.icon;
+          return (
+            <Link
+              key={step.label}
+              href={step.href}
+              style={{
+                border: active ? "1px solid rgba(0,132,61,0.42)" : "1px solid var(--color-outline-variant)",
+                background: active ? "rgba(240,253,244,0.88)" : "#fff",
+                borderRadius: 8,
+                padding: 12,
+                color: "inherit",
+                textDecoration: "none",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <span style={{ display: "inline-flex", width: 30, height: 30, alignItems: "center", justifyContent: "center", borderRadius: 8, background: active ? "rgba(0,132,61,0.12)" : "var(--color-surface-low)", color: active ? "var(--color-primary)" : "var(--color-outline)" }}>
+                  <Icon size={15} />
+                </span>
+                <span style={{ color: active ? "var(--color-primary)" : "var(--color-outline)", fontSize: 11, fontWeight: 850, textTransform: "uppercase" }}>{step.label}</span>
+              </div>
+              <div style={{ fontWeight: 850, fontSize: 13 }}>{step.title}</div>
+              <p style={{ color: "var(--color-outline)", fontSize: 12, lineHeight: 1.45, margin: "4px 0 0" }}>{step.body}</p>
+            </Link>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function FoundryNav({ activeView }: { activeView: FoundryView }) {
+  const setupViews = foundryViews.filter((item) => item.scope === "setup");
+  const runViews = foundryViews.filter((item) => item.scope === "run");
+  return (
+    <nav className="card" style={{ padding: 12, marginBottom: 18, display: "grid", gap: 12 }} aria-label="Foundry sections">
+      <FoundryNavGroup title="Setup" description="Inputs and plans shared across runs" items={setupViews} activeView={activeView} />
+      <FoundryNavGroup title="Run Review" description="Run-scoped files, gaps, fixes, verification, and evidence" items={runViews} activeView={activeView} />
+    </nav>
+  );
+}
+
+function FoundryNavGroup({
+  title,
+  description,
+  items,
+  activeView,
+}: {
+  title: string;
+  description: string;
+  items: typeof foundryViews;
+  activeView: FoundryView;
+}) {
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 7, flexWrap: "wrap" }}>
+        <span className="label-xs" style={{ color: "var(--color-outline)" }}>{title}</span>
+        <span style={{ color: "var(--color-outline)", fontSize: 12 }}>{description}</span>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {items.map((item) => {
         const active = item.view === activeView;
         return (
           <Link
             key={item.view}
             href={item.href}
+            title={item.summary}
             style={{
               border: active ? "1px solid rgba(0,132,61,0.42)" : "1px solid transparent",
               background: active ? "rgba(240,253,244,0.88)" : "transparent",
               color: active ? "var(--color-primary)" : "var(--color-outline)",
               borderRadius: 8,
-              padding: "8px 11px",
+              padding: "7px 10px",
               fontWeight: 850,
-              fontSize: 13,
+              fontSize: 12,
               textDecoration: "none",
             }}
           >
             {item.label}
           </Link>
         );
-      })}
-    </nav>
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -652,7 +765,18 @@ function ReposPanel() {
   const { data, error } = useSWR("foundry-repos", () => foundryApi.listRepos());
   return (
     <section className="card" style={{ padding: 18 }}>
-      <h2 style={{ margin: "0 0 12px", fontSize: 16 }}>Repositories</h2>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 14 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 16 }}>Repository Inventory</h2>
+          <p style={{ color: "var(--color-outline)", fontSize: 13, lineHeight: 1.5, margin: "5px 0 0" }}>
+            These are scanned source-code models. Brownfield generation and change plans use this inventory before creating patch work.
+          </p>
+        </div>
+        <Link className="btn-secondary text-xs" href="/foundry/runs">
+          <Sparkles size={13} />
+          Open run cockpit
+        </Link>
+      </div>
       {error ? <SmallError error={error} /> : null}
       <div style={{ display: "grid", gap: 10 }}>
         {(data?.items ?? []).map((repo: RepoModelSummary) => (
@@ -661,7 +785,9 @@ function ReposPanel() {
             <div style={{ color: "var(--color-outline)", fontSize: 12 }}>{repo.language} · {repo.framework} · {shortId(repo.modelHash)} · {formatDate(repo.scannedAt)}</div>
           </article>
         ))}
-        {data && data.items.length === 0 && <EmptyPanel label="No scanned repositories found." />}
+        {data && data.items.length === 0 && (
+          <EmptyPanel label="No scanned repositories found yet. Start or import a brownfield run to create repository context." />
+        )}
       </div>
     </section>
   );
@@ -671,7 +797,18 @@ function ChangePlansPanel() {
   const { data, error } = useSWR("foundry-change-plans", () => foundryApi.listChangePlans());
   return (
     <section className="card" style={{ padding: 18 }}>
-      <h2 style={{ margin: "0 0 12px", fontSize: 16 }}>Change Plans</h2>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 14 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 16 }}>Brownfield Change Plans</h2>
+          <p style={{ color: "var(--color-outline)", fontSize: 13, lineHeight: 1.5, margin: "5px 0 0" }}>
+            Change plans turn scanned repository context into proposed patch work. They sit between repository inventory and run verification.
+          </p>
+        </div>
+        <Link className="btn-secondary text-xs" href="/foundry/repos">
+          <GitBranch size={13} />
+          Review repositories
+        </Link>
+      </div>
       {error ? <SmallError error={error} /> : null}
       <div style={{ display: "grid", gap: 10 }}>
         {(data?.items ?? []).map((plan: ChangePlanSummary) => (
@@ -683,7 +820,7 @@ function ChangePlansPanel() {
             <div style={{ color: "var(--color-outline)", fontSize: 12 }}>{shortId(plan.repoModelId)} · {shortId(plan.planHash)} · {formatDate(plan.createdAt)}</div>
           </article>
         ))}
-        {data && data.items.length === 0 && <EmptyPanel label="No change plans found." />}
+        {data && data.items.length === 0 && <EmptyPanel label="No change plans found yet. Brownfield runs create plans after repository context is available." />}
       </div>
     </section>
   );
@@ -723,10 +860,10 @@ function ErrorBanner({ error }: { error: unknown }) {
       <section className="card" style={{ padding: 18, marginBottom: 18, borderColor: "rgba(37,99,235,0.22)", background: "rgba(239,246,255,0.82)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#1d4ed8", fontWeight: 850 }}>
           <ShieldCheck size={16} />
-          Code Foundry API is not running locally.
+          Workgraph code generation route is unavailable.
         </div>
         <p style={{ color: "#1e3a8a", fontSize: 13, margin: "7px 0 0", lineHeight: 1.5 }}>
-          Code Foundry API is part of the core stack. Start it with <code>./singularity.sh up code-foundry-api platform-web</code>, or configure <code>CODE_FOUNDRY_API_URL</code> to point Platform Web at a remote Foundry API.
+          Foundry runs are now served by Workgraph. Check <code>workgraph-api</code> and Platform Web proxy health, then retry the generation cockpit.
         </p>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
           <Link href="/operations/readiness" className="btn-secondary text-xs">Open readiness</Link>
@@ -748,9 +885,9 @@ function ErrorBanner({ error }: { error: unknown }) {
 
 function isFoundryUnavailable(error: unknown): boolean {
   if (error instanceof FoundryError) {
-    return error.status === 502 || error.code === "UPSTREAM_UNREACHABLE" || /code-foundry-api|fetch failed|upstream/i.test(error.message);
+    return error.status === 502 || error.code === "UPSTREAM_UNREACHABLE" || /workgraph-api|fetch failed|upstream/i.test(error.message);
   }
-  return error instanceof Error && /code-foundry-api|UPSTREAM_UNREACHABLE|fetch failed/i.test(error.message);
+  return error instanceof Error && /workgraph-api|UPSTREAM_UNREACHABLE|fetch failed/i.test(error.message);
 }
 
 function SmallError({ error }: { error: unknown }) {

@@ -4,7 +4,8 @@ import Link from "next/link";
 import type { CSSProperties } from "react";
 import useSWR from "swr";
 import { ArrowLeft, RefreshCw } from "lucide-react";
-import { readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { PlatformTopologyMap } from "@/components/PlatformTopologyMap";
 
 type Check = { label: string; path: string };
 type RuntimeInfrastructure = {
@@ -50,7 +51,7 @@ async function check(path: string): Promise<{ ok: boolean; status: number; body:
 }
 
 async function runtimeInfrastructure(): Promise<RuntimeInfrastructure> {
-  const res = await fetch("/api/runtime-infrastructure", { cache: "no-store" });
+  const res = await fetch(apiPath("/api/runtime-infrastructure"), { cache: "no-store", headers: authHeaders() });
   const { raw, parsed } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
   if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 300) : "Empty runtime infrastructure response");
@@ -114,6 +115,8 @@ export function OperationsStatusPage({
         <h1 className="page-header" style={{ marginBottom: 8 }}>{title}</h1>
         <p style={{ color: "var(--color-outline)", fontSize: 14, lineHeight: 1.6, margin: 0 }}>{description}</p>
       </section>
+
+      <PlatformTopologyMap />
 
       <section style={{ marginBottom: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, marginBottom: 14 }}>

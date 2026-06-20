@@ -114,6 +114,8 @@ function mapActionIntent(intent: ActionIntent | null): "find_evidence" | "draft_
 
 export function EventHorizonChat() {
   const pathname = usePathname();
+  const hiddenOnRunSurface = pathname === "/runs" || pathname.startsWith("/runs/");
+
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -283,6 +285,8 @@ export function EventHorizonChat() {
     setSessionId(freshId);
     setMessages([fresh]);
   }
+
+  if (hiddenOnRunSurface) return null;
 
   return (
     <div className="fixed bottom-5 right-5 z-[80]">
