@@ -130,7 +130,7 @@ export function WorkItemsConsole() {
               style={{
                 padding: 15,
                 textAlign: "left",
-                border: selected?.id === item.id ? "1px solid rgba(0,132,61,0.42)" : undefined,
+                border: selected?.id === item.id ? "1px solid rgba(54,135,39,0.42)" : undefined,
                 background: selected?.id === item.id ? "rgba(240,253,244,0.74)" : undefined,
                 cursor: "pointer",
               }}

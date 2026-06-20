@@ -33,9 +33,9 @@ export function CapabilitiesTile() {
         action={
           <a
             className="text-xs font-medium transition-colors"
-            style={{ color: '#00843D' }}
+            style={{ color: '#368727' }}
             onMouseEnter={(e) => (e.currentTarget.style.color = '#006236')}
-            onMouseLeave={(e) => (e.currentTarget.style.color = '#00843D')}
+            onMouseLeave={(e) => (e.currentTarget.style.color = '#368727')}
             href={env.links.iamAdmin}
             target="_blank"
             rel="noreferrer"

@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -13,10 +13,10 @@
     --brand-warm-white:        #F5F2EA;
     --brand-green-accent:      #00A651;
 
-    --color-primary:            #00843D;
-    --color-primary-dark:       #006227;
-    --color-primary-dim:        rgba(0, 132, 61, 0.12);
-    --color-primary-glow:       rgba(0, 132, 61, 0.3);
+    --color-primary:            #368727;
+    --color-primary-dark:       #2a6b1f;
+    --color-primary-dim:        rgba(54, 135, 39, 0.12);
+    --color-primary-glow:       rgba(54, 135, 39, 0.3);
 
     --color-secondary:          #004B8D;
     --color-secondary-dim:      rgba(0, 75, 141, 0.10);
@@ -57,7 +57,7 @@
     --wf-border:     rgba(30, 41, 59, 0.9);
     --wf-accent:     #22c55e;   /* green-500 for canvas accents */
 
-    --font-sans: 'Public Sans', ui-sans-serif, system-ui, sans-serif;
+    --font-sans: 'Mulish', ui-sans-serif, system-ui, sans-serif;
     --font-mono: 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
   }
 }
@@ -236,7 +236,7 @@
     letter-spacing: 0.18em;
   }
 
-  .badge-primary { border-color: rgba(0,132,61,0.2); background: rgba(0,132,61,0.08); color: var(--color-primary); }
+  .badge-primary { border-color: rgba(54,135,39,0.2); background: rgba(54,135,39,0.08); color: var(--color-primary); }
   .badge-secondary { border-color: rgba(0,75,141,0.2); background: rgba(0,75,141,0.08); color: var(--color-secondary); }
   .badge-success { border-color: #a7f3d0; background: #ecfdf5; color: #047857; }
   .badge-warning { border-color: #fde68a; background: #fffbeb; color: #92400e; }
@@ -263,7 +263,7 @@
 
   /* Typography */
   .page-header {
-    font-family: 'Public Sans', sans-serif;
+    font-family: 'Mulish', sans-serif;
     font-size: 1.5rem;
     font-weight: 700;
     letter-spacing: -0.02em;

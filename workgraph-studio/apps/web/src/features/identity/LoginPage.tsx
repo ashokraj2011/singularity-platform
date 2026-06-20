@@ -196,7 +196,7 @@ export function LoginPage() {
               <h1 className="text-base font-bold" style={{ color: 'var(--text-strong, #0A2240)', letterSpacing: '0.04em' }}>
                 Singularity
               </h1>
-              <p className="text-[10px] font-semibold uppercase" style={{ color: 'var(--brand-green, #00843D)', letterSpacing: '0.18em' }}>
+              <p className="text-[10px] font-semibold uppercase" style={{ color: 'var(--brand-green, #368727)', letterSpacing: '0.18em' }}>
                 Workflow Manager
               </p>
             </div>
@@ -213,7 +213,7 @@ export function LoginPage() {
             className="w-full mb-5 h-11 rounded-lg flex items-center justify-center gap-2 font-semibold text-sm transition-all"
             style={{
               background: 'var(--brand-green-tint, #e6f4ed)',
-              border: '1px solid rgba(0,132,61,0.18)',
+              border: '1px solid rgba(54,135,39,0.18)',
               color: 'var(--brand-green-dark, #006236)',
             }}
           >
@@ -236,7 +236,7 @@ export function LoginPage() {
               className="flex-1 h-8 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all"
               style={{
                 background: tab === 'iam' ? 'var(--surface-card, #ffffff)' : 'transparent',
-                color: tab === 'iam' ? 'var(--brand-green, #00843D)' : 'var(--text-muted, #64748b)',
+                color: tab === 'iam' ? 'var(--brand-green, #368727)' : 'var(--text-muted, #64748b)',
                 boxShadow: tab === 'iam' ? '0 1px 3px rgba(10,34,64,0.08)' : 'none',
               }}
             >
@@ -248,7 +248,7 @@ export function LoginPage() {
               className="flex-1 h-8 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all"
               style={{
                 background: tab === 'local' ? 'var(--surface-card, #ffffff)' : 'transparent',
-                color: tab === 'local' ? 'var(--brand-green, #00843D)' : 'var(--text-muted, #64748b)',
+                color: tab === 'local' ? 'var(--brand-green, #368727)' : 'var(--text-muted, #64748b)',
                 boxShadow: tab === 'local' ? '0 1px 3px rgba(10,34,64,0.08)' : 'none',
               }}
             >
@@ -262,7 +262,7 @@ export function LoginPage() {
               <div className="space-y-2">
                 <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted, #64748b)' }}>
                   Sign in with your{' '}
-                  <a href={IAM_LOGIN_URL} target="_blank" rel="noreferrer" className="underline" style={{ color: 'var(--brand-green, #00843D)' }}>
+                  <a href={IAM_LOGIN_URL} target="_blank" rel="noreferrer" className="underline" style={{ color: 'var(--brand-green, #368727)' }}>
                     Singularity IAM
                   </a>
                   {' '}credentials. Workgraph verifies the IAM token before opening the studio.
@@ -282,7 +282,7 @@ export function LoginPage() {
                     border: '1px solid var(--surface-border, #E2E8F0)',
                     color: 'var(--text-strong, #0A2240)',
                   }}
-                  onFocus={e => { e.currentTarget.style.borderColor = 'var(--brand-green, #00843D)' }}
+                  onFocus={e => { e.currentTarget.style.borderColor = 'var(--brand-green, #368727)' }}
                   onBlur={e => { e.currentTarget.style.borderColor = 'var(--surface-border, #E2E8F0)' }}
                 />
               </div>
@@ -300,7 +300,7 @@ export function LoginPage() {
                     border: '1px solid var(--surface-border, #E2E8F0)',
                     color: 'var(--text-strong, #0A2240)',
                   }}
-                  onFocus={e => { e.currentTarget.style.borderColor = 'var(--brand-green, #00843D)' }}
+                  onFocus={e => { e.currentTarget.style.borderColor = 'var(--brand-green, #368727)' }}
                   onBlur={e => { e.currentTarget.style.borderColor = 'var(--surface-border, #E2E8F0)' }}
                 />
               </div>
@@ -322,9 +322,9 @@ export function LoginPage() {
                 disabled={loading || !iamEmail.trim() || !iamPassword}
                 className="w-full h-10 rounded-lg text-sm font-semibold transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 style={{
-                  background: loading ? 'rgba(0,132,61,0.55)' : 'var(--brand-green, #00843D)',
+                  background: loading ? 'rgba(54,135,39,0.55)' : 'var(--brand-green, #368727)',
                   color: 'var(--brand-warm-white, #F5F2EA)',
-                  boxShadow: loading ? 'none' : '0 8px 18px rgba(0,132,61,0.18)',
+                  boxShadow: loading ? 'none' : '0 8px 18px rgba(54,135,39,0.18)',
                 }}
               >
                 {loading ? (<><Loader2 className="w-4 h-4 animate-spin" /> Signing in with IAM…</>) : 'Sign in with IAM'}
@@ -347,7 +347,7 @@ export function LoginPage() {
                     border: '1px solid var(--surface-border, #E2E8F0)',
                     color: 'var(--text-strong, #0A2240)',
                   }}
-                  onFocus={e => { e.currentTarget.style.borderColor = 'var(--brand-green, #00843D)' }}
+                  onFocus={e => { e.currentTarget.style.borderColor = 'var(--brand-green, #368727)' }}
                   onBlur={e => { e.currentTarget.style.borderColor = 'var(--surface-border, #E2E8F0)' }}
                 />
               </div>
@@ -365,7 +365,7 @@ export function LoginPage() {
                     border: '1px solid var(--surface-border, #E2E8F0)',
                     color: 'var(--text-strong, #0A2240)',
                   }}
-                  onFocus={e => { e.currentTarget.style.borderColor = 'var(--brand-green, #00843D)' }}
+                  onFocus={e => { e.currentTarget.style.borderColor = 'var(--brand-green, #368727)' }}
                   onBlur={e => { e.currentTarget.style.borderColor = 'var(--surface-border, #E2E8F0)' }}
                 />
               </div>
@@ -387,9 +387,9 @@ export function LoginPage() {
                 disabled={loading}
                 className="w-full h-10 rounded-lg text-sm font-semibold transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 style={{
-                  background: loading ? 'rgba(0,132,61,0.55)' : 'var(--brand-green, #00843D)',
+                  background: loading ? 'rgba(54,135,39,0.55)' : 'var(--brand-green, #368727)',
                   color: 'var(--brand-warm-white, #F5F2EA)',
-                  boxShadow: loading ? 'none' : '0 8px 18px rgba(0,132,61,0.18)',
+                  boxShadow: loading ? 'none' : '0 8px 18px rgba(54,135,39,0.18)',
                 }}
               >
                 {loading ? (<><Loader2 className="w-4 h-4 animate-spin" /> Authenticating…</>) : 'Sign in'}

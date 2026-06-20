@@ -68,7 +68,7 @@ export function RunWorkflowPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
         <div style={{
           width: 38, height: 38, borderRadius: 10,
-          background: 'rgba(0,132,61,0.10)', border: '1px solid rgba(0,132,61,0.25)',
+          background: 'rgba(54,135,39,0.10)', border: '1px solid rgba(54,135,39,0.25)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-primary)',
         }}>
           <Play size={18} />
@@ -130,8 +130,8 @@ export function RunWorkflowPage() {
             style={{
               padding: '9px 12px',
               borderRadius: 9,
-              border: '1px solid rgba(0,132,61,0.25)',
-              background: 'rgba(0,132,61,0.08)',
+              border: '1px solid rgba(54,135,39,0.25)',
+              background: 'rgba(54,135,39,0.08)',
               color: 'var(--color-primary)',
               cursor: 'pointer',
               fontSize: 12,
@@ -327,7 +327,7 @@ function WorkflowCard({ workflow, onRun }: { workflow: Workflow; onRun: () => vo
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
         <div style={{
           width: 32, height: 32, borderRadius: 8, flexShrink: 0,
-          background: 'rgba(0,132,61,0.08)', border: '1px solid rgba(0,132,61,0.18)',
+          background: 'rgba(54,135,39,0.08)', border: '1px solid rgba(54,135,39,0.18)',
           color: 'var(--color-primary)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>

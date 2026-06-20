@@ -13,7 +13,7 @@ export function StatCard({
   value,
   icon: Icon,
   iconBg = '#e6f4ed',
-  iconColor = '#00843D',
+  iconColor = '#368727',
 }: StatCardProps) {
   return (
     <div

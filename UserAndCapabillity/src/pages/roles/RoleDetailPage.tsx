@@ -65,7 +65,7 @@ export function RoleDetailPage() {
           <div className="flex justify-between items-center mb-3">
             <p className="text-sm text-gray-500">Permissions assigned to this role</p>
             {!role.system_role && (
-              <Button size="sm" onClick={() => setAddOpen(true)} className="bg-[#00843D] hover:bg-[#006830]">
+              <Button size="sm" onClick={() => setAddOpen(true)} className="bg-[#368727] hover:bg-[#006830]">
                 <Plus className="w-3.5 h-3.5 mr-1.5" /> Add Permission
               </Button>
             )}
@@ -116,7 +116,7 @@ export function RoleDetailPage() {
                   key={p.id}
                   type="button"
                   onClick={() => setSelected(p.permission_key)}
-                  className={`w-full text-left px-3 py-2 text-xs font-mono hover:bg-gray-50 transition-colors ${selected === p.permission_key ? 'bg-[#e6f4ed] text-[#00843D]' : 'text-gray-700'}`}
+                  className={`w-full text-left px-3 py-2 text-xs font-mono hover:bg-gray-50 transition-colors ${selected === p.permission_key ? 'bg-[#e6f4ed] text-[#368727]' : 'text-gray-700'}`}
                 >
                   {p.permission_key}
                 </button>
@@ -124,7 +124,7 @@ export function RoleDetailPage() {
             </div>
             <div className="flex justify-end gap-2 pt-1">
               <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
-              <Button onClick={handleAdd} disabled={!selected || addPerm.isPending} className="bg-[#00843D] hover:bg-[#006830]">
+              <Button onClick={handleAdd} disabled={!selected || addPerm.isPending} className="bg-[#368727] hover:bg-[#006830]">
                 {addPerm.isPending ? 'Adding…' : 'Add'}
               </Button>
             </div>

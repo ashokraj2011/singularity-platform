@@ -88,8 +88,8 @@ export function WidgetListEditor({
               display: 'flex', alignItems: 'center', gap: 7,
               padding: compact ? '6px 8px' : '8px 10px',
               borderRadius: 9, marginBottom: 4, cursor: 'pointer',
-              background:  isSelected ? 'rgba(0,132,61,0.08)' : '#fff',
-              border: `1px solid ${isSelected ? 'rgba(0,132,61,0.25)' : 'var(--color-outline-variant)'}`,
+              background:  isSelected ? 'rgba(54,135,39,0.08)' : '#fff',
+              border: `1px solid ${isSelected ? 'rgba(54,135,39,0.25)' : 'var(--color-outline-variant)'}`,
               transition: 'all 0.1s',
             }}
           >

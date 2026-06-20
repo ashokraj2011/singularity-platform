@@ -183,7 +183,7 @@ export function EnginePage() {
           onClick={() => sweepMut.mutate()}
           disabled={sweepMut.isPending}
           className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-all hover:-translate-y-0.5 hover:shadow-md disabled:opacity-50"
-          style={{ background: 'linear-gradient(135deg, #00843D 0%, #006236 100%)' }}
+          style={{ background: 'linear-gradient(135deg, #368727 0%, #006236 100%)' }}
         >
           <Play className="w-3.5 h-3.5" />
           {sweepMut.isPending ? 'Scanning...' : 'Run Sweep'}
@@ -269,7 +269,7 @@ export function EnginePage() {
                         className="w-full text-left px-5 py-3.5 flex items-start gap-3 transition-colors"
                         style={{
                           background: isSelected ? '#f0fdf4' : 'transparent',
-                          borderLeft: isSelected ? '3px solid #00843D' : '3px solid transparent',
+                          borderLeft: isSelected ? '3px solid #368727' : '3px solid transparent',
                         }}
                       >
                         <div

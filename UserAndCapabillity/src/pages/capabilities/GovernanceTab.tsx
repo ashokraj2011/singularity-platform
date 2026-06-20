@@ -161,7 +161,7 @@ export function GovernanceTab({ capabilityId }: { capabilityId: string }) {
         <p className="text-xs text-gray-400">
           Policies governing this capability (<code>governed_by</code>). Authored here — not in Relationships.
         </p>
-        <Button size="sm" onClick={openCreate} className="bg-[#00843D] hover:bg-[#006830]">
+        <Button size="sm" onClick={openCreate} className="bg-[#368727] hover:bg-[#006830]">
           <ShieldCheck className="w-3.5 h-3.5 mr-1.5" /> Attach policy
         </Button>
       </div>
@@ -283,10 +283,10 @@ export function GovernanceTab({ capabilityId }: { capabilityId: string }) {
                 <Label>Policy content</Label>
                 <div className="flex gap-1 text-xs">
                   <button type="button"
-                    className={`px-2 py-0.5 rounded ${form.policyMode === 'type' ? 'bg-[#00843D] text-white' : 'border border-gray-300 text-gray-600'}`}
+                    className={`px-2 py-0.5 rounded ${form.policyMode === 'type' ? 'bg-[#368727] text-white' : 'border border-gray-300 text-gray-600'}`}
                     onClick={() => set('policyMode', 'type')}>Type inline</button>
                   <button type="button"
-                    className={`px-2 py-0.5 rounded ${form.policyMode === 'link' ? 'bg-[#00843D] text-white' : 'border border-gray-300 text-gray-600'}`}
+                    className={`px-2 py-0.5 rounded ${form.policyMode === 'link' ? 'bg-[#368727] text-white' : 'border border-gray-300 text-gray-600'}`}
                     onClick={() => set('policyMode', 'link')}>Link to doc</button>
                 </div>
               </div>
@@ -333,7 +333,7 @@ export function GovernanceTab({ capabilityId }: { capabilityId: string }) {
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
               <Button onClick={submit} disabled={pending || !!jsonError}
-                className="bg-[#00843D] hover:bg-[#006830]">
+                className="bg-[#368727] hover:bg-[#006830]">
                 {pending ? 'Saving…' : editing ? 'Save' : 'Attach'}
               </Button>
             </div>

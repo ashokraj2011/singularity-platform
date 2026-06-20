@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
 /* Singularity — design tokens.
  *
@@ -13,7 +13,7 @@
   --brand-forest-light:  #155041;
 
   /* Green accent system */
-  --brand-green:         #00843D;
+  --brand-green:         #368727;
   --brand-green-dark:    #006236;
   --brand-green-accent:  #00A651;
   --brand-green-tint:    #e6f4ed;
@@ -41,7 +41,7 @@
   --status-error-fg:     #b91c1c;
 
   /* Typography */
-  --font-sans: 'Public Sans', ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+  --font-sans: 'Mulish', ui-sans-serif, system-ui, -apple-system, "Segoe UI",
                Roboto, sans-serif;
   --font-display: var(--font-sans);
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, monospace;

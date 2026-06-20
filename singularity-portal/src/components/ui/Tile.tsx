@@ -69,9 +69,9 @@ export function ErrorState({ message }: { message: string }) {
 export function LoadingDots() {
   return (
     <div className="flex items-center gap-1 px-1 py-2">
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full [animation-delay:-0.3s]" style={{ background: '#00843D' }} />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full [animation-delay:-0.15s]" style={{ background: '#00843D' }} />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full" style={{ background: '#00843D' }} />
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full [animation-delay:-0.3s]" style={{ background: '#368727' }} />
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full [animation-delay:-0.15s]" style={{ background: '#368727' }} />
+      <span className="h-1.5 w-1.5 animate-bounce rounded-full" style={{ background: '#368727' }} />
     </div>
   )
 }

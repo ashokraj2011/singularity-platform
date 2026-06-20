@@ -54,7 +54,7 @@ function ConnectorsView({ query, setQuery }: { query: string; setQuery: (value: 
           {isLoading && <EmptyPanel text="Loading connectors..." />}
           {!isLoading && connectors.length === 0 && <EmptyPanel text="No connectors match this view." />}
           {connectors.map((connector) => (
-            <button key={connector.id} type="button" onClick={() => setSelectedId(connector.id)} className="card card-hover" style={{ padding: 14, textAlign: "left", border: selected?.id === connector.id ? "1px solid rgba(0,132,61,0.42)" : undefined, background: selected?.id === connector.id ? "rgba(240,253,244,0.74)" : undefined, cursor: "pointer" }}>
+            <button key={connector.id} type="button" onClick={() => setSelectedId(connector.id)} className="card card-hover" style={{ padding: 14, textAlign: "left", border: selected?.id === connector.id ? "1px solid rgba(54,135,39,0.42)" : undefined, background: selected?.id === connector.id ? "rgba(240,253,244,0.74)" : undefined, cursor: "pointer" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
                 <strong>{connector.name ?? shortId(connector.id)}</strong>
                 <Badge>{connector.type ?? "connector"}</Badge>
@@ -120,7 +120,7 @@ function MetadataView({ query, setQuery, kind, setKind }: { query: string; setQu
           {isLoading && <EmptyPanel text="Loading metadata definitions..." />}
           {!isLoading && items.length === 0 && <EmptyPanel text="No metadata definitions match this view." />}
           {items.map((item) => (
-            <button key={item.id} type="button" onClick={() => setSelectedId(item.id)} className="card card-hover" style={{ padding: 14, textAlign: "left", border: selected?.id === item.id ? "1px solid rgba(0,132,61,0.42)" : undefined, background: selected?.id === item.id ? "rgba(240,253,244,0.74)" : undefined, cursor: "pointer" }}>
+            <button key={item.id} type="button" onClick={() => setSelectedId(item.id)} className="card card-hover" style={{ padding: 14, textAlign: "left", border: selected?.id === item.id ? "1px solid rgba(54,135,39,0.42)" : undefined, background: selected?.id === item.id ? "rgba(240,253,244,0.74)" : undefined, cursor: "pointer" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
                 <strong>{item.label ?? item.key ?? shortId(item.id)}</strong>
                 <Badge>{item.status ?? "UNKNOWN"}</Badge>

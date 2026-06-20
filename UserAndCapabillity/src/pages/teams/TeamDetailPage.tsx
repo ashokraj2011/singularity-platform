@@ -70,7 +70,7 @@ export function TeamDetailPage() {
         <TabsContent value="members" className="mt-4">
           <div className="flex justify-between items-center mb-3">
             <p className="text-sm text-gray-500">{members?.length ?? 0} members</p>
-            <Button size="sm" onClick={() => setAddOpen(true)} className="bg-[#00843D] hover:bg-[#006830]">
+            <Button size="sm" onClick={() => setAddOpen(true)} className="bg-[#368727] hover:bg-[#006830]">
               <UserPlus className="w-3.5 h-3.5 mr-1.5" /> Add Member
             </Button>
           </div>
@@ -135,7 +135,7 @@ export function TeamDetailPage() {
               <Button
                 size="sm"
                 disabled={!childPick || addChild.isPending}
-                className="bg-[#00843D] hover:bg-[#006830]"
+                className="bg-[#368727] hover:bg-[#006830]"
                 onClick={async () => { await addChild.mutateAsync(childPick); setChildPick('') }}
               >
                 {addChild.isPending ? 'Adding…' : 'Add child'}
@@ -185,7 +185,7 @@ export function TeamDetailPage() {
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
-              <Button onClick={handleAddMember} disabled={addMember.isPending} className="bg-[#00843D] hover:bg-[#006830]">
+              <Button onClick={handleAddMember} disabled={addMember.isPending} className="bg-[#368727] hover:bg-[#006830]">
                 {addMember.isPending ? 'Adding…' : 'Add'}
               </Button>
             </div>

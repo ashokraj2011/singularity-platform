@@ -17,7 +17,7 @@ export type DomainSignal = {
 };
 
 const toneMap = {
-  green: { bg: "rgba(0,132,61,0.10)", fg: "#007a3d", border: "rgba(0,132,61,0.25)" },
+  green: { bg: "rgba(54,135,39,0.10)", fg: "#007a3d", border: "rgba(54,135,39,0.25)" },
   blue: { bg: "rgba(0,75,141,0.10)", fg: "#004b8d", border: "rgba(0,75,141,0.22)" },
   amber: { bg: "rgba(217,119,6,0.12)", fg: "#92400e", border: "rgba(217,119,6,0.24)" },
   slate: { bg: "rgba(70,80,99,0.08)", fg: "#465063", border: "rgba(70,80,99,0.18)" },
@@ -103,7 +103,7 @@ export function DomainLanding({
                   display: "flex",
                   flexDirection: "column",
                   justifyContent: "space-between",
-                  borderColor: action.primary ? "rgba(0,132,61,0.36)" : "var(--color-outline-variant)",
+                  borderColor: action.primary ? "rgba(54,135,39,0.36)" : "var(--color-outline-variant)",
                 }}
               >
                 <div>

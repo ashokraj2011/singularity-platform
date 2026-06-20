@@ -66,7 +66,7 @@ export const ARTIFACT_TYPE_LABEL: Record<ArtifactType, string> = {
 
 export const ARTIFACT_TYPE_COLOR: Record<ArtifactType, string> = {
   CONTRACT:       '#6366f1',
-  DELIVERABLE:    '#00843D',
+  DELIVERABLE:    '#368727',
   SPECIFICATION:  '#0ea5e9',
   APPROVAL_BRIEF: '#f59e0b',
   HANDOFF:        '#8b5cf6',
@@ -83,7 +83,7 @@ export const ARTIFACT_TYPE_DESC: Record<ArtifactType, string> = {
 }
 
 const STATUS_COLOR: Record<string, string> = {
-  DRAFT: '#94a3b8', PUBLISHED: '#00843D', ARCHIVED: '#64748b',
+  DRAFT: '#94a3b8', PUBLISHED: '#368727', ARCHIVED: '#64748b',
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -245,7 +245,7 @@ function CreateModal({ onClose, onCreate }: { onClose: () => void; onCreate: (da
       <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 18, width: '100%', maxWidth: 540, boxShadow: '0 24px 64px rgba(0,0,0,0.18)' }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '22px 24px 16px' }}>
-          <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(0,132,61,0.1)', border: '1px solid rgba(0,132,61,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: 36, height: 36, borderRadius: 10, background: 'rgba(54,135,39,0.1)', border: '1px solid rgba(54,135,39,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <FileText size={16} style={{ color: 'var(--color-primary)' }} />
           </div>
           <div style={{ flex: 1 }}>

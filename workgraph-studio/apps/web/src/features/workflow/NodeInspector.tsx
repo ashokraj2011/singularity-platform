@@ -355,7 +355,7 @@ const NODE_META: Record<string, {
   standardFields: Array<{ key: string; label: string; placeholder: string; multiline?: boolean }>
 }> = {
   START: {
-    label: 'Start', color: '#00843D', Icon: Play,
+    label: 'Start', color: '#368727', Icon: Play,
     description: 'Entry point of the workflow. Execution begins here manually, from a schedule, from a webhook, or from an event trigger. One Start node is required per workflow.',
     standardFields: [
       { key: 'triggerType',      label: 'Trigger type',      placeholder: 'MANUAL | SCHEDULE | EVENT | WEBHOOK | API' },

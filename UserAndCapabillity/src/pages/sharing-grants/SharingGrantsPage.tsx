@@ -58,7 +58,7 @@ export function SharingGrantsPage() {
         title="Sharing Grants"
         subtitle="Control capability sharing between applications"
         action={
-          <Button onClick={() => setOpen(true)} className="bg-[#00843D] hover:bg-[#006830]">
+          <Button onClick={() => setOpen(true)} className="bg-[#368727] hover:bg-[#006830]">
             <Plus className="w-4 h-4 mr-1.5" /> New Grant
           </Button>
         }
@@ -155,7 +155,7 @@ export function SharingGrantsPage() {
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button type="submit" disabled={isSubmitting} className="bg-[#00843D] hover:bg-[#006830]">
+              <Button type="submit" disabled={isSubmitting} className="bg-[#368727] hover:bg-[#006830]">
                 {isSubmitting ? 'Creating…' : 'Create'}
               </Button>
             </div>

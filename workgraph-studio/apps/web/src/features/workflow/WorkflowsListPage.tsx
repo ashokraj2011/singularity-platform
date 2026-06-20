@@ -93,7 +93,7 @@ function emptyMeta(): TemplateMetadata {
 
 const STATUS_COLOR: Record<string, string> = {
   DRAFT:     '#6a7486',
-  ACTIVE:    '#00843D',
+  ACTIVE:    '#368727',
   PAUSED:    '#d97706',
   COMPLETED: '#10b981',
   CANCELLED: '#dc2626',
@@ -335,7 +335,7 @@ function TemplateMenu({
           {menuBtn('Export JSON', Download, '#475569', '#f8fafc', onExportJson)}
           {menuBtn('Export BPMN', FileCode, '#6366f1', '#eef2ff', onExportBpmn)}
           {template.archivedAt
-            ? menuBtn('Restore', ArchiveRestore, '#00843D', '#f0fdf4', onRestore)
+            ? menuBtn('Restore', ArchiveRestore, '#368727', '#f0fdf4', onRestore)
             : menuBtn('Archive', Archive, '#d97706', '#fffbeb', onArchive)
           }
         </div>
@@ -610,7 +610,7 @@ export function WorkflowsListPage() {
       style={{
         padding: '6px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
         fontSize: 12, fontWeight: 700,
-        background: tab === id ? 'rgba(0,132,61,0.10)' : 'transparent',
+        background: tab === id ? 'rgba(54,135,39,0.10)' : 'transparent',
         color: tab === id ? 'var(--color-primary)' : 'var(--color-outline)',
         transition: 'all 0.12s',
       }}
@@ -630,7 +630,7 @@ export function WorkflowsListPage() {
               <div style={{
                 width: 36, height: 36, borderRadius: 10, flexShrink: 0,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: 'rgba(0,132,61,0.10)', border: '1px solid rgba(0,132,61,0.18)',
+                background: 'rgba(54,135,39,0.10)', border: '1px solid rgba(54,135,39,0.18)',
               }}>
                 <GitBranch size={16} style={{ color: 'var(--color-primary)' }} />
               </div>
@@ -717,7 +717,7 @@ export function WorkflowsListPage() {
                     padding: '6px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
                     fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
                     background: active
-                      ? (pt === 'workbench' ? 'rgba(124,58,237,0.12)' : pt === 'main' ? 'rgba(0,132,61,0.10)' : 'rgba(71,85,105,0.10)')
+                      ? (pt === 'workbench' ? 'rgba(124,58,237,0.12)' : pt === 'main' ? 'rgba(54,135,39,0.10)' : 'rgba(71,85,105,0.10)')
                       : 'transparent',
                     color: active ? accent : 'var(--color-outline)',
                     transition: 'all 0.12s',
@@ -762,8 +762,8 @@ export function WorkflowsListPage() {
               onClick={() => setCapabilityFilter(activeContext.capabilityId)}
               style={{
                 padding: '9px 12px', borderRadius: 9,
-                border: '1px solid rgba(0,132,61,0.25)',
-                background: 'rgba(0,132,61,0.08)',
+                border: '1px solid rgba(54,135,39,0.25)',
+                background: 'rgba(54,135,39,0.08)',
                 color: 'var(--color-primary)',
                 cursor: 'pointer',
                 fontSize: 12,
@@ -803,7 +803,7 @@ export function WorkflowsListPage() {
             <div className="empty-state-icon">
               <GitBranch size={20} style={{ color: 'var(--color-primary)' }} />
             </div>
-            <p style={{ fontFamily: "'Public Sans', sans-serif", fontWeight: 700, fontSize: 14, color: 'var(--color-on-surface)', marginBottom: 4 }}>
+            <p style={{ fontFamily: "'Mulish', sans-serif", fontWeight: 700, fontSize: 14, color: 'var(--color-on-surface)', marginBottom: 4 }}>
               No workflows yet
             </p>
             <p style={{ fontSize: 12, color: 'var(--color-outline)', marginBottom: 16 }}>
@@ -833,8 +833,8 @@ export function WorkflowsListPage() {
                     opacity: inst.archivedAt ? 0.5 : 1,
                   }}
                   onMouseEnter={e => {
-                    (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(0,132,61,0.3)'
-                    ;(e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 16px rgba(0,132,61,0.08)'
+                    (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(54,135,39,0.3)'
+                    ;(e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 16px rgba(54,135,39,0.08)'
                     ;(e.currentTarget as HTMLDivElement).style.transform = 'translateY(-1px)'
                   }}
                   onMouseLeave={e => {
@@ -853,7 +853,7 @@ export function WorkflowsListPage() {
 
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <p style={{
-                      fontFamily: "'Public Sans', sans-serif",
+                      fontFamily: "'Mulish', sans-serif",
                       fontSize: 13, fontWeight: 700,
                       color: 'var(--color-on-surface)', whiteSpace: 'nowrap',
                       overflow: 'hidden', textOverflow: 'ellipsis',
@@ -930,7 +930,7 @@ export function WorkflowsListPage() {
               <div className="empty-state-icon">
                 <Layers size={20} style={{ color: 'var(--color-primary)' }} />
               </div>
-              <p style={{ fontFamily: "'Public Sans', sans-serif", fontWeight: 700, fontSize: 14, color: 'var(--color-on-surface)', marginBottom: 4 }}>
+              <p style={{ fontFamily: "'Mulish', sans-serif", fontWeight: 700, fontSize: 14, color: 'var(--color-on-surface)', marginBottom: 4 }}>
                 No workflows yet
               </p>
               <p style={{ fontSize: 12, color: 'var(--color-outline)' }}>
@@ -964,7 +964,7 @@ export function WorkflowsListPage() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <p style={{
-                        fontFamily: "'Public Sans', sans-serif",
+                        fontFamily: "'Mulish', sans-serif",
                         fontSize: 13, fontWeight: 700,
                         color: 'var(--color-on-surface)',
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -1007,7 +1007,7 @@ export function WorkflowsListPage() {
                         {(tmpl.workflowTypeKey || tmpl.metadata.workflowType) && (
                           <MetaBadge color="#6366f1">{TYPE_LABEL[tmpl.workflowTypeKey ?? tmpl.metadata.workflowType ?? ''] ?? tmpl.workflowTypeKey ?? tmpl.metadata.workflowType}</MetaBadge>
                         )}
-                        {tmpl.isDefaultForType && <MetaBadge color="#00843D">Default route</MetaBadge>}
+                        {tmpl.isDefaultForType && <MetaBadge color="#368727">Default route</MetaBadge>}
                         {tmpl.metadata.criticality && (
                           <MetaBadge color={CRITICALITY_COLOR[tmpl.metadata.criticality] ?? '#64748b'}>{tmpl.metadata.criticality}</MetaBadge>
                         )}
@@ -1024,7 +1024,7 @@ export function WorkflowsListPage() {
                           <MetaBadge color="#f59e0b">Approval req.</MetaBadge>
                         )}
                         {tmpl.capabilityId && (
-                          <MetaBadge color="#00843D">{labelForCapability(tmpl.capabilityId)}</MetaBadge>
+                          <MetaBadge color="#368727">{labelForCapability(tmpl.capabilityId)}</MetaBadge>
                         )}
                         {tmpl.metadata.slaHours && (
                           <MetaBadge color="#94a3b8">SLA {tmpl.metadata.slaHours}h</MetaBadge>
@@ -1184,10 +1184,10 @@ export function WorkflowsListPage() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <div style={{
                     width: 42, height: 42, borderRadius: 11,
-                    background: 'rgba(0,132,61,0.10)', border: '1px solid rgba(0,132,61,0.20)',
+                    background: 'rgba(54,135,39,0.10)', border: '1px solid rgba(54,135,39,0.20)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                   }}>
-                    <GitBranch size={18} style={{ color: '#00843D' }} />
+                    <GitBranch size={18} style={{ color: '#368727' }} />
                   </div>
                   <div>
                     <p style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: 0 }}>New Workflow</p>
@@ -1208,13 +1208,13 @@ export function WorkflowsListPage() {
                   return (
                     <button key={s} onClick={() => setCreateStep(s)} style={{
                       padding: '8px 16px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer',
-                      background: 'none', borderBottom: active ? '2px solid #00843D' : '2px solid transparent',
-                      color: active ? '#00843D' : '#64748b', transition: 'all 0.12s',
+                      background: 'none', borderBottom: active ? '2px solid #368727' : '2px solid transparent',
+                      color: active ? '#368727' : '#64748b', transition: 'all 0.12s',
                     }}>
                       <span style={{
                         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                         width: 18, height: 18, borderRadius: '50%', fontSize: 10, fontWeight: 800,
-                        background: active ? '#00843D' : '#e2e8f0', color: active ? '#fff' : '#475569',
+                        background: active ? '#368727' : '#e2e8f0', color: active ? '#fff' : '#475569',
                         marginRight: 6,
                       }}>{i + 1}</span>
                       {labels[i]}
@@ -1535,7 +1535,7 @@ export function WorkflowsListPage() {
             <div style={{ padding: '16px 28px', borderTop: '1px solid #f1f5f9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', gap: 6 }}>
                 {(['identity', 'config', 'tags'] as const).map(s => (
-                  <div key={s} style={{ width: 6, height: 6, borderRadius: '50%', background: createStep === s ? '#00843D' : '#e2e8f0' }} />
+                  <div key={s} style={{ width: 6, height: 6, borderRadius: '50%', background: createStep === s ? '#368727' : '#e2e8f0' }} />
                 ))}
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
@@ -1553,7 +1553,7 @@ export function WorkflowsListPage() {
                   <button onClick={() => setCreateStep(createStep === 'identity' ? 'config' : 'tags')}
                     disabled={createStep === 'identity' && !canAdvanceCreateIdentity}
                     style={{
-                      padding: '8px 18px', borderRadius: 8, border: 'none', background: '#00843D',
+                      padding: '8px 18px', borderRadius: 8, border: 'none', background: '#368727',
                       color: '#fff', fontSize: 12, fontWeight: 700, cursor: createStep === 'identity' && !canAdvanceCreateIdentity ? 'not-allowed' : 'pointer',
                       opacity: createStep === 'identity' && !canAdvanceCreateIdentity ? 0.5 : 1,
                     }}>
@@ -1575,7 +1575,7 @@ export function WorkflowsListPage() {
                     })}
                     disabled={createWorkflowMut.isPending || !createName.trim() || starterRequiresCapability}
                     style={{
-                      padding: '8px 18px', borderRadius: 8, border: 'none', background: '#00843D',
+                      padding: '8px 18px', borderRadius: 8, border: 'none', background: '#368727',
                       color: '#fff', fontSize: 12, fontWeight: 700,
                       cursor: createWorkflowMut.isPending || starterRequiresCapability ? 'not-allowed' : 'pointer',
                       opacity: createWorkflowMut.isPending || starterRequiresCapability ? 0.7 : 1,

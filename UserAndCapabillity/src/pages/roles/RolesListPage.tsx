@@ -55,7 +55,7 @@ export function RolesListPage() {
         title="Roles"
         subtitle="Define named collections of permissions"
         action={
-          <Button onClick={() => setOpen(true)} className="bg-[#00843D] hover:bg-[#006830]">
+          <Button onClick={() => setOpen(true)} className="bg-[#368727] hover:bg-[#006830]">
             <Plus className="w-4 h-4 mr-1.5" /> New Role
           </Button>
         }
@@ -70,7 +70,7 @@ export function RolesListPage() {
           {data.items.map(role => (
             <div
               key={role.id}
-              className="bg-white rounded-xl border border-gray-200 p-5 cursor-pointer hover:border-[#00843D]/40 hover:shadow-sm transition-all"
+              className="bg-white rounded-xl border border-gray-200 p-5 cursor-pointer hover:border-[#368727]/40 hover:shadow-sm transition-all"
               onClick={() => navigate(`/roles/${role.role_key}`)}
             >
               <div className="flex items-start justify-between">
@@ -86,7 +86,7 @@ export function RolesListPage() {
               {(role.tags ?? []).length > 0 && (
                 <div className="flex flex-wrap gap-1 mt-2">
                   {role.tags.map(t => (
-                    <span key={t} className="text-xs bg-[#e6f4ed] text-[#00843D] px-1.5 py-0.5 rounded-full">{t}</span>
+                    <span key={t} className="text-xs bg-[#e6f4ed] text-[#368727] px-1.5 py-0.5 rounded-full">{t}</span>
                   ))}
                 </div>
               )}
@@ -138,7 +138,7 @@ export function RolesListPage() {
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={handleClose}>Cancel</Button>
-              <Button type="submit" disabled={isSubmitting} className="bg-[#00843D] hover:bg-[#006830]">
+              <Button type="submit" disabled={isSubmitting} className="bg-[#368727] hover:bg-[#006830]">
                 {isSubmitting ? 'Creating…' : 'Create'}
               </Button>
             </div>

@@ -456,7 +456,7 @@ function Metric({ label, value }: { label: string; value: string | number }) {
 
 function Segment({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button type="button" onClick={onClick} style={{ border: 0, borderRadius: 8, padding: "7px 13px", cursor: "pointer", fontSize: 12, fontWeight: 800, background: active ? "rgba(0,132,61,0.12)" : "transparent", color: active ? "var(--color-primary)" : "var(--color-outline)" }}>
+    <button type="button" onClick={onClick} style={{ border: 0, borderRadius: 8, padding: "7px 13px", cursor: "pointer", fontSize: 12, fontWeight: 800, background: active ? "rgba(54,135,39,0.12)" : "transparent", color: active ? "var(--color-primary)" : "var(--color-outline)" }}>
       {children}
     </button>
   );
@@ -531,7 +531,7 @@ function iconBox(color: string): React.CSSProperties {
 
 function statusColor(status: unknown): string {
   const value = String(status ?? "").toUpperCase();
-  if (value === "ACTIVE" || value === "COMPLETED") return "#00843d";
+  if (value === "ACTIVE" || value === "COMPLETED") return "#368727";
   if (value === "PAUSED" || value === "BLOCKED") return "#d97706";
   if (value === "FAILED" || value === "CANCELLED") return "#ba1a1a";
   return "#64748b";

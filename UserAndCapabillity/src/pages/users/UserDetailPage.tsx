@@ -55,7 +55,7 @@ export function UserDetailPage() {
       </Button>
 
       <div className="flex items-start gap-4 mb-6">
-        <div className="w-12 h-12 rounded-full bg-[#00843D] flex items-center justify-center text-white font-semibold text-lg">
+        <div className="w-12 h-12 rounded-full bg-[#368727] flex items-center justify-center text-white font-semibold text-lg">
           {(user.display_name ?? user.email)[0].toUpperCase()}
         </div>
         <div>
@@ -64,7 +64,7 @@ export function UserDetailPage() {
           <div className="flex items-center gap-2 mt-1">
             <StatusBadge label={user.status} className={userStatusColor(user.status)} />
             {user.is_super_admin && (
-              <StatusBadge label="Super Admin" className="bg-[#e6f4ed] text-[#00843D]" />
+              <StatusBadge label="Super Admin" className="bg-[#e6f4ed] text-[#368727]" />
             )}
           </div>
         </div>
@@ -100,7 +100,7 @@ export function UserDetailPage() {
         <TabsContent value="roles" className="mt-4">
           <div className="flex justify-between items-center mb-3">
             <p className="text-sm text-gray-500">{userRoles?.length ?? 0} roles assigned</p>
-            <Button size="sm" onClick={() => setAssignOpen(true)} className="bg-[#00843D] hover:bg-[#006830]">
+            <Button size="sm" onClick={() => setAssignOpen(true)} className="bg-[#368727] hover:bg-[#006830]">
               <ShieldPlus className="w-3.5 h-3.5 mr-1.5" /> Assign Role
             </Button>
           </div>
@@ -177,7 +177,7 @@ export function UserDetailPage() {
                   onClick={() => setSelectedRoleKey(r.role_key)}
                   className={`w-full text-left px-3 py-2.5 hover:bg-gray-50 transition-colors ${selectedRoleKey === r.role_key ? 'bg-[#e6f4ed]' : ''}`}
                 >
-                  <p className={`text-sm font-medium ${selectedRoleKey === r.role_key ? 'text-[#00843D]' : 'text-gray-900'}`}>{r.name}</p>
+                  <p className={`text-sm font-medium ${selectedRoleKey === r.role_key ? 'text-[#368727]' : 'text-gray-900'}`}>{r.name}</p>
                   <p className="font-mono text-xs text-gray-400">{r.role_key}</p>
                 </button>
               ))}
@@ -187,7 +187,7 @@ export function UserDetailPage() {
               <Button
                 onClick={handleAssignRole}
                 disabled={!selectedRoleKey || assignRole.isPending}
-                className="bg-[#00843D] hover:bg-[#006830]"
+                className="bg-[#368727] hover:bg-[#006830]"
               >
                 {assignRole.isPending ? 'Assigning…' : 'Assign'}
               </Button>

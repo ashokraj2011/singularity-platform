@@ -9,7 +9,7 @@ const config: Config = {
     extend: {
       fontFamily: {
         sans:    ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
-        display: ["'Public Sans'", "ui-sans-serif", "system-ui", "sans-serif"],
+        display: ["'Mulish'", "ui-sans-serif", "system-ui", "sans-serif"],
         mono:    ["ui-monospace", "'SFMono-Regular'", "Menlo", "monospace"],
       },
       colors: {
@@ -20,8 +20,8 @@ const config: Config = {
           300: "#86efac",
           400: "#4ade80",
           500: "#22c55e",
-          600: "#00843D",   /* brand primary */
-          700: "#006227",   /* brand dark */
+          600: "#368727",   /* brand primary */
+          700: "#2a6b1f",   /* brand dark */
           800: "#14532d",
           900: "#052e16",
         },
