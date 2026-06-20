@@ -59,12 +59,13 @@ async def build_code_context_for_governed_turn(
     """Build a code-context package and return the package dict, or
     (None, reason) on any failure.
 
-    Transport: when ``laptop_user_id`` is set the run is placed on that
-    user's laptop, so the repo/worktree lives THERE — the build is dispatched
-    over the ``code-context`` bridge frame to the laptop's mcp-server. When no
-    laptop is connected/serving the frame (or it isn't placed on a laptop at
-    all) it falls back to POSTing the static ``MCP_SERVER_URL``
-    ``/mcp/code-context/build`` route. Both transports return the same
+    Transport: when ``laptop_user_id`` or ``runtime_tenant_id`` is set the
+    run is placed on a runtime, so the repo/worktree lives THERE — the build
+    is dispatched over the ``code-context`` bridge frame to the runtime's
+    mcp-server. If that runtime is unavailable, static HTTP fallback is used
+    only when ``RUNTIME_HTTP_FALLBACK_ENABLED=true``. Identity-less legacy
+    callers still use the static ``MCP_SERVER_URL`` best-effort path because
+    there is no runtime identity to route. Both transports return the same
     ``{success, data}`` envelope, parsed by ``_parse_code_context_body``.
 
     Reason strings stay informative + auditable — they end up in
@@ -110,9 +111,9 @@ async def build_code_context_for_governed_turn(
     # Laptop bridge first: when the run is placed on the user's laptop the
     # repo/worktree lives THERE, not in the box's shared mcp-server sandbox.
     # Dispatch the build over the `code-context` frame so the world model is
-    # indexed against the same laptop worktree the run's tools use. Falls
-    # through to the static HTTP path below when no laptop is connected/serving
-    # the frame (best-effort — never raises). Mirrors the tool-dispatch
+    # indexed against the same laptop worktree the run's tools use. If a
+    # runtime was requested, static HTTP is a debug fallback only; identity-less
+    # legacy calls still use the HTTP path below. Mirrors the tool-dispatch
     # (governed.dispatch) and model-run (governed.llm_client) bridge paths.
     runtime_requested = bool(laptop_user_id or runtime_tenant_id)
     if runtime_requested:
@@ -127,8 +128,6 @@ async def build_code_context_for_governed_turn(
             return _parse_code_context_body(body)
         if not _http_fallback_enabled():
             return None, "RUNTIME_NOT_CONNECTED: no runtime bridge connected for code-context"
-    elif not _http_fallback_enabled():
-        return None, "RUNTIME_NOT_CONNECTED: no runtime identity for code-context"
 
     base = (mcp_base_url or os.environ.get("MCP_SERVER_URL", "")).rstrip("/")
     if not base:

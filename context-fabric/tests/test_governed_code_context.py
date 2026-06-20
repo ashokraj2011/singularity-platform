@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+import context_api_service.app.governed.code_context as code_context_mod
 from context_api_service.app.governed.code_context import (
     build_code_context_for_governed_turn,
     package_markdown,
@@ -185,6 +186,50 @@ def test_transport_error_reported():
     assert pkg is None
     assert "transport error" in (reason or "")
     assert "mcp down" in (reason or "")
+
+
+def test_identityless_code_context_uses_static_http_without_runtime_fallback():
+    captured: list[tuple] = []
+
+    async def _capture(url, payload, headers, timeout):
+        captured.append((url, payload, headers))
+        return {"success": True, "data": {"context_package_id": "ctx-static"}}
+
+    pkg, reason = _run(build_code_context_for_governed_turn(
+        task_text="x",
+        capability_id=None,
+        run_context=None,
+        mcp_base_url="http://mcp:7100",
+        _http_post=_capture,
+    ))
+
+    assert reason is None
+    assert pkg is not None
+    assert pkg["context_package_id"] == "ctx-static"
+    assert captured[0][0] == "http://mcp:7100/mcp/code-context/build"
+
+
+def test_runtime_code_context_fails_closed_without_http_fallback(monkeypatch):
+    async def _no_runtime(*args, **kwargs):
+        return None
+
+    monkeypatch.delenv("RUNTIME_HTTP_FALLBACK_ENABLED", raising=False)
+    monkeypatch.setattr(code_context_mod, "_try_laptop_code_context", _no_runtime)
+
+    pkg, reason = _run(build_code_context_for_governed_turn(
+        task_text="x",
+        capability_id=None,
+        run_context={"user_id": "u1"},
+        laptop_user_id="u1",
+        mcp_base_url="http://mcp:7100",
+        _http_post=_make_poster({
+            "success": True,
+            "data": {"context_package_id": "should-not-use-http"},
+        }),
+    ))
+
+    assert pkg is None
+    assert reason == "RUNTIME_NOT_CONNECTED: no runtime bridge connected for code-context"
 
 
 def test_backend_success_false_reported():

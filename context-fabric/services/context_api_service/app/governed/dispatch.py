@@ -19,6 +19,8 @@ from typing import Any, Literal
 
 import httpx
 
+from . import placement as _placement
+
 log = logging.getLogger(__name__)
 
 
@@ -46,25 +48,6 @@ def _timeout_for(tool_name: str) -> float:
 
 def _http_fallback_enabled() -> bool:
     return os.environ.get("RUNTIME_HTTP_FALLBACK_ENABLED", "false").strip().lower() in _TRUTHY
-
-
-def _context_value(run_context: dict[str, Any] | None, *keys: str) -> Any:
-    if not isinstance(run_context, dict):
-        return None
-    for key in keys:
-        value = run_context.get(key)
-        if value is not None:
-            return value
-    return None
-
-
-def _context_list(run_context: dict[str, Any] | None, *keys: str) -> list[str]:
-    value = _context_value(run_context, *keys)
-    if isinstance(value, list):
-        return [str(item) for item in value if str(item)]
-    if isinstance(value, str) and value:
-        return [value]
-    return []
 
 
 class ToolDispatchError(RuntimeError):
@@ -179,22 +162,19 @@ async def dispatch_tool(
         )
         laptop_user_id = None
 
-    run_prefer = _context_value(run_context, "prefer_laptop", "preferRuntime")
-    runtime_user_id = laptop_user_id or _context_value(run_context, "user_id", "userId")
-    runtime_tenant_id = _context_value(run_context, "tenant_id", "tenantId", "org_id", "orgId")
-    capability_tags = _context_list(run_context, "capability_tags", "capabilityTags")
-    capability_id = _context_value(run_context, "capability_id", "capabilityId")
-    if capability_id:
-        capability_tags.append(str(capability_id))
-    if run_prefer is False and not laptop_user_id:
-        runtime_user_id = None
-        runtime_tenant_id = None
+    runtime_user_id = (
+        str(laptop_user_id)
+        if laptop_user_id and not _placement.enterprise_mode()
+        else _placement.mcp_laptop_target(run_context)
+    )
+    runtime_tenant_id = _placement.runtime_tenant_target(run_context)
+    capability_tags = _placement.runtime_capability_tags(run_context)
 
     if not legacy_active and (runtime_user_id or runtime_tenant_id):
         try:
             return await _dispatch_via_laptop(
                 user_id=str(runtime_user_id or ""),
-                tenant_id=str(runtime_tenant_id or "") or None,
+                tenant_id=str(runtime_tenant_id) if runtime_tenant_id is not None else None,
                 capability_tags=capability_tags,
                 tool_name=tool_name,
                 args=args,
