@@ -44,7 +44,7 @@ function BuNode({ bu, allBus, depth = 0, onEdit }: { bu: BusinessUnit; allBus: B
           <span className="text-sm font-medium text-gray-900">{bu.name}</span>
           <span className="font-mono text-xs text-gray-400">{bu.bu_key}</span>
           {(bu.tags ?? []).map(t => (
-            <span key={t} className="text-xs bg-[#e6f4ed] text-[#00843D] px-1.5 py-0.5 rounded-full">{t}</span>
+            <span key={t} className="text-xs bg-[#e6f4ed] text-[#368727] px-1.5 py-0.5 rounded-full">{t}</span>
           ))}
         </div>
         <button
@@ -135,7 +135,7 @@ export function BusinessUnitsPage() {
         title="Business Units"
         subtitle="Organizational hierarchy"
         action={
-          <Button onClick={() => setOpen(true)} className="bg-[#00843D] hover:bg-[#006830]">
+          <Button onClick={() => setOpen(true)} className="bg-[#368727] hover:bg-[#006830]">
             <Plus className="w-4 h-4 mr-1.5" /> New Business Unit
           </Button>
         }
@@ -192,7 +192,7 @@ export function BusinessUnitsPage() {
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={handleClose}>Cancel</Button>
-              <Button type="submit" disabled={isSubmitting} className="bg-[#00843D] hover:bg-[#006830]">
+              <Button type="submit" disabled={isSubmitting} className="bg-[#368727] hover:bg-[#006830]">
                 {isSubmitting ? 'Creating…' : 'Create'}
               </Button>
             </div>
@@ -233,7 +233,7 @@ export function BusinessUnitsPage() {
               )}
               <div className="flex justify-end gap-2 pt-2">
                 <Button type="button" variant="outline" onClick={() => setEditBu(null)}>Cancel</Button>
-                <Button onClick={submitEdit} disabled={updateBU.isPending} className="bg-[#00843D] hover:bg-[#006830]">
+                <Button onClick={submitEdit} disabled={updateBU.isPending} className="bg-[#368727] hover:bg-[#006830]">
                   {updateBU.isPending ? 'Saving…' : 'Save changes'}
                 </Button>
               </div>

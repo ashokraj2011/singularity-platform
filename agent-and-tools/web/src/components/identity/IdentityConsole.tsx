@@ -196,7 +196,7 @@ export function IdentityConsole({ view = "dashboard" }: { view?: IdentityView })
                     alignItems: "center",
                     gap: 10,
                     minHeight: 42,
-                    border: active ? "1px solid rgba(0,132,61,0.42)" : "1px solid transparent",
+                    border: active ? "1px solid rgba(54,135,39,0.42)" : "1px solid transparent",
                     background: active ? "rgba(240,253,244,0.86)" : "transparent",
                     color: active ? "var(--color-primary)" : "var(--color-text)",
                     borderRadius: 8,

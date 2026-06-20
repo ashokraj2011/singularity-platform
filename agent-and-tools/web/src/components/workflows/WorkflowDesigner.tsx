@@ -96,7 +96,7 @@ type WorkflowNodeData = {
 };
 
 const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType; label: string }> = {
-  START: { color: "#00843D", Icon: Play, label: "Start" },
+  START: { color: "#368727", Icon: Play, label: "Start" },
   END: { color: "#64748b", Icon: Square, label: "End" },
   HUMAN_TASK: { color: "#16a34a", Icon: User, label: "Human Task" },
   AGENT_TASK: { color: "#0284c7", Icon: Bot, label: "Agent Task" },

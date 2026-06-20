@@ -92,13 +92,14 @@ export async function GET(request: NextRequest) {
   const contextFabricUrl = trimTrailingSlash(process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000");
   const rawEventHorizonProvider = process.env.EVENT_HORIZON_PROVIDER || process.env.NEXT_PUBLIC_EVENT_HORIZON_PROVIDER || null;
   const rawEventHorizonModel = process.env.EVENT_HORIZON_MODEL || process.env.NEXT_PUBLIC_EVENT_HORIZON_MODEL || null;
-  const [gatewayHealth, providers, models, mcpHealth, workspaceStats, contextFabricHealth] = await Promise.all([
+  const [gatewayHealth, providers, models, mcpHealth, workspaceStats, contextFabricHealth, runtimeBridgeStatus] = await Promise.all([
     llmGatewayGet("/health"),
     llmGatewayGet("/llm/providers"),
     llmGatewayGet("/llm/models"),
     mcpGet("/health"),
     mcpGet("/mcp/workspaces/stats"),
     contextFabricGet("/health"),
+    contextFabricGet("/api/runtime-bridge/status"),
   ]);
 
   return NextResponse.json({
@@ -106,8 +107,9 @@ export async function GET(request: NextRequest) {
     topology: {
       mode: "dial-in-runtime",
       hub: "context-fabric",
-      llmGateway: "separate-container-or-remote",
-      mcpRuntime: "separate-container-or-remote",
+      llmGateway: "served-through-mcp-runtime",
+      mcpRuntime: "runtime-bridge-websocket",
+      httpFallback: process.env.RUNTIME_HTTP_FALLBACK_ENABLED === "true" ? "enabled" : "disabled",
     },
     gatewayUrl: llmGatewayUrl,
     llmGatewayUrl,
@@ -133,6 +135,7 @@ export async function GET(request: NextRequest) {
     gatewayHealth,
     mcpHealth,
     contextFabricHealth,
+    runtimeBridgeStatus,
     providers,
     models,
     workspaceStats,

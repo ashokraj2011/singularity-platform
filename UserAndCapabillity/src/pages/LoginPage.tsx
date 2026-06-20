@@ -63,7 +63,7 @@ export function LoginPage() {
         {/* Decorative circles */}
         <div
           className="absolute -top-24 -left-24 w-72 h-72 rounded-full opacity-10"
-          style={{ background: '#00843D' }}
+          style={{ background: '#368727' }}
         />
         <div
           className="absolute -bottom-32 -right-16 w-96 h-96 rounded-full opacity-[0.07]"
@@ -78,7 +78,7 @@ export function LoginPage() {
         <div className="relative z-10 flex flex-col items-center text-center max-w-xs">
           <div
             className="w-16 h-16 rounded-2xl flex items-center justify-center mb-6 shadow-2xl"
-            style={{ background: '#00843D' }}
+            style={{ background: '#368727' }}
           >
             <Fingerprint className="text-white" style={{ width: 32, height: 32 }} />
           </div>
@@ -98,7 +98,7 @@ export function LoginPage() {
 
           <div
             className="w-8 h-0.5 rounded-full mb-6"
-            style={{ background: '#00843D' }}
+            style={{ background: '#368727' }}
           />
 
           <p className="text-sm leading-relaxed" style={{ color: 'rgba(255,255,255,0.55)' }}>
@@ -130,7 +130,7 @@ export function LoginPage() {
         <div className="lg:hidden flex flex-col items-center mb-8">
           <div
             className="w-12 h-12 rounded-xl flex items-center justify-center mb-3"
-            style={{ background: '#00843D' }}
+            style={{ background: '#368727' }}
           >
             <Fingerprint className="text-white" style={{ width: 24, height: 24 }} />
           </div>
@@ -218,7 +218,7 @@ export function LoginPage() {
                 onClick={handleSubmit(onSubmit)}
                 className="w-full h-10 rounded-lg font-semibold text-sm tracking-wide transition-all disabled:pointer-events-none disabled:opacity-50"
                 disabled={isSubmitting}
-                style={{ background: '#00843D', color: '#ffffff' }}
+                style={{ background: '#368727', color: '#ffffff' }}
               >
                 {isSubmitting ? 'Signing in…' : 'Sign In'}
               </button>

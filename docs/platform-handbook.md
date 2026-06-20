@@ -141,16 +141,16 @@ Run `./singularity.sh urls` to print the current local endpoint map, and `./sing
 | `agent-service` | `http://localhost:3001/api/v1` | Agent application APIs and UI-facing agent service behavior; served by `platform-core` in Docker. |
 | `tool-service` | `http://localhost:3002/api/v1` | Tool registry, internal tools, connector tools, runner routes, and tool discovery; served by `platform-core` in Docker. |
 | `prompt-composer` | `http://localhost:3004/api/v1` | Prompt profiles, layers, assemblies, stage prompts, lessons, contracts, and compose/respond APIs; served by `platform-core` in Docker. |
-| `context-api` | `http://localhost:8000` | Context Fabric execution API, optimized context, laptop bridge, receipts, and Agent Execution Runtime orchestration. |
-| `llm-gateway` | `http://localhost:8001` | Optional/deployable provider abstraction, model aliases, chat completions, embeddings, model/provider listing. |
+| `context-api` | `http://localhost:8000` | Context Fabric execution API, optimized context, Runtime Bridge, receipts, and Agent Execution Runtime orchestration. |
+| `llm-gateway` | `http://localhost:8001` | Optional/deployable provider abstraction colocated behind MCP runtime for `model-run`, model aliases, chat completions, embeddings, model/provider listing. |
 | `formal-verifier` | `http://localhost:8010` | Optional formal verification service for constraints, policies, and verification receipts. |
-| `mcp-server` | `http://localhost:7100` | Optional/deployable Agent Execution Runtime, tools, resources, discovery, code context, invoke/resume, and token endpoints. |
+| `mcp-server` | `http://localhost:7100` | MCP runtime relay. Normal mode dials into Context Fabric over `/api/runtime-bridge/connect`; HTTP `7100` is debug fallback. |
 | `mcp-sandbox-runner` | internal compose network | Docker-based command execution runner for `run_command` and `run_test`. |
 | `audit-governance-service` | commonly `http://localhost:8500` | Audit events, governance budgets, receipts, cost evidence, hook ingestion. |
 
 ### Validation Ladder
 
-Run `./singularity.sh doctor` for the normal Docker install audit, or `bin/bare-metal.sh smoke` for bare-metal health checks. The normal Docker doctor includes `bin/check-platform-topology-contract.py`, which validates `docs/platform-topology.json` against Docker Compose and operator docs, then `bin/check-platform-topology.py`, which uses the same contract to verify the 8-container core shape, the completed Postgres bootstrap one-shots, prevents running legacy frontend containers next to `platform-web`, and prevents mixing split agent/tools containers with `platform-core`. It also includes `bin/check-context-profile-evidence.py`, which locks the Context Fabric receipt contract for profile-backed runs: call-log evidence columns, compact effective-capability persistence, receipt correlation, docs, tests, and trace-spine runtime checks. `bin/check-workgraph-tenant-guards.py` prevents regressions in strict tenant guards across Workgraph runtime/admin/internal surfaces, tenant-scoped service-token contracts, and the explicit tenant-policy classification for every mounted Workgraph API route. `bin/check-workgraph-db-tenant-isolation.py` checks the Workgraph tenant DB posture: workflow/run-snapshot tenant spine, tenant index, runtime child-row connectivity, tenant RLS policy scaffold, app-role RLS-bypass posture, live null-tenant data, and forced RLS for production-class targets by default. `bin/check-workgraph-forced-rls-cutover.py` checks the guarded forced-RLS cutover contract: dry-runs stay non-mutating, apply refuses without strict-runtime confirmation, and successful apply runs both preflight and postflight RLS checks. `bin/check-workgraph-forced-rls-enforcement.py` is enabled by `SINGULARITY_DOCTOR_DEEP_SMOKE=1` or `SINGULARITY_DOCTOR_RLS_ENFORCEMENT_SMOKE=1`; it creates a throwaway DB and non-bypass role, applies the real cutover, and proves cross-tenant reads/writes are blocked. `bin/check-m25-benchmarks.sh` verifies the DB-free M25 retrieval benchmark contract for hybrid ranking, FTS/vector fallback retention, citation markers, excerpt bounds, confidence clamping, recency boost, and capsule task-signature stability. Platform Web page-route coverage plus API-proxy parity are covered by `bin/check-platform-web-routes.py` for canonical routes, legacy redirects, and sidebar surfaces, and by `bin/check-platform-api-parity.py` for canonical and legacy API proxy families returning parseable JSON instead of raw upstream HTML/text errors. For migrated UI and lifecycle parity, run `SINGULARITY_DOCTOR_DEEP_SMOKE=1 ./singularity.sh doctor`; this enables browser hydration checks plus July legacy-route parity, workflow, Workbench, Foundry, and Agent Profile lifecycle smokes. You can still run individual checks with `SINGULARITY_DOCTOR_UI_SMOKE=1`, `SINGULARITY_DOCTOR_PARITY_SMOKE=1`, `SINGULARITY_DOCTOR_LIFECYCLE_SMOKE=1`, `SINGULARITY_DOCTOR_WORKBENCH_SMOKE=1`, `SINGULARITY_DOCTOR_FOUNDRY_SMOKE=1`, or `SINGULARITY_DOCTOR_AGENT_PROFILE_SMOKE=1`. When the local audit side stack is enabled with `./singularity.sh up --profile audit`, add `SINGULARITY_DOCTOR_AUDIT_SMOKE=1` to validate strict audit DB/schema health and Platform Web audit ingest/query. Add `SINGULARITY_DOCTOR_TRACE_SPINE=1` to run the trace evidence gate across Context Fabric and audit-governance; it requires the split Postgres container, verifies the live `call_log` profile-evidence columns, and checks MCP resource views when MCP is reachable. Bare-metal operators can run the same route/API proxy/browser hydration parity checks plus mutating lifecycle smokes with `BARE_METAL_DEEP_SMOKE=1 bin/bare-metal.sh smoke`, and can opt into the trace gate with `BARE_METAL_TRACE_SPINE=1 bin/bare-metal.sh smoke`.
+Run `./singularity.sh doctor` for the normal Docker install audit, or `bin/bare-metal-apps.sh smoke` for bare-metal platform-app health checks. Use `bin/bare-metal-runtime.sh smoke` only when local LLM Gateway and MCP are intentionally running on the same machine. The normal Docker doctor includes `bin/check-platform-topology-contract.py`, which validates `docs/platform-topology.json` against Docker Compose and operator docs, then `bin/check-platform-topology.py`, which uses the same contract to verify the 8-container core shape, the completed Postgres bootstrap one-shots, prevents running legacy frontend containers next to `platform-web`, and prevents mixing split agent/tools containers with `platform-core`. It also includes `bin/check-context-profile-evidence.py`, which locks the Context Fabric receipt contract for profile-backed runs: call-log evidence columns, compact effective-capability persistence, receipt correlation, docs, tests, and trace-spine runtime checks. `bin/check-workgraph-tenant-guards.py` prevents regressions in strict tenant guards across Workgraph runtime/admin/internal surfaces, tenant-scoped service-token contracts, and the explicit tenant-policy classification for every mounted Workgraph API route. `bin/check-workgraph-db-tenant-isolation.py` checks the Workgraph tenant DB posture: workflow/run-snapshot tenant spine, tenant index, runtime child-row connectivity, tenant RLS policy scaffold, app-role RLS-bypass posture, live null-tenant data, and forced RLS for production-class targets by default. `bin/check-workgraph-forced-rls-cutover.py` checks the guarded forced-RLS cutover contract: dry-runs stay non-mutating, apply refuses without strict-runtime confirmation, and successful apply runs both preflight and postflight RLS checks. `bin/check-workgraph-forced-rls-enforcement.py` is enabled by `SINGULARITY_DOCTOR_DEEP_SMOKE=1` or `SINGULARITY_DOCTOR_RLS_ENFORCEMENT_SMOKE=1`; it creates a throwaway DB and non-bypass role, applies the real cutover, and proves cross-tenant reads/writes are blocked. `bin/check-m25-benchmarks.sh` verifies the DB-free M25 retrieval benchmark contract for hybrid ranking, FTS/vector fallback retention, citation markers, excerpt bounds, confidence clamping, recency boost, and capsule task-signature stability. Platform Web page-route coverage plus API-proxy parity are covered by `bin/check-platform-web-routes.py` for canonical routes, legacy redirects, and sidebar surfaces, and by `bin/check-platform-api-parity.py` for canonical and legacy API proxy families returning parseable JSON instead of raw upstream HTML/text errors. For migrated UI and lifecycle parity, run `SINGULARITY_DOCTOR_DEEP_SMOKE=1 ./singularity.sh doctor`; this enables browser hydration checks plus July legacy-route parity, workflow, Workbench, Foundry, and Agent Profile lifecycle smokes. You can still run individual checks with `SINGULARITY_DOCTOR_UI_SMOKE=1`, `SINGULARITY_DOCTOR_PARITY_SMOKE=1`, `SINGULARITY_DOCTOR_LIFECYCLE_SMOKE=1`, `SINGULARITY_DOCTOR_WORKBENCH_SMOKE=1`, `SINGULARITY_DOCTOR_FOUNDRY_SMOKE=1`, or `SINGULARITY_DOCTOR_AGENT_PROFILE_SMOKE=1`. When the local audit side stack is enabled with `./singularity.sh up --profile audit`, add `SINGULARITY_DOCTOR_AUDIT_SMOKE=1` to validate strict audit DB/schema health and Platform Web audit ingest/query. Add `SINGULARITY_DOCTOR_TRACE_SPINE=1` to run the trace evidence gate across Context Fabric and audit-governance; it requires the split Postgres container, verifies the live `call_log` profile-evidence columns, and checks MCP resource views when MCP is reachable. Bare-metal operators can run the same route/API proxy/browser hydration parity checks plus mutating lifecycle smokes with `BARE_METAL_DEEP_SMOKE=1 bin/bare-metal-apps.sh smoke`, and can opt into the trace gate with `BARE_METAL_TRACE_SPINE=1 bin/bare-metal-apps.sh smoke`.
 
 If strict tenant DB posture reports legacy `workflow_instances` rows with null
 `tenantId`, runtime child rows without a workflow-instance spine, or missing
@@ -655,8 +655,9 @@ Important endpoints:
 - `GET /metrics/dashboard`
 - `GET /receipts`
 - `/internal/mcp/...`
-- `/api/laptop-bridge/connect`
-- `/api/laptop-bridge/status`
+- `/api/runtime-bridge/connect`
+- `/api/runtime-bridge/status`
+- `/api/laptop-bridge/connect` and `/api/laptop-bridge/status` compatibility aliases
 
 ### 9.4 Prompt Composer API
 
@@ -793,6 +794,15 @@ Rotate development defaults before any shared/staging/production deployment:
 
 This starts the core Docker Compose stack. Local LLM Gateway, MCP, verification, compression, and audit-governance are optional profiles or remote services. `/foundry` is included in Platform Web and backed by Workgraph.
 
+Bare-metal deployments use split launchers:
+
+```bash
+bin/bare-metal-apps.sh up postgres postgres localhost 5432
+bin/bare-metal-runtime.sh up  # optional local LLM Gateway + MCP
+```
+
+`bin/bare-metal-apps.sh` starts all platform applications except MCP and LLM Gateway. `bin/bare-metal-runtime.sh` has its own PID file and owns only ports `8001` and `7100`.
+
 ### 10.5 Apply Seeds
 
 ```bash
@@ -810,7 +820,7 @@ This applies the full Docker seed path in dependency order: IAM teams/users/capa
 curl -fsS http://localhost:8080/health
 curl -fsS http://localhost:8100/api/v1/health
 curl -fsS http://localhost:8000/health
-curl -fsS http://localhost:7100/health
+curl -fsS http://localhost:7100/health  # only when bin/bare-metal-runtime.sh is running
 ```
 
 After schema changes, DB rebuilds, or knowledge-source backfills, verify the

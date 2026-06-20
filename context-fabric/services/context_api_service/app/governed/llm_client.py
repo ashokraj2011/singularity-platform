@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 _GATEWAY_URL = os.environ.get("LLM_GATEWAY_URL", "http://llm-gateway:8001").rstrip("/")
 _GATEWAY_BEARER = os.environ.get("LLM_GATEWAY_BEARER", "")
 _TIMEOUT = float(os.environ.get("LLM_GATEWAY_TIMEOUT_SEC", "300"))
+_TRUTHY = {"1", "true", "yes", "on"}
 
 # ── Dynamic gateway discovery (consumer side of M11.a) ───────────────────────
 # The gateway self-registers with platform-registry (see the gateway's
@@ -101,6 +102,10 @@ async def _resolve_gateway_url() -> str:
 # global kill switch (LLM_PROMPT_CACHE_ENABLED there) and per-provider
 # handling; this knob lets the caller opt out without redeploying the gateway.
 _PROMPT_CACHE_ENABLED = os.environ.get("LLM_PROMPT_CACHE_ENABLED", "true").lower() == "true"
+
+
+def _http_fallback_enabled() -> bool:
+    return os.environ.get("RUNTIME_HTTP_FALLBACK_ENABLED", "false").strip().lower() in _TRUTHY
 
 
 class LLMGatewayError(RuntimeError):
@@ -241,6 +246,8 @@ async def call_gateway_chat(
     # gateway instead of the cloud one. None → cloud (default). Resolved by
     # governed.placement.llm_laptop_target(). See docs/deployment-topology.md §5.
     laptop_user_id: str | None = None,
+    runtime_tenant_id: str | None = None,
+    runtime_capability_tags: list[str] | None = None,
 ) -> ChatResponse:
     """POST one chat completion to llm-gateway.
 
@@ -286,14 +293,28 @@ async def call_gateway_chat(
         prompt_cache_key=prompt_cache_key,
     )
 
-    # Full-BYO-laptop placement (docs/deployment-topology.md §5): when a laptop
-    # is opted in for LLM and one is serving `model-run`, dispatch the same body
-    # over the bridge. Falls back to the cloud gateway below when no laptop is
-    # connected, so this never hard-fails a run.
-    if laptop_user_id:
-        laptop_resp = await _try_laptop_chat(laptop_user_id, body)
+    # Runtime bridge placement: model-run is served by the connected MCP
+    # runtime, which forwards the body to its local/colocated LLM gateway.
+    runtime_requested = bool(laptop_user_id or runtime_tenant_id)
+    if runtime_requested:
+        laptop_resp = await _try_laptop_chat(
+            laptop_user_id or "",
+            body,
+            tenant_id=runtime_tenant_id,
+            capability_tags=runtime_capability_tags,
+        )
         if laptop_resp is not None:
             return laptop_resp
+        if not _http_fallback_enabled():
+            raise LLMGatewayError(
+                "RUNTIME_NOT_CONNECTED",
+                "No MCP runtime bridge is connected for model-run; direct LLM HTTP fallback is disabled.",
+            )
+    elif not _http_fallback_enabled():
+        raise LLMGatewayError(
+            "RUNTIME_NOT_CONNECTED",
+            "No runtime identity was provided for model-run; direct LLM HTTP fallback is disabled.",
+        )
 
     headers = {"content-type": "application/json"}
     token = bearer or _GATEWAY_BEARER
@@ -389,7 +410,13 @@ def _build_chat_body(
     return body
 
 
-async def _try_laptop_chat(user_id: str, body: dict[str, Any]) -> ChatResponse | None:
+async def _try_laptop_chat(
+    user_id: str,
+    body: dict[str, Any],
+    *,
+    tenant_id: str | None = None,
+    capability_tags: list[str] | None = None,
+) -> ChatResponse | None:
     """Serve a chat completion from the user's laptop over the bridge.
 
     Returns a ChatResponse on success, or None when no laptop is serving
@@ -409,13 +436,16 @@ async def _try_laptop_chat(user_id: str, body: dict[str, Any]) -> ChatResponse |
 
     try:
         raw = await REGISTRY.dispatch_model_via_laptop(
-            user_id=user_id, request_body=body, timeout=_TIMEOUT
+            user_id=user_id,
+            tenant_id=tenant_id,
+            capability_tags=capability_tags,
+            request_body=body,
+            timeout=_TIMEOUT,
         )
     except LaptopNotConnected:
         log.info(
-            "laptop LLM requested (user=%s) but no laptop serving model-run; "
-            "using cloud gateway",
-            user_id,
+            "runtime LLM requested (user=%s tenant=%s) but no runtime serving model-run",
+            user_id, tenant_id,
         )
         return None
     except LaptopInvokeTimeout as exc:

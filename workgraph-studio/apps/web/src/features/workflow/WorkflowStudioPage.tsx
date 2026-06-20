@@ -32,7 +32,7 @@ import { WorkbenchStageCanvas } from './WorkbenchStageCanvas'
 // ─── Node visual map ──────────────────────────────────────────────────────────
 
 const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType }> = {
-  START:               { color: '#00843D', Icon: Play },
+  START:               { color: '#368727', Icon: Play },
   END:                 { color: '#64748b', Icon: Square },
   HUMAN_TASK:          { color: '#22c55e', Icon: User },
   AGENT_TASK:          { color: '#38bdf8', Icon: Bot },

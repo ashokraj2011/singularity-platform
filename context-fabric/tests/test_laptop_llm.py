@@ -81,7 +81,7 @@ def test_dispatch_model_round_trip_returns_gateway_payload():
 
 # ── llm_client: laptop branch + cloud fallback ────────────────────────────────
 def test_try_laptop_chat_parses_gateway_dict(monkeypatch):
-    async def _ok(*, user_id, request_body, timeout):
+    async def _ok(**kwargs):
         return {"content": "ok", "provider": "copilot", "model": "gpt-4o",
                 "finish_reason": "stop", "input_tokens": 1, "output_tokens": 1}
     monkeypatch.setattr(lr.REGISTRY, "dispatch_model_via_laptop", _ok)
@@ -90,14 +90,14 @@ def test_try_laptop_chat_parses_gateway_dict(monkeypatch):
 
 
 def test_try_laptop_chat_falls_back_when_not_connected(monkeypatch):
-    async def _none(*, user_id, request_body, timeout):
+    async def _none(**kwargs):
         raise lr.LaptopNotConnected("none")
     monkeypatch.setattr(lr.REGISTRY, "dispatch_model_via_laptop", _none)
     assert asyncio.run(lc._try_laptop_chat("u1", {"messages": []})) is None  # → caller uses cloud
 
 
 def test_try_laptop_chat_surfaces_runner_error(monkeypatch):
-    async def _err(*, user_id, request_body, timeout):
+    async def _err(**kwargs):
         raise lr.LaptopInvokeError(code="X", message="boom")
     monkeypatch.setattr(lr.REGISTRY, "dispatch_model_via_laptop", _err)
     with pytest.raises(lc.LLMGatewayError):

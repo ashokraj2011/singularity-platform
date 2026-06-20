@@ -40,7 +40,7 @@ export function TagsInput({ value, onChange, placeholder = 'Add tag…' }: TagsI
       {value.map(tag => (
         <span
           key={tag}
-          className="inline-flex items-center gap-1 bg-[#e6f4ed] text-[#00843D] text-xs font-medium px-2 py-0.5 rounded-full"
+          className="inline-flex items-center gap-1 bg-[#e6f4ed] text-[#368727] text-xs font-medium px-2 py-0.5 rounded-full"
         >
           {tag}
           <button

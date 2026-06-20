@@ -395,7 +395,7 @@ export function ConnectorsPage() {
           <div className="empty-state-icon">
             <Link2 size={20} style={{ color: 'var(--color-secondary)' }} />
           </div>
-          <p style={{ fontFamily: "'Public Sans', sans-serif", fontWeight: 700, fontSize: 14, color: 'var(--color-on-surface)', marginBottom: 4 }}>
+          <p style={{ fontFamily: "'Mulish', sans-serif", fontWeight: 700, fontSize: 14, color: 'var(--color-on-surface)', marginBottom: 4 }}>
             No connectors{showArchived ? ' archived' : ' yet'}
           </p>
           <p style={{ fontSize: 12, color: 'var(--color-outline)', marginBottom: 16 }}>

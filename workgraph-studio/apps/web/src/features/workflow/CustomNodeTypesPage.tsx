@@ -130,7 +130,7 @@ function FieldRow({
           type="checkbox"
           checked={field.multiline}
           onChange={e => onChange({ ...field, multiline: e.target.checked })}
-          style={{ accentColor: '#00843D', width: 14, height: 14, cursor: 'pointer' }}
+          style={{ accentColor: '#368727', width: 14, height: 14, cursor: 'pointer' }}
         />
       </div>
       <button
@@ -222,7 +222,7 @@ function NodeTypeCard({
             >
               {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </button>
-            <button onClick={onEdit} style={{ ...iconBtnStyle, color: '#00843D', width: 'auto', padding: '0 10px', gap: 4, display: 'flex', alignItems: 'center' }} title="Edit">
+            <button onClick={onEdit} style={{ ...iconBtnStyle, color: '#368727', width: 'auto', padding: '0 10px', gap: 4, display: 'flex', alignItems: 'center' }} title="Edit">
               <Edit2 size={13} />
               <span style={{ fontSize: 11, fontWeight: 600 }}>Edit</span>
             </button>
@@ -416,12 +416,12 @@ function DesignerPanel({
                   onClick={() => setField('baseType', bt.value)}
                   style={{
                     padding: '8px 10px', borderRadius: 10, border: '1.5px solid',
-                    borderColor: draft.baseType === bt.value ? '#00843D' : 'var(--color-outline-variant)',
-                    background: draft.baseType === bt.value ? 'rgba(0,132,61,0.08)' : 'var(--color-surface-container)',
+                    borderColor: draft.baseType === bt.value ? '#368727' : 'var(--color-outline-variant)',
+                    background: draft.baseType === bt.value ? 'rgba(54,135,39,0.08)' : 'var(--color-surface-container)',
                     cursor: 'pointer', textAlign: 'left', transition: 'all 0.12s',
                   }}
                 >
-                  <p style={{ fontSize: 11, fontWeight: 600, color: draft.baseType === bt.value ? '#00843D' : 'var(--color-on-surface)', margin: 0 }}>{bt.label}</p>
+                  <p style={{ fontSize: 11, fontWeight: 600, color: draft.baseType === bt.value ? '#368727' : 'var(--color-on-surface)', margin: 0 }}>{bt.label}</p>
                   <p style={{ fontSize: 9, color: 'var(--color-outline)', marginTop: 2, lineHeight: 1.4 }}>{bt.hint}</p>
                 </button>
               ))}
@@ -519,8 +519,8 @@ function DesignerPanel({
                 onClick={addField}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
-                  borderRadius: 8, border: '1px solid rgba(0,132,61,0.3)',
-                  background: 'rgba(0,132,61,0.08)', color: '#00843D',
+                  borderRadius: 8, border: '1px solid rgba(54,135,39,0.3)',
+                  background: 'rgba(54,135,39,0.08)', color: '#368727',
                   fontSize: 11, fontWeight: 600, cursor: 'pointer',
                 }}
               >
@@ -565,7 +565,7 @@ function DesignerPanel({
             disabled={!canSave || saving}
             style={{
               padding: '7px 20px', borderRadius: 8, border: 'none',
-              background: canSave && !saving ? '#00843D' : '#9ca3af',
+              background: canSave && !saving ? '#368727' : '#9ca3af',
               color: '#fff', cursor: canSave && !saving ? 'pointer' : 'not-allowed',
               fontSize: 13, fontWeight: 600,
               display: 'flex', alignItems: 'center', gap: 6,
@@ -619,7 +619,7 @@ export function CustomNodeTypesPage() {
         <div>
           <h1 style={{
             fontSize: 20, fontWeight: 700, color: 'var(--color-on-surface)',
-            fontFamily: "'Public Sans', sans-serif", margin: 0,
+            fontFamily: "'Mulish', sans-serif", margin: 0,
           }}>Node Type Designer</h1>
           <p style={{ fontSize: 13, color: 'var(--color-outline)', marginTop: 4 }}>
             Create reusable custom node types that appear in the Workflow Manager palette.
@@ -630,9 +630,9 @@ export function CustomNodeTypesPage() {
           style={{
             display: 'flex', alignItems: 'center', gap: 8, padding: '8px 18px',
             borderRadius: 10, border: 'none',
-            background: '#00843D', color: '#fff',
+            background: '#368727', color: '#fff',
             fontSize: 13, fontWeight: 600, cursor: 'pointer',
-            boxShadow: '0 2px 8px rgba(0,132,61,0.3)',
+            boxShadow: '0 2px 8px rgba(54,135,39,0.3)',
           }}
         >
           <Plus size={14} /> New node type
@@ -642,17 +642,17 @@ export function CustomNodeTypesPage() {
       {/* How it works banner */}
       <div style={{
         padding: '12px 16px', borderRadius: 10, marginBottom: 24,
-        background: 'rgba(0,132,61,0.06)', border: '1px solid rgba(0,132,61,0.18)',
+        background: 'rgba(54,135,39,0.06)', border: '1px solid rgba(54,135,39,0.18)',
         display: 'flex', alignItems: 'flex-start', gap: 12,
       }}>
         <div style={{
           width: 32, height: 32, borderRadius: 8, flexShrink: 0,
-          background: 'rgba(0,132,61,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'rgba(54,135,39,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
-          <Box size={16} style={{ color: '#00843D' }} />
+          <Box size={16} style={{ color: '#368727' }} />
         </div>
         <div>
-          <p style={{ fontSize: 12, fontWeight: 600, color: '#00843D', marginBottom: 3 }}>How it works</p>
+          <p style={{ fontSize: 12, fontWeight: 600, color: '#368727', marginBottom: 3 }}>How it works</p>
           <p style={{ fontSize: 11, color: 'var(--color-outline)', lineHeight: 1.6 }}>
             Custom node types appear in the Workflow Manager palette alongside built-in types.
             Each type maps to a <strong>base executor</strong> (Human Task, Tool Request, etc.) that handles runtime behaviour.
@@ -672,8 +672,8 @@ export function CustomNodeTypesPage() {
           border: '2px dashed var(--color-outline-variant)',
           background: 'var(--color-surface-container)',
         }}>
-          <div style={{ width: 52, height: 52, borderRadius: 14, background: 'rgba(0,132,61,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
-            <Box size={24} style={{ color: '#00843D' }} />
+          <div style={{ width: 52, height: 52, borderRadius: 14, background: 'rgba(54,135,39,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
+            <Box size={24} style={{ color: '#368727' }} />
           </div>
           <p style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-on-surface)', marginBottom: 6 }}>No custom node types yet</p>
           <p style={{ fontSize: 12, color: 'var(--color-outline)', marginBottom: 18 }}>
@@ -683,7 +683,7 @@ export function CustomNodeTypesPage() {
             onClick={() => setShowDesigner(true)}
             style={{
               padding: '8px 20px', borderRadius: 10, border: 'none',
-              background: '#00843D', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              background: '#368727', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
             }}
           >
             Create your first node type

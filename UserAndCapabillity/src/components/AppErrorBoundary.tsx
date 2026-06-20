@@ -43,7 +43,7 @@ export class AppErrorBoundary extends Component<Props, State> {
           <button
             type="button"
             onClick={this.reset}
-            className="mt-5 rounded-lg bg-[#00843D] px-4 py-2 text-sm font-bold text-white hover:bg-[#006236]"
+            className="mt-5 rounded-lg bg-[#368727] px-4 py-2 text-sm font-bold text-white hover:bg-[#006236]"
           >
             Clear session and return to login
           </button>

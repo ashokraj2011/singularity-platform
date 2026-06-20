@@ -50,8 +50,8 @@ function ActiveContextChip() {
         style={{
           display: 'inline-flex', alignItems: 'center', gap: 6,
           padding: '4px 10px', borderRadius: 20,
-          border: '1px solid rgba(0,132,61,0.22)',
-          background: 'rgba(0,132,61,0.08)',
+          border: '1px solid rgba(54,135,39,0.22)',
+          background: 'rgba(54,135,39,0.08)',
           fontSize: 11, fontWeight: 700, color: 'var(--color-primary)',
           cursor: 'pointer',
         }}
@@ -82,7 +82,7 @@ function ActiveContextChip() {
       </span>
       <span style={{
         padding: '1px 6px', borderRadius: 8,
-        background: active.isCapabilityOwner ? 'rgba(251,191,36,0.15)' : 'rgba(0,132,61,0.10)',
+        background: active.isCapabilityOwner ? 'rgba(251,191,36,0.15)' : 'rgba(54,135,39,0.10)',
         color: active.isCapabilityOwner ? '#b45309' : 'var(--color-primary)',
         fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em',
       }}>
@@ -235,7 +235,7 @@ export function AppLayout() {
           <div style={{
             width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontFamily: "'Public Sans', sans-serif",
+            fontFamily: "'Mulish', sans-serif",
             fontSize: 13, fontWeight: 700,
             background: 'rgba(0,166,81,0.18)', color: 'var(--brand-warm-white)',
             border: '1.5px solid rgba(0,166,81,0.35)',
@@ -315,8 +315,8 @@ export function AppLayout() {
             <span style={{
               display: 'inline-flex', alignItems: 'center', gap: 5,
               padding: '4px 10px', borderRadius: 20,
-              border: '1px solid rgba(0,132,61,0.18)',
-              background: 'rgba(0,132,61,0.06)',
+              border: '1px solid rgba(54,135,39,0.18)',
+              background: 'rgba(54,135,39,0.06)',
               fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
               letterSpacing: '0.14em', color: 'var(--color-primary)',
             }}>
@@ -366,10 +366,10 @@ export function AppLayout() {
             <div style={{
               width: 32, height: 32, borderRadius: '50%',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontFamily: "'Public Sans', sans-serif",
+              fontFamily: "'Mulish', sans-serif",
               fontSize: 12, fontWeight: 700,
-              background: 'rgba(0,132,61,0.12)', color: 'var(--color-primary)',
-              border: '1.5px solid rgba(0,132,61,0.2)',
+              background: 'rgba(54,135,39,0.12)', color: 'var(--color-primary)',
+              border: '1.5px solid rgba(54,135,39,0.2)',
               cursor: 'default',
             }}>
               {user?.displayName?.charAt(0) ?? 'U'}

@@ -188,7 +188,7 @@ export function FoundryConsole({ view = "runs" }: { view?: FoundryView }) {
                 type="button"
                 onClick={() => changeFilter(item)}
                 style={{
-                  border: filter === item ? "1px solid rgba(0,132,61,0.42)" : "1px solid var(--color-outline-variant)",
+                  border: filter === item ? "1px solid rgba(54,135,39,0.42)" : "1px solid var(--color-outline-variant)",
                   background: filter === item ? "rgba(240,253,244,0.86)" : "#fff",
                   borderRadius: 999,
                   padding: "6px 10px",
@@ -209,7 +209,7 @@ export function FoundryConsole({ view = "runs" }: { view?: FoundryView }) {
                 onClick={() => selectRun(item.id)}
                 style={{
                   textAlign: "left",
-                  border: item.id === activeId ? "1px solid rgba(0,132,61,0.42)" : "1px solid var(--color-outline-variant)",
+                  border: item.id === activeId ? "1px solid rgba(54,135,39,0.42)" : "1px solid var(--color-outline-variant)",
                   background: item.id === activeId ? "rgba(240,253,244,0.86)" : "#fff",
                   borderRadius: 8,
                   padding: 12,
@@ -305,7 +305,7 @@ function FoundryFlow({ activeView }: { activeView: FoundryView }) {
               key={step.label}
               href={step.href}
               style={{
-                border: active ? "1px solid rgba(0,132,61,0.42)" : "1px solid var(--color-outline-variant)",
+                border: active ? "1px solid rgba(54,135,39,0.42)" : "1px solid var(--color-outline-variant)",
                 background: active ? "rgba(240,253,244,0.88)" : "#fff",
                 borderRadius: 8,
                 padding: 12,
@@ -314,7 +314,7 @@ function FoundryFlow({ activeView }: { activeView: FoundryView }) {
               }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                <span style={{ display: "inline-flex", width: 30, height: 30, alignItems: "center", justifyContent: "center", borderRadius: 8, background: active ? "rgba(0,132,61,0.12)" : "var(--color-surface-low)", color: active ? "var(--color-primary)" : "var(--color-outline)" }}>
+                <span style={{ display: "inline-flex", width: 30, height: 30, alignItems: "center", justifyContent: "center", borderRadius: 8, background: active ? "rgba(54,135,39,0.12)" : "var(--color-surface-low)", color: active ? "var(--color-primary)" : "var(--color-outline)" }}>
                   <Icon size={15} />
                 </span>
                 <span style={{ color: active ? "var(--color-primary)" : "var(--color-outline)", fontSize: 11, fontWeight: 850, textTransform: "uppercase" }}>{step.label}</span>
@@ -366,7 +366,7 @@ function FoundryNavGroup({
             href={item.href}
             title={item.summary}
             style={{
-              border: active ? "1px solid rgba(0,132,61,0.42)" : "1px solid transparent",
+              border: active ? "1px solid rgba(54,135,39,0.42)" : "1px solid transparent",
               background: active ? "rgba(240,253,244,0.88)" : "transparent",
               color: active ? "var(--color-primary)" : "var(--color-outline)",
               borderRadius: 8,
@@ -394,7 +394,7 @@ function DetailTabs({ run, tab, setTab }: { run: RunDetail; tab: DetailTab; setT
           type="button"
           onClick={() => setTab(item)}
           style={{
-            border: tab === item ? "1px solid rgba(0,132,61,0.42)" : "1px solid transparent",
+            border: tab === item ? "1px solid rgba(54,135,39,0.42)" : "1px solid transparent",
             background: tab === item ? "rgba(240,253,244,0.88)" : "transparent",
             color: tab === item ? "var(--color-primary)" : "var(--color-outline)",
             borderRadius: 8,
@@ -596,7 +596,7 @@ function FilesPanel({ runId }: { runId: string }) {
               onClick={() => setActivePath(artifact.path)}
               style={{
                 textAlign: "left",
-                border: effectivePath === artifact.path ? "1px solid rgba(0,132,61,0.42)" : "1px solid var(--color-outline-variant)",
+                border: effectivePath === artifact.path ? "1px solid rgba(54,135,39,0.42)" : "1px solid var(--color-outline-variant)",
                 background: effectivePath === artifact.path ? "rgba(240,253,244,0.86)" : "#fff",
                 borderRadius: 8,
                 padding: 10,
@@ -671,7 +671,7 @@ function TasksPanel({ runId, onChanged }: { runId: string; onChanged: () => void
       <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 0.35fr) minmax(0, 1fr)", gap: 14 }}>
         <div style={{ display: "grid", gap: 8 }}>
           {tasks.map((task: LlmTaskRow) => (
-            <button key={task.id} type="button" onClick={() => setActiveId(task.id)} style={{ textAlign: "left", border: active?.id === task.id ? "1px solid rgba(0,132,61,0.42)" : "1px solid var(--color-outline-variant)", background: active?.id === task.id ? "rgba(240,253,244,0.86)" : "#fff", borderRadius: 8, padding: 10, cursor: "pointer" }}>
+            <button key={task.id} type="button" onClick={() => setActiveId(task.id)} style={{ textAlign: "left", border: active?.id === task.id ? "1px solid rgba(54,135,39,0.42)" : "1px solid var(--color-outline-variant)", background: active?.id === task.id ? "rgba(240,253,244,0.86)" : "#fff", borderRadius: 8, padding: 10, cursor: "pointer" }}>
               <strong style={{ fontSize: 13 }}>{task.taskType}</strong>
               <div style={{ color: "var(--color-outline)", fontSize: 12, marginTop: 4 }}>{task.targetFile.split("/").pop()} · {task.regionId}</div>
               <StatusPill value={task.status} />

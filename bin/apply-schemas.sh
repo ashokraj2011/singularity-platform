@@ -12,7 +12,7 @@
 # Run once after `docker compose up -d` and any time either Prisma schema
 # changes. Subsequent container restarts don't need it.
 #
-# For bare-metal dev, `bin/bare-metal.sh up` calls the same logic inline.
+# For bare-metal dev, `bin/bare-metal-apps.sh up` calls the same logic inline.
 #
 # Usage:
 #   ./bin/apply-schemas.sh

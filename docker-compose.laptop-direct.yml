@@ -1,9 +1,10 @@
-# docker-compose.laptop-direct.yml — LOCALHOST Direct-HTTP split test.
+# docker-compose.laptop-direct.yml — LOCALHOST Direct-HTTP debug fallback test.
 #
 # The BOX runs in Docker; mcp-server + llm-gateway run as HOST apps. Unlike the
 # bridge overlay, the box reaches the host apps DIRECTLY over HTTP at
-# host.docker.internal — no WebSocket bridge, no device token, no prefer_laptop.
-# The box always uses the host runtime. This is the simplest way to test a
+# host.docker.internal — no WebSocket bridge, no runtime token. This overlay
+# explicitly enables RUNTIME_HTTP_FALLBACK_ENABLED for debug. The normal path is
+# docker-compose.laptop-bridge.yml / runtime dial-in. This is the simplest way to test a
 # Copilot SDLC run (incl. clarifying questions) with mcp + gateway bare-metal.
 #
 # Driven by bin/laptop-bridge.sh box-up-direct (then `gateway` + `mcp-direct`).
@@ -16,6 +17,7 @@ services:
       MCP_DEFAULT_BASE_URL: http://host.docker.internal:7100
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       MCP_DEFAULT_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      RUNTIME_HTTP_FALLBACK_ENABLED: "true"
       # CF's own LLM (summarizer / composer / governed turn) → host gateway.
       LLM_GATEWAY_URL: http://host.docker.internal:8001
   workgraph-api:

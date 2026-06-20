@@ -30,7 +30,7 @@ const ARTIFACT_TYPES: ArtifactType[] = ['CONTRACT', 'DELIVERABLE', 'SPECIFICATIO
 function ArtifactPreview({ tmpl }: { tmpl: ArtifactTemplate }) {
   const typeColor = ARTIFACT_TYPE_COLOR[tmpl.type] ?? '#64748b'
   return (
-    <div style={{ padding: '24px', background: '#f8fafc', borderRadius: 12, border: '1px solid var(--color-outline-variant)', fontFamily: "'Public Sans', sans-serif", maxHeight: '70vh', overflowY: 'auto' }}>
+    <div style={{ padding: '24px', background: '#f8fafc', borderRadius: 12, border: '1px solid var(--color-outline-variant)', fontFamily: "'Mulish', sans-serif", maxHeight: '70vh', overflowY: 'auto' }}>
       {/* Doc header */}
       <div style={{ borderBottom: `3px solid ${typeColor}`, paddingBottom: 16, marginBottom: 20 }}>
         <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: typeColor, display: 'block', marginBottom: 6 }}>
@@ -277,7 +277,7 @@ export function ArtifactEditorPage() {
         </select>
 
         {/* Status */}
-        <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', padding: '3px 8px', borderRadius: 6, background: status === 'PUBLISHED' ? 'rgba(0,132,61,0.1)' : 'rgba(148,163,184,0.15)', color: status === 'PUBLISHED' ? '#00843D' : '#64748b', border: `1px solid ${status === 'PUBLISHED' ? 'rgba(0,132,61,0.25)' : 'var(--color-outline-variant)'}`, fontFamily: 'monospace' }}>
+        <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', padding: '3px 8px', borderRadius: 6, background: status === 'PUBLISHED' ? 'rgba(54,135,39,0.1)' : 'rgba(148,163,184,0.15)', color: status === 'PUBLISHED' ? '#368727' : '#64748b', border: `1px solid ${status === 'PUBLISHED' ? 'rgba(54,135,39,0.25)' : 'var(--color-outline-variant)'}`, fontFamily: 'monospace' }}>
           {status}
         </span>
 
@@ -302,7 +302,7 @@ export function ArtifactEditorPage() {
         {status !== 'PUBLISHED' && (
           <button
             onClick={() => { handleSave(); publishMut.mutate() }}
-            style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 14px', borderRadius: 8, border: '1.5px solid rgba(0,132,61,0.4)', background: 'rgba(0,132,61,0.08)', color: '#00843D', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}
+            style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 14px', borderRadius: 8, border: '1.5px solid rgba(54,135,39,0.4)', background: 'rgba(54,135,39,0.08)', color: '#368727', cursor: 'pointer', fontSize: 12, fontWeight: 700 }}
           >
             <CheckCircle2 size={12} /> Publish
           </button>
@@ -325,8 +325,8 @@ export function ArtifactEditorPage() {
                 style={{
                   display: 'flex', alignItems: 'center', gap: 7,
                   padding: '8px 10px', borderRadius: 9, marginBottom: 4, cursor: 'pointer',
-                  background: selectedSectionId === s.id ? 'rgba(0,132,61,0.08)' : '#fff',
-                  border: `1px solid ${selectedSectionId === s.id ? 'rgba(0,132,61,0.25)' : 'var(--color-outline-variant)'}`,
+                  background: selectedSectionId === s.id ? 'rgba(54,135,39,0.08)' : '#fff',
+                  border: `1px solid ${selectedSectionId === s.id ? 'rgba(54,135,39,0.25)' : 'var(--color-outline-variant)'}`,
                   transition: 'all 0.1s',
                 }}
               >

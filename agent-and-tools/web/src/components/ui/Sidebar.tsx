@@ -367,7 +367,7 @@ export function Sidebar() {
             opacity: canvasRoute || narrowViewport ? 0.55 : 1,
             flexShrink: 0,
           }}
-          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(0,132,61,0.10)"; }}
+          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(54,135,39,0.10)"; }}
           onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "var(--color-surface-container)"; }}
         >
           {effectiveCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}

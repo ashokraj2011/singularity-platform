@@ -56,7 +56,7 @@ export function ControlPlaneConsole() {
             <Link key={app.id} href={app.nativeHref} style={{ textDecoration: "none" }}>
               <article className="card card-hover" style={{ padding: 18, minHeight: 166, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
                 <div>
-                  <span style={{ width: 40, height: 40, borderRadius: 8, display: "inline-flex", alignItems: "center", justifyContent: "center", background: "rgba(0,132,61,0.1)", color: "var(--color-primary)", marginBottom: 12 }}>
+                  <span style={{ width: 40, height: 40, borderRadius: 8, display: "inline-flex", alignItems: "center", justifyContent: "center", background: "rgba(54,135,39,0.1)", color: "var(--color-primary)", marginBottom: 12 }}>
                     <Icon size={19} />
                   </span>
                   <h2 style={{ margin: 0, fontSize: 16, color: "var(--color-text)" }}>{app.label}</h2>

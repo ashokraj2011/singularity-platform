@@ -189,8 +189,8 @@ export function RunViewerPage() {
               onClick={() => navigate(`/mission-control/${instance.id}`)}
               style={{
                 fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4,
-                background: 'rgba(0,132,61,0.10)', color: '#00843D',
-                border: '1px solid rgba(0,132,61,0.22)', cursor: 'pointer',
+                background: 'rgba(54,135,39,0.10)', color: '#368727',
+                border: '1px solid rgba(54,135,39,0.22)', cursor: 'pointer',
                 letterSpacing: '0.06em', textTransform: 'uppercase',
               }}
               title="Open Mission Control — live events, receipts, budget, artifacts, code evidence"
@@ -230,7 +230,7 @@ export function RunViewerPage() {
           <div style={{ height: 4, marginTop: 8, borderRadius: 2, background: 'rgba(0,0,0,0.05)', overflow: 'hidden' }}>
             <div style={{
               width: `${progress}%`, height: '100%',
-              background: 'linear-gradient(to right, #0ea5e9, #00843D)',
+              background: 'linear-gradient(to right, #0ea5e9, #368727)',
               transition: 'width 0.3s ease',
             }} />
           </div>

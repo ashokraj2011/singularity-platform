@@ -37,11 +37,18 @@ const MIN_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 60_000;
 
 interface RelayConfig {
-  bridgeUrl:    string;                       // wss://platform/api/laptop-bridge/connect
-  deviceToken:  string;                       // 90-day device JWT
+  bridgeUrl:    string;                       // wss://platform/api/runtime-bridge/connect
+  deviceToken:  string;                       // runtime/device JWT
   deviceId:     string;
   deviceName:   string;
   agentVersion: string;
+  runtimeId?:   string;
+  runtimeType?: string;
+  tenantId?:    string;
+  userId?:      string;
+  shared?:      boolean;
+  runtimeScope?: string;
+  capabilityTags?: string[];
 }
 
 export class LaptopRelayClient {
@@ -128,9 +135,21 @@ export class LaptopRelayClient {
     const hello: HelloFrame = {
       type: "hello",
       device_id:     this.cfg.deviceId,
+      runtime_id:    this.cfg.runtimeId ?? this.cfg.deviceId,
+      runtime_type:  this.cfg.runtimeType ?? "mcp",
+      tenant_id:     this.cfg.tenantId,
+      user_id:       this.cfg.userId,
       device_name:   this.cfg.deviceName,
       agent_version: this.cfg.agentVersion,
       capabilities:  [],
+      capability_tags: this.cfg.capabilityTags ?? ["mcp", "tools", "llm"],
+      shared: this.cfg.shared,
+      runtime_scope: this.cfg.runtimeScope,
+      health: {
+        llm_gateway_url_configured: Boolean(process.env.LLM_GATEWAY_URL),
+        llm_gateway_url: redactUrl(process.env.LLM_GATEWAY_URL ?? "http://localhost:8001"),
+        git_push_enabled: Boolean(process.env.MCP_GIT_PUSH_ENABLED),
+      },
       // M75 Slice 1 — advertise both legacy invoke and the new per-tool
       // tool-run frame. The bridge picks based on which it's configured
       // to send; for the cutover the bridge sends invoke by default and
@@ -393,6 +412,17 @@ async function runModelViaLocalGateway(body: unknown): Promise<unknown> {
 let CACHED_DEVICE_ID: string | null = null;
 export function ensureDeviceId(): string {
   if (CACHED_DEVICE_ID) return CACHED_DEVICE_ID;
-  CACHED_DEVICE_ID = process.env.SINGULARITY_DEVICE_ID ?? randomUUID();
+  CACHED_DEVICE_ID = process.env.SINGULARITY_RUNTIME_ID ?? process.env.SINGULARITY_DEVICE_ID ?? randomUUID();
   return CACHED_DEVICE_ID;
+}
+
+function redactUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    if (url.username) url.username = "***";
+    if (url.password) url.password = "***";
+    return url.toString();
+  } catch {
+    return raw ? "configured" : "";
+  }
 }

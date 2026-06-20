@@ -19,6 +19,8 @@ from typing import Any, Literal
 
 import httpx
 
+from . import placement as _placement
+
 log = logging.getLogger(__name__)
 
 
@@ -37,10 +39,15 @@ _TIMEOUT = float(os.environ.get("MCP_TOOL_RUN_TIMEOUT_SEC", "120"))
 # long-running set a much larger ceiling, just above the tool's own 900s.
 _LONG_TIMEOUT = float(os.environ.get("MCP_TOOL_RUN_LONG_TIMEOUT_SEC", "960"))
 _LONG_RUNNING_TOOLS = {"copilot_execute"}
+_TRUTHY = {"1", "true", "yes", "on"}
 
 
 def _timeout_for(tool_name: str) -> float:
     return _LONG_TIMEOUT if tool_name in _LONG_RUNNING_TOOLS else _TIMEOUT
+
+
+def _http_fallback_enabled() -> bool:
+    return os.environ.get("RUNTIME_HTTP_FALLBACK_ENABLED", "false").strip().lower() in _TRUTHY
 
 
 class ToolDispatchError(RuntimeError):
@@ -155,10 +162,20 @@ async def dispatch_tool(
         )
         laptop_user_id = None
 
-    if laptop_user_id:
+    runtime_user_id = (
+        str(laptop_user_id)
+        if laptop_user_id and not _placement.enterprise_mode()
+        else _placement.mcp_laptop_target(run_context)
+    )
+    runtime_tenant_id = _placement.runtime_tenant_target(run_context)
+    capability_tags = _placement.runtime_capability_tags(run_context)
+
+    if not legacy_active and (runtime_user_id or runtime_tenant_id):
         try:
             return await _dispatch_via_laptop(
-                user_id=laptop_user_id,
+                user_id=str(runtime_user_id or ""),
+                tenant_id=str(runtime_tenant_id) if runtime_tenant_id is not None else None,
+                capability_tags=capability_tags,
                 tool_name=tool_name,
                 args=args,
                 workspace_id=workspace_id,
@@ -167,17 +184,19 @@ async def dispatch_tool(
                 grant=grant,
             )
         except _LaptopUnavailable as exc:
-            # Bridge isn't actually connected at dispatch time — fall
-            # through to the shared HTTP path rather than failing the
-            # whole turn. The orchestrator-level "require laptop"
-            # check is separate (see execute.py's prefer_laptop=True
-            # branch that refuses 503 MCP_NOT_CONNECTED upstream of
-            # this function).
+            if not _http_fallback_enabled():
+                raise ToolDispatchError(
+                    f"RUNTIME_NOT_CONNECTED: no runtime bridge connected for tool={tool_name} ({exc})"
+                ) from exc
             log.info(
-                "laptop dispatch unavailable; falling back to HTTP tool=%s reason=%s",
+                "runtime dispatch unavailable; HTTP fallback enabled tool=%s reason=%s",
                 tool_name,
                 exc,
             )
+    elif not legacy_active and not _http_fallback_enabled():
+        raise ToolDispatchError(
+            f"RUNTIME_NOT_CONNECTED: no runtime identity in run_context for tool={tool_name}"
+        )
 
     if not _MCP_URL:
         raise ToolDispatchError("MCP_SERVER_URL is not configured in context-fabric")
@@ -262,6 +281,8 @@ class _LaptopUnavailable(Exception):
 async def _dispatch_via_laptop(
     *,
     user_id: str,
+    tenant_id: str | None,
+    capability_tags: list[str] | None,
     tool_name: str,
     args: dict[str, Any],
     workspace_id: str | None,
@@ -298,6 +319,8 @@ async def _dispatch_via_laptop(
     try:
         registry_response = await REGISTRY.dispatch_tool_via_laptop(
             user_id=user_id,
+            tenant_id=tenant_id,
+            capability_tags=capability_tags,
             tool_name=tool_name,
             args=args or {},
             run_context=run_context or {},

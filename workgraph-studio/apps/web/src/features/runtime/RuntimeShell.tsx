@@ -90,9 +90,9 @@ function RuntimeNavLink({ to, icon, label, end }: { to: string; icon: React.Reac
           display: 'inline-flex', alignItems: 'center', gap: 6,
           padding: '6px 12px', borderRadius: 8,
           fontSize: 12, fontWeight: 600,
-          background: isActive ? 'rgba(0,132,61,0.10)' : 'transparent',
-          color:      isActive ? '#00843D' : 'var(--color-outline)',
-          border: `1px solid ${isActive ? 'rgba(0,132,61,0.25)' : 'transparent'}`,
+          background: isActive ? 'rgba(54,135,39,0.10)' : 'transparent',
+          color:      isActive ? '#368727' : 'var(--color-outline)',
+          border: `1px solid ${isActive ? 'rgba(54,135,39,0.25)' : 'transparent'}`,
         }}>
           {icon} {label}
         </span>

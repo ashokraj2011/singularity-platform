@@ -147,7 +147,7 @@ export function SectionEditor({ section, onChange }: { section: FormSection; onC
               style={{
                 display: 'flex', alignItems: 'center', gap: 7, padding: '8px 10px',
                 borderRadius: 8, border: `1.5px solid ${section.type === t.value ? 'var(--color-primary)' : 'var(--color-outline-variant)'}`,
-                background: section.type === t.value ? 'rgba(0,132,61,0.08)' : 'transparent',
+                background: section.type === t.value ? 'rgba(54,135,39,0.08)' : 'transparent',
                 cursor: 'pointer', textAlign: 'left',
               }}
             >

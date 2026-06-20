@@ -235,7 +235,7 @@ function InlineSignInPanel({ onAuthenticated }: { onAuthenticated: () => void })
   }
 
   return (
-    <section className="card" style={{ padding: 18, marginBottom: 18, borderColor: "rgba(0,132,61,0.24)", background: "rgba(240,253,244,0.75)" }}>
+    <section className="card" style={{ padding: 18, marginBottom: 18, borderColor: "rgba(54,135,39,0.24)", background: "rgba(240,253,244,0.75)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800, marginBottom: 6 }}>
         <ShieldCheck size={16} color="var(--color-primary)" />
         Sign in to load this surface

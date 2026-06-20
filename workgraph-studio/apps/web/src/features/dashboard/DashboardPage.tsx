@@ -119,14 +119,14 @@ const TYPE_COLOR: Record<string, string> = {
   INFRASTRUCTURE: '#8b5cf6', COMPLIANCE: '#ef4444', OTHER: '#64748b',
 }
 const STATUS_COLOR: Record<string, string> = {
-  DRAFT: '#94a3b8', PUBLISHED: '#00843D', FINAL: '#6366f1', ARCHIVED: '#64748b',
+  DRAFT: '#94a3b8', PUBLISHED: '#368727', FINAL: '#6366f1', ARCHIVED: '#64748b',
 }
 const RUN_STATUS_COLOR: Record<string, string> = {
-  ACTIVE: '#00843D', PAUSED: '#f59e0b', COMPLETED: '#2563eb', FAILED: '#dc2626',
+  ACTIVE: '#368727', PAUSED: '#f59e0b', COMPLETED: '#2563eb', FAILED: '#dc2626',
   CANCELLED: '#64748b', DRAFT: '#94a3b8',
 }
 const ARTIFACT_STATUS_COLOR: Record<string, string> = {
-  DRAFT: '#94a3b8', UNDER_REVIEW: '#f59e0b', APPROVED: '#00843D', PUBLISHED: '#2563eb',
+  DRAFT: '#94a3b8', UNDER_REVIEW: '#f59e0b', APPROVED: '#368727', PUBLISHED: '#2563eb',
   SUPERSEDED: '#64748b', CONSUMED: '#6366f1', REJECTED: '#dc2626',
 }
 const CRIT_COLOR: Record<string, string> = {
@@ -138,7 +138,7 @@ const SURFACE_LOW = 'var(--color-surface-low, #f8fbfb)'
 const BORDER = 'var(--color-outline-variant, #cfd8de)'
 const TEXT = 'var(--color-on-surface, #162033)'
 const MUTED = 'var(--color-outline, #6a7486)'
-const PRIMARY = 'var(--color-primary, #00843D)'
+const PRIMARY = 'var(--color-primary, #368727)'
 const CARD_SHADOW = '0 1px 2px rgba(12,23,39,0.05)'
 const CARD_RADIUS = 8
 
@@ -272,7 +272,7 @@ function Pill({ label, color }: { label: string; color: string }) {
   )
 }
 
-function KpiCard({ title, value, sub, icon: Icon, color = '#00843D', delay = 0 }: {
+function KpiCard({ title, value, sub, icon: Icon, color = '#368727', delay = 0 }: {
   title: string; value: string | number; sub?: string
   icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>
   color?: string; delay?: number
@@ -483,7 +483,7 @@ function RunHealthRow({
         <button
           title="Open insights"
           onClick={onInsights}
-          style={{ ...buttonBase, width: 30, height: 30, padding: 0, color: PRIMARY, background: 'rgba(0,132,61,0.08)', border: `1px solid rgba(0,132,61,0.20)` }}
+          style={{ ...buttonBase, width: 30, height: 30, padding: 0, color: PRIMARY, background: 'rgba(54,135,39,0.08)', border: `1px solid rgba(54,135,39,0.20)` }}
         >
           <BarChart3 size={12} />
         </button>
@@ -652,7 +652,7 @@ export function DashboardPage() {
             <div style={{
               width: 38, height: 38, borderRadius: CARD_RADIUS, flexShrink: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: 'rgba(0,132,61,0.10)', border: '1px solid rgba(0,132,61,0.18)',
+              background: 'rgba(54,135,39,0.10)', border: '1px solid rgba(54,135,39,0.18)',
             }}>
               <LayoutDashboard size={17} style={{ color: PRIMARY }} />
             </div>
@@ -683,7 +683,7 @@ export function DashboardPage() {
 
 	      {/* ── Runtime KPI strip ───────────────────────────────────────── */}
 	      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
-	        <KpiCard title="Active Runs"      value={activeRuns}                  icon={Activity}       color="#00843D"  delay={0.04} sub={`${instances.length} total`} />
+	        <KpiCard title="Active Runs"      value={activeRuns}                  icon={Activity}       color="#368727"  delay={0.04} sub={`${instances.length} total`} />
 	        <KpiCard title="Paused / Review"  value={pausedRuns}                  icon={PauseCircle}    color="#f59e0b"  delay={0.07} sub={artifactUnderReview ? `${artifactUnderReview} artifacts` : undefined} />
 	        <KpiCard title="Failed Runs"      value={failedRuns}                  icon={AlertTriangle}  color="#dc2626"  delay={0.10} sub={completedRuns ? `${completedRuns} complete` : undefined} />
 	        <KpiCard title="Tokens Used"      value={formatTokens(budgetTotals.total)} icon={Cpu}       color="#6366f1"  delay={0.13} sub={`${formatTokens(budgetTotals.input)} in / ${formatTokens(budgetTotals.output)} out`} />
@@ -887,7 +887,7 @@ export function DashboardPage() {
                     <p style={{ fontSize: 10, fontWeight: 800, color: MUTED, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Type</p>
                     {['ALL', 'SDLC', 'BUSINESS', 'DATA_PIPELINE', 'INFRASTRUCTURE', 'COMPLIANCE', 'OTHER'].map(t => (
                       <button key={t} onClick={() => { setFilterType(t); setShowFilterMenu(false) }}
-                        style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: filterType === t ? 700 : 500, background: filterType === t ? 'rgba(0,132,61,0.08)' : 'transparent', color: filterType === t ? PRIMARY : TEXT }}>
+                        style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: filterType === t ? 700 : 500, background: filterType === t ? 'rgba(54,135,39,0.08)' : 'transparent', color: filterType === t ? PRIMARY : TEXT }}>
                         {t === 'ALL' ? 'All types' : TYPE_LABEL[t] ?? t}
                       </button>
                     ))}
@@ -895,7 +895,7 @@ export function DashboardPage() {
                     <p style={{ fontSize: 10, fontWeight: 800, color: MUTED, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Status</p>
                     {['ALL', 'DRAFT', 'PUBLISHED', 'FINAL', 'ARCHIVED'].map(s => (
                       <button key={s} onClick={() => { setFilterStatus(s); setShowFilterMenu(false) }}
-                        style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: filterStatus === s ? 700 : 500, background: filterStatus === s ? 'rgba(0,132,61,0.08)' : 'transparent', color: filterStatus === s ? PRIMARY : TEXT }}>
+                        style={{ display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: filterStatus === s ? 700 : 500, background: filterStatus === s ? 'rgba(54,135,39,0.08)' : 'transparent', color: filterStatus === s ? PRIMARY : TEXT }}>
                         {s === 'ALL' ? 'All statuses' : s}
                       </button>
                     ))}
@@ -1042,8 +1042,8 @@ export function DashboardPage() {
                       <span key={key} style={{
                         display: 'inline-flex', alignItems: 'center', gap: 4,
                         fontSize: 10, fontWeight: 600, padding: '3px 8px', borderRadius: 6,
-                        background: 'rgba(0,132,61,0.07)', color: 'var(--color-primary)',
-                        border: '1px solid rgba(0,132,61,0.15)',
+                        background: 'rgba(54,135,39,0.07)', color: 'var(--color-primary)',
+                        border: '1px solid rgba(54,135,39,0.15)',
                       }}>
                         <Tag size={9} /> {key}
                         {count > 1 && <span style={{ opacity: 0.6 }}>·{count}</span>}

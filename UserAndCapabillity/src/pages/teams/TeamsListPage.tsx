@@ -55,7 +55,7 @@ export function TeamsListPage() {
         title="Teams"
         subtitle="Manage teams and their capability roles"
         action={
-          <Button onClick={() => setOpen(true)} className="bg-[#00843D] hover:bg-[#006830]">
+          <Button onClick={() => setOpen(true)} className="bg-[#368727] hover:bg-[#006830]">
             <Plus className="w-4 h-4 mr-1.5" /> New Team
           </Button>
         }
@@ -70,7 +70,7 @@ export function TeamsListPage() {
           {data.items.map(team => (
             <div
               key={team.id}
-              className="bg-white rounded-xl border border-gray-200 p-5 cursor-pointer hover:border-[#00843D]/40 hover:shadow-sm transition-all"
+              className="bg-white rounded-xl border border-gray-200 p-5 cursor-pointer hover:border-[#368727]/40 hover:shadow-sm transition-all"
               onClick={() => navigate(`/teams/${team.id}`)}
             >
               <div className="flex items-start gap-3">
@@ -86,7 +86,7 @@ export function TeamsListPage() {
                   {(team.tags ?? []).length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-2">
                       {team.tags.map(t => (
-                        <span key={t} className="text-xs bg-[#e6f4ed] text-[#00843D] px-1.5 py-0.5 rounded-full">{t}</span>
+                        <span key={t} className="text-xs bg-[#e6f4ed] text-[#368727] px-1.5 py-0.5 rounded-full">{t}</span>
                       ))}
                     </div>
                   )}
@@ -148,7 +148,7 @@ export function TeamsListPage() {
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={handleClose}>Cancel</Button>
-              <Button type="submit" disabled={isSubmitting} className="bg-[#00843D] hover:bg-[#006830]">
+              <Button type="submit" disabled={isSubmitting} className="bg-[#368727] hover:bg-[#006830]">
                 {isSubmitting ? 'Creating…' : 'Create'}
               </Button>
             </div>

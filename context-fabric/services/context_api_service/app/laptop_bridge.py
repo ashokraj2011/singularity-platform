@@ -1,14 +1,17 @@
 """
-M26 — WebSocket bridge for laptop-resident mcp-server instances.
+Runtime WebSocket bridge for MCP runtime dial-in.
 
-   wss://platform/api/laptop-bridge/connect
+   wss://platform/api/runtime-bridge/connect
        │
-       ▼  Authorization: Bearer <90-day device JWT>
-   1. handshake: device verifies token (HS256 via shared JWT_SECRET)
-   2. laptop sends "hello" → bridge replies "auth.ack"
-   3. laptop heartbeats every 30s
-   4. bridge forwards /mcp/invoke envelopes from /execute
-   5. laptop replies with "response" frame; bridge resolves the asyncio.Future
+       ▼  Authorization: Bearer <runtime/device JWT>
+   1. handshake: runtime verifies token (HS256 via shared JWT_SECRET)
+   2. runtime sends "hello" → bridge replies "auth.ack"
+   3. runtime heartbeats every 30s
+   4. bridge forwards typed frames: tool-run, model-run, code-context, invoke
+   5. runtime replies with "response" frame; bridge resolves the Future
+
+The legacy /api/laptop-bridge/connect and kind=device token shape remain
+accepted during migration.
 """
 
 from __future__ import annotations
@@ -68,7 +71,7 @@ def _verify_hs256_jwt(token: str, secret: str) -> dict[str, Any]:
         raise JWTError("token expired")
     return claims
 
-log = logging.getLogger("laptop-bridge")
+log = logging.getLogger("runtime-bridge")
 
 router = APIRouter()
 
@@ -79,21 +82,21 @@ JWT_ALGORITHM = "HS256"
 HEARTBEAT_SWEEP_SEC = 30
 
 
-def _verify_device_token(token: str) -> dict[str, Any]:
-    """Decode + validate a device JWT. Raises JWTError on failure."""
+def _verify_runtime_token(token: str) -> dict[str, Any]:
+    """Decode + validate a runtime/device JWT. Raises JWTError on failure."""
     claims = _verify_hs256_jwt(token, JWT_SECRET)
-    # M26 requires kind:device. Reject other token kinds.
-    if claims.get("kind") != "device":
-        raise JWTError(f"expected kind=device, got {claims.get('kind')}")
+    if claims.get("kind") not in {"runtime", "device"}:
+        raise JWTError(f"expected kind=runtime|device, got {claims.get('kind')}")
     if not claims.get("sub"):
         raise JWTError("missing sub")
-    if not claims.get("device_id"):
+    if claims.get("kind") == "device" and not claims.get("device_id"):
         raise JWTError("missing device_id")
     return claims
 
 
+@router.websocket("/api/runtime-bridge/connect")
 @router.websocket("/api/laptop-bridge/connect")
-async def laptop_connect(ws: WebSocket) -> None:
+async def runtime_connect(ws: WebSocket) -> None:
     # Extract token from Authorization or Sec-WebSocket-Protocol subprotocol.
     auth = ws.headers.get("authorization", "")
     token: Optional[str] = None
@@ -109,14 +112,11 @@ async def laptop_connect(ws: WebSocket) -> None:
         return
 
     try:
-        claims = _verify_device_token(token)
+        claims = _verify_runtime_token(token)
     except JWTError as err:
-        log.warning("device token rejected: %s", err)
-        await ws.close(code=4401, reason="invalid device token")
+        log.warning("runtime token rejected: %s", err)
+        await ws.close(code=4401, reason="invalid runtime token")
         return
-
-    user_id   = str(claims["sub"])
-    device_id = str(claims["device_id"])
 
     await ws.accept()
 
@@ -135,31 +135,84 @@ async def laptop_connect(ws: WebSocket) -> None:
         await ws.close(code=4400, reason=f"expected hello, got {hello.get('type')}")
         return
 
-    device_name = str(hello.get("device_name") or claims.get("device_name") or "unknown-laptop")
+    user_id = str(hello.get("user_id") or claims.get("user_id") or claims.get("sub") or "")
+    tenant_id = str(
+        hello.get("tenant_id")
+        or claims.get("tenant_id")
+        or claims.get("tenant")
+        or claims.get("org_id")
+        or ""
+    )
+    runtime_id = str(
+        hello.get("runtime_id")
+        or claims.get("runtime_id")
+        or hello.get("device_id")
+        or claims.get("device_id")
+        or claims.get("sub")
+        or ""
+    )
+    if not user_id or not runtime_id:
+        await ws.close(code=4401, reason="missing runtime identity")
+        return
+
+    runtime_type = str(hello.get("runtime_type") or claims.get("runtime_type") or "mcp")
+    device_name = str(hello.get("device_name") or claims.get("device_name") or runtime_id)
     sft_raw = hello.get("supported_frame_types")
     supported_frame_types = (
         [str(s) for s in sft_raw] if isinstance(sft_raw, list) and sft_raw else ["invoke"]
     )
+    allowed_raw = claims.get("allowed_frame_types")
+    if isinstance(allowed_raw, list) and allowed_raw:
+        allowed = {str(s) for s in allowed_raw}
+        supported_frame_types = [s for s in supported_frame_types if s in allowed]
+    if not supported_frame_types:
+        await ws.close(code=4401, reason="no allowed frame types")
+        return
+    tags_raw = hello.get("capability_tags") or claims.get("capability_tags") or claims.get("capabilities")
+    capability_tags = (
+        [str(s) for s in tags_raw] if isinstance(tags_raw, list) else []
+    )
+    health_raw = hello.get("health")
+    health = health_raw if isinstance(health_raw, dict) else {}
+    shared = bool(
+        hello.get("shared")
+        or claims.get("shared")
+        or str(hello.get("runtime_scope") or claims.get("runtime_scope") or "").lower()
+        in {"tenant", "shared"}
+    )
 
     conn = ActiveConnection(
         user_id=user_id,
-        device_id=device_id,
+        device_id=runtime_id,
         device_name=device_name,
         ws=ws,
         connected_at=time.time(),
         last_seen_at=time.time(),
         supported_frame_types=supported_frame_types,
+        runtime_id=runtime_id,
+        runtime_type=runtime_type,
+        tenant_id=tenant_id,
+        shared=shared,
+        capability_tags=capability_tags,
+        health=health,
     )
     await REGISTRY.register(conn)
-    log.info("laptop connected user=%s device=%s name=%s", user_id, device_id, device_name)
+    log.info(
+        "runtime connected tenant=%s user=%s runtime=%s type=%s name=%s",
+        tenant_id, user_id, runtime_id, runtime_type, device_name,
+    )
 
     try:
         await ws.send_text(json.dumps({
             "type": "auth.ack",
             "user_id": user_id,
-            "device_id": device_id,
+            "tenant_id": tenant_id,
+            "runtime_id": runtime_id,
+            "runtime_type": runtime_type,
+            "device_id": runtime_id,
             "registered_at": _now_iso(),
             "max_concurrent_invokes": 1,
+            "accepted_frame_types": supported_frame_types,
         }))
 
         while True:
@@ -167,14 +220,14 @@ async def laptop_connect(ws: WebSocket) -> None:
             try:
                 frame = json.loads(raw)
             except json.JSONDecodeError:
-                log.warning("bad JSON frame from user=%s device=%s", user_id, device_id)
+                log.warning("bad JSON frame from user=%s runtime=%s", user_id, runtime_id)
                 continue
             ftype = frame.get("type")
             if ftype == "heartbeat":
-                await REGISTRY.heartbeat(user_id, device_id)
+                await REGISTRY.heartbeat(user_id, runtime_id)
             elif ftype == "response":
                 await REGISTRY.deliver_response(
-                    user_id=user_id, device_id=device_id,
+                    user_id=user_id, device_id=runtime_id,
                     request_id=str(frame.get("request_id", "")),
                     payload=frame.get("payload"),
                     error=frame.get("error"),
@@ -183,11 +236,11 @@ async def laptop_connect(ws: WebSocket) -> None:
                 log.debug("unhandled frame type=%s from user=%s", ftype, user_id)
 
     except WebSocketDisconnect:
-        log.info("laptop disconnected user=%s device=%s", user_id, device_id)
+        log.info("runtime disconnected user=%s runtime=%s", user_id, runtime_id)
     except Exception as err:
-        log.warning("laptop WS error user=%s device=%s err=%s", user_id, device_id, err)
+        log.warning("runtime WS error user=%s runtime=%s err=%s", user_id, runtime_id, err)
     finally:
-        await REGISTRY.deregister(user_id, device_id)
+        await REGISTRY.deregister(user_id, runtime_id)
 
 
 # ── Periodic stale-connection sweep (R3) ───────────────────────────────────
@@ -221,20 +274,14 @@ def stop_sweep_task() -> None:
 
 
 # ── Status endpoint (handy for the SPA + smoke tests) ──────────────────────
+@router.get("/api/runtime-bridge/status")
+async def runtime_status() -> dict[str, Any]:
+    return await REGISTRY.status_snapshot()
+
+
 @router.get("/api/laptop-bridge/status")
 async def status() -> dict[str, Any]:
-    out: list[dict[str, Any]] = []
-    # Use the internal map directly — read-only.
-    for user_id, by_device in REGISTRY._by_user.items():
-        for device_id, conn in by_device.items():
-            out.append({
-                "user_id": user_id,
-                "device_id": device_id,
-                "device_name": conn.device_name,
-                "connected_at": conn.connected_at,
-                "last_seen_at": conn.last_seen_at,
-            })
-    return {"connected": out, "count": len(out)}
+    return await REGISTRY.status_snapshot()
 
 
 def _now_iso() -> str:

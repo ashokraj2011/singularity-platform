@@ -475,7 +475,7 @@ export function WorkbenchConsole({ mode = "cockpit", view }: { mode?: WorkbenchM
                 onClick={() => selectSession(item.id)}
                 style={{
                   textAlign: "left",
-                  border: item.id === selectedId ? "1px solid rgba(0,132,61,0.42)" : "1px solid var(--color-outline-variant)",
+                  border: item.id === selectedId ? "1px solid rgba(54,135,39,0.42)" : "1px solid var(--color-outline-variant)",
                   background: item.id === selectedId ? "rgba(240,253,244,0.86)" : "#fff",
                   borderRadius: 8,
                   padding: 12,
@@ -597,7 +597,7 @@ function CreateSessionPanel({
   };
 
   return (
-    <section className="card" style={{ padding: 18, marginBottom: 18, borderColor: "rgba(0,132,61,0.28)" }}>
+    <section className="card" style={{ padding: 18, marginBottom: 18, borderColor: "rgba(54,135,39,0.28)" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
           <Bot size={18} color="var(--color-primary)" />
@@ -692,7 +692,7 @@ function WorkbenchNav({ activeView }: { activeView: WorkbenchView }) {
             key={item.view}
             href={item.href}
             style={{
-              border: active ? "1px solid rgba(0,132,61,0.42)" : "1px solid transparent",
+              border: active ? "1px solid rgba(54,135,39,0.42)" : "1px solid transparent",
               background: active ? "rgba(240,253,244,0.88)" : "transparent",
               color: active ? "var(--color-primary)" : "var(--color-outline)",
               borderRadius: 8,
@@ -1060,7 +1060,7 @@ function EventsPanel({ events, milestone, finalPack }: { events: ReviewEvent[]; 
         </div>
       )}
       {finalPack && (
-        <div style={{ border: "1px solid rgba(0,132,61,0.28)", background: "rgba(240,253,244,0.78)", borderRadius: 8, padding: 10, marginBottom: 10 }}>
+        <div style={{ border: "1px solid rgba(54,135,39,0.28)", background: "rgba(240,253,244,0.78)", borderRadius: 8, padding: 10, marginBottom: 10 }}>
           <strong style={{ fontSize: 13 }}>Final pack · {finalPack.status}</strong>
           <div style={{ color: "var(--color-outline)", fontSize: 12, marginTop: 4 }}>{finalPack.summary}</div>
         </div>

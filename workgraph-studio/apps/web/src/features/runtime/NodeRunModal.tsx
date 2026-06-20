@@ -952,7 +952,7 @@ function ClaimBar({ onClaim }: { onClaim: () => void }) {
       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       padding: '10px 12px', marginBottom: 14,
       borderRadius: 10, border: '1px dashed var(--color-outline-variant)',
-      background: 'rgba(0,132,61,0.05)',
+      background: 'rgba(54,135,39,0.05)',
     }}>
       <span style={{ fontSize: 12, color: 'var(--color-on-surface)' }}>
         This node is unclaimed.

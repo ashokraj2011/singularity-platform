@@ -152,7 +152,7 @@ const ROUTING_MODES: RoutingMode[] = ['MANUAL', 'AUTO_ATTACH', 'AUTO_START', 'SC
 const TRIGGER_TYPES: TriggerType[] = ['EVENT', 'SCHEDULE', 'WEBHOOK']
 
 const ICONS = ['Network', 'Workflow', 'Layers3', 'Bug', 'Sparkles', 'ShieldCheck', 'BellRing', 'CalendarClock', 'Route', 'Settings2']
-const COLORS = ['#2563eb', '#00843d', '#7c3aed', '#ef4444', '#f97316', '#0ea5e9', '#64748b', '#14b8a6', '#eab308', '#db2777']
+const COLORS = ['#2563eb', '#368727', '#7c3aed', '#ef4444', '#f97316', '#0ea5e9', '#64748b', '#14b8a6', '#eab308', '#db2777']
 
 function emptyDefinitionDraft(kind: MetadataKind): DefinitionDraft {
   return {
@@ -410,7 +410,7 @@ export function MetadataRegistryPage() {
 
       <section style={statsGridStyle}>
         <StatCard label="Definitions" value={stats.definitions} tone="#2563eb" icon={<Braces size={17} />} />
-        <StatCard label="Active routing policies" value={stats.activePolicies} tone="#00843d" icon={<Route size={17} />} />
+        <StatCard label="Active routing policies" value={stats.activePolicies} tone="#368727" icon={<Route size={17} />} />
         <StatCard label="Event and schedule triggers" value={stats.triggers} tone="#f97316" icon={<CalendarClock size={17} />} />
         <StatCard label="Scoped overrides" value={stats.overrides} tone="#7c3aed" icon={<SlidersHorizontal size={17} />} />
       </section>
@@ -794,7 +794,7 @@ function DefinitionCard({ definition, selected, onClick }: { definition: Metadat
 function RoutingCard({ row, selected, onClick }: { row: RoutingPolicy; selected: boolean; onClick: () => void }) {
   return (
     <button type="button" onClick={onClick} style={{ ...cardButtonStyle, ...(selected ? selectedCardStyle : {}) }}>
-      <span style={{ ...definitionIconStyle, background: 'rgba(0,132,61,0.10)', borderColor: 'rgba(0,132,61,0.22)', color: '#00843d' }}>
+      <span style={{ ...definitionIconStyle, background: 'rgba(54,135,39,0.10)', borderColor: 'rgba(54,135,39,0.22)', color: '#368727' }}>
         <Route size={17} />
       </span>
       <span style={{ minWidth: 0 }}>
@@ -802,7 +802,7 @@ function RoutingCard({ row, selected, onClick }: { row: RoutingPolicy; selected:
         <span style={cardSubStyle}>{humanize(row.routingMode)} · priority {row.priority}</span>
         <span style={cardDescriptionStyle}>{row.workflow?.name ?? 'Workflow selected by type'} · {shortId(row.capabilityId)}</span>
       </span>
-      <Badge value={row.isActive ? 'Active' : 'Paused'} tone={row.isActive ? '#00843d' : '#64748b'} />
+      <Badge value={row.isActive ? 'Active' : 'Paused'} tone={row.isActive ? '#368727' : '#64748b'} />
     </button>
   )
 }
@@ -818,7 +818,7 @@ function TriggerCard({ row, selected, onClick }: { row: WorkItemTrigger; selecte
         <span style={cardSubStyle}>{row.eventTypeKey || 'No event type'} · creates {row.workItemTypeKey}</span>
         <span style={cardDescriptionStyle}>{row.capabilityId ? shortId(row.capabilityId) : 'Any capability'} · {humanize(row.routingMode)}</span>
       </span>
-      <Badge value={row.isActive ? 'Active' : 'Paused'} tone={row.isActive ? '#00843d' : '#64748b'} />
+      <Badge value={row.isActive ? 'Active' : 'Paused'} tone={row.isActive ? '#368727' : '#64748b'} />
     </button>
   )
 }
@@ -982,7 +982,7 @@ function ColorPicker({ value, onChange }: { value: string; onChange: (v: string)
 function Toggle({ checked, label, onChange }: { checked: boolean; label: string; onChange: (v: boolean) => void }) {
   return (
     <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#172033', cursor: 'pointer' }}>
-      <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} style={{ accentColor: '#00843d' }} />
+      <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} style={{ accentColor: '#368727' }} />
       {label}
     </label>
   )
@@ -1107,7 +1107,7 @@ function errorMessage(err: unknown): string {
 }
 
 function statusColor(status: MetadataStatus): string {
-  if (status === 'ACTIVE') return '#00843d'
+  if (status === 'ACTIVE') return '#368727'
   if (status === 'DRAFT') return '#2563eb'
   if (status === 'DEPRECATED') return '#f97316'
   return '#64748b'
@@ -1115,7 +1115,7 @@ function statusColor(status: MetadataStatus): string {
 
 function colorFor(kind: MetadataKind): string {
   if (kind === 'WORK_ITEM_TYPE') return '#2563eb'
-  if (kind === 'WORKFLOW_TYPE') return '#00843d'
+  if (kind === 'WORKFLOW_TYPE') return '#368727'
   if (kind === 'NODE_TYPE') return '#7c3aed'
   if (kind === 'EVENT_TYPE') return '#f97316'
   return '#64748b'
@@ -1174,7 +1174,7 @@ const eyebrowStyle: CSSProperties = {
   padding: '5px 10px',
   fontSize: 11,
   fontWeight: 800,
-  color: '#00843d',
+  color: '#368727',
   letterSpacing: '0.08em',
   textTransform: 'uppercase',
 }
@@ -1320,7 +1320,7 @@ const kindIconStyle: CSSProperties = {
   border: '1px solid #dbe4ec',
   display: 'grid',
   placeItems: 'center',
-  color: '#00843d',
+  color: '#368727',
 }
 
 const listPanelStyle: CSSProperties = {
@@ -1348,7 +1348,7 @@ const panelHeaderIconStyle: CSSProperties = {
   borderRadius: 11,
   background: '#eef7f2',
   border: '1px solid #cbe5d3',
-  color: '#00843d',
+  color: '#368727',
   display: 'grid',
   placeItems: 'center',
   flexShrink: 0,
@@ -1408,7 +1408,7 @@ const cardButtonStyle: CSSProperties = {
 
 const selectedCardStyle: CSSProperties = {
   borderColor: '#94c9a9',
-  boxShadow: '0 0 0 3px rgba(0,132,61,0.08)',
+  boxShadow: '0 0 0 3px rgba(54,135,39,0.08)',
 }
 
 const definitionIconStyle: CSSProperties = {
@@ -1487,7 +1487,7 @@ const primaryButtonStyle: CSSProperties = {
   minHeight: 40,
   border: 'none',
   borderRadius: 12,
-  background: '#00843d',
+  background: '#368727',
   color: '#fff',
   padding: '0 14px',
   display: 'inline-flex',
@@ -1497,7 +1497,7 @@ const primaryButtonStyle: CSSProperties = {
   fontSize: 13,
   fontWeight: 800,
   cursor: 'pointer',
-  boxShadow: '0 8px 20px rgba(0,132,61,0.20)',
+  boxShadow: '0 8px 20px rgba(54,135,39,0.20)',
 }
 
 const ghostButtonStyle: CSSProperties = {

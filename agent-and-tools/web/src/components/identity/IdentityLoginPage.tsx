@@ -127,12 +127,12 @@ export function IdentityLoginPage() {
             className="hidden flex-col items-center justify-center p-12 text-center lg:flex"
             style={{ background: "linear-gradient(145deg, #071829 0%, #0A2240 48%, #0D3060 100%)" }}
           >
-            <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-[#00843D] shadow-2xl">
+            <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-[#368727] shadow-2xl">
               <Fingerprint className="text-white" size={32} />
             </div>
             <h1 className="text-2xl font-bold tracking-wide text-white">SINGULARITY</h1>
             <p className="mt-2 text-xs font-semibold uppercase tracking-[0.2em] text-white/45">IAM Platform</p>
-            <div className="my-7 h-0.5 w-9 rounded-full bg-[#00843D]" />
+            <div className="my-7 h-0.5 w-9 rounded-full bg-[#368727]" />
             <p className="max-w-xs text-sm leading-relaxed text-white/60">
               Identity and Access Management for enterprise capabilities, teams, roles, and permissions.
             </p>
@@ -160,7 +160,7 @@ export function IdentityLoginPage() {
                     type="button"
                     onClick={() => void startSso()}
                     disabled={isSsoSubmitting}
-                    className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#00843D] text-sm font-semibold tracking-wide text-white transition hover:bg-[#006F34] disabled:pointer-events-none disabled:opacity-60"
+                    className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#368727] text-sm font-semibold tracking-wide text-white transition hover:bg-[#006F34] disabled:pointer-events-none disabled:opacity-60"
                   >
                     <KeyRound className="h-4 w-4" />
                     {isSsoSubmitting ? "Opening SSO..." : "Continue with SSO"}
@@ -178,7 +178,7 @@ export function IdentityLoginPage() {
                       <span className="relative block">
                         <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                         <input
-                          className="h-10 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition focus:border-[#00843D] focus:ring-2 focus:ring-[#00843D]/15"
+                          className="h-10 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition focus:border-[#368727] focus:ring-2 focus:ring-[#368727]/15"
                           name="email"
                           type="email"
                           value={email}
@@ -196,7 +196,7 @@ export function IdentityLoginPage() {
                       <span className="relative block">
                         <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                         <input
-                          className="h-10 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition focus:border-[#00843D] focus:ring-2 focus:ring-[#00843D]/15"
+                          className="h-10 w-full rounded-md border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 outline-none transition focus:border-[#368727] focus:ring-2 focus:ring-[#368727]/15"
                           name="password"
                           type="password"
                           value={password}
@@ -210,7 +210,7 @@ export function IdentityLoginPage() {
                     <button
                       type="submit"
                       disabled={isSubmitting}
-                      className="h-10 w-full rounded-lg bg-[#00843D] text-sm font-semibold tracking-wide text-white transition hover:bg-[#006F34] disabled:pointer-events-none disabled:opacity-60"
+                      className="h-10 w-full rounded-lg bg-[#368727] text-sm font-semibold tracking-wide text-white transition hover:bg-[#006F34] disabled:pointer-events-none disabled:opacity-60"
                     >
                       {isSubmitting ? "Signing in..." : "Sign In"}
                     </button>

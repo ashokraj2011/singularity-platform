@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 @import 'reactflow/dist/style.css';
 
 @tailwind base;
@@ -12,12 +12,12 @@
     --brand-forest:             #eef4f1;
     --brand-forest-deep:        #dfe9e5;
     --brand-warm-white:         #162033;
-    --brand-green-accent:       #00843D;
+    --brand-green-accent:       #368727;
 
-    --color-primary:             #00843D;
-    --color-primary-dark:        #006227;
-    --color-primary-dim:         rgba(0, 132, 61, 0.12);
-    --color-primary-glow:        rgba(0, 132, 61, 0.30);
+    --color-primary:             #368727;
+    --color-primary-dark:        #2a6b1f;
+    --color-primary-dim:         rgba(54, 135, 39, 0.12);
+    --color-primary-glow:        rgba(54, 135, 39, 0.30);
 
     --color-secondary:           #004B8D;
     --color-secondary-dim:       rgba(0, 75, 141, 0.10);
@@ -41,7 +41,7 @@
     --color-danger:   #dc2626;
     --color-error:    #ba1a1a;
 
-    --font-sans: 'Public Sans', ui-sans-serif, system-ui, sans-serif;
+    --font-sans: 'Mulish', ui-sans-serif, system-ui, sans-serif;
     --font-mono: 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
   }
 

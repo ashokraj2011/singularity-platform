@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Mulish:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -10,7 +10,7 @@
   --brand-forest:        #0E3B2D;
   --brand-forest-deep:   #082821;
   --brand-forest-light:  #155041;
-  --brand-green:         #00843D;
+  --brand-green:         #368727;
   --brand-green-dark:    #006236;
   --brand-green-accent:  #00A651;
   --brand-green-tint:    #e6f4ed;
@@ -25,7 +25,7 @@
   --text-body:           #1f2937;
   --text-muted:          #64748b;
   --text-faint:          #94a3b8;
-  --font-sans:           'Public Sans', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-sans:           'Mulish', ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono:           'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
 }
 

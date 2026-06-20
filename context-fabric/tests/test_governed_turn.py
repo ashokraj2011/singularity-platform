@@ -594,6 +594,57 @@ async def test_run_turn_happy_path_phase_advance(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_turn_emits_empty_effective_capabilities_warning(monkeypatch):
+    events: list[dict] = []
+
+    async def fake_load_stage_policy(stage_key, agent_role, *, bearer=None):
+        return _policy(["read_file"], phase=Phase.PLAN)
+
+    async def fake_resolve_prompt(*, stage_key, agent_role, phase, vars=None, bearer=None, **_kwargs):
+        return _prompt()
+
+    async def fake_call_gateway(*, messages, tools, **_kwargs):
+        return ChatResponse(
+            content="No tools.",
+            tool_calls=[],
+            finish_reason="stop",
+            input_tokens=1,
+            output_tokens=1,
+            latency_ms=1,
+            provider="mock",
+            model="mock-fast",
+        )
+
+    async def fake_emit(**kwargs):
+        events.append(kwargs)
+
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.load_stage_policy", fake_load_stage_policy
+    )
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.resolve_phase_prompt", fake_resolve_prompt
+    )
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.call_gateway_chat", fake_call_gateway
+    )
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.emit_governed_event", fake_emit
+    )
+
+    await run_turn(
+        state=PhaseState.fresh("loop.stage", "DEVELOPER"),
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        run_context={
+            "effective_capabilities": [],
+            "effective_capabilities_required": True,
+        },
+    )
+
+    assert any(event.get("kind") == "governed.effective_capabilities_empty" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_run_turn_per_phase_model_override(monkeypatch):
     """M100 — phase_model_aliases routes the CURRENT phase to its pinned
     model alias; an unset phase falls back to the stage-level model_alias."""

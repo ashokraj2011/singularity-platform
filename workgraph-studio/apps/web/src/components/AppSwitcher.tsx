@@ -93,7 +93,7 @@ export function AppSwitcher({ currentApp = 'workflow' }: { currentApp?: string }
                   borderRadius: 10,
                   padding: '10px',
                   color: 'var(--color-on-surface)',
-                  background: active ? 'rgba(0,132,61,0.10)' : 'transparent',
+                  background: active ? 'rgba(54,135,39,0.10)' : 'transparent',
                   textDecoration: 'none',
                 }}
               >

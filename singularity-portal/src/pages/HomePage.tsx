@@ -59,7 +59,7 @@ export function HomePage() {
               </div>
             </div>
           </div>
-          <span className="text-xs font-semibold" style={{ color: '#00843D' }}>Open</span>
+          <span className="text-xs font-semibold" style={{ color: '#368727' }}>Open</span>
         </Link>
       </div>
     </div>

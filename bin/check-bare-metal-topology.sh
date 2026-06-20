@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verify bare-metal scripts preserve the current platform topology:
 #   - Platform Web owns UI on :5180.
-#   - LLM Gateway and MCP are optional/remote-capable when BOX_ONLY=1.
+#   - LLM Gateway and MCP are optional/remote-capable when SKIP_LOCAL_RUNTIME=1.
 #   - bare-metal env generation respects operator-provided runtime URLs/tokens.
 set -euo pipefail
 
@@ -23,24 +23,66 @@ import re
 import sys
 
 bare = Path("bin/bare-metal.sh").read_text()
+apps = Path("bin/bare-metal-apps.sh").read_text()
+runtime = Path("bin/bare-metal-runtime.sh").read_text()
 doctor = Path("bin/doctor.sh").read_text()
+setup = Path("bin/setup.sh").read_text()
+copilot = Path("bin/llm-use-copilot.sh").read_text()
 
 checks: dict[str, bool] = {}
+
+checks["bare-metal-apps is platform-only wrapper"] = (
+    'export SKIP_LOCAL_RUNTIME=1' in apps
+    and 'exec "$ROOT/bin/bare-metal.sh" "$@"' in apps
+)
+checks["bare-metal-runtime has independent pid file"] = (
+    'PID_FILE="$ROOT/.pids.runtime"' in runtime
+    and 'PID_FILE="$ROOT/.pids"\n' not in runtime
+)
+checks["bare-metal-runtime frees only llm/mcp ports"] = (
+    'local ports=(8001 7100)' in runtime
+    and '5180' not in runtime
+    and '3001' not in runtime
+)
+checks["bare-metal-runtime boots only llm-gateway and mcp-server"] = (
+    'boot llm-gateway' in runtime
+    and 'boot mcp-server' in runtime
+    and 'boot platform-web' not in runtime
+    and 'boot workgraph-api' not in runtime
+    and 'boot agent-runtime' not in runtime
+)
+checks["setup uses split bare-metal launchers"] = (
+    'bin/bare-metal-apps.sh up "$PG_USER" "$PG_PASS" "$PG_HOST" "$PG_PORT"' in setup
+    and 'bin/bare-metal-runtime.sh up' in setup
+    and 'BOX_ONLY="$BOX_ONLY_MODE" bin/bare-metal.sh up' not in setup
+)
+checks["setup stops split launchers before reset"] = (
+    'bin/bare-metal-runtime.sh down >/dev/null 2>&1 || true' in setup
+    and 'bin/bare-metal-apps.sh down >/dev/null 2>&1 || true' in setup
+)
+checks["setup box-only uses runtime bridge default"] = (
+    'bin/bare-metal-apps.sh up "$PG_USER" "$PG_PASS" "$PG_HOST" "$PG_PORT"' in setup
+    and 'PREFER_LAPTOP_LLM="${PREFER_LAPTOP_LLM:-true}" bin/bare-metal-apps.sh up' not in setup
+)
+checks["copilot switcher recognizes split runtime pid file"] = (
+    '.pids.runtime' in copilot
+    and '[ -f "$ROOT/.pids.runtime" ] || [ -f "$ROOT/.pids" ]' in copilot
+)
 
 base_ports = re.search(r"local _ports_to_free=\(([^)]*)\)", bare, re.S)
 checks["bare-metal up base port sweep excludes llm/mcp"] = bool(
     base_ports and "7100" not in base_ports.group(1).split() and "8001" not in base_ports.group(1).split()
 )
-checks["bare-metal up only sweeps llm/mcp outside BOX_ONLY"] = (
-    'if [ "${BOX_ONLY:-}" != "1" ]; then\n    _ports_to_free+=(7100 8001)' in bare
+checks["bare-metal up only sweeps llm/mcp outside split-runtime mode"] = (
+    'if [ "${SKIP_LOCAL_RUNTIME:-}" != "1" ]; then\n    _ports_to_free+=(7100 8001)' in bare
 )
 
 down_ports = re.search(r"local ports=\(([^)]*)\)", bare, re.S)
 checks["bare-metal down base port sweep excludes llm/mcp"] = bool(
     down_ports and "7100" not in down_ports.group(1).split() and "8001" not in down_ports.group(1).split()
 )
-checks["bare-metal down only sweeps llm/mcp outside BOX_ONLY"] = (
-    'if [ -z "$BOX_ONLY" ]; then ports+=(7100 8001); fi' in bare
+checks["bare-metal down only sweeps llm/mcp outside split-runtime mode"] = (
+    'if [ -z "$SKIP_LOCAL_RUNTIME" ]; then ports+=(7100 8001); fi' in bare
 )
 
 checks["bare-metal respects MCP_SERVER_URL"] = (
@@ -140,10 +182,19 @@ runtime_block = doctor.split("runtime_services=", 1)[1] if "runtime_services=" i
 checks["bare-metal doctor checks audit-gov as local service"] = (
     '"audit-gov|http://localhost:8500/health"' in services_block
 )
-checks["BOX_ONLY skips only llm-gateway and mcp-server"] = (
+checks["bare-metal doctor remediation uses split launchers"] = (
+    'logs: bin/bare-metal-apps.sh logs $name' in doctor
+    and 'start locally with bin/bare-metal-runtime.sh up' in doctor
+    and 'restart Platform Web: bin/bare-metal-apps.sh down && bin/setup.sh --yes' in doctor
+)
+checks["split runtime mode skips only llm-gateway and mcp-server"] = (
     '"llm-gateway|http://localhost:8001/health"' in runtime_block
     and '"mcp-server|http://localhost:7100/health"' in runtime_block
     and '"audit-gov|http://localhost:8500/health"' not in runtime_block
+)
+checks["BOX_ONLY remains split-runtime compatibility alias"] = (
+    'SKIP_LOCAL_RUNTIME=1' in bare
+    and 'PREFER_LAPTOP_LLM="${PREFER_LAPTOP_LLM:-true}"' not in bare
 )
 checks["bare-metal deep smoke includes route/API/browser parity"] = (
     'python3 bin/check-platform-web-routes.py' in bare

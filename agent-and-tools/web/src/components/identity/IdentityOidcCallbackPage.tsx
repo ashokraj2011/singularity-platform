@@ -91,7 +91,7 @@ export function IdentityOidcCallbackPage() {
   return (
     <div className="min-h-[calc(100vh-8rem)] flex items-center justify-center">
       <section className="w-full max-w-md rounded-lg border border-[var(--color-outline-variant)] bg-white p-8 text-center shadow-[0_12px_32px_rgba(15,23,42,0.08)]">
-        <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-[#00843D]/10 text-[#00843D]">
+        <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-[#368727]/10 text-[#368727]">
           {status === "loading" ? <Loader2 className="h-6 w-6 animate-spin" /> : null}
           {status === "success" ? <CheckCircle2 className="h-6 w-6" /> : null}
           {status === "error" ? <AlertCircle className="h-6 w-6 text-red-600" /> : null}
@@ -103,7 +103,7 @@ export function IdentityOidcCallbackPage() {
         {status === "error" ? (
           <Link
             href="/identity/login"
-            className="mt-6 inline-flex h-10 items-center justify-center rounded-lg bg-[#00843D] px-4 text-sm font-semibold text-white hover:bg-[#006F34]"
+            className="mt-6 inline-flex h-10 items-center justify-center rounded-lg bg-[#368727] px-4 text-sm font-semibold text-white hover:bg-[#006F34]"
           >
             Back to sign in
           </Link>

@@ -48,10 +48,12 @@ COMPOSE_FILES="-f docker-compose.yml -f docker-compose.cloud.yml" \
 
 ## A-alt — Cloud box WITHOUT Docker (bare-metal)
 
-No Docker/compose on the box? `bin/bare-metal.sh` boots the platform as host
-processes; **`BOX_ONLY=1`** skips the two laptop apps (mcp-server,
-llm-gateway) and sets `PREFER_LAPTOP_LLM=true` on context-api so the platform's
-own LLM calls ride the bridge to your laptop.
+No Docker/compose on the box? `bin/bare-metal-apps.sh` boots the platform as
+host processes without starting MCP or LLM Gateway. For this cloud-box/laptop
+topology, set `PREFER_LAPTOP_LLM=true` so context-api sends the platform's own
+LLM calls over the bridge to your laptop. If you intentionally want MCP and LLM
+Gateway on the same machine, start them separately with
+`bin/bare-metal-runtime.sh up`.
 
 Prereqs on the box: Node 20 + 22, Python 3.11 + 3.12, pnpm, and a **Postgres +
 MinIO you run yourself** (the script connects to them; it never manages them).
@@ -59,7 +61,7 @@ MinIO you run yourself** (the script connects to them; it never manages them).
 ```bash
 git clone https://github.com/ashokraj2011/singularity-platform.git && cd singularity-platform
 export JWT_SECRET='<ONE strong 32+ char secret>'     # the script respects it (and passes it to IAM + context-api)
-BOX_ONLY=1 bin/bare-metal.sh up
+PREFER_LAPTOP_LLM=true bin/bare-metal-apps.sh up <db_user> [db_password] [db_host] [db_port]
 ```
 
 - `up` installs deps, migrates the DBs, and seeds IAM demo users/capabilities,
@@ -71,7 +73,7 @@ BOX_ONLY=1 bin/bare-metal.sh up
   Legacy per-app UI ports are debug-only and are not part of the normal office path.
 - Laptop settings (§B) are identical — point Platform/Bridge at
   `http://<box-host>:8100/api/v1` and `ws://<box-host>:8000/api/laptop-bridge/connect`.
-- Stop with `bin/bare-metal.sh down`; status with `bin/bare-metal.sh status`.
+- Stop with `bin/bare-metal-apps.sh down`; status with `bin/bare-metal-apps.sh status`.
 
 ## B — Office laptop (once)
 

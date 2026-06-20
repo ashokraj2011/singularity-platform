@@ -27,7 +27,7 @@ export function CapabilitiesListPage() {
         subtitle="Identity references for capabilities bootstrapped in Agent Studio"
         action={
           <a href={agentStudioCapabilitiesHref()} target="_blank" rel="noreferrer">
-            <Button className="bg-[#00843D] hover:bg-[#006830]">
+            <Button className="bg-[#368727] hover:bg-[#006830]">
               <ExternalLink className="w-4 h-4 mr-1.5" /> Bootstrap in Agent Studio
             </Button>
           </a>
@@ -35,7 +35,7 @@ export function CapabilitiesListPage() {
       />
 
       <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 flex items-start gap-3">
-        <ShieldCheck className="w-5 h-5 text-[#00843D] mt-0.5" />
+        <ShieldCheck className="w-5 h-5 text-[#368727] mt-0.5" />
         <div>
           <p className="text-sm font-semibold text-gray-900">Single owner for bootstrapping</p>
           <p className="text-sm text-gray-600 mt-0.5">
@@ -99,7 +99,7 @@ export function CapabilitiesListPage() {
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
                       {(cap.tags ?? []).map(t => (
-                        <span key={t} className="text-xs bg-[#e6f4ed] text-[#00843D] px-1.5 py-0.5 rounded-full">{t}</span>
+                        <span key={t} className="text-xs bg-[#e6f4ed] text-[#368727] px-1.5 py-0.5 rounded-full">{t}</span>
                       ))}
                     </div>
                   </td>

@@ -56,7 +56,7 @@ const loop = [
     href: "/workflows/planner",
     icon: Workflow,
     detail: "Templates, designer, metadata, and run inputs",
-    tone: "#00843d",
+    tone: "#368727",
   },
   {
     label: "Assign",
@@ -125,7 +125,7 @@ const evidenceLinks = [
 ];
 
 function valueTone(state: CountResult["state"]) {
-  if (state === "live") return "#00843d";
+  if (state === "live") return "#368727";
   if (state === "guarded") return "#004b8d";
   return "#b45309";
 }

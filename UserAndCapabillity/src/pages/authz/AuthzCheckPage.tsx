@@ -66,7 +66,7 @@ export function AuthzCheckPage() {
               <Label>Requesting Capability ID (for shared access)</Label>
               <Input placeholder="Optional" {...register('requesting_capability_id')} />
             </div>
-            <Button type="submit" disabled={isSubmitting} className="w-full bg-[#00843D] hover:bg-[#006830]">
+            <Button type="submit" disabled={isSubmitting} className="w-full bg-[#368727] hover:bg-[#006830]">
               {isSubmitting ? 'Checking…' : 'Check Authorization'}
             </Button>
           </form>

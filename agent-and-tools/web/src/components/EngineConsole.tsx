@@ -211,7 +211,7 @@ export function EngineConsole() {
                     textAlign: "left",
                     border: "none",
                     borderBottom: "1px solid var(--color-outline-variant)",
-                    background: active ? "rgba(0,132,61,0.08)" : "transparent",
+                    background: active ? "rgba(54,135,39,0.08)" : "transparent",
                     padding: 14,
                     cursor: "pointer",
                   }}

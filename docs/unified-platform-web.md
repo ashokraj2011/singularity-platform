@@ -116,14 +116,15 @@ The default core stack currently has 8 running containers: `platform-web`, `plat
 Bare metal also starts Platform Web on `:5180`:
 
 ```bash
-bin/bare-metal.sh up <db_user> [db_password] [db_host] [db_port]
-bin/bare-metal.sh smoke
+bin/bare-metal-apps.sh up <db_user> [db_password] [db_host] [db_port]
+bin/bare-metal-apps.sh smoke
 ```
 
-The bare-metal script does not start the old split Vite frontend apps by default. Bare-metal still runs the Node backend apps as separate local processes for hot reload; the single-container `platform-core` consolidation is a Docker packaging change. Set `BOX_ONLY=1` when the LLM gateway and MCP runtime should run somewhere else:
+The bare-metal apps launcher does not start the old split Vite frontend apps, LLM Gateway, or MCP runtime. Bare-metal still runs the Node backend apps as separate local processes for hot reload; the single-container `platform-core` consolidation is a Docker packaging change. Start the local runtime launcher only when the LLM gateway and MCP runtime should run on the same machine:
 
 ```bash
-BOX_ONLY=1 bin/bare-metal.sh up <db_user> [db_password] [db_host] [db_port]
+bin/bare-metal-runtime.sh up
+bin/bare-metal-runtime.sh smoke
 ```
 
 ## Verification
@@ -136,7 +137,7 @@ done
 ```
 
 Expected result: every route returns `200`; legacy paths return redirects to the canonical routes.
-If `curl` is not available on a bare-metal host, use `bin/doctor.sh` or `bin/bare-metal.sh smoke`; both use Python HTTP fallbacks.
+If `curl` is not available on a bare-metal host, use `bin/doctor.sh` or `bin/bare-metal-apps.sh smoke`; both use Python HTTP fallbacks.
 For the full canonical route and legacy redirect matrix, run:
 
 ```bash

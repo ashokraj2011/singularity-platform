@@ -15,7 +15,7 @@ export default {
         },
         brand: {
           // Green accents
-          DEFAULT: '#00843D',
+          DEFAULT: '#368727',
           dark: '#006236',
           accent: '#00A651',
           light: '#e6f4ed',

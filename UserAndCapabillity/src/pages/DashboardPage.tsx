@@ -39,7 +39,7 @@ export function DashboardPage() {
           value={users?.total ?? '—'}
           icon={Users}
           iconBg="#e6f4ed"
-          iconColor="#00843D"
+          iconColor="#368727"
         />
         <StatCard
           label="Capabilities"
@@ -84,7 +84,7 @@ export function DashboardPage() {
           <a
             href="/audit"
             className="flex items-center gap-1 text-xs font-medium transition-colors hover:opacity-80"
-            style={{ color: '#00843D' }}
+            style={{ color: '#368727' }}
           >
             View all <ArrowRight className="w-3 h-3" />
           </a>

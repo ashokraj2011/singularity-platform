@@ -53,23 +53,29 @@ def create_device_token(
     device_name: str,
     scopes: list[str],
     ttl_days: int = 90,
+    token_kind: str = "device",
+    tenant_id: str | None = None,
+    runtime_type: str = "mcp",
+    runtime_scope: str = "user",
+    allowed_frame_types: list[str] | None = None,
+    capability_tags: list[str] | None = None,
 ) -> str:
-    """M26 — long-lived JWT for a user's laptop-resident mcp-server.
+    """Long-lived JWT for a user's device or MCP runtime.
 
     Minted by `POST /api/v1/auth/device-token` after the user logs into the
     platform; stored in the laptop's OS keychain by the `singularity-mcp`
-    CLI. The platform's reverse-WebSocket bridge (context-fabric
-    `/api/laptop-bridge/connect`) verifies these tokens to identify which
-    user's machine is on the other end of the socket.
+    CLI. Context Fabric's runtime bridge verifies these tokens to identify
+    which runtime is on the other end of the socket.
 
     Wire-compat with the pseudo-IAM mint at `pseudo-iam-service/src/index.ts`:
     same claim shape (`kind:"device"`, `sub:user_id`, `device_id`,
     `device_name`, `email`, `scopes`) signed with the shared `JWT_SECRET`.
     """
     expire = datetime.now(timezone.utc) + timedelta(days=ttl_days)
+    kind = "runtime" if token_kind == "runtime" else "device"
     payload = {
         "sub":          user_id,
-        "kind":         "device",
+        "kind":         kind,
         "email":        email,
         "device_id":    device_id,
         "device_name":  device_name,
@@ -79,6 +85,16 @@ def create_device_token(
         # status, but downstream consumers should prefer `scopes` for gating.
         "is_super_admin": True,
     }
+    if kind == "runtime":
+        payload.update({
+            "runtime_id": device_id,
+            "runtime_type": runtime_type or "mcp",
+            "runtime_scope": runtime_scope or "user",
+            "allowed_frame_types": list(allowed_frame_types or ["tool-run", "model-run", "code-context", "invoke"]),
+            "capability_tags": list(capability_tags or ["mcp", "tools", "llm"]),
+        })
+        if tenant_id:
+            payload["tenant_id"] = tenant_id
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 

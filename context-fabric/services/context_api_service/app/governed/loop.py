@@ -38,6 +38,10 @@ from typing import Any
 
 from .audit_emit import emit_governed_event
 from .dispatch import ToolDispatchError, ToolDispatchResult, dispatch_tool
+from .effective_capabilities import (
+    effective_capabilities_from_context,
+    effective_capabilities_required,
+)
 from .grant import mint_tool_grant
 # M99 S3.3 — hard full-file-read gate (pure decision fn; no-op unless the
 # stage policy sets full_file_read_requires_justification).
@@ -218,22 +222,6 @@ _MUTATING_TOOLS = frozenset({
     "write_file",
     "finish_work_branch",
 })
-
-
-def _effective_capabilities_from_context(run_context: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if not isinstance(run_context, dict):
-        return []
-    raw = run_context.get("effective_capabilities") or run_context.get("effectiveCapabilities")
-    return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
-
-
-def _effective_capabilities_required(run_context: dict[str, Any] | None) -> bool:
-    if not isinstance(run_context, dict):
-        return False
-    raw = run_context.get("effective_capabilities_required")
-    if raw is None:
-        raw = run_context.get("effectiveCapabilitiesRequired")
-    return raw is True or (isinstance(raw, str) and raw.strip().lower() in {"1", "true", "yes", "on"})
 
 
 def _normalise_change_path(path: str) -> str:
@@ -540,11 +528,11 @@ async def governed_step(
             )
             continue
 
-        effective_capabilities = _effective_capabilities_from_context(run_context)
+        effective_capabilities = effective_capabilities_from_context(run_context)
         profile_allowed, profile_refusal = effective_capability_allows_tool(
             {"name": tool_name},
             effective_capabilities,
-            require_effective_capabilities=_effective_capabilities_required(run_context),
+            require_effective_capabilities=effective_capabilities_required(run_context),
         )
         if not profile_allowed:
             log.info(

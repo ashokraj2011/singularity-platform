@@ -122,6 +122,11 @@ from .code_context import (
     build_code_context_for_governed_turn,
     package_markdown,
 )
+from .effective_capabilities import (
+    effective_capabilities_from_context,
+    effective_capabilities_required,
+    effective_capabilities_required_but_empty,
+)
 from .model_catalog import context_window_for
 from .loop import GovernedStepResult, governed_step
 from .phase_state import Phase, PhaseState
@@ -187,22 +192,6 @@ def _render_policy_facts(
 # the next phase. NEVER dispatched to mcp-server. The loop catches the call
 # by name and routes the payload through the receipt validator.
 SUBMIT_PHASE_OUTPUT = "submit_phase_output"
-
-
-def _effective_capabilities_from_context(run_context: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if not isinstance(run_context, dict):
-        return []
-    raw = run_context.get("effective_capabilities") or run_context.get("effectiveCapabilities")
-    return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
-
-
-def _effective_capabilities_required(run_context: dict[str, Any] | None) -> bool:
-    if not isinstance(run_context, dict):
-        return False
-    raw = run_context.get("effective_capabilities_required")
-    if raw is None:
-        raw = run_context.get("effectiveCapabilitiesRequired")
-    return raw is True or (isinstance(raw, str) and raw.strip().lower() in {"1", "true", "yes", "on"})
 
 
 @dataclass
@@ -809,6 +798,8 @@ async def run_turn(
                 # frame) instead of the box's shared sandbox. None → cloud HTTP.
                 # Mirrors tool dispatch (loop.py). See placement.py.
                 laptop_user_id=_placement.mcp_laptop_target(run_context),
+                runtime_tenant_id=_placement.runtime_tenant_target(run_context),
+                runtime_capability_tags=_placement.runtime_capability_tags(run_context),
             )
             if pkg is not None:
                 md = package_markdown(pkg)
@@ -903,13 +894,27 @@ async def run_turn(
     _blocked_tools: set[str] = set()
     if isinstance(_gov_tp, dict):
         _blocked_tools.update(str(t) for t in (_gov_tp.get("blocked") or []) if t)
-    effective_capabilities = _effective_capabilities_from_context(run_context)
+    effective_capabilities = effective_capabilities_from_context(run_context)
+    if effective_capabilities_required_but_empty(run_context):
+        await emit_governed_event(
+            kind="governed.effective_capabilities_empty",
+            state=state,
+            policy=policy,
+            run_context=run_context,
+            payload={
+                "reason": "effective_capabilities_required_but_empty",
+                "stage_key": stage_key,
+                "phase": state.current_phase.value,
+                "agent_role": agent_role,
+            },
+            severity="warn",
+        )
     tools = _build_tool_descriptors(
         policy,
         state.current_phase,
         _blocked_tools or None,
         effective_capabilities,
-        _effective_capabilities_required(run_context),
+        effective_capabilities_required(run_context),
     )
 
     # Audit the LLM call now — useful for cost accounting even when the
@@ -958,6 +963,8 @@ async def run_turn(
         # model-run), call_gateway_chat dispatches over the bridge; otherwise it
         # uses the cloud gateway. None in the common case. See placement.py.
         laptop_user_id=_placement.llm_laptop_target(run_context),
+        runtime_tenant_id=_placement.runtime_tenant_target(run_context),
+        runtime_capability_tags=_placement.runtime_capability_tags(run_context),
     )
 
     await emit_governed_event(

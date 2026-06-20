@@ -99,7 +99,7 @@ export function CapabilityDetailPage() {
 
       <div className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 flex items-start justify-between gap-4">
         <div className="flex items-start gap-3">
-          <ShieldCheck className="w-5 h-5 text-[#00843D] mt-0.5" />
+          <ShieldCheck className="w-5 h-5 text-[#368727] mt-0.5" />
           <div>
             <p className="text-sm font-semibold text-gray-900">IAM reference only</p>
             <p className="text-sm text-gray-600 mt-0.5">
@@ -147,7 +147,7 @@ export function CapabilityDetailPage() {
 
         <TabsContent value="members" className="mt-4">
           <div className="flex justify-end mb-3">
-            <Button size="sm" onClick={() => setMemberOpen(true)} className="bg-[#00843D] hover:bg-[#006830]">
+            <Button size="sm" onClick={() => setMemberOpen(true)} className="bg-[#368727] hover:bg-[#006830]">
               <Users className="w-3.5 h-3.5 mr-1.5" /> Add Member
             </Button>
           </div>
@@ -167,7 +167,7 @@ export function CapabilityDetailPage() {
 
         <TabsContent value="relationships" className="mt-4">
           <div className="flex justify-end mb-3">
-            <Button size="sm" onClick={() => setRelOpen(true)} className="bg-[#00843D] hover:bg-[#006830]">
+            <Button size="sm" onClick={() => setRelOpen(true)} className="bg-[#368727] hover:bg-[#006830]">
               <GitBranch className="w-3.5 h-3.5 mr-1.5" /> Add Relationship
             </Button>
           </div>
@@ -219,7 +219,7 @@ export function CapabilityDetailPage() {
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => setRelOpen(false)}>Cancel</Button>
-              <Button onClick={handleAddRel} disabled={addRel.isPending} className="bg-[#00843D] hover:bg-[#006830]">
+              <Button onClick={handleAddRel} disabled={addRel.isPending} className="bg-[#368727] hover:bg-[#006830]">
                 {addRel.isPending ? 'Adding…' : 'Add'}
               </Button>
             </div>
@@ -241,7 +241,7 @@ export function CapabilityDetailPage() {
                   padding: '6px 12px',
                   borderRadius: 6,
                   border: memberType === 'user' ? 'none' : '1px solid #d1d5db',
-                  background: memberType === 'user' ? 'var(--primary, #00843D)' : 'transparent',
+                  background: memberType === 'user' ? 'var(--primary, #368727)' : 'transparent',
                   color: memberType === 'user' ? '#fff' : '#374151',
                   fontWeight: 500,
                   fontSize: 13,
@@ -257,7 +257,7 @@ export function CapabilityDetailPage() {
                   padding: '6px 12px',
                   borderRadius: 6,
                   border: memberType === 'team' ? 'none' : '1px solid #d1d5db',
-                  background: memberType === 'team' ? 'var(--primary, #00843D)' : 'transparent',
+                  background: memberType === 'team' ? 'var(--primary, #368727)' : 'transparent',
                   color: memberType === 'team' ? '#fff' : '#374151',
                   fontWeight: 500,
                   fontSize: 13,
@@ -284,7 +284,7 @@ export function CapabilityDetailPage() {
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => setMemberOpen(false)}>Cancel</Button>
-              <Button onClick={handleAddMember} disabled={addMember.isPending} className="bg-[#00843D] hover:bg-[#006830]">
+              <Button onClick={handleAddMember} disabled={addMember.isPending} className="bg-[#368727] hover:bg-[#006830]">
                 {addMember.isPending ? 'Adding…' : 'Add'}
               </Button>
             </div>

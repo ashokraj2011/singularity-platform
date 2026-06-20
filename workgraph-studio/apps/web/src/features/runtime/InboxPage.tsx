@@ -148,8 +148,8 @@ export function InboxPage() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
         <div style={{
           width: 38, height: 38, borderRadius: 10,
-          background: 'rgba(0,132,61,0.10)', border: '1px solid rgba(0,132,61,0.25)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#00843D',
+          background: 'rgba(54,135,39,0.10)', border: '1px solid rgba(54,135,39,0.25)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#368727',
         }}>
           <Inbox size={18} />
         </div>
@@ -167,9 +167,9 @@ export function InboxPage() {
             marginLeft: 'auto',
             display: 'inline-flex', alignItems: 'center', gap: 7,
             padding: '9px 13px', borderRadius: 9,
-            border: '1px solid rgba(0,132,61,0.25)',
-            background: 'rgba(0,132,61,0.10)',
-            color: '#006227', fontSize: 12, fontWeight: 800,
+            border: '1px solid rgba(54,135,39,0.25)',
+            background: 'rgba(54,135,39,0.10)',
+            color: '#2a6b1f', fontSize: 12, fontWeight: 800,
             cursor: 'pointer',
           }}
         >
@@ -297,7 +297,7 @@ const primaryButtonStyle: CSSProperties = {
   padding: '8px 12px',
   borderRadius: 9,
   border: 'none',
-  background: '#00843D',
+  background: '#368727',
   color: '#fff',
   fontSize: 12,
   fontWeight: 800,
@@ -350,8 +350,8 @@ function Tab({ label, count, active, onClick }: { label: string; count: number; 
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
         minWidth: 20, padding: '0 6px', height: 16, borderRadius: 8,
         fontSize: 10, fontWeight: 800,
-        background: active ? 'rgba(0,132,61,0.10)' : 'var(--color-outline-variant)',
-        color:      active ? '#00843D' : 'var(--color-outline)',
+        background: active ? 'rgba(54,135,39,0.10)' : 'var(--color-outline-variant)',
+        color:      active ? '#368727' : 'var(--color-outline)',
       }}>
         {count}
       </span>

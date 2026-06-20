@@ -45,6 +45,8 @@ _VALID_DEVICE_SCOPES = {
     "fs:write",        # write inside allowed_paths
 }
 
+_VALID_RUNTIME_FRAMES = {"tool-run", "model-run", "code-context", "invoke"}
+
 
 def _to_out(device: UserDevice) -> DeviceOut:
     return DeviceOut(
@@ -81,6 +83,14 @@ async def mint_device_token(
             detail=f"unknown scopes: {invalid}; valid={sorted(_VALID_DEVICE_SCOPES)}",
         )
     scopes = requested_scopes or sorted(_VALID_DEVICE_SCOPES)
+    requested_frames = list(body.allowed_frame_types or [])
+    invalid_frames = [f for f in requested_frames if f not in _VALID_RUNTIME_FRAMES]
+    if invalid_frames:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown frame types: {invalid_frames}; valid={sorted(_VALID_RUNTIME_FRAMES)}",
+        )
+    allowed_frame_types = requested_frames or sorted(_VALID_RUNTIME_FRAMES)
 
     existing_q = await db.execute(
         select(UserDevice).where(
@@ -112,6 +122,12 @@ async def mint_device_token(
         device_name=device_name,
         scopes=scopes,
         ttl_days=body.ttl_days,
+        token_kind=body.token_kind,
+        tenant_id=body.tenant_id,
+        runtime_type=body.runtime_type or "mcp",
+        runtime_scope=body.runtime_scope or "user",
+        allowed_frame_types=allowed_frame_types,
+        capability_tags=list(body.capability_tags or ["mcp", "tools", "llm"]),
     )
 
     await record_event(
@@ -121,6 +137,9 @@ async def mint_device_token(
             "device_name": device_name,
             "scopes": scopes,
             "ttl_days": body.ttl_days,
+            "token_kind": body.token_kind,
+            "allowed_frame_types": allowed_frame_types,
+            "capability_tags": list(body.capability_tags or []),
         },
     )
     await db.commit()
@@ -137,11 +156,15 @@ async def mint_device_token(
             "device_name": device_name,
             "scopes": scopes,
             "ttl_days": body.ttl_days,
+            "token_kind": body.token_kind,
+            "allowed_frame_types": allowed_frame_types,
+            "capability_tags": list(body.capability_tags or []),
         },
     )
 
     return DeviceTokenResponse(
         access_token=token,
+        token_kind=body.token_kind,
         device_id=device_id,
         user_id=current_user.id,
         email=current_user.email,

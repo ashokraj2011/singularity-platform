@@ -38,10 +38,20 @@ describe("HelloFrame.supported_frame_types", () => {
     const hello = HelloFrame.parse({
       type: "hello",
       device_id: "dev-1",
+      runtime_id: "runtime-1",
+      runtime_type: "mcp",
+      tenant_id: "tenant-a",
+      user_id: "user-a",
       device_name: "Mac",
       agent_version: "1.2.3",
+      capability_tags: ["mcp", "tools", "llm"],
+      health: { llm_gateway_url_configured: true },
       supported_frame_types: ["invoke", "tool-run"],
     });
+    expect(hello.runtime_id).toBe("runtime-1");
+    expect(hello.runtime_type).toBe("mcp");
+    expect(hello.tenant_id).toBe("tenant-a");
+    expect(hello.capability_tags).toEqual(["mcp", "tools", "llm"]);
     expect(hello.supported_frame_types).toEqual(["invoke", "tool-run"]);
   });
 
@@ -319,9 +329,11 @@ describe("round-trip", () => {
     const original: HelloFrame = {
       type: "hello",
       device_id: "d",
+      runtime_type: "mcp",
       device_name: "n",
       agent_version: "v",
       capabilities: ["pii_mask"],
+      capability_tags: [],
       supported_frame_types: ["invoke", "tool-run"],
     };
     const parsed = HelloFrame.parse(JSON.parse(JSON.stringify(original)));

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# laptop-bridge.sh — localhost BRIDGE-mode split test.
+# laptop-bridge.sh — localhost runtime BRIDGE-mode split test.
 #
 #   ┌─────────────── Docker "box" ───────────────┐        ┌──── host apps ────┐
 #   │ context-api · workgraph-api · platform-core │        │ mcp-server (:7100)│
@@ -8,7 +8,7 @@
 #   └─────────────────────────────────────────────┘  out  │ llm-gateway(:8001)│
 #                  (no mcp-server / no llm-gateway)        └───────────────────┘
 #
-# The host mcp-server dials OUT to context-api's /api/laptop-bridge/connect, so
+# The host mcp-server dials OUT to context-api's /api/runtime-bridge/connect, so
 # the box never needs to reach the host. Governed runs with prefer_laptop=true
 # dispatch tools / chat (model-run) / world-model (code-context) to the host.
 #
@@ -43,7 +43,8 @@ DEVICE_TOKEN_FILE="${DEVICE_TOKEN_FILE:-$ROOT/.singularity/laptop-device-token}"
 MCP_WS="${MCP_SANDBOX_ROOT:-$HOME/sg-laptop-workspace}"
 LLM_PROVIDER_CONFIG_PATH="${LLM_PROVIDER_CONFIG_PATH:-$ROOT/.singularity/llm-providers.json}"
 LLM_MODEL_CATALOG_PATH="${LLM_MODEL_CATALOG_PATH:-$ROOT/.singularity/llm-models.json}"
-LAPTOP_BRIDGE_URL="${LAPTOP_BRIDGE_URL:-ws://localhost:8000/api/laptop-bridge/connect}"
+RUNTIME_BRIDGE_URL="${RUNTIME_BRIDGE_URL:-${LAPTOP_BRIDGE_URL:-ws://localhost:8000/api/runtime-bridge/connect}}"
+LAPTOP_BRIDGE_URL="$RUNTIME_BRIDGE_URL"
 LLM_GATEWAY_URL="${LLM_GATEWAY_URL:-http://localhost:8001}"
 export JWT_SECRET MCP_BEARER_TOKEN
 
@@ -95,15 +96,17 @@ cmd_mint_token() {
     const now = Math.floor(Date.now() / 1000);
     const head = b64({ alg: "HS256", typ: "JWT" });
     const body = b64({
-      kind: "device", sub: SUB,
-      device_id: "laptop-test-" + SUB, device_name: "mcp-laptop-test",
+      kind: "runtime", sub: SUB,
+      runtime_id: "runtime-test-" + SUB, runtime_type: "mcp",
+      device_id: "runtime-test-" + SUB, device_name: "mcp-runtime-test",
+      runtime_scope: "user", capability_tags: ["mcp", "tools", "llm"],
       iat: now, exp: now + 90 * 24 * 3600,
     });
     const sig = c.createHmac("sha256", JWT_SECRET).update(head + "." + body).digest("base64url");
     process.stdout.write(head + "." + body + "." + sig);
   ' > "$DEVICE_TOKEN_FILE"
   chmod 600 "$DEVICE_TOKEN_FILE"
-  echo "minted device JWT (kind=device, sub=$uid, 90d) → $DEVICE_TOKEN_FILE"
+  echo "minted runtime JWT (kind=runtime, sub=$uid, 90d) → $DEVICE_TOKEN_FILE"
 }
 
 cmd_box_up() {
@@ -147,17 +150,17 @@ cmd_seed() {
     "$(dirname "$0")/seed-docker.sh"
 }
 
-# Direct-HTTP box: same services as box-up, but the box calls the HOST mcp +
+# Direct-HTTP DEBUG box: same services as box-up, but the box calls the HOST mcp +
 # gateway at host.docker.internal (docker-compose.laptop-direct.yml). No bridge,
 # no device token, no prefer_laptop. --build picks up new feature code.
 cmd_box_up_direct() {
   build_app_list "$@"
   echo "[box:direct] infra…"; dcd up -d $INFRA
   echo "[box:direct] seed…";  dcd up -d $BOOTSTRAP
-  echo "[box:direct] apps — --build (new code) + --no-deps (no mcp/gateway containers)…"
+  echo "[box:direct/debug] apps — --build (new code) + --no-deps (no mcp/gateway containers)…"
   dcd up -d ${BUILD:---build} --no-deps $APPS
   entry_banner
-  echo "The box calls your host mcp at http://host.docker.internal:7100."
+  echo "Debug fallback: the box calls your host mcp at http://host.docker.internal:7100."
   echo "Next:  $0 gateway   (terminal 2)   and   $0 mcp-direct   (terminal 3)"
 }
 
@@ -195,13 +198,16 @@ cmd_mcp() {
     exit 1
   fi
   mkdir -p "$MCP_WS"
-  echo "[mcp] LAPTOP_MODE → $LAPTOP_BRIDGE_URL   gateway $LLM_GATEWAY_URL   sandbox $MCP_WS"
+  echo "[mcp] RUNTIME_DIAL_IN_MODE → $RUNTIME_BRIDGE_URL   gateway $LLM_GATEWAY_URL   sandbox $MCP_WS"
   cd mcp-server
   # Required bridge + runtime env. COPILOT_* / GITHUB_TOKEN / MCP_GIT_* inherit
   # from your shell (export them once) and pass straight through to npm run dev.
-  export LAPTOP_MODE=true
-  export LAPTOP_BRIDGE_URL SINGULARITY_DEVICE_NAME="mcp-laptop-test"
-  export SINGULARITY_DEVICE_TOKEN="$(cat "$DEVICE_TOKEN_FILE")"
+  export RUNTIME_DIAL_IN_MODE=true LAPTOP_MODE=true
+  export RUNTIME_BRIDGE_URL LAPTOP_BRIDGE_URL
+  export SINGULARITY_RUNTIME_NAME="mcp-runtime-test" SINGULARITY_DEVICE_NAME="mcp-runtime-test"
+  export SINGULARITY_RUNTIME_TOKEN="$(cat "$DEVICE_TOKEN_FILE")"
+  export SINGULARITY_DEVICE_TOKEN="$SINGULARITY_RUNTIME_TOKEN"
+  export SINGULARITY_RUNTIME_TYPE=mcp
   export JWT_SECRET PORT=7100 MCP_BEARER_TOKEN LLM_GATEWAY_URL
   export MCP_COMMAND_EXECUTION_MODE=process
   export MCP_SANDBOX_ROOT="$MCP_WS"
@@ -218,8 +224,8 @@ cmd_status() {
     && echo "UP" || echo "DOWN (expected in BRIDGE mode — it runs no HTTP server)"
   printf '── context-api (:8000) … '
   curl -fsS http://localhost:8000/health >/dev/null 2>&1 && echo "UP" || echo "DOWN"
-  echo  "── laptop bridge — does the box see the laptop? (BRIDGE mode only)"
-  curl -fsS http://localhost:8000/api/laptop-bridge/status 2>/dev/null || echo "   (context-api down, or direct mode / no laptop connected)"
+  echo  "── runtime bridge — does the box see the MCP runtime? (BRIDGE mode only)"
+  curl -fsS http://localhost:8000/api/runtime-bridge/status 2>/dev/null || echo "   (context-api down, or direct mode / no runtime connected)"
   echo
 }
 

@@ -13,7 +13,7 @@
  * this for the OS keychain via `keytar`.
  *
  * For demo / dev: --platform defaults to http://localhost:8101 (pseudo-IAM
- * for token mint) and the bridge is ws://localhost:8000/api/laptop-bridge/connect
+ * for token mint) and the bridge is ws://localhost:8000/api/runtime-bridge/connect
  * (context-fabric). Override with --platform / --bridge / env.
  */
 import { spawn } from "node:child_process";
@@ -25,7 +25,9 @@ import { randomUUID } from "node:crypto";
 const HOME           = process.env.SINGULARITY_MCP_HOME ?? join(homedir(), ".singularity-mcp");
 const TOKEN_FILE     = join(HOME, "token.json");
 const DEFAULT_IAM    = process.env.SINGULARITY_IAM_URL    ?? "http://localhost:8101/api/v1";
-const DEFAULT_BRIDGE = process.env.LAPTOP_BRIDGE_URL      ?? "ws://localhost:8000/api/laptop-bridge/connect";
+const DEFAULT_BRIDGE = process.env.RUNTIME_BRIDGE_URL
+  ?? process.env.LAPTOP_BRIDGE_URL
+  ?? "ws://localhost:8000/api/runtime-bridge/connect";
 
 interface SavedToken {
   access_token:    string;
@@ -100,14 +102,24 @@ async function cmdLogin(flags: Record<string, string>): Promise<void> {
   const deviceRes = await fetch(`${platform.replace(/\/$/, "")}/auth/device-token`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${loginBody.access_token}` },
-    body: JSON.stringify({ device_id: deviceId, device_name: deviceName, ttl_days: ttlDays, scopes: [] }),
+    body: JSON.stringify({
+      device_id: deviceId,
+      device_name: deviceName,
+      ttl_days: ttlDays,
+      scopes: [],
+      token_kind: "runtime",
+      runtime_type: "mcp",
+      runtime_scope: "user",
+      allowed_frame_types: ["tool-run", "model-run", "code-context", "invoke"],
+      capability_tags: ["mcp", "tools", "llm"],
+    }),
   });
   if (!deviceRes.ok) {
     console.error(`✗ /auth/device-token failed: ${deviceRes.status} ${await deviceRes.text()}`);
     process.exit(1);
   }
   const dt = await deviceRes.json() as {
-    access_token: string; device_id: string; user_id: string;
+    access_token: string; token_kind?: string; device_id: string; user_id: string;
     email: string; device_name: string; expires_in_days: number;
   };
 
@@ -120,7 +132,7 @@ async function cmdLogin(flags: Record<string, string>): Promise<void> {
     expires_in_days: dt.expires_in_days,
     saved_at:        new Date().toISOString(),
   });
-  console.log(`✓ saved device token to ${TOKEN_FILE} (user_id=${dt.user_id}, device_id=${dt.device_id})`);
+  console.log(`✓ saved ${dt.token_kind ?? "runtime"} token to ${TOKEN_FILE} (user_id=${dt.user_id}, runtime_id=${dt.device_id})`);
   console.log(`  Next: singularity-mcp start`);
 }
 
@@ -150,7 +162,7 @@ function cmdStart(flags: Record<string, string>): void {
     process.exit(1);
   }
   const bridgeUrl = flags["bridge"] ?? DEFAULT_BRIDGE;
-  // Re-exec mcp-server in laptop mode with the saved token in the env.
+  // Re-exec mcp-server in runtime dial-in mode with the saved token in the env.
   // The CLI script lives at dist/cli/index.js; mcp-server's entry is
   // dist/index.js. Resolve relative to this file.
   const here = __dirname.includes("/dist/") ? __dirname : __dirname.replace(/src\/cli$/, "dist/cli");
@@ -163,18 +175,24 @@ function cmdStart(flags: Record<string, string>): void {
     process.exit(1);
   }
 
-  console.log(`▸ starting mcp-server (laptop mode) → bridge=${bridgeUrl}`);
-  console.log(`  user_id=${tok.user_id} device=${tok.device_name}`);
+  console.log(`▸ starting mcp-server (runtime dial-in) → bridge=${bridgeUrl}`);
+  console.log(`  user_id=${tok.user_id} runtime=${tok.device_name}`);
 
   const child = spawn(process.execPath, [entry], {
     stdio: "inherit",
     env: {
       ...process.env,
+      RUNTIME_DIAL_IN_MODE: "true",
       LAPTOP_MODE: "true",
+      RUNTIME_BRIDGE_URL: bridgeUrl,
       LAPTOP_BRIDGE_URL: bridgeUrl,
+      SINGULARITY_RUNTIME_TOKEN: tok.access_token,
       SINGULARITY_DEVICE_TOKEN: tok.access_token,
+      SINGULARITY_RUNTIME_ID:    tok.device_id,
       SINGULARITY_DEVICE_ID:    tok.device_id,
+      SINGULARITY_RUNTIME_NAME:  tok.device_name,
       SINGULARITY_DEVICE_NAME:  tok.device_name,
+      SINGULARITY_USER_ID:      tok.user_id,
     },
   });
   child.on("exit", (code) => process.exit(code ?? 0));

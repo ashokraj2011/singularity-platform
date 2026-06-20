@@ -191,7 +191,7 @@ if [[ "$FAILURES" -gt 0 ]]; then
   echo "M25 readiness failed with $FAILURES issue(s)."
   echo "Repair hints:"
   echo "  - Docker/split: docker compose restart agent-runtime, or run bin/apply-schemas.sh."
-  echo "  - Bare metal: rerun bin/bare-metal.sh up so prisma/post-push.sql is applied."
+  echo "  - Bare metal: rerun bin/bare-metal-apps.sh up so prisma/post-push.sql is applied."
   echo "  - Fresh DBs: seed first, then rerun with --strict-data if validating demo readiness."
   exit 1
 fi
